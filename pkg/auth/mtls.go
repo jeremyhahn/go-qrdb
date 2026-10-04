@@ -106,7 +106,7 @@ type IssuerVerifier interface {
 	// certificate (Key A), resolved fresh on every call. Unknown (no
 	// cluster CA configured, or a transient failure resolving it) is never
 	// a match: fail closed.
-	IsClusterCA(issuer *x509.Certificate) bool
+	IsClusterCA(ctx context.Context, issuer *x509.Certificate) bool
 
 	// VerifyIssuer reports whether issuer may authenticate as tenantID: the
 	// cluster CA (any tenant, via IsClusterCA) or tenantID's registered Key

@@ -60,7 +60,7 @@ func TestAutoProvision_GRPC_ServesTLS13ChainedToCA(t *testing.T) {
 		t.Fatal("server presented no certificate")
 	}
 
-	caCert, err := testServerCA.CACertificate()
+	caCert, err := testServerCA.CACertificate(t.Context())
 	if err != nil {
 		t.Fatalf("CA certificate: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestAutoProvision_Unix_ServesTLS13ChainedToCA(t *testing.T) {
 	if state.Version != tls.VersionTLS13 {
 		t.Fatalf("negotiated TLS version = %#x, want TLS 1.3 (%#x)", state.Version, tls.VersionTLS13)
 	}
-	caCert, err := testServerCA.CACertificate()
+	caCert, err := testServerCA.CACertificate(t.Context())
 	if err != nil {
 		t.Fatalf("CA certificate: %v", err)
 	}

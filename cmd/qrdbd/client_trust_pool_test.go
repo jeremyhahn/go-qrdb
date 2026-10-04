@@ -79,7 +79,9 @@ type fakeClusterCA struct {
 	err  error
 }
 
-func (f *fakeClusterCA) CACertificate() (*x509.Certificate, error) { return f.cert, f.err }
+func (f *fakeClusterCA) CACertificate(context.Context) (*x509.Certificate, error) {
+	return f.cert, f.err
+}
 
 var _ clienttrust.ClusterCA = (*fakeClusterCA)(nil)
 
@@ -170,15 +172,15 @@ func TestTLSBundle_TrustPoolIsTheWiredInstance(t *testing.T) {
 	if pool == nil {
 		t.Fatal("TrustPool() returned nil after wireClientTrustPool")
 	}
-	if !pool.IsClusterCA(clusterCA.cert) {
+	if !pool.IsClusterCA(t.Context(), clusterCA.cert) {
 		t.Fatal("TrustPool() is not the instance SetClusterCA populated")
 	}
 }
 
 func TestWireClientTrustPool_InstallsHook(t *testing.T) {
 	bundle := testBundle(t)
-	if cfg := getConfigForClient(t, bundle); cfg != nil {
-		t.Fatalf("expected (nil, nil) before SetKeyBProvider, got %+v", cfg)
+	if cfg := getConfigForClient(t, bundle); cfg != bundle.TLSConfig {
+		t.Fatalf("expected the unmodified base config before SetKeyBProvider, got %+v", cfg)
 	}
 }
 
@@ -225,8 +227,8 @@ func TestWireClientTrustPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	// "no cluster CA configured" fallback.
 	bundle.SetClusterCA(bundleClusterCA(t, bundle))
 
-	if cfg := getConfigForClient(t, bundle); cfg != nil {
-		t.Fatalf("expected (nil, nil) when CACertPEMs fails (simulating sealed), got %+v", cfg)
+	if cfg := getConfigForClient(t, bundle); cfg != bundle.TLSConfig {
+		t.Fatalf("expected the unmodified base config when CACertPEMs fails (simulating sealed), got %+v", cfg)
 	}
 }
 

@@ -45,12 +45,21 @@ func establishClusterCA(t *testing.T, n *node.Node) {
 	}
 }
 
-// certCARecordKeys are the actual KVStore keys cakey.SoftwareProvider
-// writes for a given CA prefix: ONE combined key+certificate record named
-// "material" (go-qrdb#560 review: the two-record "wrapped_key"/"cert_pem"
-// layout this test used to name does not exist any more -- a test naming
-// nonexistent keys proves nothing, since Get on them is "not found"
-// whether or not confinement is actually enforced).
+// certCARecordKeys names the ONE record under a given CA prefix this test
+// confines on: "material", the private-key record (go-qrdb#560 review: the
+// two-record "wrapped_key"/"cert_pem" layout this test used to name does
+// not exist any more -- a test naming nonexistent keys proves nothing,
+// since Get on them is "not found" whether or not confinement is actually
+// enforced).
+//
+// cakey.SoftwareProvider also writes a SEPARATE sibling record,
+// "certificate" (go-qrdb#591's review, B1), in the SAME atomic batch as
+// "material" -- but that record is deliberately NOT hard-confined (it is
+// public data: the CA's own certificate, not its key) and is deliberately
+// excluded here, not merely forgotten: this test proves the PRIVATE
+// material is unreachable, and asserting "certificate" belongs on that same
+// list would assert a confinement property this package does not and must
+// not provide for it.
 func certCARecordKeys(prefix string) []string {
 	return []string{prefix + "material"}
 }

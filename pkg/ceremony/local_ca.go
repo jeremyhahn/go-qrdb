@@ -92,8 +92,10 @@ func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions
 	return signCSRWith(c.caCert, c.caKey, csrPEM, opts)
 }
 
-// CACertificate returns the parsed CA certificate.
-func (c *LocalCA) CACertificate() (*x509.Certificate, error) {
+// CACertificate returns the parsed CA certificate. The certificate is
+// already resolved and held in memory, so ctx is unused -- there is nothing
+// here to cancel or bound.
+func (c *LocalCA) CACertificate(context.Context) (*x509.Certificate, error) {
 	return c.caCert, nil
 }
 

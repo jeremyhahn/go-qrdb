@@ -206,23 +206,42 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   now a real, newly-possible cause of that error, and it must classify as a
   cancellation/deadline, not a node-side fault.
 
+### Security
+
+- **BREAKING: an injected Key B provider now requires one key per tenant.**
+  `cert.WithKeyProvider`/`server.WithCertKeyProvider` (shipped in
+  v0.40.0-alpha as a single `cakey.Provider` shared across every tenant) are
+  renamed `cert.WithKeyProviderFactory`/`server.WithCertKeyProviderFactory`
+  and now take a `cakey.ProviderFactory`, resolved per tenant
+  (`ProviderForTenant(tenantID)`) exactly like the built-in software path.
+  The single-shared-provider shape made the issuer-tenant binding
+  (`IsTenantIssuer`) vacuous: every tenant's presented certificate verified
+  against the SAME injected CA, so the binding answered true for whichever
+  tenant a certificate's Subject OU merely claimed, regardless of which
+  tenant the signing key was actually provisioned for (owner ruling,
+  go-qrdb#591's review). There is no migration shim: an embedder on the old
+  API adapts its provider into a factory (`ProviderForTenant`/`TenantIDs`),
+  resolving its own key per tenant. `cert.DefaultCertProvider.CACertPEMs`
+  now enumerates a factory-backed deployment's tenants via
+  `factory.TenantIDs(ctx)`, since qrdb's own store has no record of a
+  factory-backed tenant's CA.
+- **BREAKING: a TLS handshake's trust resolution can never generate a CA,
+  and is bounded by a deadline derived from the handshake itself, never
+  `context.Background()`.** `ceremony.CeremonyCA.CACertificate` and
+  `clienttrust.ClusterCA.CACertificate` now take a `context.Context`.
+  `ceremony.ProviderCA.CACertificate` prefers the new
+  `cakey.CertOnlyProvider.CertificateOnly` when the wrapped provider offers
+  it, so the dynamic client-auth trust pool's cluster-CA resolution
+  (`pkg/clienttrust.Pool`) can never establish Key A as a side effect of a
+  connection attempt -- before this, the first TLS handshake a listener
+  received was ALSO what lazily bootstrapped a self-issued cluster's Key A,
+  an accidental side effect of an inbound connection. Every composer
+  (`cmd/qrdbd`, `sdk/go/node`) now calls the new
+  `lifecycle.EstablishClusterCA` once, deliberately, after `BuildServices`
+  succeeds, to establish Key A explicitly instead.
+
 ### Added
 
-- `cert.WithKeyProvider` and `server.WithCertKeyProvider`: the login CA (Key
-  B) now signs through a `cakey.Provider` the same way. The built-in default
-  is a `cakey.SoftwareProvider` per tenant at `__sys:cert_ca/{tenantID}/`,
-  constructed lazily; an injected provider (`WithCertKeyProvider`, forwarded
-  into `lifecycle.Infra.CertKeyProvider` by `sdk/go/node`'s standalone and
-  clustered builders and the `qrdb_embedded` Wails binding via the new
-  `EmbeddedServerBinding.SetCertKeyProvider`) replaces it entirely: no
-  software key is ever generated or stored for that deployment. `cmd/qrdbd`
-  leaves it unset, as a pure-software composition with no hardware injection
-  surface of its own. `DefaultCertProvider.getCAMaterial` no longer returns
-  raw key bytes; every client certificate is signed through the resolved
-  provider's `crypto.Signer`.
-- `DefaultCertProvider.CACertPEMs` enumerates every tenant's Key B CA
-  certificate (or the single injected provider's), the seam the dynamic
-  client-auth trust pool reads from.
 - `pkg/clienttrust`: the ONE shared implementation of the dynamic
   client-auth trust pool AND the issuer-tenant binding (`IsClusterCA`,
   `VerifyIssuer`, implementing the new `auth.IssuerVerifier` interface) --

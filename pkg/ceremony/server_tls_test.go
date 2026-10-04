@@ -44,7 +44,7 @@ func TestServerTLSConfig_ProvisionsTLS13LeafChainedToCA(t *testing.T) {
 		t.Fatalf("parse leaf: %v", err)
 	}
 
-	caCert, err := ca.CACertificate()
+	caCert, err := ca.CACertificate(t.Context())
 	if err != nil {
 		t.Fatalf("CA certificate: %v", err)
 	}
@@ -89,8 +89,8 @@ type failingCA struct{}
 func (failingCA) SignCSR(context.Context, []byte, *SignCSROptions) (*x509.Certificate, error) {
 	return nil, errAlwaysFail
 }
-func (failingCA) CACertificate() (*x509.Certificate, error) { return nil, errAlwaysFail }
-func (failingCA) CABundle() ([]byte, error)                 { return nil, errAlwaysFail }
+func (failingCA) CACertificate(context.Context) (*x509.Certificate, error) { return nil, errAlwaysFail }
+func (failingCA) CABundle() ([]byte, error)                                { return nil, errAlwaysFail }
 func (failingCA) IssueCertificate(context.Context, *IssueCertRequest) (*IssuedCert, error) {
 	return nil, errAlwaysFail
 }

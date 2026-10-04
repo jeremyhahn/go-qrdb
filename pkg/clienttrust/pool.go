@@ -52,6 +52,24 @@ import (
 // cluster-CA swap is never subject to this staleness window.
 const poolCacheTTL = 2 * time.Second
 
+// handshakeTrustTimeout bounds how long a single TLS handshake's trust
+// resolution (configForClient's ClientCAs widening, by extension
+// VerifyConnection's peer check against the pool that resolution produces)
+// may take. hello.Context() is canceled when the handshake's own connection
+// deadline fires or the connection closes early, but carries no deadline of
+// its own, so configForClient always derives a bounded one from it, never
+// context.Background() (go-qrdb#591's review, B5): an unbounded resolve on
+// the handshake path would let one slow storage read hang that connection's
+// handshake indefinitely, and context.Background() can never be canceled by
+// anything, including the listener shutting down.
+//
+// A var, not a const: pool_test.go shortens it for
+// TestPool_ConfigForClient_HandshakeBoundedNotBackground, which proves the
+// bound is real by making a resolver block until canceled -- at the
+// production value that test would have to wait out the whole 5 seconds to
+// observe the deadline firing.
+var handshakeTrustTimeout = 5 * time.Second
+
 // CertSource is the capability DefaultCertProvider provides: every tenant's
 // Key B CA certificate (or, with an injected cakey.Provider, the single one
 // that replaces them), and a load-only check of whether a given certificate
@@ -71,8 +89,13 @@ type CertSource interface {
 // call -- never cached by the caller, because a reseal, rotation, or
 // bootstrap-to-persisted transition must be visible on the very next call.
 // ceremony.CeremonyCA satisfies this structurally.
+//
+// ctx bounds the resolution. A handshake-time caller (configForClient, via
+// resolveClientCAs/resolveClusterCA) derives it from the handshake's own
+// *tls.ClientHelloInfo.Context() with a bounded timeout, never
+// context.Background() -- see handshakeTrustTimeout.
 type ClusterCA interface {
-	CACertificate() (*x509.Certificate, error)
+	CACertificate(ctx context.Context) (*x509.Certificate, error)
 }
 
 // StaticClusterCA wraps a fixed certificate as a ClusterCA, for a
@@ -103,8 +126,10 @@ func NewStaticClusterCA(cert *x509.Certificate) (*StaticClusterCA, error) {
 	return &StaticClusterCA{cert: cert}, nil
 }
 
-// CACertificate returns the wrapped certificate.
-func (s *StaticClusterCA) CACertificate() (*x509.Certificate, error) {
+// CACertificate returns the wrapped certificate. It is already resolved and
+// held in memory, so ctx is unused -- there is nothing here to cancel or
+// bound, and nothing this call could ever generate.
+func (s *StaticClusterCA) CACertificate(context.Context) (*x509.Certificate, error) {
 	return s.cert, nil
 }
 
@@ -206,13 +231,14 @@ func (p *Pool) SetClusterCA(ca ClusterCA) {
 }
 
 // resolveClusterCA returns the current cluster CA certificate, resolved
-// fresh (never from the pool's own cache -- see ClusterCA).
-func (p *Pool) resolveClusterCA() (*x509.Certificate, error) {
+// fresh (never from the pool's own cache -- see ClusterCA). ctx bounds the
+// resolution; see ClusterCA's own doc comment.
+func (p *Pool) resolveClusterCA(ctx context.Context) (*x509.Certificate, error) {
 	box := p.clusterCA.Load()
 	if box == nil || box.ca == nil {
 		return nil, &ClusterCANotConfiguredError{}
 	}
-	cert, err := box.ca.CACertificate()
+	cert, err := box.ca.CACertificate(ctx)
 	if err != nil {
 		return nil, &ClusterCAUnavailableError{Err: err}
 	}
@@ -222,11 +248,11 @@ func (p *Pool) resolveClusterCA() (*x509.Certificate, error) {
 // IsClusterCA reports whether cert is byte-identical to the CURRENT cluster
 // CA certificate. Unknown -- no ClusterCA configured, or a transient
 // failure resolving it -- is never a match: fail closed.
-func (p *Pool) IsClusterCA(cert *x509.Certificate) bool {
+func (p *Pool) IsClusterCA(ctx context.Context, cert *x509.Certificate) bool {
 	if cert == nil {
 		return false
 	}
-	ca, err := p.resolveClusterCA()
+	ca, err := p.resolveClusterCA(ctx)
 	if err != nil || ca == nil {
 		return false
 	}
@@ -306,7 +332,7 @@ func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
 // check). Returns *IssuerNotTrustedError when it is none of those, or when
 // the check itself could not be completed.
 func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
-	if p.IsClusterCA(issuer) {
+	if p.IsClusterCA(ctx, issuer) {
 		return nil
 	}
 	if p.IsStaticallyTrusted(issuer) {
@@ -345,9 +371,11 @@ func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.C
 //
 // Call once per *tls.Config, after cfg.ClientCAs already holds its Key-A
 // baseline, and before any listener sharing it starts.
-// Returning (nil, nil) from the installed hook keeps crypto/tls on the
-// original, unmodified cfg -- the correct behavior before SetKeyBProvider
-// has been called, on a reseal (CACertPEMs then fails: see
+// A failed Key B resolution makes the installed hook return the base config
+// unmodified -- cfg itself (equivalent to crypto/tls's own "no override"
+// convention) when Wire composed with no prior hook, or whatever a prior
+// composed hook itself returned otherwise -- the correct behavior before
+// SetKeyBProvider has been called, on a reseal (CACertPEMs then fails: see
 // docs/certificate-authority/architecture.md's "while sealed, Key B isn't
 // available" rule), and for a CertProvider that does not implement
 // CertSource.
@@ -362,18 +390,39 @@ func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.C
 // config: it is meant to trust the cluster CA (Key A) only, never Key B, so
 // its trust pool is built independently, directly from the cluster CA
 // certificate.
+// Composes with, rather than overwrites, a GetConfigForClient hook cfg
+// already carries: a composer that wires its own dynamic hook (a cert
+// reloader's own per-connection override, say) before calling Wire would
+// otherwise have that hook silently discarded, with no error -- the
+// listener would keep working, just without whatever the lost hook did,
+// which is the kind of regression that is invisible until it is a reported
+// behavior gap (go-qrdb#591's review, non-blocking). The existing hook, if
+// any, runs FIRST on every handshake, and its own returned config (when
+// non-nil) becomes the base Pool's OWN widening decision applies on top of,
+// so neither hook's effect is lost.
 func (p *Pool) Wire(cfg *tls.Config) {
 	// Captured ONCE, here, for IsStaticallyTrusted's exemption -- see its
 	// own doc comment for why this must be a fixed, Wire-time snapshot
 	// rather than resampled per connection.
 	p.staticBase.Store(cfg.ClientCAs)
-	cfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
-		return p.configForClient(cfg)
+	existing := cfg.GetConfigForClient
+	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		base := cfg
+		if existing != nil {
+			got, err := existing(hello)
+			if err != nil {
+				return nil, err
+			}
+			if got != nil {
+				base = got
+			}
+		}
+		return p.configForClient(hello, base)
 	}
 }
 
 // configForClient builds the per-connection config GetConfigForClient
-// returns, or (nil, nil) to keep base unchanged.
+// returns, or (base, nil) to keep base unchanged on a failed resolution.
 //
 // clone.ClientCAs is deliberately left as base's own static baseline --
 // NEVER the widened pool -- because crypto/tls derives the
@@ -395,10 +444,34 @@ func (p *Pool) Wire(cfg *tls.Config) {
 // certificate is required at all -- the operator's own
 // mtls_binding_policy choice -- while moving ALL verification to one
 // place for both Key A and Key B.
-func (p *Pool) configForClient(base *tls.Config) (*tls.Config, error) {
-	pool, err := p.resolveClientCAs(context.Background(), base.ClientCAs)
+//
+// The trust resolution below is bounded by a context derived from hello's
+// own Context(), never context.Background() -- see handshakeTrustTimeout.
+func (p *Pool) configForClient(hello *tls.ClientHelloInfo, base *tls.Config) (*tls.Config, error) {
+	// A real crypto/tls handshake always supplies a non-nil Context()
+	// (since Go 1.17); nil is reachable only from a caller that built a
+	// *tls.ClientHelloInfo directly rather than through an actual
+	// handshake, which several packages' own tests do to exercise
+	// GetConfigForClient without a real TLS connection. Falling back to
+	// context.Background() only in that case keeps those tests a safe
+	// no-op rather than a context.WithTimeout panic ("cannot create
+	// context from nil parent") -- the real handshake path above always
+	// has a genuine one to derive from.
+	parent := hello.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, handshakeTrustTimeout)
+	defer cancel()
+	pool, err := p.resolveClientCAs(ctx, base.ClientCAs)
 	if err != nil {
-		return nil, nil
+		// base, not nil: base is cfg itself when Wire's caller installed no
+		// prior GetConfigForClient hook, so returning it is equivalent to
+		// the original (nil, nil) "keep crypto/tls on the unmodified cfg"
+		// behavior -- but when Wire composed with an existing hook, base is
+		// THAT hook's own returned config, which must survive a failure
+		// here untouched rather than being silently discarded.
+		return base, nil
 	}
 	clone := base.Clone()
 	switch clone.ClientAuth {
@@ -510,7 +583,7 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 	// below: see refreshKeyBOnlyCache's own doc comment for why.
 	p.refreshKeyBOnlyCache(ctx)
 
-	clusterCACert, err := p.resolveClusterCA()
+	clusterCACert, err := p.resolveClusterCA(ctx)
 	if err != nil {
 		var notConfiguredErr *ClusterCANotConfiguredError
 		if !errors.As(err, &notConfiguredErr) {

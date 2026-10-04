@@ -212,8 +212,8 @@ func (s *CeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, 
 
 // CeremonyStatus returns the current ceremony state and SPKI pin. Before the
 // CA is wired the SPKI pin is empty.
-func (s *CeremonyService) CeremonyStatus(_ context.Context) (*CeremonyStatusInfo, error) {
-	pin, err := s.ceremony.SPKIPin()
+func (s *CeremonyService) CeremonyStatus(ctx context.Context) (*CeremonyStatusInfo, error) {
+	pin, err := s.ceremony.SPKIPin(ctx)
 	if err != nil {
 		pin = ""
 	}

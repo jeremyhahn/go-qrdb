@@ -1178,7 +1178,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		// Forward an injected (xkms) Key B provider the same way: the
 		// CertProvider is also constructed inside BuildServices.
-		CertKeyProvider:           server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProvider,
+		CertKeyProviderFactory:    server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
@@ -1669,7 +1669,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// hardware/cloud seal strategies resolve in clustered mode too.
 		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		// Forward an injected (xkms) Key B provider the same way.
-		CertKeyProvider:           server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProvider,
+		CertKeyProviderFactory:    server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
@@ -2260,7 +2260,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// than silently dropped.
 		StrategyRegistry: server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
 		// Forward an injected (xkms) Key B provider the same way.
-		CertKeyProvider:           server.ResolveCryptoOptions(serverOpts...).CertKeyProvider,
+		CertKeyProviderFactory:    server.ResolveCryptoOptions(serverOpts...).CertKeyProviderFactory,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	})
 	if err != nil {
@@ -2880,6 +2880,23 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 			return &AuthMiddlewareWiringError{Err: verr}
 		}
 	}
+	// A self-issued cluster's cakey.Provider (svcNode.ClusterCAProv) must be
+	// ESTABLISHED before the trust pool below ever resolves it: the trust
+	// pool's own resolution (ceremony.ProviderCA.CACertificate) deliberately
+	// prefers cakey.CertOnlyProvider.CertificateOnly, which never generates
+	// a CA as a side effect of a TLS handshake asking about one (go-qrdb#591's
+	// review, B5) -- so unlike before that fix, nothing implicitly
+	// bootstraps Key A as a side effect of the first client connection
+	// anymore, and this composer must trigger it explicitly instead. A nil
+	// ClusterCAProv (BYO-TLS, lifecycle.Infra.NoClusterCAKey) is a no-op.
+	// Logged, not fatal: a node booting sealed (unseal to follow later) is
+	// expected to fail this the same way the old implicit path would have
+	// failed the first handshake, and must still finish construction.
+	if err := lifecycle.EstablishClusterCA(ctx, svcNode); err != nil && n.logger != nil {
+		n.logger.Warn("node: cluster CA establishment failed; Key A is not yet available",
+			slog.Any("error", err))
+	}
+
 	// The dynamic client-auth trust pool (pkg/clienttrust) is built ONCE,
 	// here, and is BOTH the auth.IssuerVerifier the mTLS authenticator and
 	// the on-behalf forwarding path enforce against below AND the object

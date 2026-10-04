@@ -106,7 +106,7 @@ func TestNewLocalCA_SEC1Key(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ca)
 
-	cert, err := ca.CACertificate()
+	cert, err := ca.CACertificate(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "qrdb-test-ca", cert.Subject.CommonName)
 }
@@ -233,7 +233,7 @@ func TestLocalCA_SignCSR_AssignsTheIdentity(t *testing.T) {
 
 	// The signed certificate must chain to the CA — the property the
 	// holder claim flow depends on for mTLS client authentication.
-	caCert, err := ca.CACertificate()
+	caCert, err := ca.CACertificate(t.Context())
 	require.NoError(t, err)
 	assert.NoError(t, cert.CheckSignatureFrom(caCert))
 }
@@ -296,7 +296,7 @@ func TestLocalCA_CACertificate(t *testing.T) {
 	ca, err := NewLocalCA(certPEM, sec1KeyPEM)
 	require.NoError(t, err)
 
-	cert, err := ca.CACertificate()
+	cert, err := ca.CACertificate(t.Context())
 	require.NoError(t, err)
 	assert.True(t, cert.IsCA)
 	assert.Equal(t, "qrdb-test-ca", cert.Subject.CommonName)
@@ -335,7 +335,7 @@ func TestLocalCA_IssueCertificate(t *testing.T) {
 	assert.True(t, issued.Certificate.IPAddresses[0].Equal([]byte{127, 0, 0, 1}))
 
 	// The leaf must chain to the CA.
-	caCert, err := ca.CACertificate()
+	caCert, err := ca.CACertificate(t.Context())
 	require.NoError(t, err)
 	assert.NoError(t, issued.Certificate.CheckSignatureFrom(caCert))
 

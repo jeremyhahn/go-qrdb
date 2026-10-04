@@ -63,12 +63,20 @@ func (c *ProviderCA) SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROp
 	return signCSRWith(caCert, caKey, csrPEM, opts)
 }
 
-// CACertificate returns the provider's CA certificate. CeremonyCA's method
-// of this name takes no context; Certificate is resolved with
-// context.Background(), matching how CACertPEM()-shaped accessors elsewhere
-// in this codebase treat the CA certificate as public, context-free data.
-func (c *ProviderCA) CACertificate() (*x509.Certificate, error) {
-	return c.provider.Certificate(context.Background())
+// CACertificate returns the provider's CA certificate, resolved through
+// cakey.CertOnlyProvider's CertificateOnly when the wrapped provider offers
+// it, so this call can never generate a CA as a side effect -- the trust
+// path a TLS handshake resolves through (pkg/clienttrust.Pool) calls this,
+// and a handshake must never mint a cluster CA merely because one has not
+// been established yet (go-qrdb#591's review, B5). Falls back to
+// Certificate for a provider with no cert-only accessor (StaticProvider, an
+// Adapter over an externally-managed xkms CA), neither of which generates
+// anything from Certificate either; see CertOnlyProvider's own doc comment.
+func (c *ProviderCA) CACertificate(ctx context.Context) (*x509.Certificate, error) {
+	if only, ok := c.provider.(cakey.CertOnlyProvider); ok {
+		return only.CertificateOnly(ctx)
+	}
+	return c.provider.Certificate(ctx)
 }
 
 // CABundle returns the provider's CA certificate, PEM-encoded.

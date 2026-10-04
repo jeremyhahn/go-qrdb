@@ -517,14 +517,26 @@ at rest:
 ```
 Bootstrap (barrier unsealed)
   ├─ Generate ECDSA P-256 CA key pair
-  ├─ Encode key + self-signed cert together as ONE JSON record
-  ├─ kvStore.PutIfAbsent(__sys:cert_ca/{tenantID}/material, record)
+  ├─ Encode the key as the "material" record and the self-signed cert as
+  │  the SEPARATE "certificate" record (see "The CA key provider seam",
+  │  below, for why these are two records, not one combined one)
+  ├─ kvStore.PutAllIfAllUnchanged(__sys:cert_ca/{tenantID}/material,
+  │  __sys:cert_ca/{tenantID}/certificate) -- ONE atomic guarded batch,
+  │  guarded on BOTH being absent
   └─ Cache CA key + cert in memory
 
-Unseal
-  ├─ Load the material record from KVStore
-  ├─ Decode key + cert from it
+Unseal (load-only; auto-establishes on a cold cache with nothing persisted
+yet -- see Initialize)
+  ├─ Load BOTH the material and certificate records from KVStore
+  ├─ Decode the key from material, the cert from certificate
   └─ Cache CA key + cert in memory
+
+CertificateOnly (the handshake / trust-decision path -- IsTenantIssuer,
+CACertPEMs' per-tenant load)
+  ├─ Read ONLY the certificate record; the material record is never
+  │  fetched, let alone parsed, and NOTHING is ever generated here
+  └─ Cache the cert; a cold store with neither record yet answers
+     *NotInitializedError, never a freshly-minted CA
 
 Seal
   ├─ secure.Wipe(caKey) → zero memory
@@ -650,9 +662,12 @@ same CA.
 An embedder supplies its own `cakey.Provider` through a `With*` option on
 `qrdbd`, `sdk/go/node`, and the embedded SDK alike:
 
-- `WithClusterCAKeyProvider(cakey.Provider)` — replaces Key A.
-- `WithCertKeyProvider(cakey.Provider)` — replaces Key B: `pkg/cert`'s login
-  CA.
+- `WithClusterCAKeyProvider(cakey.Provider)` — replaces Key A: one key,
+  cluster-wide, no tenant concept.
+- `WithCertKeyProviderFactory(cakey.ProviderFactory)` — replaces Key B:
+  `pkg/cert`'s login CA. **Not a bare `cakey.Provider`** — see
+  `cakey.ProviderFactory`, below, for why Key B's seam is asymmetric with
+  Key A's.
 
 **What `WithClusterCAKeyProvider` actually wires, precisely, per
 composition root.** The option itself flows into exactly one place,
@@ -693,8 +708,30 @@ wire the *same* provider instance to both roles by mistake, silently
 collapsing the separation the two-key design exists to hold. Two distinctly
 named options make that mistake require two separate, deliberate lines.
 
-When a provider is injected, qrdb's built-in `SoftwareProvider` for that key
-is never constructed, never generates a key pair, and never reads or writes
+**The two options are not symmetric in shape, either, and that is deliberate
+(owner ruling).** Key A has no tenant concept — one cluster, one key — so
+`WithClusterCAKeyProvider` takes a bare `cakey.Provider`. Key B is
+per-tenant BY DEFINITION: the built-in path already constructs one
+`cakey.SoftwareProvider` per tenant (its own storage prefix, its own
+Subject), and an injected backend must do the same, one key per tenant, or
+the issuer-tenant binding (`pkg/clienttrust.Pool.VerifyIssuer`, via
+`cert.CertProvider`'s `IsTenantIssuer`) becomes vacuous: every tenant's
+presented certificate would verify against the SAME injected CA, so
+`IsTenantIssuer` would answer true for whichever tenant a certificate's
+Subject OU merely CLAIMED, regardless of which tenant the signing key was
+actually provisioned for. `WithCertKeyProviderFactory` therefore takes a
+`cakey.ProviderFactory` — `ProviderForTenant(tenantID) (Provider, error)`
+plus `TenantIDs(ctx) ([]string, error)` for `CACertPEMs`' own enumeration —
+not a `cakey.Provider`, and this package deliberately offers no adapter
+that lifts a single `Provider` into a `ProviderFactory` by ignoring the
+tenant argument: that shortcut is the defect this seam's shape exists to
+make impossible to reach by accident, not a convenience to preserve. An
+HSM/KMS-backed factory holds one key per tenant and resolves it by tenant
+ID, exactly like the software provider.
+
+When a provider (or, for Key B, a provider resolved from the factory) is
+injected, qrdb's built-in `SoftwareProvider` for that key is never
+constructed, never generates a key pair, and never reads or writes
 `__sys:cluster_ca/`/`__sys:cert_ca/{tenantID}/` — the key is wherever the
 injected provider says it is, and qrdb stores at most a certificate.
 
@@ -774,7 +811,7 @@ new* CSR-signed certificate moves to post-unseal.
 | At-rest protection of the CA key | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
 | Certificate-to-user binding | `pkg/user` — see [../identity-rbac/](../identity-rbac/) | go-qrdb |
 | Ceremony CA adapter (`LocalCA` over raw PEM, `ProviderCA` over `cakey.Provider`) | `pkg/ceremony` — see [../ceremony/](../ceremony/) | go-qrdb |
-| CRL, OCSP, HSM-backed CA, profiles, CT | — | **go-xkms**, injected via `WithCertProvider` / `WithClusterCAKeyProvider` / `WithCertKeyProvider` |
+| CRL, OCSP, HSM-backed CA, profiles, CT | — | **go-xkms**, injected via `WithCertProvider` / `WithClusterCAKeyProvider` / `WithCertKeyProviderFactory` |
 
 `ceremony.CeremonyCA` is satisfied by `ceremony.LocalCA` (raw PEM, used only
 for the pre-store `StaticProvider` window), `ceremony.ProviderCA` (any
@@ -803,8 +840,9 @@ copies of the same logic:
   its `ClientCAs` field fresh on every connection (not captured at Wire time)
   as the Key A baseline; `clienttrust.Pool.SetKeyBProvider` installs the live
   `cert.CertProvider` once it exists (after the first unseal), so a Key B CA
-  created — or rotated to an HSM-backed one via `WithCertKeyProvider` — after
-  the listener started is picked up on the next connection, not only at boot.
+  created — or rotated to an HSM-backed one via `WithCertKeyProviderFactory`
+  — after the listener started is picked up on the next connection, not
+  only at boot.
   `GetConfigForClient` returning `(nil, nil)` keeps the original, static
   (Key A-only) config, which is what happens before the first
   `SetKeyBProvider` call, and on every call where `CACertPEMs` fails — the
@@ -829,6 +867,21 @@ copies of the same logic:
     trusted at the TLS layer with the binding unenforced at the
     authentication layer. `Pool` cannot verify that obligation for itself;
     see `SetKeyBProvider`'s own doc comment.
+  - **The resolution is bounded by a deadline derived from the handshake
+    itself, and can never generate a CA** (owner ruling, go-qrdb#591's
+    review). `configForClient` derives its context from the handshake's own
+    `*tls.ClientHelloInfo.Context()` with an additional bounded timeout
+    (`handshakeTrustTimeout`), never `context.Background()`: an unbounded
+    resolve on the handshake path would let one slow storage read hang that
+    connection's handshake indefinitely, where `context.Background()` can
+    never be canceled by anything, including the listener shutting down.
+    The cluster-CA half of that resolution
+    (`ceremony.ProviderCA.CACertificate`) prefers
+    `cakey.CertOnlyProvider.CertificateOnly` when the wrapped provider
+    offers it, so a TLS handshake can never establish a self-issued
+    cluster's Key A as a side effect of a connection attempt — every
+    composer instead calls the new `lifecycle.EstablishClusterCA` once,
+    deliberately, during startup.
   - **The widened pool is cached for 2 seconds** (`poolCacheTTL`), the
     current mitigation for the per-handshake cost of scanning and parsing
     every tenant's CA certificate (measured at ~20ms at 1,000 tenants
@@ -990,8 +1043,13 @@ provider.
 - **The built-in per-tenant CA key is never auto-created by a read.**
   `IsTenantIssuer` — reached on the authentication path for whatever tenant
   a presented leaf CLAIMS to be, including tenants that do not exist — is
-  LOAD-ONLY: it calls the built-in `cakey.SoftwareProvider`'s `Unseal`
-  (load-only) before `Certificate`, so a tenant with no established CA
+  LOAD-ONLY: `loadOnlyCertificate` calls the built-in
+  `cakey.SoftwareProvider`'s `CertificateOnly` (cert-only, load-only --
+  WITHOUT ever creating one and WITHOUT loading or decoding the private
+  key; see `cakey.CertOnlyProvider`), never `Certificate` (which
+  auto-establishes a brand-new CA the first time none exists) and never
+  `Unseal` (which loads the key record into memory alongside the
+  certificate one, on every call), so a tenant with no established CA
   answers `false`, never minting one as a side effect of being asked about.
   `Initialize`'s own auto-init-on-first-use path is safe under concurrency
   without any lock of `pkg/cert`'s own: `cakey.SoftwareProvider.Initialize`
@@ -1007,21 +1065,31 @@ provider.
   whenever the underlying store happens to become unreadable.
 - Issuance, revocation and listing are separately permissioned
   (`certs:generate`, `certs:revoke`, `certs:list`).
-- **An injected `cakey.Provider` (`WithKeyProvider`/`WithCertKeyProvider`)
-  replaces the built-in per-tenant default ENTIRELY: one CA serves every
-  tenant.** There is no per-tenant isolation on that path — `CACertPEMs`
-  returns the single injected provider's one certificate, and
-  `IsTenantIssuer` is unreachable in any tenant-distinguishing sense,
-  because there is only ever one CA to compare against regardless of which
-  tenant is asked about. **Switching an already-running deployment from the
-  built-in default to an injected provider (or back) drops every per-tenant
-  CA it is switching away from**: nothing migrates existing tenants' Key B
-  CAs onto the newly injected provider, and the built-in per-tenant
-  material under `__sys:cert_ca/{tenantID}/` is not deleted but is also no
-  longer consulted — any login certificate still anchored at a now-orphaned
-  per-tenant CA stops authenticating. This is a deliberate, operator-chosen
-  transition, not an upgrade path; see the BREAKING entry in the changelog
-  for the inverse direction (adopting per-tenant CAs for the first time).
+- **An injected `cakey.ProviderFactory` (`WithKeyProviderFactory` /
+  `WithCertKeyProviderFactory`) replaces the built-in per-tenant default
+  one tenant at a time, never with one shared CA** (owner ruling,
+  go-qrdb#591's review — this reverses an earlier revision of this
+  document, which described a single injected `cakey.Provider` serving
+  every tenant; that shape made the issuer-tenant binding vacuous and is no
+  longer how this seam is typed). `resolveKeyProvider` calls
+  `factory.ProviderForTenant(tenantID)` for the SAME `tenantID` every other
+  accessor on the path is resolving for, so `IsTenantIssuer` compares each
+  tenant's CLAIMED certificate against THAT tenant's own registered CA,
+  exactly as it does for the built-in path — a certificate issued under
+  tenant X's injected CA never satisfies tenant Y's binding. `CACertPEMs`
+  enumerates the tenants to widen `ClientCAs` with via
+  `factory.TenantIDs(ctx)`, since qrdb's own `__sys:cert_ca/` scan finds
+  nothing for a factory-backed tenant (its material lives in the embedder's
+  own backend, never qrdb's store). **Switching an already-running
+  deployment from the built-in default to an injected factory (or back)
+  drops every per-tenant CA it is switching away from**: nothing migrates
+  existing tenants' Key B CAs onto the newly injected factory, and the
+  built-in per-tenant material under `__sys:cert_ca/{tenantID}/` is not
+  deleted but is also no longer consulted — any login certificate still
+  anchored at a now-orphaned per-tenant CA stops authenticating. This is a
+  deliberate, operator-chosen transition, not an upgrade path; see the
+  BREAKING entry in the changelog for the inverse direction (adopting
+  per-tenant CAs for the first time).
 
 ## What this feature deliberately does not do
 

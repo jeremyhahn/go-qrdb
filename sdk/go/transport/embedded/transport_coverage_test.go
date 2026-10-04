@@ -810,7 +810,7 @@ func (m *mockCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCS
 	return nil, errors.New("not used")
 }
 
-func (m *mockCeremonyCA) CACertificate() (*x509.Certificate, error) {
+func (m *mockCeremonyCA) CACertificate(context.Context) (*x509.Certificate, error) {
 	return nil, errors.New("not used")
 }
 

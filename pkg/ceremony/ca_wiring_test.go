@@ -187,7 +187,7 @@ func TestReplaceCA_PostOperationalSigningSurvivesRestart(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, cert)
-	caCert, err := initCA.CACertificate()
+	caCert, err := initCA.CACertificate(t.Context())
 	require.NoError(t, err)
 	require.NoError(t, cert.CheckSignatureFrom(caCert),
 		"post-restart signing must still chain to the ceremony's own CA")

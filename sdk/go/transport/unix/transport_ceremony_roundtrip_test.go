@@ -83,8 +83,8 @@ type stubCeremonyCA struct{}
 func (stubCeremonyCA) SignCSR(context.Context, []byte, *ceremony.SignCSROptions) (*x509.Certificate, error) {
 	return nil, nil
 }
-func (stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
-func (stubCeremonyCA) CABundle() ([]byte, error)                 { return nil, nil }
+func (stubCeremonyCA) CACertificate(context.Context) (*x509.Certificate, error) { return nil, nil }
+func (stubCeremonyCA) CABundle() ([]byte, error)                                { return nil, nil }
 func (stubCeremonyCA) IssueCertificate(context.Context, *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return nil, nil
 }

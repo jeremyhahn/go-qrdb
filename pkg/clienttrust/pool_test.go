@@ -119,7 +119,9 @@ type fakeClusterCA struct {
 	err  error
 }
 
-func (f *fakeClusterCA) CACertificate() (*x509.Certificate, error) { return f.cert, f.err }
+func (f *fakeClusterCA) CACertificate(context.Context) (*x509.Certificate, error) {
+	return f.cert, f.err
+}
 
 // pemEncode wraps encoding/pem.EncodeToMemory for a CERTIFICATE block.
 func pemEncode(der []byte) []byte {
@@ -310,8 +312,8 @@ func TestPool_ClusterCATransientError_KeyBNotTrustedThisCallOnly(t *testing.T) {
 
 	transientCA := &fakeClusterCA{err: errors.New("replicated store unreachable")}
 	pool.SetClusterCA(transientCA)
-	if got := getConfigForClient(t, cfg); got != nil {
-		t.Fatalf("expected (nil, nil) while ClusterCA fails, got %+v", got)
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Fatalf("expected the unmodified base config while ClusterCA fails, got %+v", got)
 	}
 
 	// The SAME Pool, no re-wiring: a later call where ClusterCA resolves
@@ -390,8 +392,8 @@ func TestPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakeCertProvider{err: errors.New("barrier is sealed")})
 
-	if got := getConfigForClient(t, cfg); got != nil {
-		t.Fatalf("expected (nil, nil) when CACertPEMs fails (simulating sealed), got %+v", got)
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Fatalf("expected the unmodified base config when CACertPEMs fails (simulating sealed), got %+v", got)
 	}
 }
 
@@ -421,8 +423,8 @@ func TestPool_ProviderWithoutCertSourceFallsBackToStatic(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakePlainCertProvider{})
 
-	if got := getConfigForClient(t, cfg); got != nil {
-		t.Fatalf("expected (nil, nil) for a CertProvider that does not implement CertSource, got %+v", got)
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Fatalf("expected the unmodified base config for a CertProvider that does not implement CertSource, got %+v", got)
 	}
 }
 
@@ -439,8 +441,8 @@ func TestPool_NilKeyBProviderRevertsToStatic(t *testing.T) {
 	}
 
 	pool.SetKeyBProvider(nil)
-	if got := getConfigForClient(t, cfg); got != nil {
-		t.Fatalf("expected (nil, nil) after SetKeyBProvider(nil), got %+v", got)
+	if got := getConfigForClient(t, cfg); got != cfg {
+		t.Fatalf("expected the unmodified base config after SetKeyBProvider(nil), got %+v", got)
 	}
 }
 
@@ -517,17 +519,17 @@ func TestPool_IsClusterCA(t *testing.T) {
 	_, otherCert := genCAPEM(t)
 	pool := New()
 
-	if pool.IsClusterCA(keyACert) {
+	if pool.IsClusterCA(t.Context(), keyACert) {
 		t.Error("expected false with no ClusterCA configured")
 	}
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
-	if !pool.IsClusterCA(keyACert) {
+	if !pool.IsClusterCA(t.Context(), keyACert) {
 		t.Error("expected true for the configured cluster CA certificate")
 	}
-	if pool.IsClusterCA(otherCert) {
+	if pool.IsClusterCA(t.Context(), otherCert) {
 		t.Error("expected false for a different certificate")
 	}
-	if pool.IsClusterCA(nil) {
+	if pool.IsClusterCA(t.Context(), nil) {
 		t.Error("expected false for a nil certificate")
 	}
 }
@@ -1065,5 +1067,145 @@ func TestPool_RealHandshake_3000Tenants_AdvertisesNoTenantCA(t *testing.T) {
 		if bytes.Equal(acceptableCAs[0], tenantCert.RawSubject) {
 			t.Fatalf("tenant %d's CA subject was advertised in the CertificateRequest", i)
 		}
+	}
+}
+
+// blockingClusterCA is a ClusterCA whose CACertificate blocks until ctx is
+// done, then reports ctx's own error. It exists to prove that
+// configForClient's resolution is bounded by a context DERIVED FROM the
+// handshake -- never context.Background(), which nothing can ever cancel --
+// so a resolver that never otherwise returns still lets that one
+// connection's handshake conclude rather than hang forever (go-qrdb#591's
+// review, B5).
+type blockingClusterCA struct{}
+
+func (blockingClusterCA) CACertificate(ctx context.Context) (*x509.Certificate, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestPool_ConfigForClient_HandshakeBoundedNotBackground proves
+// configForClient derives a BOUNDED context from the handshake's own
+// hello.Context(), never context.Background(), for its trust resolution.
+//
+// handshakeTrustTimeout is shortened for this test (see its own doc
+// comment) so the assertion below is cheap at the production value too: a
+// resolver that blocks forever still causes THIS test's own handshake to
+// conclude well within the test's own outer deadline, which is set to many
+// multiples of the shortened timeout -- proving a bound shorter than
+// "forever" exists, independent of its exact production duration.
+//
+// The outer HandshakeContext call is given a context with NO deadline of
+// its own (context.WithCancel, never fired early): any bound observed
+// cannot be credited to the caller's own context, only to configForClient's
+// own internal derivation from hello.Context().
+func TestPool_ConfigForClient_HandshakeBoundedNotBackground(t *testing.T) {
+	savedTimeout := handshakeTrustTimeout
+	handshakeTrustTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { handshakeTrustTimeout = savedTimeout })
+
+	_, operatorCACert, operatorCAKey := genCAWithKey(t, "operator-static-ca")
+	operatorPool := x509.NewCertPool()
+	operatorPool.AddCert(operatorCACert)
+	serverLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
+	clientLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
+
+	serverCfg := &tls.Config{
+		Certificates: []tls.Certificate{serverLeaf},
+		ClientCAs:    operatorPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	pool := New()
+	pool.Wire(serverCfg)
+	pool.SetClusterCA(blockingClusterCA{})
+	pool.SetKeyBProvider(&fakeCertProvider{})
+
+	clientCfg := &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13,
+		Certificates:       []tls.Certificate{clientLeaf},
+	}
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	// No deadline of its own -- see doc comment above.
+	outerCtx, outerCancel := context.WithCancel(context.Background())
+	defer outerCancel()
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		// An error here (the expected outcome: configForClient's own
+		// resolveClientCAs failed, so GetConfigForClient returns (nil,
+		// nil) and crypto/tls falls back to serverCfg's static ClientCAs,
+		// OR the resolution's failure surfaces some other way) is not
+		// itself the point -- only that this returns at all, promptly.
+		_ = tls.Server(serverConn, serverCfg).HandshakeContext(outerCtx)
+	}()
+	go func() {
+		_ = tls.Client(clientConn, clientCfg).HandshakeContext(outerCtx)
+	}()
+
+	select {
+	case <-serverDone:
+		// configForClient's own bounded context expired and the handshake
+		// concluded -- the behavior under test.
+	case <-time.After(5 * time.Second):
+		t.Fatal("server handshake did not conclude: configForClient is not bounding its trust resolution to a context derived from the handshake (handshakeTrustTimeout), so a resolver that never returns hangs the connection forever")
+	}
+}
+
+// TestPool_Wire_ComposesWithExistingGetConfigForClient proves Wire does not
+// silently discard a GetConfigForClient hook cfg already carries when Wire
+// is called: the pre-existing hook must still run, on every handshake, and
+// its own returned config must still be the base Pool's OWN widening
+// applies on top of (go-qrdb#591's review, non-blocking).
+func TestPool_Wire_ComposesWithExistingGetConfigForClient(t *testing.T) {
+	var existingCalled bool
+	existing := func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		existingCalled = true
+		return &tls.Config{NextProtos: []string{"existing-hook-marker"}}, nil
+	}
+
+	cfg := &tls.Config{GetConfigForClient: existing}
+	pool := New()
+	pool.Wire(cfg)
+
+	got := getConfigForClient(t, cfg)
+	if !existingCalled {
+		t.Fatal("expected the pre-existing GetConfigForClient hook to be called")
+	}
+	if got == nil {
+		t.Fatal("expected a non-nil config")
+	}
+	if len(got.NextProtos) != 1 || got.NextProtos[0] != "existing-hook-marker" {
+		t.Errorf("expected the pre-existing hook's own config to be the base Pool's widening applied to, got NextProtos=%v", got.NextProtos)
+	}
+}
+
+// TestPool_Wire_ExistingHookSurvivesAFailedResolution proves that when Key
+// B resolution itself fails, the pre-existing hook's config is still what
+// is returned -- not silently discarded in favor of a bare nil, which
+// would also discard whatever that hook's own override did.
+func TestPool_Wire_ExistingHookSurvivesAFailedResolution(t *testing.T) {
+	existing := func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		return &tls.Config{NextProtos: []string{"existing-hook-marker"}}, nil
+	}
+
+	cfg := &tls.Config{GetConfigForClient: existing}
+	pool := New()
+	pool.Wire(cfg)
+	// No SetKeyBProvider call at all: resolveClientCAs fails with
+	// *KeyBUnavailableError, the ordinary "nothing installed yet" case.
+
+	got := getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected the pre-existing hook's config to survive a failed resolution")
+	}
+	if len(got.NextProtos) != 1 || got.NextProtos[0] != "existing-hook-marker" {
+		t.Errorf("expected the pre-existing hook's config to survive untouched, got NextProtos=%v", got.NextProtos)
 	}
 }

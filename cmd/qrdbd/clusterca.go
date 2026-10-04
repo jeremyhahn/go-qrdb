@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,7 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
 const (
@@ -90,30 +89,13 @@ func clusterCABootstrapKeyPEM(bundle *TLSBundle) []byte {
 // Bounded by both ctx (so a shutdown signal during the retry loop is
 // honored immediately) and deadline, measured from the first call: a
 // genuinely stuck shard fails the boot rather than hanging it.
+//
+// A thin wrapper over lifecycle.AwaitClusterCACertificate: the retry logic
+// itself is shared with every other composer (go-qrdb#591's review, B5's
+// EstablishClusterCA), and this qrdbd-local name and signature are kept so
+// existing tests in this package stay unchanged.
 func awaitClusterCACertificate(ctx context.Context, provider cakey.Provider, deadline, baseDelay, maxDelay time.Duration) (*x509.Certificate, error) {
-	giveUpAt := time.Now().Add(deadline)
-	delay := baseDelay
-	for {
-		cert, err := provider.Certificate(ctx)
-		if err == nil {
-			return cert, nil
-		}
-		var notLeader *service.NotLeaderError
-		if !errors.As(err, &notLeader) {
-			return nil, err
-		}
-		if !time.Now().Before(giveUpAt) {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, err
-		case <-time.After(delay):
-		}
-		if delay *= 2; delay > maxDelay {
-			delay = maxDelay
-		}
-	}
+	return lifecycle.AwaitClusterCACertificate(ctx, provider, deadline, baseDelay, maxDelay)
 }
 
 // confirmClusterCAPersisted triggers the cluster CA (Key A) provider's

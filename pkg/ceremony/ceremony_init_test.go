@@ -67,7 +67,7 @@ func TestInitialize_ShamirEnrolsHoldersAndGoesOperationalOnceAllClaim(t *testing
 	e.claim(seal.DomainUnseal, holders[2])
 	assert.Equal(t, StateOperational, e.svc.State())
 
-	pinned, err := e.svc.SPKIPin()
+	pinned, err := e.svc.SPKIPin(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, res.SPKIPin, pinned)
 }
@@ -222,7 +222,7 @@ func TestCeremonyService_Accessors(t *testing.T) {
 
 	fresh, err := NewCeremonyService(&CeremonyConfig{}, b, testLogger())
 	require.NoError(t, err)
-	_, err = fresh.SPKIPin()
+	_, err = fresh.SPKIPin(t.Context())
 	assert.ErrorIs(t, err, ErrCANotInitialized)
 }
 

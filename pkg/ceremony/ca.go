@@ -161,8 +161,14 @@ type CeremonyCA interface {
 	// given options and returns the issued certificate.
 	SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
 
-	// CACertificate returns the CA's own certificate.
-	CACertificate() (*x509.Certificate, error)
+	// CACertificate returns the CA's own certificate, resolved without ever
+	// generating one as a side effect of being asked -- see
+	// cakey.CertOnlyProvider, which ProviderCA's implementation prefers
+	// when the wrapped Provider offers it. ctx bounds the resolution; a
+	// caller on a TLS handshake's trust path derives it from the
+	// handshake's own hello.Context() with a bounded timeout, never
+	// context.Background().
+	CACertificate(ctx context.Context) (*x509.Certificate, error)
 
 	// CABundle returns the PEM-encoded CA certificate chain.
 	CABundle() ([]byte, error)

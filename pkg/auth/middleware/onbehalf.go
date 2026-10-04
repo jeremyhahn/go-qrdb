@@ -118,7 +118,7 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 			if len(c) < 2 {
 				continue
 			}
-			if m.issuerVerifier.IsClusterCA(c[1]) {
+			if m.issuerVerifier.IsClusterCA(ctx, c[1]) {
 				trusted = true
 				break
 			}

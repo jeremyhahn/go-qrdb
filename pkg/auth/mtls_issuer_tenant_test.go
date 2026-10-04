@@ -128,7 +128,7 @@ type fakeIssuerVerifier struct {
 	err               error                        // when set, VerifyIssuer always fails with it
 }
 
-func (f *fakeIssuerVerifier) IsClusterCA(issuer *x509.Certificate) bool {
+func (f *fakeIssuerVerifier) IsClusterCA(_ context.Context, issuer *x509.Certificate) bool {
 	if f.clusterCA == nil || issuer == nil {
 		return false
 	}
@@ -152,11 +152,11 @@ func (f *fakeIssuerVerifier) isStaticallyTrusted(issuer *x509.Certificate) bool 
 	return bytes.Equal(f.staticallyTrusted.Raw, issuer.Raw)
 }
 
-func (f *fakeIssuerVerifier) VerifyIssuer(_ context.Context, tenantID string, issuer *x509.Certificate) error {
+func (f *fakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
 	if f.err != nil {
 		return f.err
 	}
-	if f.IsClusterCA(issuer) || f.isStaticallyTrusted(issuer) {
+	if f.IsClusterCA(ctx, issuer) || f.isStaticallyTrusted(issuer) {
 		return nil
 	}
 	registered, ok := f.registry[tenantID]

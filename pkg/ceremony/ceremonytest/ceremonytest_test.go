@@ -24,7 +24,7 @@ import (
 // certificate, named as asked.
 func TestNewCA_ReturnsTheCAItsPEMNames(t *testing.T) {
 	ca, certPEM := NewCA(t, "Fixture CA")
-	cert, err := ca.CACertificate()
+	cert, err := ca.CACertificate(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestNewCA_IsFreshAndSelfSigned(t *testing.T) {
 	if string(aPEM) == string(bPEM) {
 		t.Fatal("two calls returned the same CA")
 	}
-	cert, err := a.CACertificate()
+	cert, err := a.CACertificate(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

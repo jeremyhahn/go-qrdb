@@ -66,7 +66,7 @@ func newTestCeremonyCA(t *testing.T) *testCeremonyCA {
 }
 
 // CACertificate returns the CA certificate.
-func (ca *testCeremonyCA) CACertificate() (*x509.Certificate, error) {
+func (ca *testCeremonyCA) CACertificate(context.Context) (*x509.Certificate, error) {
 	return ca.caCert, nil
 }
 

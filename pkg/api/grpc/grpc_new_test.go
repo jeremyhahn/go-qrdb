@@ -58,8 +58,8 @@ var _ ceremony.CeremonyCA = (*stubCeremonyCA)(nil)
 func (*stubCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
 	return nil, nil
 }
-func (*stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
-func (*stubCeremonyCA) CABundle() ([]byte, error)                 { return []byte("ca-bundle"), nil }
+func (*stubCeremonyCA) CACertificate(context.Context) (*x509.Certificate, error) { return nil, nil }
+func (*stubCeremonyCA) CABundle() ([]byte, error)                                { return []byte("ca-bundle"), nil }
 func (*stubCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return &ceremony.IssuedCert{CertPEM: []byte("cert-pem"), KeyPEM: []byte("key-pem")}, nil
 }

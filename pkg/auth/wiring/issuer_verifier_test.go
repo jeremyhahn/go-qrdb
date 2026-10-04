@@ -66,7 +66,7 @@ type wiringFakeIssuerVerifier struct {
 
 var errWiringIssuerNotTrusted = errors.New("wiring test: issuer not trusted")
 
-func (f *wiringFakeIssuerVerifier) IsClusterCA(issuer *x509.Certificate) bool {
+func (f *wiringFakeIssuerVerifier) IsClusterCA(_ context.Context, issuer *x509.Certificate) bool {
 	if f.clusterCA == nil || issuer == nil {
 		return false
 	}
@@ -82,8 +82,8 @@ func (f *wiringFakeIssuerVerifier) VerifyPeerChain(context.Context, *x509.Certif
 	return nil, errors.New("wiringFakeIssuerVerifier: VerifyPeerChain not implemented")
 }
 
-func (f *wiringFakeIssuerVerifier) VerifyIssuer(_ context.Context, tenantID string, issuer *x509.Certificate) error {
-	if f.IsClusterCA(issuer) {
+func (f *wiringFakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
+	if f.IsClusterCA(ctx, issuer) {
 		return nil
 	}
 	registered, ok := f.registry[tenantID]

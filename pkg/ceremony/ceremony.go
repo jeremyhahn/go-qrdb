@@ -253,12 +253,12 @@ func (s *CeremonyService) ThresholdRegistry() *ThresholdRegistry {
 }
 
 // SPKIPin computes the SPKI pin of the CA certificate.
-func (s *CeremonyService) SPKIPin() (string, error) {
+func (s *CeremonyService) SPKIPin(ctx context.Context) (string, error) {
 	ca := s.CA()
 	if ca == nil {
 		return "", ErrCANotInitialized
 	}
-	caCert, err := ca.CACertificate()
+	caCert, err := ca.CACertificate(ctx)
 	if err != nil {
 		return "", &CABundleError{Err: err}
 	}
@@ -318,7 +318,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.logger.Error("failed to issue TLS certificate", slog.String("error", err.Error()))
 		return nil, ErrInitFailed
 	}
-	caCert, err := ca.CACertificate()
+	caCert, err := ca.CACertificate(ctx)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, &CABundleError{Err: err}

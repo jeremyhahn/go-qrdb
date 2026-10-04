@@ -1047,7 +1047,9 @@ func (stubCeremonyCA) SignCSR(context.Context, []byte, *ceremony.SignCSROptions)
 	return nil, errors.New("stub")
 }
 
-func (stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, errors.New("stub") }
+func (stubCeremonyCA) CACertificate(context.Context) (*x509.Certificate, error) {
+	return nil, errors.New("stub")
+}
 
 func (stubCeremonyCA) CABundle() ([]byte, error) { return nil, errors.New("stub") }
 
@@ -1184,7 +1186,7 @@ func TestBuildServices_OverridesCeremonyCAWithClusterCAProv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClusterCAProv.Certificate: %v", err)
 	}
-	got2, err := providerCA.CACertificate()
+	got2, err := providerCA.CACertificate(t.Context())
 	if err != nil {
 		t.Fatalf("ProviderCA.CACertificate: %v", err)
 	}

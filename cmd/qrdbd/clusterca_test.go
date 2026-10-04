@@ -412,7 +412,7 @@ func TestResolveTrustPoolClusterCA_SelfIssued_UsesClusterCAProv(t *testing.T) {
 	if ca == nil {
 		t.Fatal("expected a non-nil ClusterCA for a non-nil clusterCAProv")
 	}
-	cert, err := ca.CACertificate()
+	cert, err := ca.CACertificate(t.Context())
 	if err != nil {
 		t.Fatalf("CACertificate: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestResolveTrustPoolClusterCA_BYOTLS_UsesOperatorCACertPEM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificate(caCertPEM): %v", err)
 	}
-	got, err := ca.CACertificate()
+	got, err := ca.CACertificate(t.Context())
 	if err != nil {
 		t.Fatalf("CACertificate: %v", err)
 	}
