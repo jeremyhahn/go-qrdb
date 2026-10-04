@@ -94,6 +94,24 @@ func (e *EmptyVectorDataDirError) Error() string {
 		string(e.Backend) + "; set Infra.Backend to database.BackendMemory to opt into an in-memory vector store instead"
 }
 
+// BackupServiceError is returned when the backup service fails to
+// initialize -- e.g. an injected WithKeyWrapProvider collided with a
+// provider ID already registered (go-qrdb security review,
+// backup-encrypt-default #B6).
+type BackupServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BackupServiceError) Error() string {
+	return "lifecycle: backup service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupServiceError) Unwrap() error {
+	return e.Err
+}
+
 // VectorStorageError is returned when the vector storage backend fails
 // to initialize.
 type VectorStorageError struct {

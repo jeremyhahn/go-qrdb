@@ -17,6 +17,8 @@ package keywrap
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -53,7 +55,10 @@ func TestNewRegistry_StartsEmpty(t *testing.T) {
 }
 
 func TestNewDefaultRegistry_HasExactlySoftware(t *testing.T) {
-	r := NewDefaultRegistry()
+	r, err := NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
 	got := r.ListAvailable()
 	want := []string{SoftwareProviderID}
 	if len(got) != len(want) || got[0] != want[0] {
@@ -91,9 +96,12 @@ func TestDefaultRegistry_RegisterRefusesNilFactoryOrEmptyID(t *testing.T) {
 }
 
 func TestDefaultRegistry_LookupFactoryUnregistered(t *testing.T) {
-	r := NewDefaultRegistry()
+	r, err := NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
 
-	_, err := r.LookupFactory("aws-kms")
+	_, err = r.LookupFactory("aws-kms")
 	var notReg *ProviderNotRegisteredError
 	if !errors.As(err, &notReg) {
 		t.Fatalf("LookupFactory err = %v, want *ProviderNotRegisteredError", err)
@@ -131,7 +139,11 @@ func TestLookup_PackageFunctionWorksThroughInterface(t *testing.T) {
 	// proving a caller holding only keywrap.Registry (e.g. a composed
 	// *DefaultRegistry passed as the interface through WithKeyWrapRegistry)
 	// can still resolve and construct.
-	var r Registry = NewDefaultRegistry()
+	reg, err := NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	var r Registry = reg
 
 	p, err := Lookup(r, SoftwareProviderID)
 	if err != nil {
@@ -139,6 +151,24 @@ func TestLookup_PackageFunctionWorksThroughInterface(t *testing.T) {
 	}
 	if p.ProviderID() != SoftwareProviderID {
 		t.Fatalf("p.ProviderID() = %q, want %q", p.ProviderID(), SoftwareProviderID)
+	}
+}
+
+// TestNewDefaultRegistry_RefusesUnopenableKeyDir proves a key directory
+// that cannot be opened as an *os.Root (here, a path through a file rather
+// than a directory) fails registry construction with *KeyDirectoryError --
+// the construction-time, operator-facing error -- rather than silently
+// deferring the failure to first use.
+func TestNewDefaultRegistry_RefusesUnopenableKeyDir(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := NewDefaultRegistry(filepath.Join(notADir, "sub"))
+	var dirErr *KeyDirectoryError
+	if !errors.As(err, &dirErr) {
+		t.Fatalf("NewDefaultRegistry err = %v, want *KeyDirectoryError", err)
 	}
 }
 

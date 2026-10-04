@@ -51,6 +51,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -258,6 +259,18 @@ type serverOptions struct {
 	// Software + None; higher layers (xkms via quicbaas composition)
 	// register hardware-backed strategies into it.
 	strategyRegistry seal.StrategyRegistry
+
+	// keyWrapRegistry is the canonical name->factory lookup for key-wrap
+	// (KEK) providers the Backup service resolves BackupOptions.
+	// KeyProviderID through. qrdb provides a default registry holding only
+	// the built-in "software" provider; higher layers (xkms via quicbaas
+	// composition) register hardware or cloud-KMS providers into it.
+	keyWrapRegistry keywrap.Registry
+
+	// keyWrapProvider is the narrower sibling of keyWrapRegistry for a
+	// caller with exactly one additional provider and no registry of its
+	// own.
+	keyWrapProvider keywrap.Provider
 
 	// pinBackend is the canonical PIN management implementation. nil
 	// means every PIN-gated operation fails closed with
@@ -973,6 +986,30 @@ func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
 	return func(o *serverOptions) { o.strategyRegistry = reg }
 }
 
+// WithKeyWrapRegistry injects a populated keywrap.Registry so the Backup
+// service can resolve BackupOptions.KeyProviderID against hardware or
+// cloud-KMS key-wrap providers (TPM2, PKCS#11, cloud KMS, Vault) by name.
+// qrdb provides a default registry holding only the built-in "software"
+// provider; higher layers (xkms via quicbaas composition) call Register on
+// the supplied registry to add hardware-backed providers -- the same
+// composition shape WithStrategyRegistry uses for sealing strategies.
+//
+// The Backup service is constructed during lifecycle.BuildServices —
+// before server.New runs — so the SDK node builders resolve this option via
+// ResolveCryptoOptions and forward it into lifecycle.Infra.KeyWrapRegistry
+// up front, exactly as WithStrategyRegistry's own doc comment describes.
+func WithKeyWrapRegistry(reg keywrap.Registry) ServerOption {
+	return func(o *serverOptions) { o.keyWrapRegistry = reg }
+}
+
+// WithKeyWrapProvider is the narrower sibling of WithKeyWrapRegistry for a
+// caller with exactly one additional key-wrap provider and no registry of
+// its own: it is registered under its own ProviderID() into the (default,
+// software-only, unless WithKeyWrapRegistry is also applied) registry.
+func WithKeyWrapProvider(p keywrap.Provider) ServerOption {
+	return func(o *serverOptions) { o.keyWrapProvider = p }
+}
+
 // WithPINBackend injects the canonical PIN backend. Without one every
 // PIN-gated operation fails closed with pin.ErrBackendNotConfigured. Hardware
 // callers inject TPM2 or PKCS#11 backends from go-xkms here; the
@@ -1045,6 +1082,12 @@ type CryptoOptions struct {
 	FactorRegistry         *authfactors.FactorRegistry
 	CertKeyProviderFactory cakey.ProviderFactory
 	AuditLogger            audit.AuditLogger
+	// KeyWrapRegistry and KeyWrapProvider carry WithKeyWrapRegistry /
+	// WithKeyWrapProvider into lifecycle.Infra.KeyWrapRegistry /
+	// KeyWrapProvider, the same forwarding StrategyRegistry needs and for
+	// the same reason: the Backup service is built before server.New runs.
+	KeyWrapRegistry keywrap.Registry
+	KeyWrapProvider keywrap.Provider
 	// AuthFactorService is the caller-supplied AuthFactorServicer, if any.
 	// When non-nil the caller passed server.WithAuthFactorService explicitly.
 	// When nil and FactorRegistry is non-nil, the server and SDK node builders
@@ -1076,6 +1119,8 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		FactorRegistry:         o.factorRegistry,
 		CertKeyProviderFactory: o.certKeyProviderFactory,
 		AuditLogger:            o.auditLogger,
+		KeyWrapRegistry:        o.keyWrapRegistry,
+		KeyWrapProvider:        o.keyWrapProvider,
 		AuthFactorService:      o.authFactorSvc,
 		CeremonyCA:             o.ceremonyCA,
 	}

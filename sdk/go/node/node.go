@@ -561,16 +561,38 @@ func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
 // the caller's own (server.WithAuditLogger), which exists before the node
 // does, so the holder events of the sealed window are recorded on it too.
 func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) (lifecycle.Infra, error) {
+	infra, err := withCryptoInfra(infra, cfg, serverOpts)
+	if err != nil {
+		return infra, err
+	}
 	crypto := server.ResolveCryptoOptions(serverOpts...)
 	infra.PINBackend = n.pinBackend(serverOpts)
 	infra.FactorRegistry = crypto.FactorRegistry
 	infra.CeremonyCA = crypto.CeremonyCA
+	return infra, nil
+}
+
+// withCryptoInfra fills infra's crypto-injection points shared by seal-
+// enabled AND seal-disabled service construction: the key-wrap registry
+// (and its narrower WithKeyWrapProvider sibling) the Backup service
+// resolves KeyProviderID through, and the compliance audit trail/failure
+// posture its plaintext-override records follow. withHolderInfra layers
+// the seal-specific, holder-only fields (PIN backend, factor registry,
+// ceremony CA) on top of this for the seal-enabled path; the seal-disabled
+// construction sites call this directly, since they build no holder graph
+// at all but still build a Backup service that needs the same wiring
+// (go-qrdb security review, backup-encrypt-default #B5/#B6).
+func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) (lifecycle.Infra, error) {
+	crypto := server.ResolveCryptoOptions(serverOpts...)
 	infra.AuditLogger = crypto.AuditLogger
-	// The holder events recorded before they take effect follow the node's
-	// one audit failure posture. The sealed window's graph is built before the
-	// authorization middleware parses it, so an unrecognised value refuses the
-	// graph here -- as it refuses qrdbd's start -- rather than resolving to
-	// either posture.
+	infra.KeyWrapRegistry = crypto.KeyWrapRegistry
+	infra.KeyWrapProvider = crypto.KeyWrapProvider
+	// The holder events (and the backup plaintext-override audit) recorded
+	// before they take effect follow the node's one audit failure posture.
+	// The sealed window's graph is built before the authorization
+	// middleware parses it, so an unrecognised value refuses the graph here
+	// -- as it refuses qrdbd's start -- rather than resolving to either
+	// posture.
 	if cfg != nil {
 		policy, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy)
 		if err != nil {
@@ -2340,7 +2362,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	profile := profileCfg.EffectiveCapabilities()
 	profile.WarnUnencryptedAtRest(n.logger)
 
-	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+	infra, err := withCryptoInfra(lifecycle.Infra{
 		Host:            localHost,
 		WatchHub:        watchHub,
 		DataDir:         dataDir,
@@ -2367,7 +2389,15 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(cfg),
-	})
+	}, cfg, serverOpts)
+	if err != nil {
+		_ = localHost.Close()
+		_ = n.stg.Close()
+		n.closeDatabaseManager()
+		return nil, err
+	}
+
+	svcNode, err := lifecycle.BuildServices(ctx, infra)
 	if err != nil {
 		_ = localHost.Close()
 		_ = n.stg.Close()
@@ -2550,7 +2580,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 
-	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+	infra, err := withCryptoInfra(lifecycle.Infra{
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(cfg),
 		WatchHub:          watchHub,
@@ -2564,7 +2594,13 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
-	})
+	}, cfg, serverOpts)
+	if err != nil {
+		_ = host.Close()
+		return nil, err
+	}
+
+	svcNode, err := lifecycle.BuildServices(ctx, infra)
 	if err != nil {
 		_ = host.Close()
 		return nil, &ServicesCreateError{Err: err}

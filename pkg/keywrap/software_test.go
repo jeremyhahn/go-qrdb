@@ -16,29 +16,42 @@ package keywrap
 
 import (
 	"context"
+	"crypto/cipher"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// writeKeyFile writes n random-looking (but deterministic, test-only)
-// bytes to a fresh file under t.TempDir() and returns its path.
-func writeKeyFile(t *testing.T, n int, fill byte) string {
+// newTestProvider returns a SoftwareProvider confined to a fresh directory
+// under t.TempDir().
+func newTestProvider(t *testing.T) (*SoftwareProvider, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup.key")
+	dir := t.TempDir()
+	p, err := NewSoftwareProvider(dir)
+	if err != nil {
+		t.Fatalf("NewSoftwareProvider: %v", err)
+	}
+	return p, dir
+}
+
+// writeKeyFile writes n random-looking (but deterministic, test-only)
+// bytes to a file named name inside dir and returns name -- the bare file
+// name every keyRef must now be (go-qrdb review #B4).
+func writeKeyFile(t *testing.T, dir, name string, n int, fill byte) string {
+	t.Helper()
 	data := make([]byte, n)
 	for i := range data {
 		data[i] = fill + byte(i)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	return path
+	return name
 }
 
 func TestSoftwareProvider_ProviderID(t *testing.T) {
-	p := NewSoftwareProvider()
+	p, _ := newTestProvider(t)
 	if p.ProviderID() != "software" {
 		t.Fatalf("ProviderID() = %q, want %q", p.ProviderID(), "software")
 	}
@@ -47,12 +60,28 @@ func TestSoftwareProvider_ProviderID(t *testing.T) {
 	}
 }
 
+func TestNewSoftwareProvider_RefusesUnopenableDir(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := NewSoftwareProvider(filepath.Join(notADir, "sub"))
+	var dirErr *KeyDirectoryError
+	if !errors.As(err, &dirErr) {
+		t.Fatalf("NewSoftwareProvider err = %v, want *KeyDirectoryError", err)
+	}
+	if dirErr.Dir == "" {
+		t.Fatal("KeyDirectoryError.Dir is empty")
+	}
+}
+
 func TestSoftwareProvider_WrapUnwrapRoundTrip(t *testing.T) {
-	keyPath := writeKeyFile(t, 32, 0x01)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x01)
 	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
 
-	wrapped, err := p.Wrap(context.Background(), keyPath, dek)
+	wrapped, err := p.Wrap(context.Background(), keyName, dek)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -60,7 +89,7 @@ func TestSoftwareProvider_WrapUnwrapRoundTrip(t *testing.T) {
 		t.Fatalf("wrapped length %d, want > plaintext length %d (nonce + tag overhead)", len(wrapped), len(dek))
 	}
 
-	got, err := p.Unwrap(context.Background(), keyPath, wrapped)
+	got, err := p.Unwrap(context.Background(), keyName, wrapped)
 	if err != nil {
 		t.Fatalf("Unwrap: %v", err)
 	}
@@ -70,15 +99,15 @@ func TestSoftwareProvider_WrapUnwrapRoundTrip(t *testing.T) {
 }
 
 func TestSoftwareProvider_WrapProducesDistinctCiphertextEachCall(t *testing.T) {
-	keyPath := writeKeyFile(t, 32, 0x02)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x02)
 	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
 
-	a, err := p.Wrap(context.Background(), keyPath, dek)
+	a, err := p.Wrap(context.Background(), keyName, dek)
 	if err != nil {
 		t.Fatalf("Wrap (1): %v", err)
 	}
-	b, err := p.Wrap(context.Background(), keyPath, dek)
+	b, err := p.Wrap(context.Background(), keyName, dek)
 	if err != nil {
 		t.Fatalf("Wrap (2): %v", err)
 	}
@@ -88,37 +117,47 @@ func TestSoftwareProvider_WrapProducesDistinctCiphertextEachCall(t *testing.T) {
 }
 
 func TestSoftwareProvider_RefusesShortKeyFile(t *testing.T) {
-	keyPath := writeKeyFile(t, 31, 0x03)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 31, 0x03)
 
-	_, err := p.Wrap(context.Background(), keyPath, make([]byte, 32))
-	var lenErr *InvalidKeyLengthError
-	if !errors.As(err, &lenErr) {
-		t.Fatalf("Wrap err = %v, want *InvalidKeyLengthError", err)
-	}
-	if lenErr.Length != 31 {
-		t.Fatalf("lenErr.Length = %d, want 31", lenErr.Length)
+	_, err := p.Wrap(context.Background(), keyName, make([]byte, 32))
+	var accessErr *KeyAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("Wrap err = %v, want *KeyAccessError", err)
 	}
 }
 
 func TestSoftwareProvider_RefusesLongKeyFile(t *testing.T) {
-	keyPath := writeKeyFile(t, 33, 0x04)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 33, 0x04)
 
-	_, err := p.Unwrap(context.Background(), keyPath, make([]byte, 28))
-	var lenErr *InvalidKeyLengthError
-	if !errors.As(err, &lenErr) {
-		t.Fatalf("Unwrap err = %v, want *InvalidKeyLengthError", err)
+	_, err := p.Unwrap(context.Background(), keyName, make([]byte, 28))
+	var accessErr *KeyAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("Unwrap err = %v, want *KeyAccessError", err)
 	}
-	if lenErr.Length != 33 {
-		t.Fatalf("lenErr.Length = %d, want 33", lenErr.Length)
+}
+
+// TestSoftwareProvider_RefusesArbitrarilyLargeKeyFile proves a key
+// reference naming a file far larger than 32 bytes is refused without
+// reading the whole thing -- the DoS this provider must not be a lever
+// for (go-qrdb review #B4). 1 MiB stands in for "unbounded"; the fix
+// reads at most 33 bytes regardless.
+func TestSoftwareProvider_RefusesArbitrarilyLargeKeyFile(t *testing.T) {
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 1<<20, 0x05)
+
+	_, err := p.Wrap(context.Background(), keyName, make([]byte, 32))
+	var accessErr *KeyAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("Wrap err = %v, want *KeyAccessError", err)
 	}
 }
 
 func TestSoftwareProvider_UnwrapWithDifferentKeyFails(t *testing.T) {
-	keyA := writeKeyFile(t, 32, 0x10)
-	keyB := writeKeyFile(t, 32, 0x20)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyA := writeKeyFile(t, dir, "key-a", 32, 0x10)
+	keyB := writeKeyFile(t, dir, "key-b", 32, 0x20)
 	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
 
 	wrapped, err := p.Wrap(context.Background(), keyA, dek)
@@ -134,18 +173,18 @@ func TestSoftwareProvider_UnwrapWithDifferentKeyFails(t *testing.T) {
 }
 
 func TestSoftwareProvider_UnwrapWithTamperedCiphertextFails(t *testing.T) {
-	keyPath := writeKeyFile(t, 32, 0x30)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x30)
 	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
 
-	wrapped, err := p.Wrap(context.Background(), keyPath, dek)
+	wrapped, err := p.Wrap(context.Background(), keyName, dek)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
 	tampered := append([]byte(nil), wrapped...)
 	tampered[len(tampered)-1] ^= 0xFF // flip a bit in the authentication tag
 
-	_, err = p.Unwrap(context.Background(), keyPath, tampered)
+	_, err = p.Unwrap(context.Background(), keyName, tampered)
 	var unwrapErr *UnwrapFailedError
 	if !errors.As(err, &unwrapErr) {
 		t.Fatalf("Unwrap with tampered ciphertext err = %v, want *UnwrapFailedError", err)
@@ -153,10 +192,10 @@ func TestSoftwareProvider_UnwrapWithTamperedCiphertextFails(t *testing.T) {
 }
 
 func TestSoftwareProvider_UnwrapWithTruncatedPayloadFails(t *testing.T) {
-	keyPath := writeKeyFile(t, 32, 0x40)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x40)
 
-	_, err := p.Unwrap(context.Background(), keyPath, []byte{0x01, 0x02})
+	_, err := p.Unwrap(context.Background(), keyName, []byte{0x01, 0x02})
 	var unwrapErr *UnwrapFailedError
 	if !errors.As(err, &unwrapErr) {
 		t.Fatalf("Unwrap with truncated payload err = %v, want *UnwrapFailedError", err)
@@ -164,16 +203,90 @@ func TestSoftwareProvider_UnwrapWithTruncatedPayloadFails(t *testing.T) {
 }
 
 func TestSoftwareProvider_MissingKeyFile(t *testing.T) {
-	p := NewSoftwareProvider()
-	missing := filepath.Join(t.TempDir(), "does-not-exist.key")
+	p, _ := newTestProvider(t)
 
-	_, err := p.Wrap(context.Background(), missing, make([]byte, 32))
-	var keyFileErr *KeyFileError
-	if !errors.As(err, &keyFileErr) {
-		t.Fatalf("Wrap with missing key file err = %v, want *KeyFileError", err)
+	_, err := p.Wrap(context.Background(), "does-not-exist.key", make([]byte, 32))
+	var accessErr *KeyAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("Wrap with missing key file err = %v, want *KeyAccessError", err)
 	}
-	if keyFileErr.Path != missing {
-		t.Fatalf("keyFileErr.Path = %q, want %q", keyFileErr.Path, missing)
+}
+
+// TestSoftwareProvider_RefusesPathSeparator proves a keyRef naming
+// anything other than a bare file name inside the configured directory --
+// here, an attempt to traverse into a parent directory -- is refused with
+// the SAME detail-free KeyAccessError as every other key-access failure,
+// never a filesystem error that would confirm or deny what exists outside
+// the confined directory (go-qrdb review #B4).
+func TestSoftwareProvider_RefusesPathSeparator(t *testing.T) {
+	p, _ := newTestProvider(t)
+
+	for _, ref := range []string{
+		"../escape.key",
+		"sub/backup.key",
+		"sub\\backup.key",
+		"",
+		".",
+		"..",
+	} {
+		_, err := p.Wrap(context.Background(), ref, make([]byte, 32))
+		var accessErr *KeyAccessError
+		if !errors.As(err, &accessErr) {
+			t.Fatalf("Wrap(%q) err = %v, want *KeyAccessError", ref, err)
+		}
+	}
+}
+
+// TestSoftwareProvider_RefusesDirectoryAsKeyRef proves a keyRef naming a
+// subdirectory of the confined key directory -- rather than a regular
+// file -- is refused the same way, never opened as if it were a key.
+func TestSoftwareProvider_RefusesDirectoryAsKeyRef(t *testing.T) {
+	p, dir := newTestProvider(t)
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	_, err := p.Wrap(context.Background(), "subdir", make([]byte, 32))
+	var accessErr *KeyAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("Wrap(subdir) err = %v, want *KeyAccessError", err)
+	}
+}
+
+// failingReader always fails Read -- used to force Wrap's nonce
+// generation branch, otherwise unreachable against the real entropy
+// source.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy source failed") }
+
+func TestSoftwareProvider_WrapNonceGenerationFailureIsWrapped(t *testing.T) {
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x91)
+
+	prev := randReader
+	randReader = failingReader{}
+	t.Cleanup(func() { randReader = prev })
+
+	_, err := p.Wrap(context.Background(), keyName, make([]byte, 32))
+	var wrapErr *WrapFailedError
+	if !errors.As(err, &wrapErr) {
+		t.Fatalf("Wrap err = %v, want *WrapFailedError", err)
+	}
+}
+
+func TestSoftwareProvider_GCMConstructionFailureIsWrapped(t *testing.T) {
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x92)
+
+	prev := newGCM
+	newGCM = func(key []byte) (cipher.AEAD, error) { return nil, errors.New("boom") }
+	t.Cleanup(func() { newGCM = prev })
+
+	_, err := p.Wrap(context.Background(), keyName, make([]byte, 32))
+	var wrapErr *WrapFailedError
+	if !errors.As(err, &wrapErr) {
+		t.Fatalf("Wrap err = %v, want *WrapFailedError", err)
 	}
 }
 
@@ -190,15 +303,15 @@ func swapWipeFn(t *testing.T, fn func([]byte)) {
 }
 
 func TestSoftwareProvider_WrapWipesItsKeyCopy(t *testing.T) {
-	keyPath := writeKeyFile(t, 32, 0x70)
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x70)
 	var wiped [][]byte
 	swapWipeFn(t, func(b []byte) {
 		cp := append([]byte(nil), b...)
 		wiped = append(wiped, cp)
 	})
 
-	p := NewSoftwareProvider()
-	if _, err := p.Wrap(context.Background(), keyPath, make([]byte, 32)); err != nil {
+	if _, err := p.Wrap(context.Background(), keyName, make([]byte, 32)); err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
 	if len(wiped) != 1 {
@@ -210,10 +323,10 @@ func TestSoftwareProvider_WrapWipesItsKeyCopy(t *testing.T) {
 }
 
 func TestSoftwareProvider_UnwrapWipesItsKeyCopy(t *testing.T) {
-	keyPath := writeKeyFile(t, 32, 0x80)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x80)
 	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
-	wrapped, err := p.Wrap(context.Background(), keyPath, dek)
+	wrapped, err := p.Wrap(context.Background(), keyName, dek)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -221,7 +334,7 @@ func TestSoftwareProvider_UnwrapWipesItsKeyCopy(t *testing.T) {
 	var wipeCalls int
 	swapWipeFn(t, func(b []byte) { wipeCalls++ })
 
-	if _, err := p.Unwrap(context.Background(), keyPath, wrapped); err != nil {
+	if _, err := p.Unwrap(context.Background(), keyName, wrapped); err != nil {
 		t.Fatalf("Unwrap: %v", err)
 	}
 	if wipeCalls != 1 {
@@ -233,9 +346,9 @@ func TestSoftwareProvider_KeyFileNeverCachedAcrossCalls(t *testing.T) {
 	// Two sequential Wrap calls against two DIFFERENT key files must each
 	// use their OWN file's key -- proving nothing is cached from the
 	// first call into the second.
-	keyA := writeKeyFile(t, 32, 0x50)
-	keyB := writeKeyFile(t, 32, 0x60)
-	p := NewSoftwareProvider()
+	p, dir := newTestProvider(t)
+	keyA := writeKeyFile(t, dir, "key-a", 32, 0x50)
+	keyB := writeKeyFile(t, dir, "key-b", 32, 0x60)
 	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
 
 	wrappedA, err := p.Wrap(context.Background(), keyA, dek)
@@ -253,5 +366,43 @@ func TestSoftwareProvider_KeyFileNeverCachedAcrossCalls(t *testing.T) {
 	}
 	if string(got) != string(dek) {
 		t.Fatalf("Unwrap(keyA, wrappedA) = %q, want %q", got, dek)
+	}
+}
+
+// TestSoftwareProvider_RotationNewVersionIsANewRefAndOldStillWorks proves
+// the documented rotation discipline: a new key version is a NEW file and
+// a new ref, never an in-place overwrite of the old one, and a wrapped
+// DEK produced under the old ref keeps unwrapping after the new ref
+// exists alongside it (go-qrdb review #B4).
+func TestSoftwareProvider_RotationNewVersionIsANewRefAndOldStillWorks(t *testing.T) {
+	p, dir := newTestProvider(t)
+	v1 := writeKeyFile(t, dir, "backup-v1.key", 32, 0xC0)
+	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
+
+	wrapped, err := p.Wrap(context.Background(), v1, dek)
+	if err != nil {
+		t.Fatalf("Wrap under v1: %v", err)
+	}
+
+	// Rotation: v2 is a NEW file/ref, added alongside v1, never an
+	// overwrite of it.
+	v2 := writeKeyFile(t, dir, "backup-v2.key", 32, 0xD0)
+	if v1 == v2 {
+		t.Fatal("v1 and v2 refs must differ")
+	}
+
+	// The backup made under v1 still restores: v1's file and ref are
+	// untouched by v2's arrival.
+	got, err := p.Unwrap(context.Background(), v1, wrapped)
+	if err != nil {
+		t.Fatalf("Unwrap under v1 after v2 exists: %v", err)
+	}
+	if string(got) != string(dek) {
+		t.Fatalf("Unwrap(v1) = %q, want %q", got, dek)
+	}
+
+	// v2 is usable independently for new backups.
+	if _, err := p.Wrap(context.Background(), v2, dek); err != nil {
+		t.Fatalf("Wrap under v2: %v", err)
 	}
 }

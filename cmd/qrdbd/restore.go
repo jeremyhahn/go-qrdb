@@ -85,7 +85,24 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 
 	sink := backupsink.New(backupStore)
 	provider := service.NewHostShardSnapshotProvider(newHostAdapter(host))
-	backupSvc := service.NewBackupService(provider, service.WithBackupSink(sink))
+	backupOpts := []service.BackupServiceOption{
+		service.WithBackupSink(sink),
+		service.WithKeyDir(f.backupKeyDir),
+	}
+	// Shared with this daemon's live BuildServices call (start.go) so an
+	// embedder's injected key-wrap provider is honored on the offline
+	// restore path too, not only the live one (go-qrdb security review,
+	// backup-encrypt-default #B6).
+	if keyWrapInjection.registry != nil {
+		backupOpts = append(backupOpts, service.WithKeyWrapRegistry(keyWrapInjection.registry))
+	}
+	if keyWrapInjection.provider != nil {
+		backupOpts = append(backupOpts, service.WithKeyWrapProvider(keyWrapInjection.provider))
+	}
+	backupSvc, err := service.NewBackupService(provider, backupOpts...)
+	if err != nil {
+		return &RestoreBackupError{Phase: "open-backup-store", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
+	}
 	// NewBackupService always returns *service.BackupService; the type
 	// assertion only reaches DecryptBackupShard, a capability outside the
 	// BackupServicer interface (see that method's own doc comment for why).
@@ -109,11 +126,19 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 	// ciphertext directly for an encrypted backup.
 	data, err := bs.DecryptBackupShard(ctx, f.restoreBackupID, shardCfg.ShardID, f.restoreDecryptionKeyRef)
 	if err != nil {
-		var decFailed *service.BackupDecryptionFailedError
-		if errors.As(err, &decFailed) {
-			return &RestoreBackupError{Phase: "decrypt", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
+		// Only a shard genuinely absent from the artifact is reported as
+		// "shard not in artifact" -- every other failure (a wrong key, a
+		// tampered shard or manifest, a metadata/artifact mismatch, an
+		// unregistered provider) is a decrypt-phase failure and is
+		// reported as such, not collapsed into the same generic message
+		// (go-qrdb security review, backup-encrypt-default; previously
+		// every non-*BackupDecryptionFailedError here, including these,
+		// was mapped to "shard not in artifact").
+		var notFound *service.BackupShardNotFoundError
+		if errors.As(err, &notFound) {
+			return &RestoreBackupShardNotInArtifactError{BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID}
 		}
-		return &RestoreBackupShardNotInArtifactError{BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID}
+		return &RestoreBackupError{Phase: "decrypt", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
 	}
 
 	slog.Info("offline restore: bootstrapping shard before import", "backup_id", f.restoreBackupID, "shard_id", shardCfg.ShardID)

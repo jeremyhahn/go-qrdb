@@ -274,7 +274,7 @@ func TestBatchService_Import_JSON_EmptyArray(t *testing.T) {
 // validate first refuses it rather than restoring corrupt data.
 func TestBackupService_VerifyBackup_CorruptedEntry(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc, ok := NewBackupService(provider).(*BackupService)
+	svc, ok := mustNewBackupService(t, provider).(*BackupService)
 	if !ok {
 		t.Fatal("NewBackupService did not return *BackupService")
 	}
@@ -329,7 +329,7 @@ func TestBackupService_VerifyBackup_CorruptedEntry(t *testing.T) {
 func TestBackupService_VerifyBackup_FailedBackupIsInvalid(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	provider.snapshotErr = errors.New("snapshot unavailable")
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/failed", Encryption: EncryptionNone})

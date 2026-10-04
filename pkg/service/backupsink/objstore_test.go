@@ -81,10 +81,11 @@ func TestBackupSink_DurableRoundTrip(t *testing.T) {
 	shards := map[uint64][]byte{1: []byte("shard-one"), 2: []byte("shard-two")}
 	provider := newFakeProvider(shards)
 
-	svc := service.NewBackupService(provider,
+	svc, err := service.NewBackupService(provider,
 		service.WithBackupSink(sink),
 		service.WithIDGenerator(func() string { return "backup-123" }),
 	)
+	require.NoError(t, err)
 
 	info, err := svc.CreateBackup(ctx, service.BackupOptions{Destination: "objstore://repo", Encryption: service.EncryptionNone})
 	require.NoError(t, err)
@@ -95,7 +96,8 @@ func TestBackupSink_DurableRoundTrip(t *testing.T) {
 	// Simulate a process restart: a brand-new service with the SAME sink but a
 	// fresh (empty) in-memory registry and a fresh restore target.
 	freshProvider := newFakeProvider(map[uint64][]byte{})
-	restarted := service.NewBackupService(freshProvider, service.WithBackupSink(sink))
+	restarted, err := service.NewBackupService(freshProvider, service.WithBackupSink(sink))
+	require.NoError(t, err)
 
 	// List sees the durably-persisted backup.
 	list, err := restarted.ListBackups(ctx)
@@ -143,22 +145,25 @@ func TestBackupSink_EncryptedBackup_DurableRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	sink := newMemSink(t)
 
-	keyPath := filepath.Join(t.TempDir(), "backup.key")
+	keyDir := t.TempDir()
+	const keyName = "backup.key"
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i)
 	}
-	require.NoError(t, os.WriteFile(keyPath, key, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(keyDir, keyName), key, 0o600))
 
 	shards := map[uint64][]byte{1: []byte("shard-one"), 2: []byte("shard-two")}
 	provider := newFakeProvider(shards)
 
-	svc := service.NewBackupService(provider,
+	svc, err := service.NewBackupService(provider,
 		service.WithBackupSink(sink),
 		service.WithIDGenerator(func() string { return "backup-enc-1" }),
+		service.WithKeyDir(keyDir),
 	)
+	require.NoError(t, err)
 
-	info, err := svc.CreateBackup(ctx, service.BackupOptions{Destination: "objstore://repo", KeyRef: keyPath})
+	info, err := svc.CreateBackup(ctx, service.BackupOptions{Destination: "objstore://repo", KeyRef: keyName})
 	require.NoError(t, err)
 	require.Equal(t, service.EncryptionAES256, info.Encryption)
 	require.Equal(t, "software", info.KeyProviderID)
@@ -168,12 +173,17 @@ func TestBackupSink_EncryptedBackup_DurableRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, envelope)
 	assert.Equal(t, "software", envelope.ProviderID)
-	assert.Equal(t, keyPath, envelope.KeyRef)
+	assert.Equal(t, keyName, envelope.KeyRef)
 	assert.NotEmpty(t, envelope.WrappedDEK)
+	assert.NotEmpty(t, envelope.SealedManifest)
 
-	// Simulate a process restart: a brand-new service, same sink.
+	// Simulate a process restart: a brand-new service, same sink, same key
+	// directory (a different node restoring this backup would need the
+	// SAME key directory configured, exactly as it would need the same
+	// key file available under the old path-based KeyRef).
 	freshProvider := newFakeProvider(map[uint64][]byte{})
-	restarted := service.NewBackupService(freshProvider, service.WithBackupSink(sink))
+	restarted, err := service.NewBackupService(freshProvider, service.WithBackupSink(sink), service.WithKeyDir(keyDir))
+	require.NoError(t, err)
 
 	rr, err := restarted.RestoreBackup(ctx, service.RestoreOptions{BackupID: "backup-enc-1"})
 	require.NoError(t, err)

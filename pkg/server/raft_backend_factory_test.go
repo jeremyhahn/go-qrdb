@@ -486,7 +486,10 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1Success(t *testing.T) {
 	}
 
 	providerDst := service.NewHostShardSnapshotProvider(raftbackend.New(fDst.host))
-	backupSvc := service.NewBackupService(providerDst)
+	backupSvc, err := service.NewBackupService(providerDst)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
 	service.SetShardRestarter(backupSvc, fDst)
 
 	online, ok := providerDst.(service.OnlineShardRestorer)
@@ -578,7 +581,10 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1_PostBackupWriteSurvivesIdemp
 
 	hostAdapter := raftbackend.New(f.host)
 	provider := service.NewHostShardSnapshotProvider(hostAdapter)
-	backupSvc := service.NewBackupService(provider)
+	backupSvc, err := service.NewBackupService(provider)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
 	service.SetShardRestarter(backupSvc, f)
 
 	backup, err := backupSvc.CreateBackup(ctx, service.BackupOptions{

@@ -14,20 +14,52 @@
 
 package keywrap
 
-import (
-	"strconv"
-	"strings"
-)
+import "strings"
 
-// InvalidKeyLengthError is returned when a software provider's key file is
-// not exactly 32 bytes. Never truncated, padded, or hashed to size.
-type InvalidKeyLengthError struct {
-	Length int
+// KeyDirectoryError is returned by NewSoftwareProvider when the configured
+// key directory cannot be opened as an *os.Root (missing, not a directory,
+// no permission). It is a construction-time, server-local error -- the
+// directory is an operator configuration value, never something a remote
+// caller supplies -- so it carries the directory and the underlying OS
+// error for the operator who reads the boot log.
+type KeyDirectoryError struct {
+	Dir string
+	Err error
 }
 
 // Error returns a human-readable description.
-func (e *InvalidKeyLengthError) Error() string {
-	return "keywrap: key must be exactly 32 bytes, found " + strconv.Itoa(e.Length)
+func (e *KeyDirectoryError) Error() string {
+	return "keywrap: key directory " + e.Dir + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *KeyDirectoryError) Unwrap() error {
+	return e.Err
+}
+
+// KeyAccessError is returned by SoftwareProvider.Wrap/Unwrap when keyRef
+// could not be resolved to a usable 32-byte key file: keyRef was not a bare
+// file name (it contained a path separator, was empty, "." or "..", or
+// otherwise named something outside the configured key directory), the
+// named file does not exist or could not be opened, is not a regular file,
+// or is not exactly 32 bytes long.
+//
+// It deliberately carries NO detail in its own Error() -- not the
+// directory, not keyRef, not the underlying OS error, and not the file's
+// actual length. keyRef is resolved entirely on this node, and a caller of
+// Wrap/Unwrap may be relaying a value a REMOTE client supplied (the backup
+// service's BackupOptions.KeyRef / RestoreOptions.DecryptionKeyRef); echoing
+// any of that detail back would turn this error into a filesystem oracle --
+// confirming file existence, permissions, or size to a caller probing key
+// references it does not control (go-qrdb security review,
+// backup-encrypt-default #B4). Full detail is written to the server's own
+// log via slog at the point of failure, never returned.
+type KeyAccessError struct{}
+
+// Error returns a human-readable description with no caller-controlled or
+// filesystem-derived detail. See the type's own doc comment for why.
+func (e *KeyAccessError) Error() string {
+	return "keywrap: key reference could not be resolved to a usable key; see the server log for detail"
 }
 
 // ProviderRegisterError is returned by Register when the supplied factory
@@ -65,23 +97,6 @@ type ProviderNotRegisteredError struct {
 // Error returns a human-readable description.
 func (e *ProviderNotRegisteredError) Error() string {
 	return "keywrap: provider not registered: " + e.ID + " (available: " + joinStrings(e.Available) + ")"
-}
-
-// KeyFileError is returned when a software provider's key file cannot be
-// read (missing, unreadable, a directory).
-type KeyFileError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *KeyFileError) Error() string {
-	return "keywrap: reading key file " + e.Path + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *KeyFileError) Unwrap() error {
-	return e.Err
 }
 
 // WrapFailedError is returned when constructing the AEAD cipher over an

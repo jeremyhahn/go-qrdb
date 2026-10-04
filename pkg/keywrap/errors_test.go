@@ -20,10 +20,29 @@ import (
 	"testing"
 )
 
-func TestInvalidKeyLengthError_Error(t *testing.T) {
-	err := &InvalidKeyLengthError{Length: 31}
-	if !strings.Contains(err.Error(), "31") {
-		t.Fatalf("Error() = %q, want it to mention the length found", err.Error())
+func TestKeyAccessError_ErrorCarriesNoDetail(t *testing.T) {
+	err := &KeyAccessError{}
+	msg := err.Error()
+	if msg == "" {
+		t.Fatal("Error() is empty")
+	}
+	// The whole point of this type: no path, OS error, or length ever
+	// renders into its message (go-qrdb review #B4).
+	for _, leak := range []string{"/etc/", "/tmp/", ".key", "no such file"} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("Error() = %q, must not contain %q", msg, leak)
+		}
+	}
+}
+
+func TestKeyDirectoryError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("permission denied")
+	err := &KeyDirectoryError{Dir: "/etc/qrdb/keys", Err: inner}
+	if !strings.Contains(err.Error(), "/etc/qrdb/keys") {
+		t.Fatalf("Error() = %q, want it to mention the directory", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is(err, inner) = false, want true via Unwrap")
 	}
 }
 
@@ -53,17 +72,6 @@ func TestUnwrapFailedError_Error(t *testing.T) {
 	err := &UnwrapFailedError{}
 	if err.Error() == "" {
 		t.Fatal("Error() is empty")
-	}
-}
-
-func TestKeyFileError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("permission denied")
-	err := &KeyFileError{Path: "/etc/qrdb/backup.key", Err: inner}
-	if !strings.Contains(err.Error(), "/etc/qrdb/backup.key") {
-		t.Fatalf("Error() = %q, want it to mention the path", err.Error())
-	}
-	if !errors.Is(err, inner) {
-		t.Fatal("errors.Is(err, inner) = false, want true via Unwrap")
 	}
 }
 

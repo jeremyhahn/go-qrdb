@@ -77,15 +77,22 @@ func NewRegistry() *DefaultRegistry {
 }
 
 // NewDefaultRegistry returns a DefaultRegistry pre-populated with the one
-// provider go-qrdb owns: "software" (SoftwareProvider). go-xkms and other
-// embedders add hardware or cloud-KMS providers on top by calling
-// Register.
-func NewDefaultRegistry() *DefaultRegistry {
+// provider go-qrdb owns: "software" (SoftwareProvider), confined to keyDir
+// -- every key file "software" ever opens must live directly inside it,
+// named, never pathed (see SoftwareProvider's own doc comment). Returns
+// whatever NewSoftwareProvider(keyDir) returns when keyDir cannot be
+// opened as an *os.Root. go-xkms and other embedders add hardware or
+// cloud-KMS providers on top by calling Register.
+func NewDefaultRegistry(keyDir string) (*DefaultRegistry, error) {
+	provider, err := NewSoftwareProvider(keyDir)
+	if err != nil {
+		return nil, err
+	}
 	r := NewRegistry()
 	_ = r.Register(SoftwareProviderID, func() (Provider, error) {
-		return NewSoftwareProvider(), nil
+		return provider, nil
 	})
-	return r
+	return r, nil
 }
 
 // Register installs factory under id. Returns

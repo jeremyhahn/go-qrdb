@@ -68,6 +68,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -259,8 +260,21 @@ type startFlags struct {
 	// create time is not at that path on this node. Left empty, the
 	// stored reference is used, which is the common case since the key
 	// file is typically kept OUTSIDE --data-dir and so survives whatever
-	// loss --restore-backup-id is recovering from. See restore.go.
+	// loss --restore-backup-id is recovering from. See restore.go. It is
+	// now a bare file NAME inside --backup-key-dir, never a path
+	// (keywrap.SoftwareProvider confines every key file to one configured
+	// directory; go-qrdb security review, backup-encrypt-default #B4).
 	restoreDecryptionKeyRef string
+
+	// backupKeyDir is the directory the built-in "software" key-wrap
+	// provider's key files must live inside, confined via *os.Root. Every
+	// --encryption-key-file / --decryption-key-file /
+	// --restore-decryption-key-file this daemon is given is a bare file
+	// name inside it, never a path. Kept OUTSIDE --data-dir and
+	// --backup-dir on purpose, same as the rest of this node's key
+	// material: a backup made with a key from this directory must still
+	// be restorable after --data-dir is lost entirely.
+	backupKeyDir string
 
 	// databases holds the database configurations loaded from the YAML
 	// config file. When no config file is provided, this defaults to a
@@ -594,7 +608,9 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.restoreBackupID, "restore-backup-id", "",
 		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
 	cmd.Flags().StringVar(&f.restoreDecryptionKeyRef, "restore-decryption-key-file", "",
-		"Overrides the key reference stored in the restored backup's own envelope (only needed if the key file named at create time is not at that path on this node)")
+		"Name of the key file, inside --backup-key-dir, that overrides the key reference stored in the restored backup's own envelope (only needed if the backup's own key reference is not usable on this node)")
+	cmd.Flags().StringVar(&f.backupKeyDir, "backup-key-dir", "",
+		"Directory the built-in \"software\" key-wrap provider's key files must live inside; every backup/restore key reference is a bare file name inside it, never a path (required to create or restore an encrypted backup with the built-in provider)")
 
 	return cmd, f
 }
@@ -1744,6 +1760,9 @@ func runStart(f *startFlags) (err error) {
 				CeremonyCoreSvc:           ceremonyCoreSvc,
 				AuditLogger:               complianceAudit,
 				AuditFailurePolicy:        auditPolicy,
+				KeyDir:                    f.backupKeyDir,
+				KeyWrapRegistry:           keyWrapInjection.registry,
+				KeyWrapProvider:           keyWrapInjection.provider,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				PINBackend:                pinBackend,
@@ -4188,6 +4207,22 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 // certificate bindings to be readable (firstboot.VerifyAdminCertBindingWithin).
 // A variable so tests can shorten it; production uses the shared default.
 var adminBindingWait = firstboot.AdminBindingLookupTimeout
+
+// keyWrapInjection carries an optional keywrap.Registry/Provider override
+// shared by this daemon's live BuildServices call (above) AND its own
+// offline, boot-time disaster-recovery restore path
+// (restoreShardFromBackup, restore.go) -- the same registry (or the same
+// single extra provider) reaches both, so an embedder that registers a
+// hardware or cloud-KMS key-wrap provider sees it honored whichever path
+// a boot takes. Nil in production (the built-in "software" provider,
+// confined to --backup-key-dir, is all qrdbd ships); a test overrides it
+// to prove an injected fake provider is used by both paths (go-qrdb
+// security review, backup-encrypt-default #B6). Never written outside
+// init or a test.
+var keyWrapInjection struct {
+	registry keywrap.Registry
+	provider keywrap.Provider
+}
 
 // decorateWithABAC wraps the given authorizer with the ABAC policy
 // decorator when ABAC is enabled in the configuration. When disabled it

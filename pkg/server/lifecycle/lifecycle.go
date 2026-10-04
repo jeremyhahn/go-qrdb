@@ -45,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -297,6 +298,33 @@ type Infra struct {
 	// recovery. The caller constructs and owns the sink's lifecycle (e.g. the
 	// storage.Storage it wraps); BuildServices only reads from it.
 	BackupSink service.BackupSink
+
+	// KeyWrapRegistry is the canonical name->factory lookup for key-wrap
+	// (KEK) providers the Backup service resolves BackupOptions.
+	// KeyProviderID through. qrdb provides a default registry holding only
+	// the built-in "software" provider (confined to KeyDir, below); go-xkms
+	// and other embedders register hardware or cloud-KMS providers into
+	// their own registry and inject it here -- the same WithStrategyRegistry
+	// composition shape, applied to key wrapping instead of sealing.
+	KeyWrapRegistry keywrap.Registry
+
+	// KeyWrapProvider is the narrower sibling of KeyWrapRegistry for an
+	// embedder with exactly one additional provider and no registry of its
+	// own: it is registered into the default registry under its own
+	// ProviderID(). Mutually composable with KeyWrapRegistry left nil.
+	KeyWrapProvider keywrap.Provider
+
+	// KeyDir is the directory the built-in "software" key-wrap provider's
+	// key files must live inside, confined via *os.Root
+	// (keywrap.NewSoftwareProvider) -- every key file BackupOptions.KeyRef
+	// / RestoreOptions.DecryptionKeyRef names is a bare file name inside
+	// it, never a path (go-qrdb security review, backup-encrypt-default
+	// #B4). Only consulted when KeyWrapRegistry is nil. Empty leaves the
+	// built-in "software" provider unusable (BackupKeyDirNotConfiguredError
+	// on first use) without disabling encrypted backups altogether -- a
+	// composer that supplies KeyWrapRegistry or KeyWrapProvider needs no
+	// KeyDir at all.
+	KeyDir string
 
 	// ClusterSealer makes node, tenant and database seals reach every node
 	// once the cluster has activated cluster-seal, and lets an unseal clear
@@ -571,7 +599,22 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if infra.BackupSink != nil {
 		backupOpts = append(backupOpts, service.WithBackupSink(infra.BackupSink))
 	}
-	n.Backup = service.NewBackupService(service.NewHostShardSnapshotProvider(infra.Host), backupOpts...)
+	if infra.KeyWrapRegistry != nil {
+		backupOpts = append(backupOpts, service.WithKeyWrapRegistry(infra.KeyWrapRegistry))
+	}
+	if infra.KeyWrapProvider != nil {
+		backupOpts = append(backupOpts, service.WithKeyWrapProvider(infra.KeyWrapProvider))
+	}
+	backupOpts = append(backupOpts,
+		service.WithKeyDir(infra.KeyDir),
+		service.WithAuditLogger(infra.AuditLogger),
+		service.WithAuditFailurePolicy(infra.AuditFailurePolicy),
+	)
+	backupSvc, err := service.NewBackupService(service.NewHostShardSnapshotProvider(infra.Host), backupOpts...)
+	if err != nil {
+		return nil, &BackupServiceError{Err: err}
+	}
+	n.Backup = backupSvc
 
 	// Auth services (user, role) backed by KV storage.
 	//

@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"sort"
@@ -167,7 +168,49 @@ type BackupEnvelope struct {
 	// WrappedDEK is this backup's single per-backup data-encrypting key,
 	// wrapped under the KEK ProviderID/KeyRef name. Never the DEK itself.
 	WrappedDEK []byte
+
+	// SealedManifest is this backup's authenticated manifest: FormatVersion,
+	// Algorithm, ProviderID, KeyRef, BackupID, Destination, and the exact
+	// sorted set of shard IDs with a SHA-256 digest of each shard's stored
+	// (ciphertext) bytes, JSON-encoded and sealed with AES-256-GCM under
+	// this backup's own DEK (never the KEK). RestoreBackup and
+	// DecryptBackupShard authenticate and open it before touching any
+	// shard: a tampered header field, a dropped shard, or a substituted
+	// shard all fail this check closed (go-qrdb security review,
+	// backup-encrypt-default #B3). Empty for an EncryptionNone backup,
+	// which carries no envelope at all.
+	SealedManifest []byte
 }
+
+// backupManifestShard records one shard's identity and content digest
+// inside a backup's authenticated manifest.
+type backupManifestShard struct {
+	ShardID uint64 `json:"shard_id"`
+	Digest  string `json:"digest"` // hex-encoded SHA-256 of the stored (ciphertext) bytes
+}
+
+// backupManifest is a backup's authenticated header, sealed under its own
+// DEK (see BackupEnvelope.SealedManifest): the envelope format version and
+// algorithm, which KEK provider and key reference wrapped the DEK, the
+// backup's own identity, and the exact sorted set of shards with a
+// per-shard digest. Verified before importing any shard on restore --
+// authenticating this binds every one of these fields and the shard set
+// together, so none of them can be changed independently of the others
+// without the DEK (go-qrdb security review, backup-encrypt-default #B3).
+type backupManifest struct {
+	FormatVersion uint32                `json:"format_version"`
+	Algorithm     string                `json:"algorithm"`
+	ProviderID    string                `json:"provider_id"`
+	KeyRef        string                `json:"key_ref"`
+	BackupID      string                `json:"backup_id"`
+	Destination   string                `json:"destination"`
+	Shards        []backupManifestShard `json:"shards"` // sorted by ShardID
+}
+
+// manifestAlgorithm is the sole algorithm backupManifest.Algorithm ever
+// records for format version 1: AES-256-GCM at both the DEK-wrap and
+// shard-payload layers, matching envelopeFormatVersion's own doc comment.
+const manifestAlgorithm = "aes-256-gcm"
 
 // RestoreOptions contains parameters for restoring a backup.
 type RestoreOptions struct {
@@ -320,15 +363,33 @@ type BackupService struct {
 	keyWrapExtra keywrap.Provider
 
 	// audit is an optional compliance-grade audit logger. When set, a
-	// backup created with encryption explicitly disabled (EncryptionNone)
-	// emits an audit event recording that choice, in addition to the WARN
-	// log every such backup gets regardless. A nil logger disables
-	// emission. It is read via auditLogger()/SetAuditLogger under mu so a
-	// composer can attach it after construction, the same accommodation
+	// backup created with encryption explicitly disabled (EncryptionNone),
+	// or a restore of one, emits an audit event recording that choice, in
+	// addition to the WARN log every such backup/restore gets regardless.
+	// A nil logger disables emission. It is read via
+	// auditLogger()/SetAuditLogger under mu so a composer can attach it
+	// after construction, the same accommodation
 	// pkg/credentials.CredentialService makes for the same reason (the
 	// seal subsystem builds services before the compliance logger
 	// exists).
 	audit audit.AuditLogger
+
+	// auditFailurePolicy is this node's audit failure posture
+	// (auth.audit_failure_policy). The plaintext-override audit record is
+	// GATING -- it is emitted after the backup/restore has its ID but
+	// before any shard data is touched -- so under the zero value,
+	// FailClosed, a record that cannot be written refuses the
+	// backup/restore rather than let an unrecorded plaintext override
+	// through silently, the same posture every other gated audit site in
+	// this repository holds (go-qrdb#445).
+	auditFailurePolicy audit.FailurePolicy
+
+	// keyDir is the directory the built-in "software" key-wrap provider's
+	// key files must live inside, confined via *os.Root
+	// (keywrap.NewSoftwareProvider). Consulted lazily, the first time
+	// "software" is resolved through the default registry -- never used
+	// when a caller supplies its own registry via WithKeyWrapRegistry.
+	keyDir string
 }
 
 // Compile-time interface assertion.
@@ -384,6 +445,25 @@ func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption {
 	}
 }
 
+// WithAuditFailurePolicy sets this node's audit failure posture for the
+// plaintext-override audit record (see the field's own doc comment).
+// Defaults to the zero value, audit.FailClosed, when never applied.
+func WithAuditFailurePolicy(p audit.FailurePolicy) BackupServiceOption {
+	return func(s *BackupService) {
+		s.auditFailurePolicy = p
+	}
+}
+
+// WithKeyDir configures the directory the built-in "software" key-wrap
+// provider's key files must live inside (see the field's own doc
+// comment). Only consulted when no WithKeyWrapRegistry/WithKeyWrapProvider
+// option supplies a registry of the caller's own.
+func WithKeyDir(dir string) BackupServiceOption {
+	return func(s *BackupService) {
+		s.keyDir = dir
+	}
+}
+
 // SetAuditLogger attaches (or replaces) the compliance audit logger after
 // construction. It exists for wiring paths where the service is built
 // before the daemon's compliance logger is available. A nil logger
@@ -395,6 +475,15 @@ func (s *BackupService) SetAuditLogger(logger audit.AuditLogger) {
 	s.mu.Unlock()
 }
 
+// SetAuditFailurePolicy installs this node's audit failure posture after
+// construction, mirroring SetAuditLogger for the same boot-ordering
+// reason.
+func (s *BackupService) SetAuditFailurePolicy(p audit.FailurePolicy) {
+	s.mu.Lock()
+	s.auditFailurePolicy = p
+	s.mu.Unlock()
+}
+
 // auditLogger returns the configured audit logger under mu.
 func (s *BackupService) auditLogger() audit.AuditLogger {
 	s.mu.RLock()
@@ -403,42 +492,59 @@ func (s *BackupService) auditLogger() audit.AuditLogger {
 	return l
 }
 
-// warnPlaintextBackup logs, at WARN, that a backup is being written with
-// encryption explicitly disabled, and -- when an audit logger is
-// configured -- records the same fact in the compliance audit trail. It is
-// called only for an EXPLICIT EncryptionNone; the default (empty
-// BackupOptions.Encryption) never reaches here because it is refused before
-// any backup starts (BackupEncryptionRequiredError) unless a key was also
-// supplied, in which case it is encrypted, not plaintext.
-func (s *BackupService) warnPlaintextBackup(ctx context.Context, destination string) {
-	slog.WarnContext(ctx, "service: backup created with encryption explicitly disabled; the backup is plaintext, and one covering the system shard carries the cluster CA and every tenant's login CA key material in the clear",
-		"destination", destination)
+// auditFailurePolicyValue returns the configured audit failure policy
+// under mu.
+func (s *BackupService) auditFailurePolicyValue() audit.FailurePolicy {
+	s.mu.RLock()
+	p := s.auditFailurePolicy
+	s.mu.RUnlock()
+	return p
+}
 
-	logger := s.auditLogger()
-	if logger == nil {
-		return
-	}
+// auditPlaintextOverride logs, at WARN, that a backup with id is being
+// created or restored with encryption explicitly disabled, and records the
+// same fact in the compliance audit trail -- GATING, not best-effort: it is
+// called only for an EXPLICIT EncryptionNone (the default BackupOptions.
+// Encryption, left empty, never reaches here, because CreateBackup refuses
+// it before any backup starts -- BackupEncryptionRequiredError -- unless a
+// key was also supplied, in which case it is encrypted, not plaintext), and
+// it runs AFTER the backup/restore has its id (so the audit record names
+// it) but BEFORE any shard data is captured or imported. Under this node's
+// configured audit failure policy (the zero value, FailClosed, refuses),
+// an audit record that cannot be written fails the backup/restore closed
+// rather than let an unrecorded plaintext override through, matching every
+// other gated audit site in this repository (go-qrdb#445). action is
+// "backup.create" or "backup.restore".
+func (s *BackupService) auditPlaintextOverride(ctx context.Context, id, destination, action string) error {
+	slog.WarnContext(ctx, "service: backup "+action+" with encryption explicitly disabled; the backup is plaintext, and one covering the system shard carries the cluster CA and every tenant's login CA key material in the clear",
+		"backup_id", id, "destination", destination)
+
 	var actor, tenantID string
-	if id := auth.IdentityFromContext(ctx); id != nil {
-		actor = id.Subject
-		tenantID = id.TenantID
+	if identity := auth.IdentityFromContext(ctx); identity != nil {
+		actor = identity.Subject
+		tenantID = identity.TenantID
 	}
-	audit.EmitBestEffort(ctx, logger, "backup", audit.AuditEvent{
+	return audit.EmitGated(ctx, s.auditLogger(), "backup", s.auditFailurePolicyValue(), audit.AuditEvent{
 		Actor:    actor,
 		TenantID: tenantID,
-		Resource: "backup:" + destination,
-		Action:   "backup.create",
+		Resource: "backup:" + id,
+		Action:   action,
 		Outcome:  audit.OutcomeSuccess,
 		Attributes: map[string]any{
-			"encryption": string(EncryptionNone),
-			"plaintext":  true,
+			"encryption":  string(EncryptionNone),
+			"plaintext":   true,
+			"destination": destination,
 		},
 	})
 }
 
 // NewBackupService creates a new BackupService backed by the given
-// shard snapshot provider.
-func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOption) BackupServicer {
+// shard snapshot provider. Returns an error when WithKeyWrapProvider names
+// a provider ID already present in the registry it is being installed
+// into (the caller's own WithKeyWrapRegistry, or the default) --
+// previously discarded, silently leaving the earlier registration in
+// place (go-qrdb security review, backup-encrypt-default #B6).
+func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOption) (BackupServicer, error) {
 	s := &BackupService{
 		provider: provider,
 		backups:  make(map[string]*backupEntry),
@@ -448,18 +554,29 @@ func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOptio
 		opt(s)
 	}
 	if s.keyWrap == nil {
-		s.keyWrap = keywrap.NewDefaultRegistry()
-	}
-	if s.keyWrapExtra != nil {
-		// Best-effort: a duplicate ID (e.g. an embedder re-registering
-		// "software") is a composition-time configuration mistake the
-		// embedder's own tests should catch, not something this
-		// constructor can surface (BackupServiceOption returns nothing).
-		_ = s.keyWrap.Register(s.keyWrapExtra.ProviderID(), func() (keywrap.Provider, error) {
-			return s.keyWrapExtra, nil
+		// The "software" provider is resolved LAZILY, reading s.keyDir at
+		// Lookup time rather than at construction: WithKeyDir and the
+		// option loop above have already run by the time this closure is
+		// built, but reading s.keyDir here (rather than capturing its
+		// value now) keeps the one obvious extension point open for a
+		// future SetKeyDir, exactly as audit/auditFailurePolicy already
+		// work.
+		s.keyWrap = keywrap.NewRegistry()
+		_ = s.keyWrap.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+			if s.keyDir == "" {
+				return nil, &BackupKeyDirNotConfiguredError{}
+			}
+			return keywrap.NewSoftwareProvider(s.keyDir)
 		})
 	}
-	return s
+	if s.keyWrapExtra != nil {
+		if err := s.keyWrap.Register(s.keyWrapExtra.ProviderID(), func() (keywrap.Provider, error) {
+			return s.keyWrapExtra, nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
 }
 
 // validCompressions is the set of valid compression types.
@@ -545,20 +662,88 @@ func encryptShard(gcm cipher.AEAD, aad, plaintext []byte) ([]byte, error) {
 }
 
 // decryptShard splits stored into its nonce and ciphertext and opens it
-// under gcm, checking aad. Returns *UnwrapFailedError-shaped failure
-// (surfaced by callers as *BackupDecryptionFailedError) on a too-short
-// payload or an authentication failure -- never distinguished from each
-// other in what is returned.
+// under gcm, checking aad. Returns *BackupShardIntegrityError on a
+// too-short payload or an authentication failure -- never distinguished
+// from each other in what is returned, and deliberately a DIFFERENT type
+// from keywrap.UnwrapFailedError: a shard's own ciphertext failing
+// authentication has nothing to do with the KEK or the wrapped DEK, and
+// reporting it as "wrong key-encrypting key" was misleading (go-qrdb
+// security review, backup-encrypt-default).
 func decryptShard(gcm cipher.AEAD, aad, stored []byte) ([]byte, error) {
 	if len(stored) < shardNonceLength {
-		return nil, &keywrap.UnwrapFailedError{}
+		return nil, &BackupShardIntegrityError{}
 	}
 	nonce, ciphertext := stored[:shardNonceLength], stored[shardNonceLength:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
-		return nil, &keywrap.UnwrapFailedError{}
+		return nil, &BackupShardIntegrityError{}
 	}
 	return plaintext, nil
+}
+
+// shardDigest returns the hex-encoded SHA-256 digest of a shard's stored
+// (ciphertext, for an encrypted backup) bytes, as recorded in and verified
+// against the backup's authenticated manifest.
+func shardDigest(stored []byte) string {
+	sum := sha256.Sum256(stored)
+	return hex.EncodeToString(sum[:])
+}
+
+// buildManifestAAD derives the additional authenticated data the backup's
+// manifest is sealed under: a domain-separation label (so a manifest
+// ciphertext can never be mistaken for a shard ciphertext or vice versa),
+// the backup's ID, its destination, and the envelope format version.
+// Recomputed identically at restore time from the backup's own trusted
+// metadata, exactly like buildShardAAD.
+func buildManifestAAD(backupID, destination string, formatVersion uint32) []byte {
+	var buf bytes.Buffer
+	writeLenPrefixed(&buf, []byte("qrdb-backup-manifest"))
+	writeLenPrefixed(&buf, []byte(backupID))
+	writeLenPrefixed(&buf, []byte(destination))
+	var versionBuf [4]byte
+	binary.BigEndian.PutUint32(versionBuf[:], formatVersion)
+	writeLenPrefixed(&buf, versionBuf[:])
+	return buf.Bytes()
+}
+
+// sealManifest JSON-encodes manifest and seals it with AES-256-GCM under
+// gcm (the backup's own DEK), binding it to aad, returning a fresh nonce
+// prepended to the ciphertext -- the same shape encryptShard returns.
+func sealManifest(gcm cipher.AEAD, manifest *backupManifest, aad []byte) ([]byte, error) {
+	plain, err := json.Marshal(manifest)
+	if err != nil {
+		return nil, err
+	}
+	return encryptShard(gcm, aad, plain)
+}
+
+// openManifest authenticates and decodes a backup's sealed manifest under
+// gcm, checking aad. Returns *BackupManifestInvalidError -- carrying no
+// further detail, for the same reason every other decryption failure in
+// this package does not distinguish "wrong key" from "tampered" -- on
+// authentication failure or malformed JSON.
+func openManifest(gcm cipher.AEAD, sealed, aad []byte, backupID string) (*backupManifest, error) {
+	plain, err := decryptShard(gcm, aad, sealed)
+	if err != nil {
+		return nil, &BackupManifestInvalidError{BackupID: backupID}
+	}
+	var manifest backupManifest
+	if err := json.Unmarshal(plain, &manifest); err != nil {
+		return nil, &BackupManifestInvalidError{BackupID: backupID}
+	}
+	return &manifest, nil
+}
+
+// buildManifestShards returns the sorted shard-digest list a backup's
+// manifest records, one entry per shard in shardIDs (already sorted by
+// the caller), each digest covering that shard's STORED bytes in
+// shardData.
+func buildManifestShards(shardIDs []uint64, shardData map[uint64][]byte) []backupManifestShard {
+	shards := make([]backupManifestShard, len(shardIDs))
+	for i, id := range shardIDs {
+		shards[i] = backupManifestShard{ShardID: id, Digest: shardDigest(shardData[id])}
+	}
+	return shards
 }
 
 // envelopeSetup is the result of preparing an encrypted backup's envelope
@@ -648,8 +833,19 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 		return nil, &BackupEncryptionKeyRequiredError{}
 	}
 
+	start := time.Now()
+	id := s.idGen()
+
+	// The plaintext-override audit record is GATING, not best-effort: it
+	// runs with the backup's own id, after validation but strictly before
+	// any shard is touched, and -- under this node's configured audit
+	// failure policy -- a record that cannot be written refuses the
+	// backup rather than let an unrecorded plaintext override through
+	// (go-qrdb security review, backup-encrypt-default #B5).
 	if encryption == EncryptionNone {
-		s.warnPlaintextBackup(ctx, opts.Destination)
+		if err := s.auditPlaintextOverride(ctx, id, opts.Destination, "backup.create"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Resolve the key-wrap provider and wrap a fresh DEK BEFORE touching
@@ -664,9 +860,6 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 			return nil, err
 		}
 	}
-
-	start := time.Now()
-	id := s.idGen()
 
 	info := BackupInfo{
 		ID:          id,
@@ -753,11 +946,30 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 
 	var envelope *BackupEnvelope
 	if envSetup != nil {
-		envelope = &BackupEnvelope{
+		manifest := &backupManifest{
 			FormatVersion: envelopeFormatVersion,
+			Algorithm:     manifestAlgorithm,
 			ProviderID:    envSetup.providerID,
 			KeyRef:        envSetup.keyRef,
-			WrappedDEK:    envSetup.wrappedDEK,
+			BackupID:      id,
+			Destination:   opts.Destination,
+			Shards:        buildManifestShards(shardIDs, shardData),
+		}
+		manifestAAD := buildManifestAAD(id, opts.Destination, envelopeFormatVersion)
+		sealedManifest, sealErr := sealManifest(envSetup.gcm, manifest, manifestAAD)
+		if sealErr != nil {
+			info.Status = BackupStatusFailed
+			info.ErrorMessage = sealErr.Error()
+			info.Duration = time.Since(start)
+			s.storeBackup(id, &backupEntry{info: info})
+			return &info, &BackupCreateError{Err: sealErr}
+		}
+		envelope = &BackupEnvelope{
+			FormatVersion:  envelopeFormatVersion,
+			ProviderID:     envSetup.providerID,
+			KeyRef:         envSetup.keyRef,
+			WrappedDEK:     envSetup.wrappedDEK,
+			SealedManifest: sealedManifest,
 		}
 	}
 
@@ -917,8 +1129,103 @@ func (s *BackupService) resolveDEK(ctx context.Context, entry *backupEntry, keyR
 	return gcm, nil
 }
 
+// checkEncryptionConsistency refuses when entry's stored metadata and its
+// artifact disagree about whether the backup is encrypted -- an envelope
+// present while the metadata claims EncryptionNone, or the metadata
+// claiming otherwise with no envelope stored at all. Either shape means
+// the metadata was edited independently of the cryptographic artifact: an
+// attacker who flips BackupInfo.Encryption to "none" and substitutes
+// plaintext still leaves the ORIGINAL envelope in the sink unless they
+// also remove it, and this is what catches that (go-qrdb security
+// review, backup-encrypt-default #B2).
+func checkEncryptionConsistency(entry *backupEntry) error {
+	claimsEncrypted := entry.info.Encryption != EncryptionNone
+	hasEnvelope := entry.envelope != nil
+	if claimsEncrypted != hasEnvelope {
+		return &BackupMetadataMismatchError{BackupID: entry.info.ID}
+	}
+	return nil
+}
+
+// resolveManifest unwraps entry's DEK (resolveDEK) and authenticates its
+// manifest, cross-checking the manifest's own backup ID, destination and
+// provider against the trusted metadata it was read alongside. A
+// mismatch means the envelope, the manifest, and the metadata were not
+// all assembled together -- e.g. an envelope/manifest pair borrowed from
+// a different backup under the same provider and key reference (go-qrdb
+// security review, backup-encrypt-default #B2/#B3).
+func (s *BackupService) resolveManifest(ctx context.Context, entry *backupEntry, keyRefOverride string) (cipher.AEAD, *backupManifest, error) {
+	gcm, err := s.resolveDEK(ctx, entry, keyRefOverride)
+	if err != nil {
+		return nil, nil, err
+	}
+	envelope := entry.envelope
+	aad := buildManifestAAD(entry.info.ID, entry.info.Destination, envelope.FormatVersion)
+	manifest, err := openManifest(gcm, envelope.SealedManifest, aad, entry.info.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if manifest.BackupID != entry.info.ID || manifest.Destination != entry.info.Destination || manifest.ProviderID != envelope.ProviderID {
+		return nil, nil, &BackupMetadataMismatchError{BackupID: entry.info.ID}
+	}
+	return gcm, manifest, nil
+}
+
+// manifestDigests indexes manifest's shard-digest list by shard ID.
+func manifestDigests(manifest *backupManifest) map[uint64]string {
+	digests := make(map[uint64]string, len(manifest.Shards))
+	for _, ms := range manifest.Shards {
+		digests[ms.ShardID] = ms.Digest
+	}
+	return digests
+}
+
+// manifestShardIDs returns manifest's own recorded shard IDs -- the
+// authenticated original shard set, which CreateBackup always records in
+// sorted order.
+func manifestShardIDs(manifest *backupManifest) []uint64 {
+	ids := make([]uint64, len(manifest.Shards))
+	for i, ms := range manifest.Shards {
+		ids[i] = ms.ShardID
+	}
+	return ids
+}
+
+// verifyAndDecryptShard authenticates shardID's stored bytes against its
+// recorded manifest digest and decrypts them under gcm, bound to the same
+// AAD CreateBackup sealed them under. Returns *BackupShardNotFoundError
+// when shardID has no stored payload or no manifest entry, and
+// *BackupShardIntegrityError when its digest or its AEAD tag does not
+// match. Shared by RestoreBackup (every target shard, before importing
+// any) and DecryptBackupShard so both apply IDENTICAL checks.
+func (s *BackupService) verifyAndDecryptShard(entry *backupEntry, digests map[uint64]string, gcm cipher.AEAD, shardID uint64) ([]byte, error) {
+	data, ok := entry.shards[shardID]
+	if !ok {
+		return nil, &BackupShardNotFoundError{BackupID: entry.info.ID, ShardID: shardID}
+	}
+	wantDigest, inManifest := digests[shardID]
+	if !inManifest {
+		return nil, &BackupShardNotFoundError{BackupID: entry.info.ID, ShardID: shardID}
+	}
+	if shardDigest(data) != wantDigest {
+		return nil, &BackupShardIntegrityError{}
+	}
+	aad := buildShardAAD(entry.info.ID, entry.info.Destination, shardID, entry.envelope.FormatVersion)
+	return decryptShard(gcm, aad, data)
+}
+
 // RestoreBackup restores data from a backup. When ValidateFirst is set,
 // the backup is verified before restoration begins.
+//
+// Every target shard is authenticated and decrypted (or, for an
+// EncryptionNone backup, confirmed present) BEFORE any shard is imported.
+// A tampered, substituted, or missing shard aborts the WHOLE restore with
+// a typed top-level error and imports NOTHING -- a tampered shard never
+// leaves an earlier shard already imported with no top-level error to
+// show for it (go-qrdb security review, backup-encrypt-default #B1). Only
+// an OPERATIONAL failure during the import itself (the underlying store
+// refused it, after every shard already passed verification) is reported
+// per-shard rather than aborting the shards that already succeeded.
 func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) (*RestoreResult, error) {
 	if opts.BackupID == "" {
 		return nil, &BackupEmptyIDError{}
@@ -945,28 +1252,86 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 		}
 	}
 
-	// Resolve and unwrap the backup's DEK once, up front: a wrong KEK or an
-	// unregistered provider cannot decrypt ANY shard (they all share the
-	// same DEK), so it is a whole-restore failure before any shard is
-	// touched -- unlike a single tampered shard's ciphertext, which is a
-	// per-shard failure (see the loop below).
-	var gcm cipher.AEAD
-	if entry.info.Encryption != EncryptionNone {
-		gcm, err = s.resolveDEK(ctx, entry, opts.DecryptionKeyRef)
-		if err != nil {
+	// B2: the stored metadata and the artifact must agree about whether
+	// this backup is encrypted.
+	if err := checkEncryptionConsistency(entry); err != nil {
+		return nil, err
+	}
+	claimsEncrypted := entry.info.Encryption != EncryptionNone
+
+	if !claimsEncrypted {
+		if err := s.auditPlaintextOverride(ctx, opts.BackupID, entry.info.Destination, "backup.restore"); err != nil {
 			return nil, err
 		}
 	}
 
-	// Determine which shards to restore.
+	// Resolve and unwrap the backup's DEK, and authenticate its manifest,
+	// once, up front: a wrong KEK, an unregistered provider, or a
+	// tampered manifest cannot decrypt or authenticate ANY shard (they
+	// all share the same DEK and the same manifest), so it is a
+	// whole-restore failure before any shard is touched.
+	var (
+		gcm      cipher.AEAD
+		manifest *backupManifest
+		digests  map[uint64]string
+	)
+	if claimsEncrypted {
+		gcm, manifest, err = s.resolveManifest(ctx, entry, opts.DecryptionKeyRef)
+		if err != nil {
+			return nil, err
+		}
+		digests = manifestDigests(manifest)
+	}
+
+	// Determine which shards to restore. For an encrypted backup with no
+	// explicit target, the default is the MANIFEST's own recorded shard
+	// set -- the authenticated original -- never the artifact's own
+	// (possibly shrunk) shard map: a shard dropped from storage is then
+	// caught by verification below instead of silently restoring fewer
+	// shards with no error at all (go-qrdb security review,
+	// backup-encrypt-default #B3).
 	targetShards := opts.TargetShards
 	if len(targetShards) == 0 {
-		targetShards = make([]uint64, 0, len(entry.shards))
-		for shardID := range entry.shards {
-			targetShards = append(targetShards, shardID)
+		if manifest != nil {
+			targetShards = manifestShardIDs(manifest)
+		} else {
+			targetShards = make([]uint64, 0, len(entry.shards))
+			for shardID := range entry.shards {
+				targetShards = append(targetShards, shardID)
+			}
 		}
 	}
 
+	// PASS 1: authenticate and decrypt (or, for plaintext, confirm the
+	// presence of) EVERY target shard before importing any of them.
+	plaintexts := make(map[uint64][]byte, len(targetShards))
+	for _, shardID := range targetShards {
+		if err := ctx.Err(); err != nil {
+			return nil, &BackupRestoreError{BackupID: opts.BackupID, Err: err}
+		}
+		if manifest != nil {
+			pt, verifyErr := s.verifyAndDecryptShard(entry, digests, gcm, shardID)
+			if verifyErr != nil {
+				return nil, &BackupVerificationFailedError{BackupID: opts.BackupID, ShardID: shardID, Err: verifyErr}
+			}
+			plaintexts[shardID] = pt
+			continue
+		}
+		data, ok := entry.shards[shardID]
+		if !ok {
+			return nil, &BackupVerificationFailedError{
+				BackupID: opts.BackupID,
+				ShardID:  shardID,
+				Err:      &BackupShardNotFoundError{BackupID: opts.BackupID, ShardID: shardID},
+			}
+		}
+		plaintexts[shardID] = data
+	}
+
+	// PASS 2: import. Every target shard already passed verification in
+	// pass 1; a failure here is an OPERATIONAL one (the underlying store
+	// refused the import), reported per-shard rather than retroactively
+	// undoing the shards that already succeeded.
 	var (
 		restored atomic.Int32
 		errs     []ShardError
@@ -983,33 +1348,6 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 			}, &BackupRestoreError{BackupID: opts.BackupID, Err: err}
 		}
 
-		data, dataOK := entry.shards[shardID]
-		if !dataOK {
-			errMu.Lock()
-			errs = append(errs, ShardError{
-				ShardID: shardID,
-				Message: "shard not found in backup",
-			})
-			errMu.Unlock()
-			continue
-		}
-
-		plaintext := data
-		if gcm != nil {
-			aad := buildShardAAD(entry.info.ID, entry.info.Destination, shardID, entry.envelope.FormatVersion)
-			decrypted, decErr := decryptShard(gcm, aad, data)
-			if decErr != nil {
-				errMu.Lock()
-				errs = append(errs, ShardError{
-					ShardID: shardID,
-					Message: (&BackupDecryptionFailedError{BackupID: entry.info.ID, Err: decErr}).Error(),
-				})
-				errMu.Unlock()
-				continue
-			}
-			plaintext = decrypted
-		}
-
 		// Prefer the SAFETY-GUARDED online path when the provider supports
 		// it: the shard may still be RUNNING (this is the live REST/gRPC/CLI
 		// restore path), and plain RestoreShard's ImportSnapshot always
@@ -1017,7 +1355,7 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 		// OnlineShardRestorer (e.g. a simple test double) falls back to
 		// RestoreShard, which requires the shard to already be stopped —
 		// exactly the OFFLINE boot-time restore pattern.
-		restoreErr := s.restoreShard(ctx, shardID, plaintext)
+		restoreErr := s.restoreShard(ctx, shardID, plaintexts[shardID])
 		if restoreErr != nil {
 			errMu.Lock()
 			errs = append(errs, ShardError{
@@ -1077,11 +1415,15 @@ func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
 	p.mu.Unlock()
 }
 
-// DecryptBackupShard returns shardID's plaintext from backup id, resolving
-// and unwrapping the backup's envelope exactly as RestoreBackup does.
-// decryptionKeyRef overrides the envelope's own stored key reference,
-// exactly like RestoreOptions.DecryptionKeyRef; left empty, the stored
-// reference is used.
+// DecryptBackupShard returns shardID's plaintext from backup id, applying
+// the SAME checks RestoreBackup applies to every target shard: the stored
+// metadata and the artifact must agree about encryption
+// (checkEncryptionConsistency), the manifest must authenticate and
+// cross-check cleanly (resolveManifest), and shardID's own digest and AEAD
+// tag must verify (verifyAndDecryptShard). decryptionKeyRef overrides the
+// envelope's own stored key reference, exactly like
+// RestoreOptions.DecryptionKeyRef; left empty, the stored reference is
+// used.
 //
 // It exists for callers that must read and apply a single shard OUTSIDE
 // RestoreBackup's own per-shard dispatch (which prefers
@@ -1089,7 +1431,8 @@ func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
 // guards) -- currently only qrdbd's offline, boot-time disaster-recovery
 // restore (cmd/qrdbd/restore.go), which stops and restarts the shard
 // around the import in a sequence RestoreBackup's own online dispatch does
-// not perform. An EncryptionNone backup's shard is returned unchanged.
+// not perform. An EncryptionNone backup's shard is returned unchanged,
+// after the same gated plaintext-restore audit RestoreBackup emits.
 func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shardID uint64, decryptionKeyRef string) ([]byte, error) {
 	if id == "" {
 		return nil, &BackupEmptyIDError{}
@@ -1100,23 +1443,28 @@ func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shard
 		return nil, err
 	}
 
-	data, ok := entry.shards[shardID]
-	if !ok {
-		return nil, &BackupDecryptionFailedError{BackupID: id, Err: &keywrap.UnwrapFailedError{}}
+	if err := checkEncryptionConsistency(entry); err != nil {
+		return nil, err
 	}
 
 	if entry.info.Encryption == EncryptionNone {
+		if err := s.auditPlaintextOverride(ctx, id, entry.info.Destination, "backup.restore"); err != nil {
+			return nil, err
+		}
+		data, ok := entry.shards[shardID]
+		if !ok {
+			return nil, &BackupShardNotFoundError{BackupID: id, ShardID: shardID}
+		}
 		return data, nil
 	}
 
-	gcm, err := s.resolveDEK(ctx, entry, decryptionKeyRef)
+	gcm, manifest, err := s.resolveManifest(ctx, entry, decryptionKeyRef)
 	if err != nil {
 		return nil, err
 	}
-	aad := buildShardAAD(entry.info.ID, entry.info.Destination, shardID, entry.envelope.FormatVersion)
-	plaintext, err := decryptShard(gcm, aad, data)
+	plaintext, err := s.verifyAndDecryptShard(entry, manifestDigests(manifest), gcm, shardID)
 	if err != nil {
-		return nil, &BackupDecryptionFailedError{BackupID: id, Err: err}
+		return nil, err
 	}
 	return plaintext, nil
 }

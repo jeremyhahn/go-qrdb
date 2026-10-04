@@ -20,6 +20,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -27,20 +28,62 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 )
 
-// writeTestKeyFile writes a fresh 32-byte key file under t.TempDir() and
-// returns its path, suitable for use as BackupOptions.KeyRef /
-// RestoreOptions.DecryptionKeyRef against the "software" keywrap provider.
+// sharedKeyDir is the one directory every test's software-provider key
+// files live in for this test binary's run (TestMain creates/removes it).
+// SoftwareProvider confines every key file to ONE configured directory
+// (go-qrdb security review, backup-encrypt-default #B4): KeyRef and
+// DecryptionKeyRef are now bare file NAMES inside it, never paths, so
+// every test in this file shares the directory via mustNewBackupService's
+// automatic WithKeyDir rather than minting its own.
+var sharedKeyDir string
+
+// TestMain creates sharedKeyDir once for this package's test binary and
+// removes it on exit. Safe to own here: this is pkg/service's only
+// TestMain, and every other test file's behavior is unaffected by it.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "qrdb-backup-keytest-")
+	if err != nil {
+		panic(err)
+	}
+	sharedKeyDir = dir
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// mustNewBackupService calls NewBackupService, failing t on error, and
+// always applies WithKeyDir(sharedKeyDir) in addition to opts (applied
+// first, so an opts entry that supplies its own WithKeyWrapRegistry/
+// WithKeyWrapProvider is unaffected -- WithKeyDir only matters to the
+// DEFAULT registry's lazily-constructed "software" provider).
+func mustNewBackupService(t *testing.T, provider ShardSnapshotProvider, opts ...BackupServiceOption) BackupServicer {
+	t.Helper()
+	allOpts := make([]BackupServiceOption, 0, len(opts)+1)
+	allOpts = append(allOpts, WithKeyDir(sharedKeyDir))
+	allOpts = append(allOpts, opts...)
+	svc, err := NewBackupService(provider, allOpts...)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
+	return svc
+}
+
+// writeTestKeyFile writes a fresh 32-byte key file into sharedKeyDir and
+// returns its bare NAME, suitable for use as BackupOptions.KeyRef /
+// RestoreOptions.DecryptionKeyRef against the "software" keywrap provider
+// (go-qrdb security review, backup-encrypt-default #B4: KeyRef is a name
+// inside the configured key directory, never a path).
 func writeTestKeyFile(t *testing.T, fill byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup.key")
+	name := "key-" + strconv.Itoa(int(fill)) + ".key"
 	data := make([]byte, 32)
 	for i := range data {
 		data[i] = fill + byte(i)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(sharedKeyDir, name), data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	return path
+	return name
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +162,7 @@ var _ OnlineShardRestorer = (*mockOnlineSnapshotProvider)(nil)
 func TestBackupService_CreateBackup_Success(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	idCounter := 0
-	svc := NewBackupService(provider, WithIDGenerator(func() string {
+	svc := mustNewBackupService(t, provider, WithIDGenerator(func() string {
 		idCounter++
 		return "backup-" + string(rune('0'+idCounter))
 	}))
@@ -167,7 +210,7 @@ func TestBackupService_CreateBackup_Success(t *testing.T) {
 
 func TestBackupService_CreateBackup_EmptyDestination(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.CreateBackup(ctx, BackupOptions{})
@@ -182,7 +225,7 @@ func TestBackupService_CreateBackup_EmptyDestination(t *testing.T) {
 
 func TestBackupService_CreateBackup_InvalidCompression(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.CreateBackup(ctx, BackupOptions{
@@ -200,7 +243,7 @@ func TestBackupService_CreateBackup_InvalidCompression(t *testing.T) {
 
 func TestBackupService_CreateBackup_InvalidEncryption(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.CreateBackup(ctx, BackupOptions{
@@ -218,7 +261,7 @@ func TestBackupService_CreateBackup_InvalidEncryption(t *testing.T) {
 
 func TestBackupService_CreateBackup_EncryptionWithoutKey(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.CreateBackup(ctx, BackupOptions{
@@ -242,7 +285,7 @@ func TestBackupService_CreateBackup_EncryptionWithoutKey(t *testing.T) {
 // (which fires only when aes256 was named explicitly).
 func TestBackupService_CreateBackup_DefaultEncryptionWithoutKey(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.CreateBackup(ctx, BackupOptions{
@@ -259,7 +302,7 @@ func TestBackupService_CreateBackup_DefaultEncryptionWithoutKey(t *testing.T) {
 
 func TestBackupService_CreateBackup_WithEncryption(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	keyPath := writeTestKeyFile(t, 0x01)
 
 	ctx := context.Background()
@@ -289,7 +332,7 @@ func TestBackupService_CreateBackup_WithEncryption(t *testing.T) {
 // resolves it itself.
 func TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 	keyPath := writeTestKeyFile(t, 0x02)
 
@@ -317,7 +360,7 @@ func TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores(t *testing.
 
 func TestBackupService_CreateBackup_WithCompression(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
@@ -335,7 +378,7 @@ func TestBackupService_CreateBackup_WithCompression(t *testing.T) {
 
 func TestBackupService_CreateBackup_SpecificShards(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
@@ -354,7 +397,7 @@ func TestBackupService_CreateBackup_SpecificShards(t *testing.T) {
 func TestBackupService_CreateBackup_SnapshotError(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	provider.snapshotErr = errors.New("snapshot failed")
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
@@ -376,7 +419,7 @@ func TestBackupService_CreateBackup_SnapshotError(t *testing.T) {
 func TestBackupService_CreateBackup_AvailableShardsError(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	provider.availableErr = errors.New("cannot list shards")
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
@@ -397,7 +440,7 @@ func TestBackupService_CreateBackup_AvailableShardsError(t *testing.T) {
 
 func TestBackupService_CreateBackup_CanceledContext(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -424,7 +467,7 @@ func TestBackupService_CreateBackup_CanceledContext(t *testing.T) {
 
 func TestBackupService_ListBackups_Empty(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	backups, err := svc.ListBackups(ctx)
@@ -438,7 +481,7 @@ func TestBackupService_ListBackups_Empty(t *testing.T) {
 
 func TestBackupService_ListBackups_Ordered(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 
@@ -471,7 +514,7 @@ func TestBackupService_ListBackups_Ordered(t *testing.T) {
 
 func TestBackupService_GetBackup_Success(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/test", Encryption: EncryptionNone})
@@ -490,7 +533,7 @@ func TestBackupService_GetBackup_Success(t *testing.T) {
 
 func TestBackupService_GetBackup_NotFound(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.GetBackup(ctx, "nonexistent")
@@ -505,7 +548,7 @@ func TestBackupService_GetBackup_NotFound(t *testing.T) {
 
 func TestBackupService_GetBackup_EmptyID(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.GetBackup(ctx, "")
@@ -524,7 +567,7 @@ func TestBackupService_GetBackup_EmptyID(t *testing.T) {
 
 func TestBackupService_DeleteBackup_Success(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/delete-me", Encryption: EncryptionNone})
@@ -546,7 +589,7 @@ func TestBackupService_DeleteBackup_Success(t *testing.T) {
 
 func TestBackupService_DeleteBackup_NotFound(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	err := svc.DeleteBackup(ctx, "nonexistent")
@@ -561,7 +604,7 @@ func TestBackupService_DeleteBackup_NotFound(t *testing.T) {
 
 func TestBackupService_DeleteBackup_EmptyID(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	err := svc.DeleteBackup(ctx, "")
@@ -580,7 +623,7 @@ func TestBackupService_DeleteBackup_EmptyID(t *testing.T) {
 
 func TestBackupService_RestoreBackup_Success(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/restore-test", Encryption: EncryptionNone})
@@ -610,7 +653,7 @@ func TestBackupService_RestoreBackup_Success(t *testing.T) {
 
 func TestBackupService_RestoreBackup_TargetShards(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial-restore", Encryption: EncryptionNone})
@@ -632,7 +675,7 @@ func TestBackupService_RestoreBackup_TargetShards(t *testing.T) {
 
 func TestBackupService_RestoreBackup_NotFound(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.RestoreBackup(ctx, RestoreOptions{
@@ -649,7 +692,7 @@ func TestBackupService_RestoreBackup_NotFound(t *testing.T) {
 
 func TestBackupService_RestoreBackup_EmptyID(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.RestoreBackup(ctx, RestoreOptions{})
@@ -664,7 +707,7 @@ func TestBackupService_RestoreBackup_EmptyID(t *testing.T) {
 
 func TestBackupService_RestoreBackup_WithValidation(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/validate", Encryption: EncryptionNone})
@@ -686,7 +729,7 @@ func TestBackupService_RestoreBackup_WithValidation(t *testing.T) {
 
 func TestBackupService_RestoreBackup_RestoreError(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/restore-fail", Encryption: EncryptionNone})
@@ -714,7 +757,7 @@ func TestBackupService_RestoreBackup_RestoreError(t *testing.T) {
 // configured provider implements OnlineShardRestorer.
 func TestBackupService_RestoreBackup_PrefersOnlineShardRestorer(t *testing.T) {
 	provider := newMockOnlineSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online", Encryption: EncryptionNone})
@@ -744,7 +787,7 @@ func TestBackupService_RestoreBackup_PrefersOnlineShardRestorer(t *testing.T) {
 func TestBackupService_RestoreBackup_OnlineShardRestorerError(t *testing.T) {
 	provider := newMockOnlineSnapshotProvider()
 	provider.onlineErr = &OnlineRestoreSystemShardError{ShardID: 1}
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online-fail", Encryption: EncryptionNone})
@@ -769,9 +812,17 @@ func TestBackupService_RestoreBackup_OnlineShardRestorerError(t *testing.T) {
 	}
 }
 
+// TestBackupService_RestoreBackup_ShardNotInBackup proves a request for a
+// shard this backup never captured is refused as a single, TOP-LEVEL
+// *BackupVerificationFailedError wrapping *BackupShardNotFoundError --
+// nothing is imported, including shards that WOULD have succeeded had
+// they been requested (go-qrdb security review, backup-encrypt-default
+// #B1: every target shard is verified before any is imported, so a
+// missing one aborts the whole restore rather than reporting a tolerated
+// per-shard error).
 func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial", Encryption: EncryptionNone})
@@ -783,17 +834,25 @@ func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 		BackupID:     created.ID,
 		TargetShards: []uint64{999},
 	})
-	if err != nil {
-		t.Fatalf("RestoreBackup should not return error for missing shard: %v", err)
+	if err == nil {
+		t.Fatal("RestoreBackup should return a top-level error for a target shard not in the backup")
 	}
-	if result.ShardsRestored != 0 {
-		t.Fatalf("expected 0 shards restored, got %d", result.ShardsRestored)
+	if result != nil {
+		t.Fatalf("RestoreBackup should return a nil result alongside a top-level error, got %+v", result)
 	}
-	if len(result.Errors) != 1 {
-		t.Fatalf("expected 1 shard error, got %d", len(result.Errors))
+	var verifyErr *BackupVerificationFailedError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("err = %T, want *BackupVerificationFailedError", err)
 	}
-	if result.Errors[0].ShardID != 999 {
-		t.Fatalf("expected shard error for ID 999, got %d", result.Errors[0].ShardID)
+	if verifyErr.ShardID != 999 {
+		t.Fatalf("verifyErr.ShardID = %d, want 999", verifyErr.ShardID)
+	}
+	var notFound *BackupShardNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want it to wrap *BackupShardNotFoundError", err)
+	}
+	if provider.restoreCalls.Load() != 0 {
+		t.Error("a refused restore must not have touched any shard")
 	}
 }
 
@@ -804,7 +863,7 @@ func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 // "tampered" in what it returns.
 func TestBackupService_RestoreBackup_WrongKeyFileRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{
@@ -839,7 +898,7 @@ func TestBackupService_RestoreBackup_UnregisteredProviderRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
 
 	registry := keywrap.NewRegistry() // deliberately empty -- no "software"
-	svc := NewBackupService(provider, WithKeyWrapRegistry(registry))
+	svc := mustNewBackupService(t, provider, WithKeyWrapRegistry(registry))
 
 	ctx := context.Background()
 	_, err := svc.CreateBackup(ctx, BackupOptions{
@@ -862,7 +921,7 @@ func TestBackupService_RestoreBackup_UnregisteredProviderRefused(t *testing.T) {
 
 func TestBackupService_VerifyBackup_Success(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/verify", Encryption: EncryptionNone})
@@ -891,7 +950,7 @@ func TestBackupService_VerifyBackup_Success(t *testing.T) {
 
 func TestBackupService_VerifyBackup_NotFound(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.VerifyBackup(ctx, "nonexistent")
@@ -906,7 +965,7 @@ func TestBackupService_VerifyBackup_NotFound(t *testing.T) {
 
 func TestBackupService_VerifyBackup_EmptyID(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	ctx := context.Background()
 	_, err := svc.VerifyBackup(ctx, "")
@@ -1025,7 +1084,7 @@ func TestBackupErrors_Unwrap(t *testing.T) {
 func TestSetShardRestarter_EnablesOnlineRestoreOnHostBackedProvider(t *testing.T) {
 	host := newMockSnapshotHost()
 	provider := NewHostShardSnapshotProvider(host)
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	restarter := &fakeShardRestarter{}
 	SetShardRestarter(svc, restarter)
@@ -1059,7 +1118,7 @@ func TestSetShardRestarter_NoopForNonBackupService(t *testing.T) {
 // SetShardRestarter tolerates a *BackupService whose provider is not the
 // host-backed hostShardSnapshotProvider (e.g. mockSnapshotProvider in tests).
 func TestSetShardRestarter_NoopForNonHostBackedProvider(t *testing.T) {
-	svc := NewBackupService(newMockSnapshotProvider())
+	svc := mustNewBackupService(t, newMockSnapshotProvider())
 	SetShardRestarter(svc, &fakeShardRestarter{})
 }
 
@@ -1068,7 +1127,7 @@ func TestSetShardRestarter_NoopForNonHostBackedProvider(t *testing.T) {
 func TestSetShardRestarter_NilRestarterIsNoop(t *testing.T) {
 	host := newMockSnapshotHost()
 	provider := NewHostShardSnapshotProvider(host)
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	restarter := &fakeShardRestarter{}
 	SetShardRestarter(svc, restarter)
@@ -1118,7 +1177,7 @@ var _ BackupServicer = (*noopBackupServicer)(nil)
 func TestBackupService_CreateBackup_ExplicitNoneAudits(t *testing.T) {
 	ring := audit.NewRingBuffer(0)
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider, WithAuditLogger(ring))
+	svc := mustNewBackupService(t, provider, WithAuditLogger(ring))
 
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1140,14 +1199,20 @@ func TestBackupService_CreateBackup_ExplicitNoneAudits(t *testing.T) {
 	if ev.Outcome != audit.OutcomeSuccess {
 		t.Fatalf("audit event Outcome = %q, want %q", ev.Outcome, audit.OutcomeSuccess)
 	}
-	if ev.Resource != "backup:"+info.Destination {
-		t.Fatalf("audit event Resource = %q, want %q", ev.Resource, "backup:"+info.Destination)
+	// The audit record is emitted AFTER the backup has its ID and carries
+	// it (go-qrdb security review, backup-encrypt-default #B5) -- the
+	// resource names the backup, not merely its destination.
+	if ev.Resource != "backup:"+info.ID {
+		t.Fatalf("audit event Resource = %q, want %q", ev.Resource, "backup:"+info.ID)
 	}
 	if plaintext, _ := ev.Attributes["plaintext"].(bool); !plaintext {
 		t.Fatalf("audit event Attributes[plaintext] = %v, want true", ev.Attributes["plaintext"])
 	}
 	if encAttr, _ := ev.Attributes["encryption"].(string); encAttr != string(EncryptionNone) {
 		t.Fatalf("audit event Attributes[encryption] = %v, want %q", ev.Attributes["encryption"], EncryptionNone)
+	}
+	if dest, _ := ev.Attributes["destination"].(string); dest != info.Destination {
+		t.Fatalf("audit event Attributes[destination] = %v, want %q", ev.Attributes["destination"], info.Destination)
 	}
 }
 
@@ -1157,7 +1222,7 @@ func TestBackupService_CreateBackup_ExplicitNoneAudits(t *testing.T) {
 func TestBackupService_CreateBackup_EncryptedDoesNotAudit(t *testing.T) {
 	ring := audit.NewRingBuffer(0)
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider, WithAuditLogger(ring))
+	svc := mustNewBackupService(t, provider, WithAuditLogger(ring))
 
 	ctx := context.Background()
 	if _, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1179,7 +1244,7 @@ func TestBackupService_CreateBackup_EncryptedDoesNotAudit(t *testing.T) {
 // compliance logger configured.
 func TestBackupService_CreateBackup_ExplicitNoneWithoutAuditLoggerStillSucceeds(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 
 	if _, err := svc.CreateBackup(context.Background(), BackupOptions{
 		Destination: "/backups/plaintext-no-logger",
@@ -1227,7 +1292,7 @@ func storedShardBytes(t *testing.T, svc BackupServicer, id string) map[uint64][]
 // anywhere in what is actually stored.
 func TestBackupService_EncryptedBackup_StoredBytesAreNotPlaintext(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1266,7 +1331,7 @@ func TestBackupService_EncryptedBackup_StoredBytesAreNotPlaintext(t *testing.T) 
 // plaintext" check above is meaningful rather than vacuous.
 func TestBackupService_PlaintextBackup_StoredBytesArePlaintext(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1292,13 +1357,16 @@ func TestBackupService_PlaintextBackup_StoredBytesArePlaintext(t *testing.T) {
 	}
 }
 
-// TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError proves a
-// single-bit flip in a stored shard's ciphertext is detected as a per-shard
-// ShardError carrying *BackupDecryptionFailedError's message, rather than
-// decrypting into silently-wrong bytes -- other shards still restore.
+// TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError proves
+// a single-bit flip in a stored shard's ciphertext is detected and the
+// WHOLE restore aborts with a typed top-level error BEFORE any shard is
+// imported -- not a per-shard ShardError that leaves every other shard
+// already imported, which is exactly the defect go-qrdb's security review
+// found here (backup-encrypt-default #B1): "a tampered shard 2 still
+// leaves shard 1 imported with no top-level error."
 func TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1318,20 +1386,25 @@ func TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError(t *testin
 	shards[tamperedShard][len(shards[tamperedShard])-1] ^= 0xFF
 
 	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
-	if err != nil {
-		t.Fatalf("RestoreBackup should not return a top-level error for a per-shard tamper: %v", err)
+	if err == nil {
+		t.Fatal("RestoreBackup should return a top-level error for a tampered shard")
 	}
-	if result.ShardsRestored != len(shards)-1 {
-		t.Fatalf("ShardsRestored = %d, want %d (every shard but the tampered one)", result.ShardsRestored, len(shards)-1)
+	if result != nil {
+		t.Fatalf("RestoreBackup should return a nil result alongside a top-level error, got %+v", result)
 	}
-	if len(result.Errors) != 1 {
-		t.Fatalf("expected exactly 1 shard error, got %d", len(result.Errors))
+	var verifyErr *BackupVerificationFailedError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("err = %T, want *BackupVerificationFailedError", err)
 	}
-	if result.Errors[0].ShardID != tamperedShard {
-		t.Fatalf("ShardID = %d, want %d", result.Errors[0].ShardID, tamperedShard)
+	if verifyErr.ShardID != tamperedShard {
+		t.Fatalf("verifyErr.ShardID = %d, want %d", verifyErr.ShardID, tamperedShard)
 	}
-	if result.Errors[0].Message == "" {
-		t.Fatal("expected a non-empty error message for the tampered shard")
+	var integrityErr *BackupShardIntegrityError
+	if !errors.As(err, &integrityErr) {
+		t.Fatalf("err = %v, want it to wrap *BackupShardIntegrityError (not keywrap.UnwrapFailedError -- a shard tamper is not a wrong-KEK failure)", err)
+	}
+	if provider.restoreCalls.Load() != 0 {
+		t.Fatal("a tampered shard must leave NOTHING imported, including shards that would otherwise have succeeded")
 	}
 }
 
@@ -1342,7 +1415,7 @@ func TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError(t *testin
 // before any shard is touched.
 func TestBackupService_RestoreBackup_UnregisteredProviderAtRestoreRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1430,7 +1503,7 @@ var _ keywrap.Provider = (*fakeKeyWrapProvider)(nil)
 func TestBackupService_FakeProvider_KeyRotation_OldKeyIDStillUnwraps(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	fake := &fakeKeyWrapProvider{id: "fake-hsm"}
-	svc := NewBackupService(provider, WithKeyWrapProvider(fake))
+	svc := mustNewBackupService(t, provider, WithKeyWrapProvider(fake))
 	ctx := context.Background()
 
 	old, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1497,7 +1570,7 @@ func TestBackupService_FakeProvider_KeyRotation_OldKeyIDStillUnwraps(t *testing.
 func TestBackupService_FakeProvider_WrongKeyIDRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	fake := &fakeKeyWrapProvider{id: "fake-hsm"}
-	svc := NewBackupService(provider, WithKeyWrapProvider(fake))
+	svc := mustNewBackupService(t, provider, WithKeyWrapProvider(fake))
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{
@@ -1534,7 +1607,7 @@ func TestBackupService_WithKeyWrapRegistry_ReplacesDefault(t *testing.T) {
 	if err := registry.Register("only-this-one", func() (keywrap.Provider, error) { return fake, nil }); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	svc := NewBackupService(provider, WithKeyWrapRegistry(registry))
+	svc := mustNewBackupService(t, provider, WithKeyWrapRegistry(registry))
 	ctx := context.Background()
 
 	// The default provider id ("software") is NOT in this registry.
@@ -1575,7 +1648,7 @@ func TestBackupService_WithKeyWrapRegistry_ReplacesDefault(t *testing.T) {
 // backup) shard bytes directly.
 func TestBackupService_DecryptBackupShard_EncryptedRoundTrips(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 	keyPath := writeTestKeyFile(t, 0x90)
 
@@ -1601,7 +1674,7 @@ func TestBackupService_DecryptBackupShard_EncryptedRoundTrips(t *testing.T) {
 // decryption attempted.
 func TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-restore-plain", Encryption: EncryptionNone})
@@ -1626,7 +1699,7 @@ func TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough(t *testin
 // RestoreBackup's own refusal for the same condition.
 func TestBackupService_DecryptBackupShard_WrongKeyRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-wrong-key", KeyRef: writeTestKeyFile(t, 0xA0)})
@@ -1652,7 +1725,7 @@ func TestBackupService_DecryptBackupShard_WrongKeyRefused(t *testing.T) {
 // empty-ID guard every other id-taking method has.
 func TestBackupService_DecryptBackupShard_EmptyIDRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	bs := svc.(*BackupService)
 
 	_, err := bs.DecryptBackupShard(context.Background(), "", 1, "")
@@ -1667,7 +1740,7 @@ func TestBackupService_DecryptBackupShard_EmptyIDRefused(t *testing.T) {
 // returning a zero-value plaintext.
 func TestBackupService_DecryptBackupShard_UnknownShardRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
-	svc := NewBackupService(provider)
+	svc := mustNewBackupService(t, provider)
 	ctx := context.Background()
 
 	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-unknown-shard", Encryption: EncryptionNone})

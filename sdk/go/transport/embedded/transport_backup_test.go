@@ -66,7 +66,10 @@ func newBackupTransport(t *testing.T) *Transport {
 	kvSvc := newMockKVService()
 	adminSvc := &mockAdminService{}
 	provider := newTestSnapshotProvider()
-	backupSvc := service.NewBackupService(provider)
+	backupSvc, err := service.NewBackupService(provider)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
 
 	tr, err := New(kvSvc, adminSvc, WithBackupService(backupSvc))
 	if err != nil {

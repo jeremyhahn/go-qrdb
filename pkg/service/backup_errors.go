@@ -14,6 +14,8 @@
 
 package service
 
+import "strconv"
+
 // ---------------------------------------------------------------------------
 // Backup errors
 // ---------------------------------------------------------------------------
@@ -166,4 +168,110 @@ type BackupInvalidEncryptionError struct {
 // Error returns a human-readable description.
 func (e *BackupInvalidEncryptionError) Error() string {
 	return "service: invalid backup encryption type: " + e.Encryption
+}
+
+// BackupShardIntegrityError is returned when a shard's own AES-256-GCM
+// authentication fails during restore -- its stored ciphertext was
+// tampered with, or does not belong to this backup (a different shard ID,
+// a different backup entirely). It is distinct from
+// keywrap.UnwrapFailedError (which names a wrong KEK or a tampered wrapped
+// DEK, one layer up): conflating the two previously surfaced a shard
+// ciphertext tamper as "wrong key-encrypting key", which is misleading --
+// the KEK and the wrapped DEK were never involved in checking a single
+// shard's own authentication tag.
+type BackupShardIntegrityError struct{}
+
+// Error returns a human-readable description.
+func (e *BackupShardIntegrityError) Error() string {
+	return "service: shard ciphertext failed authentication (tampered, or belongs to a different shard/backup)"
+}
+
+// BackupShardNotFoundError is returned when a specific shard ID has no
+// stored payload in a backup's artifact -- distinct from
+// *BackupDecryptionFailedError, which names a cryptographic failure. A
+// caller asking for a shard this backup never captured gets told exactly
+// that, not a decryption failure that never happened.
+type BackupShardNotFoundError struct {
+	BackupID string
+	ShardID  uint64
+}
+
+// Error returns a human-readable description.
+func (e *BackupShardNotFoundError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) + " not found in backup " + e.BackupID
+}
+
+// BackupManifestInvalidError is returned when a backup's authenticated
+// manifest -- the sealed header binding its format version, algorithm,
+// key-wrap provider, key reference, and its exact sorted shard set with a
+// per-shard digest -- fails to authenticate or decode. Because the
+// manifest is sealed under the backup's own DEK, this collapses the same
+// two causes *BackupDecryptionFailedError's own Unwrap does (the wrong
+// KEK, or tampering) and deliberately does not distinguish them.
+type BackupManifestInvalidError struct {
+	BackupID string
+}
+
+// Error returns a human-readable description.
+func (e *BackupManifestInvalidError) Error() string {
+	return "service: backup " + e.BackupID + "'s manifest failed to authenticate"
+}
+
+// BackupMetadataMismatchError is returned when a backup's stored metadata
+// (BackupInfo.Encryption) and its artifact disagree about whether the
+// backup is encrypted -- an envelope is present while the metadata claims
+// "none", metadata claims encryption but no envelope was stored, or the
+// authenticated manifest's own backup ID, destination, or provider does
+// not match the metadata it was read alongside. Each of these is a sign
+// the backup's metadata was tampered with independently of its
+// cryptographic artifact (go-qrdb security review, backup-encrypt-default
+// #B2): restore refuses rather than trusting whichever side the caller's
+// code path happens to read first.
+type BackupMetadataMismatchError struct {
+	BackupID string
+}
+
+// Error returns a human-readable description.
+func (e *BackupMetadataMismatchError) Error() string {
+	return "service: backup " + e.BackupID + "'s stored metadata and its artifact disagree about encryption"
+}
+
+// BackupVerificationFailedError is RestoreBackup's (and
+// DecryptBackupShard's) single top-level, fail-closed verification error:
+// at least one target shard failed authentication, digest verification
+// against the backup's manifest, or was simply absent from the artifact,
+// BEFORE any shard was imported. RestoreBackup verifies and decrypts
+// EVERY target shard before importing ANY of them (go-qrdb security
+// review, backup-encrypt-default #B1) specifically so a tampered or
+// missing shard never leaves an earlier shard already imported with no
+// top-level error to show for it.
+type BackupVerificationFailedError struct {
+	BackupID string
+	ShardID  uint64
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *BackupVerificationFailedError) Error() string {
+	return "service: backup " + e.BackupID + " failed verification at shard " +
+		strconv.FormatUint(e.ShardID, 10) + ", before importing any shard: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupVerificationFailedError) Unwrap() error {
+	return e.Err
+}
+
+// BackupKeyDirNotConfiguredError is returned when the built-in "software"
+// key-wrap provider is resolved but no key directory was ever configured
+// for it (BackupServiceOption WithKeyDir, or lifecycle.Infra.KeyDir).
+// Every key file the software provider reads must live inside one
+// configured directory (go-qrdb security review, backup-encrypt-default
+// #B4); there is no default directory to fall back to.
+type BackupKeyDirNotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *BackupKeyDirNotConfiguredError) Error() string {
+	return "service: no key directory configured for the \"software\" key-wrap provider " +
+		"(set BackupServiceOption WithKeyDir, or lifecycle.Infra.KeyDir)"
 }

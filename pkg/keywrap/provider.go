@@ -21,12 +21,13 @@
 // consumer and is not touched by this package.
 //
 // go-qrdb ships exactly one implementation, SoftwareProvider, which wraps
-// and unwraps with an operator-supplied 32-byte key read from a key file.
-// go-xkms and other embedders register hardware or cloud-KMS providers
-// (TPM2, PKCS#11, AWS/GCP/Azure KMS, Vault) into a Registry at composition
-// time -- go-qrdb never imports go-xkms, so the fit is proven in this
-// package's own tests against a same-shaped local double, never against a
-// real xkms type.
+// and unwraps with an operator-supplied 32-byte key read from a key file
+// confined to one configured directory (see SoftwareProvider's own doc
+// comment). go-xkms and other embedders register hardware or cloud-KMS
+// providers (TPM2, PKCS#11, AWS/GCP/Azure KMS, Vault) into a Registry at
+// composition time -- go-qrdb never imports go-xkms, so the fit is proven
+// in this package's own tests against a same-shaped local double, never
+// against a real xkms type.
 //
 // See docs/key-wrapping/architecture.md for the full design.
 package keywrap
