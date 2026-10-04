@@ -63,7 +63,7 @@ func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		true, auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	return mgmt
@@ -91,7 +91,7 @@ func TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot(t *testi
 	_, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingRequired, nil, nil, nil,
+		true, auth.MTLSBindingRequired, nil, nil, nil,
 	)
 	var noCred *firstboot.NoPendingAdminCredentialError
 	require.True(t, errors.As(err, &noCred), "err = %v", err)

@@ -872,7 +872,7 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// A throwaway map backs the guarded-batch mock: this test targets the
 	// List/Scan failure path, not the atomic-identity plane.
 	tx := newMockTransactionServicer(make(map[string][]byte))
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, true, auth.MTLSBindingEnrolled, nil, nil, nil)
 	// The error should be from bootstrap, though user/role stores may
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
@@ -898,7 +898,7 @@ func TestBootstrapAuth_ContextCanceledSkipsBootstrap(t *testing.T) {
 
 	dir := t.TempDir()
 	tx := newMockTransactionServicer(make(map[string][]byte))
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, true, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))

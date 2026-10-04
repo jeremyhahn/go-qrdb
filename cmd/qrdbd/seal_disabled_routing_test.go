@@ -53,7 +53,7 @@ func TestBootstrapUserRoleStores_SealDisabled_StillRoutesByTenant(t *testing.T) 
 		1, 1,
 		&prefixTenantServicer{}, false,
 		nil, // NO barrier registry: sealing is disabled
-		"", nil,
+		"", nil, true,
 		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	if err != nil {

@@ -1999,7 +1999,7 @@ func runStart(f *startFlags) (err error) {
 			// against THIS node's auth-chain vocabulary (built-ins until the
 			// middleware is bound below, and with auth disabled).
 			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, f.authEnabled, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -3629,7 +3629,7 @@ type authBootstrapResult struct {
 // so no transport can make a change that leaves the bootstrap admin unable to
 // log in by certificate (delete, rename, disable or suspend it, drop mtls from
 // its methods, or withdraw its last live binding).
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, authEnabled bool, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -3773,7 +3773,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// create the admin user with the canonical Admin@system grant. The
 	// system-tenant rule in pkg/auth/rbac promotes that single grant to
 	// cross-tenant authority. Idempotent across daemon restarts.
-	if err := runFirstBoot(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
+	if err := runFirstBoot(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, authEnabled, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
 		return nil, err
 	}
 
@@ -4116,7 +4116,7 @@ func defaultAuthFactors() []authfactors.Factor {
 // reserved-id rejection on CreateTenant. Production startup always
 // supplies a non-nil tenant servicer; tests do the same via a small
 // in-memory tenant servicer.
-func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
+func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, authEnabled bool, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
 	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
@@ -4149,7 +4149,15 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// and the repair it falls through to can never disagree about what
 	// "needs binding" means.
 	if existingAdmin, ok := adminExists(ctx, userSvc, tenantid.System); ok {
-		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" {
+		// A certificate binding authenticates an mTLS caller as the admin;
+		// with auth disabled there is no authentication at all, so an
+		// existing System admin needs no binding and the repair fallthrough
+		// below -- which exists to resolve one -- has nothing to do. Without
+		// this, a deployment that never presents an admin certificate (no
+		// auth, so none ever will) re-enters Phase 2.5 on every boot after
+		// the first, where AwaitPendingAdminCert's own "required" default
+		// has nothing to resolve either, reaching the same unbound state.
+		if existingAdmin.System && (!authEnabled || user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "") {
 			slog.Debug("first-boot: admin user exists, is already the System user, and holds a live certificate binding, skipping")
 			return nil
 		}
