@@ -239,6 +239,41 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   (`cmd/qrdbd`, `sdk/go/node`) now calls the new
   `lifecycle.EstablishClusterCA` once, deliberately, after `BuildServices`
   succeeds, to establish Key A explicitly instead.
+- **A deleted tenant's Key B CA stayed in every node's trust-pool cache.**
+  `DefaultCertProvider` now watches the replicated `__sys:cert_ca/` prefix
+  and the tenant tombstone prefix through the node's own `Watch` service; a
+  delete on a tenant's `material`/`certificate` record, or the appearance of
+  its tombstone, evicts `perTenant[tenantID]` and invalidates
+  `clienttrust.Pool`'s cached trust bundle (`Pool.SetKeyBProvider` now
+  subscribes through the new `clienttrust.InvalidationSource` interface).
+  This runs on every node, not only the one that handled the delete, and a
+  factory-backed tenant with no store record is still covered by the
+  tombstone watch. Proven on a 3-replica Raft cluster
+  (`sdk/go/node/cert_eviction_cluster_test.go`); a literal
+  delete-then-recreate-same-ID test is not possible against the real API,
+  since tenant IDs are tombstoned permanently by design, so the test
+  triggers eviction directly through the node's own privileged KV service
+  instead.
+- **`IsTenantIssuer` took an exclusive lock on every call to rebuild the
+  trust-pool's Key B cache.** `clienttrust.Pool`'s cache rebuild is now
+  singleflighted (`golang.org/x/sync/singleflight`), so N concurrent
+  handshakes hitting an expired cache trigger exactly one rebuild, and
+  `DefaultCertProvider.resolveKeyProvider`'s per-tenant provider lookup now
+  takes a read lock for the cached fast path, escalating to a write lock
+  only to construct a tenant's provider the first time.
+- **A boot-time mutation of a LIVE listener's shared `*tls.Config` was a
+  genuine, reproducible data race.** `cmd/qrdbd`'s sealed-window listener
+  can still be completing an in-flight handshake against
+  `bundle.TLSConfig` when `pkg/api/rest.Server.Stop`'s 5-second shutdown
+  timeout expires and boot proceeds to install the auth-derived
+  `ClientAuth`/`ClientCAs` default -- previously by writing those fields on
+  the shared config directly, racing `configForClient`'s reads of the same
+  fields on every handshake. `TLSBundle.clientAuth` is now an
+  `atomic.Pointer`, and `wireClientTrustPool`'s `GetConfigForClient` hook
+  returns a `Clone()` with the atomic override applied, so every handshake
+  sees a consistent snapshot instead of a config being mutated under it.
+  Proven with a `-race` test driving real handshakes concurrently with
+  `SetClientAuthMode`.
 
 ### Added
 
