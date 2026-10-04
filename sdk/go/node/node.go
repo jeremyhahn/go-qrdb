@@ -988,6 +988,12 @@ type Node struct {
 	featureAdv  atomic.Pointer[cluster.Advertiser]
 	featureWG   sync.WaitGroup
 
+	// memberAdv publishes this node's member record once startMemberRecord
+	// has brought it up; memberWG tracks that goroutine so Close can wait it
+	// out. Nil on a standalone node, which has no cluster to publish to.
+	memberAdv atomic.Pointer[cluster.Advertiser]
+	memberWG  sync.WaitGroup
+
 	// encMigrator is the scoped encryption migrator built in wireClientAndServer.
 	// It routes system scope to the nodeSystemMigrator (which holds the lifecycle gate)
 	// and tenant scope to tenantHosts.MigrateEncryption. Both Node.EnableEncryption
@@ -1872,6 +1878,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		return err
 	}
 	n.startFeatureGate(host, svcNode.KV)
+	n.startMemberRecord(host, pending.cfg)
 	return nil
 }
 
@@ -2001,6 +2008,7 @@ func (n *Node) Close() error {
 		n.stopLeaseExpiry = nil
 	}
 	record(n.stopFeatureGate())
+	record(n.stopMemberRecord())
 
 	// Retract every handle this node published BEFORE stopping what backs
 	// them. A caller that loads one after Close gets nil rather than a
@@ -2513,6 +2521,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 	n.startFeatureGate(host, svcNode.KV)
+	n.startMemberRecord(host, cfg)
 
 	return n, nil
 }

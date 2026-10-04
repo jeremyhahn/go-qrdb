@@ -3216,22 +3216,23 @@ func selfAdminURL(f *startFlags) (string, bool) {
 // with no explicit advertise host publishes nothing rather than an address no
 // peer can dial.
 func advertisedAPIEndpoints(f *startFlags) (map[cluster.APIProtocol]string, error) {
-	host := resolveAdvertiseHost(f)
-
-	ports := make(map[cluster.APIProtocol]int, len(cluster.APIProtocols))
-	if f.enableREST {
-		ports[cluster.APIProtocolREST] = f.adminPort
+	cfg := &qrdbconfig.Config{
+		Server: qrdbconfig.ServerConfig{
+			AdvertiseHost: f.advertiseHost,
+			AdminPort:     f.adminPort,
+			GRPCPort:      f.grpcPort,
+			QUICPort:      f.quicPort,
+		},
+		Protocols: qrdbconfig.ProtocolsConfig{
+			REST: f.enableREST,
+			GRPC: f.enableGRPC,
+			QUIC: f.enableQUIC,
+			MCP:  f.enableMCP,
+		},
+		MCP:  qrdbconfig.MCPConfig{Port: f.mcpPort},
+		Raft: qrdbconfig.RaftConfig{RaftAddress: f.raftAddress},
 	}
-	if f.enableGRPC {
-		ports[cluster.APIProtocolGRPC] = f.grpcPort
-	}
-	if f.enableQUIC {
-		ports[cluster.APIProtocolQUIC] = f.quicPort
-	}
-	if f.enableMCP {
-		ports[cluster.APIProtocolMCP] = f.mcpPort
-	}
-	return cluster.BuildAPIEndpoints(host, ports)
+	return cfg.AdvertisedAPIEndpoints()
 }
 
 // startDynamicMembership builds an in-process (embedded) qrdb SDK client over
