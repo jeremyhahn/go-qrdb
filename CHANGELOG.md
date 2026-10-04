@@ -11,6 +11,22 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.39.0-alpha] - 2026-10-04
+
+Recovery train: stranded fixes brought onto main. Highlights:
+
+- **State hashes never see a half-applied batch or a half-restored snapshot (#584)**, on the concurrent, disk and standard state machines. Taking a hash briefly blocks applies; it is a diagnostic path.
+- **No false 403 for tenant logins.** User and role lookups no longer consult the system-confined stale-read fallback for non-system tenants.
+- **A per-push multi-node tenancy suite runs in CI.**
+- **Compaction follow-ups:**
+  - etcd answers Unavailable before compaction is activated;
+  - an empty prefix is refused outside a dedicated keyspace;
+  - reclaim is scoped to the database's incarnation;
+  - a typed `CompactionPolicyReadError` is surfaced.
+- **Enable-encryption migrations run on the request's context** on every transport.
+- **`check-public-releasable` refuses tracked executables.**
+- **Test fixes:** lockout and rate-limit tests are deterministic, and `pkg/config` coverage is restored.
+
 ### Added
 
 - **The multi-node tenant suites gate every push.** CI's new
