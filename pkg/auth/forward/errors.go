@@ -107,3 +107,14 @@ func (e *ForwardSigningError) Error() string {
 }
 
 func (e *ForwardSigningError) Unwrap() error { return e.Err }
+
+// ForwardUnsignedError reports that a request cannot carry an on-behalf
+// assertion: there is no authenticated caller to assert, or this node has no
+// identity to sign with. The request is not forwarded.
+type ForwardUnsignedError struct {
+	Reason string
+}
+
+func (e *ForwardUnsignedError) Error() string {
+	return "auth/forward: cannot sign an on-behalf assertion: " + e.Reason
+}

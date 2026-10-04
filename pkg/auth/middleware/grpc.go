@@ -66,7 +66,7 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 			identity *auth.Identity
 			authnErr error
 		)
-		if assertion, sig, forwarded := grpcOnBehalfAssertion(ctx); forwarded {
+		if assertion, sig, forwarded := GRPCOnBehalfAssertion(ctx); forwarded {
 			ctx, identity, authnErr = m.authenticateGRPCOnBehalf(ctx, info.FullMethod, req, assertion, sig)
 		} else {
 			ctx, identity, authnErr = m.authenticate(ctx)
@@ -311,10 +311,10 @@ func injectTLSState(ctx context.Context) context.Context {
 	return auth.WithTLSState(ctx, &tlsInfo.State)
 }
 
-// grpcOnBehalfAssertion returns the on-behalf assertion and signature a
+// GRPCOnBehalfAssertion returns the on-behalf assertion and signature a
 // forwarded request carries in its metadata. A request carrying only one of
 // the two is treated as not forwarded, and authenticates as itself.
-func grpcOnBehalfAssertion(ctx context.Context) (assertion, sig string, ok bool) {
+func GRPCOnBehalfAssertion(ctx context.Context) (assertion, sig string, ok bool) {
 	a := metadata.ValueFromIncomingContext(ctx, forward.MetadataAssertion)
 	s := metadata.ValueFromIncomingContext(ctx, forward.MetadataSignature)
 	if len(a) == 0 || len(s) == 0 || a[0] == "" || s[0] == "" {

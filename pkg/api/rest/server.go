@@ -43,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -897,7 +898,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		// forwarding node. When no identity certificate or node SAN is present
 		// (e.g. auth-disabled deployments), the signer/nodeID stay unset and
 		// no assertion is emitted -- behavior is unchanged.
-		s.forwardSigner, s.forwardNodeID = deriveForwardIdentity(s.tlsConfig)
+		s.forwardSigner, s.forwardNodeID = forward.NodeIdentity(s.tlsConfig)
 	}
 
 	// The chi router is the single routing surface. Capability modules

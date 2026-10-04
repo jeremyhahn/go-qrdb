@@ -17,7 +17,6 @@ package rest
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -35,7 +34,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -983,66 +981,6 @@ func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) e
 
 	fwdReq.Header.Set(forward.HeaderAssertion, assertionB64)
 	fwdReq.Header.Set(forward.HeaderSignature, sigB64)
-	return nil
-}
-
-// deriveForwardIdentity extracts the on-behalf signing key and this node's
-// SPIFFE node id from the node's own TLS identity certificate. It returns
-// (nil, "") when no usable identity is present so the caller falls back to
-// node-identity authorization on forwarded requests (unchanged behavior). Both
-// the static Certificates slice and a GetClientCertificate callback are probed
-// so the derivation works regardless of how the transport TLS was provisioned.
-func deriveForwardIdentity(tlsCfg *tls.Config) (crypto.Signer, string) {
-	if tlsCfg == nil {
-		return nil, ""
-	}
-
-	leaf := leafCertificate(tlsCfg)
-	if leaf == nil {
-		return nil, ""
-	}
-
-	signer, ok := leaf.PrivateKey.(crypto.Signer)
-	if !ok {
-		return nil, ""
-	}
-
-	parsed := leaf.Leaf
-	if parsed == nil {
-		if len(leaf.Certificate) == 0 {
-			return nil, ""
-		}
-		var perr error
-		parsed, perr = x509.ParseCertificate(leaf.Certificate[0])
-		if perr != nil {
-			return nil, ""
-		}
-	}
-
-	// The node id is not trust-domain-pinned here: it merely stamps the
-	// assertion's ForwarderNodeID, which the leader re-checks against the
-	// mTLS peer certificate it actually verified against the cluster CA.
-	nodeID, err := spiffe.NodeFromCert(parsed, "")
-	if err != nil {
-		return signer, ""
-	}
-	return signer, nodeID.NodeID
-}
-
-// leafCertificate returns the node's own TLS identity certificate from cfg,
-// preferring the static Certificates slice and falling back to a
-// GetClientCertificate callback. It returns nil when neither yields a
-// certificate with a usable private key.
-func leafCertificate(cfg *tls.Config) *tls.Certificate {
-	if len(cfg.Certificates) > 0 && cfg.Certificates[0].PrivateKey != nil {
-		return &cfg.Certificates[0]
-	}
-	if cfg.GetClientCertificate != nil {
-		if cert, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err == nil &&
-			cert != nil && cert.PrivateKey != nil {
-			return cert
-		}
-	}
 	return nil
 }
 

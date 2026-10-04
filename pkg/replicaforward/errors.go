@@ -43,3 +43,22 @@ func (e *MemberLookupError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *MemberLookupError) Unwrap() error { return e.Err }
+
+// RefusalDecodeError reports structured refusal metadata that does not
+// decode: Key is missing or malformed.
+type RefusalDecodeError struct {
+	Key string
+	Err error
+}
+
+// Error implements the error interface.
+func (e *RefusalDecodeError) Error() string {
+	msg := "replicaforward: refusal metadata key " + e.Key + " is missing or malformed"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error.
+func (e *RefusalDecodeError) Unwrap() error { return e.Err }

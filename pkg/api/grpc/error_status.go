@@ -121,7 +121,10 @@ func ServiceErrorCode(err error) codes.Code {
 // mapServiceError converts err into a gRPC status error carrying its class's
 // code and err's message. A refusal that says how long to wait before a retry
 // can succeed (errclass.RetryAfter) also carries a google.rpc.RetryInfo detail
-// with that delay -- the peer of REST's Retry-After. A nil error stays nil.
+// with that delay -- the peer of REST's Retry-After. A replica refusal also
+// carries its structured form (refusalDetail), so a forwarding node or a
+// client reads the replica set or the leader without parsing the message. A
+// nil error stays nil.
 func mapServiceError(err error) error {
 	if err == nil {
 		return nil
@@ -129,6 +132,11 @@ func mapServiceError(err error) error {
 	st := status.New(ServiceErrorCode(err), err.Error())
 	if delay, ok := errclass.RetryAfter(err); ok {
 		if detailed, derr := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(delay)}); derr == nil {
+			st = detailed
+		}
+	}
+	if info := refusalDetail(err); info != nil {
+		if detailed, derr := st.WithDetails(info); derr == nil {
 			st = detailed
 		}
 	}

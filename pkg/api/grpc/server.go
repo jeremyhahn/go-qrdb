@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -43,6 +44,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -147,6 +149,12 @@ type Server struct {
 	// cap. Zero means DefaultMaxConcurrentStreams; see
 	// WithMaxConcurrentStreams.
 	maxConcurrentStreams uint32
+
+	// replicaForwarding, when set, makes the listener forward what it
+	// refuses as a non-replica (WithReplicaForwarding); forwarder is built
+	// from it at Start and closed at Stop.
+	replicaForwarding *replicaforward.Config
+	forwarder         *replicaForwarder
 }
 
 // ServerOption configures optional Server dependencies.
@@ -577,6 +585,16 @@ func (s *Server) Start() error {
 		unaryInterceptors = append(unaryInterceptors,
 			sealedWindowUnary(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
+	// Replica forwarding sits innermost: the caller is authenticated and
+	// admitted here before a refusal is forwarded, and a request forwarded
+	// here is marked as served by this node whether or not this listener
+	// forwards itself.
+	_, nodeID := forward.NodeIdentity(s.tls)
+	unaryInterceptors = append(unaryInterceptors, servedByUnary(nodeID))
+	if s.replicaForwarding != nil {
+		s.forwarder = newReplicaForwarder(*s.replicaForwarding, s.tls)
+		unaryInterceptors = append(unaryInterceptors, s.forwarder.unary)
+	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
 		streamLoggingInterceptor,
@@ -706,6 +724,9 @@ func (s *Server) Stop() {
 		return
 	}
 	s.server.GracefulStop()
+	if s.forwarder != nil {
+		s.forwarder.close()
+	}
 	slog.Info("gRPC server stopped")
 }
 

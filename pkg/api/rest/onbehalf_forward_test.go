@@ -94,8 +94,8 @@ func TestDeriveForwardIdentity_FromNodeCert(t *testing.T) {
 	}
 }
 
-func TestDeriveForwardIdentity_NoTLS(t *testing.T) {
-	if s, id := deriveForwardIdentity(nil); s != nil || id != "" {
+func TestNodeIdentity_NoTLS(t *testing.T) {
+	if s, id := forward.NodeIdentity(nil); s != nil || id != "" {
 		t.Fatalf("nil tls: got signer=%v id=%q", s, id)
 	}
 	// A cert without a node SAN yields a signer but empty node id.
@@ -104,7 +104,7 @@ func TestDeriveForwardIdentity_NoTLS(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	leaf, _ := x509.ParseCertificate(der)
 	cfg := &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}}}
-	if s, id := deriveForwardIdentity(cfg); s == nil || id != "" {
+	if s, id := forward.NodeIdentity(cfg); s == nil || id != "" {
 		t.Fatalf("no-node-SAN cert: got signer=%v id=%q", s, id)
 	}
 }
