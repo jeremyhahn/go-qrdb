@@ -264,6 +264,25 @@ func (e *CertReloadError) Unwrap() error {
 	return e.Err
 }
 
+// DataDirError is returned when --data-dir cannot be created. It is the
+// first thing runStart ensures exists: the compliance audit trail (which
+// opens before the seal subsystem, go-qrdb#548) and everything after it
+// read and write under this directory.
+type DataDirError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *DataDirError) Error() string {
+	return "cli: data directory " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *DataDirError) Unwrap() error {
+	return e.Err
+}
+
 // SealStorageError is returned when the seal storage backend
 // fails to initialize.
 type SealStorageError struct {

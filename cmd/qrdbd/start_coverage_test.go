@@ -1500,13 +1500,14 @@ func TestRunStart_TLSLoadError(t *testing.T) {
 func TestRunStart_MySQLCapabilityGate(t *testing.T) {
 	dir := t.TempDir()
 	f := &startFlags{
-		tlsCAFile:   filepath.Join(dir, "nonexistent-ca.pem"),
-		tlsCertFile: filepath.Join(dir, "nonexistent-cert.pem"),
-		tlsKeyFile:  filepath.Join(dir, "nonexistent-key.pem"),
-		dataDir:     dir,
-		smType:      "memory",
-		host:        testBindHost,
-		enableMySQL: true,
+		tlsCAFile:       filepath.Join(dir, "nonexistent-ca.pem"),
+		tlsCertFile:     filepath.Join(dir, "nonexistent-cert.pem"),
+		tlsKeyFile:      filepath.Join(dir, "nonexistent-key.pem"),
+		dataDir:         dir,
+		smType:          "memory",
+		host:            testBindHost,
+		enableMySQL:     true,
+		discoveryMethod: "static",
 	}
 
 	err := runStart(f)

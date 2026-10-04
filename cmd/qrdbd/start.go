@@ -1361,6 +1361,16 @@ func runStart(f *startFlags) (err error) {
 	if err != nil {
 		return err
 	}
+	// Before this point nothing has created --data-dir: that used to be a
+	// side effect of initSealSubsystem's own os.MkdirAll on its "seal"
+	// subdirectory, which ran before the audit trail did. Now that the
+	// trail opens first, a data directory an operator (or an offline
+	// restore test) wiped entirely and expects this process to recreate
+	// has nothing to create it, and openTrailDir's os.OpenRoot fails
+	// closed on a directory that does not exist yet.
+	if err := os.MkdirAll(f.dataDir, 0o700); err != nil {
+		return &DataDirError{Path: f.dataDir, Err: err}
+	}
 	complianceAudit, err := openComplianceAudit(sigCtx, f.dataDir, f.processHardening)
 	if err != nil {
 		return err
