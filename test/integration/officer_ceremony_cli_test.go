@@ -751,29 +751,32 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	}
 }
 
-// TestCLI_BarrierInitShamir_InsufficientOfficers verifies the real,
-// working validation surface of `barrier init-shamir` when the officer
-// count does not satisfy the requested threshold/total (which, given bug
-// 1 above, is the only reachable state for a fresh node's system
-// barrier): pkg/seal StorageBarrier.InitializeShamir ->
-// sealSharesToOfficers rejects with ErrInsufficientOfficers whenever
-// fewer officers are enrolled than the requested threshold.
-func TestCLI_BarrierInitShamir_InsufficientOfficers(t *testing.T) {
+// TestCLI_BarrierInitShamir_RefusedOnSystemBarrier verifies `barrier
+// init-shamir` against a fresh node's system barrier: `qrdb init` is the
+// only system bootstrap (go-qrdb#548; go-qrdb#560 review item 8), so
+// BarrierService.BarrierInitializeShamir refuses unconditionally on any
+// ceremony-backed service -- qrdbd's own system barrier, always one --
+// with *SystemBarrierInitRefusedError, before ever reaching the
+// officer-count check this test used to pin (sealSharesToOfficers'
+// ErrInsufficientOfficers, which an officer-less fresh node also used to
+// satisfy, but which this refusal now makes unreachable for the system
+// barrier on any officer count).
+func TestCLI_BarrierInitShamir_RefusedOnSystemBarrier(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 3\n",
-		"[init-shamir-insufficient] ")
+		"[init-shamir-refused] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init-shamir",
 		"--threshold", "2", "--total", "3")
 	if err == nil {
-		t.Fatalf("barrier init-shamir with zero enrolled officers should fail; output: %s", out)
+		t.Fatalf("barrier init-shamir against the system barrier should fail; output: %s", out)
 	}
-	if !strings.Contains(out, "insufficient officers enrolled") {
-		t.Errorf("expected 'insufficient officers enrolled for threshold', got: %s", out)
+	if !strings.Contains(out, `the system barrier is brought up by "qrdb init"`) {
+		t.Errorf("expected the system-bootstrap refusal, got: %s", out)
 	}
 }
 
