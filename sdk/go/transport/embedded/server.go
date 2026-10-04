@@ -516,15 +516,28 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	// Create local backend (implements service.Host).
 	srv.localBackend = backend.NewLocalBackend(sm)
 
-	// Create core services.
+	// Create core services. These are UN-namespaced: no composite (tenant,
+	// db) prefix sits in front of them the way pkg/server's registry
+	// prepends one (see service.hardConfinedPrefix's own doc comment), so
+	// a literal "__sys:cluster_ca/..." request physically reaches that
+	// record if the opened data directory was ever part of a cluster.
+	// kvSvc/mvccSvc/txSvc/watchSvc/batchSvc are wrapped with this
+	// package's hard-confinement decorators IMMEDIATELY, before anything
+	// else in this composition (the lock service, the auth/IAM KV
+	// adapter, lease expiry) is built over them, so nothing reached
+	// through this server -- including the desktop webview's bindings,
+	// which talk to exactly these services -- can read, range over, or
+	// watch the cluster CA's key material. pkg/cakey is not wired into
+	// this composition at all, so it is not, and cannot be, affected by
+	// this wrapping.
 	host := srv.localBackend
-	kvSvc := service.NewKVService(host, serverDefaultShardID)
+	kvSvc := service.NewHardConfinedKV(service.NewKVService(host, serverDefaultShardID))
 	adminSvc := service.NewAdminService(host)
-	mvccSvc := service.NewMVCCKVService(host, serverDefaultShardID)
-	txSvc := service.NewTransactionService(host, serverDefaultShardID)
-	batchSvc := service.NewBatchService(host, serverDefaultShardID)
+	mvccSvc := service.NewHardConfinedMVCC(service.NewMVCCKVService(host, serverDefaultShardID))
+	txSvc := service.NewHardConfinedTransaction(service.NewTransactionService(host, serverDefaultShardID))
+	batchSvc := service.NewHardConfinedBatch(service.NewBatchService(host, serverDefaultShardID))
 	leaseSvc := service.NewLeaseService(host, serverDefaultShardID)
-	watchSvc := service.NewWatchService(srv.hub)
+	watchSvc := service.NewHardConfinedWatch(service.NewWatchService(srv.hub))
 	indexSvc := service.NewIndexService(host, serverDefaultShardID)
 	tsSvc := service.NewTimeSeriesService(host, serverDefaultShardID)
 	lockSvc, err := service.NewLockService(txSvc, leaseSvc, watchSvc, mvccSvc, logger)
