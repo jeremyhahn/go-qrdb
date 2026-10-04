@@ -41,7 +41,11 @@
   let createLoading: boolean = $state(false);
   let newDestination: string = $state("");
   let newCompression = $state<"none" | "gzip" | "zstd">("zstd");
-  let newEncryption = $state<"none" | "aes256gcm">("none");
+  // "aes256" is the one canonical identifier for AES-256-GCM across the
+  // entire stack (Go service layer, wire protocol, CLI, this SDK) -- it is
+  // the default to match the server's own default, matching the server
+  // refusing a request that names neither a key nor an explicit "none".
+  let newEncryption = $state<"aes256" | "none">("aes256");
   let newEncryptionKey: string = $state("");
 
   // Restore form
@@ -84,7 +88,7 @@
   function resetCreateForm(): void {
     newDestination = "";
     newCompression = "zstd";
-    newEncryption = "none";
+    newEncryption = "aes256";
     newEncryptionKey = "";
   }
 
@@ -115,10 +119,21 @@
       const info = await client.backups.create({
         destination,
         ...(newCompression !== "none" ? { compression: newCompression } : {}),
-        ...(newEncryption !== "none" ? { encryption: newEncryption } : {}),
+        // Always sent explicitly, even "none": the server defaults to
+        // aes256 when this field is omitted, so omitting it here on a
+        // deliberate plaintext choice would ask for encryption, not
+        // plaintext. The server independently logs and audits an explicit
+        // "none".
+        encryption: newEncryption,
         ...(newEncryptionKey.trim() !== "" ? { encryptionKey: newEncryptionKey.trim() } : {}),
       });
       showToast("success", `Backup "${info.id}" created (${info.status}).`);
+      if (newEncryption === "none") {
+        showToast(
+          "warning",
+          `Backup "${info.id}" was created in plaintext. If it covers the system shard, it carries the cluster CA and every tenant's login CA key material in the clear.`,
+        );
+      }
       showCreateModal = false;
       resetCreateForm();
       await loadBackups();
@@ -309,8 +324,8 @@
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Encryption</span></div>
         <select class="select select-bordered w-full" bind:value={newEncryption}>
-          <option value="none">None</option>
-          <option value="aes256gcm">AES-256-GCM</option>
+          <option value="aes256">AES-256-GCM (default)</option>
+          <option value="none">None (plaintext)</option>
         </select>
       </label>
       {#if newEncryption !== "none"}
@@ -323,6 +338,14 @@
             bind:value={newEncryptionKey}
           />
         </label>
+      {:else}
+        <div class="alert alert-warning py-2 text-xs">
+          <span>
+            This backup will be written in plaintext. If it covers the system shard (the default
+            when no shard filter is used), it carries the cluster CA and every tenant's login CA
+            key material in the clear.
+          </span>
+        </div>
       {/if}
     </div>
   {/snippet}
