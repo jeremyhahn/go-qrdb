@@ -66,8 +66,12 @@ Earlier revisions of this folder described per-shard namespaces and
 barrier-encrypted, tenant-safe storage. The code does this instead:
 
 - **One node-local store for everything.** The vector service is built once per
-  node over a Pebble store at `{DataDir}/vector` (`pkg/server/lifecycle`),
-  shared by every tenant and every database on the node.
+  node, shared by every tenant and every database on the node, over a Pebble
+  store at `{DataDir}/vector` when the node has a data directory, or an
+  entirely in-memory store (`vectorstorage.MemoryVectorStorage`) when it does
+  not (`pkg/server/lifecycle`) -- the vector subsystem follows the node's
+  primary engine rather than requiring a directory a memory-engine node has
+  no other reason to have (go-qrdb#578).
 - **Isolation is a name prefix.** A database's namespaces are distinguished by
   the `<tenant>/<db>/` prefix the request resolver adds to the namespace name,
   plus a tenant scope the service adds itself.
