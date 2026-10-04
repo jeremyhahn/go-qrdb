@@ -138,7 +138,27 @@ shard, not MORE protected the way the old per-record wrap made it look.
 - **Restore is the most destructive operation in the system** — it overwrites
   shard state. `backup:restore` is a distinct permission from
   `backup:create`/`backup:read` for exactly that reason, and `backup:delete` is
-  separate again.
+  separate again. For the system shard specifically, that overwrite includes
+  `__sys:cluster_ca/` (Key A): restoring an OLDER backup replaces the live
+  cluster CA with whatever key and certificate that backup captured, and
+  restoring one shard-snapshotted from a DIFFERENT cluster entirely replaces
+  it outright — `backup:restore` is the authority to roll Key A back or swap
+  it for another cluster's, not only to undo an ordinary data mistake.
+- **Holding Key A is holding the cluster's signing identity, not merely
+  reading a secret.** Every certificate `pkg/clusterca` issues — every
+  node's own TLS identity and every joiner admitted through member-side CSR
+  join — chains to Key A, and every peer validates the chain against it, not
+  against any one node. A party that extracts Key A from a backup (`backup:create`/
+  `backup:read`, above) can mint a certificate for ANY node identity the
+  cluster will accept and use it to impersonate that node to any client or
+  peer that trusts the cluster CA — a reach that crosses every
+  barrier-isolated tenant on the cluster, because mTLS trust in Key A is
+  cluster-wide, not scoped to one tenant's barrier. This is strictly worse
+  than reading the tenant data the same backup carries: tenant data is
+  confined by that tenant's barrier (or by `none`'s absence of one, which is
+  at least confined to what that tenant stored), while Key A's reach is the
+  whole cluster's trust relationship, regardless of any single tenant's own
+  encryption posture.
 - **The checksum is integrity, not authenticity.** SHA-256 detects corruption
   and truncation. Authenticated encryption (AES-256-GCM) is what detects
   tampering, and it is opt-in.
