@@ -1661,12 +1661,15 @@ func TestInitialize_RepairsCreateButNeverBoundAdmin_Idempotent(t *testing.T) {
 	}
 }
 
-// TestInitialize_UnboundAdminWithNoCredentialPathStillRefuses guards the
-// other half of B6: an admin that exists with no live binding and NO
-// credential path at all (no CA, no Signer+CSR, no AdminCertPEM) is still
-// refused under "required", exactly as before -- the repair above must
-// never be mistaken for "any unbound admin passes now".
-func TestInitialize_UnboundAdminWithNoCredentialPathStillRefuses(t *testing.T) {
+// TestInitialize_UnboundAdminWithNoCredentialPathBootsUnbound guards the
+// other half of B6, under the go-qrdb#560 review B2 ruling: an admin that
+// exists with no live binding and NO credential path at all (no CA, no
+// Signer+CSR, no AdminCertPEM) is NOT refused under "required" -- there was
+// nothing this run could have bound, so it proceeds and leaves the admin
+// unbound for the composer's AwaitingAdminCredentialProbe to gate, rather
+// than refusing to boot at all. The repair test above still covers the case
+// a credential path IS wired.
+func TestInitialize_UnboundAdminWithNoCredentialPathBootsUnbound(t *testing.T) {
 	kv := newGuardedMemoryKVStore()
 	idgen, err := dao.NewSnowflakeGenerator(1)
 	if err != nil {
@@ -1682,15 +1685,20 @@ func TestInitialize_UnboundAdminWithNoCredentialPathStillRefuses(t *testing.T) {
 	}
 	seedUnboundAdmin(t, userSvc)
 
-	_, err = Initialize(context.Background(), Dependencies{
+	result, err := Initialize(context.Background(), Dependencies{
 		MTLSBindingPolicy: auth.MTLSBindingRequired,
 		Tenants:           tenantSvc, Users: userSvc, Roles: &fakeRoles{},
 		Binder: UserCertBinder{Users: userSvc},
 		Logger: discardLogger(),
 	})
-	var refused *AdminCertBindingRequiredError
-	if !errors.As(err, &refused) {
-		t.Fatalf("err = %v, want *AdminCertBindingRequiredError (no credential path to repair with)", err)
+	if err != nil {
+		t.Fatalf("Initialize must boot unbound, not refuse: %v", err)
+	}
+	if result.AdminCreated {
+		t.Error("AdminCreated = true, want false: the admin already existed")
+	}
+	if verifyErr := VerifyAdminCertBinding(context.Background(), userSvc, time.Now().UTC()); verifyErr == nil {
+		t.Fatal("admin reads as bound; the fixture seeded it unbound")
 	}
 }
 

@@ -4197,7 +4197,22 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// required, so an "enrolled" deployment never waits on it.
 	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, pendingAdminCertStore, userSvc, mtlsBindingPolicy, adminBindingWait)
 	if err != nil {
-		return err
+		// *NoPendingAdminCredentialError means the bounded wait ran out with
+		// neither a live binding nor a pending record -- under "required",
+		// that no longer aborts the boot (go-qrdb#560 review B2, matching
+		// the reversal already in effect at bootstrapAuthEnforcement's own
+		// boot-time check, go-qrdb#548 review item 3): first-boot proceeds
+		// with no certificate to bind, leaving the admin unbound, and the
+		// node comes up into "awaiting admin credential" once
+		// bootstrapAuthEnforcement's own lookup decides that posture. Every
+		// other error here (a genuine store fault) still aborts.
+		var noCred *firstboot.NoPendingAdminCredentialError
+		if !errors.As(err, &noCred) {
+			return err
+		}
+		slog.Warn(`first-boot: no admin certificate binding and no pending admin credential record; `+
+			`continuing without one -- the node will boot into "awaiting admin credential"`,
+			slog.String("error", err.Error()))
 	}
 	var adminCertPool *x509.CertPool
 	if len(adminCertPEM) > 0 {

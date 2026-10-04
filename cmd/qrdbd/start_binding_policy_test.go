@@ -69,32 +69,38 @@ func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	return mgmt
 }
 
-// TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot is the
-// go-qrdb#548 fix itself, at the layer bootstrapForBindingPolicy's helper
+// TestBootstrapUserRoleStores_RequiredWithNoCertPathBootsIntoAwaiting is the
+// go-qrdb#560 review B2 fix, at the layer bootstrapForBindingPolicy's helper
 // deliberately avoids: under the DEFAULT "required" posture, with no
 // ceremony having run on this node (no pending credential) and no admin
-// existing yet, first boot now refuses -- via runFirstBoot's own bounded
-// wait for a pending admin credential, which times out first and names the
-// retry command -- rather than creating an unbound admin and letting
-// bootstrapAuthEnforcement discover it later.
-func TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot(t *testing.T) {
+// existing yet, first boot no longer refuses when runFirstBoot's own
+// bounded wait for a pending admin credential times out -- it logs and
+// proceeds, creating the admin unbound, so bootstrapAuthEnforcement's own
+// later check (TestBootstrapAuthEnforcement_RequiredWithUnboundAdminBootsAwaiting)
+// is the one that puts the node into "awaiting admin credential". The
+// earlier ruling this reverses -- "first boot now refuses" -- is exactly
+// the go-qrdb#560 NOT READY finding: a node in this state must boot and
+// never exit.
+func TestBootstrapUserRoleStores_RequiredWithNoCertPathBootsIntoAwaiting(t *testing.T) {
 	// No ceremony ran on this node (nil ceremonyCoreSvc) and nothing else
 	// writes the pending-admin-cert record in this test, so the bounded wait
-	// for one to arrive from elsewhere in the cluster would genuinely run out
-	// -- shorten it rather than block this unit test for the production bound.
+	// for one to arrive from elsewhere in the cluster genuinely runs out --
+	// shorten it rather than block this unit test for the production bound.
 	saved := adminBindingWait
 	adminBindingWait = 50 * time.Millisecond
 	t.Cleanup(func() { adminBindingWait = saved })
 
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
-	_, err := bootstrapUserRoleStores(
+	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 		auth.MTLSBindingRequired, nil, nil, nil,
 	)
-	var noCred *firstboot.NoPendingAdminCredentialError
-	require.True(t, errors.As(err, &noCred), "err = %v", err)
+	require.NoError(t, err, "a timed-out pending-credential wait must boot into awaiting, not refuse")
+	admin, lerr := mgmt.bootUserSvc.GetUserByUsername(context.Background(), tenantid.System, "admin")
+	require.NoError(t, lerr, "first boot must still create the admin")
+	assert.Empty(t, admin.CertBindings, "no credential path was available on this run")
 }
 
 func runAuthBootstrapWithPolicy(t *testing.T, mgmt *mgmtBootstrapResult, policy string) (*authBootstrapResult, error) {

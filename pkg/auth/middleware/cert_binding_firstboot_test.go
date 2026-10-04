@@ -17,7 +17,6 @@ package middleware
 import (
 	"context"
 	"encoding/pem"
-	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -95,11 +94,14 @@ func (b *firstBootBinder) BindAdminCert(ctx context.Context, _ string, userID ui
 // rests on, for a composer that cannot yet wire a CertBinder.
 //
 // Under the DEFAULT "required" posture this exact configuration -- no CA, no
-// CertBinder wired -- is refused at firstboot.Initialize itself
-// (*firstboot.AdminCertBindingRequiredError, AdminBindingNoBinder), before an
-// unbound admin is ever created; that is the fix go-qrdb#548 makes. This test
-// covers the remaining, explicit "enrolled" escape hatch for a composer that
-// has not finished wiring a CertBinder yet, not the default behavior.
+// CertBinder wired -- no longer refuses at firstboot.Initialize (go-qrdb#560
+// review B2, reversing go-qrdb#548's original premise for this shape): there
+// is nothing this run could have bound, so it proceeds and leaves the admin
+// unbound, deferring to the composer's AwaitingAdminCredentialProbe rather
+// than refusing to boot. See TestFirstBoot_NoCredentialPathBootsAdminUnbound
+// for that case. This test covers the remaining, explicit "enrolled" escape
+// hatch for a composer that has not finished wiring a CertBinder yet, not
+// the default behavior.
 func TestFirstBoot_UnboundAdminStillAuthenticates_UnderEnrolled(t *testing.T) {
 	users, deps := firstBootServices(t)
 	deps.MTLSBindingPolicy = auth.MTLSBindingEnrolled
@@ -126,19 +128,29 @@ func TestFirstBoot_UnboundAdminStillAuthenticates_UnderEnrolled(t *testing.T) {
 	}
 }
 
-// TestFirstBoot_NoBinderRefusedUnderRequired is the go-qrdb#548 fix itself:
-// the DEFAULT posture refuses to create an admin it cannot bind, rather than
-// creating one with an empty binding set and admitting any certificate that
-// names it.
-func TestFirstBoot_NoBinderRefusedUnderRequired(t *testing.T) {
-	_, deps := firstBootServices(t)
-	_, err := firstboot.Initialize(context.Background(), deps)
-	var required *firstboot.AdminCertBindingRequiredError
-	if !errors.As(err, &required) {
-		t.Fatalf("firstboot.Initialize with no CertBinder under the default policy = %v, want *firstboot.AdminCertBindingRequiredError", err)
+// TestFirstBoot_NoCredentialPathBootsAdminUnbound is the go-qrdb#560 review
+// B2 fix: under the DEFAULT "required" posture, a configuration with no
+// credential path and no CertBinder wired at all is the everyday "nothing to
+// bind with on this run" case, not a wiring bug -- Initialize proceeds,
+// creates the admin with an empty binding set, and leaves the
+// awaiting-admin-credential posture to whatever composer-level check reads
+// this outcome next (bootstrapAuthEnforcement / wireClientAndServer), rather
+// than refusing to boot the node at all.
+func TestFirstBoot_NoCredentialPathBootsAdminUnbound(t *testing.T) {
+	users, deps := firstBootServices(t)
+	result, err := firstboot.Initialize(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("firstboot.Initialize must boot unbound, not refuse: %v", err)
 	}
-	if required.Reason != firstboot.AdminBindingNoBinder {
-		t.Fatalf("Reason = %q, want %q", required.Reason, firstboot.AdminBindingNoBinder)
+	if !result.AdminCreated {
+		t.Fatal("AdminCreated = false, want true: this run creates the admin")
+	}
+	admin, err := users.GetUserByUsername(context.Background(), tenantid.System, "admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername(admin): %v", err)
+	}
+	if len(admin.CertBindings) != 0 {
+		t.Fatalf("bootstrap admin has %d bindings; no credential path was wired", len(admin.CertBindings))
 	}
 }
 

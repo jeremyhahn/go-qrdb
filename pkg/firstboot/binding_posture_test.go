@@ -153,9 +153,11 @@ func TestVerifyAdminCertBinding(t *testing.T) {
 	})
 }
 
-// TestInitialize_Required_RefusesBeforeWriting covers the fresh-cluster cases:
-// the admin does not exist yet, and this run could not bind it. Nothing may be
-// written -- no tenant, no role, no admin.
+// TestInitialize_Required_RefusesBeforeWriting covers the ONE fresh-cluster
+// configuration that is a wiring bug rather than "nothing to bind with yet":
+// a credential path IS configured (a CA, here) but no CertBinder is, so
+// Initialize would issue a certificate and never bind it. That is still
+// refused before anything is written -- no tenant, no role, no admin.
 func TestInitialize_Required_RefusesBeforeWriting(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -166,15 +168,6 @@ func TestInitialize_Required_RefusesBeforeWriting(t *testing.T) {
 			d.CA = &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
 			return d
 		}, AdminBindingNoBinder},
-		{"binder without a certificate path", func(d Dependencies) Dependencies {
-			d.Binder = &fakeBinder{}
-			return d
-		}, AdminBindingNoCertPath},
-		{"binder with a CSR but no signer", func(d Dependencies) Dependencies {
-			d.Binder = &fakeBinder{}
-			d.AdminCSRPEM = []byte("csr")
-			return d
-		}, AdminBindingNoCertPath},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -257,19 +250,52 @@ func TestInitialize_Required_ExistingUnboundAdminWithCredentialPathRepaired(t *t
 	}
 }
 
-// TestInitialize_Required_ExistingUnboundAdminNoCredentialPathRefused is the
-// other half: an existing admin with no binding and NO credential path at
-// all (no CA, no Signer+CSR, no AdminCertPEM) is still refused -- nothing
-// wired for Initialize to repair the binding with.
-func TestInitialize_Required_ExistingUnboundAdminNoCredentialPathRefused(t *testing.T) {
-	users := newRealUsers(t)
-	createAdmin(t, users)
-	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
-		Binder:            storeBinder{users: users},
-		MTLSBindingPolicy: auth.MTLSBindingRequired,
+// TestInitialize_Required_NoCredentialPathBootsAdminUnbound is the other half
+// (go-qrdb#560 review B2, reversing TestInitialize_Required_RefusesBeforeWriting's
+// old premise for this exact shape): an existing admin with no binding and NO
+// credential path at all (no CA, no Signer+CSR, no AdminCertPEM) -- the
+// everyday "nothing to bind with on this run" case, not a wiring bug -- no
+// longer refuses. Initialize proceeds, the admin stays unbound, and it is
+// the composer's AwaitingAdminCredentialProbe, not this call, that decides
+// the node boots into "awaiting admin credential" rather than refusing to
+// start. A totally bare Dependencies (no Binder either) boots the same way:
+// a brand-new cluster under "required" with no ceremony ever run.
+func TestInitialize_Required_NoCredentialPathBootsAdminUnbound(t *testing.T) {
+	t.Run("existing unbound admin, binder but no path", func(t *testing.T) {
+		users := newRealUsers(t)
+		seedUnboundAdmin(t, users)
+		result, err := Initialize(context.Background(), Dependencies{
+			Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
+			Binder:            storeBinder{users: users},
+			MTLSBindingPolicy: auth.MTLSBindingRequired,
+		})
+		if err != nil {
+			t.Fatalf("Initialize must boot unbound, not refuse: %v", err)
+		}
+		if result.AdminCreated {
+			t.Error("AdminCreated = true, want false: the admin already existed")
+		}
+		verifyErr := VerifyAdminCertBinding(context.Background(), users, time.Now().UTC())
+		requireRefusal(t, verifyErr, AdminBindingNone)
 	})
-	requireRefusal(t, err, AdminBindingNoCertPath)
+	t.Run("brand-new admin, nothing wired at all", func(t *testing.T) {
+		users := newRealUsers(t)
+		result, err := Initialize(context.Background(), Dependencies{
+			Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
+			MTLSBindingPolicy: auth.MTLSBindingRequired,
+		})
+		if err != nil {
+			t.Fatalf("Initialize must boot unbound, not refuse: %v", err)
+		}
+		if !result.AdminCreated {
+			t.Fatal("AdminCreated = false, want true: this run creates the admin")
+		}
+		if result.AdminCertThumbprint != "" {
+			t.Fatalf("AdminCertThumbprint = %q, want empty: no path was wired", result.AdminCertThumbprint)
+		}
+		verifyErr := VerifyAdminCertBinding(context.Background(), users, time.Now().UTC())
+		requireRefusal(t, verifyErr, AdminBindingNone)
+	})
 }
 
 // TestInitialize_Required_UnverifiableUsersRefused: an adapter that can only

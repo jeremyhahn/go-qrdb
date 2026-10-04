@@ -71,7 +71,22 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 
 	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, store, users, policy, timeout)
 	if err != nil {
-		return nil, err
+		// *NoPendingAdminCredentialError means the bounded wait ran out with
+		// neither a live binding nor a pending record -- under "required",
+		// that no longer aborts the boot (go-qrdb#560 review B2, matching
+		// the reversal already in effect at wireClientAndServer's own
+		// boot-time check, go-qrdb#548 review item 3): first boot proceeds
+		// with no certificate to bind, leaving the admin unbound, and the
+		// node comes up into "awaiting admin credential" once that later
+		// check decides the posture. Every other error here (a genuine
+		// store fault) still aborts.
+		var noCred *firstboot.NoPendingAdminCredentialError
+		if !errors.As(err, &noCred) {
+			return nil, err
+		}
+		slog.Warn(`node: no admin certificate binding and no pending admin credential record; `+
+			`continuing without one -- the node will boot into "awaiting admin credential"`,
+			"error", err)
 	}
 	deps.AdminCertPEM = adminCertPEM
 	deps.AdminCertPool = firstboot.AdminCertPoolFromCABundle(caBundlePEM)
@@ -105,8 +120,29 @@ func firstBootUnderPolicy(ctx context.Context, deps firstboot.Dependencies, poli
 		return nil, err
 	}
 	if policy == auth.MTLSBindingRequired {
-		if err := firstboot.VerifyAdminCertBinding(ctx, users, time.Now().UTC()); err != nil {
-			return nil, err
+		if verifyErr := firstboot.VerifyAdminCertBinding(ctx, users, time.Now().UTC()); verifyErr != nil {
+			// A no-live-binding verdict is tolerated when no
+			// admin-credential path was configured for this run at all
+			// (go-qrdb#560 review B2): there was nothing this run could
+			// have bound, so the admin stays unbound and
+			// wireClientAndServer's own AwaitingAdminCredentialProbe is
+			// the posture that takes over -- not a boot refusal. This is
+			// the SAME tolerance firstboot.Initialize's own
+			// verifyRequiredOutcome applies internally against deps.Users;
+			// re-applying it here, against users (the node's own
+			// authentication store, which may differ from deps.Users), is
+			// what lets TestFirstBootUnderPolicy_VerdictReadFromTheNodesStore
+			// still catch a certificate bound into the wrong store: that
+			// case always has a path configured, so HasAdminCertPath keeps
+			// refusing it.
+			if !firstboot.HasAdminCertPath(deps) {
+				var refusal *firstboot.AdminCertBindingRequiredError
+				if errors.As(verifyErr, &refusal) &&
+					(refusal.Reason == firstboot.AdminBindingNone || refusal.Reason == firstboot.AdminBindingAllExpired) {
+					return result, nil
+				}
+			}
+			return nil, verifyErr
 		}
 	}
 	return result, nil

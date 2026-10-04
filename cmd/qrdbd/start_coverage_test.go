@@ -770,6 +770,58 @@ func TestRunFirstBoot_SecondBoot_Required_BindsThenFastPathsCleanly(t *testing.T
 	require.NoError(t, err)
 }
 
+// TestRunFirstBoot_Required_ExpiredAdminNoPendingCredential_BootsAwaiting is
+// the go-qrdb#560 review B2 fix at runFirstBoot's own layer: an admin whose
+// ONLY certificate binding has expired, with NO pending admin-certificate
+// record to resolve, must boot cleanly -- not shut the node down with
+// *firstboot.NoPendingAdminCredentialError, the exact regression the
+// go-qrdb#560 re-review named ("that state boots into awaiting-admin-
+// credential mode and never exits"). Covers both shapes
+// ResolveAdminCertForFirstBoot's bounded wait can time out on: a pending
+// record that was written and already consumed by an earlier boot, and one
+// that was never written at all.
+func TestRunFirstBoot_Required_ExpiredAdminNoPendingCredential_BootsAwaiting(t *testing.T) {
+	saved := adminBindingWait
+	adminBindingWait = 100 * time.Millisecond
+	t.Cleanup(func() { adminBindingWait = saved })
+
+	newExpiredAdminUserSvc := func() *mockUserServicer {
+		admin := &user.User{
+			ID: 9001, Username: "admin", System: true, Lifecycle: user.LifecycleActive,
+			CertBindings: []user.CertBinding{{
+				Thumbprint: "stale-thumbprint", Kind: user.CertBindingSPKIThumbprint,
+				NotAfter: time.Now().Add(-time.Hour),
+			}},
+		}
+		return &mockUserServicer{
+			getUserByUsernameFn: func(context.Context, string, string) (*user.User, error) { return admin, nil },
+			createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+				return admin, nil
+			},
+		}
+	}
+	node := &mockRaftNode{} // default: leader ready
+
+	t.Run("pending record already consumed", func(t *testing.T) {
+		store := newMockKVStore(make(map[string][]byte))
+		certPEM, _ := selfSignedAdminCertPEM(t)
+		require.NoError(t, firstboot.WritePendingAdminCert(context.Background(), store, certPEM))
+		require.NoError(t, firstboot.ClearPendingAdminCert(context.Background(), store))
+
+		err := runFirstBoot(context.Background(), node, 1, newExpiredAdminUserSvc(), &mockRoleServicer{}, &mockTenantServicer{},
+			false, nil, "", auth.MTLSBindingRequired, store, nil, nil)
+		require.NoError(t, err, "an expired admin with a CONSUMED pending record must boot, not shut down")
+	})
+
+	t.Run("nothing ever pending", func(t *testing.T) {
+		store := newMockKVStore(make(map[string][]byte))
+
+		err := runFirstBoot(context.Background(), node, 1, newExpiredAdminUserSvc(), &mockRoleServicer{}, &mockTenantServicer{},
+			false, nil, "", auth.MTLSBindingRequired, store, nil, nil)
+		require.NoError(t, err, "an expired admin with NO pending record at all must boot, not shut down")
+	})
+}
+
 // TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile is the
 // round-2 regression test: an admin that exists but is NOT yet the System
 // user must NOT be skipped — runFirstBoot must fall through to the full,
