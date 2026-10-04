@@ -297,3 +297,107 @@ func stringSliceContains(s []string, needle string) bool {
 	}
 	return false
 }
+
+// rolesReconcileCLIJSON mirrors transport.ReconcileRolesResponse, decoded
+// from qrdb roles reconcile --output json.
+type rolesReconcileCLIJSON struct {
+	TenantID string        `json:"tenant_id"`
+	Roles    []interface{} `json:"roles,omitempty"`
+}
+
+// TestRoles_CLI_Reconcile_PerProtocol drives qrdb roles reconcile through
+// the CLI against every transport: with no --tenant it targets the caller
+// own tenant (system, for the harness system-admin identity), already fully
+// converged by firstboot; a freshly created prefix tenant has NO built-in
+// roles until the first reconcile seeds them (prefix tenants are not
+// auto-seeded at tenant create, unlike dedicated-isolation tenants); and a
+// second, immediate reconcile of that same tenant reports NO further
+// changes, proving convergence -- pkg/role/reconcile.go own contract
+// ("a second call therefore performs zero writes and returns an empty
+// report"), also pinned directly against the store in
+// pkg/role/reconcile_test.go TestReconcileBuiltInRoles_SecondCallWritesNothing.
+//
+// A decode-into-a-shared-variable bug in an earlier version of this test
+// (json.Unmarshal leaves a destination field untouched when the new JSON
+// omits the key, so a stale non-empty Roles slice from the first call
+// decode survived into the second call supposedly-empty one) made it look
+// like reconcile never converged. It does; the test now decodes each
+// response into its own fresh variable.
+func TestRoles_CLI_Reconcile_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testRolesReconcileOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile")
+	if err != nil {
+		t.Fatalf("[%s] roles reconcile: %v\noutput: %s", proto.name, err, out)
+	}
+	var systemResp rolesReconcileCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &systemResp); jerr != nil {
+		t.Fatalf("[%s] decode roles reconcile JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if systemResp.TenantID != "system" {
+		t.Fatalf("[%s] roles reconcile with no --tenant = tenant_id %q, want the caller's own tenant 'system'", proto.name, systemResp.TenantID)
+	}
+	if len(systemResp.Roles) != 0 {
+		t.Fatalf("[%s] roles reconcile on a freshly booted node's system tenant reported changes, want none (built-ins already current): %+v", proto.name, systemResp.Roles)
+	}
+
+	tenantID := fmt.Sprintf("rr-%s-%d", proto.name, time.Now().UnixNano())
+	createTenant(t, node, proto, tenantID, "Reconcile Tenant", "prefix", false)
+
+	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] first roles reconcile --tenant %s: %v\noutput: %s", proto.name, tenantID, err, out)
+	}
+	var first rolesReconcileCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &first); jerr != nil {
+		t.Fatalf("[%s] decode first roles reconcile --tenant JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if first.TenantID != tenantID {
+		t.Fatalf("[%s] first roles reconcile --tenant %s = tenant_id %q, want %s", proto.name, tenantID, first.TenantID, tenantID)
+	}
+	if len(first.Roles) == 0 {
+		t.Fatalf("[%s] first roles reconcile on a freshly created prefix tenant reported no changes, want it to seed the built-ins: %+v", proto.name, first)
+	}
+
+	for _, r := range first.Roles {
+		rm, ok := r.(map[string]interface{})
+		if !ok {
+			t.Fatalf("[%s] roles reconcile role entry has unexpected shape: %+v", proto.name, r)
+		}
+		if name, _ := rm["name"].(string); name == "" {
+			t.Fatalf("[%s] roles reconcile role entry has no name: %+v", proto.name, rm)
+		}
+		if created, _ := rm["created"].(bool); !created {
+			t.Fatalf("[%s] roles reconcile role entry on a brand-new tenant should be reported as created: %+v", proto.name, rm)
+		}
+	}
+
+	// The real assertion of effect: an immediate second call must converge
+	// to an empty report, proving the first call writes actually took.
+	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] second roles reconcile --tenant %s: %v\noutput: %s", proto.name, tenantID, err, out)
+	}
+
+	var second rolesReconcileCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &second); jerr != nil {
+		t.Fatalf("[%s] decode second roles reconcile --tenant JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if second.TenantID != tenantID {
+		t.Fatalf("[%s] second roles reconcile --tenant %s = tenant_id %q, want %s", proto.name, tenantID, second.TenantID, tenantID)
+	}
+	if len(second.Roles) != 0 {
+		t.Fatalf("[%s] second, immediate roles reconcile reported further changes, want none (the first call must have converged them): %+v", proto.name, second.Roles)
+	}
+}
