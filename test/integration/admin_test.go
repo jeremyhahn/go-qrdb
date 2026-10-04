@@ -366,7 +366,12 @@ func TestCLI_Start_AllFlags(t *testing.T) {
 	grpcPorts := allocateTCPPorts(t, 1)
 	dataDir := t.TempDir()
 
-	// Test that all flags are accepted without error.
+	// Test that all flags are accepted without error. --shard-id is pinned
+	// to 1 (shard.ShardKV): the flag is deprecated and system services
+	// (database provisioning, the leader wait admin/health depend on)
+	// always target the system shard regardless of its value, so any other
+	// value starts a Raft shard that never satisfies them and the node
+	// never finishes provisioning.
 	args := []string{
 		"start",
 		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
@@ -376,7 +381,7 @@ func TestCLI_Start_AllFlags(t *testing.T) {
 		"--sm", "pebble",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
-		"--shard-id", "100",
+		"--shard-id", "1",
 		"--replica-id", "1",
 		"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
 		"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
@@ -386,9 +391,23 @@ func TestCLI_Start_AllFlags(t *testing.T) {
 	cmd := startNode(t, binary, args, "[allflags] ")
 	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
+	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
 
-	// Verify the node started correctly with all flags.
-	t.Log("all flags accepted, node started successfully")
+	// Verify the node actually serves its shard, not just that the process
+	// came up: the status command reports the shard a node serves, and a
+	// typo or dropped flag here would still pass waitForHealthy.
+	adminCert, adminKey := ca.boundAdminCert(t, dataDir)
+	out, err := runCLI(t, binary, "status",
+		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
+		"--tls-ca-file", ca.CertPath,
+		"--tls-cert-file", adminCert,
+		"--tls-key-file", adminKey)
+	if err != nil {
+		t.Fatalf("status command failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Shard 1:") {
+		t.Errorf("status output should contain 'Shard 1:', got: %s", out)
+	}
 
 	cmd.Process.Signal(syscall.SIGTERM)
 }
