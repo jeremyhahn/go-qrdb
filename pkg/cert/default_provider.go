@@ -25,6 +25,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"math/big"
 	"net/url"
@@ -270,18 +271,23 @@ func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provide
 // error vocabulary regardless of which cakey.Provider implementation signed
 // (the built-in software one or an injected HSM/TPM/KMS adapter).
 func mapProviderError(err error) error {
-	switch e := err.(type) {
-	case *cakey.BarrierSealedError:
+	var sealedErr *cakey.BarrierSealedError
+	if errors.As(err, &sealedErr) {
 		return &BarrierSealedError{}
-	case *cakey.NotInitializedError:
-		return &CAKeyNotAvailableError{}
-	case *cakey.StoreError:
-		return &StoreError{Op: e.Op, Detail: e.Detail, Err: e.Err}
-	case *cakey.GenerateError:
-		return &CertGenerateError{Err: e.Err}
-	default:
-		return &CertGenerateError{Err: err}
 	}
+	var notInitErr *cakey.NotInitializedError
+	if errors.As(err, &notInitErr) {
+		return &CAKeyNotAvailableError{}
+	}
+	var storeErr *cakey.StoreError
+	if errors.As(err, &storeErr) {
+		return &StoreError{Op: storeErr.Op, Detail: storeErr.Detail, Err: storeErr.Err}
+	}
+	var genErr *cakey.GenerateError
+	if errors.As(err, &genErr) {
+		return &CertGenerateError{Err: genErr.Err}
+	}
+	return &CertGenerateError{Err: err}
 }
 
 // Seal destroys, for every tenant whose Key B uses the built-in software
@@ -828,7 +834,8 @@ func (p *DefaultCertProvider) IsTenantIssuer(ctx context.Context, tenantID strin
 	}
 	registered, err := p.loadOnlyCertificate(ctx, prov)
 	if err != nil {
-		if _, ok := err.(*CAKeyNotAvailableError); ok {
+		var notAvailable *CAKeyNotAvailableError
+		if errors.As(err, &notAvailable) {
 			// No CA has ever been established for this tenant: it cannot
 			// be anyone's issuer. This is the load-only answer --
 			// Certificate would have silently minted one just to answer

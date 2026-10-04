@@ -35,6 +35,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -368,7 +369,8 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 	// granting the cluster-CA exemption.
 	clusterCACert, err := p.resolveClusterCA()
 	if err != nil {
-		if _, notConfigured := err.(*ClusterCANotConfiguredError); !notConfigured {
+		var notConfiguredErr *ClusterCANotConfiguredError
+		if !errors.As(err, &notConfiguredErr) {
 			return nil, err
 		}
 		clusterCACert = nil
