@@ -2331,7 +2331,14 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 		"so_pin":         harnessSOPIN,
 		"user_pin":       harnessUserPIN,
 		"admin_cert_pem": string(adminCertPEM),
-		"secret":         passphrase,
+		// []byte, not the bare string: CeremonyInitializeRequest.Secret is
+		// []byte (go-qrdb#560 review item 7), and encoding/json renders a
+		// []byte as base64 on marshal -- the wire shape the REST decoder on
+		// the other end expects, matching every other "secret" literal in
+		// this package (cluster_seal_test.go, enable_encryption_test.go,
+		// etc.). A bare string marshals as plain JSON text instead, which
+		// is not valid base64 and the decoder rejects.
+		"secret": []byte(passphrase),
 	})
 	if err != nil {
 		t.Fatalf("initAndUnsealBarrier: marshal: %v", err)
