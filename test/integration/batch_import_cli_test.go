@@ -16,7 +16,13 @@
 
 // batch_import_cli_test.go exercises the `qrdb batch import` and
 // `qrdb batch import-formats` CLI surface (cmd/qrdb/batch.go) end-to-end
-// against a real, freshly-spawned qrdbd node.
+// against a real, freshly-spawned qrdbd node. TestCLI_BatchImport_CSV,
+// TestCLI_BatchImport_CSV_Unix, TestCLI_BatchImport_Stdin, and
+// TestCLI_BatchImportFormats_ListsSupportedFormats below predate the
+// multi-protocol harness and only ever drove REST (plus a dedicated
+// Unix-only parity check); TestBatchImport_CLI_PerProtocol closes that
+// gap by exercising both commands over all five CLI-selectable transports
+// (REST, gRPC, QUIC, MCP, Unix) against one shared multiProtoNode.
 package integration_test
 
 import (
@@ -234,6 +240,92 @@ func TestCLI_BatchImportFormats_ListsSupportedFormats(t *testing.T) {
 	for _, want := range []string{"auto", "csv", "json", "ndjson", "yaml", "archive"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected format %q in output, got: %s", want, out)
+		}
+	}
+}
+
+// TestBatchImport_CLI_PerProtocol drives `qrdb batch import` (CSV and
+// stdin/ndjson forms) and `qrdb batch import-formats` through the CLI
+// binary against every transport sharing one multiProtoNode. Neither
+// command is identity-gated; TestCLI_BatchImport_CSV/CSV_Unix/Stdin and
+// TestCLI_BatchImportFormats_ListsSupportedFormats above only ever
+// exercised REST (plus a dedicated Unix-only parity check), leaving
+// gRPC/QUIC/MCP unverified for `import`, and REST alone for
+// `import-formats`.
+func TestBatchImport_CLI_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testBatchImportOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// testBatchImportOverProtocol exercises `batch import` (CSV and NDJSON
+// stdin forms) and `batch import-formats` against a single protocol. Each
+// subtest uses a key prefix scoped to proto.name so the five subtests can
+// safely share one multiProtoNode.
+func testBatchImportOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	prefix := "batchimport/" + proto.name + "/"
+	keyA := prefix + "k1"
+	keyB := prefix + "k2"
+
+	csvPath := writeTempFile(t, "import-"+proto.name+".csv",
+		[]byte("id,value\n"+keyA+",v1\n"+keyB+",v2\n"))
+
+	out, err := runCLIProto(t, node, proto, "batch", "import",
+		"--file", csvPath, "--format", "csv", "--key-field", "id", "--value-mode", "row",
+		"--skip-header", "--output", "json")
+	if err != nil {
+		t.Fatalf("[%s] batch import (csv): %v\noutput: %s", proto.name, err, out)
+	}
+	var result struct {
+		Total     int `json:"total"`
+		Succeeded int `json:"succeeded"`
+		Failed    int `json:"failed"`
+	}
+	decodeJSON(t, out, &result)
+	if result.Total != 2 || result.Succeeded != 2 || result.Failed != 0 {
+		t.Fatalf("[%s] unexpected import result: %+v (output: %s)", proto.name, result, out)
+	}
+
+	getOut, err := runCLIProto(t, node, proto, "kv", "get", keyA)
+	if err != nil {
+		t.Fatalf("[%s] kv get %s after csv import: %v\noutput: %s", proto.name, keyA, err, getOut)
+	}
+	if !strings.Contains(getOut, keyA) {
+		t.Errorf("[%s] expected the imported row's key to appear in the row-mode value, got: %s", proto.name, getOut)
+	}
+
+	// --- stdin/ndjson form. ---------------------------------------------
+	keyStdin := prefix + "s1"
+	out, err = runCLIProtoStdin(t, node, proto, `{"id":"`+keyStdin+`","value":"a"}`+"\n",
+		"batch", "import", "--file", "-", "--format", "ndjson",
+		"--key-field", "id", "--value-mode", "row", "--output", "json")
+	if err != nil {
+		t.Fatalf("[%s] batch import --file - (ndjson stdin): %v\noutput: %s", proto.name, err, out)
+	}
+	var stdinResult struct {
+		Total     int `json:"total"`
+		Succeeded int `json:"succeeded"`
+	}
+	decodeJSON(t, out, &stdinResult)
+	if stdinResult.Total != 1 || stdinResult.Succeeded != 1 {
+		t.Fatalf("[%s] unexpected stdin import result: %+v (output: %s)", proto.name, stdinResult, out)
+	}
+
+	// --- import-formats. --------------------------------------------------
+	out, err = runCLIProto(t, node, proto, "batch", "import-formats")
+	if err != nil {
+		t.Fatalf("[%s] batch import-formats: %v\noutput: %s", proto.name, err, out)
+	}
+	for _, want := range []string{"auto", "csv", "json", "ndjson", "yaml", "archive"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("[%s] expected format %q in import-formats output, got: %s", proto.name, want, out)
 		}
 	}
 }
