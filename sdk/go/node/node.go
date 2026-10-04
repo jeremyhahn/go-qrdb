@@ -2897,6 +2897,18 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 			slog.Any("error", err))
 	}
 
+	// Key B cache eviction (go-qrdb#591's review): watches for a deleted
+	// tenant's CA material/certificate, or the tenant's own tombstone, so a
+	// retired tenant's CA stops being cached and trusted on this node
+	// promptly rather than aging out by TTL alone. Bound to n.background(),
+	// not ctx (this call's own, short-lived setup context): the watchers
+	// this starts are meant to outlive wireClientAndServer's own return,
+	// for the life of the node.
+	if err := lifecycle.WatchCertProviderEvictions(n.background(), svcNode); err != nil && n.logger != nil {
+		n.logger.Warn("node: Key B cache eviction watch failed to start",
+			slog.Any("error", err))
+	}
+
 	// The dynamic client-auth trust pool (pkg/clienttrust) is built ONCE,
 	// here, and is BOTH the auth.IssuerVerifier the mTLS authenticator and
 	// the on-behalf forwarding path enforce against below AND the object

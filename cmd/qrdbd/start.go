@@ -1703,6 +1703,19 @@ func runStart(f *startFlags) (err error) {
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
+			// Key B cache eviction (go-qrdb#591's review): watches for a
+			// deleted tenant's CA material/certificate, or the tenant's own
+			// tombstone, so a retired tenant's CA stops being cached and
+			// trusted on this node promptly rather than aging out by TTL
+			// alone. Unconditional -- Key B's eviction has nothing to do
+			// with whether this node's OWN cluster CA (Key A) is
+			// self-issued or BYO-TLS, unlike the block below. Bound to
+			// sigCtx, the process-lifetime context, since the watchers this
+			// starts are meant to run for the life of the node, not only
+			// until this boot sequence finishes.
+			if err := lifecycle.WatchCertProviderEvictions(sigCtx, svcNode); err != nil {
+				slog.Warn("Key B cache eviction watch failed to start", slog.Any("error", err))
+			}
 			if svcNode.ClusterCAProv != nil {
 				// A leader must be known before this read-through-Raft check
 				// can mean anything: right after BuildServices the system
@@ -2342,12 +2355,19 @@ func runStart(f *startFlags) (err error) {
 			// certificate while still validating certs when provided; when auth
 			// is disabled, NoClientCert disables client cert verification
 			// entirely.
+			// SetClientAuthMode, never a direct mutation of
+			// bundle.TLSConfig.ClientAuth/.ClientCAs: by this point the
+			// pre-host sealed-window listener may have only just stopped
+			// (its own graceful Stop is bounded by a fixed timeout and can
+			// return before every in-flight handshake against it has
+			// actually finished reading those fields), so an unsynchronized
+			// write here would race an unsynchronized read there
+			// (go-qrdb#591's review, item 3).
 			if !f.tlsClientAuthSet {
 				if f.authEnabled {
-					bundle.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
-					bundle.TLSConfig.ClientCAs = bundle.ClientCACertPool
+					bundle.SetClientAuthMode(tls.VerifyClientCertIfGiven, bundle.ClientCACertPool)
 				} else {
-					bundle.TLSConfig.ClientAuth = tls.NoClientCert
+					bundle.SetClientAuthMode(tls.NoClientCert, bundle.TLSConfig.ClientCAs)
 				}
 			}
 

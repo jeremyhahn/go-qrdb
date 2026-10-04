@@ -28,6 +28,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,10 +46,41 @@ type fakeCertProvider struct {
 	registry   map[string]*x509.Certificate // tenantID -> registered Key B CA
 	issuerErr  error
 	callCounts *int // non-nil: incremented on every CACertPEMs call
+
+	// blockUntil, when non-nil, makes CACertPEMs wait for it to close
+	// before returning -- after already having incremented
+	// blockingCalls -- so a test can force genuine concurrent contention
+	// over a single in-flight call
+	// (TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds).
+	// Separate from callCounts because it is incremented with atomic,
+	// safe for the concurrent callers that test deliberately creates.
+	blockUntil    chan struct{}
+	blockingCalls int32
 }
 
 var _ cert.CertProvider = (*fakeCertProvider)(nil)
 var _ CertSource = (*fakeCertProvider)(nil)
+
+// fakeInvalidatingCertProvider extends fakeCertProvider with
+// InvalidationSource, so a test can prove Pool.SetKeyBProvider subscribes
+// to it, and that firing the subscribed hook actually drops Pool's own
+// cached widened pool immediately (go-qrdb#591's review).
+type fakeInvalidatingCertProvider struct {
+	fakeCertProvider
+	hooks []func()
+}
+
+func (f *fakeInvalidatingCertProvider) OnInvalidate(fn func()) {
+	f.hooks = append(f.hooks, fn)
+}
+
+func (f *fakeInvalidatingCertProvider) fire() {
+	for _, fn := range f.hooks {
+		fn()
+	}
+}
+
+var _ InvalidationSource = (*fakeInvalidatingCertProvider)(nil)
 
 func (f *fakeCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
 	return nil, errors.New("not implemented")
@@ -70,6 +103,10 @@ func (f *fakeCertProvider) CACertPEM() []byte { return nil }
 func (f *fakeCertProvider) CACertPEMs(context.Context) ([][]byte, error) {
 	if f.callCounts != nil {
 		*f.callCounts++
+	}
+	if f.blockUntil != nil {
+		atomic.AddInt32(&f.blockingCalls, 1)
+		<-f.blockUntil
 	}
 	return f.pems, f.err
 }
@@ -1207,5 +1244,82 @@ func TestPool_Wire_ExistingHookSurvivesAFailedResolution(t *testing.T) {
 	}
 	if len(got.NextProtos) != 1 || got.NextProtos[0] != "existing-hook-marker" {
 		t.Errorf("expected the pre-existing hook's config to survive untouched, got NextProtos=%v", got.NextProtos)
+	}
+}
+
+// TestPool_SetKeyBProvider_SubscribesToInvalidationSource proves Pool
+// subscribes its own cache invalidation to a provider that implements
+// InvalidationSource, so a deleted tenant's CA stops being trusted the
+// moment the provider fires its hook -- not merely after poolCacheTTL
+// (go-qrdb#591's review).
+func TestPool_SetKeyBProvider_SubscribesToInvalidationSource(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	keyAPool := x509.NewCertPool()
+	keyAPool.AddCert(keyACert)
+	cfg := baseConfig(t, keyAPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+
+	keyBPEM, keyBCert := genCAPEM(t)
+	prov := &fakeInvalidatingCertProvider{fakeCertProvider: fakeCertProvider{pems: [][]byte{keyBPEM}}}
+	pool.SetKeyBProvider(prov)
+
+	got := getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected a widened config")
+	}
+	assertTrustedByConnection(t, got, keyBCert)
+
+	// Simulate the tenant's CA being deleted (CACertPEMs now returns
+	// nothing for it) and fire the invalidation hook -- WITHOUT this,
+	// Pool's own cache would keep trusting keyBCert for up to
+	// poolCacheTTL, since resolveClientCAs never re-consults
+	// fakeCertProvider until the cache ages out on its own.
+	prov.pems = nil
+	prov.fire()
+
+	got2 := getConfigForClient(t, cfg)
+	if got2 == nil {
+		t.Fatal("expected a config (possibly the static fallback) after invalidation")
+	}
+	assertNotTrustedByConnection(t, got2, keyBCert)
+}
+
+// TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds proves N
+// concurrent callers landing in refreshKeyBOnlyCache right as poolCacheTTL
+// ages out share ONE CACertPEMs call rather than each issuing their own
+// (go-qrdb#591's review, non-blocking): the provider's CACertPEMs blocks
+// until every goroutine has had a chance to arrive, so if more than one of
+// them actually entered it, singleflight did not dedupe them.
+func TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds(t *testing.T) {
+	keyBPEM, _ := genCAPEM(t)
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}, blockUntil: make(chan struct{})}
+	pool := New()
+	pool.SetKeyBProvider(prov)
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			pool.refreshKeyBOnlyCache(context.Background())
+		}()
+	}
+
+	// Give every goroutine a chance to reach the blocking CACertPEMs call,
+	// or queue behind singleflight waiting on it, before releasing it.
+	time.Sleep(100 * time.Millisecond)
+	close(prov.blockUntil)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&prov.blockingCalls); got != 1 {
+		t.Errorf("CACertPEMs entered %d times for %d concurrent refreshes, want exactly 1", got, n)
+	}
+	cached := pool.keyBCache.Load()
+	if cached == nil || len(cached.pems) != 1 {
+		t.Fatal("expected the singleflighted call's result to populate the cache for every waiter")
 	}
 }

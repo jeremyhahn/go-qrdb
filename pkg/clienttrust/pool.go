@@ -39,6 +39,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 )
 
@@ -83,6 +85,24 @@ var handshakeTrustTimeout = 5 * time.Second
 type CertSource interface {
 	CACertPEMs(ctx context.Context) ([][]byte, error)
 	IsTenantIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) (bool, error)
+}
+
+// InvalidationSource is the capability DefaultCertProvider provides
+// alongside CertSource: a way for Pool to learn, immediately, when the
+// provider's own Key B cache changes outside of any handshake -- a
+// watched tenant deletion (tombstone) or a watched CA material/certificate
+// deletion, see DefaultCertProvider.WatchForDeletions -- so the widened
+// pool's cache drops that tenant's CA right away instead of waiting out
+// poolCacheTTL. Declared here, not added to cert.CertProvider, for the
+// same reason CertSource is: a type assertion against this shape is how
+// Pool asks for the capability without widening the interface every
+// CertProvider implementation must carry.
+type InvalidationSource interface {
+	// OnInvalidate registers fn to be called whenever this provider's Key
+	// B cache is invalidated for some tenant. May be called more than
+	// once, for different subscribers; a provider that supports it calls
+	// every registered fn.
+	OnInvalidate(fn func())
 }
 
 // ClusterCA resolves the cluster CA (Key A) certificate, fresh on every
@@ -142,6 +162,13 @@ type Pool struct {
 	cache      atomic.Pointer[poolCache]
 	keyBCache  atomic.Pointer[keyBCacheEntry]
 	staticBase atomic.Pointer[x509.CertPool]
+
+	// keyBGroup dedupes concurrent refreshKeyBOnlyCache rebuilds: N
+	// handshakes landing here in the same instant right as poolCacheTTL
+	// ages out must share ONE CACertPEMs call (a scan and parse of every
+	// tenant's CA certificate), not each issue their own (go-qrdb#591's
+	// review, non-blocking). The zero value is ready to use.
+	keyBGroup singleflight.Group
 }
 
 type providerBox struct{ prov cert.CertProvider }
@@ -195,6 +222,12 @@ func New() *Pool {
 // CertProvider exists. A nil prov (or one that does not implement
 // CertSource) means Key B is never trusted.
 //
+// When prov also implements InvalidationSource (DefaultCertProvider, when
+// WatchForDeletions is running), Pool subscribes its own cache
+// invalidation so a deleted tenant's CA stops being trusted immediately --
+// on every node the watched deletion replicates to, not only the one that
+// issued it -- rather than up to poolCacheTTL later.
+//
 // The composer calling this MUST ALSO pass this SAME Pool as the
 // auth.IssuerVerifier wired into the authentication layer (mTLS
 // authenticator and on-behalf forwarding path) -- unconditionally,
@@ -208,6 +241,12 @@ func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 	p.provider.Store(&providerBox{prov: prov})
 	p.cache.Store(nil)
 	p.keyBCache.Store(nil)
+	if inv, ok := prov.(InvalidationSource); ok {
+		inv.OnInvalidate(func() {
+			p.cache.Store(nil)
+			p.keyBCache.Store(nil)
+		})
+	}
 }
 
 // SetClusterCA installs the resolver the pool checks every issuer against,
@@ -659,13 +698,30 @@ func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
 	if !ok {
 		return
 	}
-	pems, err := src.CACertPEMs(ctx)
-	if err != nil {
-		return
-	}
-	keyBOnly := x509.NewCertPool()
-	for _, certPEM := range pems {
-		keyBOnly.AppendCertsFromPEM(certPEM)
-	}
-	p.keyBCache.Store(&keyBCacheEntry{built: time.Now(), pems: pems, keyBOnly: keyBOnly})
+	// Singleflight: only ONE CACertPEMs call is ever in flight at a time,
+	// however many goroutines arrive here concurrently right as the cache
+	// ages out; the rest wait for and share that one call's result rather
+	// than each scanning and parsing every tenant's CA certificate
+	// themselves (go-qrdb#591's review, non-blocking).
+	_, _, _ = p.keyBGroup.Do("refresh", func() (any, error) {
+		// Re-checked inside the singleflight section: the load above runs
+		// before Do is even called, so a cache another goroutine just
+		// finished building between that load and this one becoming the
+		// leader must not be discarded by a redundant CACertPEMs call.
+		if cached := p.keyBCache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
+			return nil, nil
+		}
+		pems, err := src.CACertPEMs(ctx)
+		if err != nil {
+			// Never propagated as Do's own error: matches the documented
+			// "leave the stale cache in place" contract above.
+			return nil, nil
+		}
+		keyBOnly := x509.NewCertPool()
+		for _, certPEM := range pems {
+			keyBOnly.AppendCertsFromPEM(certPEM)
+		}
+		p.keyBCache.Store(&keyBCacheEntry{built: time.Now(), pems: pems, keyBOnly: keyBOnly})
+		return nil, nil
+	})
 }

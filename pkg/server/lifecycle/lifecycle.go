@@ -1026,6 +1026,13 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		if infra.CertKeyProviderFactory != nil {
 			certOpts = append(certOpts, cert.WithKeyProviderFactory(infra.CertKeyProviderFactory))
 		}
+		// n.Watch is already live (set above, unconditionally on
+		// infra.WatchHub): wiring it here only enables
+		// DefaultCertProvider.WatchForDeletions, which starts nothing by
+		// itself. Every composer calls WatchCertProviderEvictions,
+		// below, once, with its own long-lived background context, after
+		// BuildServices returns.
+		certOpts = append(certOpts, cert.WithWatchService(n.Watch))
 		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier, certOpts...)
 
 		// Cluster CA (Key A): an injected provider replaces the built-in one

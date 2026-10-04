@@ -40,6 +40,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -77,6 +78,7 @@ type providerOptions struct {
 	defaultTTL         time.Duration
 	trustDomain        string
 	keyProviderFactory cakey.ProviderFactory
+	watchSvc           service.WatchServicer
 }
 
 // WithDefaultTTL sets the default certificate validity period used when
@@ -115,6 +117,19 @@ func WithDefaultTTL(d time.Duration) ProviderOption {
 func WithKeyProviderFactory(f cakey.ProviderFactory) ProviderOption {
 	return func(o *providerOptions) {
 		o.keyProviderFactory = f
+	}
+}
+
+// WithWatchService enables cache eviction on a deleted tenant's Key B CA:
+// see WatchForDeletions, which the caller must still call explicitly (this
+// option only stores w; it starts nothing). A nil w (the default) leaves
+// eviction entirely event-driven-off -- the built-in per-tenant cache
+// (perTenant) and any subscribed downstream cache (pkg/clienttrust.Pool,
+// via InvalidationSource) age out only by their own TTLs, same as before
+// this option existed.
+func WithWatchService(w service.WatchServicer) ProviderOption {
+	return func(o *providerOptions) {
+		o.watchSvc = w
 	}
 }
 
@@ -178,6 +193,18 @@ type DefaultCertProvider struct {
 	// operator or a test observes that withdrawal through. See
 	// SkippedTenantCACount.
 	skippedTenantCAs atomic.Int64
+
+	// watchSvc, when non-nil (WithWatchService), is what WatchForDeletions
+	// watches __sys:cert_ca/ and the tenant tombstone prefix through.
+	watchSvc service.WatchServicer
+
+	// invalidateHooks are called, in order, whenever a watched deletion
+	// evicts a tenant's cached state (evictTenant's callers). Registered
+	// by OnInvalidate -- pkg/clienttrust.Pool subscribes one from
+	// SetKeyBProvider, so its own widened-pool cache drops a deleted
+	// tenant immediately rather than waiting out poolCacheTTL. Guarded by
+	// mu, the same lock perTenant uses.
+	invalidateHooks []func()
 }
 
 // SkippedTenantCACount returns how many tenants CACertPEMs has skipped,
@@ -209,6 +236,7 @@ func NewDefaultProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.E
 		keyProviderFactory: o.keyProviderFactory,
 		defaultTTL:         o.defaultTTL,
 		trustDomain:        o.trustDomain,
+		watchSvc:           o.watchSvc,
 	}
 }
 
@@ -279,9 +307,26 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 // was used -- resolved FRESH for this specific tenant, never a value shared
 // across tenants -- otherwise the built-in cakey.SoftwareProvider for
 // tenantID, constructed lazily and cached in perTenant on first use.
+//
+// The common case -- tenantID already cached -- takes ONLY a read lock
+// (go-qrdb#591's review, non-blocking): IsTenantIssuer calls this on every
+// authentication request, and an exclusive lock per call serialized every
+// tenant's authentication through one lock for a map read that never
+// writes anything. The slow path (construct and cache a new
+// cakey.SoftwareProvider) still takes the exclusive lock, and re-checks
+// the map after acquiring it: another goroutine may have already won the
+// race to construct tenantID's provider between this call's RUnlock and
+// Lock.
 func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provider, error) {
 	if p.keyProviderFactory != nil {
 		return p.keyProviderFactory.ProviderForTenant(tenantID)
+	}
+
+	p.mu.RLock()
+	sp, ok := p.perTenant[tenantID]
+	p.mu.RUnlock()
+	if ok {
+		return sp, nil
 	}
 
 	p.mu.Lock()
@@ -296,7 +341,7 @@ func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provide
 		CommonName:         "qrdb-ca",
 		OrganizationalUnit: []string{tenantID},
 	}
-	sp := cakey.NewSoftwareProvider(p.kvStore, p.barrier, prefixCertCA+tenantID+"/", subject, caTTL)
+	sp = cakey.NewSoftwareProvider(p.kvStore, p.barrier, prefixCertCA+tenantID+"/", subject, caTTL)
 	p.perTenant[tenantID] = sp
 	return sp, nil
 }

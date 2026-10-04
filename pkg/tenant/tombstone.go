@@ -59,6 +59,14 @@ import (
 // from user-facing KV list and scan by the store's internal-key filter.
 const tombstonePrefix = "__sys:tenants-deleted/"
 
+// TombstonePrefix is tombstonePrefix, exported so another package's own
+// watch can react to a tenant's retirement without duplicating this
+// string. pkg/cert's Key B cache eviction (go-qrdb#591's review) is the
+// first consumer: a factory-backed tenant has no __sys:cert_ca/ record of
+// its own to watch for deletion, so the tombstone's appearance is the
+// only replicated signal it has that the tenant is gone.
+const TombstonePrefix = tombstonePrefix
+
 // Tombstone is the durable record of a deleted tenant id.
 //
 // It is the mechanism behind two guarantees: CreateTenant refuses a
