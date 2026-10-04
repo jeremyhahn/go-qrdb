@@ -91,6 +91,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -1175,5 +1176,363 @@ func testBarrierQuorumBeginOverProtocol(t *testing.T, proto multiProtocol) {
 
 	if _, _, err := quorumBegin(t, cli, ep, "unseal", bogusOp, alice); err == nil {
 		t.Error("quorum begin for an invalid op should fail")
+	}
+}
+
+// officerListUsernames runs `barrier officer list --domain <domain>` using
+// adminFlags and returns the enrolled usernames, proving the list verb's
+// actual response shape (not just its exit code).
+func officerListUsernames(t *testing.T, cli string, adminFlags []string, domain string) []string {
+	t.Helper()
+	args := append(append([]string{}, adminFlags...), "--output", "json",
+		"barrier", "officer", "list", "--domain", domain)
+	stdout, stderr, err := runCLISplit(t, cli, args...)
+	if err != nil {
+		t.Fatalf("barrier officer list --domain %s: %v\nstderr: %s", domain, err, stderr)
+	}
+	var officers []*transport.OfficerStatus
+	if err := json.Unmarshal([]byte(stdout), &officers); err != nil {
+		t.Fatalf("barrier officer list --domain %s: decode JSON: %v\noutput: %s", domain, err, stdout)
+	}
+	names := make([]string, 0, len(officers))
+	for _, o := range officers {
+		names = append(names, o.Username)
+	}
+	return names
+}
+
+// claimEnvelopeTwoStep claims off's envelope via the external-signer
+// claim-begin/claim-complete split, as opposed to claimEnvelope's
+// single-step `claim`: it signs the server-issued claim message itself
+// (signNonceASN1) the way a key that signs outside this CLI would,
+// proving the two-step handshake independently of the single-step path.
+func claimEnvelopeTwoStep(t *testing.T, cli, dir string, ep endpoint, off *officer, recovery bool) {
+	t.Helper()
+	domain := "unseal"
+	if recovery {
+		domain = "recovery"
+	}
+
+	beginArgs := append(off.flags(ep), "--output", "json", "barrier", "officer", "claim-begin",
+		"--domain", domain, "--username", off.username)
+	stdout, stderr, err := runCLISplit(t, cli, beginArgs...)
+	if err != nil {
+		t.Fatalf("claim-begin %s: %v\nstdout:%s\nstderr:%s", off.username, err, stdout, stderr)
+	}
+	var begin struct {
+		NonceHex       string `json:"nonce_hex"`
+		SignMessageHex string `json:"sign_message_hex"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &begin); err != nil {
+		t.Fatalf("claim-begin %s: decode JSON: %v\noutput: %s", off.username, err, stdout)
+	}
+	if begin.NonceHex == "" || begin.SignMessageHex == "" {
+		t.Fatalf("claim-begin %s: empty nonce/message in response: %s", off.username, stdout)
+	}
+
+	msg, err := hex.DecodeString(begin.SignMessageHex)
+	if err != nil {
+		t.Fatalf("claim-begin %s: sign_message_hex not hex: %v", off.username, err)
+	}
+	sig := signNonceASN1(t, off.key, msg)
+	sigPath := filepath.Join(dir, fmt.Sprintf("%s-%s-%d.sig", off.username, domain, time.Now().UnixNano()))
+	if err := os.WriteFile(sigPath, sig, 0o600); err != nil {
+		t.Fatalf("claim-begin %s: write sig file: %v", off.username, err)
+	}
+
+	off.envelope = filepath.Join(dir, fmt.Sprintf("%s-%s-%d.env", off.username, domain, time.Now().UnixNano()))
+	completeArgs := append(off.flags(ep), "barrier", "officer", "claim-complete",
+		"--domain", domain, "--username", off.username,
+		"--nonce-hex", begin.NonceHex, "--sig-file", sigPath, "--out", off.envelope)
+	if stdout, stderr, err := runCLISplit(t, cli, completeArgs...); err != nil {
+		t.Fatalf("claim-complete %s: %v\nstdout:%s\nstderr:%s", off.username, err, stdout, stderr)
+	}
+}
+
+// TestBarrierCLI_PassphraseLifecycle_PerProtocol is
+// TestBarrierCLI_PassphraseLifecycle extended to all 5 CLI-selectable
+// transports: passphrase barrier init, status, seal/unseal cycling
+// (including a wrong-passphrase negative), and a KV write/read round trip,
+// each proving the passphrase domain's commands gate the data plane
+// identically regardless of transport.
+func TestBarrierCLI_PassphraseLifecycle_PerProtocol(t *testing.T) {
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testBarrierPassphraseLifecycleOverProtocol(t, proto)
+		})
+	}
+}
+
+func testBarrierPassphraseLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
+	t.Helper()
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	configPath := writeSealConfig(t, "passphrase", 0, 0)
+	dataDir := t.TempDir()
+	sockDir, err := os.MkdirTemp("", "qrdb-mp-")
+	if err != nil {
+		t.Fatalf("testBarrierPassphraseLifecycleOverProtocol: socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3)
+
+	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
+		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
+	flags := node.adminFlagsFor(proto)
+
+	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+
+	status := barrierStatus(t, cli, flags)
+	if !status.Sealed {
+		t.Fatalf("[%s] expected fresh passphrase barrier to be sealed pre-init, got: %+v", proto.name, status)
+	}
+
+	const passphrase = "correct-horse-battery-staple-1"
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "init", "--barrier-strategy", "passphrase", "--passphrase", passphrase)...); err != nil {
+		t.Fatalf("[%s] barrier init: %v\nstderr: %s", proto.name, err, stderr)
+	}
+
+	status = barrierStatus(t, cli, flags)
+	if status.Sealed {
+		t.Fatalf("[%s] expected barrier to be unsealed immediately after init", proto.name)
+	}
+	if status.Strategy != "passphrase" {
+		t.Errorf("[%s] expected strategy 'passphrase', got %q", proto.name, status.Strategy)
+	}
+
+	waitForHealthy(t, dataDir, 60*time.Second)
+	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"kv", "put", "barrier-cli-key", "barrier-cli-value")...); err != nil {
+		t.Fatalf("[%s] kv put: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "kv", "get", "barrier-cli-key")...)
+	if err != nil {
+		t.Fatalf("[%s] kv get: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	if !strings.Contains(stdout, "barrier-cli-value") {
+		t.Fatalf("[%s] kv get: expected value in output, got: %s", proto.name, stdout)
+	}
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y")...); err != nil {
+		t.Fatalf("[%s] barrier seal: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	status = barrierStatus(t, cli, flags)
+	if !status.Sealed {
+		t.Fatalf("[%s] expected barrier to be sealed after 'barrier seal -y'", proto.name)
+	}
+
+	if _, _, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "unseal", "--passphrase", "definitely-the-wrong-passphrase")...); err == nil {
+		t.Fatalf("[%s] expected non-zero exit for wrong-passphrase unseal", proto.name)
+	}
+	status = barrierStatus(t, cli, flags)
+	if !status.Sealed {
+		t.Fatalf("[%s] wrong-passphrase unseal must not have left the barrier unsealed", proto.name)
+	}
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "unseal", "--passphrase", passphrase)...); err != nil {
+		t.Fatalf("[%s] barrier unseal: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	status = barrierStatus(t, cli, flags)
+	if status.Sealed {
+		t.Fatalf("[%s] expected barrier to be unsealed after the correct passphrase", proto.name)
+	}
+
+	stdout, stderr, err = runCLISplit(t, cli, append(append([]string{}, flags...), "kv", "get", "barrier-cli-key")...)
+	if err != nil {
+		t.Fatalf("[%s] kv get after seal/unseal cycle: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	if !strings.Contains(stdout, "barrier-cli-value") {
+		t.Fatalf("[%s] kv get after seal/unseal cycle: expected surviving value, got: %s", proto.name, stdout)
+	}
+}
+
+// TestBarrierCLI_ShamirLifecycle_PerProtocol is TestBarrierCLI_ShamirLifecycle
+// extended to all 5 CLI-selectable transports: holder enrolment and listing,
+// init-shamir, the one-time envelope claim over BOTH the single-step `claim`
+// and the external-signer `claim-begin`/`claim-complete` split, the
+// authenticated quorum for seal/unseal/root-token, the explicit `barrier
+// rekey` round (with a negative proving the pre-rekey envelopes are
+// revoked), and the independent recovery domain
+// (generate/claim/recover/delete/status) with its own holders.
+func TestBarrierCLI_ShamirLifecycle_PerProtocol(t *testing.T) {
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testBarrierShamirLifecycleOverProtocol(t, proto)
+		})
+	}
+}
+
+func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
+	t.Helper()
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+	workDir := t.TempDir()
+
+	const threshold, total = 2, 3
+	const soPIN, userPIN = "shamir-pp-so-pin", "shamir-pp-user-pin"
+	configPath := writeSealConfig(t, "shamir", threshold, total)
+	dataDir := t.TempDir()
+	sockDir, err := os.MkdirTemp("", "qrdb-mp-")
+	if err != nil {
+		t.Fatalf("testBarrierShamirLifecycleOverProtocol: socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3)
+
+	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
+		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
+	flags := node.adminFlagsFor(proto)
+	ep := node.endpointFor(proto)
+
+	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+
+	status := barrierStatus(t, cli, flags)
+	if !status.Sealed {
+		t.Fatalf("[%s] expected fresh shamir barrier to be sealed pre-init, got: %+v", proto.name, status)
+	}
+
+	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
+	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
+	registerOfficer(t, cli, workDir, flags, "carol", false)
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "init-shamir",
+		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total), "--so-pin", soPIN, "--user-pin", userPIN)...); err != nil {
+		t.Fatalf("[%s] barrier init-shamir: %v\nstderr: %s", proto.name, err, stderr)
+	}
+
+	status = barrierStatus(t, cli, flags)
+	if status.Sealed {
+		t.Fatalf("[%s] expected barrier to be unsealed immediately after init-shamir", proto.name)
+	}
+	if status.Strategy != "shamir" {
+		t.Errorf("[%s] expected strategy %q, got %q", proto.name, "shamir", status.Strategy)
+	}
+
+	waitForHealthy(t, dataDir, 60*time.Second)
+	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+
+	if names := officerListUsernames(t, cli, flags, "unseal"); !contains(names, "alice") || !contains(names, "bob") || !contains(names, "carol") {
+		t.Fatalf("[%s] barrier officer list --domain unseal = %v, want alice/bob/carol", proto.name, names)
+	}
+
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelopeTwoStep(t, cli, workDir, ep, bob, false)
+	firstAlice, firstBob := *alice, *bob
+
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	status = barrierStatus(t, cli, flags)
+	if !status.Sealed {
+		t.Fatalf("[%s] expected barrier to be sealed after the seal quorum", proto.name)
+	}
+
+	out := quorumAll(t, cli, ep, "unseal", "unseal", alice)
+	if out.Complete || out.Submitted != 1 || out.Required != threshold {
+		t.Fatalf("[%s] one of two submissions = %+v, want 1/2 incomplete", proto.name, out)
+	}
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatalf("[%s] a below-threshold round must not unseal the barrier", proto.name)
+	}
+	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", alice); err == nil {
+		t.Fatalf("[%s] a second submission from the same holder was accepted", proto.name)
+	}
+	if out = quorumAll(t, cli, ep, "unseal", "unseal", bob); !out.Complete {
+		t.Fatalf("[%s] second holder submission = %+v, want complete", proto.name, out)
+	}
+	if status = barrierStatus(t, cli, flags); status.Sealed {
+		t.Fatalf("[%s] expected barrier to be unsealed after the unseal quorum", proto.name)
+	}
+
+	out = quorumAll(t, cli, ep, "unseal", "root-token", alice, bob)
+	if !out.Complete || out.RootToken == "" {
+		t.Fatalf("[%s] root-token round = %+v, want a root token", proto.name, out)
+	}
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
+		t.Fatalf("[%s] barrier rekey: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	if out = quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
+		t.Fatalf("[%s] rekey round = %+v, want complete", proto.name, out)
+	}
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, bob, false)
+
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatalf("[%s] expected barrier to be sealed after the post-rekey seal quorum", proto.name)
+	}
+
+	quorumAll(t, cli, ep, "unseal", "unseal", &firstAlice)
+	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", &firstBob); err == nil {
+		t.Fatalf("[%s] a quorum of pre-rekey envelopes completed", proto.name)
+	}
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatalf("[%s] revoked envelopes must not unseal the barrier", proto.name)
+	}
+
+	quorumAll(t, cli, ep, "unseal", "unseal", alice, bob)
+	if status = barrierStatus(t, cli, flags); status.Sealed {
+		t.Fatalf("[%s] expected barrier to be unsealed with the post-rekey envelopes", proto.name)
+	}
+
+	dave := registerOfficer(t, cli, workDir, flags, "dave", true)
+	erin := registerOfficer(t, cli, workDir, flags, "erin", true)
+
+	// `barrier officer list` serves only the unseal domain
+	// (systemHolders.list refuses --domain recovery outright,
+	// cmd/qrdb/barrier_holders.go); that refusal is itself part of the
+	// command's contract and must hold on every transport.
+	if _, _, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "officer", "list", "--domain", "recovery")...); err == nil {
+		t.Fatalf("[%s] barrier officer list --domain recovery unexpectedly succeeded", proto.name)
+	}
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", soPIN)...); err != nil {
+		t.Fatalf("[%s] barrier recovery generate: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	if !barrierHasRecoveryKeys(t, cli, flags) {
+		t.Fatalf("[%s] expected recovery keys to be present after generate", proto.name)
+	}
+
+	claimEnvelope(t, cli, workDir, ep, dave, true)
+	claimEnvelopeTwoStep(t, cli, workDir, ep, erin, true)
+
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatalf("[%s] expected barrier to be sealed before exercising recover", proto.name)
+	}
+
+	if out = quorumAll(t, cli, ep, "recovery", "recover", dave, erin); !out.Complete {
+		t.Fatalf("[%s] recover round = %+v, want complete", proto.name, out)
+	}
+	if status = barrierStatus(t, cli, flags); status.Sealed {
+		t.Fatalf("[%s] expected barrier to be unsealed after the recover quorum", proto.name)
+	}
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "recovery", "delete")...); err != nil {
+		t.Fatalf("[%s] barrier recovery delete: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	if barrierHasRecoveryKeys(t, cli, flags) {
+		t.Fatalf("[%s] expected recovery keys to be absent after delete", proto.name)
 	}
 }
