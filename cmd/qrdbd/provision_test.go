@@ -147,11 +147,36 @@ func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
 }
 
 // A databases[] entry enabling etcd on a binary without qrdb_etcd is
-// refused at boot, before anything is provisioned -- the one caller
-// service.RefuseEtcdNotCompiled's placement in pkg/service cannot reach on
-// its own, because this path creates databases through *database.Manager
-// directly.
-func TestProvisionDatabases_ConfiguredEtcdCapabilityGate(t *testing.T) {
+// refused by validateConfiguredDatabases -- which start.go always calls
+// before provisionDatabases, so this is where "every entry refuses before
+// anything is provisioned" actually lives, not inside provisionDatabases'
+// own per-entry loop. The valid entry is listed FIRST and the etcd one
+// SECOND, so a check that only looked at the first entry would pass this
+// test by accident.
+func TestValidateConfiguredDatabases_RefusesEtcdNotCompiled(t *testing.T) {
+	f := &startFlags{
+		databases: []qrdbconfig.DatabaseConfig{
+			{Name: "orders", Engine: "kv", Backend: "memory"},
+			{Name: "locks", Engine: "kv", Backend: "memory", Etcd: &qrdbconfig.DatabaseEtcdConfig{
+				Enabled: true, ListenAddr: "127.0.0.1:2379",
+			}},
+		},
+	}
+	err := validateConfiguredDatabases(f)
+
+	if !capabilities.Has("etcd") {
+		var capErr *service.CapabilityUnsupportedError
+		require.ErrorAs(t, err, &capErr, "want *service.CapabilityUnsupportedError, got %T: %v", err, err)
+		return
+	}
+	require.NoError(t, err)
+}
+
+// A configured database's etcd block carries through to provisioning.
+// provisionDatabases itself does not re-check the capability -- that is
+// validateConfiguredDatabases's job (see above), and start.go always runs
+// it first -- so this is exercised the same way on every build.
+func TestProvisionDatabases_ConfiguredEntryCarriesEtcd(t *testing.T) {
 	mgr := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &startFlags{
@@ -162,19 +187,9 @@ func TestProvisionDatabases_ConfiguredEtcdCapabilityGate(t *testing.T) {
 		},
 		smType: "memory",
 	}
-	err := provisionDatabases(context.Background(), f, mgr, electedLeader{})
-
-	if !capabilities.Has("etcd") {
-		var capErr *service.CapabilityUnsupportedError
-		require.ErrorAs(t, err, &capErr, "want *service.CapabilityUnsupportedError, got %T: %v", err, err)
-		var notFound *database.NotFoundError
-		_, getErr := mgr.Get("locks")
-		assert.ErrorAs(t, getErr, &notFound, "the refused database must not have been provisioned")
-		return
-	}
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	db, err := mgr.Get("locks")
 	require.NoError(t, err)
-	db, getErr := mgr.Get("locks")
-	require.NoError(t, getErr)
 	require.NotNil(t, db.ProtocolConfig().Etcd)
 	assert.True(t, db.ProtocolConfig().Etcd.Enabled)
 }

@@ -56,9 +56,6 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
 	for _, cfg := range configuredDatabases(f) {
-		if err := service.RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
-			return err
-		}
 		if _, err := dbs.Provision(ctx, cfg); err != nil {
 			return err
 		}
@@ -153,9 +150,22 @@ func sqlDatabaseConfig(f *startFlags) database.DatabaseConfig {
 // validateConfiguredDatabases rejects an invalid configured database before
 // the node starts. Provisioning itself waits for the data plane, and a
 // configuration error must not wait for a Raft leader to be reported.
+//
+// RefuseEtcdNotCompiled runs over EVERY configured entry here, before
+// provisionDatabases provisions any of them: on a binary without
+// qrdb_etcd, a `databases:` list with its etcd-enabled entry listed
+// second must refuse before the first entry is ever created, not after --
+// this is the one caller the capability check added for pkg/service's own
+// Create/CreateForTenant/UpdateEtcd/UpdateEtcdForTenant could not reach
+// (boot-time provisioning calls *database.Manager directly), so it carries
+// the same all-before-any discipline cfg.Validate() already has here
+// rather than being interleaved into provisionDatabases' per-entry loop.
 func validateConfiguredDatabases(f *startFlags) error {
 	for _, cfg := range configuredDatabases(f) {
 		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		if err := service.RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
 			return err
 		}
 	}
