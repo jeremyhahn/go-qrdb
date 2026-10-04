@@ -127,3 +127,31 @@ func (e *StoreError) Error() string {
 
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *StoreError) Unwrap() error { return e.Err }
+
+// NotAReplicaError refuses serving a dedicated-raft database on a node its
+// placement does not name. The node must not resolve the database through its
+// own catalog or start a shard of its own: a write it acknowledged there would
+// never reach the real replicas. Replicas is the placement's replica set, so
+// the caller can retry against one of them.
+type NotAReplicaError struct {
+	TenantID string
+	Database string
+	ShardID  uint64
+	// NodeID is the node that refused.
+	NodeID string
+	// Replicas is the replica set the placement names.
+	Replicas []Replica
+}
+
+// Error implements the error interface.
+func (e *NotAReplicaError) Error() string {
+	msg := "placement: node " + e.NodeID + " is not a replica of " + e.TenantID + "/" + e.Database +
+		" (shard " + strconv.FormatUint(e.ShardID, 10) + "); its replicas are on"
+	for i, r := range e.Replicas {
+		if i > 0 {
+			msg += ","
+		}
+		msg += " " + r.NodeID
+	}
+	return msg
+}

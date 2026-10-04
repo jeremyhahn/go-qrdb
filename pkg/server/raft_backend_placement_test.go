@@ -195,10 +195,13 @@ func TestPlacementInfoSource_NoEntryFallsBack(t *testing.T) {
 	}
 }
 
-// TestPlacementInfoSource_NoLocalReplicaFallsBack verifies that a placement
-// entry assigning no replica to the local node defers to the fallback so this
-// stage never regresses single-node behavior.
-func TestPlacementInfoSource_NoLocalReplicaFallsBack(t *testing.T) {
+// TestPlacementInfoSource_NoLocalReplicaIsRefused verifies a placement entry
+// that assigns no replica to the local node is refused with
+// *placement.NotAReplicaError carrying the replica set -- never resolved
+// through the local catalog. Falling back started a single-node shard on a
+// node that is not a replica, which acknowledged writes the real replica
+// never saw; they were lost when the reconciler purged the impostor.
+func TestPlacementInfoSource_NoLocalReplicaIsRefused(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
@@ -210,12 +213,23 @@ func TestPlacementInfoSource_NoLocalReplicaFallsBack(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	fallback := newFakeRaftInfoSource()
-	fallback.add("rt", "orders", 1234, "/meta/root")
+	fallback.add("rt", "orders", 1234, "/meta/root") // the local catalog knows it too
 
-	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback, timeout: placementResolveTimeout}
-	shardID, _, ok := src.databaseInfo("rt", "orders", false)
-	if !ok || shardID != 1234 {
-		t.Fatalf("expected fallback shard 1234, got (%d,%v)", shardID, ok)
+	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+	if shardID, _, ok := src.databaseInfo("rt", "orders", false); ok {
+		t.Fatalf("databaseInfo resolved shard %d on a node that is not a replica", shardID)
+	}
+	_, _, _, ok, err := src.databaseAndPlacementInfo("rt", "orders")
+	var nar *placement.NotAReplicaError
+	if ok || !errors.As(err, &nar) {
+		t.Fatalf("databaseAndPlacementInfo = ok %v, %v; want *placement.NotAReplicaError", ok, err)
+	}
+	if nar.NodeID != "local:1" || nar.ShardID != 7777 || len(nar.Replicas) != 1 || nar.Replicas[0].NodeID != "remote:1" {
+		t.Fatalf("NotAReplicaError = %+v; want local:1 refused for shard 7777 with replica remote:1", nar)
+	}
+	if !strings.Contains(nar.Error(), "remote:1") {
+		t.Fatalf("the refusal %q does not name the replica set", nar.Error())
 	}
 }
 

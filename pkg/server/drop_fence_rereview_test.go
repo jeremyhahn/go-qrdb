@@ -239,3 +239,35 @@ func TestRaftBackendFactory_EvictionPurgesOnlyTheDroppedShard(t *testing.T) {
 		t.Fatalf("the new shard's directory did not survive: %v", err)
 	}
 }
+
+// TestRaftBackendFactory_Services_RefusesOnANodeThatIsNotAReplica: a node the
+// placement does not name -- here, the node that created the database --
+// refuses with *placement.NotAReplicaError and starts no shard, even though its
+// own catalog knows the database.
+func TestRaftBackendFactory_Services_RefusesOnANodeThatIsNotAReplica(t *testing.T) {
+	store := newPlacementStore(t)
+	reg := newVolumePooledRegistry(t)
+	registerVolumeTenant(t, reg, "rt")
+	ctx := context.Background()
+	if err := store.Put(ctx, &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 5070, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "elsewhere:1", RaftAddr: "elsewhere:1"}},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
+	src := f.dbInfo.(*placementRaftInfoSource)
+	src.fallback.(*fakeRaftInfoSource).add("rt", "orders", 5070, t.TempDir())
+
+	_, err := f.Services(ctx, "rt", "orders")
+	var nar *placement.NotAReplicaError
+	if !errors.As(err, &nar) {
+		t.Fatalf("Services() = %v; want *placement.NotAReplicaError", err)
+	}
+	f.mu.Lock()
+	started := len(f.shards)
+	f.mu.Unlock()
+	if started != 0 {
+		t.Fatalf("a node that is not a replica started %d shard(s)", started)
+	}
+}

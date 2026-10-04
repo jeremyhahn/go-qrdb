@@ -121,6 +121,9 @@ var dominantRules = []rule{
 	as(&seal.AbsoluteDataRootRecordError{}, FailedPrecondition),
 	as(&seal.TenantRootUnresolvedError{}, FailedPrecondition),
 	as(&seal.DataRootOutsideLocalRootsError{}, Internal),
+	// A dedicated-raft database asked of a node its placement does not name:
+	// retryable against one of the replicas the refusal lists.
+	as(&placement.NotAReplicaError{}, Unavailable),
 
 	// Cluster sealing. Dominant, because the tenant and database services
 	// wrap them in their own barrier errors: a seal or clear record whose

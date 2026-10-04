@@ -1327,10 +1327,9 @@ type placementRaftInfoSource struct {
 
 // databaseInfo returns the local replica's shard ID and DataRoot for the
 // (tenant, db) database. When a placement entry exists and assigns a replica to
-// the local node, that entry wins; otherwise it falls back to the meta-derived
-// source. A placement entry that does NOT assign a replica to the local node
-// still defers to the fallback so this stage never regresses (multi-node
-// placement materialization is Phase 4c-1d).
+// the local node, that entry wins; when no placement entry exists it falls back
+// to the meta-derived source. A placement entry that does NOT assign a replica
+// to the local node resolves nothing: the node is not a replica.
 //
 // Placement records no path for any replica, so each node resolves its own:
 // databaseInfo calls the localRootResolver to compute this node's
@@ -1349,8 +1348,10 @@ func (s *placementRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence 
 
 // databaseAndPlacementInfo performs a single placement-table lookup and returns
 // the shard ID, resolved DataDir, the full Placement, and ok=true when the
-// local node hosts a replica for (tenantID, db). This avoids two separate
-// store.Get calls in Services (M2 optimization).
+// local node hosts a replica for (tenantID, db). A placement entry that names
+// only other nodes is *placement.NotAReplicaError, never ok=false: ok=false
+// means "no placement", which callers resolve through the local catalog. This
+// avoids two separate store.Get calls in Services (M2 optimization).
 func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) (shardID uint64, dataDir string, p *placement.Placement, ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
@@ -1366,7 +1367,13 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 	}
 	r, assigned := p.ReplicaForNode(s.localNodeID)
 	if !assigned {
-		return 0, "", nil, false, nil
+		// The placement names other nodes. Never fall back to the local
+		// catalog here: that started a single-node shard on a node that is not
+		// a replica, which acknowledged writes the real replicas never saw.
+		return 0, "", nil, false, &placement.NotAReplicaError{
+			TenantID: tenantID, Database: db, ShardID: p.ShardID,
+			NodeID: s.localNodeID, Replicas: p.Replicas,
+		}
 	}
 	// A placement record names no path: one would name the disk of the node
 	// that wrote it. Refuse a record that carries one rather than open it.

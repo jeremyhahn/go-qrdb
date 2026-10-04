@@ -23,6 +23,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -180,6 +181,7 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		{"tenant-root record names a path", &seal.AbsoluteDataRootRecordError{TenantID: "t", DataRoot: "/d"}, FailedPrecondition},
 		{"recorded slot does not resolve here", &seal.TenantRootUnresolvedError{TenantID: "t", Pool: "p", Err: errors.New("x")}, FailedPrecondition},
 		{"removal outside this node's pool", &seal.DataRootOutsideLocalRootsError{DataRoot: "/d"}, Internal},
+		{"node is not a replica of the database", &placement.NotAReplicaError{TenantID: "t", Database: "d", NodeID: "n"}, Unavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, e := range map[string]error{"bare": tc.err, "wrapped": wrapped{tc.err}} {
