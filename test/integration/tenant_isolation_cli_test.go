@@ -65,6 +65,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -781,64 +782,121 @@ func assertNotAuthorizationDenied(t *testing.T, node *multiProtoNode, proto mult
 	}
 }
 
-// mvccCompactPermissions grants a tenant identity the store-global
-// mvcc:compact verb (plus the connect permission). mvcc:compact is registered
-// ScopeCross, so even a tenant that HOLDS it must be denied at the RBAC
-// authorizer -- only the system tenant may compact.
-var mvccCompactPermissions = []string{
-	"mvcc:compact",
-	"admin:health",
-}
+// mvccCompactPermissions grants a tenant identity what the compaction proof
+// below drives: its own database, KV writes and revision reads, and
+// mvcc:compact. Compaction is per database (v0.33.0): mvcc:compact is the
+// owning tenant's right over its own database's history, ScopeSelfStrict, so
+// holding it never reaches another tenant's database or the system's.
+var mvccCompactPermissions = append(append([]string{}, dataPlanePermissions...), "kv:range", "mvcc:range", "mvcc:current_revision", "mvcc:compact")
 
-// TestTenantIsolation_MVCCCompact_SystemOnly_PerProtocol proves that MVCC
-// compaction -- which discards a store-GLOBAL revision counter shared by every
-// prefix-isolated tenant, destroying other tenants' time-travel history -- is
-// reserved for the system tenant on EVERY transport. A tenant-local identity
-// that HOLDS mvcc:compact is refused a permission denial (the ScopeCross authz
-// gate), while the SYSTEM admin's identical compaction succeeds.
-func TestTenantIsolation_MVCCCompact_SystemOnly_PerProtocol(t *testing.T) {
+// TestTenantIsolation_MVCCCompact_OwnDatabaseOnly_PerProtocol proves on every
+// transport that a tenant holding mvcc:compact compacts its OWN database and
+// nothing else. Naming another tenant's database or the system's is refused
+// (ownership fails closed to "not found"), and after the tenant compacts its
+// own database, the other tenant's and the system's history at their old
+// revisions still reads back -- the compaction never lifted onto a keyspace
+// the tenant does not own -- while the tenant's own old revision is gone.
+func TestTenantIsolation_MVCCCompact_OwnDatabaseOnly_PerProtocol(t *testing.T) {
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
-			tenantID := "cmp-" + suffix
-			createTenant(t, node, proto, tenantID, "Compact Tenant", "prefix", false)
-			certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "cmp-admin-"+suffix, mvccCompactPermissions)
-			tenantConn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
-
-			// Tenant caller: refused a permission denial by the ScopeCross gate.
-			out, err := runQRDB(t, node.cli, tenantConn, "kv", "compact", "--revision", "1")
-			if err == nil {
-				t.Fatalf("[%s] tenant mvcc compact must be FORBIDDEN (mvcc:compact is system-only), got success: %s", proto.name, out)
-			}
-			// The denial wording is normalized differently per transport (gRPC/
-			// unix surface the RBAC "insufficient permissions"/"unauthorized"
-			// text; MCP/REST/QUIC carry the fuller "cross-scope permission
-			// requires system tenant"), so accept any authorization-denial
-			// marker -- the point proven is that it is refused as a permission
-			// denial, never silently compacted.
-			lower := strings.ToLower(out)
-			if !strings.Contains(lower, "permission denied") &&
-				!strings.Contains(lower, "permissiondenied") &&
-				!strings.Contains(lower, "not permitted") &&
-				!strings.Contains(lower, "forbidden") &&
-				!strings.Contains(lower, "unauthorized") &&
-				!strings.Contains(lower, "insufficient permission") &&
-				!strings.Contains(lower, "system tenant") {
-				t.Fatalf("[%s] tenant mvcc compact must be refused as a permission denial, got: %s", proto.name, out)
-			}
-
-			// System caller: the identical compaction is admitted. Advance the
-			// revision with a write first so compacting to revision 1 is valid.
-			sysConn := node.cliArgsFor(proto)
-			if out, err := runQRDB(t, node.cli, sysConn, "kv", "put", "cmp-seed-"+suffix, "v"); err != nil {
-				t.Fatalf("[%s] system kv put (seed revision): %v\noutput: %s", proto.name, err, out)
-			}
-			if out, err := runQRDB(t, node.cli, sysConn, "kv", "compact", "--revision", "1"); err != nil {
-				t.Fatalf("[%s] system mvcc compact must succeed (legitimate admin path): %v\noutput: %s", proto.name, err, out)
-			}
+			testOwnDatabaseCompactionOverProtocol(t, node, proto)
 		})
 	}
+}
+
+// compactionHistory is one identity's database with a key written twice: the
+// first value, and the store revision it was written at.
+type compactionHistory struct {
+	conn     []string
+	db       string
+	first    string
+	firstRev int64
+}
+
+func testOwnDatabaseCompactionOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	const key = "history"
+
+	tenantA, tenantB := "cmp-a-"+suffix, "cmp-b-"+suffix
+	createTenant(t, node, proto, tenantA, "Compact Tenant A", "prefix", false)
+	createTenant(t, node, proto, tenantB, "Compact Tenant B", "prefix", false)
+	certA, keyA := provisionTenantIdentity(t, node, tenantA, "cmp-admin", mvccCompactPermissions)
+	certB, keyB := provisionTenantIdentity(t, node, tenantB, "cmp-admin", mvccCompactPermissions)
+
+	write := func(conn []string, db, owner string) compactionHistory {
+		t.Helper()
+		if out, err := runQRDB(t, node.cli, conn, "database", "create", db, "--engine", "kv", "--backend", "pebble"); err != nil {
+			t.Fatalf("[%s] %s database create %s: %v\noutput: %s", proto.name, owner, db, err, out)
+		}
+		h := compactionHistory{conn: conn, db: db, first: owner + "-first-" + suffix}
+		if out, err := runQRDB(t, node.cli, conn, "--database", db, "kv", "put", key, h.first); err != nil {
+			t.Fatalf("[%s] %s kv put: %v\noutput: %s", proto.name, owner, err, out)
+		}
+		h.firstRev = compactionRevision(t, node, proto, conn, db)
+		if out, err := runQRDB(t, node.cli, conn, "--database", db, "kv", "put", key, owner+"-second-"+suffix); err != nil {
+			t.Fatalf("[%s] %s kv put (second): %v\noutput: %s", proto.name, owner, err, out)
+		}
+		return h
+	}
+	a := write(tenantCLIArgsForProto(node, proto, certA, keyA), "cmp-db-a-"+suffix, "tenant-a")
+	b := write(tenantCLIArgsForProto(node, proto, certB, keyB), "cmp-db-b-"+suffix, "tenant-b")
+	sys := write(node.cliArgsFor(proto), "cmp-db-sys-"+suffix, "system")
+
+	// The history a database owner reads at its first revision.
+	readsFirst := func(h compactionHistory) (string, error) {
+		return runQRDB(t, node.cli, h.conn, "--database", h.db, "kv", "range", key, "--revision", strconv.FormatInt(h.firstRev, 10))
+	}
+	assertIntact := func(h compactionHistory, after string) {
+		t.Helper()
+		out, err := readsFirst(h)
+		if err != nil || !strings.Contains(out, h.first) {
+			t.Fatalf("[%s] %s: database %s at revision %d = %q (err=%v), want %q -- another identity's compaction reached it",
+				proto.name, after, h.db, h.firstRev, out, err, h.first)
+		}
+	}
+
+	revision := strconv.FormatInt(compactionRevision(t, node, proto, a.conn, a.db), 10)
+
+	// Tenant A names a database it does not own: refused, nothing compacted.
+	for _, other := range []compactionHistory{b, sys} {
+		if out, err := runQRDB(t, node.cli, a.conn, "--database", other.db, "kv", "compact", "--revision", revision); err == nil {
+			t.Fatalf("[%s] tenant A compacting %s, which it does not own, must be refused, got: %s", proto.name, other.db, out)
+		}
+	}
+	assertIntact(b, "after tenant A's refused compaction")
+	assertIntact(sys, "after tenant A's refused compaction")
+
+	// Tenant A compacts its own database: admitted, and its own first
+	// revision is gone.
+	if out, err := runQRDB(t, node.cli, a.conn, "--database", a.db, "kv", "compact", "--revision", revision); err != nil {
+		t.Fatalf("[%s] tenant A compacting its own database must succeed: %v\noutput: %s", proto.name, err, out)
+	}
+	if out, err := readsFirst(a); err == nil && strings.Contains(out, a.first) {
+		t.Fatalf("[%s] tenant A still reads revision %d of its own compacted database: %s", proto.name, a.firstRev, out)
+	}
+
+	// Nothing else was compacted.
+	assertIntact(b, "after tenant A compacted its own database")
+	assertIntact(sys, "after tenant A compacted its own database")
+}
+
+// compactionRevision returns the current store revision as conn reads it
+// through database db.
+func compactionRevision(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, db string) int64 {
+	t.Helper()
+	out, err := runQRDB(t, node.cli, conn, "--output", "json", "--database", db, "kv", "revision")
+	if err != nil {
+		t.Fatalf("[%s] kv revision on %s: %v\noutput: %s", proto.name, db, err, out)
+	}
+	var resp struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := json.Unmarshal([]byte(out[strings.Index(out, "{"):]), &resp); err != nil || resp.Revision == 0 {
+		t.Fatalf("[%s] kv revision on %s: decode %q: %v", proto.name, db, out, err)
+	}
+	return resp.Revision
 }
