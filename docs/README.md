@@ -90,6 +90,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [trust-bootstrap](trust-bootstrap/) | client-side CA trust establishment *(command shape only — see its docs)* |
 | [certificate-authority](certificate-authority/) | client certificate issuance, export, revocation |
 | [credentials](credentials/) | named credentials, versioned rotation, secret resolution |
+| [key-wrapping](key-wrapping/) | the KEK provider seam (`keywrap.Provider`), the software implementation, the registry, backup's envelope encryption |
 | [tenant-dek](tenant-dek/) | the per-tenant versioned data encryption keyring: encrypt, decrypt, rewrap, rotate, retire |
 | [identity-rbac](identity-rbac/) | users, roles, the permission vocabulary, the RBAC PDP |
 | [auth-factors](auth-factors/) | the `Factor` framework, the N-factor model, PIN custody |
