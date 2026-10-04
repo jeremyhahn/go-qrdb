@@ -30,7 +30,7 @@ import (
 // for pkg/server's registry: a namespaced KVServicer composite-prefixes
 // every key before it reaches the shared store, which already makes a
 // literal "__sys:cluster_ca/..." request physically harmless there (see
-// hardConfinedPrefix's own doc comment). The embedded transport's
+// hardConfinedPrefixes' own doc comment). The embedded transport's
 // services carry no such prefix.
 //
 // Point-key methods (Get, Put, PutIfAbsent, CompareAndSwap, CompareAndDelete,
@@ -110,14 +110,14 @@ func (h *hardConfinedKV) Delete(ctx context.Context, key string) error {
 }
 
 func (h *hardConfinedKV) List(ctx context.Context, prefix string) ([]string, error) {
-	if isHardConfinedKey(prefix) {
+	if isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 		return nil, &HardConfinedKeyError{Key: prefix}
 	}
 	keys, err := h.KVServicer.List(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedKeys(keys), nil
+	return filterHardConfinedKeys(keys, prefix), nil
 }
 
 func (h *hardConfinedKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
@@ -125,18 +125,18 @@ func (h *hardConfinedKV) ListAll(ctx context.Context, prefix string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedKeys(keys), nil
+	return filterHardConfinedKeys(keys, prefix), nil
 }
 
 func (h *hardConfinedKV) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
-	if isHardConfinedKey(prefix) {
+	if isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 		return nil, &HardConfinedKeyError{Key: prefix}
 	}
 	data, err := h.KVServicer.Scan(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedMap(data), nil
+	return filterHardConfinedMap(data, prefix), nil
 }
 
 func (h *hardConfinedKV) GetStale(ctx context.Context, key string) ([]byte, error) {
@@ -147,25 +147,25 @@ func (h *hardConfinedKV) GetStale(ctx context.Context, key string) ([]byte, erro
 }
 
 func (h *hardConfinedKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
-	if isHardConfinedKey(prefix) {
+	if isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 		return nil, &HardConfinedKeyError{Key: prefix}
 	}
 	keys, err := h.KVServicer.ListStale(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedKeys(keys), nil
+	return filterHardConfinedKeys(keys, prefix), nil
 }
 
 func (h *hardConfinedKV) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
-	if isHardConfinedKey(prefix) {
+	if isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 		return nil, &HardConfinedKeyError{Key: prefix}
 	}
 	data, err := h.KVServicer.ScanStale(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedMap(data), nil
+	return filterHardConfinedMap(data, prefix), nil
 }
 
 func (h *hardConfinedKV) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
@@ -190,25 +190,25 @@ func (h *hardConfinedKV) GetWithConsistency(ctx context.Context, key string, opt
 }
 
 func (h *hardConfinedKV) ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error) {
-	if isHardConfinedKey(prefix) {
+	if isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 		return nil, &HardConfinedKeyError{Key: prefix}
 	}
 	keys, err := h.KVServicer.ListWithConsistency(ctx, prefix, opts)
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedKeys(keys), nil
+	return filterHardConfinedKeys(keys, prefix), nil
 }
 
 func (h *hardConfinedKV) ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error) {
-	if isHardConfinedKey(prefix) {
+	if isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 		return nil, &HardConfinedKeyError{Key: prefix}
 	}
 	data, err := h.KVServicer.ScanWithConsistency(ctx, prefix, opts)
 	if err != nil {
 		return nil, err
 	}
-	return filterHardConfinedMap(data), nil
+	return filterHardConfinedMap(data, prefix), nil
 }
 
 func (h *hardConfinedKV) ExistsWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) (bool, error) {
@@ -255,7 +255,7 @@ func (h *hardConfinedKV) DeleteEntity(ctx context.Context, req *DeleteEntityRequ
 // filtered here is owed or attempted.
 func (h *hardConfinedKV) ListEntities(ctx context.Context, req *ListEntitiesRequest) (*ListEntitiesResponse, error) {
 	if req != nil {
-		if composed := entityPrefix(req.EntityType) + req.Prefix; isHardConfinedKey(composed) {
+		if composed := entityPrefix(req.EntityType) + req.Prefix; isHardConfinedKey(composed) || isHardConfinedRoot(composed) {
 			return nil, &HardConfinedKeyError{Key: composed}
 		}
 	}

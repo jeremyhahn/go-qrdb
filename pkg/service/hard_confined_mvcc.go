@@ -198,28 +198,47 @@ func (h *hardConfinedMVCC) RangeWithConsistency(ctx context.Context, start, end 
 }
 
 // confinedCountInRange returns how many hard-confined keys fall within
-// [start, end), via a dedicated WithCountOnly sub-query restricted to the
-// overlap of [start, end) with the confined namespace -- issued only when
-// there is an overlap at all, so an ordinary application range that never
-// touches "__sys:cluster_ca/" costs nothing beyond the overlap check.
+// [start, end), via a dedicated sub-query restricted to the overlap of
+// [start, end) with a confined prefix -- issued only when there is an
+// overlap at all, so an ordinary application range that never touches a
+// CA prefix costs nothing beyond the overlap check.
+//
+// The sub-query cannot use WithCountOnly: a confined prefix's overlap
+// region holds BOTH its "material" record (hard-confined) and its
+// "certificate" sibling (public, never confined -- see this package's
+// own hard_confined_keys.go doc comment), and a raw store-level count
+// over that region counts both. isHardConfinedKey is the precise filter
+// filterHardConfinedKeyValues itself uses on the OUTER range's results,
+// so the correction counted here must apply the identical filter to its
+// own sub-query's results, or it would subtract one confined key too
+// many for every CA prefix the outer range actually reaches.
+//
 // callerOpts' own WithRevision (if any) is carried through to the
 // sub-query unchanged, so a historical range (GetAtRevision-shaped)
 // subtracts only the confined records that existed at THAT revision, not
 // however many exist at the current one.
 func (h *hardConfinedMVCC) confinedCountInRange(ctx context.Context, start, end []byte, callerOpts []RangeOption, rangeFn func(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error)) (int64, error) {
-	if !hardConfinedRangeOverlaps(string(start), string(end)) {
+	ranges := hardConfinedOverlapRanges(start, end)
+	if len(ranges) == 0 {
 		return 0, nil
 	}
-	clampedStart, clampedEnd := clampRangeToHardConfined(start, end)
-	subOpts := []RangeOption{WithCountOnly()}
+	var subOpts []RangeOption
 	if resolved := ApplyRangeOptions(callerOpts); resolved.Revision != 0 {
 		subOpts = append(subOpts, WithRevision(resolved.Revision))
 	}
-	_, confined, _, err := rangeFn(ctx, clampedStart, clampedEnd, subOpts...)
-	if err != nil {
-		return 0, err
+	var total int64
+	for _, r := range ranges {
+		kvs, _, _, err := rangeFn(ctx, r[0], r[1], subOpts...)
+		if err != nil {
+			return 0, err
+		}
+		for _, kv := range kvs {
+			if kv != nil && isHardConfinedKey(string(kv.Key)) {
+				total++
+			}
+		}
 	}
-	return confined, nil
+	return total, nil
 }
 
 // filterHardConfinedKeyValues returns a new slice with any *KeyValue whose

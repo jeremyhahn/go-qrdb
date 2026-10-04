@@ -289,7 +289,7 @@ func WithCollectionService(svc service.CollectionServicer) Option {
 // services. New is the one seam every composer of an embedded transport
 // goes through -- NewServer below, sdk/go/node, the desktop's
 // cmd/qrdb/bindings_server.go, and cmd/qrdbd/start.go -- and these
-// services are UN-namespaced (see service.hardConfinedPrefix's own doc
+// services are UN-namespaced (see service.hardConfinedPrefixes' own doc
 // comment): no composite (tenant, db) prefix sits in front of them the
 // way pkg/server's registry prepends one, so a literal
 // "__sys:cluster_ca/..." request physically reaches that record if the

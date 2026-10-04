@@ -166,7 +166,7 @@ func (f *fakeKV) ListEntities(ctx context.Context, req *ListEntitiesRequest) (*L
 	return &ListEntitiesResponse{Keys: ids, TotalCount: int64(len(ids))}, nil
 }
 
-const confinedKey = hardConfinedPrefix + "material"
+var confinedKey = hardConfinedPrefixes[0] + "material"
 
 // confinedEntityType and confinedEntityID compose, via entityKey, to
 // exactly confinedKey -- "{entityType}/{id}" is "__sys:cluster_ca/material"
@@ -266,23 +266,23 @@ func TestHardConfinedKV_EnumerationMethodsRefuseTheConfinedPrefix(t *testing.T) 
 	fake.store[confinedKey] = []byte("secret")
 	kv := NewHardConfinedKV(fake)
 
-	if _, err := kv.List(ctx, hardConfinedPrefix); err == nil {
-		t.Fatal("List(hardConfinedPrefix) succeeded, want a refusal")
+	if _, err := kv.List(ctx, hardConfinedPrefixes[0]); err == nil {
+		t.Fatal("List(hardConfinedPrefixes[0]) succeeded, want a refusal")
 	}
-	if _, err := kv.Scan(ctx, hardConfinedPrefix); err == nil {
-		t.Fatal("Scan(hardConfinedPrefix) succeeded, want a refusal")
+	if _, err := kv.Scan(ctx, hardConfinedPrefixes[0]); err == nil {
+		t.Fatal("Scan(hardConfinedPrefixes[0]) succeeded, want a refusal")
 	}
-	if _, err := kv.ListStale(ctx, hardConfinedPrefix); err == nil {
-		t.Fatal("ListStale(hardConfinedPrefix) succeeded, want a refusal")
+	if _, err := kv.ListStale(ctx, hardConfinedPrefixes[0]); err == nil {
+		t.Fatal("ListStale(hardConfinedPrefixes[0]) succeeded, want a refusal")
 	}
-	if _, err := kv.ScanStale(ctx, hardConfinedPrefix); err == nil {
-		t.Fatal("ScanStale(hardConfinedPrefix) succeeded, want a refusal")
+	if _, err := kv.ScanStale(ctx, hardConfinedPrefixes[0]); err == nil {
+		t.Fatal("ScanStale(hardConfinedPrefixes[0]) succeeded, want a refusal")
 	}
-	if _, err := kv.ListWithConsistency(ctx, hardConfinedPrefix, consistency.ReadOptions{}); err == nil {
-		t.Fatal("ListWithConsistency(hardConfinedPrefix) succeeded, want a refusal")
+	if _, err := kv.ListWithConsistency(ctx, hardConfinedPrefixes[0], consistency.ReadOptions{}); err == nil {
+		t.Fatal("ListWithConsistency(hardConfinedPrefixes[0]) succeeded, want a refusal")
 	}
-	if _, err := kv.ScanWithConsistency(ctx, hardConfinedPrefix, consistency.ReadOptions{}); err == nil {
-		t.Fatal("ScanWithConsistency(hardConfinedPrefix) succeeded, want a refusal")
+	if _, err := kv.ScanWithConsistency(ctx, hardConfinedPrefixes[0], consistency.ReadOptions{}); err == nil {
+		t.Fatal("ScanWithConsistency(hardConfinedPrefixes[0]) succeeded, want a refusal")
 	}
 }
 

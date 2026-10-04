@@ -718,19 +718,31 @@ func (p *DefaultCertProvider) ListCerts(ctx context.Context, tenantID string) ([
 	return records, nil
 }
 
-// materialRecordSuffix is the KVStore record name a tenant's Key B CA key
-// and certificate are stored under, together, as one atomically-written
-// record (prefixCertCA + tenantID + "/" + materialRecordSuffix). It mirrors
-// cakey.SoftwareProvider's own unexported keyMaterial constant -- duplicated
-// here, rather than imported, because it names a storage record shape the
-// cakey package does not export, exactly as prefixCertCA already must stay
-// in sync with cakey's own prefix convention. Scanning it only discovers
-// WHICH tenants have established Key B material; the certificate itself is
-// always read back through resolveKeyProvider/loadOnlyCertificate (the
-// cakey.Provider interface), never decoded from the scanned record
-// directly, so this package never duplicates cakey's own JSON envelope
-// format or touches a key's DER bytes for a trust decision.
+// materialRecordSuffix is the KVStore record name a tenant's Key B CA
+// private key is stored under (prefixCertCA + tenantID + "/" +
+// materialRecordSuffix), cakey.SoftwareProvider's split "material" record.
+// It mirrors cakey.SoftwareProvider's own unexported keyMaterial constant
+// -- duplicated here, rather than imported, because it names a storage
+// record shape the cakey package does not export, exactly as
+// prefixCertCA already must stay in sync with cakey's own prefix
+// convention. Nothing in this package Scans for it (see certRecordSuffix,
+// below, for why): it names the record only for a direct, single-key Put
+// in this package's own tests.
 const materialRecordSuffix = "/material"
+
+// certRecordSuffix is cakey.SoftwareProvider's companion record name to
+// materialRecordSuffix: the public certificate half of the same atomic
+// batch write. CACertPEMs' tenant-discovery scan (below) matches THIS
+// suffix, not materialRecordSuffix, because the certificate is public
+// data (pkg/cakey/software.go's own Seal doc comment) and never
+// hard-confined (pkg/service/hard_confined_keys.go), where the material
+// record is -- including from pkg/service.KVService.Scan's own
+// owner-enumerates escape this provider's kvStore rides on. Every tenant
+// with a material record has a certificate record too, written together
+// in cakey's one atomic batch, so discovering tenant IDs from this
+// sibling finds the identical set without ever asking the filtered Scan
+// to surface a record it must refuse every other caller.
+const certRecordSuffix = "/certificate"
 
 // CACertPEMs returns the PEM-encoded Key B CA certificate for every tenant
 // that has established one -- or, when WithKeyProvider replaced the built-in
@@ -767,11 +779,11 @@ func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) 
 
 	var tenantIDs []string
 	if err := p.kvStore.Scan(ctx, prefixCertCA, func(key string, _ []byte) error {
-		if !strings.HasSuffix(key, materialRecordSuffix) {
+		if !strings.HasSuffix(key, certRecordSuffix) {
 			return nil
 		}
 		rel := strings.TrimPrefix(key, prefixCertCA)
-		tenantID := strings.TrimSuffix(rel, materialRecordSuffix)
+		tenantID := strings.TrimSuffix(rel, certRecordSuffix)
 		if tenantID == "" {
 			return nil
 		}

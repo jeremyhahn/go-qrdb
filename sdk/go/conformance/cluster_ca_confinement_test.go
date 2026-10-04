@@ -15,6 +15,7 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -149,23 +150,47 @@ func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 				t.Fatalf("%s: KV().Get(cluster CA key) = %q, want absent or refused", tk, v)
 			}
 
-			rangeResp, err := client.MVCC().Range(ctx, []byte(""), []byte("\xff"), transport.RangeOptions{Revision: 1})
-			if err == nil {
-				for _, kv := range rangeResp.Kvs {
-					if string(kv.Key) == clusterCAMaterialKey {
-						t.Fatalf("%s: MVCC().Range returned the cluster CA key material", tk)
-					}
+			// A wide-open Range or Watch is a legitimate call this
+			// namespace's own hard-confinement wrapper FILTERS rather than
+			// refuses (pkg/service/hard_confined_mvcc.go, hard_confined_watch.go):
+			// go-qrdb#591's review found this test treating either call's
+			// OWN error as an acceptable outcome, silently skipping the
+			// check it exists to make rather than failing it. Both calls
+			// below must succeed; an error here is itself the regression.
+			rangeResp, err := client.MVCC().Range(ctx, []byte{0x00}, []byte("\xff"), transport.RangeOptions{Revision: 1})
+			if err != nil {
+				t.Fatalf("%s: MVCC().Range(\"\", \"\\xff\", revision 1): %v", tk, err)
+			}
+			for _, kv := range rangeResp.Kvs {
+				if kv == nil {
+					continue
+				}
+				if string(kv.Key) == clusterCAMaterialKey {
+					t.Fatalf("%s: MVCC().Range returned the cluster CA key material", tk)
+				}
+				// Assert on value bytes too, not only the key name: a
+				// confinement bug that renamed or re-prefixed the key
+				// while leaving the secret attached to it would pass a
+				// key-name-only check and still leak the actual material.
+				if bytes.Contains(kv.Value, secretMaterial) {
+					t.Fatalf("%s: MVCC().Range returned a value containing the cluster CA key material", tk)
 				}
 			}
 
+			// "__sys:cluster_ca/", not "": the REST transport's watch
+			// handler treats an empty key/prefix as a missing required
+			// parameter and refuses it outright (handlers_watch.go,
+			// go-qrdb#591's review), and "__sys:cluster_ca/" is the exact
+			// confined prefix anyway -- as targeted a sweep as this test
+			// needs. No sentinel write terminates the loop early: it is
+			// the reserved internal-key namespace, so there is nothing an
+			// ordinary Put inside it that would ever land; the loop drains
+			// for the full timeout instead.
 			watchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			ch, err := client.Watch().WatchPrefix(watchCtx, "", transport.WatchOptions{StartRevision: 1})
+			ch, err := client.Watch().WatchPrefix(watchCtx, "__sys:cluster_ca/", transport.WatchOptions{StartRevision: 1})
 			if err != nil {
-				return
-			}
-			if err := client.KV().Put(ctx, "ordinary/sentinel-"+string(tk), []byte("v")); err != nil {
-				t.Fatalf("%s: Put(ordinary sentinel): %v", tk, err)
+				t.Fatalf("%s: Watch().WatchPrefix(\"__sys:cluster_ca/\", revision 1): %v", tk, err)
 			}
 			for {
 				select {
@@ -174,14 +199,21 @@ func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 						return
 					}
 					for _, ev := range resp.Events {
-						if ev.Kv != nil && string(ev.Kv.Key) == clusterCAMaterialKey {
-							t.Fatalf("%s: WatchPrefix delivered an event naming the cluster CA key material", tk)
+						if ev.Kv != nil {
+							if string(ev.Kv.Key) == clusterCAMaterialKey {
+								t.Fatalf("%s: WatchPrefix delivered an event naming the cluster CA key material", tk)
+							}
+							if bytes.Contains(ev.Kv.Value, secretMaterial) {
+								t.Fatalf("%s: WatchPrefix delivered an event whose value contains the cluster CA key material", tk)
+							}
 						}
-						if ev.PrevKv != nil && string(ev.PrevKv.Key) == clusterCAMaterialKey {
-							t.Fatalf("%s: WatchPrefix delivered a delete/update event whose PrevKv names the cluster CA key material", tk)
-						}
-						if ev.Kv != nil && string(ev.Kv.Key) == "ordinary/sentinel-"+string(tk) {
-							return
+						if ev.PrevKv != nil {
+							if string(ev.PrevKv.Key) == clusterCAMaterialKey {
+								t.Fatalf("%s: WatchPrefix delivered a delete/update event whose PrevKv names the cluster CA key material", tk)
+							}
+							if bytes.Contains(ev.PrevKv.Value, secretMaterial) {
+								t.Fatalf("%s: WatchPrefix delivered a delete/update event whose PrevKv value contains the cluster CA key material", tk)
+							}
 						}
 					}
 				case <-watchCtx.Done():

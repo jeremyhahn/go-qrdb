@@ -104,21 +104,21 @@ func NewHardConfinedTransaction(svc TransactionServicer) TransactionServicer {
 
 func (h *hardConfinedTxn) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
 	if opsOrComparesTouchHardConfined(compares, successOps, failureOps) {
-		return nil, &HardConfinedKeyError{Key: hardConfinedPrefix}
+		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
 	return h.TransactionServicer.Execute(ctx, compares, successOps, failureOps)
 }
 
 func (h *hardConfinedTxn) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
 	if opsOrComparesTouchHardConfined(compares, successOps, failureOps) {
-		return nil, &HardConfinedKeyError{Key: hardConfinedPrefix}
+		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
 	return h.TransactionServicer.ExecuteWithMode(ctx, compares, successOps, failureOps, mode)
 }
 
 func (h *hardConfinedTxn) ExecuteEntity(ctx context.Context, req *TransactionEntityRequest) (*TransactionEntityResponse, error) {
 	if entityTxnTouchesHardConfined(req) {
-		return nil, &HardConfinedKeyError{Key: hardConfinedPrefix}
+		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
 	return h.TransactionServicer.ExecuteEntity(ctx, req)
 }
@@ -218,14 +218,14 @@ func (e *HardConfinedImportGuardUnavailableError) Error() string {
 
 func (h *hardConfinedBatch) Execute(ctx context.Context, ops []Op) ([]OpResponse, error) {
 	if opsOrComparesTouchHardConfined(nil, ops) {
-		return nil, &HardConfinedKeyError{Key: hardConfinedPrefix}
+		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
 	return h.BatchServicer.Execute(ctx, ops)
 }
 
 func (h *hardConfinedBatch) ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) ([]OpResponse, error) {
 	if opsOrComparesTouchHardConfined(nil, ops) {
-		return nil, &HardConfinedKeyError{Key: hardConfinedPrefix}
+		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
 	return h.BatchServicer.ExecuteWithMode(ctx, ops, mode)
 }

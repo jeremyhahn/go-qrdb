@@ -239,7 +239,7 @@ var dataPlaneRules = []rule{
 	is(watch.ErrStartRevisionUnsupported, Unimplemented),
 	// A raw-KV point verb (Get/Put/Delete/CAS) or a transaction compare
 	// named the cluster CA's key material on an un-namespaced servicer
-	// (the embedded SDK transport -- see service.hardConfinedPrefix's own
+	// (the embedded SDK transport -- see service.hardConfinedPrefixes' own
 	// doc comment). The same class as RestoreInternalKeyError: an
 	// authority the caller does not have, not a malformed request.
 	as(&service.HardConfinedKeyError{}, PermissionDenied),

@@ -392,6 +392,8 @@ type clients struct {
 	kv      transport.KVClient
 	guarded transport.GuardedKVClient
 	txn     transport.TransactionClient
+	mvcc    transport.MVCCClient
+	watch   transport.WatchClient
 }
 
 // boot brings the cell up and returns a client for it.

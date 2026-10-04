@@ -518,7 +518,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 
 	// Create core services. These are UN-namespaced: no composite (tenant,
 	// db) prefix sits in front of them the way pkg/server's registry
-	// prepends one (see service.hardConfinedPrefix's own doc comment), so
+	// prepends one (see service.hardConfinedPrefixes' own doc comment), so
 	// a literal "__sys:cluster_ca/..." request physically reaches that
 	// record if the opened data directory was ever part of a cluster.
 	// They are constructed RAW here, deliberately: New below -- the one

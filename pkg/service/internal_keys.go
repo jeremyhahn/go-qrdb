@@ -239,15 +239,24 @@ func SkipInternalKeyFilter(prefix string) bool {
 // must therefore apply the guard itself, to the keys and the requested prefix
 // as the CALLER wrote them — which it can only do by calling the canonical
 // filter rather than reimplementing it.
-// The owner-enumerates escape is not unconditional: a hard-confined key
-// (see hard_confined_keys.go) is stripped even when the requested prefix
-// would otherwise see everything under "__sys:" unfiltered, because that
-// escape exists for a subsystem reading its OWN bookkeeping back, and
-// "__sys:cluster_ca/" is secret material no data-plane caller -- including
-// one naming "__sys:" outright -- has a legitimate reason to receive.
+// The owner-enumerates escape is not unconditional: a hard-confined key's
+// private-key record (see hard_confined_keys.go) is stripped even when the
+// requested prefix would otherwise see everything under "__sys:"
+// unfiltered, because that escape exists for a subsystem reading its OWN
+// bookkeeping back, and a CA's private key material is secret no
+// data-plane caller -- including one naming "__sys:" outright -- has a
+// legitimate reason to receive. A prefix AT OR BELOW a confined CA's own
+// root (prefix itself scanning "__sys:cert_ca/", or narrower) additionally
+// keeps that CA's public certificate records visible: that is the CA
+// subsystem's own narrow self-scan (pkg/cert.DefaultCertProvider.CACertPEMs'
+// tenant-discovery enumeration), and the certificate is public data no
+// confinement protects. A prefix ABOVE a confined CA's root -- "__sys:"
+// itself, or any other ancestor -- strips the certificate too, since that
+// sweep is broader than any subsystem's own namespace and has no
+// legitimate claim to see inside it at all, public or not.
 func FilterInternalKeys(keys []string, prefix string) []string {
 	if SkipInternalKeyFilter(prefix) {
-		return filterHardConfinedKeys(keys)
+		return filterHardConfinedKeys(keys, prefix)
 	}
 	filtered := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -264,7 +273,7 @@ func FilterInternalKeys(keys []string, prefix string) []string {
 // reason given on FilterInternalKeys.
 func FilterInternalMap(data map[string][]byte, prefix string) map[string][]byte {
 	if SkipInternalKeyFilter(prefix) {
-		return filterHardConfinedMap(data)
+		return filterHardConfinedMap(data, prefix)
 	}
 	for k := range data {
 		if IsInternalKey(k) {

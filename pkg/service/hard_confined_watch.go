@@ -36,7 +36,7 @@ import (
 // prefix is "{entityType}/": since an entity type is never a strict
 // substring of another (the composed prefix always ends at a "/"
 // boundary immediately after the whole type name), the confined entity
-// type's prefix either matches hardConfinedPrefix exactly or does not
+// type's prefix either matches one of hardConfinedPrefixes exactly or does not
 // overlap it at all -- there is no partial-overlap case to filter, so
 // WatchEntityType refuses outright too rather than returning a channel
 // that could only ever deliver nothing.
@@ -158,7 +158,7 @@ func (h *hardConfinedWatch) WatchEntity(ctx context.Context, req *WatchEntityReq
 
 func (h *hardConfinedWatch) WatchEntityType(ctx context.Context, req *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error) {
 	if req != nil {
-		if prefix := entityPrefix(req.EntityType); isHardConfinedKey(prefix) {
+		if prefix := entityPrefix(req.EntityType); isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
 			return nil, &HardConfinedKeyError{Key: prefix}
 		}
 	}
