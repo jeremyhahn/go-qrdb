@@ -119,6 +119,46 @@ func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
 	assert.Nil(t, errors.Unwrap(noCert), "an absent (not malformed) ServerCertPEM carries no Cause")
 }
 
+// TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect is the
+// go-qrdb#560 review item 8 regression: NoServerCertificateError was
+// raised AFTER PIN provisioning and system-barrier initialization had
+// already run (ca == nil's branch is reached only after both), so a
+// misconfigured BYO-TLS node (no ServerCertPEM at all) left PINs
+// provisioned and the barrier initialized on a call that reported
+// failure. The check must run up front, before either side effect, so a
+// refused call leaves the ceremony untouched and a corrected retry starts
+// clean.
+func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) {
+	operatorCA := newMockCA(t)
+	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
+	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
+	})
+	require.NoError(t, err)
+
+	cfg := byoTLSConfig(nil, clientCACertPEM)
+	barrier := testBarrier(t)
+	svc := newTestCeremonyService(t, cfg, barrier)
+
+	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
+		SOPin:        "test-so-pin",
+		UserPin:      "test-user-pin",
+		Secret:       []byte("test-master-password"),
+		AdminCertPEM: adminLeaf.CertPEM,
+	})
+	var noCert *NoServerCertificateError
+	require.ErrorAs(t, err, &noCert)
+
+	assert.False(t, svc.pins.SOPINSet(), "the SO PIN must not be provisioned on a refused Initialize")
+	assert.False(t, svc.pins.UserPINSet(), "the user PIN must not be provisioned on a refused Initialize")
+
+	initialized, err := barrier.Initialized(context.Background())
+	require.NoError(t, err)
+	assert.False(t, initialized, "the system barrier must not be initialized on a refused Initialize")
+}
+
 // TestInitialize_BYOTLS_UnparseableServerCertRefuses covers the OTHER half
 // of NoServerCertificateError: a BYO-TLS node whose ServerCertPEM is PRESENT
 // but does not parse as a certificate is refused the same way, with the

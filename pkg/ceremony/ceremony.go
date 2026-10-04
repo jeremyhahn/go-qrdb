@@ -340,6 +340,29 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		return nil, err
 	}
 
+	// A BYO-TLS node (ca == nil) has no CA to self-issue a TLS certificate
+	// with, so its OWN configured leaf (s.config.ServerCertPEM) must
+	// already be present and parseable. Checked here, alongside the other
+	// pure, no-side-effect validation above and for the same reason
+	// (go-qrdb#548 review B3, "init is atomic"; go-qrdb#560 review item
+	// 8): this used to be checked only once the ca != nil branch was
+	// skipped, further down, by which point PIN provisioning and -- for
+	// the single-admin path -- system barrier initialization had already
+	// run. A misconfigured BYO-TLS node was left with both side effects
+	// already committed on a call that reported failure. serverCert is
+	// reused below (once past the lock) rather than reparsed.
+	var serverCert *x509.Certificate
+	if ca == nil {
+		block, _ := pem.Decode(s.config.ServerCertPEM)
+		if block == nil {
+			return nil, &NoServerCertificateError{}
+		}
+		serverCert, err = x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, &NoServerCertificateError{Cause: err}
+		}
+	}
+
 	s.mu.Lock()
 	if s.state != StateAwaitingInit {
 		s.mu.Unlock()
@@ -413,16 +436,8 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			return nil, err
 		}
 	} else {
-		block, _ := pem.Decode(s.config.ServerCertPEM)
-		if block == nil {
-			s.mu.Unlock()
-			return nil, &NoServerCertificateError{}
-		}
-		serverCert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			s.mu.Unlock()
-			return nil, &NoServerCertificateError{Cause: err}
-		}
+		// serverCert was already resolved and validated up front, before
+		// any side effect ran (see above): reused here, never reparsed.
 		spkiPin, err = computeSPKIPin(serverCert)
 		if err != nil {
 			s.mu.Unlock()
