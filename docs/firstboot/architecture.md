@@ -208,8 +208,8 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
      `*service.AdminRebindAdminNotFoundError`, `*service.AdminRebindBindError`).
 5. **No record and no binding within the bound** is
    `*firstboot.NoPendingAdminCredentialError`, naming the retry command — but
-   it no longer refuses the boot (go-qrdb#560 review B2, reversing the
-   earlier design here): `runFirstBoot` (`cmd/qrdbd`) and `sdk/go/node`'s
+   it no longer refuses the boot, reversing the earlier design here:
+   `runFirstBoot` (`cmd/qrdbd`) and `sdk/go/node`'s
    `FirstBootWithCeremony` both log it as a warning and continue with no
    certificate to bind, exactly as if no pending record had ever been
    expected. First boot still creates (or reconciles) the admin account;
@@ -229,8 +229,8 @@ binding state with the identical `verifyAdminBindings` predicate
 `checkBindingPosture` and `verifyRequiredOutcome` already apply, and runs
 step 4 (issue + bind) again whenever that check fails, not only when this
 run created the account. `checkBindingPosture`'s pre-flight lets an
-existing, unbound admin through UNCONDITIONALLY now (go-qrdb#560 review
-B2) — with a credential path wired, step 4 repairs it; with none wired at
+existing, unbound admin through UNCONDITIONALLY now — with a credential
+path wired, step 4 repairs it; with none wired at
 all, the admin stays unbound for the "awaiting admin credential" posture
 to gate, which is the ordinary case this bound exists for, not a boot
 refusal. The one case that still refuses pre-flight is the genuine wiring

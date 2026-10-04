@@ -190,7 +190,7 @@ wired a way to issue a certificate but not a way to bind it is a wiring bug,
 caught before any side effect (`checkBindingPosture`). `AdminBindingNoCertPath`
 is retained on the type for source compatibility but is no longer produced:
 a `CertBinder` with nothing to bind is the ordinary case this doc's "awaiting
-admin credential" state exists for, not a refusal (go-qrdb#560 review B2).
+admin credential" state exists for, not a refusal.
 Every other reason — no credential path configured at all, a missing admin,
 or all bindings expired — no longer refuses `Initialize` pre-flight or its
 post-run outcome check (`verifyRequiredOutcome`) either: the admin is

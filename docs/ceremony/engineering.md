@@ -99,7 +99,7 @@ qrdb ships only `NoopThresholdInitializer`.
 (`threshold < 2`) skips `enrolling`. The move to `operational` happens when
 the last initial holder claims.
 
-**State survives a restart** (go-qrdb#560 review): `NewCeremonyService`
+**State survives a restart.** `NewCeremonyService`
 derives it at construction from the barrier's own durable, plaintext-readable
 records, rather than always starting at `awaiting_init` regardless of
 whether this barrier was already taken through the ceremony in an earlier
@@ -131,7 +131,7 @@ durable, replicated state.
 - **`Claim` destroys the enclave** and retains only the fact of the claim.
 - **A batch M-of-N `qrdb init` validates every officer PURELY, through the
   SAME checks `enrol` applies to a single live registration, before any of
-  them is enrolled** (go-qrdb#560 review B3). `validateOfficerEnrolment` is
+  them is enrolled.** `validateOfficerEnrolment` is
   the one shared validator (role validity, principal name, self-enrolment,
   CSR presence/parseability/key kind, the encryption KEM/key, and the
   resolved factor set) both `enrol` and the batch pre-flight
@@ -153,8 +153,8 @@ durable, replicated state.
   supplying the SAME SO/User PINs still succeeds (`pin.Provision`'s own
   idempotent re-verify); only a retry that changes either PIN is affected.
 - **`ReissueAdminCredential` verifies the SO PIN through
-  `pin.RequireProvisionedSOPIN`, not `pin.RequireSOPIN`** (go-qrdb#560
-  re-review B1): an already-initialized ceremony always provisioned its SO
+  `pin.RequireProvisionedSOPIN`, not `pin.RequireSOPIN`.** An
+  already-initialized ceremony always provisioned its SO
   PIN during `Initialize` (`validateInitOptions` refuses an empty one), so
   admitting an UNPROVISIONED backend here — `RequireSOPIN`'s own documented
   convenience for a brand-new node — could only mean something is wrong.
