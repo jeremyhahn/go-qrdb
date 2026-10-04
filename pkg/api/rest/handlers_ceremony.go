@@ -62,13 +62,20 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 	// *ceremony.AdminCredentialRequiresCAError mapErrorJSON already
 	// propagates.
 	//
-	// admin_csr_pem/admin_cert_pem/admin_cert_pool_pem/secret round-trip
-	// through transport.CeremonyInitializeRequest/Response and the
-	// holderwire.CeremonyInitFrom/To conversions below -- shared by REST,
-	// MCP and the embedded transport (go-qrdb#548 B2). gRPC/Unix and native
-	// QUIC still need the matching fields added to their own
-	// protobuf-generated and transport-specific request/response types;
-	// that part of B2 is not done by this handler.
+	// admin_csr_pem/admin_cert_pem/admin_cert_pool_pem/admin_generate/secret
+	// round-trip through transport.CeremonyInitializeRequest/Response and
+	// the holderwire.CeremonyInitFrom/To conversions below, shared by REST,
+	// MCP and the embedded transport, and through the matching
+	// CeremonyInitializeRequest/Response protobuf fields and
+	// holderpb.CeremonyInitFromPB/ToPB, shared by gRPC, Unix (the same
+	// qrdbServiceServer over a different socket) and native QUIC -- every
+	// field on every transport (go-qrdb#548 B2). The nil-CA refusal this
+	// handler never had was, until go-qrdb#560 review item 5, still present
+	// on those other five transports, which is a DIFFERENT gap than missing
+	// fields: refusing a BYO-TLS deployment's `qrdb init` outright rather
+	// than forwarding a request those transports could already decode in
+	// full. All six now forward ca == nil into the service layer exactly as
+	// this handler does.
 	var req transport.CeremonyInitializeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})

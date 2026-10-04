@@ -36,6 +36,15 @@ import (
 // than mutating shared service configuration. Per-request PINs take
 // precedence over any construction-time configuration; when both are absent
 // the ceremony fails closed at the service layer.
+//
+// t.ceremonyCA is nil whenever this embedding's TLS identity is BYO (no CA
+// injected via WithCeremonyCA) -- that is no longer refused here.
+// ceremony.CeremonyService.Initialize supports ca == nil directly (the
+// embedder's own configured leaf is the server identity, and no CA is
+// needed to pin it), refusing only the two admin-credential paths that
+// actually need one to sign with (CSR-sign, generate) via the typed
+// *ceremony.AdminCredentialRequiresCAError the service layer already
+// returns (go-qrdb#560 review item 5).
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
 	if err := t.gate("CeremonyInitialize"); err != nil {
 		return nil, err
@@ -45,9 +54,6 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	}
 	if t.ceremonySvc == nil {
 		return nil, &NilServiceError{Service: "CeremonyServicer"}
-	}
-	if t.ceremonyCA == nil {
-		return nil, &NilServiceError{Service: "CeremonyCA"}
 	}
 	if req == nil {
 		return nil, &InvalidRequestError{Method: "CeremonyInitialize"}

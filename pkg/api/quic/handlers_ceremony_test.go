@@ -44,25 +44,25 @@ func TestHandleCeremonyInitialize_NilService(t *testing.T) {
 	}
 }
 
-// TestHandleCeremonyInitialize_NilCeremonyCA proves that a server with a
-// ceremony service but no CeremonyCA (WithCeremonyCA never applied) fails
-// closed with a typed *CeremonyCANotConfiguredError instead of forwarding a
-// nil CA into the ceremony service layer, which would otherwise nil-pointer
-// panic when it calls ca.IssueCertificate.
-func TestHandleCeremonyInitialize_NilCeremonyCA(t *testing.T) {
+// TestHandleCeremonyInitialize_NilCeremonyCAReachesTheService proves a
+// server with a ceremony service but no CeremonyCA (WithCeremonyCA never
+// applied, as a BYO-TLS deployment configures it) reaches the ceremony
+// service layer with ca == nil rather than being refused at the transport.
+// ceremony.CeremonyService.Initialize is nil-safe by construction -- a
+// BYO-TLS node pins its own configured leaf instead of self-issuing one --
+// so refusing here (the pre-fix behavior, go-qrdb#560 review item 5) only
+// blocked `qrdb init` on a BYO-TLS deployment using this transport, for no
+// safety reason: the nil CA never panics, it never even reaches an
+// unchecked dereference.
+func TestHandleCeremonyInitialize_NilCeremonyCAReachesTheService(t *testing.T) {
 	ceremonySvc := &mockCeremonyService{}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
 
-	_, err := srv.handleCeremonyInitialize(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected CeremonyCANotConfiguredError, got nil")
-	}
-	var ccnc *CeremonyCANotConfiguredError
-	if !errors.As(err, &ccnc) {
-		t.Fatalf("expected *CeremonyCANotConfiguredError, got %T", err)
+	if _, err := srv.handleCeremonyInitialize(context.Background(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if ceremonySvc.capturedCA != nil {
-		t.Fatal("ceremony service must not be reached when the CA is not configured")
+		t.Fatalf("expected the service to be called with a nil CA (BYO-TLS), got %#v", ceremonySvc.capturedCA)
 	}
 }
 

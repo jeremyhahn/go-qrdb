@@ -854,12 +854,23 @@ func TestEmbeddedCeremony_Initialize_NilService(t *testing.T) {
 	}
 }
 
-func TestEmbeddedCeremony_Initialize_NilCA(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T", err)
+// TestEmbeddedCeremony_Initialize_NilCAReachesTheService proves a transport
+// with a ceremony service but no CeremonyCA (WithCeremonyCA never applied,
+// as a BYO-TLS deployment configures it) reaches the ceremony service layer
+// with ca == nil rather than being refused by the transport.
+// ceremony.CeremonyService.Initialize is nil-safe by construction -- a
+// BYO-TLS node pins its own configured leaf instead of self-issuing one --
+// so refusing here (the pre-fix behavior, go-qrdb#560 review item 5) only
+// blocked `qrdb init` on a BYO-TLS embedded deployment, for no safety
+// reason.
+func TestEmbeddedCeremony_Initialize_NilCAReachesTheService(t *testing.T) {
+	mock := &mockCeremonyService{}
+	tr := newExtTransport(t, WithCeremonyService(mock))
+	if _, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mock.initOptsSeen {
+		t.Fatal("expected the service to be reached with a nil CA (BYO-TLS)")
 	}
 }
 

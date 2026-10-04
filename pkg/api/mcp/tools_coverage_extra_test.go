@@ -277,32 +277,45 @@ func TestCovCeremonyTools_Registration(t *testing.T) {
 	}
 }
 
-func TestCovHandleCeremonyInitialize_NilCA(t *testing.T) {
-	handler := handleCeremonyInitialize(newCovMockCeremonySvc(), nil)
+// TestCovHandleCeremonyInitialize_NilCAReachesTheService proves a nil CA
+// (BYO-TLS: WithCeremonyCA never applied) reaches the ceremony service
+// layer rather than being refused by this tool. ceremony.CeremonyService.
+// Initialize is nil-safe by construction -- a BYO-TLS node pins its own
+// configured leaf instead of self-issuing one -- so refusing here (the
+// pre-fix behavior, go-qrdb#560 review item 5) only blocked `qrdb init` on
+// a BYO-TLS deployment using this tool, for no safety reason.
+func TestCovHandleCeremonyInitialize_NilCAReachesTheService(t *testing.T) {
+	var capturedCA ceremony.CeremonyCA
+	capturedSentinel := errors.New("sentinel")
+	svc := newCovMockCeremonySvc()
+	svc.initializeFn = func(_ context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+		capturedCA = ca
+		return nil, capturedSentinel
+	}
+	handler := handleCeremonyInitialize(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_ceremony_initialize", map[string]any{})
 	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for nil CA")
+	if !errors.Is(err, capturedSentinel) {
+		t.Fatalf("expected the service's own error to propagate, got %v", err)
 	}
-	var te *ToolError
-	if !errors.As(err, &te) {
-		t.Errorf("expected *ToolError, got %T", err)
+	if capturedCA != nil {
+		t.Fatalf("expected the service to be called with a nil CA (BYO-TLS), got %#v", capturedCA)
 	}
 }
 
+// TestCovHandleCeremonyInitialize_ServiceError proves a genuine service
+// failure (unrelated to the CA) propagates as a *ToolError.
 func TestCovHandleCeremonyInitialize_ServiceError(t *testing.T) {
 	svc := newCovMockCeremonySvc()
 	svc.initializeFn = func(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
 		return nil, errors.New("already initialized")
 	}
-	// nil CA triggers ErrCeremonyCANotConfigured; we test the nil path to cover the guard.
 	handler := handleCeremonyInitialize(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_ceremony_initialize", map[string]any{})
 	_, err := handler(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// nil CA triggers the ErrCeremonyCANotConfigured path
 	var te *ToolError
 	if !errors.As(err, &te) {
 		t.Errorf("expected *ToolError, got %T", err)

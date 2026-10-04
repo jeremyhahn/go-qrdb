@@ -32,12 +32,18 @@ import (
 // the TCP gRPC transport, WithRegisterCeremonyCA for the Unix domain socket
 // transport, which shares this handler). The per-request SO and user PINs
 // are forwarded so callers can supply credentials on the call itself.
+//
+// s.ceremonyCA is nil whenever this node's TLS identity is BYO (no CA
+// private key configured) -- that is no longer refused here.
+// ceremony.CeremonyService.Initialize supports ca == nil directly (the
+// operator's own leaf certificate is the server identity, and no CA is
+// needed to pin it), refusing only the two admin-credential paths that
+// actually need one to sign with (CSR-sign, generate) via the typed
+// *ceremony.AdminCredentialRequiresCAError the service layer already
+// returns (go-qrdb#560 review item 5).
 func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
 	if s.ceremonySvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
-	}
-	if s.ceremonyCA == nil {
-		return nil, mapServiceError(&CeremonyCANotConfiguredError{})
 	}
 
 	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, holderpb.CeremonyInitFromPB(req))

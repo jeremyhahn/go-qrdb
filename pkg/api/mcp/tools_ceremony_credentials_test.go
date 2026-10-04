@@ -160,23 +160,29 @@ func TestServer_WithCeremonyService(t *testing.T) {
 // handleCeremonyInitialize
 // ---------------------------------------------------------------------------
 
-func TestHandleCeremonyInitialize_NilCA(t *testing.T) {
+// TestHandleCeremonyInitialize_NilCAReachesTheService proves a nil CA
+// (BYO-TLS: WithCeremonyCA never applied) reaches the ceremony service
+// layer rather than being refused by this tool. ceremony.CeremonyService.
+// Initialize is nil-safe by construction -- a BYO-TLS node pins its own
+// configured leaf instead of self-issuing one -- so refusing here (the
+// pre-fix behavior, go-qrdb#560 review item 5) only blocked `qrdb init` on
+// a BYO-TLS deployment using this tool, for no safety reason.
+func TestHandleCeremonyInitialize_NilCAReachesTheService(t *testing.T) {
 	svc := newMockCeremonyService()
+	var capturedCA ceremony.CeremonyCA
+	svc.initializeFn = func(_ context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+		capturedCA = ca
+		return &service.CeremonyInitResult{SPKIPin: "abc123pin", State: "initialized"}, nil
+	}
 	handler := handleCeremonyInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_ceremony_initialize", map[string]any{})
 
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for nil CA")
+	if _, err := handler(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-	if toolErr.Tool != "qrdb_ceremony_initialize" {
-		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_ceremony_initialize")
+	if capturedCA != nil {
+		t.Fatalf("expected the service to be called with a nil CA (BYO-TLS), got %#v", capturedCA)
 	}
 }
 

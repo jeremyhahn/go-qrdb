@@ -1318,30 +1318,27 @@ func TestGRPC_CeremonyInitialize_Success(t *testing.T) {
 	}
 }
 
-// TestGRPC_CeremonyInitialize_NilCeremonyCA proves that a server with a
-// ceremony service but no CeremonyCA (WithCeremonyCA never applied) fails
-// closed with a typed *CeremonyCANotConfiguredError, mapped to
-// codes.Unimplemented, instead of forwarding a nil CA into the ceremony
-// service layer, which would otherwise nil-pointer panic when it calls
-// ca.IssueCertificate.
-func TestGRPC_CeremonyInitialize_NilCeremonyCA(t *testing.T) {
+// TestGRPC_CeremonyInitialize_NilCeremonyCAReachesTheService proves a
+// server with a ceremony service but no CeremonyCA (WithCeremonyCA never
+// applied, as a BYO-TLS deployment configures it) reaches the ceremony
+// service layer with ca == nil rather than being refused at the transport
+// -- shared by gRPC and Unix, which registers this same qrdbServiceServer
+// over a different socket.
+// ceremony.CeremonyService.Initialize is nil-safe by construction -- a
+// BYO-TLS node pins its own configured leaf instead of self-issuing one --
+// so refusing here (the pre-fix behavior, go-qrdb#560 review item 5) only
+// blocked `qrdb init` on a BYO-TLS deployment using either transport, for
+// no safety reason.
+func TestGRPC_CeremonyInitialize_NilCeremonyCAReachesTheService(t *testing.T) {
 	ceremonySvc := newMockCeremonyService()
 	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
 	defer cleanup()
 
-	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-	if !strings.Contains(st.Message(), "ceremony CA is not configured") {
-		t.Errorf("expected 'ceremony CA is not configured' in status message, got %q", st.Message())
+	if _, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if ceremonySvc.capturedCA != nil {
-		t.Fatal("ceremony service must not be reached when the CA is not configured")
+		t.Fatalf("expected the service to be called with a nil CA (BYO-TLS), got %#v", ceremonySvc.capturedCA)
 	}
 }
 

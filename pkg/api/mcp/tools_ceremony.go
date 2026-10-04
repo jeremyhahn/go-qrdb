@@ -68,16 +68,37 @@ func toolCeremonyInitialize() mcp.Tool {
 		mcp.WithString("sans",
 			mcp.Description("Additional Subject Alternative Names for TLS certificates, JSON-encoded as a string array, e.g. '[\"host2\",\"1.2.3.4\"]'. Takes precedence over server configuration when non-empty."),
 		),
+		mcp.WithString("admin_csr_pem",
+			mcp.Description("PEM-encoded CSR for the bootstrap admin's certificate (CSR-sign path). Mutually exclusive with admin_cert_pem and admin_generate; requires a configured CeremonyCA."),
+		),
+		mcp.WithString("admin_cert_pem",
+			mcp.Description("PEM-encoded, caller-supplied bootstrap admin certificate (bring-your-own-certificate path). Mutually exclusive with admin_csr_pem and admin_generate; needs no CeremonyCA."),
+		),
+		mcp.WithString("admin_cert_pool_pem",
+			mcp.Description("PEM-encoded CA bundle admin_cert_pem must chain to when it is not self-signed. Ignored unless admin_cert_pem is set."),
+		),
+		mcp.WithBoolean("admin_generate",
+			mcp.Description("Selects the generate path explicitly: the server mints the bootstrap admin's key pair and certificate. Mutually exclusive with admin_csr_pem and admin_cert_pem; requires a configured CeremonyCA. The generated private key is returned exactly once in the response and never retained."),
+		),
+		mcp.WithString("secret",
+			mcp.Description("The passphrase the system barrier is initialized with (single-admin path only; ignored for Threshold >= 2, where the barrier unseals later from share holders' Shamir reconstruction)."),
+		),
 	)
 }
 
 // handleCeremonyInitialize returns a tool handler that delegates to
 // svc.CeremonyInitialize with the pre-configured ceremony CA.
+//
+// ca is nil whenever this node's TLS identity is BYO (no CA private key
+// configured) -- that is no longer refused here.
+// ceremony.CeremonyService.Initialize supports ca == nil directly (the
+// operator's own leaf certificate is the server identity, and no CA is
+// needed to pin it), refusing only the two admin-credential paths that
+// actually need one to sign with (CSR-sign, generate) via the typed
+// *ceremony.AdminCredentialRequiresCAError the service layer already
+// returns (go-qrdb#560 review item 5).
 func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.CeremonyCA) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if ca == nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: ErrCeremonyCANotConfigured}
-		}
 		var in transport.CeremonyInitializeRequest
 		if err := wire.DecodeArgs(req.GetArguments(), &in, wire.CeremonyJSONFields...); err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
