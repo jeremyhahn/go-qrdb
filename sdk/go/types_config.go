@@ -138,6 +138,10 @@ type DaemonConfigLoadError = config.LoadError
 // DaemonConfigValidationError is returned when config validation fails.
 type DaemonConfigValidationError = config.ValidationError
 
+// DaemonConfigUnknownFieldError is returned when the config file carries a
+// key that names no field in the schema.
+type DaemonConfigUnknownFieldError = config.UnknownFieldError
+
 // DaemonDatabaseConfigError is returned for invalid per-database configuration.
 type DaemonDatabaseConfigError = config.DatabaseConfigError
 

@@ -36,7 +36,7 @@ mode: raft
 raft:
   data_dir: /var/lib/qrdb
 storage:
-  engine: pebble
+  backend: pebble
 tls:
   enabled: true
   ca_file: /etc/qrdb/ca.pem
@@ -44,9 +44,10 @@ tls:
   key_file: /etc/qrdb/server-key.pem
 auth:
   enabled: true
-audit:
-  enabled: true
 ```
+
+There is no `audit:` block to write — audit logging is always on and is not
+configured; see [../audit/](../audit/architecture.md).
 
 Complete worked examples — minimal single node, a 3-node cluster with static
 discovery, and a high-throughput MVCC setup with watches and leases — are in
@@ -198,9 +199,18 @@ part of loading the config file. Pass `--config`, or use `--host`.
 not be — only explicitly-set flags override YAML. If you see this, check whether
 a wrapper script is passing the flag.
 
+**The server refused to start with "unknown key".** You misspelled a key or a
+section name, or carried one over from an old config that no longer exists
+(the message names the exact path, e.g. `storage.cach_size` or
+`databases[2].protocol`, and the line where it appeared). Fix or remove it —
+the loader refuses the file rather than silently running with that setting
+off. This replaced an earlier behaviour where an unrecognized key loaded with
+no effect and the only symptom was the field it was supposed to set coming
+out at its default.
+
 **A field you omitted came out as zero.** It should not — omission leaves the
-default. If you see a zero, check that the surrounding section is spelled
-correctly; a mistyped section name means every field under it is absent.
+default. If you see a zero, the file loaded (so the key is real), but check
+whether you meant to set it inside a different section than it landed in.
 
 **"software" appears in your config but the server reports "passphrase".**
 That is correct: `seal.strategy: software` is a deprecated alias, canonicalized

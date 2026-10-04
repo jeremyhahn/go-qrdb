@@ -13,19 +13,25 @@ at database creation. There is no client verb for it.
 
 ## Choosing an engine
 
-| Engine | Pick it when | Notes |
+| Backend | Pick it when | Notes |
 |---|---|---|
 | `pebble` (default) | production, anything durable and large | LSM store; the right default |
 | `file` | small metadata sets, or when a real filesystem layout matters | durable: atomic writes plus a replayed commit journal |
 | `memory` | tests, caches, anything disposable | nothing survives a restart |
-| `qrdb` | this node should store through another node | reaches a remote node over the SDK |
+| `objstore` | snapshot/backup/archive tiers | go-objstore backend; not a hot apply path |
 
 ```yaml
 storage:
-  engine: pebble
-  pebble:
-    dir: /var/lib/qrdb/pebble
+  backend: pebble
+  cache_size: 0
+  wal_dir: ""
+  max_open_files: 0
 ```
+
+**There is no `qrdb` storage backend here.** A networked adapter that stores
+through another go-qrdb node exists, but it is go-xkms's own
+`pkg/storage/qrdb/` wrapper over the go-qrdb SDK, not a value `storage.backend`
+accepts in this daemon's own config.
 
 In raft mode the state machines pick their own backend:
 

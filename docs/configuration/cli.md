@@ -24,6 +24,14 @@ Four layers, in order:
 Layer 3 is applied by the config loader, so it needs `--config` to point at a
 file. Without one, only defaults and flags apply.
 
+The file is decoded **strictly**: a key that names no field in the schema —
+misspelled, or left over from a renamed or removed setting — refuses the
+file rather than loading with that key silently having no effect:
+
+```
+config: unknown key "storage.cach_size" in /etc/qrdb/qrdb.yaml:14
+```
+
 ## Flag to YAML mapping
 
 | CLI flag | YAML path |
@@ -60,7 +68,6 @@ file. Without one, only defaults and flags apply.
 | `--multicast-secret` | `discovery.multicast_secret` |
 | `--dns-domain` | `discovery.dns_domain` |
 | `--auth-enabled` | `auth.enabled` |
-| `--audit-enabled` | `audit.enabled` |
 | `--debug-raft` | *(forces `logging.level: debug`)* |
 
 Feature-specific flags are documented in their own folders: `--mode`

@@ -56,6 +56,16 @@ Two shapes follow from it:
   `DefaultConfig().Server.AdminPort`, so the enroll client dialed a port nothing
   in the system listens on.
 
+Before any of that, `config.Load` decodes the file **strictly**: a key that
+names no field anywhere in the `Config` schema fails the load rather than
+being silently dropped. This closed a real gap — a documented-but-wrong
+`databases[].protocol.etcd` key loaded cleanly and had no effect, so an
+operator who believed etcd was configured was running without it, with no
+error and no log line. The check walks the YAML document tree against the
+same struct tags Viper's own decode step reads, so the known-key set can
+never drift from what `Load` actually honors into a second, separately
+maintained list.
+
 After merging, `Config.Validate()` checks **every** field and returns the first
 error as a `*ValidationError` carrying the field path and the reason:
 
@@ -63,15 +73,32 @@ error as a `*ValidationError` carrying the field path and the reason:
 config: validation failed for "raft.shard_id": must be greater than 0
 ```
 
-### Two error types
+### Three error types
 
 | Error | Returned when |
 |---|---|
 | `*LoadError` | the YAML file cannot be read or parsed |
+| `*UnknownFieldError` | the YAML file carries a key that names no field in the schema |
 | `*ValidationError` | a field has an invalid value |
 
-Both implement `error`; `LoadError` also implements `Unwrap()` for `errors.Is`
-and `errors.As`.
+All three implement `error`; `LoadError` also implements `Unwrap()` for
+`errors.Is` and `errors.As`.
+
+### Unknown keys are refused, not dropped
+
+**Owner ruling, 2026-10-03**: a config carrying a stale or
+misspelled key must fail to load, naming the key. Precedence was already
+**build tag > run mode > config** for *values* config asks for beyond what the
+mode or binary allow (see "Alternatives rejected" below); this closes the
+matching gap for *keys* the schema never defined in the first place, which
+previously loaded and did nothing.
+
+A key for a feature this binary was not compiled with (e.g. `protocols.mysql`
+without build tag `qrdb_mysql`) is **not** an unknown key: `pkg/config`
+declares every field unconditionally regardless of build tags, so the schema
+check passes and `Config.ValidateCapabilities` refuses it by name instead,
+keeping the two gates — schema shape and build-tag availability — separate for
+the same reason they were already separate for values.
 
 ### The separate capability gate
 
@@ -86,10 +113,11 @@ present.
 
 ### Alternatives rejected
 
-- **Ignoring unknown or impossible settings.** Rejected: precedence is
-  **build tag > run mode > config**, and config asking for more than the mode or
-  the binary allows is a **validation error, never a silent no-op** — see
-  [../run-modes/](../run-modes/architecture.md).
+- **Ignoring unknown or impossible settings.** Rejected both ways: config
+  asking for more than the mode or the binary allows is a **validation error,
+  never a silent no-op** — see [../run-modes/](../run-modes/architecture.md) —
+  and a key the schema never defined at all is now a load error rather than a
+  no-op key.
 - **Folding the capability check into `Validate()`.** Rejected on the
   build-independence argument above.
 - **Reporting all validation errors at once.** Not done — `Validate()` returns
@@ -99,9 +127,16 @@ present.
 ## Sections
 
 `server`, `protocols`, `raft`, `storage`, `tls`, `logging`, `discovery`,
-`mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `audit`, `cors`,
-`databases` (with nested `ProtocolConfig` and `EtcdConfig`), `embedding` (with
-`EmbeddingProviderConfig`), `rag`, `tenant`, plus `seal` and `mode`.
+`mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `cors`,
+`databases` (with per-database `mysql`, `postgresql`, `etcd` and
+`sql.concurrency` — flat on the entry, no `protocol` wrapper field),
+`embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, plus `seal` and
+`mode`. There is no `audit:` section — audit logging is always on and is not
+configured; see [../audit/](../audit/architecture.md). See
+[../etcd-compatibility/](../etcd-compatibility/architecture.md) for the
+per-database `etcd` block's own validation (engine/backend/build-tag
+requirements) and the CLI/API verbs (`qrdb database create --etcd` /
+`update-etcd`) that set it without a restart.
 
 Each is documented in its own feature folder; the complete field-by-field
 reference with defaults is [12-configuration.md](../12-configuration.md).

@@ -29,14 +29,19 @@ databases:
         - "https://node1:2379"
 ```
 
-**Validation:** TLS and auth must be enabled when the etcd protocol is active. The database `engine` must be `kv` and `backend` must be `raft`.
+**Validation:** TLS and auth must be enabled when the etcd protocol is active, the node must run in mode `raft`, and the database `engine` must be `kv` -- any `backend` serves it.
 
 
 **Validation is strict and fails startup, not the first request:**
 
 - TLS and auth must both be enabled when the etcd protocol is active.
-- The database `engine` must be `kv`.
-- The database `backend` must be `raft`.
+- The node must run in mode `raft`: the etcd listener is a raft-only surface
+  (`capabilities.Etcd`), and a standalone node's listener refuses to start.
+- The database `engine` must be `kv`; enabling etcd on any other engine is
+  refused with `database.EtcdEngineUnsupportedError`. Any `backend` serves
+  it -- the listener resolves the database through the service registry
+  regardless of backend. *(Corrected 2026-10-03: `backend: raft` was
+  documented as required here and was neither required nor checked.)*
 - For Kubernetes, `sm_type` must additionally be `mvcc` — Kubernetes needs
   revisions, watches, leases and transactions.
 

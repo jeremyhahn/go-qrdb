@@ -11,6 +11,23 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`qrdbd` refuses a config file that carries a key the schema does not
+  recognize.** `config.Load` now decodes the YAML file strictly
+  before merging it with defaults and the environment: a stale or
+  misspelled key -- the motivating case was a documented-but-wrong
+  `databases[].protocol.etcd`, which loaded cleanly and had no effect --
+  now fails the load with a typed `*config.UnknownFieldError` naming the
+  key's full path (`databases[2].protocol`), the file and, where known, the
+  line. A key for a feature this binary was not compiled with (e.g.
+  `protocols.mysql` without build tag `qrdb_mysql`) is unaffected: it is
+  still a recognized field, refused instead by the existing, separate
+  `Config.ValidateCapabilities` "not compiled in" error. Operators carrying
+  a stale key in their config must remove or correct it before upgrading;
+  every example config shipped under `configs/`, `test/integration/api/`
+  and the `docs/` reference now loads under the stricter check.
+
 ## [0.37.0-alpha] - 2026-10-03
 
 Protocol build tags. This release contains BREAKING changes; see the entries below. Highlights:

@@ -21,6 +21,7 @@ package config
 import (
 	"crypto/tls"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1380,7 +1381,23 @@ func DefaultConfig() *Config {
 // production defaults, the YAML file at path, and QRDB_-prefixed environment
 // variables. The file is read by Viper; environment variables can override
 // any key (e.g. QRDB_SEAL_SHAMIR_TOTAL for seal.shamir_total).
+//
+// The file is decoded strictly: any key that names no field of the Config
+// schema fails the load with a typed *UnknownFieldError naming the key, its
+// full path and, where known, its line -- rather than the key being silently
+// dropped and whatever it was supposed to configure staying off.
 func Load(path string) (*Config, error) {
+	// #nosec G304 - path is the operator-supplied --config file, the same
+	// shape already excluded for pkg/clustertls's CA/cert/key paths; no
+	// transport handler reaches this argument with a request value.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
+	if err := validateKnownFields(path, data); err != nil {
+		return nil, err
+	}
+
 	v, err := newConfigViper(path)
 	if err != nil {
 		return nil, err

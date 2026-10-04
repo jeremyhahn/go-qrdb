@@ -82,7 +82,9 @@ tls:
   ca_file: ""
   cert_file: ""
   key_file: ""
-  auto_tls: true
+  # Leaving ca_file/cert_file/key_file empty auto-resolves TLS material
+  # (generate for single-node, or enroll into an existing cluster); there is
+  # no separate "auto_tls" toggle. See the "tls" section below.
 
 logging:
   level: "info"
@@ -346,33 +348,46 @@ Configures the underlying storage backend.
 
 Configures TLS for all network listeners (REST, gRPC, Raft).
 
-| Field       | Type   | Default | Required                          | CLI Flag         | Description                                  |
-|-------------|--------|---------|-----------------------------------|------------------|----------------------------------------------|
-| `enabled`   | bool   | `true`  | no                                | N/A              | Enable TLS for all listeners                 |
-| `ca_file`   | string | `""`    | yes (when `enabled && !auto_tls`) | `--tls-ca-file`  | Path to CA certificate PEM file              |
-| `cert_file` | string | `""`    | yes (when `enabled && !auto_tls`) | `--tls-cert-file`| Path to TLS certificate PEM file             |
-| `key_file`  | string | `""`    | yes (when `enabled && !auto_tls`) | `--tls-key-file` | Path to TLS private key PEM file             |
-| `auto_tls`  | bool   | `true`  | no                                | N/A              | Auto-generate CA and certificates at startup |
+| Field            | Type     | Default   | Required | CLI Flag          | Description                                       |
+|------------------|----------|-----------|----------|-------------------|----------------------------------------------------|
+| `enabled`        | bool     | `true`    | no       | N/A               | Enable TLS for all listeners                       |
+| `ca_file`        | string   | `""`      | no       | `--tls-ca-file`   | Path to CA certificate PEM file                     |
+| `cert_file`      | string   | `""`      | no       | `--tls-cert-file` | Path to TLS certificate PEM file                    |
+| `key_file`       | string   | `""`      | no       | `--tls-key-file`  | Path to TLS private key PEM file                    |
+| `client_auth`    | string   | `""`      | no       | `--tls-client-auth` | Client certificate requirement; see below        |
+| `min_version`    | string   | `"TLS1.3"`| no       | N/A               | Minimum TLS version: `"TLS1.2"` or `"TLS1.3"`       |
+| `additional_cas` | []string | `[]`      | no       | N/A               | Extra CA PEM files layered onto the client-CA pool  |
+
+**There is no `auto_tls` field.** TLS material resolution is not a boolean —
+it is `resolveTLS`'s ordered fallback, driven by what is and is not set:
+
+1. `ca_file`, `cert_file` and `key_file` all set → loaded from those paths.
+2. Otherwise, cached certificates in `raft.data_dir` from a previous start, if
+   present → loaded from there.
+3. Otherwise → generated (single node) or obtained by enrolling into an
+   existing cluster (joining node), via `pkg/clusterenroll`.
+
+Leaving all three paths empty is the common case (single node, or a node
+enrolling into a cluster); setting all three is manual PKI. Setting only some
+of the three is not a supported partial state.
 
 **Validation rules:**
 
-- When `enabled` is `true` and `auto_tls` is `false`, all three fields `ca_file`, `cert_file`, and `key_file` are required.
-- When `auto_tls` is `true`, certificate fields may be empty; a CA and leaf certificate are generated automatically.
+- `client_auth`, when non-empty, must be one of: `none`, `request`, `require`,
+  `require_and_verify`. Empty derives the mode from whether `auth.enabled` is
+  true (see [identity-rbac](identity-rbac/architecture.md)).
+- `min_version`, when non-empty, must be one of: `TLS1.2`, `TLS1.3`.
 - When `enabled` is `false`, no TLS validation is performed.
-
-**TLS modes:**
-
-| Mode              | Configuration                                         | Use Case                      |
-|-------------------|-------------------------------------------------------|-------------------------------|
-| Auto TLS          | `enabled: true`, `auto_tls: true`                     | Development, single-node      |
-| Manual TLS        | `enabled: true`, `auto_tls: false`, paths set         | Production with PKI           |
-| TLS disabled      | `enabled: false`                                      | Testing behind a TLS proxy    |
 
 **Notes:**
 
-- When `auto_tls` is enabled, the generated CA certificate is written to `{data_dir}/ca.pem` so CLI commands (`qrdb status`, `qrdb peers`) can verify the server certificate.
-- The auto-generated certificates use the CA to sign a leaf certificate for the local node. This supports both REST/gRPC client connections and mTLS on the QUIC transport for Raft peer communication.
-- For production multi-node clusters, use manual TLS with a shared CA to enable mTLS between all cluster nodes.
+- A generated or enrolled CA certificate is written under `raft.data_dir` so
+  CLI commands (`qrdb status`, `qrdb peers`) can verify the server certificate
+  on a later start.
+- The generated/enrolled certificate supports both REST/gRPC client
+  connections and mTLS on the QUIC transport for Raft peer communication.
+- For production multi-node clusters, set `ca_file`/`cert_file`/`key_file`
+  explicitly from a shared CA to enable mTLS between all cluster nodes.
 
 ---
 
@@ -729,33 +744,40 @@ Configures Cross-Origin Resource Sharing headers for the REST API.
 
 ### databases
 
-Configures named databases with per-database protocol support. Each database
-entry defines an isolated data store with its own engine, backend, and optional
-protocol endpoints.
+Configures named databases. Each entry defines an isolated data store with
+its own engine, backend, and optional per-database wire protocols.
 
-| Field        | Type   | Default | Required | Description                                    |
-|--------------|--------|---------|----------|-------------------------------------------------|
-| `name`       | string | --      | yes      | Unique database name                           |
-| `engine`     | string | `kv`    | yes      | Store engine (`kv` or `mvcc`)                  |
-| `backend`    | string | `raft`  | yes      | Replication backend (`raft`)                   |
-| `mysql`      | bool   | `false` | no       | Enable the MySQL wire protocol for this database |
-| `postgresql` | bool   | `false` | no       | Enable the PostgreSQL wire protocol for this database |
-| `etcd`       | object | --      | no       | etcd v3 gRPC protocol configuration (below)    |
+| Field        | Type   | Default | Required | Description                                          |
+|--------------|--------|---------|----------|-------------------------------------------------------|
+| `name`       | string | --      | yes      | Unique database name                                  |
+| `engine`     | string | `kv`    | yes      | Store engine: `kv`, `timeseries`, or `vector`          |
+| `backend`    | string | --      | yes      | Storage backend: `memory`, `file`, `pebble`, `raft`, or `objstore` |
+| `mysql`      | bool   | `false` | no       | Enable the MySQL wire protocol for this database       |
+| `postgresql` | bool   | `false` | no       | Enable the PostgreSQL wire protocol for this database  |
+| `etcd`       | object | --      | no       | etcd v3 gRPC protocol configuration; see `EtcdConfig` below |
+| `sql`        | object | --      | no       | Per-database SQL settings; see `DatabaseSQLConfig` below |
 
-`mysql`, `postgresql` and `etcd` sit directly on the database entry — flat,
-there is no `protocol` wrapper field. (Corrected 2026-10-03: earlier
+`mysql`, `postgresql`, `etcd` and `sql` sit directly on the database entry —
+flat, there is no `protocol` wrapper field. (Corrected 2026-10-03: earlier
 versions of this section showed a nested `protocol:` object with `mysql`
 and `postgresql` themselves as nested objects; `config.DatabaseConfig` has
-no `protocol` field, `MySQL`/`PostgreSQL` are plain booleans, and a nested
-block here is silently dropped by the YAML decoder rather than applied.)
-`mysql`/`postgresql` replaced the former top-level `SQLConfig`.
+no `protocol` field, `MySQL`/`PostgreSQL` are plain booleans, `Etcd` is a
+pointer directly on the entry, and a nested block here is silently dropped
+by the YAML decoder rather than applied.) `mysql`/`postgresql` replaced the
+former top-level `SQLConfig`.
+
+**`DatabaseSQLConfig`** (the `sql` field):
+
+| Field         | Type   | Default       | Description                                         |
+|---------------|--------|---------------|------------------------------------------------------|
+| `concurrency` | string | `"optimistic"`| Row-locking mode: `"optimistic"` or `"pessimistic"`. See [row-locking](row-locking/architecture.md). |
 
 #### EtcdConfig
 
-Configures the etcd-compatible gRPC endpoint for a database. `etcd` is the
-one of the three protocol fields that is an object rather than a boolean,
-because it needs a listen address and advertise URLs; it is still flat on
-the database entry, not nested under anything else.
+Configures the etcd-compatible gRPC endpoint for a database. Unlike `mysql`
+and `postgresql`, which are plain booleans, `etcd` is an object (it needs a
+listen address and advertise URLs) — but it is still flat on the database
+entry, not nested under anything else.
 
 | Field                   | Type     | Default  | Required | Description                                      |
 |-------------------------|----------|----------|----------|--------------------------------------------------|
@@ -765,14 +787,30 @@ the database entry, not nested under anything else.
 
 **Validation rules:**
 
-- When `enabled` is `true`, the database `engine` must be `kv` and `backend` must be `raft`.
-- When `enabled` is `true`, TLS and auth must be enabled at the server level.
-- `listen_addr` must be a valid `host:port` or `:port` format.
+- `name` must not be empty and must be unique across `databases`.
+- `engine` must be one of: `kv`, `timeseries`, `vector`.
+- `backend` must be one of: `memory`, `file`, `pebble`, `raft`, `objstore`.
+- `mysql` or `postgresql`, when `true` on any database, require TLS and auth
+  enabled at the server level (`tls.enabled`, `auth.enabled`).
+- `etcd.enabled`, when `true`, requires the database `engine` to be `kv`,
+  and requires TLS and auth enabled at the server level; a binary without
+  the `qrdb_etcd` build tag refuses it at boot (`service.RefuseEtcdNotCompiled`),
+  checked over every configured database before any of them provisions.
+  See [etcd-compatibility](etcd-compatibility/architecture.md) for the full
+  contract, including the CLI/API verbs (`qrdb database create --etcd` /
+  `update-etcd`) that set it without a restart.
+- `sql.concurrency`, when set, must be `"optimistic"` or `"pessimistic"`.
 
 **Example:**
 
 ```yaml
 databases:
+  - name: app
+    engine: kv
+    backend: pebble
+    mysql: true
+    sql:
+      concurrency: pessimistic
   - name: k8s-prod
     engine: kv
     backend: raft
@@ -781,16 +819,19 @@ databases:
       listen_addr: ":2379"
       advertise_client_urls:
         - "https://node1:2379"
-    mysql: false
-    postgresql: false
+  - name: cache
+    engine: kv
+    backend: memory
 ```
 
 **Notes:**
 
-- Each database with `etcd: enabled` spawns its own gRPC server on the specified `listen_addr`.
-- Multiple databases can each have etcd enabled on different listen addresses.
-- The etcd endpoint is fully isolated per database: revision counters, watches, leases, and encryption barriers are scoped to the database's shard.
-- See [etcd documentation](etcd-compatibility/architecture.md) for Kubernetes integration and client examples.
+- The top-level `sql:` section (below) configures settings shared by every SQL
+  connection (`default_database`, `max_connections`, `query_timeout`); it does
+  not enable a protocol. A database's own `mysql`/`postgresql` fields are what
+  turn the wire protocols on, and `protocols.mysql`/`protocols.postgresql`
+  must also be enabled server-wide (and compiled in — see
+  `ValidateCapabilities`).
 
 ---
 
@@ -966,6 +1007,10 @@ tenant:
 
 ### Load Order
 
+0. The YAML file is decoded **strictly** before anything else: a key that
+   names no field in the `Config` schema fails the load as
+   `*UnknownFieldError`, naming the key's full path (e.g.
+   `databases[2].protocol`) and, where known, the file and line.
 1. `DefaultConfig()` initializes all fields with production-ready defaults.
 2. The YAML file (if provided via `--config`) is unmarshaled on top of the defaults. Only fields present in the YAML file override the defaults.
 3. CLI flags that are explicitly set override the corresponding YAML values.
@@ -982,13 +1027,20 @@ config: validation failed for "raft.shard_id": must be greater than 0
 
 ### Error Types
 
-| Error Type        | Returned When                                      |
-|-------------------|-----------------------------------------------------|
-| `*LoadError`      | The YAML file cannot be read or parsed              |
-| `*ValidationError`| A configuration field has an invalid value          |
+| Error Type           | Returned When                                              |
+|-----------------------|-------------------------------------------------------------|
+| `*LoadError`          | The YAML file cannot be read or parsed                      |
+| `*UnknownFieldError`  | The YAML file carries a key that names no field in the schema |
+| `*ValidationError`    | A configuration field has an invalid value                   |
 
-Both error types implement the `error` interface. `LoadError` also implements
-`Unwrap()` for use with `errors.Is` and `errors.As`.
+All three error types implement the `error` interface. `LoadError` also
+implements `Unwrap()` for use with `errors.Is` and `errors.As`.
+
+A key for a feature this binary was not compiled with (e.g. `protocols.mysql`
+without build tag `qrdb_mysql`) is never an `*UnknownFieldError` -- `pkg/config`
+declares every field unconditionally regardless of build tags. It is refused
+instead by the separate `Config.ValidateCapabilities()`, naming the missing
+tag.
 
 ---
 
@@ -1016,8 +1068,7 @@ storage:
   backend: "memory"
 
 tls:
-  enabled: true
-  auto_tls: true
+  enabled: true  # ca_file/cert_file/key_file omitted: auto-generated
 
 logging:
   level: "debug"
@@ -1070,7 +1121,6 @@ storage:
 
 tls:
   enabled: true
-  auto_tls: false
   ca_file: "/etc/qrdb/tls/ca.pem"
   cert_file: "/etc/qrdb/tls/node1.pem"
   key_file: "/etc/qrdb/tls/node1-key.pem"
@@ -1117,7 +1167,6 @@ storage:
 
 tls:
   enabled: true
-  auto_tls: false
   ca_file: "/etc/qrdb/tls/ca.pem"
   cert_file: "/etc/qrdb/tls/node2.pem"
   key_file: "/etc/qrdb/tls/node2-key.pem"
@@ -1164,7 +1213,6 @@ storage:
 
 tls:
   enabled: true
-  auto_tls: false
   ca_file: "/etc/qrdb/tls/ca.pem"
   cert_file: "/etc/qrdb/tls/node3.pem"
   key_file: "/etc/qrdb/tls/node3-key.pem"
@@ -1216,7 +1264,6 @@ storage:
 
 tls:
   enabled: true
-  auto_tls: false
   ca_file: "/etc/qrdb/tls/ca.pem"
   cert_file: "/etc/qrdb/tls/node.pem"
   key_file: "/etc/qrdb/tls/node-key.pem"
@@ -1295,7 +1342,9 @@ precedence. The following table maps CLI flags to their YAML equivalents.
 | `--dns-domain`                  | `discovery.dns_domain`             |
 | `--debug-raft`                  | N/A (forces `logging.level: debug`)|
 | `--auth-enabled`                | `auth.enabled`                     |
-| `--audit-enabled`               | `audit.enabled`                    |
+
+There is no `--audit-enabled` flag or `audit.enabled` key -- audit logging is
+always on; see the [audit](#audit) section above.
 
 ---
 

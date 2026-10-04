@@ -9,15 +9,28 @@ concern, and volume pools have an SDK surface but no `qrdb` verbs.
 
 ```yaml
 storage:
-  engine: pebble    # file | memory | pebble | qrdb
-  file:
-    dir: /var/lib/qrdb/data
-  pebble:
-    dir: /var/lib/qrdb/pebble
-  qrdb:
-    address: "db.example.com:63003"
-    transport: grpc
+  backend: pebble    # pebble | memory | file | objstore
+  cache_size: 0        # pebble block cache bytes; 0 = pebble default
+  wal_dir: ""          # separate pebble WAL directory; empty = data dir
+  max_open_files: 0    # 0 = pebble default
 ```
+
+An `objstore` backend additionally configures its provider:
+
+```yaml
+storage:
+  backend: objstore
+  objstore:
+    provider: s3        # local | memory | s3 | gcs | azure | minio
+    settings:
+      bucket: "my-bucket"
+      region: "us-east-1"
+```
+
+There is no `qrdb` storage backend in `qrdbd`'s own config -- a networked
+adapter that stores through another go-qrdb node exists, but it is
+go-xkms's own `pkg/storage/qrdb/` wrapper over the go-qrdb SDK, not a value
+`storage.backend` accepts here.
 
 In raft mode the state machines select their backend separately:
 

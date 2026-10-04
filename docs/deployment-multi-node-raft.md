@@ -46,8 +46,8 @@ nodes. For the design rationale and implementation details, see
 Set in the daemon YAML config (default: `qrdb.cluster`):
 
 ```yaml
-cluster:
-  trust_domain: "qrdb.cluster"   # Unique per cluster; used for SPIFFE identities
+auth:
+  cluster_trust_domain: "qrdb.cluster"   # Unique per cluster; used for SPIFFE identities
 ```
 
 The trust domain is threaded into:
@@ -57,19 +57,19 @@ The trust domain is threaded into:
 
 ### Volume pool
 
-Each node must have the same pool root path configured:
+Each node must have the same pool path(s) configured:
 
 ```yaml
 storage:
   volume_pools:
     - name: "default"
-      root: "/var/qrdb/pools/default"       # Same path on every node
-      max_provisioned_bytes: 1099511627776  # 1 TiB
+      paths: ["/var/qrdb/pools/default"]   # Same path(s) on every node
+      strategy: "round_robin"               # round_robin (default) | least_utilization
 ```
 
-The pool is homogeneous — operator must ensure the same mount point exists on
-all nodes. A tenant's `DataRoot` is allocated under the pool root, so its
-replicas can resolve the same path on each node.
+The pool is homogeneous — operator must ensure the same mount point(s) exist
+on all nodes. A tenant's dedicated store is allocated under one of the pool's
+paths, so its replicas can resolve the same path on each node.
 
 ### Barrier and key management
 

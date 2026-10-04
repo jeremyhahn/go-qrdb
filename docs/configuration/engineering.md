@@ -16,6 +16,7 @@ const DefaultServerHost = "0.0.0.0"              // the defaults-layer bind host
 const DefaultSecureMemoryBudgetMiB int64 = 64    // ceiling of the derived secure-memory budget
 
 type LoadError struct{ /* implements error and Unwrap() */ }
+type UnknownFieldError struct{ /* File, Path, Line -- schema has no such key */ }
 type ValidationError struct{ /* field path + reason */ }
 ```
 
@@ -38,6 +39,17 @@ flags alone.
 
 ## Invariants
 
+- **An unrecognized key fails the load.** `config.Load` decodes the file
+  strictly, before any merge with defaults or environment: a key that names no
+  field anywhere in the `Config` schema returns `*UnknownFieldError`, naming
+  the key's full path (`databases[2].protocol`), the file and, where known,
+  the line. The known-key set is read from the same `yaml` struct tags Viper's
+  own decode step resolves against, so it cannot drift from what `Load`
+  actually honors into a second, separately maintained list. A key for a
+  feature not compiled into this binary (`protocols.mysql` without
+  `qrdb_mysql`) is still a *known* field — `pkg/config` declares every field
+  unconditionally — and is refused by `ValidateCapabilities` instead, naming
+  the missing tag.
 - **A YAML file that omits a field leaves the default in place.** Absence is not
   zero.
 - **A flag left at its own default does not overwrite a YAML value.** Only
@@ -145,16 +157,17 @@ Viper-bound, equivalent to their flags:
 | `--dns-domain`                  | `discovery.dns_domain`             |
 | `--debug-raft`                  | N/A (forces `logging.level: debug`)|
 | `--auth-enabled`                | `auth.enabled`                     |
-| `--audit-enabled`               | `audit.enabled`                    |
 
 ---
 
 ## Sections
 
 `server`, `protocols`, `raft`, `storage`, `tls`, `logging`, `discovery`,
-`mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `audit`, `cors`,
-`databases` (with `ProtocolConfig` and `EtcdConfig`), `embedding` (with
-`EmbeddingProviderConfig`), `rag`, `tenant`, `seal`, `mode`.
+`mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `cors`,
+`databases` (with per-database `mysql`, `postgresql` and `sql.concurrency`),
+`embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`, `mode`.
+There is no `audit:` section (audit logging is always on) and no per-database
+etcd key (etcd is enabled through `qrdb database create --etcd`, not YAML).
 
 No compaction policy is configuration. A database's scheduled compaction and
 the platform's node-keyspace policy are replicated records set through the
@@ -162,8 +175,9 @@ API, so they apply on every node and survive a node's loss; see
 [../key-value/engineering.md](../key-value/engineering.md) "Scheduled
 compaction" and "Node-keyspace compaction". *(Corrected: `mvcc.node_compaction`
 and `databases[].compaction` were configuration keys. Neither is read any
-more; the loader ignores an unknown key, so a file that still carries one
-loads and the key has no effect.)*
+more. The loader used to ignore an unknown key, so a file that still carried
+one loaded and the key had no effect; it is now refused at load with
+`*UnknownFieldError` instead.)*
 
 **The complete field-by-field reference with every default lives in
 [12-configuration.md](../12-configuration.md)**, which also carries worked
@@ -183,6 +197,12 @@ Per-section detail also appears in the owning feature's folder — `seal` in
 - **Unit**: the three-layer merge (a YAML omission keeps the default; an unset
   flag does not overwrite YAML), `Validate()` returning the first error with the
   correct field path, and each refusal in the table above.
+- **Strict decoding**: an unknown top-level key, an unknown nested key (path
+  threaded through the error), a misspelled key, and a key under a sequence
+  element (`databases[N].x`) are each refused with `*UnknownFieldError`; a
+  build-tag-gated key (`protocols.mysql`) is accepted as known regardless of
+  tags, with `ValidateCapabilities` the only thing that can refuse it; every
+  shipped and documented example config loads strictly.
 - **`ValidateCapabilities` is tested independently of build tags** — that
   separation is the property it exists for.
 - **The `software` → `passphrase` canonicalization is its own test**, since a

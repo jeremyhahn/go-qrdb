@@ -41,6 +41,7 @@ mode-gated, or config-disabled. See
 
 | Stage | Behaviour |
 |---|---|
+| Strict decode | a key naming no field in the schema fails the load as `*UnknownFieldError`, naming the key's full path and, where known, its line |
 | Defaults | `DefaultConfig()` populates every field |
 | YAML | only fields present override |
 | Flags | only explicitly-set flags override |
@@ -48,7 +49,9 @@ mode-gated, or config-disabled. See
 | `ValidateCapabilities()` | separate, called by composition roots; fails naming the missing build tag |
 
 `*LoadError` is returned when the YAML cannot be read or parsed, and implements
-`Unwrap()`.
+`Unwrap()`. A key for a feature not compiled into this binary is not an
+unknown key — the schema always declares it — and surfaces only through
+`ValidateCapabilities()`.
 
 ## Secret references
 
