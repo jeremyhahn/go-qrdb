@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/tls"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -23,8 +24,10 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 )
 
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that performs
@@ -56,8 +59,18 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		ctx = injectTLSState(ctx)
 		ctx = injectAuthorization(ctx)
 
-		// Authenticate the caller.
-		ctx, identity, authnErr := m.authenticate(ctx)
+		// Authenticate the caller: the ORIGINAL caller of a request a cluster
+		// peer forwarded on its behalf, otherwise whoever presented
+		// credentials here.
+		var (
+			identity *auth.Identity
+			authnErr error
+		)
+		if assertion, sig, forwarded := grpcOnBehalfAssertion(ctx); forwarded {
+			ctx, identity, authnErr = m.authenticateGRPCOnBehalf(ctx, info.FullMethod, req, assertion, sig)
+		} else {
+			ctx, identity, authnErr = m.authenticate(ctx)
+		}
 		if authnErr != nil {
 			return nil, mapGRPCAuthError(authnErr)
 		}
@@ -296,6 +309,49 @@ func injectTLSState(ctx context.Context) context.Context {
 		return ctx
 	}
 	return auth.WithTLSState(ctx, &tlsInfo.State)
+}
+
+// grpcOnBehalfAssertion returns the on-behalf assertion and signature a
+// forwarded request carries in its metadata. A request carrying only one of
+// the two is treated as not forwarded, and authenticates as itself.
+func grpcOnBehalfAssertion(ctx context.Context) (assertion, sig string, ok bool) {
+	a := metadata.ValueFromIncomingContext(ctx, forward.MetadataAssertion)
+	s := metadata.ValueFromIncomingContext(ctx, forward.MetadataSignature)
+	if len(a) == 0 || len(s) == 0 || a[0] == "" || s[0] == "" {
+		return "", "", false
+	}
+	return a[0], s[0], true
+}
+
+// authenticateGRPCOnBehalf authenticates a gRPC request a cluster peer
+// forwarded on a caller's behalf. The peer must present a verified cluster
+// node certificate (onBehalfPeerGate), and the assertion must be bound to
+// this method and this request message, serialized deterministically -- the
+// form the forwarding node signed.
+func (m *AuthMiddleware) authenticateGRPCOnBehalf(ctx context.Context, fullMethod string, req any, assertion, sig string) (context.Context, *auth.Identity, error) {
+	var state *tls.ConnectionState
+	if p, ok := peer.FromContext(ctx); ok {
+		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok {
+			state = &tlsInfo.State
+		}
+	}
+	chains, err := auth.ResolveVerifiedChains(ctx, state, m.issuerVerifier)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if gerr := m.onBehalfPeerGate(ctx, chains); gerr != nil {
+		return ctx, nil, gerr
+	}
+	peerCert := chains[0][0]
+	msg, ok := req.(proto.Message)
+	if !ok {
+		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+	}
+	payload, merr := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
+	if merr != nil {
+		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+	}
+	return m.authenticateOnBehalfBinding(ctx, peerCert, assertion, sig, forward.RPCBinding("grpc", fullMethod, payload))
 }
 
 // injectAuthorization carries the caller's "authorization" metadata into ctx

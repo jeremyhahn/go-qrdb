@@ -86,46 +86,8 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 	if err != nil {
 		return ctx, nil, err
 	}
-	peerCert := chains[0][0]
-
-	// A REVOKED forwarding node must not be able to forward. This path never
-	// runs the authenticator chain, so it does not inherit the mTLS
-	// authenticator's revocation check and has to apply the same policy
-	// itself — auth.EnforceRevocation is that policy, defined once.
-	if rerr := auth.EnforceRevocation(ctx, m.revocation, peerCert); rerr != nil {
-		return ctx, nil, rerr
-	}
-
-	// Only a cluster node can present an honored assertion. Refuse anything
-	// else before reading a byte of the body, with the same opaque error as
-	// every other verification failure below.
-	if _, perr := forward.ClusterPeer(peerCert, ""); perr != nil {
-		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
-	}
-
-	// forward.ClusterPeer only checks the SPIFFE SAN SHAPE (does the cert
-	// carry a node-scoped URI SAN?); it says nothing about which CA
-	// actually verified the chain. Every tenant's Key B CA is now trusted
-	// on this same listener (pkg/clienttrust), so a Key B leaf carrying a
-	// forged node SPIFFE SAN would otherwise pass the check above and
-	// present an honored assertion AS THE CLUSTER, up to and including
-	// acting as system admin. The issuer must be confirmed to be the
-	// cluster CA (Key A) here, explicitly, and unknown fails closed
-	// (go-qrdb#560 review, B2-1).
-	if m.issuerVerifier != nil {
-		trusted := false
-		for _, c := range chains {
-			if len(c) < 2 {
-				continue
-			}
-			if m.issuerVerifier.IsClusterCA(ctx, c[1]) {
-				trusted = true
-				break
-			}
-		}
-		if !trusted {
-			return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
-		}
+	if gerr := m.onBehalfPeerGate(ctx, chains); gerr != nil {
+		return ctx, nil, gerr
 	}
 
 	body, err := drainAndRestoreBody(w, r, forward.MaxBodyBytes)
@@ -133,9 +95,69 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "cannot read request body for on-behalf binding"}
 	}
 
-	assertion, verr := forward.Verify(
-		r.Header.Get(forward.HeaderAssertion),
-		r.Header.Get(forward.HeaderSignature),
+	return m.authenticateOnBehalfBinding(ctx, chains[0][0],
+		r.Header.Get(forward.HeaderAssertion), r.Header.Get(forward.HeaderSignature),
+		forward.HTTPBinding(r.Method, r.URL.RequestURI(), body))
+}
+
+// onBehalfPeerGate admits only a peer that may present an on-behalf assertion
+// at all, BEFORE anything the request carries is read. chains are the peer's
+// verified certificate chains (auth.ResolveVerifiedChains), leaf first:
+//
+//   - the leaf must not be revoked. This path never runs the authenticator
+//     chain, so it does not inherit the mTLS authenticator's revocation check
+//     and applies the same policy itself -- auth.EnforceRevocation is that
+//     policy, defined once;
+//   - the leaf must be a cluster node's (forward.ClusterPeer). A user or
+//     service certificate can never present an honored assertion, so it must
+//     not be able to make this node read anything;
+//   - with an issuer verifier wired, a chain must have been issued by the
+//     cluster CA (IssuerVerifier.IsClusterCA) -- on a node with operator-
+//     supplied TLS, the operator's peer CA. forward.ClusterPeer checks only
+//     the SPIFFE SAN's shape, and every tenant's Key B CA is trusted on the
+//     same listener (pkg/clienttrust), so a Key B leaf carrying a forged node
+//     SAN would otherwise present an honored assertion AS THE CLUSTER, up to
+//     acting as system admin (go-qrdb#560 review, B2-1). Unknown fails closed.
+//
+// Every refusal but revocation's is the same opaque error as every
+// verification failure. REST, gRPC, the Unix socket and QUIC all pass through
+// it.
+func (m *AuthMiddleware) onBehalfPeerGate(ctx context.Context, chains [][]*x509.Certificate) error {
+	if len(chains) == 0 || len(chains[0]) == 0 {
+		return auth.ErrNoPeerCertificate
+	}
+	peerCert := chains[0][0]
+	if rerr := auth.EnforceRevocation(ctx, m.revocation, peerCert); rerr != nil {
+		return rerr
+	}
+	if _, perr := forward.ClusterPeer(peerCert, ""); perr != nil {
+		return errOnBehalfRejected
+	}
+	if m.issuerVerifier == nil {
+		return nil
+	}
+	for _, c := range chains {
+		if len(c) >= 2 && m.issuerVerifier.IsClusterCA(ctx, c[1]) {
+			return nil
+		}
+	}
+	return errOnBehalfRejected
+}
+
+// errOnBehalfRejected is the one opaque refusal of an on-behalf assertion:
+// it never says which check failed (a reconnaissance oracle).
+var errOnBehalfRejected = &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+
+// authenticateOnBehalfBinding verifies an on-behalf assertion, presented by
+// peerCert (which onBehalfPeerGate has admitted), against the request binding
+// b, and returns a context carrying the ORIGINAL caller's identity with roles
+// re-resolved from this node's own authorization store. It is the
+// transport-independent half of on-behalf authentication: REST binds the HTTP
+// request, gRPC and QUIC bind the protocol, method and payload.
+func (m *AuthMiddleware) authenticateOnBehalfBinding(ctx context.Context, peerCert *x509.Certificate, assertionB64, sigB64 string, b forward.Binding) (context.Context, *auth.Identity, error) {
+	assertion, verr := forward.VerifyBinding(
+		assertionB64,
+		sigB64,
 		peerCert,
 		"", // trust-domain pin: the issuer check above (when m.issuerVerifier
 		// is wired) already confirmed the peer chains to the cluster CA, not
@@ -143,9 +165,7 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 		// binding + node-id match establish cluster-peer trust without a
 		// separate pin here.
 		time.Now(),
-		r.Method,
-		r.URL.RequestURI(),
-		forward.BodyDigest(body),
+		b,
 	)
 	if verr != nil {
 		// Collapse every verification failure to a single opaque
