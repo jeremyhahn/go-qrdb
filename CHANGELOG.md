@@ -101,6 +101,44 @@ are not reconstructed here — their history is in the git log.
   its eventual failure describes. An embedder with a configured fallback
   sees no change, since the system tenant's resolve was already bounded the
   same way.
+- **Enable-encryption runs its migration on the request's context without
+  the request's cancellation** (`context.WithoutCancel`) on every transport
+  (REST, gRPC, Unix, QUIC, MCP, embedded), instead of `context.Background()`.
+  The migration still outlives the request, and now carries the caller's
+  identity and tenant, so the migration's own tenant-scope checks see the
+  real caller on every transport alike.
+- **A database stays inspectable when its compaction policy cannot be read.** `GetDatabase`
+  failed outright when the policy read from the database's store failed, so a degraded raft
+  database could not be inspected, and every `Update*` reported a failure after its change had
+  committed. The rest of the information is now reported with the policy marked unavailable --
+  `DatabaseInfo.compactionUnavailable` (gRPC `compaction_unavailable`, field 18; the CLI shows
+  "Compaction: unavailable"), unknown rather than off -- and the cause is logged as
+  `service.CompactionPolicyReadError`.
+- **A shared store refuses the empty compaction prefix.** The empty prefix -- and the empty
+  compaction-state scope -- is a whole store: one database's on a dedicated raft group, every
+  database at once on the system shard or a volume tenant's host. The MVCC service took it on
+  any store; it is refused now (`service.CompactPrefixInvalidError`, nothing proposed) unless the
+  service is built with the new `service.WithDedicatedKeyspace`, which only dedicated raft
+  groups' services are.
+- **A drop clears only its own incarnation's compaction record.** Reclaiming a dropped
+  database's keyspace cleared the compaction record under the database's name whatever
+  incarnation had set it, so a re-issued drop of an old incarnation could take the policy of a
+  database created again under the name. `database.KeyspaceReclaimer.ReclaimDatabaseKeyspace`
+  takes the dropped incarnation, and only a record bound to it is cleared.
+- **`GetHash` could land mid-batch through `DiskAdapter`, and mid-recovery
+  through either state machine.** `DiskAdapter.Update` applied one entry
+  per call to `KVStateMachine.Update`, which itself takes and releases the
+  batch lock, so the lock was released and reacquired between every pair of
+  entries handed to it as one batch -- exactly the gap the batch lock exists
+  to close, reopened one layer up. Fixed by taking the lock once around
+  `DiskAdapter`'s own per-entry loop and calling a new unlocked
+  `KVStateMachine.applyEntries` for each entry instead of the locking
+  `Update`. Snapshot recovery had the same gap from the other direction:
+  `ConcurrentStateMachine.RecoverFromSnapshot` and
+  `KVStateMachine.RecoverSnapshot` took no lock at all, so a hash could land
+  after recovery cleared the state but before every entry was restored.
+  Both now hold the batch lock exclusively for the whole recovery, the same
+  way `GetHash` itself does.
 
 ## [0.38.0-alpha] - 2026-10-03
 
@@ -1341,12 +1379,6 @@ Unified share holders. This release contains BREAKING changes; see the entries b
 
 ### Fixed
 
-- **Enable-encryption runs its migration on the request's context without
-  the request's cancellation** (`context.WithoutCancel`) on every transport
-  (REST, gRPC, Unix, QUIC, MCP, embedded), instead of `context.Background()`.
-  The migration still outlives the request, and now carries the caller's
-  identity and tenant, so the migration's own tenant-scope checks see the
-  real caller on every transport alike.
 - **A completed database rekey was reported as failed when its M-of-N could
   not be recorded.** The quorum's last submission had already retired every
   old share when the catalog write failed, and the holder was told the
@@ -1701,24 +1733,6 @@ A clustered SDK boot that fails can now be retried cleanly. Highlights:
   actually exit before `svcNode.Stop` -- cancelling alone does not block
   until a goroutine's current tick notices, so a bare cancel raced
   `svcNode.Stop` against whichever of them woke up last.
-- **A database stays inspectable when its compaction policy cannot be read.** `GetDatabase`
-  failed outright when the policy read from the database's store failed, so a degraded raft
-  database could not be inspected, and every `Update*` reported a failure after its change had
-  committed. The rest of the information is now reported with the policy marked unavailable --
-  `DatabaseInfo.compactionUnavailable` (gRPC `compaction_unavailable`, field 18; the CLI shows
-  "Compaction: unavailable"), unknown rather than off -- and the cause is logged as
-  `service.CompactionPolicyReadError`.
-- **A shared store refuses the empty compaction prefix.** The empty prefix -- and the empty
-  compaction-state scope -- is a whole store: one database's on a dedicated raft group, every
-  database at once on the system shard or a volume tenant's host. The MVCC service took it on
-  any store; it is refused now (`service.CompactPrefixInvalidError`, nothing proposed) unless the
-  service is built with the new `service.WithDedicatedKeyspace`, which only dedicated raft
-  groups' services are.
-- **A drop clears only its own incarnation's compaction record.** Reclaiming a dropped
-  database's keyspace cleared the compaction record under the database's name whatever
-  incarnation had set it, so a re-issued drop of an old incarnation could take the policy of a
-  database created again under the name. `database.KeyspaceReclaimer.ReclaimDatabaseKeyspace`
-  takes the dropped incarnation, and only a record bound to it is cleared.
 
 ## [0.33.0-alpha] - 2026-10-03
 
