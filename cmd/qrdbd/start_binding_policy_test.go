@@ -63,7 +63,7 @@ func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		true, auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	return mgmt
@@ -91,7 +91,7 @@ func TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot(t *testi
 	_, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		true, auth.MTLSBindingRequired, nil, nil, nil,
+		auth.MTLSBindingRequired, nil, nil, nil,
 	)
 	var noCred *firstboot.NoPendingAdminCredentialError
 	require.True(t, errors.As(err, &noCred), "err = %v", err)
@@ -214,6 +214,30 @@ func TestBootstrapAuthEnforcement_RequiredWithBoundAdminBoots(t *testing.T) {
 	require.NotNil(t, result.awaitingAdminCredentialProbe)
 	assert.False(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
 		"a bound admin under \"required\" must never report awaiting")
+	_ = result.auditLogger.Close()
+}
+
+// TestBootstrapAuthEnforcement_ExpiredAdminBindingBootsAwaiting is the
+// go-qrdb#560 review B1/B2 restart case: an admin whose ONLY certificate
+// binding has EXPIRED (as opposed to never having bound one at all) must
+// restart cleanly into "awaiting admin credential", not refuse to boot --
+// "an expired admin is recovered by restarting into awaiting mode, then an
+// SO-PIN-gated reissue" (go-qrdb#560 review B1's own ruling). Mirrors
+// TestBootstrapAuthEnforcement_RequiredWithUnboundAdminBootsAwaiting, whose
+// admin never bound anything at all; this one bound once and the
+// certificate simply expired since.
+func TestBootstrapAuthEnforcement_ExpiredAdminBindingBootsAwaiting(t *testing.T) {
+	mgmt := bootstrapForBindingPolicy(t)
+	mgmt.userSvc = servingAdmin(t, mgmt, user.CertBinding{
+		Thumbprint: adminThumbprint(t), Kind: user.CertBindingSPKIThumbprint,
+		NotAfter: time.Now().Add(-time.Hour),
+	})
+
+	result, err := runAuthBootstrapWithPolicy(t, mgmt, "required")
+	require.NoError(t, err, "an expired-but-once-bound admin must restart cleanly, not refuse to boot")
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.True(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"an admin with no LIVE binding (expired counts) must report awaiting on restart")
 	_ = result.auditLogger.Close()
 }
 

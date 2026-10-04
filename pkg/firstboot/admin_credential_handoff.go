@@ -15,6 +15,7 @@
 package firstboot
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"time"
@@ -49,7 +50,14 @@ func ResolveAdminCertForFirstBoot(ctx context.Context, store PendingAdminCertSto
 		return AwaitPendingAdminCert(ctx, store, users, timeout)
 	}
 	certPEM, err := store.Get(ctx, PendingAdminCertKey)
-	if err != nil {
+	// A consumed-marker record, or any error/empty read, is "nothing to
+	// resolve" -- never a certificate (go-qrdb#560 review B2). Without
+	// this check, a record ClearPendingAdminCert already marked consumed
+	// is handed back to first boot VERBATIM as if "consumed" (the literal
+	// bytes ClearPendingAdminCert writes) were real PEM, which
+	// AwaitPendingAdminCert's own bounded-wait branch already guards
+	// against -- this mirrors that same check for the non-blocking read.
+	if err != nil || len(certPEM) == 0 || bytes.Equal(certPEM, pendingAdminCertConsumedMarker) {
 		return nil, nil
 	}
 	return certPEM, nil

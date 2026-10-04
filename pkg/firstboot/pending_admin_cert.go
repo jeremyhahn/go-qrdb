@@ -196,8 +196,31 @@ func AwaitPendingAdminCert(ctx context.Context, store PendingAdminCertStore, use
 //
 // Idempotent: consuming an already-consumed record, or calling with a nil
 // store, is not an error.
+//
+// It writes the marker ONLY on a REAL pending -> consumed transition
+// (go-qrdb#560 review B2): a prior version wrote it unconditionally, on
+// every first-boot run, including the many nodes and many boots where
+// nothing was ever pending at all (an auth-disabled node, for one -- it
+// never runs a ceremony, so the key never exists -- but also, on ANY node,
+// every boot after the first). That poisoned the key permanently: with the
+// record present as "consumed" before a ceremony ever ran,
+// WritePendingAdminCert's create-if-absent PutIfAbsent could never
+// succeed again, so ceremony-initialize's admin-credential hand-off could
+// never record a credential for first boot to bind -- the SAME failure
+// bb65257df's repair fallthrough and a04e9d38d's auth-disabled carve-out
+// were working around from the other side. Get's absence contract is not
+// uniform across implementations (service.KVService's Get returns a
+// *service.KeyNotFoundError-shaped error for a missing key;
+// kvstore.MemoryKVStore's returns (nil, nil)); AwaitPendingAdminCert
+// already treats EITHER shape as "nothing recorded yet", and this mirrors
+// that same convention -- any error from Get, or an empty value, means
+// there was nothing pending to consume, so nothing is written.
 func ClearPendingAdminCert(ctx context.Context, store PendingAdminCertStore) error {
 	if store == nil {
+		return nil
+	}
+	certPEM, err := store.Get(ctx, PendingAdminCertKey)
+	if err != nil || len(certPEM) == 0 || bytes.Equal(certPEM, pendingAdminCertConsumedMarker) {
 		return nil
 	}
 	if err := store.Put(ctx, PendingAdminCertKey, pendingAdminCertConsumedMarker); err != nil {

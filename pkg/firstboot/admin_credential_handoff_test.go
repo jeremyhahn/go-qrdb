@@ -79,6 +79,33 @@ func TestResolveAdminCertForFirstBoot_OpportunisticRead(t *testing.T) {
 	}
 }
 
+// TestResolveAdminCertForFirstBoot_OpportunisticReadNeverReturnsTheConsumedMarker
+// is the regression test for go-qrdb#560 review B2: the opportunistic,
+// non-blocking read (any policy other than "required") handed the
+// pending-admin-cert record back VERBATIM, with no check for
+// ClearPendingAdminCert's own "consumed" marker -- a composer calling this
+// after a ceremony's credential had already been bound and cleared would
+// receive the literal bytes "consumed" and treat them as a certificate to
+// bind. AwaitPendingAdminCert's bounded-wait branch already guards against
+// exactly this; this proves the opportunistic branch does too.
+func TestResolveAdminCertForFirstBoot_OpportunisticReadNeverReturnsTheConsumedMarker(t *testing.T) {
+	store := newMemPendingAdminCertStore()
+	if err := WritePendingAdminCert(context.Background(), store, []byte("cert-pem")); err != nil {
+		t.Fatalf("WritePendingAdminCert: %v", err)
+	}
+	if err := ClearPendingAdminCert(context.Background(), store); err != nil {
+		t.Fatalf("ClearPendingAdminCert: %v", err)
+	}
+
+	got, err := ResolveAdminCertForFirstBoot(context.Background(), store, noAdminLookup{}, auth.MTLSBindingEnrolled, time.Second)
+	if err != nil {
+		t.Fatalf("ResolveAdminCertForFirstBoot: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ResolveAdminCertForFirstBoot returned the consumed marker as a certificate: %q", got)
+	}
+}
+
 // TestAdminCertPoolFromCABundle covers the empty, malformed and valid cases.
 func TestAdminCertPoolFromCABundle(t *testing.T) {
 	if pool := AdminCertPoolFromCABundle(nil); pool != nil {

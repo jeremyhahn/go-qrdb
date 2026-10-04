@@ -267,7 +267,7 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 		ctx, node, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
-		true, auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 
 	// firstBootErr is assigned the *bootstrap.FirstBootError from

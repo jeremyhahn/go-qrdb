@@ -237,6 +237,33 @@ func TestClearPendingAdminCert_Idempotent(t *testing.T) {
 	}
 }
 
+// TestClearPendingAdminCert_NothingPendingIsANoOp is the regression test for
+// go-qrdb#560 review B2: a prior version wrote the "consumed" marker
+// UNCONDITIONALLY, every time first boot ran, including the many boots
+// where nothing was ever pending at all (an auth-disabled node, for one --
+// it never runs a ceremony, so the key never exists -- but also, on ANY
+// node, every boot after the first). That poisoned the key permanently:
+// WritePendingAdminCert's create-if-absent could never succeed again, so a
+// LATER ceremony on this same cluster could never hand a credential to
+// first boot at all. Clearing an empty store must leave the key absent,
+// not write the marker over it.
+func TestClearPendingAdminCert_NothingPendingIsANoOp(t *testing.T) {
+	store := newMemPendingAdminCertStore()
+	if err := ClearPendingAdminCert(context.Background(), store); err != nil {
+		t.Fatalf("ClearPendingAdminCert on an empty store: %v", err)
+	}
+	if _, err := store.Get(context.Background(), PendingAdminCertKey); err == nil {
+		t.Fatal("ClearPendingAdminCert must not create the record when nothing was pending")
+	}
+
+	// A ceremony running LATER on this same cluster must still be able to
+	// record its credential: the key must not have been poisoned to
+	// "consumed" while nothing was ever pending.
+	if err := WritePendingAdminCert(context.Background(), store, []byte("later-cert-pem")); err != nil {
+		t.Fatalf("WritePendingAdminCert after a no-op clear: %v", err)
+	}
+}
+
 // TestClearPendingAdminCert_NeverDeletesTheRecord is the regression test for
 // go-qrdb#560 review item 8: the pending-admin-cert record is a one-way
 // state machine, pending then consumed, and is NEVER deleted. The old
@@ -314,11 +341,30 @@ func TestWritePendingAdminCert_StoreErrorWraps(t *testing.T) {
 	}
 }
 
+// putFailsStore wraps a real PendingAdminCertStore, answering Get from it
+// unchanged but always refusing Put with cause -- so a test can exercise a
+// Put failure on a record that genuinely IS pending (Get succeeds),
+// distinct from a Get failure (which ClearPendingAdminCert now treats as
+// "nothing to clear", go-qrdb#560 review B2).
+type putFailsStore struct {
+	PendingAdminCertStore
+	cause error
+}
+
+func (s putFailsStore) Put(context.Context, string, []byte) error { return s.cause }
+
 // TestClearPendingAdminCert_StoreErrorWraps covers the Put-failure path
-// (the consume-in-place write, not a delete).
+// (the consume-in-place write, not a delete) on a record that IS pending --
+// Get must succeed and report a real certificate for Put to even be
+// attempted; see TestClearPendingAdminCert_NothingPendingIsANoOp for the
+// Get-failure/nothing-pending case, which is a no-op, not an error.
 func TestClearPendingAdminCert_StoreErrorWraps(t *testing.T) {
+	store := newMemPendingAdminCertStore()
+	if err := WritePendingAdminCert(context.Background(), store, []byte("cert-pem")); err != nil {
+		t.Fatalf("WritePendingAdminCert: %v", err)
+	}
 	cause := errors.New("consume refused")
-	err := ClearPendingAdminCert(context.Background(), failingPendingAdminCertStore{cause: cause})
+	err := ClearPendingAdminCert(context.Background(), putFailsStore{PendingAdminCertStore: store, cause: cause})
 	var storeErr *PendingAdminCertStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("err = %T(%v), want *PendingAdminCertStoreError", err, err)
