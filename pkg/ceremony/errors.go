@@ -627,10 +627,14 @@ func (e *NoServerCertificateError) Unwrap() error { return e.Cause }
 // the operator holds the signing key, not this process. Path names
 // "csr-sign" and "generate". The bring-your-own-certificate path
 // (--admin-cert) needs no signing CA at all and is the one this error
-// names as supported. A future cluster CA provider (cakey.Provider)
-// composed in at the CeremonyCA seam removes this refusal without any
-// change here: it is gated purely on ca == nil, not on the node's TLS
-// shape.
+// names as supported.
+//
+// The cluster CA provider (cakey.Provider) exists today, but a BYO-TLS node
+// is composed with NO cluster CA key by design (Node.ClusterCAProv stays
+// nil; cmd/qrdbd withholds the operator's certificate from the provider,
+// per TLSBundle.ExplicitTLS), so this refusal is gated purely on ca == nil
+// and stays in effect for that shape regardless of the cluster CA's own
+// availability elsewhere in the deployment.
 type AdminCredentialRequiresCAError struct {
 	Path string
 }
