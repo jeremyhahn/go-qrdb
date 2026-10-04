@@ -32,8 +32,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // multiProtocol describes a single CLI-selectable transport target. scheme
@@ -389,28 +387,22 @@ func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
 	startNode(t, bin, args, "[self-issued-ca] ")
 
 	caPath := filepath.Join(dataDir, "ca.pem")
-	caKeyPath := filepath.Join(dataDir, "ca-key.pem")
 	leafCertPath := filepath.Join(dataDir, "node-cert.pem")
 	adminCertPath := filepath.Join(dataDir, "admin-cert.pem")
 	adminKeyPath := filepath.Join(dataDir, "admin-key.pem")
 	waitForFile(t, caPath, 30*time.Second)
-	waitForFile(t, caKeyPath, 30*time.Second)
 	waitForFile(t, leafCertPath, 30*time.Second)
 	waitForFile(t, adminCertPath, 30*time.Second)
 	waitForFile(t, adminKeyPath, 30*time.Second)
 
-	// Adopt the CA NOW, before any of the bootstrap calls below run:
-	// confirmClusterCAPersisted (cmd/qrdbd/start.go) deletes ca-key.pem from
-	// disk the moment it confirms Key A durably replicated into the system
-	// store -- which races ahead of, and normally finishes well before,
-	// qrdb init below (see TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart
-	// for the same deletion observed directly). Only the CA certificate is
-	// actually needed afterward (trust, not signing), but the key must be
-	// read while it still exists.
-	ca, err := qrdbdharness.LoadCA(caPath, caKeyPath)
-	if err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolNode: adopt self-issued CA: %v", err)
-	}
+	// loadDaemonCA (barrier_cli_test.go) adopts the self-issued CA
+	// confirmClusterCAPersisted (cmd/qrdbd/start.go) wrote into dataDir. It
+	// races ca-key.pem's own deletion -- removed from disk the moment Key A
+	// is confirmed durably replicated into the system store -- itself, by
+	// falling back to qrdbdharness.LoadCACertOnly (cert only, the only thing
+	// actually needed afterward: trust, not signing) when the key is
+	// already gone.
+	ca := loadDaemonCA(t, dataDir)
 
 	adminURL := fmt.Sprintf("https://127.0.0.1:%d", restPort)
 	noAuthArgs := []string{"--server", adminURL, "--transport", "rest", "--ca-file", caPath, "--timeout", "20s"}
@@ -436,7 +428,7 @@ func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
 
 	n := &multiProtoNode{
 		cli:        cli,
-		ca:         &testCA{CA: ca},
+		ca:         ca,
 		dataDir:    dataDir,
 		clientCert: adminCertPath,
 		clientKey:  adminKeyPath,
