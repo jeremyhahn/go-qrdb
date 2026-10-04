@@ -75,6 +75,9 @@ type fwdTransport interface {
 	// checked by the success alone: a node holding no replica refuses
 	// every request it does not forward.
 	reportsServedBy() bool
+	// hasStream says whether watch is a stream, which is refused, or a
+	// bounded request (MCP's qrdb_watch), which is forwarded like any other.
+	hasStream() bool
 	put(t *testing.T, c *fwdCluster, node int, caller fwdCaller, db, key, value string) fwdAnswer
 	get(t *testing.T, c *fwdCluster, node int, caller fwdCaller, db, key string) fwdAnswer
 	// watch opens the transport's stream on db and returns its first answer.
@@ -82,7 +85,7 @@ type fwdTransport interface {
 }
 
 // fwdTransports is every network transport the suite runs over.
-var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}, quicFwdTransport{}}
+var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}, quicFwdTransport{}, mcpFwdTransport{}}
 
 // TestReplicaForwarding: three nodes and a single-replica database, so two
 // nodes hold no replica of it; the same command set over every transport.
@@ -131,8 +134,14 @@ func TestReplicaForwarding(t *testing.T) {
 				}
 			})
 
-			t.Run("a stream is refused with the replica set", func(t *testing.T) {
+			t.Run("a watch stream is refused with the replica set, a bounded watch forwarded", func(t *testing.T) {
 				a := tr.watch(t, c, others[0], db)
+				if !tr.hasStream() {
+					if !a.ok || a.servedBy != replicaID {
+						t.Fatalf("bounded watch through a non-replica = %s, served by %q; want it forwarded to replica %s", a.detail, a.servedBy, replicaID)
+					}
+					return
+				}
 				if a.refusal == nil || a.refusal["replicas"] != "1" || a.refusal["replica_0_raft_addr"] != c.nodes[replica].raftAddr {
 					t.Fatalf("watch through a non-replica = %s; want the refusal naming the replica on node %d", a.detail, replica+1)
 				}

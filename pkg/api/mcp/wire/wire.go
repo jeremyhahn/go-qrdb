@@ -260,6 +260,14 @@ type ErrorPayload struct {
 	// gRPC's RetryInfo on this transport. Zero means the failure names no
 	// delay.
 	RetryAfterSeconds int64 `json:"retry_after_seconds,omitempty"`
+
+	// Reason and Metadata are the failure's structured reason -- gRPC's
+	// google.rpc.ErrorInfo on this transport: a replica refusal's
+	// NOT_A_REPLICA with the replica set, or NOT_LEADER with the leader --
+	// so a forwarding node classifies the answer, and a client redials,
+	// without parsing Message.
+	Reason   string            `json:"reason,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // ErrorEnvelope is the shape of StructuredContent on a failed tool result.

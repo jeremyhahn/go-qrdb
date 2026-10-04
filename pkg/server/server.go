@@ -2274,6 +2274,9 @@ func (s *Server) startMCP() error {
 		// (default-deny). Parity with REST/gRPC/QUIC.
 		mcpOpts = append(mcpOpts, mcpapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	if fwd, ok := s.replicaForwarding(); ok {
+		mcpOpts = append(mcpOpts, mcpapi.WithReplicaForwarding(fwd))
+	}
 	if s.opts.userSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithUserService(s.opts.userSvc))
 	}

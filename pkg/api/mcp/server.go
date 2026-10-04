@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -108,6 +109,12 @@ type Server struct {
 	// installed on mcpSrv and applied by SealedWindowTools to the tools it
 	// exports.
 	toolMiddlewares []mcpserver.ToolHandlerMiddleware
+
+	// replicaForwarding, when set, makes the listener forward what it
+	// refuses as a non-replica (WithReplicaForwarding); forwarder is built
+	// from it, over the listener's TLS identity, at construction.
+	replicaForwarding *replicaforward.Config
+	forwarder         *replicaForwarder
 
 	// modules are ServiceModule instances (see pkg/apimodule) whose MCP tools
 	// are registered on the shared mcpSrv after the built-in tool sets, giving
@@ -584,6 +591,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		// context so data-plane tool handlers resolve per (tenant, database).
 		s.toolMiddlewares = append(s.toolMiddlewares, s.databaseScopeMiddleware())
 	}
+	// Replica forwarding sits innermost: the caller is authenticated,
+	// authorized and scoped before a refusal is forwarded on its behalf.
+	if s.replicaForwarding != nil && s.tlsConfig != nil {
+		s.forwarder = newReplicaForwarder(*s.replicaForwarding, s.tlsConfig)
+		s.toolMiddlewares = append(s.toolMiddlewares, s.forwarder.middleware())
+	}
 	mcpOpts := []mcpserver.ServerOption{mcpserver.WithToolCapabilities(false)}
 	for _, mw := range s.toolMiddlewares {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(mw))
@@ -854,6 +867,9 @@ func (s *Server) Stop() {
 	defer cancel()
 	if err := s.httpSrv.Shutdown(ctx); err != nil {
 		slog.Error("MCP server shutdown error", "error", err)
+	}
+	if s.forwarder != nil {
+		s.forwarder.close()
 	}
 	slog.Info("MCP server stopped")
 }

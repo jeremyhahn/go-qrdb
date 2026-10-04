@@ -39,6 +39,8 @@ type grpcFwdTransport struct{}
 
 func (grpcFwdTransport) name() string { return "grpc" }
 
+func (grpcFwdTransport) hasStream() bool { return true }
+
 func (grpcFwdTransport) reportsServedBy() bool { return true }
 
 // client is a gRPC client of node i authenticated as caller.

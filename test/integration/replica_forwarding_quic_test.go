@@ -38,6 +38,8 @@ type quicFwdTransport struct{}
 
 func (quicFwdTransport) name() string { return "quic" }
 
+func (quicFwdTransport) hasStream() bool { return true }
+
 func (quicFwdTransport) reportsServedBy() bool { return false }
 
 // call sends one frame to node i as caller and returns the answer.

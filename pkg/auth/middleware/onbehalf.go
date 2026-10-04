@@ -43,6 +43,23 @@ func isOnBehalfIdentity(identity *auth.Identity) bool {
 	return identity != nil && identity.Metadata[authSourceMetadataKey] == authSourceOnBehalf
 }
 
+// IsOnBehalf reports whether identity is the original caller of a request a
+// cluster peer forwarded on its behalf. Such a request is never forwarded
+// again.
+func IsOnBehalf(identity *auth.Identity) bool { return isOnBehalfIdentity(identity) }
+
+// AuthenticateHTTP authenticates an HTTP request served outside the REST
+// middleware -- the MCP endpoint: as the original caller of a request a
+// cluster peer forwarded on its behalf (the same verification REST applies),
+// otherwise through the authenticator chain. ctx must carry the request's
+// credentials (WithTLSState, WithHTTPAuthorization).
+func (m *AuthMiddleware) AuthenticateHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, *auth.Identity, error) {
+	if hasOnBehalfAssertion(r) {
+		return m.authenticateOnBehalf(ctx, w, r)
+	}
+	return m.Authenticate(ctx)
+}
+
 // hasOnBehalfAssertion reports whether the request carries both on-behalf
 // headers (assertion + signature). A request carrying only one is treated as
 // not present; verification of the pair fails closed if it is malformed.

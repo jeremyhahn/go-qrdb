@@ -125,7 +125,9 @@ func (s *Server) protectedResourceMetadataHandler(w http.ResponseWriter, r *http
 func (s *Server) authenticateHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := withHTTPRequestCredentials(r.Context(), r)
-		authCtx, _, err := s.authMW.Authenticate(ctx)
+		// A request a cluster node forwarded on a caller's behalf
+		// authenticates as that caller (docs/replica-forwarding).
+		authCtx, _, err := s.authMW.AuthenticateHTTP(ctx, w, r)
 		if err != nil {
 			slog.Debug("mcp: request authentication failed", "error", err)
 			if s.bearerChallenge != "" {

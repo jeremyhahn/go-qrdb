@@ -32,6 +32,8 @@ type restFwdTransport struct{}
 
 func (restFwdTransport) name() string { return "rest" }
 
+func (restFwdTransport) hasStream() bool { return true }
+
 func (restFwdTransport) reportsServedBy() bool { return true }
 
 // do sends one request to node i as caller, scoped to db.
