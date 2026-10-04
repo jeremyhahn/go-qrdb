@@ -106,6 +106,12 @@ func TestDecodeErrorPayload_RefusesMalformedBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	brokenInfo, err := proto.Marshal(&spb.Status{Message: "m", Details: []*anypb.Any{{
+		TypeUrl: "type.googleapis.com/google.rpc.ErrorInfo", Value: []byte{0xff},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	invalidDelay, err := anypb.New(&errdetails.RetryInfo{RetryDelay: &durationpb.Duration{Seconds: 1, Nanos: -1}})
 	if err != nil {
 		t.Fatal(err)
@@ -117,6 +123,7 @@ func TestDecodeErrorPayload_RefusesMalformedBodies(t *testing.T) {
 	for name, body := range map[string][]byte{
 		"bare text":                 []byte("\xffkey not found"),
 		"undecodable RetryInfo":     brokenDetail,
+		"undecodable ErrorInfo":     brokenInfo,
 		"a delay that is not valid": badDelay,
 	} {
 		_, err := DecodeErrorPayload(body)
@@ -130,7 +137,7 @@ func TestDecodeErrorPayload_RefusesMalformedBodies(t *testing.T) {
 // TestDecodeErrorPayload_IgnoresOtherDetails: a detail this build does not
 // read is skipped, and the RetryInfo after it is still found.
 func TestDecodeErrorPayload_IgnoresOtherDetails(t *testing.T) {
-	other, err := anypb.New(&errdetails.ErrorInfo{Reason: "LOCKED"})
+	other, err := anypb.New(&errdetails.DebugInfo{Detail: "trace"})
 	if err != nil {
 		t.Fatal(err)
 	}

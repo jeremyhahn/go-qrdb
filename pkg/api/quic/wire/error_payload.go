@@ -76,15 +76,15 @@ func EncodeErrorPayload(status uint16, p ErrorPayload) ([]byte, error) {
 		Code:    int32(code), //nolint:gosec // codes.Code is a uint32 enum whose values (0-16) fit an int32.
 		Message: strings.ToValidUTF8(p.Message, "\uFFFD"),
 	}
+	var details []proto.Message
 	if p.HasRetryAfter {
-		detail, err := anypb.New(&errdetails.RetryInfo{RetryDelay: durationpb.New(p.RetryAfter)})
-		if err != nil {
-			return nil, &PayloadEncodeError{Err: err}
-		}
-		st.Details = append(st.Details, detail)
+		details = append(details, &errdetails.RetryInfo{RetryDelay: durationpb.New(p.RetryAfter)})
 	}
 	if p.Info != nil {
-		detail, err := anypb.New(&errdetails.ErrorInfo{Domain: p.Info.Domain, Reason: p.Info.Reason, Metadata: p.Info.Metadata})
+		details = append(details, &errdetails.ErrorInfo{Domain: p.Info.Domain, Reason: p.Info.Reason, Metadata: p.Info.Metadata})
+	}
+	for _, d := range details {
+		detail, err := anypb.New(d)
 		if err != nil {
 			return nil, &PayloadEncodeError{Err: err}
 		}

@@ -76,22 +76,35 @@ func TestSignCaller_RefusesToSignForNobodyOrAsNobody(t *testing.T) {
 func TestNodeIdentity_ReadsTheNodeCertificate(t *testing.T) {
 	cert, key := nodeCert(t, tdom, nodeID)
 	tc := tls.Certificate{Certificate: [][]byte{cert.Raw}, PrivateKey: key}
+	parsed := tc
+	parsed.Leaf = cert
 	for name, cfg := range map[string]*tls.Config{
-		"static":   {Certificates: []tls.Certificate{tc}},
-		"callback": {GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &tc, nil }},
+		"static":         {Certificates: []tls.Certificate{tc}},
+		"already parsed": {Certificates: []tls.Certificate{parsed}},
+		"callback":       {GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &tc, nil }},
 	} {
 		if s, id := NodeIdentity(cfg); s == nil || id != nodeID {
 			t.Errorf("%s: NodeIdentity = %v, %q; want the node key and %q", name, s, id, nodeID)
 		}
 	}
 	for name, cfg := range map[string]*tls.Config{
-		"no certificate":   {},
-		"no key":           {Certificates: []tls.Certificate{{Certificate: [][]byte{cert.Raw}}}},
-		"unparseable leaf": {Certificates: []tls.Certificate{{Certificate: [][]byte{[]byte("junk")}, PrivateKey: key}}},
-		"empty chain":      {Certificates: []tls.Certificate{{PrivateKey: key}}},
+		"no certificate":       {},
+		"no key":               {Certificates: []tls.Certificate{{Certificate: [][]byte{cert.Raw}}}},
+		"unparseable leaf":     {Certificates: []tls.Certificate{{Certificate: [][]byte{[]byte("junk")}, PrivateKey: key}}},
+		"empty chain":          {Certificates: []tls.Certificate{{PrivateKey: key}}},
+		"key that cannot sign": {Certificates: []tls.Certificate{{Certificate: [][]byte{cert.Raw}, PrivateKey: "not a key"}}},
+		"callback failing": {GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return nil, errors.New("no certificate")
+		}},
 	} {
 		if s, id := NodeIdentity(cfg); s != nil || id != "" {
 			t.Errorf("%s: NodeIdentity = %v, %q; want nothing", name, s, id)
 		}
+	}
+	// A certificate with no node SAN signs but names no node: such a node
+	// cannot sign an assertion a peer would honor.
+	ucert, ukey := userCert(t)
+	if s, id := NodeIdentity(&tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{ucert.Raw}, PrivateKey: ukey}}}); s == nil || id != "" {
+		t.Errorf("a certificate with no node SAN = %v, %q; want its key and no node id", s, id)
 	}
 }
