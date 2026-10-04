@@ -185,7 +185,7 @@ func TestSealedWindow_OfficerEnrollmentClosedAfterInitialization(t *testing.T) {
 		// BarrierInitialize for. This test is about the enrollment
 		// listener's PreOperationalOnly gate, not about how the barrier
 		// came up.
-		if err := b.Initialize(ctx, seal.MustCredentials([]byte("sealed-window-enrollment-pass"))); err != nil {
+		if err := b.Initialize(ctx, seal.MustCredentials(context.Background(), []byte("sealed-window-enrollment-pass"))); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
 		if err := b.Seal(); err != nil {

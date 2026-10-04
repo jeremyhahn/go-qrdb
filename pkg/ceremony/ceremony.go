@@ -724,7 +724,7 @@ func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []
 // unseals a barrier it does not.
 func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, secret []byte) error {
 	if !s.barrier.IsSealed() {
-		creds, err := seal.CredentialsFor(secret)
+		creds, err := seal.CredentialsFor(ctx, secret)
 		if err != nil {
 			return &SystemBarrierInitError{Cause: err}
 		}
@@ -734,7 +734,7 @@ func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, sec
 		}
 		return nil
 	}
-	creds, err := seal.CredentialsFor(secret)
+	creds, err := seal.CredentialsFor(ctx, secret)
 	if err != nil {
 		return &SystemBarrierInitError{Cause: err}
 	}

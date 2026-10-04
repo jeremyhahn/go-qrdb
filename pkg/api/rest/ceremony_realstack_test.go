@@ -112,7 +112,7 @@ func newRealCeremonyCA(t *testing.T) ceremony.CeremonyCA {
 // WithCeremonyCA.
 func newRealReissueStack(t *testing.T, soPIN string) (service.CeremonyServicer, ceremony.CeremonyCA) {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if err != nil {
 		t.Fatal(err)
 	}

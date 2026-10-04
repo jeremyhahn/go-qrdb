@@ -55,7 +55,7 @@ func TestInitialize_SystemBarrier_RetryAfterCrashConverges(t *testing.T) {
 
 	// Simulate the barrier having already been initialized by a prior,
 	// interrupted call, then sealed again (a fresh process restart).
-	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(secret)))
+	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(context.Background(), secret)))
 	require.NoError(t, barrier.Seal())
 	require.True(t, barrier.IsSealed())
 
@@ -89,7 +89,7 @@ func TestInitialize_SystemBarrier_WrongSecretOnRetryFails(t *testing.T) {
 	require.NoError(t, err)
 	secret := []byte("test-master-password")
 
-	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(secret)))
+	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(context.Background(), secret)))
 	require.NoError(t, barrier.Seal())
 	require.True(t, barrier.IsSealed())
 
@@ -153,7 +153,7 @@ func TestInitialize_SystemBarrier_AlreadyUnsealedWrongSecretRefused(t *testing.T
 	// -- CredentialsFor's own doc contrasts this -- so Initialize is handed a
 	// COPY here. p1Secret itself must survive intact: it is reused below to
 	// prove it is still the one working credential.
-	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(append([]byte(nil), p1Secret...))))
+	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(context.Background(), append([]byte(nil), p1Secret...))))
 	require.False(t, barrier.IsSealed(), "P1 leaves the barrier unsealed under its own secret")
 
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
@@ -171,8 +171,8 @@ func TestInitialize_SystemBarrier_AlreadyUnsealedWrongSecretRefused(t *testing.T
 
 	// Only P1's secret -- never P2's -- actually verifies against the live
 	// barrier: the key was never stranded on a credential nobody can use.
-	assert.NoError(t, barrier.VerifyCredentials(context.Background(), seal.MustCredentials(p1Secret)))
-	assert.Error(t, barrier.VerifyCredentials(context.Background(), seal.MustCredentials(p2Secret)))
+	assert.NoError(t, barrier.VerifyCredentials(context.Background(), seal.MustCredentials(context.Background(), p1Secret)))
+	assert.Error(t, barrier.VerifyCredentials(context.Background(), seal.MustCredentials(context.Background(), p2Secret)))
 }
 
 // TestInitialize_SystemBarrier_MofNLeavesItSealed covers the M-of-N

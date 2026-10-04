@@ -78,7 +78,7 @@ func (a *RealAdminLookup) BindAdminCert(_ context.Context, _ string, _ uint64, t
 // lookup double so a test can inspect CertBindings directly.
 func NewRealReissueStack(t testing.TB, soPIN string) (service.CeremonyServicer, ceremony.CeremonyCA, *RealAdminLookup) {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if err != nil {
 		t.Fatalf("NewRealReissueStack: NewSoftwareStrategy: %v", err)
 	}

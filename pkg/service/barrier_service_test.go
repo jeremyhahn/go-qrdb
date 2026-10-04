@@ -68,7 +68,7 @@ func initAndUnsealSoftwareBarrier(t *testing.T) BarrierServicer {
 	t.Helper()
 	barrier, _ := newTestSoftwareBarrier(t)
 	ctx := context.Background()
-	if err := barrier.Initialize(ctx, seal.MustCredentials([]byte("my-secret"))); err != nil {
+	if err := barrier.Initialize(ctx, seal.MustCredentials(context.Background(), []byte("my-secret"))); err != nil {
 		t.Fatalf("barrier.Initialize: %v", err)
 	}
 	return NewBarrierService(barrier)
@@ -197,7 +197,7 @@ func TestBarrierService_BarrierInitializeShamir_DelegatesWithoutCeremony(t *test
 
 func TestBarrierService_BarrierUnseal(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
-	if err := barrier.Initialize(context.Background(), seal.MustCredentials([]byte("my-secret"))); err != nil {
+	if err := barrier.Initialize(context.Background(), seal.MustCredentials(context.Background(), []byte("my-secret"))); err != nil {
 		t.Fatalf("barrier.Initialize: %v", err)
 	}
 	svc := NewBarrierService(barrier)
@@ -237,7 +237,7 @@ func TestBarrierService_BarrierUnseal_NotInitialized(t *testing.T) {
 func TestBarrierService_BarrierUnseal_AlreadyUnsealed(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
 	ctx := context.Background()
-	if err := barrier.Initialize(ctx, seal.MustCredentials([]byte("my-secret"))); err != nil {
+	if err := barrier.Initialize(ctx, seal.MustCredentials(context.Background(), []byte("my-secret"))); err != nil {
 		t.Fatalf("barrier.Initialize: %v", err)
 	}
 	svc := NewBarrierService(barrier)

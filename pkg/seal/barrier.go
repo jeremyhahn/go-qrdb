@@ -607,7 +607,7 @@ func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credential
 	}
 	defer secure.Wipe(candidate)
 
-	live, err := b.barrier.RootKey()
+	live, err := b.barrier.RootKey(ctx)
 	if err != nil {
 		return err
 	}

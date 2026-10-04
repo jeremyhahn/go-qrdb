@@ -166,7 +166,7 @@ func TestWriteIssuedAdminCertIfAny_TheRaceLoserIsNotAnError(t *testing.T) {
 // LastIssuedAdminCertPEM from, so a test double cannot stand in for it.
 func testCeremonyCore(t *testing.T) *ceremony.CeremonyService {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	require.NoError(t, err)
 	barrier, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "test/root-key"}, strategy)

@@ -50,7 +50,7 @@ import (
 // needs to run a real Initialize, without any daemon-specific scaffolding.
 func ceremonyHandoffBarrier(t *testing.T) *seal.StorageBarrier {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	require.NoError(t, err)
 	b, err := seal.NewStorageBarrier(
 		ceremonyHandoffLogger(),
@@ -59,7 +59,7 @@ func ceremonyHandoffBarrier(t *testing.T) *seal.StorageBarrier {
 		strategy,
 	)
 	require.NoError(t, err)
-	require.NoError(t, b.Initialize(context.Background(), seal.MustCredentials([]byte("test-master-password"))))
+	require.NoError(t, b.Initialize(context.Background(), seal.MustCredentials(context.Background(), []byte("test-master-password"))))
 	return b
 }
 
