@@ -3078,9 +3078,16 @@ export interface BackupRequest {
     readonly destination: string;
     /** Compression algorithm to apply (e.g. "gzip", "zstd", "none"). */
     readonly compression?: string;
-    /** Encryption algorithm to apply (e.g. "aes256gcm", "none"). */
+    /**
+     * Encryption algorithm to apply: "aes256" or "none". Left unset, the
+     * server defaults to "aes256" and then requires `encryptionKey` (or a
+     * server-side KMS key reference, where the deployment provides one);
+     * it never defaults to plaintext. Set explicitly to "none" to write
+     * the backup unencrypted -- the server logs that choice and, where a
+     * compliance audit logger is configured, records it.
+     */
     readonly encryption?: string;
-    /** Encryption key material (base64-encoded). */
+    /** Encryption key material (base64-encoded). Required unless encryption is explicitly "none". */
     readonly encryptionKey?: string;
     /** Arbitrary metadata to embed in the backup manifest. */
     readonly metadata?: Record<string, string>;

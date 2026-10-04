@@ -85,6 +85,7 @@ func TestTransportBackup_CreateBackup_Success(t *testing.T) {
 
 	info, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/embedded-test",
+		Encryption:  transport.EncryptionNone,
 		Metadata:    map[string]string{"test": "true"},
 	})
 	if err != nil {
@@ -162,6 +163,7 @@ func TestTransportBackup_ListBackups_AfterCreate(t *testing.T) {
 
 	_, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/list-test",
+		Encryption:  transport.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
@@ -201,6 +203,7 @@ func TestTransportBackup_GetBackup_Success(t *testing.T) {
 
 	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/get-test",
+		Encryption:  transport.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
@@ -254,6 +257,7 @@ func TestTransportBackup_DeleteBackup_Success(t *testing.T) {
 
 	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/delete-test",
+		Encryption:  transport.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
@@ -310,6 +314,7 @@ func TestTransportBackup_RestoreBackup_Success(t *testing.T) {
 
 	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/restore-test",
+		Encryption:  transport.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
@@ -372,6 +377,7 @@ func TestTransportBackup_VerifyBackup_Success(t *testing.T) {
 
 	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/verify-test",
+		Encryption:  transport.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
@@ -430,6 +436,7 @@ func TestTransportBackup_FullLifecycle(t *testing.T) {
 	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
 		Destination: "/backups/lifecycle",
 		Compression: transport.CompressionSnappy,
+		Encryption:  transport.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)

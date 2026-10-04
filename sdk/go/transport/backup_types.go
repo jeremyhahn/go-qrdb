@@ -41,10 +41,16 @@ const (
 type EncryptionType string
 
 const (
-	// EncryptionNone disables encryption.
+	// EncryptionNone disables encryption. It is never the default: a
+	// caller gets it only by setting BackupRequest.Encryption to
+	// EncryptionNone outright. The server logs and, where a compliance
+	// audit logger is configured, audits that choice.
 	EncryptionNone EncryptionType = "none"
 
-	// EncryptionAES256 uses AES-256-GCM encryption.
+	// EncryptionAES256 uses AES-256-GCM encryption. It is the server's
+	// default when BackupRequest.Encryption is left empty, which then
+	// requires EncryptionKey (or a server-side KMS key reference, where
+	// the deployment provides one).
 	EncryptionAES256 EncryptionType = "aes256"
 )
 
@@ -77,12 +83,16 @@ type BackupRequest struct {
 	// CompressionNone when empty.
 	Compression CompressionType `json:"compression,omitempty"`
 
-	// Encryption selects the encryption algorithm. Defaults to
-	// EncryptionNone when empty.
+	// Encryption selects the encryption algorithm. Left empty, the server
+	// defaults it to EncryptionAES256 and then requires EncryptionKey: the
+	// default is encrypted, not plaintext. A caller that wants plaintext
+	// must set this to EncryptionNone outright rather than get it by
+	// omission.
 	Encryption EncryptionType `json:"encryption,omitempty"`
 
-	// EncryptionKey is the encryption key material. Required when
-	// Encryption is not EncryptionNone.
+	// EncryptionKey is the encryption key material. Required unless
+	// Encryption is EncryptionNone (or the server has a KMS key reference
+	// configured for the default).
 	EncryptionKey []byte `json:"encryption_key,omitempty"`
 
 	// Metadata holds arbitrary user-supplied metadata tags.

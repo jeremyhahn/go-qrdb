@@ -269,6 +269,11 @@ func translateBackupError(err error) error {
 		return &transport.BackupCreateError{Err: ekr}
 	}
 
+	var encReq *service.BackupEncryptionRequiredError
+	if errors.As(err, &encReq) {
+		return &transport.BackupCreateError{Err: encReq}
+	}
+
 	var dkr *service.BackupDecryptionKeyRequiredError
 	if errors.As(err, &dkr) {
 		return &transport.BackupRestoreError{Err: dkr}
