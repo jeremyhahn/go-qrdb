@@ -287,7 +287,7 @@ func TestReissueAdminCredential_Succeeds(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	second, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{AdminGenerate: true})
+	second, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
 	require.NoError(t, err)
 	assert.NotEmpty(t, second.AdminCertPEM)
 	assert.NotEmpty(t, second.AdminKeyPEM)
@@ -314,7 +314,7 @@ func TestReissueAdminCredential_HonoursCSRPath(t *testing.T) {
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "ignored-cn")
-	result, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{AdminCSRPEM: csrPEM})
+	result, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{SOPin: "test-so-pin", AdminCSRPEM: csrPEM})
 	require.NoError(t, err)
 	assert.Empty(t, result.AdminKeyPEM)
 	assert.Equal(t, AdminCredentialCSR, result.AdminCredentialSource)
