@@ -1,6 +1,6 @@
 # Initialization Ceremony — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -41,7 +41,9 @@ share-claim route of its own.
     { "username": "carol", "role": "custodian", "csr_pem": "…" }
   ],
   "hostname": "db.example.com", "sans": ["db.example.com"],
-  "admin_csr_pem": "…", "admin_cert_pem": "…", "admin_cert_pool_pem": "…"
+  "admin_csr_pem": "…", "admin_cert_pem": "…", "admin_cert_pool_pem": "…",
+  "admin_generate": false,
+  "secret": "YmFycmllci1wYXNzcGhyYXNl"
 }
 ```
 
@@ -51,11 +53,23 @@ initial share holder, officers and custodians alike, each with its role — and
 fails closed with `ErrNoOfficers` without them. The unseal key is split
 `threshold`-of-`len(officers)`. The caller may not name itself among them.
 
-**`admin_csr_pem`, `admin_cert_pem` and `admin_cert_pool_pem` select the
-bootstrap admin's credential path**: CSR-sign, BYOC, or (when
-all three are empty) generate — dev/test/evaluation only, not suitable for
-production. `admin_csr_pem` and `admin_cert_pem` are mutually exclusive
-(`*ceremony.ConflictingAdminCredentialInputsError`, 400).
+**`secret` is `bytes`, base64-encoded on the wire** (**BREAKING**: it was a
+plain string before; see CHANGELOG) -- a Go string is immutable and can
+never be wiped from memory after use the way a `[]byte` can, matching
+`BarrierInitializeRequest.secret`'s existing convention. It is the system
+barrier's passphrase for the single-admin path (`threshold < 2`); omit it for
+`--barrier-strategy none` and for M-of-N, where the barrier stays sealed
+until officers reconstruct it from their shares. The MCP tool's `secret`
+argument is the one exception: it is plain text there, not base64, matching
+its `passphrase` argument's convention on the barrier and tenant-barrier
+tools.
+
+**`admin_csr_pem`, `admin_cert_pem`/`admin_cert_pool_pem`, and
+`admin_generate` select the bootstrap admin's credential path**: CSR-sign,
+BYOC, or generate — dev/test/evaluation only, not suitable for production.
+Exactly one must be set; a request selecting none is refused
+(`*ceremony.NoAdminCredentialSelectedError`, 400), and more than one is
+refused too (`*ceremony.ConflictingAdminCredentialInputsError`, 400).
 
 Response — `CeremonyInitializeResponse`: `spki_pin`, `ca_cert_pem`,
 `tls_cert_pem`, `state`, `share_count`, `holders` — each initial holder's
@@ -67,13 +81,18 @@ claims its own envelope) — and the bootstrap admin's credential result:
 ```json
 { "spki_pin": "…", "ca_cert_pem": "…", "state": "operational",
   "admin_cert_pem": "…", "admin_credential_source": "generated",
-  "admin_key_pem": "…" }
+  "admin_key_pem": "LS0tLS1CRUdJTiBFQyBQUklWQVRFIEtFWS0tLS0tCuKApg==" }
 ```
 
-`admin_key_pem` is present **only** when `admin_credential_source` is
-`"generated"`. It is returned exactly once; the server retains no copy. First
-boot binds `admin_cert_pem`'s thumbprint to the admin account once that
-account exists — see [../firstboot/api.md](../firstboot/api.md).
+**`admin_key_pem` is `bytes`, base64-encoded on the wire** (**BREAKING**: it
+was a plain string before; see CHANGELOG) -- the PEM text re-encoded as
+base64 by the JSON marshaler: decode it to recover the PEM. It is present
+**only** when `admin_credential_source` is
+`"generated"`. It is returned exactly once; the server retains no copy and
+wipes its own in-memory copy once the response has been sent, on every
+transport. First boot binds `admin_cert_pem`'s thumbprint to the admin
+account once that account exists — see
+[../firstboot/api.md](../firstboot/api.md).
 
 `POST /v1/ceremony/sign-csr` — `{ "username", "so_pin", "csr_pem", "role" }`
 issues a HOLDER certificate only (`role` is `so` or `custodian`, which

@@ -230,11 +230,12 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 // TestHandleCeremonyInitialize_WipesAdminKeyPEM proves the generate path's
 // private key is wiped from the service-layer result
 // (CeremonyInitResult.WipeAdminKeyPEM) once this handler has built its own,
-// independent string copy for the wire response -- go-qrdb#560 review
-// item 7: "WipeAdminKeyPEM runs on every transport, not only REST." The
-// client must still receive the correct, un-zeroed key: proving the wipe
-// happens AFTER holderwire.CeremonyInitTo's string(...) copy and after
-// holderResult has already serialized it, never before.
+// independent copy for the wire response -- go-qrdb#560 review item 7:
+// "WipeAdminKeyPEM runs on every transport, not only REST." The client
+// must still receive the correct, un-zeroed key (base64-encoded on the
+// wire, since admin_key_pem is now bytes): proving the wipe happens AFTER
+// holderwire.CeremonyInitTo's bytes.Clone and after holderResult has
+// already serialized it, never before.
 func TestHandleCeremonyInitialize_WipesAdminKeyPEM(t *testing.T) {
 	result := &service.CeremonyInitResult{
 		SPKIPin:               "abc123pin",
@@ -257,12 +258,12 @@ func TestHandleCeremonyInitialize_WipesAdminKeyPEM(t *testing.T) {
 
 	text := resultText(t, out)
 	var wire struct {
-		AdminKeyPEM string `json:"admin_key_pem"`
+		AdminKeyPEM []byte `json:"admin_key_pem"`
 	}
 	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		t.Fatalf("unmarshal admin_key_pem: %v", jsonErr)
 	}
-	if wire.AdminKeyPEM != "admin-key" {
+	if string(wire.AdminKeyPEM) != "admin-key" {
 		t.Fatalf("client must still receive the un-zeroed key, got %q", wire.AdminKeyPEM)
 	}
 	if result.AdminKeyPEM != nil {

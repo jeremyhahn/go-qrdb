@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -99,19 +100,40 @@ func toolCeremonyInitialize() mcp.Tool {
 // returns (go-qrdb#560 review item 5).
 func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.CeremonyCA) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// "secret" is decoded separately, through secretArg -- the same
+		// plain-text convention the tenant-barrier tools' "passphrase"
+		// argument uses -- never through the generic struct decode below:
+		// transport.CeremonyInitializeRequest.Secret is []byte, which
+		// encoding/json renders as base64 on every OTHER transport, but an
+		// MCP caller types the secret as plain text, not base64
+		// (go-qrdb#560 review item 7, follow-up). argsWithoutSecret is a
+		// shallow copy with "secret" removed so DecodeArgs never attempts
+		// to base64-decode it.
+		args := req.GetArguments()
+		argsWithoutSecret := make(map[string]any, len(args))
+		for k, v := range args {
+			if k == "secret" {
+				continue
+			}
+			argsWithoutSecret[k] = v
+		}
+
 		var in transport.CeremonyInitializeRequest
-		if err := wire.DecodeArgs(req.GetArguments(), &in, wire.CeremonyJSONFields...); err != nil {
+		if err := wire.DecodeArgs(argsWithoutSecret, &in, wire.CeremonyJSONFields...); err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
+		in.Secret = secretArg(req, "secret")
+		defer secure.Wipe(in.Secret)
+
 		result, err := svc.CeremonyInitialize(ctx, ca, holderwire.CeremonyInitFrom(&in))
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
-		// out carries its own independent string copy of result.AdminKeyPEM
-		// (holderwire.CeremonyInitTo's string(...) conversion), and
-		// holderResult fully serializes it to JSON text before returning,
-		// so wiping result's copy here, now that out is built and about
-		// to be returned, cannot affect the response already handed back
+		// out carries its own independent copy of result.AdminKeyPEM
+		// (holderwire.CeremonyInitTo's bytes.Clone), and holderResult
+		// fully serializes it to JSON text before returning, so wiping
+		// result's copy here, now that out is built and about to be
+		// returned, cannot affect the response already handed back
 		// (go-qrdb#560 review item 7: every transport, not only REST).
 		out := holderwire.CeremonyInitTo(result)
 		result.WipeAdminKeyPEM()

@@ -62,11 +62,10 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, delayed("CeremonyInitialize", err)
 	}
-	// resp carries its own independent string copy of result.AdminKeyPEM
-	// (holderwire.CeremonyInitTo's string(...) conversion), so wiping
-	// result's copy here, now that resp is fully built, cannot affect
-	// resp's own bytes (go-qrdb#560 review item 7: every transport, not
-	// only REST).
+	// resp carries its own independent copy of result.AdminKeyPEM
+	// (holderwire.CeremonyInitTo's bytes.Clone), so wiping result's copy
+	// here, now that resp is fully built, cannot affect resp's own bytes
+	// (go-qrdb#560 review item 7: every transport, not only REST).
 	resp := holderwire.CeremonyInitTo(result)
 	result.WipeAdminKeyPEM()
 	return resp, nil

@@ -258,12 +258,12 @@ func TenantRevokeToPB(req *transport.TenantOfficerRevokeRequest) *pb.TenantBarri
 
 // CeremonyInitToPB encodes a ceremony initialization.
 //
-// Secret is the one, unavoidable copy converting
-// transport.CeremonyInitializeRequest's wire string into the proto
-// message's bytes field (go-qrdb#560 review item 7): the SDK caller
-// supplied it as a Go string (transport.CeremonyInitializeRequest.Secret),
-// so a copy crossing into []byte here is the earliest this client can make
-// it wipeable, not an avoidable extra one.
+// Secret is now bytes end to end (go-qrdb#560 review item 7, follow-up):
+// transport.CeremonyInitializeRequest.Secret is []byte, the same as the
+// proto field, so this is a direct assignment, not a copy -- safe because
+// the gRPC client call this builds the request for is synchronous: it
+// marshals and sends req before this function's caller can regain control
+// to wipe anything.
 func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) *pb.CeremonyInitializeRequest {
 	officers := make([]*pb.CeremonyOfficer, len(req.Officers))
 	for i, o := range req.Officers {
@@ -282,19 +282,18 @@ func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) *pb.CeremonyInit
 		AdminCertPem:           req.AdminCertPEM,
 		AdminCertPoolPem:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
-		Secret:                 []byte(req.Secret),
+		Secret:                 req.Secret,
 	}
 }
 
 // CeremonyInitFromPB decodes a ceremony initialization result.
 //
-// AdminKeyPEM converts the proto's bytes field to
-// transport.CeremonyInitializeResponse's wire string (go-qrdb#560 review
-// item 7): that field stays a Go string so every SDK caller across every
-// transport sees the same type, and a string conversion of
-// resp.GetAdminKeyPem() already makes its own independent copy -- the
-// proto message resp belongs to, and may still be read from, this call's
-// caller, so nothing here wipes it.
+// AdminKeyPEM is now bytes end to end (go-qrdb#560 review item 7,
+// follow-up): transport.CeremonyInitializeResponse.AdminKeyPEM is []byte,
+// the same as the proto field, so this is a direct assignment, not a
+// copy -- resp was freshly unmarshaled by grpc-go for this call alone, so
+// nothing else retains or mutates its backing array once this function
+// hands it to the caller, who is responsible for wiping it.
 func CeremonyInitFromPB(resp *pb.CeremonyInitializeResponse) *transport.CeremonyInitializeResponse {
 	holders := make([]transport.CeremonyHolderCert, len(resp.GetHolders()))
 	for i, h := range resp.GetHolders() {
@@ -308,7 +307,7 @@ func CeremonyInitFromPB(resp *pb.CeremonyInitializeResponse) *transport.Ceremony
 		ShareCount:            int(resp.GetShareCount()),
 		Holders:               holders,
 		AdminCertPEM:          resp.GetAdminCertPem(),
-		AdminKeyPEM:           string(resp.GetAdminKeyPem()),
+		AdminKeyPEM:           resp.GetAdminKeyPem(),
 		AdminCredentialSource: resp.GetAdminCredentialSource(),
 	}
 }

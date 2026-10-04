@@ -58,7 +58,13 @@ type CeremonyInitializeRequest struct {
 	// barrier up itself in this same call. Required when the barrier's
 	// registered strategy needs one (e.g. "passphrase"); must be empty for
 	// "none".
-	Secret string `json:"secret,omitempty"`
+	//
+	// []byte, not string (go-qrdb#560 review item 7): a Go string is
+	// immutable and can never be wiped from memory after use the way a
+	// []byte can. encoding/json renders a []byte as base64, matching
+	// transport.BarrierInitializeRequest.Secret's existing convention (the
+	// TS SDK already sends the barrier passphrase base64-encoded).
+	Secret []byte `json:"secret,omitempty"`
 }
 
 // CeremonyHolderCert is the CA-issued certificate of one initial holder.
@@ -76,6 +82,11 @@ type CeremonyHolderCert struct {
 // is returned exactly once and the server retains no copy (go-qrdb#548). A
 // caller that receives it must capture it immediately -- there is no way to
 // retrieve it again.
+//
+// It is []byte, not string (go-qrdb#560 review item 7): a Go string is
+// immutable and can never be wiped from memory after use the way a []byte
+// can. encoding/json renders it as base64, matching
+// transport.BarrierInitializeRequest.Secret's existing convention.
 type CeremonyInitializeResponse struct {
 	SPKIPin               string               `json:"spki_pin"`
 	CACertPEM             string               `json:"ca_cert_pem"`
@@ -84,7 +95,7 @@ type CeremonyInitializeResponse struct {
 	ShareCount            int                  `json:"share_count"`
 	Holders               []CeremonyHolderCert `json:"holders,omitempty"`
 	AdminCertPEM          string               `json:"admin_cert_pem,omitempty"`
-	AdminKeyPEM           string               `json:"admin_key_pem,omitempty"`
+	AdminKeyPEM           []byte               `json:"admin_key_pem,omitempty"`
 	AdminCredentialSource string               `json:"admin_credential_source,omitempty"`
 }
 

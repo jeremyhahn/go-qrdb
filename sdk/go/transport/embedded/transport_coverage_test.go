@@ -986,10 +986,10 @@ func TestEmbeddedCeremony_Initialize_ForwardsAllFields(t *testing.T) {
 // TestEmbeddedCeremony_Initialize_WipesAdminKeyPEM proves the generate
 // path's private key is wiped from the service-layer result
 // (CeremonyInitResult.WipeAdminKeyPEM) once this transport has built its
-// own, independent string copy for the response -- go-qrdb#560 review item
-// 7: "WipeAdminKeyPEM runs on every transport, not only REST." The caller
+// own, independent copy for the response -- go-qrdb#560 review item 7:
+// "WipeAdminKeyPEM runs on every transport, not only REST." The caller
 // must still receive the correct, un-zeroed key: proving the wipe happens
-// AFTER holderwire.CeremonyInitTo's string(...) copy, never before it.
+// AFTER holderwire.CeremonyInitTo's bytes.Clone, never before it.
 func TestEmbeddedCeremony_Initialize_WipesAdminKeyPEM(t *testing.T) {
 	result := &service.CeremonyInitResult{
 		SPKIPin:               "pin",
@@ -1009,7 +1009,7 @@ func TestEmbeddedCeremony_Initialize_WipesAdminKeyPEM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CeremonyInitialize: %v", err)
 	}
-	if resp.AdminKeyPEM != "admin-key" {
+	if string(resp.AdminKeyPEM) != "admin-key" {
 		t.Fatalf("caller must still receive the un-zeroed key, got %q", resp.AdminKeyPEM)
 	}
 	if result.AdminKeyPEM != nil {

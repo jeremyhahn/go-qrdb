@@ -19,6 +19,7 @@ import (
 	"net/http"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -81,6 +82,11 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
+	// req.Secret is this handler's own copy of the system barrier
+	// passphrase (go-qrdb#560 review item 7, follow-up: the field is
+	// []byte, wire-encoded as base64, matching
+	// transport.BarrierInitializeRequest.Secret's existing convention).
+	defer secure.Wipe(req.Secret)
 
 	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA, holderwire.CeremonyInitFrom(&req))
 	if err != nil {
@@ -91,11 +97,10 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 	// The admin key, when the generate path produced one, is wiped from
 	// this handler's own copy of result once writeJSON has already
 	// serialized and written the response (go-qrdb#548) -- the response
-	// itself carries an independent string copy
-	// (holderwire.CeremonyInitTo's string(...) conversion), so this wipe
-	// cannot reach it. Every other transport now wipes the same way
-	// (go-qrdb#560 review item 7); WipeAdminKeyPEM is a safe no-op when
-	// result carries none.
+	// itself carries an independent copy (holderwire.CeremonyInitTo's
+	// bytes.Clone), so this wipe cannot reach it. Every other transport
+	// now wipes the same way (go-qrdb#560 review item 7); WipeAdminKeyPEM
+	// is a safe no-op when result carries none.
 	defer result.WipeAdminKeyPEM()
 	writeJSON(w, holderwire.CeremonyInitTo(result))
 }

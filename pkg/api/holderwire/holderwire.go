@@ -20,6 +20,8 @@
 package holderwire
 
 import (
+	"bytes"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -224,19 +226,26 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.Ceremon
 		AdminCertPEM:           req.AdminCertPEM,
 		AdminCertPoolPEM:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
-		// transport.CeremonyInitializeRequest.Secret stays a wire string
-		// (REST/MCP/embedded's JSON-shaped request); this is the one,
-		// unavoidable copy converting it to the []byte
-		// service.CeremonyInitializeOptions.Secret carries from here down,
-		// so nothing downstream has to make a second, equally unwiped
-		// copy of its own to hand off to the core ceremony package
-		// (go-qrdb#560 review item 7).
-		Secret: []byte(req.Secret),
+		// transport.CeremonyInitializeRequest.Secret is now []byte end to
+		// end (go-qrdb#560 review item 7, follow-up): a direct assignment,
+		// not a copy.
+		Secret: req.Secret,
 	}
 }
 
 // CeremonyInitTo converts a ceremony initialization result, including the
 // certificate the CA issued each initial holder.
+//
+// AdminKeyPEM is an explicit bytes.Clone of r.AdminKeyPEM, not a shared
+// slice (go-qrdb#560 review item 7, follow-up: the field is now []byte,
+// not string, so unlike before it no longer makes its own independent
+// copy by construction). Every transport that calls this (REST, MCP,
+// embedded) wipes r.AdminKeyPEM (CeremonyInitResult.WipeAdminKeyPEM) once
+// it has built its outgoing response -- sharing the backing array would
+// zero the response's own copy, still unmarshaled/unread, out from under
+// it. The clone is the one, unavoidable copy this value's single delivery
+// to its caller requires; nothing beyond this call and the one wipe
+// retains another.
 func CeremonyInitTo(r *service.CeremonyInitResult) *transport.CeremonyInitializeResponse {
 	holders := make([]transport.CeremonyHolderCert, len(r.Holders))
 	for i, h := range r.Holders {
@@ -250,7 +259,7 @@ func CeremonyInitTo(r *service.CeremonyInitResult) *transport.CeremonyInitialize
 		ShareCount:            r.ShareCount,
 		Holders:               holders,
 		AdminCertPEM:          string(r.AdminCertPEM),
-		AdminKeyPEM:           string(r.AdminKeyPEM),
+		AdminKeyPEM:           bytes.Clone(r.AdminKeyPEM),
 		AdminCredentialSource: r.AdminCredentialSource,
 	}
 }

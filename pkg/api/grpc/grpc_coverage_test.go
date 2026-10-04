@@ -17,6 +17,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -156,7 +157,14 @@ func newMockCeremonyService() *mockCeremonyService {
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
-	m.capturedInitOpts = opts
+	// The handler wipes opts.Secret's backing array (go-qrdb#560 review
+	// item 7, follow-up) once it has finished using it, which runs before
+	// this call returns to the test -- captured is a shallow copy with an
+	// independent clone of Secret, so the test can still inspect what was
+	// forwarded after the wipe has already run.
+	captured := *opts
+	captured.Secret = bytes.Clone(opts.Secret)
+	m.capturedInitOpts = &captured
 	m.capturedCA = ca
 	if m.initErr != nil {
 		return nil, m.initErr

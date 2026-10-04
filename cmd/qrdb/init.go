@@ -31,6 +31,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -357,6 +358,12 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 		}
 	}
 
+	// f.passphrase is the one, unavoidable copy at the CLI flag-parsing
+	// boundary: cobra owns that Go string, and nothing converts it to
+	// wipeable bytes before this point. Wiped once the request below is
+	// sent (go-qrdb#560 review item 7, follow-up).
+	secretBytes := []byte(f.passphrase)
+	defer secure.Wipe(secretBytes)
 	req := &transport.CeremonyInitializeRequest{
 		SOPin:                  f.soPin,
 		UserPin:                f.userPin,
@@ -365,7 +372,7 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 		CredentialSealStrategy: f.barrierStrategy,
 		Officers:               officers,
 		Hostname:               f.hostname,
-		Secret:                 f.passphrase,
+		Secret:                 secretBytes,
 	}
 	if f.sans != "" {
 		req.SANs = strings.Split(f.sans, ",")
@@ -408,6 +415,10 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 	if err != nil {
 		return err
 	}
+	// resp.AdminKeyPEM, when present, is returned exactly once and wiped
+	// here once this command has finished printing it in whichever format
+	// the caller asked for (go-qrdb#560 review item 7, follow-up).
+	defer secure.Wipe(resp.AdminKeyPEM)
 
 	switch outputFormat {
 	case "json":
@@ -424,9 +435,9 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 		if resp.AdminCertPEM != "" {
 			_, _ = fmt.Fprintf(outputWriter, "AdminCertPEM (source=%s):\n%s\n", resp.AdminCredentialSource, resp.AdminCertPEM)
 		}
-		if resp.AdminKeyPEM != "" {
+		if len(resp.AdminKeyPEM) != 0 {
 			_, _ = fmt.Fprintln(outputWriter, "AdminKeyPEM (returned exactly once -- save it now, it cannot be retrieved again):")
-			_, _ = fmt.Fprintln(outputWriter, resp.AdminKeyPEM)
+			_, _ = fmt.Fprintln(outputWriter, string(resp.AdminKeyPEM))
 		}
 		return nil
 	}
