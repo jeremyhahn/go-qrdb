@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -103,6 +104,44 @@ type TLSBundle struct {
 	// qrdb_embedded composer all wire the SAME package rather than keeping
 	// independent copies of this logic.
 	trustPool *clienttrust.Pool
+
+	// clientAuth holds the ClientAuth mode and ClientCAs pool every
+	// client-facing listener sharing TLSConfig applies, read fresh on
+	// every handshake by the hook wireClientTrustPool installs. See
+	// SetClientAuthMode for why this is an atomic holder rather than a
+	// direct mutation of TLSConfig.ClientAuth/.ClientCAs.
+	clientAuth atomic.Pointer[clientAuthOverride]
+}
+
+// clientAuthOverride is the ClientAuth mode and ClientCAs pool
+// SetClientAuthMode installs.
+type clientAuthOverride struct {
+	mode      tls.ClientAuthType
+	clientCAs *x509.CertPool
+}
+
+// SetClientAuthMode atomically installs the ClientAuth mode and ClientCAs
+// pool every client-facing listener sharing this bundle's TLSConfig
+// applies, effective from the very next handshake. Call any number of
+// times; the most recent call wins.
+//
+// NEVER mutate TLSConfig.ClientAuth or .ClientCAs directly once
+// wireClientTrustPool has run -- the pre-host sealed-window listener (and,
+// after it, every regular listener sharing this bundle) can still have an
+// in-flight handshake reading those fields at the exact moment a later
+// boot phase decides the auth-derived default (go-qrdb#591's review, item
+// 3): the sealed-window listener's own graceful Stop is bounded by a fixed
+// timeout (pkg/api/rest.Server.Stop and its siblings), so it can return --
+// and the boot sequence proceed to install a new mode -- before a slow,
+// still-open connection's handshake has actually finished reading them.
+// This call is race-free because it is the ONLY thing that ever changes
+// the applied mode after wireClientTrustPool runs; the struct's own fields
+// are written only before any listener starts and never again.
+//
+// Must be called after wireClientTrustPool, which installs the hook that
+// reads this instead of TLSConfig's own fields.
+func (b *TLSBundle) SetClientAuthMode(mode tls.ClientAuthType, clientCAs *x509.CertPool) {
+	b.clientAuth.Store(&clientAuthOverride{mode: mode, clientCAs: clientCAs})
 }
 
 // SetKeyBProvider installs the CertProvider the dynamic client-auth trust
@@ -170,6 +209,25 @@ func (b *TLSBundle) TrustPool() *clienttrust.Pool {
 // quicraftconfig.MTLSConfig in start.go), so a Key B leaf is refused there
 // regardless of what this pool trusts.
 func (b *TLSBundle) wireClientTrustPool() {
+	// Seeded from TLSConfig's own current values -- the pre-unseal
+	// baseline applyTLSClientAuth and the unconditional ClientCAs
+	// assignment above this call's own call site already set -- so a
+	// caller that never calls SetClientAuthMode sees exactly that.
+	b.clientAuth.Store(&clientAuthOverride{mode: b.TLSConfig.ClientAuth, clientCAs: b.TLSConfig.ClientCAs})
+	// Installed BEFORE b.trustPool.Wire below, so Pool's own composability
+	// (Wire composes with whatever GetConfigForClient hook already exists
+	// rather than overwriting it) captures this hook as the base its own
+	// widening applies on top of -- this hook's returned clone, carrying
+	// the CURRENT atomic ClientAuth/ClientCAs, never TLSConfig's own
+	// fields directly (see SetClientAuthMode's own doc comment for why).
+	b.TLSConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		ov := b.clientAuth.Load()
+		clone := b.TLSConfig.Clone()
+		clone.ClientAuth = ov.mode
+		clone.ClientCAs = ov.clientCAs
+		clone.GetConfigForClient = nil
+		return clone, nil
+	}
 	b.trustPool = clienttrust.New()
 	b.trustPool.Wire(b.TLSConfig)
 }

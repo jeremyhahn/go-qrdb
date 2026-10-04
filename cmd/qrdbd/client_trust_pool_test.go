@@ -179,8 +179,20 @@ func TestTLSBundle_TrustPoolIsTheWiredInstance(t *testing.T) {
 
 func TestWireClientTrustPool_InstallsHook(t *testing.T) {
 	bundle := testBundle(t)
-	if cfg := getConfigForClient(t, bundle); cfg != bundle.TLSConfig {
-		t.Fatalf("expected the unmodified base config before SetKeyBProvider, got %+v", cfg)
+	// Never the literal bundle.TLSConfig pointer: wireClientTrustPool's own
+	// hook (ahead of Pool's) always returns a clone carrying the CURRENT
+	// atomic ClientAuth/ClientCAs override, by design (go-qrdb#591's
+	// review, item 3) -- so "unmodified" is asserted on CONTENT here, not
+	// identity.
+	cfg := getConfigForClient(t, bundle)
+	if cfg == nil {
+		t.Fatal("expected a non-nil config before SetKeyBProvider")
+	}
+	if cfg.ClientAuth != bundle.TLSConfig.ClientAuth {
+		t.Errorf("ClientAuth = %v, want %v (the unmodified baseline)", cfg.ClientAuth, bundle.TLSConfig.ClientAuth)
+	}
+	if cfg.ClientCAs != bundle.TLSConfig.ClientCAs {
+		t.Error("ClientCAs is not the unmodified baseline pool")
 	}
 }
 
@@ -227,8 +239,15 @@ func TestWireClientTrustPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	// "no cluster CA configured" fallback.
 	bundle.SetClusterCA(bundleClusterCA(t, bundle))
 
-	if cfg := getConfigForClient(t, bundle); cfg != bundle.TLSConfig {
-		t.Fatalf("expected the unmodified base config when CACertPEMs fails (simulating sealed), got %+v", cfg)
+	cfg := getConfigForClient(t, bundle)
+	if cfg == nil {
+		t.Fatal("expected a non-nil config when CACertPEMs fails (simulating sealed)")
+	}
+	if cfg.ClientAuth != bundle.TLSConfig.ClientAuth {
+		t.Errorf("ClientAuth = %v, want %v (the unmodified baseline)", cfg.ClientAuth, bundle.TLSConfig.ClientAuth)
+	}
+	if cfg.ClientCAs != bundle.TLSConfig.ClientCAs {
+		t.Error("ClientCAs is not the unmodified baseline pool")
 	}
 }
 
