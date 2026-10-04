@@ -254,10 +254,7 @@ func newStoreError(op string, cause error) *StoreError {
 // each is two lines and a shared dependency for them would outweigh the
 // duplication.
 func isTransientCause(cause error) bool {
-	if errors.Is(cause, seal.ErrDecryptionFailed) {
-		return false
-	}
-	return true
+	return !errors.Is(cause, seal.ErrDecryptionFailed)
 }
 
 // BarrierError is returned when a barrier registry operation fails

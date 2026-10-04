@@ -216,10 +216,7 @@ func newStoreError(op, detail string, cause error) *StoreError {
 // it. Everything else reaching here is presumed to be the read itself
 // failing (ReadIndex not ready, leader lost, timeout), which retrying can fix.
 func isTransientCause(cause error) bool {
-	if errors.Is(cause, seal.ErrDecryptionFailed) {
-		return false
-	}
-	return true
+	return !errors.Is(cause, seal.ErrDecryptionFailed)
 }
 
 // ValidationError is returned when request validation fails.

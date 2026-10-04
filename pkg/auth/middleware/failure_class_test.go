@@ -122,13 +122,13 @@ var classCases = []struct {
 		// role.StoreError/tenant.StoreError by type or by Op/Detail string --
 		// it asks the cause chain whether it declares itself transient
 		// (transientMarker), a capability only the PRODUCER can set (its
-		// field is unexported). fakeTransientCause pins that interface check
+		// field is unexported). fakeTransientCauseError pins that interface check
 		// in isolation, decoupled from either producer package; the real
 		// producers are pinned end-to-end by
 		// TestResolveErrorIsTransient_ProducerDeclaresTransience below, built
 		// over the real role.NewStore and the real tenant service/resolver.
 		name:  "rbac.ResolveError -- the cause declares itself transient",
-		err:   &rbac.ResolveError{Err: &fakeTransientCause{msg: "read index not ready", transient: true}},
+		err:   &rbac.ResolveError{Err: &fakeTransientCauseError{msg: "read index not ready", transient: true}},
 		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
 	{
@@ -150,17 +150,17 @@ var classCases = []struct {
 	},
 }
 
-// fakeTransientCause is a minimal error implementing the same ReadTransient()
+// fakeTransientCauseError is a minimal error implementing the same ReadTransient()
 // bool capability role.StoreError and tenant.StoreError do (transientMarker),
 // so resolveErrorIsTransient's interface check can be pinned directly
 // without needing either producer package's real, unexported field.
-type fakeTransientCause struct {
+type fakeTransientCauseError struct {
 	msg       string
 	transient bool
 }
 
-func (f *fakeTransientCause) Error() string       { return f.msg }
-func (f *fakeTransientCause) ReadTransient() bool { return f.transient }
+func (f *fakeTransientCauseError) Error() string       { return f.msg }
+func (f *fakeTransientCauseError) ReadTransient() bool { return f.transient }
 
 func TestClassifyAuthError(t *testing.T) {
 	for _, tc := range classCases {
@@ -365,7 +365,7 @@ func TestClassifyAuthError_ResolveErrorDefinitiveCausesStayUnknown(t *testing.T)
 			// real producers). This pins the interface check's false branch in
 			// isolation.
 			name: "the cause declares itself NOT transient",
-			err:  &rbac.ResolveError{Err: &fakeTransientCause{msg: "invalid character", transient: false}},
+			err:  &rbac.ResolveError{Err: &fakeTransientCauseError{msg: "invalid character", transient: false}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
