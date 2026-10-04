@@ -512,6 +512,16 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 // enrolAndInitialize has the admin enrol every holder and initialize 3-of-5
 // custody, in-process: an uninitialized node has no RBAC store yet, so this
 // is the embedded composer's path (the remote path is qrdb init).
+//
+// BarrierOfficerRegister still goes through e.svc (e.n.Services().Barrier):
+// registration is unaffected by go-qrdb#560 review item 8. The Shamir
+// initialization itself, though, can no longer go through
+// BarrierService.BarrierInitializeShamir on this ceremony-backed service --
+// it now unconditionally refuses with *SystemBarrierInitRefusedError,
+// exactly as BarrierInitialize already did, because qrdb init is the only
+// system bootstrap. It goes through the ceremony's own InitializeShamir
+// instead, the same holder-authority path qrdb init itself uses, over the
+// same underlying barrier.
 func (e *holderE2E) enrolAndInitialize() {
 	e.t.Helper()
 	svc := e.n.Services().Barrier
@@ -524,12 +534,18 @@ func (e *holderE2E) enrolAndInitialize() {
 		}
 		h.recordCert(e.t, holderwire.RegisterTo(res).CertPEM)
 	}
-	info, err := svc.BarrierInitializeShamir(ctx, e2eThreshold, e2eTotal, seal.FactorPolicyDesignated)
+	core, ok := service.CeremonyServiceCore(e.n.Services().Ceremony)
+	if !ok {
+		e.t.Fatal("node's CeremonyServicer has no ceremony core")
+	}
+	barrier := e.n.BarrierRegistry().SystemBarrier()
+	barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: e2eThreshold, TotalShares: e2eTotal})
+	params, err := core.InitializeShamir(ctx, seal.FactorPolicyDesignated)
 	if err != nil {
 		e.t.Fatalf("initialize shamir: %v", err)
 	}
-	if info.ShareCount != e2eTotal {
-		e.t.Fatalf("shares distributed = %d, want %d", info.ShareCount, e2eTotal)
+	if params.ShareCount != e2eTotal {
+		e.t.Fatalf("shares distributed = %d, want %d", params.ShareCount, e2eTotal)
 	}
 }
 

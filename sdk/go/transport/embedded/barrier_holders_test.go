@@ -42,7 +42,7 @@ import (
 // newSystemHolderTransport is the embedded transport over the REAL barrier
 // service and ceremony of a 2-of-2 Shamir system barrier whose holders are
 // not yet enrolled, with the service so a test can initialize it.
-func newSystemHolderTransport(t *testing.T) (*Transport, service.BarrierServicer) {
+func newSystemHolderTransport(t *testing.T) (*Transport, service.BarrierServicer, *seal.StorageBarrier, *ceremony.CeremonyService) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	strategy, err := seal.NewShamirStrategy(2, 2)
@@ -63,7 +63,7 @@ func newSystemHolderTransport(t *testing.T) (*Transport, service.BarrierServicer
 	ca, _ := ceremonytest.NewCA(t, "Embedded Holder CA")
 	core.SetCA(ca)
 	svc := service.NewBarrierServiceWithCeremony(barrier, core)
-	return newExtTransport(t, WithBarrierService(svc)), svc
+	return newExtTransport(t, WithBarrierService(svc)), svc, barrier, core
 }
 
 // holderAdminCtx is a context authenticated as the enrolling admin.
@@ -124,7 +124,7 @@ func submitSystemShare(t *testing.T, tr *Transport, op string, h *servicetest.Ho
 // unseal-key holders and of a recovery-key holder, listing, each holder's
 // claim, and a root-token quorum that completes only on the second share.
 func TestTransport_SystemHolders(t *testing.T) {
-	tr, svc := newSystemHolderTransport(t)
+	tr, _, barrier, core := newSystemHolderTransport(t)
 	holders := []*servicetest.Holder{servicetest.NewHolder(t, "alice"), servicetest.NewHolder(t, "bob")}
 	for _, h := range holders {
 		resp, err := tr.OfficerRegister(holderAdminCtx(), &transport.OfficerRegisterRequest{Username: h.Name, CSRPEM: h.CSRPEM})
@@ -156,7 +156,13 @@ func TestTransport_SystemHolders(t *testing.T) {
 		}
 	}
 
-	if _, err := svc.BarrierInitializeShamir(context.Background(), 2, 2, ""); err != nil {
+	// BarrierService.BarrierInitializeShamir now unconditionally refuses on
+	// any ceremony-backed service (go-qrdb#560 review item 8): qrdb init is
+	// the only system bootstrap. Initialize through the ceremony's own
+	// InitializeShamir instead, the holder-authority path qrdb init itself
+	// uses, over the same underlying barrier.
+	barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: 2, TotalShares: 2})
+	if _, err := core.InitializeShamir(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, h := range holders {
@@ -185,7 +191,7 @@ func TestTransport_SystemHolders(t *testing.T) {
 // submitted on the decoy challenge an unenrolled holder is issued, and a
 // submission whose factor answer is not the holder's.
 func TestTransport_SystemHolders_ServiceRefusals(t *testing.T) {
-	tr, svc := newSystemHolderTransport(t)
+	tr, _, barrier, core := newSystemHolderTransport(t)
 	alice, bob := servicetest.NewHolder(t, "alice"), servicetest.NewHolder(t, "bob")
 	for _, h := range []*servicetest.Holder{alice, bob} {
 		resp, err := tr.OfficerRegister(holderAdminCtx(), &transport.OfficerRegisterRequest{Username: h.Name, CSRPEM: h.CSRPEM})
@@ -197,7 +203,10 @@ func TestTransport_SystemHolders_ServiceRefusals(t *testing.T) {
 	if _, err := tr.OfficerRegister(holderAdminCtx(), &transport.OfficerRegisterRequest{Username: "alice", CSRPEM: alice.CSRPEM}); err == nil {
 		t.Fatal("a second enrolment of alice succeeded")
 	}
-	if _, err := svc.BarrierInitializeShamir(context.Background(), 2, 2, ""); err != nil {
+	// See TestTransport_SystemHolders: the ceremony's own InitializeShamir,
+	// not BarrierService.BarrierInitializeShamir (go-qrdb#560 review item 8).
+	barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: 2, TotalShares: 2})
+	if _, err := core.InitializeShamir(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	claimSystemShare(t, tr, seal.DomainUnseal, alice)
@@ -266,7 +275,7 @@ func TestTransport_SystemHolders_Unconfigured(t *testing.T) {
 			t.Errorf("%s with no barrier service = %v, want NilServiceError{BarrierServicer}", name, err)
 		}
 	}
-	_, svc := newSystemHolderTransport(t)
+	_, svc, _, _ := newSystemHolderTransport(t)
 	for name, call := range calls(closedExtTransport(t, WithBarrierService(svc))) {
 		var closed *transport.ClosedError
 		if err := call(); !errors.As(err, &closed) {

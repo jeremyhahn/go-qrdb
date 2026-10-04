@@ -70,7 +70,12 @@ func (d *sealHook) Distribute(ctx context.Context, secret *secure.Buffer, roster
 func TestBarrierService_GenerateRecoveryKeysRefusesARacingRegistration(t *testing.T) {
 	e := newHolderSvcEnv(t, 2, 2)
 	e.register(seal.DomainUnseal, newSvcHolder(t, "alice"), newSvcHolder(t, "bob"))
-	_, err := e.svc.BarrierInitializeShamir(adminCtx(), 2, 2, "")
+	// See TestBarrierService_HolderCustodyEndToEnd (holder_service_test.go):
+	// a plain, non-ceremony BarrierService over the same barrier, since
+	// e.svc's ceremony now refuses BarrierInitializeShamir (go-qrdb#560
+	// review item 8). This test exercises recovery-key generation, not
+	// that bootstrap gate.
+	_, err := NewBarrierService(e.barrier).BarrierInitializeShamir(adminCtx(), 2, 2, "")
 	require.NoError(t, err)
 	e.register(seal.DomainRecovery, newSvcHolder(t, "rita"), newSvcHolder(t, "rob"))
 	dist := &sealHook{CeremonyDistributor: e.core}
@@ -108,7 +113,16 @@ func TestBarrierService_InitializeShamirRefusesARacingRegistration(t *testing.T)
 		_, registerErr = e.svc.BarrierOfficerRegister(adminCtx(), seal.DomainUnseal, &BarrierOfficerRegisterRequest{Username: carol.name, CSRPEM: carol.csr})
 	}
 
-	info, err := e.svc.BarrierInitializeShamir(adminCtx(), 2, 2, "")
+	// Unlike the other races in this file, this one IS exercising the
+	// ceremony's holder-authority race guard around Shamir
+	// initialization, so it must go through the ceremony's own
+	// InitializeShamir (the path the system barrier's bring-up uses),
+	// not e.svc.BarrierInitializeShamir: that method now unconditionally
+	// refuses on any ceremony-backed service (go-qrdb#560 review item
+	// 8) and never reaches the ceremony at all, so the race guard this
+	// test pins would never arm.
+	e.barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: 2, TotalShares: 2})
+	info, err := e.core.InitializeShamir(adminCtx(), "")
 	require.NoError(t, err, "the initialization completes")
 	assert.Equal(t, 2, info.ShareCount)
 	require.Equal(t, 2, dist.calls, "the barrier read the holder set twice, the hook before the second")

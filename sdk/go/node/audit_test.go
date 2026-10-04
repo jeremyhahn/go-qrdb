@@ -82,7 +82,11 @@ func TestNodeAuditClient_EmitAndQueryRoundTrip(t *testing.T) {
 	}
 	require.NoError(t, auditClient.EmitAudit(ctx, ev))
 
-	page, err := auditClient.QueryAudit(ctx, transport.AuditFilter{})
+	// Filtered on this test's own action: the audit trail is opened before
+	// the seal subsystem during boot (go-qrdb#548) and already carries that
+	// barrier-initialize record by the time the node is up, so an
+	// unfiltered query sees it too.
+	page, err := auditClient.QueryAudit(ctx, transport.AuditFilter{Action: "test"})
 	require.NoError(t, err)
 	require.NotNil(t, page)
 	require.Len(t, page.Events, 1, "the emitted event must be retrievable")

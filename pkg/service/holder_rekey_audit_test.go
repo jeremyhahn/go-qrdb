@@ -51,7 +51,12 @@ func TestBarrierService_RekeyStartsAreAudited(t *testing.T) {
 	ring := audit.NewRingBuffer(64)
 	e.core.SetAuditLogger(ring)
 	e.register(seal.DomainUnseal, newSvcHolder(t, "alice"), newSvcHolder(t, "bob"), newSvcHolder(t, "carol"))
-	_, err := e.svc.BarrierInitializeShamir(ctx, 2, 3, "")
+	// See TestBarrierService_HolderCustodyEndToEnd (holder_service_test.go):
+	// a plain, non-ceremony BarrierService over the same barrier, since
+	// e.svc's ceremony now refuses BarrierInitializeShamir (go-qrdb#560
+	// review item 8). This test exercises the rekey/revocation audit
+	// trail, not that bootstrap gate.
+	_, err := NewBarrierService(e.barrier).BarrierInitializeShamir(ctx, 2, 3, "")
 	require.NoError(t, err)
 	require.NoError(t, e.pins.SetSOPIN("", svcSOPIN))
 
