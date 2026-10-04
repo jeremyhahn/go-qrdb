@@ -170,7 +170,8 @@ func handleCeremonySignCSR(svc service.CeremonyServicer) mcpserver.ToolHandlerFu
 			return nil, &ToolError{Tool: "qrdb_ceremony_sign_csr", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(result)
+		wire := &transport.SignCSRInitResponse{CertPEM: string(result.CertPEM)}
+		data, jsonErr := json.Marshal(wire)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_sign_csr", Err: jsonErr}
 		}

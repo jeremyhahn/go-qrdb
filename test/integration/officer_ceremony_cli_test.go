@@ -1017,3 +1017,60 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 		t.Errorf("expected pin.ErrPINInvalid from the PIN backend, got: %s", out)
 	}
 }
+
+// TestCeremony_SignCSR_CLI_PerProtocol drives `qrdb ceremony sign-csr`
+// against every CLI-selectable protocol: the correct-SO-PIN happy path (a
+// signed certificate is returned) and the wrong-SO-PIN refusal, both over
+// the same protocol as the rest of that subtest's requests. sign-csr is an
+// ordinary RBAC-gated verb (no holder certificate required), unlike
+// officer/quorum, so there is no architectural reason to restrict it to
+// REST the way TestCLI_Ceremony_StatusAndSubcommands above does.
+func TestCeremony_SignCSR_CLI_PerProtocol(t *testing.T) {
+	for _, proto := range ceremonyInitProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testCeremonySignCSROverProtocol(t, proto)
+		})
+	}
+}
+
+func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
+	t.Helper()
+	node := startFreshSealedNode(t, "none", 0, 0)
+	flags := node.flagsFor(proto)
+	waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
+	if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
+		"barrier", "init", "--barrier-strategy", "none")...); err != nil {
+		t.Fatalf("[%s] barrier init: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	node.waitForFullBoot(t)
+	_, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
+		"--output", "json",
+		"init", "--so-pin", "SOPIN-"+proto.name, "--user-pin", "USERPIN-"+proto.name)...)
+	if err != nil {
+		t.Fatalf("[%s] qrdb init: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	soPin := "SOPIN-" + proto.name
+	csrPEM, _ := generateCeremonyCSR(t, "svc-"+proto.name)
+	csrPath := writeTempFile(t, "svc-"+proto.name+".csr", csrPEM)
+
+	out, err := runQRDB(t, node.cli, flags,
+		"ceremony", "sign-csr", "--username", "svc1", "--so-pin", soPin,
+		"--csr-file", csrPath, "--role", "operator")
+	if err != nil {
+		t.Fatalf("ceremony sign-csr with the correct SO PIN should succeed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "-----BEGIN CERTIFICATE-----") {
+		t.Errorf("ceremony sign-csr: expected a signed certificate in the output, got: %s", out)
+	}
+
+	out, err = runQRDB(t, node.cli, flags,
+		"ceremony", "sign-csr", "--username", "svc2", "--so-pin", "wrong-pin",
+		"--csr-file", csrPath, "--role", "operator")
+	if err == nil {
+		t.Fatalf("ceremony sign-csr with the wrong SO PIN should fail; output: %s", out)
+	}
+	if !strings.Contains(out, "invalid PIN") {
+		t.Errorf("expected pin.ErrPINInvalid from the PIN backend, got: %s", out)
+	}
+}

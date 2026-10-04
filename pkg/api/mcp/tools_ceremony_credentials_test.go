@@ -22,11 +22,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -392,12 +394,12 @@ func TestHandleCeremonySignCSR_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var signResult service.CeremonySignCSRResult
+	var signResult transport.SignCSRInitResponse
 	if jsonErr := json.Unmarshal([]byte(text), &signResult); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if len(signResult.CertPEM) == 0 {
-		t.Error("expected non-empty CertPEM")
+	if !strings.Contains(signResult.CertPEM, "-----BEGIN CERTIFICATE-----") {
+		t.Errorf("expected CertPEM to contain a PEM certificate, got: %q", signResult.CertPEM)
 	}
 }
 
