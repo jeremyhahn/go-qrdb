@@ -121,6 +121,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -170,6 +171,24 @@ func WithAuthenticators(authenticators ...auth.Authenticator) NodeOption {
 // The in-process embedded transport has no peer and is not gated.
 func WithPeerAttestationGate(gate *middleware.PeerAttestationGate) NodeOption {
 	return func(o *nodeOptions) { o.peerAttestation = gate }
+}
+
+// WithRateLimitPolicies installs the single-source per-permission request
+// throttling policies (go-qrdb#398) onto the node's auth middleware,
+// enforced on every network transport's authorize path
+// (middleware.AuthMiddleware.authorize). Nil -- the default -- declares no
+// policies, and the middleware enforces nothing. See WithRateLimiter for the
+// enforcement engine a non-nil Registry runs against.
+func WithRateLimitPolicies(policies *ratelimit.Registry) NodeOption {
+	return func(o *nodeOptions) { o.rateLimitPolicies = policies }
+}
+
+// WithRateLimiter overrides the enforcement engine WithRateLimitPolicies
+// runs against. Nil, with WithRateLimitPolicies set, constructs the built-in
+// ratelimit.TokenBucketLimiter. Ignored when WithRateLimitPolicies is not
+// used.
+func WithRateLimiter(l ratelimit.Limiter) NodeOption {
+	return func(o *nodeOptions) { o.rateLimiter = l }
 }
 
 // WithAuthorizerWrapper decorates the node's fully built RBAC[+ABAC]
@@ -233,6 +252,12 @@ type nodeOptions struct {
 	// peerAttestation is the attested-caller gate installed on every network
 	// transport's auth middleware. See WithPeerAttestationGate.
 	peerAttestation *middleware.PeerAttestationGate
+
+	// rateLimitPolicies and rateLimiter carry the embedder's request-
+	// throttling configuration into wiring.AuthMiddlewareConfig. See
+	// WithRateLimitPolicies and WithRateLimiter.
+	rateLimitPolicies *ratelimit.Registry
+	rateLimiter       ratelimit.Limiter
 
 	// clusterCAKeyProvider, clusterCACertPEM, clusterCAKeyPEM mirror the
 	// Node fields of the same name. See WithClusterCAKeyProvider and
@@ -817,6 +842,11 @@ type Node struct {
 	// is exactly the drift that let Key B be trusted at the TLS layer
 	// without the binding being enforceable at the authentication layer.
 	trustPool *clienttrust.Pool
+
+	// rateLimitPolicies and rateLimiter carry WithRateLimitPolicies and
+	// WithRateLimiter from the node constructor to wireClientAndServer.
+	rateLimitPolicies *ratelimit.Registry
+	rateLimiter       ratelimit.Limiter
 
 	// authMethods is THIS node's permitted-method vocabulary, handed to every
 	// user store BuildServices creates and bound to the node's own auth
@@ -2145,6 +2175,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		extraAuthenticators:       nOpts.extraAuthenticators,
 		authorizerWrapper:         nOpts.authorizerWrapper,
 		peerAttestation:           nOpts.peerAttestation,
+		rateLimitPolicies:         nOpts.rateLimitPolicies,
+		rateLimiter:               nOpts.rateLimiter,
 		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
 		clusterCACertPEM:          nOpts.clusterCACertPEM,
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
@@ -2338,6 +2370,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		extraAuthenticators:       nOpts.extraAuthenticators,
 		authorizerWrapper:         nOpts.authorizerWrapper,
 		peerAttestation:           nOpts.peerAttestation,
+		rateLimitPolicies:         nOpts.rateLimitPolicies,
+		rateLimiter:               nOpts.rateLimiter,
 		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
 		clusterCACertPEM:          nOpts.clusterCACertPEM,
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
@@ -2971,6 +3005,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
 		PeerAttestation:    n.peerAttestation,
+		RateLimitPolicies:  n.rateLimitPolicies,
+		RateLimiter:        n.rateLimiter,
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}

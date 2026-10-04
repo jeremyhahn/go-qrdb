@@ -55,7 +55,7 @@ func freeTCPPort(t *testing.T) int {
 // production posture: wireClientAndServer installs
 // pkg/auth/wiring.BuildAuthMiddleware on the multi-protocol server via
 // server.WithAuthMiddleware.
-func newAuthEnforcedRESTNode(t *testing.T) (n *Node, ca *qrdbdharness.CA, adminKP *qrdbdharness.KeyPair) {
+func newAuthEnforcedRESTNode(t *testing.T, nodeOpts ...NodeOption) (n *Node, ca *qrdbdharness.CA, adminKP *qrdbdharness.KeyPair) {
 	t.Helper()
 	certDir := t.TempDir()
 
@@ -93,7 +93,7 @@ func newAuthEnforcedRESTNode(t *testing.T) (n *Node, ca *qrdbdharness.CA, adminK
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Server.AdminPort = freeTCPPort(t)
 
-	n, err = NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithTLS(tlsCfg)})
+	n, err = NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithTLS(tlsCfg)}, nodeOpts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
 
