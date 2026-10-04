@@ -165,7 +165,7 @@ func writeSealConfig(t *testing.T, strategy string, threshold, total int) string
 // daemon's admin client certificate and CA material exist on disk -- both
 // are written very early in boot (cmd/qrdbd/start.go), strictly before the
 // barrier is ever initialized, so this never races the barrier lifecycle.
-func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort int) *sealNode {
+func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort int, priorCA ...*testCA) *sealNode {
 	t.Helper()
 	args := []string{
 		"start",
@@ -199,7 +199,7 @@ func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, a
 		caFile:    caPath,
 		adminCert: adminCertPath,
 		adminKey:  adminKeyPath,
-		ca:        loadDaemonCA(t, dataDir),
+		ca:        resolveSealNodeCA(t, dataDir, priorCA),
 	}
 }
 
@@ -231,7 +231,15 @@ func loadDaemonCA(t *testing.T, dataDir string) *testCA {
 	t.Helper()
 	certPath := filepath.Join(dataDir, "ca.pem")
 	keyPath := filepath.Join(dataDir, "ca-key.pem")
-	waitForNonEmptyFile(t, keyPath, 30*time.Second)
+	waitForNonEmptyFile(t, certPath, 30*time.Second)
+
+	if !nonEmptyFileAppears(keyPath, 5*time.Second) {
+		ca, err := qrdbdharness.LoadCACertOnly(certPath)
+		if err != nil {
+			t.Fatalf("loadDaemonCA: %v", err)
+		}
+		return &testCA{CA: ca}
+	}
 
 	ca, err := qrdbdharness.LoadCA(certPath, keyPath)
 	if err != nil {
@@ -631,6 +639,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	workDir := t.TempDir()
 
 	const threshold, total = 2, 3
+	const soPIN, userPIN = "shamir-test-so-pin-1", "shamir-test-user-pin-1"
 	configPath := writeSealConfig(t, "shamir", threshold, total)
 	dataDir := t.TempDir()
 	raftPorts := allocatePorts(t, 1)
@@ -657,7 +666,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "init-shamir",
-		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
+		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total), "--so-pin", soPIN, "--user-pin", userPIN)...); err != nil {
 		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
 	}
 
@@ -709,7 +718,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "rekey", "--threshold", strconv.Itoa(threshold))...); err != nil {
+		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
 		t.Fatalf("barrier rekey: %v\nstderr: %s", err, stderr)
 	}
 	if out = quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
@@ -746,7 +755,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	erin := registerOfficer(t, cli, workDir, flags, "erin", true)
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "recovery", "generate", "--threshold", "2")...); err != nil {
+		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", soPIN)...); err != nil {
 		t.Fatalf("barrier recovery generate: %v\nstderr: %s", err, stderr)
 	}
 	if !barrierHasRecoveryKeys(t, cli, flags) {
@@ -824,13 +833,14 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	}
 	initializedAt := status.InitializedAt
 
+	priorCA := node.ca
 	stopSealNode(t, node)
 
 	// Restart on the SAME data dir, config, and ports. resolveTLS's
 	// cached-certificate path (ca.pem/node-cert.pem/node-key.pem already
 	// present under dataDir) keeps the CA and admin identity stable across
 	// the restart.
-	node = startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
+	node = startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1], priorCA)
 	flags = node.adminFlags()
 	waitForBarrierReachable(t, cli, flags, 60*time.Second)
 
@@ -858,4 +868,186 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	if !strings.Contains(stdout, "restart-value") {
 		t.Fatalf("kv get after restart: expected surviving value, got: %s", stdout)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Flow 4: officer revoke and quorum begin
+// ---------------------------------------------------------------------------
+
+// TestBarrierCLI_OfficerRevoke drives `barrier officer revoke` over the qrdb
+// CLI: a 2-of-3 Shamir barrier revokes one holder through a quorum-gated
+// rekey that drops them, the remaining two holders complete it, each claims
+// a fresh envelope, and the revoked holder's PRE-revoke envelope no longer
+// forms a valid quorum (it was cryptographically retired by the rekey, the
+// same mechanism `barrier rekey` itself uses -- see TestBarrierCLI_ShamirLifecycle).
+func TestBarrierCLI_OfficerRevoke(t *testing.T) {
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+	workDir := t.TempDir()
+
+	const threshold, total = 2, 3
+	const soPIN, userPIN = "shamir-test-so-pin-2", "shamir-test-user-pin-2"
+	configPath := writeSealConfig(t, "shamir", threshold, total)
+	dataDir := t.TempDir()
+	raftPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 2)
+
+	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
+	flags := node.adminFlags()
+	ep := node.endpoint()
+
+	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+
+	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
+	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
+	carol := registerOfficer(t, cli, workDir, flags, "carol", false)
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "init-shamir",
+		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total), "--so-pin", soPIN, "--user-pin", userPIN)...); err != nil {
+		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
+	}
+
+	waitForHealthy(t, dataDir, 60*time.Second)
+	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, bob, false)
+	claimEnvelope(t, cli, workDir, ep, carol, false)
+	preRevokeCarol := *carol
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "officer", "revoke", "--username", "carol", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
+		t.Fatalf("barrier officer revoke carol: %v\nstderr: %s", err, stderr)
+	}
+	if out := quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
+		t.Fatalf("rekey round = %+v, want complete", out)
+	}
+
+	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", &preRevokeCarol); err == nil {
+		t.Fatal("a revoked holder's pre-revoke envelope was accepted")
+	}
+
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, bob, false)
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	if status := barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatal("expected barrier to be sealed after the post-revoke seal quorum")
+	}
+	if out := quorumAll(t, cli, ep, "unseal", "unseal", alice, bob); !out.Complete {
+		t.Fatalf("post-revoke unseal quorum = %+v, want complete", out)
+	}
+
+	if _, _, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "officer", "revoke", "--username", "never-enrolled", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err == nil {
+		t.Fatal("revoking a never-enrolled holder succeeded, want error")
+	}
+}
+
+// TestBarrierCLI_QuorumBegin drives `barrier quorum begin` over the qrdb
+// CLI: issuing a challenge for the mtls factor ahead of quorum submit,
+// proving the split handshake (begin, then submit --challenge-id/--factor)
+// works independently of quorum submit's own all-in-one mtls path.
+func TestBarrierCLI_QuorumBegin(t *testing.T) {
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+	workDir := t.TempDir()
+
+	const threshold, total = 2, 2
+	configPath := writeSealConfig(t, "shamir", threshold, total)
+	dataDir := t.TempDir()
+	raftPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 2)
+
+	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
+	flags := node.adminFlags()
+	ep := node.endpoint()
+
+	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+
+	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
+	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"barrier", "init-shamir",
+		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
+		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
+	}
+
+	waitForHealthy(t, dataDir, 60*time.Second)
+	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+
+	claimEnvelope(t, cli, workDir, ep, bob, false)
+
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+
+	challenge, _, err := quorumBegin(t, cli, ep, "unseal", "unseal", alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := challenge.ChallengeID
+	if id == "" {
+		t.Error("expected non-empty challenge id")
+	}
+	factorName := challenge.Factor
+	if factorName != "mtls" {
+		t.Errorf("factor = %q", factorName)
+	}
+
+	preStatus := barrierStatus(t, cli, flags)
+	if !preStatus.Sealed {
+		t.Error("expected barrier to still be sealed before the quorum")
+	}
+
+	quorumAll(t, cli, ep, "unseal", "unseal", alice, bob)
+	postStatus := barrierStatus(t, cli, flags)
+	if postStatus.Sealed {
+		t.Error("expected barrier to be unsealed after the quorum")
+	}
+	bogusOp := "not-a-real-operation"
+
+	if _, _, err := quorumBegin(t, cli, ep, "unseal", bogusOp, alice); err == nil {
+		t.Error("quorum begin for an invalid op should fail")
+	}
+}
+
+// quorumBegin issues a quorum challenge for one holder ahead of submit,
+// used by the split handshake (begin, then submit --challenge-id/--factor).
+func quorumBegin(t *testing.T, cli string, ep endpoint, domain, op string, h *officer) (*transport.QuorumChallenge, string, error) {
+	t.Helper()
+	args := append(h.flags(ep), "--output", "json", "barrier", "quorum", "begin",
+		"--domain", domain, "--op", op, "--username", h.username)
+	stdout, stderr, err := runCLISplit(t, cli, args...)
+	if err != nil {
+		return nil, stderr, err
+	}
+	var out transport.QuorumChallenge
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("quorum begin %s: decode JSON: %v\noutput: %s", h.username, err, stdout)
+	}
+	return &out, stderr, nil
+}
+func nonEmptyFileAppears(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func resolveSealNodeCA(t *testing.T, dataDir string, priorCA []*testCA) *testCA {
+	t.Helper()
+	keyPath := filepath.Join(dataDir, "ca-key.pem")
+	ok := len(priorCA) > 0 && !nonEmptyFileAppears(keyPath, 2*time.Second)
+	if ok {
+		return priorCA[0]
+	}
+	return loadDaemonCA(t, dataDir)
 }

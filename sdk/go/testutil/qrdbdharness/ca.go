@@ -372,6 +372,9 @@ func WithServerAuth() CertOption {
 // same directory overwrite each other; give them separate directories or
 // distinct subjects.
 func (ca *CA) Issue(dir string, opts ...CertOption) (*KeyPair, error) {
+	if err := caIssueKeyGuard(ca); err != nil {
+		return nil, err
+	}
 	cfg := certConfig{
 		organization: DefaultOrganization,
 		validity:     DefaultValidity,
@@ -507,4 +510,45 @@ func validateCommonName(commonName string) error {
 // newSerial draws a random 128-bit certificate serial number.
 func newSerial() (*big.Int, error) {
 	return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+}
+
+// LoadCACertOnly adopts a certificate authority from its certificate alone,
+// for a node that has moved its CA private key out of the local file cache
+// (qrdbd does this once the key is persisted to the replicated store after
+// the barrier's first unseal). A CA loaded this way verifies certificates
+// and mints client/server identities that were issued earlier, but Issue
+// returns an error: there is no key to sign with.
+func LoadCACertOnly(certPath string) (*CA, error) {
+	// #nosec G304 -- both paths are the test's own: LoadCA exists to adopt the
+	// CA qrdbd wrote into a data directory the harness created. No request
+	// value reaches either argument.
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, &CAError{Op: "read cert", Err: err}
+	}
+
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, &CAError{Op: "decode cert", Err: errNoPEMBlock}
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, &CAError{Op: "parse cert", Err: err}
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+
+	return &CA{CertPEM: certPEM, CertPath: certPath, Pool: pool, cert: cert}, nil
+}
+
+// errNoSigningKey reports a CA loaded without its private key.
+var errNoSigningKey = errors.New("CA has no private key loaded")
+
+func caIssueKeyGuard(ca *CA) error {
+	missing := ca.key == nil
+	var e error
+	if missing {
+		e = errNoSigningKey
+	}
+	return e
 }
