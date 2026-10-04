@@ -37,13 +37,18 @@ awaiting_init --> enrolling --> operational
 3. CeremonyStatus              -- operational once every holder has claimed
 ```
 
-`CeremonySignCSR` issues a login certificate under the SO PIN, but only
-BEFORE the ceremony reaches `operational` (`PreOperationalOnly`): minting a
-brand-new CA-signed certificate needs the cluster CA key, which exists only
-as the in-memory bootstrap key during `awaiting_init`/`enrolling`. Once
-`operational`, `CeremonySignCSR` is refused regardless of PIN -- an officer
-who already holds a certificate unseals with it on every later restart
-instead.
+`CeremonySignCSR` issues a login certificate under the SO PIN. It is
+`PreOperationalOnly` in the sealed-window sense: the BOOT-TIME sealed
+listener allows it WITHOUT session authentication only during
+`awaiting_init`/`enrolling`, while the cluster CA key still exists only as
+the in-memory bootstrap key and there is no IAM plane yet to authenticate
+against. Once the ceremony reaches `operational`, that unauthenticated
+sealed-window path refuses it outright -- but the verb itself is not
+retired: it is served normally over the node's ordinary, authenticated
+API to a caller holding a valid session, the same as any other ceremony
+verb. An officer who already holds a certificate still unseals with it on
+every later restart instead, which needs only the CA certificate (public),
+never this verb.
 
 ## SDK CeremonyClient Interface
 

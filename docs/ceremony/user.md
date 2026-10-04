@@ -75,21 +75,25 @@ step cannot mint a login in another tenant. A `--role so` or
 `--role custodian` certificate is a holder certificate, not a login: it
 authenticates with no roles and is refused every permission.
 
-`sign-csr` is reachable only BEFORE the initialization ceremony goes
-operational (`PreOperationalOnly`): minting a brand-new CA-signed
-certificate needs the cluster CA key, which is only the in-memory
-bootstrap key before the ceremony completes, so this is the window the
-verb exists for. Once the ceremony is operational, `sign-csr` is refused
-regardless of PIN -- an officer who already holds a certificate unseals
-with it on every later restart instead, which needs only the CA
-certificate (public), never this verb.
+`sign-csr` is `PreOperationalOnly` in a specific sense: it is one of the
+sealed-window boot listener's allowlisted verbs, reachable there WITHOUT
+session authentication, only until the initialization ceremony goes
+operational. That bypass exists because, before the ceremony completes,
+there is no IAM plane yet to authenticate against -- Key A is still the
+in-memory bootstrap key, and the SO PIN is the only credential available.
+Once enrollment closes, the sealed-window listener refuses `sign-csr`
+outright (there is no PIN that reopens it there); the verb itself is not
+retired, though -- it is served normally over the node's ordinary,
+authenticated API once unsealed, the same as any other ceremony verb, to a
+caller holding a valid session.
 
 Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
 characters from letters and digits, or a 12-digit random number. Before
-unseal, sign-csr can be reached without session authentication, so the PIN
-is all that protects it during that window. After 5 wrong PINs in a row the
-check locks for a delay that doubles from 1 second up to 15 minutes, and the
-server answers `429` with `Retry-After`. A correct PIN resets the count.
+unseal, sign-csr can be reached on the sealed-window listener without
+session authentication, so the PIN is all that protects it during that
+window. After 5 wrong PINs in a row the check locks for a delay that
+doubles from 1 second up to 15 minutes, and the server answers `429` with
+`Retry-After`. A correct PIN resets the count.
 
 This issues a certificate, not a share. To give someone a share, enrol
 them as a holder and rekey.
