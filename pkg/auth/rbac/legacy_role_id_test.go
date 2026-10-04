@@ -22,7 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // System role identifiers moved from UUIDv5 (SHA-1) to UUIDv8 (SHA-256) for
@@ -177,16 +177,16 @@ func TestAuthorize_LegacyIdentifierLookup_UsesFallbackStore(t *testing.T) {
 	primary.byNameErr = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		legacySOIDSystem: {"keys:sign"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacySOIDSystem, role.RoleNameSO))
+	}).withRole(legacyRole(tenantid.System, legacySOIDSystem, role.RoleNameSO))
 
 	identity := &auth.Identity{
 		Subject:  "so-by-legacy-id",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{legacySOIDSystem},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	if !errors.Is(err, auth.ErrUnauthorized) {
 		t.Fatalf("expected the deny-list to trigger via the fallback store, got %v", err)
 	}
@@ -366,7 +366,7 @@ func TestAuthorize_ResolverContractViolation_DoesNotFallBackToTheStaleReplica(t 
 	primary.byNameNil = true
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		legacySOIDAcme: {"keys:sign"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacySOIDAcme, role.RoleNameSO))
+	}).withRole(legacyRole(tenantid.System, legacySOIDAcme, role.RoleNameSO))
 
 	identity := &auth.Identity{
 		Subject:  "so-by-legacy-id",
@@ -400,12 +400,12 @@ func TestAuthorize_FallbackResolverReturningNilNil_FailsClosed(t *testing.T) {
 
 	identity := &auth.Identity{
 		Subject:  "so-by-legacy-id",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{legacySOIDSystem},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	if err == nil {
 		t.Fatal("a contract-violating fallback let a legacy SO reach keys:sign")
 	}
@@ -442,16 +442,16 @@ func TestAuthorize_ReplacementSO_StaleFallbackDoesNotClearTheDenyList(t *testing
 	primary.err = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		replacementSOStale: {"keys:sign"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacySOIDSystem, role.RoleNameSO))
+	}).withRole(legacyRole(tenantid.System, legacySOIDSystem, role.RoleNameSO))
 
 	identity := &auth.Identity{
 		Subject:  "replacement-so",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{replacementSOStale},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	assertDeniedByTheSODenyList(t, err)
 }
 
@@ -479,17 +479,17 @@ func TestAuthorize_ReplacementSO_StaleFallbackWithRecordButNoNameIndex(t *testin
 	primary.err = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		replacementSOStale: {"keys:sign"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacySOIDSystem, role.RoleNameSO)).
-		withRecordOnly(legacyRole(tenant.SystemTenantID, replacementSOStale, role.RoleNameSO))
+	}).withRole(legacyRole(tenantid.System, legacySOIDSystem, role.RoleNameSO)).
+		withRecordOnly(legacyRole(tenantid.System, replacementSOStale, role.RoleNameSO))
 
 	identity := &auth.Identity{
 		Subject:  "replacement-so",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{replacementSOStale},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	assertDeniedByTheSODenyList(t, err)
 }
 
@@ -502,22 +502,22 @@ func TestAuthorize_ReplacementOwner_StaleFallbackStillStripsTheGrant(t *testing.
 	primary.err = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		replacementOwnerStale: {"kv:put"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacyOwnerIDSystem, role.RoleNameOwner))
+	}).withRole(legacyRole(tenantid.System, legacyOwnerIDSystem, role.RoleNameOwner))
 
 	identity := &auth.Identity{
 		Subject:  "replacement-owner",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{replacementOwnerStale},
 	}
 
 	// Standard posture: the grant is honored, through the fallback.
 	if err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "kv", "put"); err != nil {
+		Authorize(ctxFor(tenantid.System), identity, "kv", "put"); err != nil {
 		t.Fatalf("standard posture: expected kv:put allowed, got %v", err)
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback), WithStrictSeparation(true)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "kv", "put")
+		Authorize(ctxFor(tenantid.System), identity, "kv", "put")
 	if !errors.Is(err, auth.ErrUnauthorized) {
 		t.Fatalf("strict posture: replacement Owner grant survived a stale lookup, got %T (%v)", err, err)
 	}
@@ -533,29 +533,29 @@ func TestAuthorize_StaleFallback_SparesARoleItCanAccountFor(t *testing.T) {
 	primary.err = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		unrelatedRoleID: {"kv:put"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacyOwnerIDSystem, role.RoleNameOwner)).
-		withRole(&role.Role{ID: unrelatedRoleID, Name: "editor", TenantID: tenant.SystemTenantID})
+	}).withRole(legacyRole(tenantid.System, legacyOwnerIDSystem, role.RoleNameOwner)).
+		withRole(&role.Role{ID: unrelatedRoleID, Name: "editor", TenantID: tenantid.System})
 
 	identity := &auth.Identity{
 		Subject:  "editor",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{unrelatedRoleID},
 	}
 
 	if err := New(primary, WithRoleServiceFallback(fallback), WithStrictSeparation(true)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "kv", "put"); err != nil {
+		Authorize(ctxFor(tenantid.System), identity, "kv", "put"); err != nil {
 		t.Fatalf("strict posture: an ordinary role was stripped on a cold node: %v", err)
 	}
 
 	// And the SO deny-list does not deny it either.
 	soIdentity := &auth.Identity{
 		Subject:  "editor",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{unrelatedRoleID},
 	}
 	fallback.perms[unrelatedRoleID] = []permission.Permission{"keys:sign"}
 	if err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), soIdentity, "keys", "sign"); err != nil {
+		Authorize(ctxFor(tenantid.System), soIdentity, "keys", "sign"); err != nil {
 		t.Fatalf("deny-list denied a role the replica accounts for: %v", err)
 	}
 }
@@ -566,17 +566,17 @@ func TestAuthorize_StaleFallback_RoleLookupFailure_Denies(t *testing.T) {
 	primary.byNameErr = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		replacementSOStale: {"keys:sign"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacySOIDSystem, role.RoleNameSO))
+	}).withRole(legacyRole(tenantid.System, legacySOIDSystem, role.RoleNameSO))
 	fallback.byIDErr = errors.New("replica read failed")
 
 	identity := &auth.Identity{
 		Subject:  "replacement-so",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{replacementSOStale},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	var re *ResolveError
 	if !errors.As(err, &re) {
 		t.Fatalf("expected *ResolveError, got %T (%v)", err, err)
@@ -589,17 +589,17 @@ func TestAuthorize_StaleFallback_RoleLookupNilNil_Denies(t *testing.T) {
 	primary.byNameErr = errors.New("read index not ready")
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		replacementSOStale: {"keys:sign"},
-	}).withRole(legacyRole(tenant.SystemTenantID, legacySOIDSystem, role.RoleNameSO))
+	}).withRole(legacyRole(tenantid.System, legacySOIDSystem, role.RoleNameSO))
 	fallback.byIDNil = true
 
 	identity := &auth.Identity{
 		Subject:  "replacement-so",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{replacementSOStale},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	var invalid *InvalidRoleLookupError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("expected *InvalidRoleLookupError, got %T (%v)", err, err)

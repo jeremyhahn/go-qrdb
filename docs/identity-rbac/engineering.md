@@ -911,7 +911,7 @@ a retryable 503.
 `bootRoleSvc`) has the same confinement, for the same reason, and the fix is
 the same rule applied in three places.** `resolvePermissionSet`, `systemRoleIDs`
 and `staleMayDenote` each consult `rolesFallback` only when
-`tenant.IsSystemTenant` holds for the tenant the resolve is scoped to;
+`tenantid.IsSystem` holds for the tenant the resolve is scoped to;
 otherwise the primary's transient error stands.
 
 **The 500 ms budget itself is unconditional, for both lookups, on every

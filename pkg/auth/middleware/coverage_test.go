@@ -37,7 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -276,7 +276,7 @@ func TestLookupUser_PrimaryTransient_FallbackTransient(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	_, err := m.lookupUser(context.Background(), tenant.SystemTenantID, "alice")
+	_, err := m.lookupUser(context.Background(), tenantid.System, "alice")
 	if err == nil {
 		t.Fatal("expected error")
 	}

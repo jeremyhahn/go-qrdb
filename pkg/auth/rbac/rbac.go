@@ -355,7 +355,7 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 	if errors.As(err, &invalid) {
 		return nil, false, &ResolveError{Err: err}
 	}
-	if a.rolesFallback == nil || !tenant.IsSystemTenant(tenantID) {
+	if a.rolesFallback == nil || !tenantid.IsSystem(tenantID) {
 		return nil, false, &ResolveError{Err: err}
 	}
 	// Same StaleRead fallback rationale as permission resolution: role data
@@ -398,7 +398,7 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 // for a non-system tenant, and staleMayDenote's only callers invoke it
 // exclusively off of that stale answer.
 func (a *RBACAuthorizer) staleMayDenote(ctx context.Context, roleID, roleName string) (bool, error) {
-	if tid := tenant.FromContext(ctx); !tenant.IsSystemTenant(tid) {
+	if tid := tenant.FromContext(ctx); !tenantid.IsSystem(tid) {
 		return false, &ResolveError{Err: &CrossTenantFallbackError{TenantID: tid}}
 	}
 	r, err := a.rolesFallback.GetRole(ctx, roleID)
@@ -647,7 +647,7 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 	// "not found" as "this role grants nothing", the same bug the user-store
 	// fallback had (see lookupUser). useFallback gates both the timeout
 	// bound below and the fallback consult after a primary failure.
-	useFallback := a.rolesFallback != nil && tenant.IsSystemTenant(cacheTenantID)
+	useFallback := a.rolesFallback != nil && tenantid.IsSystem(cacheTenantID)
 	// Bound the primary linearizable resolve on EVERY tenant, not only when a
 	// StaleRead fallback is available for it. A SLOW (not just failed)
 	// ReadIndex — cold pipeline, draining host, transient consensus latency —

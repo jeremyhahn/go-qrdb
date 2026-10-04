@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -34,7 +35,7 @@ import (
 func newSystemConfinedUserStore(t *testing.T) user.UserServicer {
 	t.Helper()
 	confined, err := kvstore.NewNamespacedKVStore(kvstore.NewMemoryKVStore(),
-		tenant.IdentityNamespace(tenant.SystemTenantID))
+		tenant.IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -62,7 +63,7 @@ func newSystemConfinedUserStore(t *testing.T) user.UserServicer {
 // the primary already returned: 503, retryable.
 func TestFallbackUserStore_NeverAnswersForAnotherTenant(t *testing.T) {
 	fallback := newSystemConfinedUserStore(t)
-	createUser(t, fallback, tenant.SystemTenantID, "admin", []string{"system-admin-role"})
+	createUser(t, fallback, tenantid.System, "admin", []string{"system-admin-role"})
 
 	// The tenant's own admin shares the subject name, as tenant provisioning
 	// creates it; only the tenant differs.
@@ -93,9 +94,9 @@ func TestFallbackUserStore_NeverAnswersForAnotherTenant(t *testing.T) {
 // ReadIndex still fails over to it.
 func TestFallbackUserStore_StillServesTheSystemTenant(t *testing.T) {
 	fallback := newSystemConfinedUserStore(t)
-	createUser(t, fallback, tenant.SystemTenantID, "admin", []string{"system-admin-role"})
+	createUser(t, fallback, tenantid.System, "admin", []string{"system-admin-role"})
 
-	id := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID}
+	id := &auth.Identity{Subject: "admin", TenantID: tenantid.System}
 	m := New(&mockAuthorizer{},
 		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
 		WithUserService(&mockUserServicer{err: context.DeadlineExceeded}),

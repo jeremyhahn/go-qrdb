@@ -3618,7 +3618,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 	// its identity namespace — for the boot window in which the ReadIndex
 	// pipeline is not yet warm. For any other tenant, barrier-isolated or
 	// not, the fallback is never consulted: the auth middleware and the RBAC
-	// authorizer both gate on tenant.IsSystemTenant before reaching it, so
+	// authorizer both gate on tenantid.IsSystem before reaching it, so
 	// that tenant's caller gets the primary's transient error as a retryable
 	// 503, not the fallback's "not found" read as a definitive denial.
 	// The revocation cache TTL is the window during which a revoked

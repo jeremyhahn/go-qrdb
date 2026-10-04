@@ -609,7 +609,7 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject strin
 	// as authoritative turned a slow ReadIndex into a definitive 403 for a
 	// correctly enrolled user. For those tenants the primary's transient error
 	// stands, and the caller gets the retryable 503 it describes.
-	if m.usersFallback != nil && tenant.IsSystemTenant(tenantID) {
+	if m.usersFallback != nil && tenantid.IsSystem(tenantID) {
 		fallbackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		u, ferr := m.usersFallback.GetUserByUsername(fallbackCtx, tenantID, subject)
 		cancel()

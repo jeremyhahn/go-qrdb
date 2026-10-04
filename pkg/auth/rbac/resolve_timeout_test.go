@@ -22,7 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // hangingRoleService never answers on its own: ResolvePermissions blocks
@@ -79,10 +79,10 @@ func TestResolvePermissionSet_BoundsThePrimaryResolveForANonSystemTenant(t *test
 // a.rolesFallback != nil, which is nil here) -- the budget is no longer tied
 // to fallback availability at all.
 func TestResolvePermissionSet_SystemTenantStillBoundedWithoutFallback(t *testing.T) {
-	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin"}}
+	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"admin"}}
 
 	err := New(hangingRoleService{}).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain")
+		Authorize(ctxFor(tenantid.System), identity, "admin", "drain")
 
 	if err == nil {
 		t.Fatal("expected a retryable error from a primary resolve that never answers")

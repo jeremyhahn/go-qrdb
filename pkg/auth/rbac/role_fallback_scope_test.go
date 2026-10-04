@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // countingRoleService wraps a role.RoleServicer and counts GetRoleByName
@@ -50,7 +51,7 @@ func (s *countingRoleService) GetRoleByName(ctx context.Context, tenantID, name 
 func newSystemConfinedRoleStore(t *testing.T) role.RoleServicer {
 	t.Helper()
 	confined, err := kvstore.NewNamespacedKVStore(kvstore.NewMemoryKVStore(),
-		tenant.IdentityNamespace(tenant.SystemTenantID))
+		tenant.IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -132,10 +133,10 @@ func TestResolvePermissionSet_StillConsultsFallbackForTheSystemTenant(t *testing
 		"admin": {"admin:drain"},
 	})
 
-	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin"}}
+	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"admin"}}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain")
+		Authorize(ctxFor(tenantid.System), identity, "admin", "drain")
 	if err != nil {
 		t.Fatalf("expected the fallback to authorize the system tenant, got %v", err)
 	}
@@ -162,10 +163,10 @@ func TestResolvePermissionSet_DefinitiveRoleNotFound_NeverConsultsFallback(t *te
 		"deleted-role": {"admin:drain"}, // stale: the deletion has not replicated here yet
 	})
 
-	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"deleted-role"}}
+	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"deleted-role"}}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain")
+		Authorize(ctxFor(tenantid.System), identity, "admin", "drain")
 
 	if fallback.callCount.Load() != 0 {
 		t.Fatalf("fallback.ResolvePermissions was called %d times for a DEFINITIVE RoleNotFoundError; "+
@@ -192,10 +193,10 @@ func TestResolvePermissionSet_DefinitiveValidationError_NeverConsultsFallback(t 
 		"bad-role": {"admin:drain"},
 	})
 
-	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"bad-role"}}
+	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"bad-role"}}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain")
+		Authorize(ctxFor(tenantid.System), identity, "admin", "drain")
 
 	if fallback.callCount.Load() != 0 {
 		t.Fatalf("fallback.ResolvePermissions was called %d times for a DEFINITIVE ValidationError; "+
@@ -284,19 +285,19 @@ func TestSODenyList_StaleFallback_NeverAnswersForAnotherTenant(t *testing.T) {
 // system-tenant SO role.
 func TestSODenyList_StaleFallback_StillServesTheSystemTenant(t *testing.T) {
 	fallback := newSystemConfinedRoleStore(t)
-	soRole := seedBuiltInRole(t, fallback, tenant.SystemTenantID, role.RoleNameSO)
+	soRole := seedBuiltInRole(t, fallback, tenantid.System, role.RoleNameSO)
 
 	primary := newMockRoleService(map[string][]permission.Permission{})
 	primary.byNameErr = errors.New("read index not ready")
 
 	identity := &auth.Identity{
 		Subject:  "so",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{soRole.ID},
 	}
 
 	err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "keys", "sign")
+		Authorize(ctxFor(tenantid.System), identity, "keys", "sign")
 	assertDeniedByTheSODenyList(t, err)
 }
 
