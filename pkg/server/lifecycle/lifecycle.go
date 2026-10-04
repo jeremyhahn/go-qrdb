@@ -733,7 +733,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	// Seal-gated services: only constructed when a barrier is provided.
 	if infra.SealBarrier != nil {
-		if err := n.buildSealServices(ctx, infra, log); err != nil {
+		if err := n.buildSealServices(ctx, infra, log, authStore); err != nil {
 			return nil, err
 		}
 		// A Shamir database barrier's holders are enrolled and verified by
@@ -972,7 +972,7 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
-func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger) error {
+func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
 
@@ -1086,6 +1086,20 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 				tenantOpts = append(tenantOpts, tenant.WithTenantHolderDeps(coreSvc.HolderDeps()))
 			}
 		}
+		// A prefix tenant's IAM lives in the shared store, confined to its own
+		// "{tenantID}/" namespace -- exactly tenant.IdentityNamespace, the
+		// same confinement StoreResolver.sharedFor applies for every OTHER
+		// prefix-tenant IAM read/write, including the ones `roles
+		// list`/`reconcile` make moments after this CreateTenant call
+		// returns. The routed role service (n.Role, reassigned further below)
+		// cannot be used here: it is built from n.Tenant, which is this very
+		// construction and does not exist yet. Reusing the unscoped
+		// n.Role / role.NewStore(authStore) instance instead -- without this
+		// namespace wrapper -- would write the seeded roles to a DIFFERENT
+		// key than the routed reads later look under, landing roles the
+		// tenant's own `roles list` can never see. See tenant.RoleSeeder's
+		// doc comment.
+		tenantOpts = append(tenantOpts, tenant.WithRoleSeeder(roleSeederAdapter{shared: authStore}))
 		// Tenant metadata (TenantInfo) is replicated cluster state: back it with
 		// the REPLICATED system shard via the KV service — exactly like the
 		// user, role, and placement stores — so a tenant created on one node is

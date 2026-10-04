@@ -403,6 +403,7 @@ type TenantService struct {
 	holderDeps       *ceremony.HolderDeps
 	defaultQuotas    *quota.Quotas
 	defaultEnts      *quota.Entitlements
+	roleSeeder       RoleSeeder
 	// reservedDataRoots are filesystem roots the deleted-tenant reconciliation
 	// never removes and never removes a directory containing, beyond the
 	// volume-pool base paths themselves. It is the seam for injecting the
@@ -453,6 +454,37 @@ func WithStrategyRegistry(reg seal.StrategyRegistry) TenantServiceOption {
 // and every holder operation fail with ErrCeremonyDistributorNotConfigured.
 func WithTenantHolderDeps(deps ceremony.HolderDeps) TenantServiceOption {
 	return func(s *TenantService) { s.holderDeps = &deps }
+}
+
+// RoleSeeder seeds a newly created tenant's built-in roles. CreateTenant
+// calls it, for isolation types whose IAM store is reachable in the SAME
+// operation (prefix and system tenants share the system store; a
+// dedicated-isolation tenant's own store may not exist -- or be unsealed --
+// yet, so it is left to a later `roles reconcile`, exactly as before), so
+// the tenant admin can act immediately instead of needing a separate
+// reconcile call first (docs/identity-rbac/architecture.md: "each tenant
+// seeds its own built-in roles").
+//
+// This is an interface, not a direct pkg/role dependency, because pkg/role
+// already imports pkg/tenant (ReconcileBuiltInRoles's own tenant-scoping);
+// the reverse import would cycle. The composer satisfies it with a thin
+// adapter over the ALREADY-constructed, non-tenant-routed role.RoleServicer
+// (role.NewStore(authStore)) -- the one instance guaranteed to exist before
+// TenantService itself does, which is also exactly the correct one for a
+// prefix tenant, whose IAM lives in that same shared store either way.
+type RoleSeeder interface {
+	// ReconcileBuiltInRoles seeds tenantID's built-in roles, creating any
+	// that are missing. Idempotent: a tenant that already has them is a
+	// no-op.
+	ReconcileBuiltInRoles(ctx context.Context, tenantID string) error
+}
+
+// WithRoleSeeder injects the RoleSeeder CreateTenant uses to seed a new
+// prefix or system tenant's built-in roles in the same operation. Without
+// it, CreateTenant behaves as before: a tenant has no roles until its first
+// `roles reconcile`.
+func WithRoleSeeder(seeder RoleSeeder) TenantServiceOption {
+	return func(s *TenantService) { s.roleSeeder = seeder }
 }
 
 // WithReservedDataRoots registers filesystem roots the deleted-tenant
@@ -702,6 +734,28 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		slog.String("tenant_id", id),
 		slog.String("name", name),
 		slog.String("isolation_type", string(isolationType)))
+
+	// Seed the new tenant's built-in roles in this SAME operation, for the
+	// isolation types whose IAM store is reachable right now: prefix tenants
+	// (and the system tenant, structurally a prefix tenant too) share the
+	// system store unconditionally. A dedicated-isolation tenant's own IAM
+	// store may not exist yet (self-managed barrier, left sealed above) or
+	// may need the barrier-aware ROUTED role service this plain seeder is
+	// deliberately not (see RoleSeeder's doc comment) -- that case is left to
+	// the operator's first `roles reconcile` exactly as before this fix.
+	//
+	// Best-effort by design, not rolled back on failure: the tenant record is
+	// already durably committed above, and failing this whole call now would
+	// report a tenant that demonstrably exists as "not created" -- worse than
+	// a created tenant whose roles lag until a retried `roles reconcile`
+	// (idempotent, already the documented recovery path for every tenant
+	// created before this fix existed).
+	if s.roleSeeder != nil && isolationType == IsolationPrefix {
+		if seedErr := s.roleSeeder.ReconcileBuiltInRoles(ctx, id); seedErr != nil {
+			s.logger.Error("tenant created but seeding its built-in roles failed; retry with `roles reconcile`",
+				slog.String("tenant_id", id), slog.Any("error", seedErr))
+		}
+	}
 
 	return info, nil
 }

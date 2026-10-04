@@ -352,39 +352,53 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] roles reconcile on a freshly booted node's system tenant reported changes, want none (built-ins already current): %+v", proto.name, systemResp.Roles)
 	}
 
+	// A freshly created PREFIX tenant must already have its built-in roles --
+	// CreateTenant seeds them in the SAME operation (pkg/tenant/service.go's
+	// RoleSeeder) precisely so the tenant admin can act immediately, per
+	// docs/identity-rbac/architecture.md ("each tenant seeds its own built-in
+	// roles"). Asserted two ways: `roles list` shows them directly, and the
+	// FIRST `roles reconcile` call -- which used to be the only thing that
+	// created them -- is now already a no-op.
 	tenantID := fmt.Sprintf("rr-%s-%d", proto.name, time.Now().UnixNano())
 	createTenant(t, node, proto, tenantID, "Reconcile Tenant", "prefix", false)
 
+	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "list", "--tenant-id", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] roles list --tenant %s immediately after create: %v\noutput: %s", proto.name, tenantID, err, out)
+	}
+	var listed roleListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode roles list --tenant JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if len(listed.Roles) == 0 {
+		t.Fatalf("[%s] roles list --tenant %s immediately after create returned none, want the built-ins seeded at creation", proto.name, tenantID)
+	}
+	for _, r := range listed.Roles {
+		if r.TenantID != tenantID {
+			t.Fatalf("[%s] roles list --tenant %s returned a role scoped to tenant %q: %+v", proto.name, tenantID, r.TenantID, r)
+		}
+		if r.Name == "" {
+			t.Fatalf("[%s] roles list --tenant %s returned a nameless role: %+v", proto.name, tenantID, r)
+		}
+	}
+
 	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
 	if err != nil {
-		t.Fatalf("[%s] first roles reconcile --tenant %s: %v\noutput: %s", proto.name, tenantID, err, out)
+		t.Fatalf("[%s] roles reconcile --tenant %s immediately after create: %v\noutput: %s", proto.name, tenantID, err, out)
 	}
 	var first rolesReconcileCLIJSON
 	if jerr := json.Unmarshal([]byte(out), &first); jerr != nil {
-		t.Fatalf("[%s] decode first roles reconcile --tenant JSON: %v\noutput: %s", proto.name, jerr, out)
+		t.Fatalf("[%s] decode roles reconcile --tenant JSON: %v\noutput: %s", proto.name, jerr, out)
 	}
 	if first.TenantID != tenantID {
-		t.Fatalf("[%s] first roles reconcile --tenant %s = tenant_id %q, want %s", proto.name, tenantID, first.TenantID, tenantID)
+		t.Fatalf("[%s] roles reconcile --tenant %s = tenant_id %q, want %s", proto.name, tenantID, first.TenantID, tenantID)
 	}
-	if len(first.Roles) == 0 {
-		t.Fatalf("[%s] first roles reconcile on a freshly created prefix tenant reported no changes, want it to seed the built-ins: %+v", proto.name, first)
-	}
-
-	for _, r := range first.Roles {
-		rm, ok := r.(map[string]interface{})
-		if !ok {
-			t.Fatalf("[%s] roles reconcile role entry has unexpected shape: %+v", proto.name, r)
-		}
-		if name, _ := rm["name"].(string); name == "" {
-			t.Fatalf("[%s] roles reconcile role entry has no name: %+v", proto.name, rm)
-		}
-		if created, _ := rm["created"].(bool); !created {
-			t.Fatalf("[%s] roles reconcile role entry on a brand-new tenant should be reported as created: %+v", proto.name, rm)
-		}
+	if len(first.Roles) != 0 {
+		t.Fatalf("[%s] roles reconcile on a freshly created prefix tenant reported changes, want none -- CreateTenant must have already seeded the built-ins: %+v", proto.name, first.Roles)
 	}
 
-	// The real assertion of effect: an immediate second call must converge
-	// to an empty report, proving the first call writes actually took.
+	// A second, immediate call must converge to the SAME empty report too:
+	// idempotent either way.
 	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
 	if err != nil {
 		t.Fatalf("[%s] second roles reconcile --tenant %s: %v\noutput: %s", proto.name, tenantID, err, out)
@@ -398,6 +412,6 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] second roles reconcile --tenant %s = tenant_id %q, want %s", proto.name, tenantID, second.TenantID, tenantID)
 	}
 	if len(second.Roles) != 0 {
-		t.Fatalf("[%s] second, immediate roles reconcile reported further changes, want none (the first call must have converged them): %+v", proto.name, second.Roles)
+		t.Fatalf("[%s] second, immediate roles reconcile reported changes, want none: %+v", proto.name, second.Roles)
 	}
 }

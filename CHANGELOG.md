@@ -118,6 +118,29 @@ are not reconstructed here — their history is in the git log.
     `Deprecated:`/`deprecated = true`, or if the CLI defines a cobra
     `Deprecated` field or a redirect stub, so none of this creeps back.
 
+- **`qrdb completion` and `qrdbd completion` failed with a connection error
+  on a host with no reachable daemon** instead of printing their static
+  script: `cmd/qrdb/root.go`'s `PersistentPreRunE` always tried to build an
+  SDK client first. Fixed by `isCompletionCmd`, anchored at exactly the
+  root's direct `completion` child and that child's own direct children
+  (bash/zsh/fish/powershell) -- not a walk of the whole parent chain, so a
+  command elsewhere in the tree that merely happens to be named
+  "completion" is never also exempted.
+- **A new prefix tenant had no built-in roles until its first `roles
+  reconcile` call**, contradicting docs/identity-rbac/architecture.md's
+  "each tenant seeds its own built-in roles." `tenant.TenantService.CreateTenant`
+  now seeds them in the same operation for prefix and system tenants (whose
+  IAM store is reachable immediately); a dedicated-isolation tenant's own
+  store may not exist or be unsealed yet, so it is still left to a later
+  `roles reconcile`, unchanged from before.
+
+### Added
+
+- Integration coverage for `qrdb completion`/`qrdbd completion`
+  (bash/zsh/fish/powershell), `qrdbd node-identity`, and `tenant
+  list-deleted`/`reconcile-deleted`, closing a CLI-coverage audit finding
+  that all three had none.
+
 ## [0.41.0-alpha] - 2026-10-04
 
 Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). This release contains BREAKING API changes; see the entries below. Highlights:
