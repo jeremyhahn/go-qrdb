@@ -281,3 +281,71 @@ func auditTotalValid(total, numEvents int) bool {
 	}
 	return numEvents == 0 && total == -1
 }
+
+// TestAudit_CLI_Verify_PerProtocol drives `qrdb audit verify` through the CLI
+// binary against every transport sharing one multiProtoNode. The node's
+// audit trail is freshly created and untampered, so Verified must be true on
+// every transport, with Files/Records/Genesis populated -- proving the
+// chain-verification call (go-qrdb#453) is wired symmetrically across REST,
+// gRPC, QUIC, MCP and Unix, not merely reachable on one of them.
+func TestAudit_CLI_Verify_PerProtocol(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testAuditVerifyOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// auditVerifyCLIJSON mirrors transport.AuditVerifyResult's wire JSON shape.
+type auditVerifyCLIJSON struct {
+	Verified bool     `json:"verified"`
+	Reason   string   `json:"reason,omitempty"`
+	Files    int      `json:"files"`
+	Records  int64    `json:"records"`
+	Order    []string `json:"order,omitempty"`
+	Genesis  bool     `json:"genesis"`
+}
+
+func testAuditVerifyOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	// Generate at least one auditable event so Records > 0 on every
+	// subtest, regardless of ordering across the shared node.
+	roleName := fmt.Sprintf("audit-verify-%s-%d", proto.name, time.Now().UnixNano())
+	out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "create",
+		"--name", roleName, "--permissions", "users:read")
+	if err != nil {
+		t.Fatalf("[%s] roles create (to seed the audit trail): %v\noutput: %s", proto.name, err, out)
+	}
+
+	out, err = runCLIProto(t, node, proto, "--output", "json", "audit", "verify")
+	if err != nil {
+		t.Fatalf("[%s] audit verify: %v\noutput: %s", proto.name, err, out)
+	}
+	var result auditVerifyCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &result); jerr != nil {
+		t.Fatalf("[%s] decode `audit verify` JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if !result.Verified {
+		t.Fatalf("[%s] audit verify: Verified=false on a fresh untampered trail, reason=%q", proto.name, result.Reason)
+	}
+	if result.Files < 1 {
+		t.Fatalf("[%s] audit verify: Files=%d, want >= 1", proto.name, result.Files)
+	}
+	if result.Records < 1 {
+		t.Fatalf("[%s] audit verify: Records=%d, want >= 1 (the role create above)", proto.name, result.Records)
+	}
+
+	// Table-format sanity: the human-readable rendering must carry the same
+	// verdict.
+	tableOut, err := runCLIProto(t, node, proto, "audit", "verify")
+	if err != nil {
+		t.Fatalf("[%s] audit verify (table): %v\noutput: %s", proto.name, err, tableOut)
+	}
+	if !strings.Contains(tableOut, "Verified: true") {
+		t.Fatalf("[%s] audit verify (table): expected 'Verified: true', got: %s", proto.name, tableOut)
+	}
+}
