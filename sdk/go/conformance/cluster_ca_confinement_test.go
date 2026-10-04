@@ -223,3 +223,46 @@ func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 		})
 	}
 }
+
+// TestHarnessLogin_SurvivesCorruptClusterCARecord is go-qrdb#591's B3
+// regression proof, restoring the unparseable-placeholder scenario this
+// file's own TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport
+// moved away from (see generateFakeClusterCA's own doc comment): seeding a
+// non-DER placeholder directly into the cluster CA's real storage key
+// corrupts pkg/cakey.SoftwareProvider's ability to resolve Key A, and
+// before the B3 fix that cascaded into pkg/clienttrust.Pool's
+// isRegisteredKeyBCA answering "uncertain" forever, which made
+// IsStaticallyTrusted refuse the exemption for EVERY issuer -- including
+// the harness's own ad-hoc CA, which has nothing to do with Key A or Key
+// B at all. A harness login (the remote cells' own client certificate,
+// issued by remoteServerTLS's ad-hoc CA, authenticated purely through the
+// static exemption) must keep authenticating despite the corruption.
+func TestHarnessLogin_SurvivesCorruptClusterCARecord(t *testing.T) {
+	corruptMaterial := []byte("-----BEGIN EC PRIVATE KEY----- not actually DER -----END EC PRIVATE KEY-----")
+
+	for _, tk := range transportKinds {
+		if !tk.remote() {
+			continue // the embedded cell has no TLS handshake, and so no static exemption to break
+		}
+		t.Run(string(tk), func(t *testing.T) {
+			client := bootAuthorizedCell(t, tk, func(n *node.Node) {
+				seedIdentityFixtures(t, n, permission.KVGet, permission.KVPut)
+				if err := n.Services().KV.Put(context.Background(), clusterCAMaterialKey, corruptMaterial); err != nil {
+					t.Fatalf("%s: seeding the corrupt cluster CA key material: %v", tk, err)
+				}
+			})
+
+			ctx := boundedCtx(t)
+			// The harness login itself (the mTLS handshake underlying
+			// every call client makes) is what this test proves survives
+			// the corruption; an ordinary authenticated KV round-trip is
+			// the simplest proof it did.
+			if err := client.KV().Put(ctx, "harness-login-survives", []byte("v")); err != nil {
+				t.Fatalf("%s: harness login was refused by an unrelated corrupt cluster CA record: %v", tk, err)
+			}
+			if got, err := client.KV().Get(ctx, "harness-login-survives"); err != nil || string(got) != "v" {
+				t.Fatalf("%s: Get after a successful harness-login Put = %q, %v", tk, got, err)
+			}
+		})
+	}
+}

@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -153,6 +154,23 @@ type DefaultCertProvider struct {
 	// trustDomain, when non-empty, is the SPIFFE trust domain every issued
 	// client certificate's tenant SAN is minted under. See WithTrustDomain.
 	trustDomain string
+
+	// skippedTenantCAs counts every tenant CACertPEMs has skipped because
+	// its own record failed to resolve or load (go-qrdb#591's review, B3):
+	// a corrupt or unreadable tenant record withdraws only that tenant's
+	// own anchor, never the whole call, and this is the counter an
+	// operator or a test observes that withdrawal through. See
+	// SkippedTenantCACount.
+	skippedTenantCAs atomic.Int64
+}
+
+// SkippedTenantCACount returns how many tenants CACertPEMs has skipped,
+// cumulatively, because their own Key B CA record failed to resolve or
+// load. A non-zero count is a signal worth alerting on -- it names a
+// specific tenant's login CA as unreadable -- but it is never, by itself,
+// a reason to refuse every OTHER tenant's.
+func (p *DefaultCertProvider) SkippedTenantCACount() int64 {
+	return p.skippedTenantCAs.Load()
 }
 
 // NewDefaultProvider creates a new DefaultCertProvider. kvStore must support
@@ -793,17 +811,36 @@ func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) 
 		return nil, &StoreError{Op: "scan", Detail: prefixCertCA, Err: err}
 	}
 
+	// A single tenant's corrupt or unreadable record withdraws only that
+	// tenant's own anchor from the widened pool -- logged and counted, not
+	// propagated as this call's own error (go-qrdb#591's review, B3): the
+	// alternative made one bad record fail Key B trust for EVERY tenant,
+	// cascading into the dynamic trust pool's isRegisteredKeyBCA check
+	// (pkg/clienttrust.Pool) answering "uncertain" forever, which in turn
+	// refuses the static exemption Key A and operator/harness logins rely
+	// on -- locking out principals that have nothing to do with the
+	// broken tenant at all.
 	out := make([][]byte, 0, len(tenantIDs))
+	var skipped int
 	for _, tenantID := range tenantIDs {
 		prov, err := p.resolveKeyProvider(tenantID)
 		if err != nil {
-			return nil, err
+			skipped++
+			slog.Warn("qrdb/cert: skipping a tenant's Key B CA in CACertPEMs; its own anchor is withdrawn, every other tenant's is not",
+				"tenant_id", tenantID, "error", err)
+			continue
 		}
 		cert, err := p.loadOnlyCertificate(ctx, prov)
 		if err != nil {
-			return nil, err
+			skipped++
+			slog.Warn("qrdb/cert: skipping a tenant's Key B CA in CACertPEMs; its own anchor is withdrawn, every other tenant's is not",
+				"tenant_id", tenantID, "error", err)
+			continue
 		}
 		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+	}
+	if skipped > 0 {
+		p.skippedTenantCAs.Add(int64(skipped))
 	}
 	return out, nil
 }

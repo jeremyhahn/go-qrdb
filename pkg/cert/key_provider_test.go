@@ -370,6 +370,15 @@ func TestDefaultCertProvider_CACertPEMs_SkipsEmptyTenantIDKey(t *testing.T) {
 // CertificateOnly) never touches the key record for this failure to
 // surface: if it did, a corrupt KEY would have to be the one that fails
 // this call, not a corrupt certificate.
+// TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails proves a
+// single tenant's corrupt or unreadable record withdraws only that
+// tenant's own anchor, never the whole call (go-qrdb#591's review, B3): the
+// old behavior -- CACertPEMs failing outright -- cascaded into
+// pkg/clienttrust.Pool's isRegisteredKeyBCA answering "uncertain" forever
+// for EVERY issuer whenever one tenant's record was corrupt, which in turn
+// refused the static exemption Key A and every operator/harness login
+// relies on, locking out principals that have nothing to do with the
+// broken tenant at all.
 func TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails(t *testing.T) {
 	kv := newMockKVStore()
 	p := NewDefaultProvider(kv, newMockBarrier())
@@ -384,14 +393,22 @@ func TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails(t *testing.T) 
 	if err := kv.Put(ctx, prefixCertCA+"ghost/certificate", []byte("not-der-data")); err != nil {
 		t.Fatalf("Put certificate: %v", err)
 	}
-
-	_, err := p.CACertPEMs(ctx)
-	if err == nil {
-		t.Fatal("expected CACertPEMs to fail when a discovered tenant's certificate record does not decode")
+	// A second, healthy tenant alongside the corrupt one, so a pass here
+	// is not merely "the only tenant was skipped and nothing was ever
+	// enumerated" -- it proves the healthy tenant's own anchor survives.
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "healthy-tenant"}); err != nil {
+		t.Fatalf("establish the healthy tenant's own Key B CA: %v", err)
 	}
-	var genErr *CertGenerateError
-	if !errors.As(err, &genErr) {
-		t.Fatalf("expected *CertGenerateError, got %T: %v", err, err)
+
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil {
+		t.Fatalf("expected CACertPEMs to succeed, skipping the corrupt tenant, got: %v", err)
+	}
+	if len(pems) != 1 {
+		t.Fatalf("CACertPEMs returned %d certificate(s), want exactly 1 (the healthy tenant's, with the corrupt one skipped)", len(pems))
+	}
+	if got := p.SkippedTenantCACount(); got != 1 {
+		t.Errorf("SkippedTenantCACount() = %d, want 1", got)
 	}
 }
 

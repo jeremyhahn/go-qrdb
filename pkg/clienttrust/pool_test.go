@@ -575,6 +575,87 @@ func TestPool_VerifyIssuer_ForeignTenantCARefused(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// B3: a Key B or cluster CA failure fails closed and IN ISOLATION -- never
+// taking the static exemption (Key A, the operator's own additional client
+// CAs, a test harness's ad-hoc CA) down with it.
+// ---------------------------------------------------------------------------
+
+// TestPool_ClusterCABroken_StaticExemptionStillWorks is go-qrdb#591's B3
+// regression proof: before the fix, resolveClientCAs returned on a BROKEN
+// (not merely unconfigured) cluster CA resolver before ever reaching
+// CACertPEMs, so the Key-B-only cache isRegisteredKeyBCA reads never
+// refreshed and stayed "uncertain" (true) forever -- which
+// IsStaticallyTrusted treats as "assume this issuer might be a Key B CA,
+// refuse the exemption", for every issuer, including the harness's own
+// static CA that has nothing to do with Key B at all. A real connection
+// triggers this through configForClient/GetConfigForClient; this test
+// calls resolveClientCAs directly, the seam both that path and
+// VerifyPeerChain share, to observe its effect on IsStaticallyTrusted
+// without needing a live TLS handshake.
+func TestPool_ClusterCABroken_StaticExemptionStillWorks(t *testing.T) {
+	harnessCAPEM, harnessCACert := genCAPEM(t)
+	harnessPool := x509.NewCertPool()
+	harnessPool.AppendCertsFromPEM(harnessCAPEM)
+	cfg := baseConfig(t, harnessPool)
+
+	pool := New()
+	pool.Wire(cfg)
+
+	keyBPEM, _ := genCAPEM(t)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+	// The cluster CA resolver IS installed (configured), but every call
+	// fails -- a corrupt stored record, in production terms -- not merely
+	// absent (*ClusterCANotConfiguredError), which is the OTHER, already
+	// non-blocking case.
+	pool.SetClusterCA(&fakeClusterCA{err: errors.New("stored cluster CA record is corrupt")})
+
+	// Simulates the live connection that would normally trigger this via
+	// GetConfigForClient: the widened pool itself correctly fails closed
+	// (the cluster CA entry and exemption are unavailable this call), but
+	// the Key-B-only cache underneath must still have refreshed.
+	if _, err := pool.resolveClientCAs(context.Background(), cfg.ClientCAs); err == nil {
+		t.Fatal("expected resolveClientCAs to fail closed while the cluster CA resolver is broken")
+	}
+
+	if !pool.IsStaticallyTrusted(harnessCACert) {
+		t.Fatal("harness login (static exemption) was refused by a cluster CA failure that has nothing to do with it")
+	}
+}
+
+// TestPool_KeyBNeverSucceeded_StaticExemptionStillUncertainButSafe proves
+// the OTHER direction is unaffected by this fix: a Key B provider that has
+// NEVER once succeeded (CACertPEMs always fails, e.g. sealed) genuinely
+// cannot rule out whether a given issuer might be some tenant's Key B CA,
+// so isRegisteredKeyBCA's conservative "uncertain, so true" answer for a
+// cache that was never built even once is unchanged -- this is a
+// correctness floor, not the B3 bug (which was specifically a cluster CA
+// failure blocking a Key-B-only cache refresh that would otherwise have
+// succeeded).
+func TestPool_KeyBNeverSucceeded_StaticExemptionStillUncertainButSafe(t *testing.T) {
+	harnessCAPEM, harnessCACert := genCAPEM(t)
+	harnessPool := x509.NewCertPool()
+	harnessPool.AppendCertsFromPEM(harnessCAPEM)
+	cfg := baseConfig(t, harnessPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{err: errors.New("barrier is sealed")})
+
+	if _, err := pool.resolveClientCAs(context.Background(), cfg.ClientCAs); err == nil {
+		t.Fatal("expected resolveClientCAs to fail while Key B has never once succeeded")
+	}
+
+	// Unchanged, conservative behavior: a Key B provider IS installed, but
+	// nothing proves harnessCACert is NOT one of its tenants' CAs yet, so
+	// the exemption is refused -- this is NOT the B3 regression, which
+	// was specifically about a cluster CA failure preventing a refresh
+	// that Key B's OWN health would otherwise have allowed to succeed.
+	if pool.IsStaticallyTrusted(harnessCACert) {
+		t.Fatal("expected the exemption to stay refused while Key B has never once resolved (conservative-uncertain, unrelated to B3)")
+	}
+}
+
 func TestPool_VerifyIssuer_NoProviderRefused(t *testing.T) {
 	_, keyACert := genCAPEM(t)
 	_, keyBCert := genCAPEM(t)

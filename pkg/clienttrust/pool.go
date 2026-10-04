@@ -82,6 +82,7 @@ type Pool struct {
 	provider   atomic.Pointer[providerBox]
 	clusterCA  atomic.Pointer[clusterCABox]
 	cache      atomic.Pointer[poolCache]
+	keyBCache  atomic.Pointer[keyBCacheEntry]
 	staticBase atomic.Pointer[x509.CertPool]
 }
 
@@ -90,11 +91,28 @@ type clusterCABox struct{ ca ClusterCA }
 type poolCache struct {
 	built time.Time
 	pool  *x509.CertPool
-	// keyBOnly holds ONLY the Key B certificates fetched to build pool --
-	// never the static base, never the cluster CA -- so
-	// isRegisteredKeyBCA can ask "is this issuer SOME tenant's Key B CA"
-	// without re-fetching CACertPEMs on every authentication check. Built
-	// from the SAME src.CACertPEMs call pool is, at zero extra cost.
+}
+
+// keyBCacheEntry holds every tenant's Key B certificate CACertPEMs
+// returned, refreshed INDEPENDENTLY of the cluster CA's own health
+// (go-qrdb#591's review, B3): isRegisteredKeyBCA -- and through it,
+// IsStaticallyTrusted, the exemption Key A and every operator/harness
+// login the composer trusted before Key B ever existed relies on -- must
+// never depend on whether the cluster CA currently resolves. Before this
+// split, both read the SAME cache resolveClientCAs built, and
+// resolveClientCAs returned early, before ever reaching CACertPEMs,
+// whenever an installed cluster CA resolver was merely failing right now
+// (a corrupt record, a reseal): the Key-B-only cache then never
+// refreshed, isRegisteredKeyBCA answered "uncertain" forever, and
+// IsStaticallyTrusted refused the exemption for every issuer, including
+// ones with nothing to do with Key B at all.
+//
+// pems is kept alongside keyBOnly (not reconstructed from it -- CertPool
+// exposes no enumeration) so resolveClientCAs can merge the identical set
+// into the full widened pool without a second CACertPEMs call.
+type keyBCacheEntry struct {
+	built    time.Time
+	pems     [][]byte
 	keyBOnly *x509.CertPool
 }
 
@@ -131,6 +149,7 @@ func New() *Pool {
 func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 	p.provider.Store(&providerBox{prov: prov})
 	p.cache.Store(nil)
+	p.keyBCache.Store(nil)
 }
 
 // SetClusterCA installs the resolver the pool checks every issuer against,
@@ -239,7 +258,7 @@ func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
 	if box == nil || box.prov == nil {
 		return false
 	}
-	cached := p.cache.Load()
+	cached := p.keyBCache.Load()
 	if cached == nil || cached.keyBOnly == nil {
 		return true
 	}
@@ -444,22 +463,20 @@ func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, inte
 //     B still widens; VerifyIssuer's per-tenant IsTenantIssuer branch gates
 //     it, and needs no cluster CA to operate -- only the exemption does.
 //   - Any other error (an installed resolver that is CURRENTLY failing --
-//     sealed, a transient store failure): fail closed, no widening at all.
-//     A resolver that answered before and is answering differently now is
-//     a signal this function must not paper over by falling back to
-//     whatever was cached, which is why this check runs before the cache
-//     read below, every time.
+//     sealed, a transient store failure): the WIDENED pool this call
+//     returns fails closed -- a resolver that answered before and is
+//     answering differently now is a signal this function must not paper
+//     over. This withdraws the cluster-CA entry and exemption from THIS
+//     call's pool, never the Key-B-only cache refresh below (B3, see
+//     refreshKeyBOnlyCache's own doc comment): a broken cluster CA must
+//     not also make isRegisteredKeyBCA -- and through it,
+//     IsStaticallyTrusted's exemption for Key A and every operator/harness
+//     login -- degrade to "uncertain" forever.
 func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPool) (*x509.CertPool, error) {
-	// The cluster CA is resolved FIRST, on every call -- but its absence
-	// splits into two different outcomes. Never configured at all
-	// (*ClusterCANotConfiguredError) is a deployment shape with no cluster
-	// CA concept, same as this composer never calling SetClusterCA: Key B
-	// still widens, gated purely by the issuer-tenant binding's per-tenant
-	// check (VerifyIssuer's IsTenantIssuer branch), which needs no cluster
-	// CA to operate. Configured but CURRENTLY failing (e.g. a reseal) is
-	// fail-closed: that resolver answered once and is answering differently
-	// now, which must withdraw Key B trust immediately, not merely stop
-	// granting the cluster-CA exemption.
+	// Refreshed FIRST, and unconditionally of the cluster CA's own state
+	// below: see refreshKeyBOnlyCache's own doc comment for why.
+	p.refreshKeyBOnlyCache(ctx)
+
 	clusterCACert, err := p.resolveClusterCA()
 	if err != nil {
 		var notConfiguredErr *ClusterCANotConfiguredError
@@ -473,22 +490,20 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 		return cached.pool, nil
 	}
 
-	box := p.provider.Load()
-	if box == nil || box.prov == nil {
-		return nil, &KeyBUnavailableError{Reason: "no Key B provider installed"}
-	}
-	src, ok := box.prov.(CertSource)
-	if !ok {
-		return nil, &KeyBUnavailableError{Reason: "the installed CertProvider does not implement CertSource"}
-	}
-	pems, err := src.CACertPEMs(ctx)
-	if err != nil {
-		// Sealed (the ordinary cause in Raft mode, where the replicated
-		// store cannot be opened while sealed, and now also checked
-		// directly by CACertPEMs itself) is not reported as a distinct
-		// case: any failure here means "fall back", which configForClient
-		// already does for every KeyBUnavailableError/*.
-		return nil, &KeyBUnavailableError{Reason: "CACertPEMs failed", Err: err}
+	keyB := p.keyBCache.Load()
+	if keyB == nil {
+		box := p.provider.Load()
+		if box == nil || box.prov == nil {
+			return nil, &KeyBUnavailableError{Reason: "no Key B provider installed"}
+		}
+		if _, ok := box.prov.(CertSource); !ok {
+			return nil, &KeyBUnavailableError{Reason: "the installed CertProvider does not implement CertSource"}
+		}
+		// A provider IS installed and does implement CertSource, but
+		// refreshKeyBOnlyCache has never once succeeded (every attempt
+		// so far, including the one just above, failed): sealed is the
+		// ordinary cause in Raft mode.
+		return nil, &KeyBUnavailableError{Reason: "CACertPEMs has not yet succeeded"}
 	}
 
 	pool := x509.NewCertPool()
@@ -498,15 +513,53 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 	if clusterCACert != nil {
 		pool.AddCert(clusterCACert)
 	}
-	// keyBOnly holds ONLY the certificates just fetched -- never the static
-	// base, never the cluster CA -- so isRegisteredKeyBCA can ask "is this
-	// issuer SOME tenant's Key B CA" without re-fetching CACertPEMs.
-	keyBOnly := x509.NewCertPool()
-	for _, certPEM := range pems {
+	for _, certPEM := range keyB.pems {
 		pool.AppendCertsFromPEM(certPEM)
-		keyBOnly.AppendCertsFromPEM(certPEM)
 	}
 
-	p.cache.Store(&poolCache{built: time.Now(), pool: pool, keyBOnly: keyBOnly})
+	p.cache.Store(&poolCache{built: time.Now(), pool: pool})
 	return pool, nil
+}
+
+// refreshKeyBOnlyCache rebuilds p.keyBCache from the installed Key B
+// provider's CACertPEMs, when the current entry (if any) is older than
+// poolCacheTTL. It never returns an error: a failure (no provider, no
+// CertSource, CACertPEMs itself failing -- sealed is the ordinary cause
+// in Raft mode) simply leaves whatever is already cached in place,
+// stale or nil, rather than tearing it down -- isRegisteredKeyBCA's
+// "uncertain" answer for a nil/never-built cache is the conservative
+// default for a Key B CA it cannot rule out, but a cache that WAS built
+// and is merely aging is still the best available answer, not something
+// a transient CACertPEMs failure should discard.
+//
+// Called from resolveClientCAs UNCONDITIONALLY, before that function's
+// own cluster-CA resolution: a broken cluster CA resolver must never
+// prevent this refresh (go-qrdb#591's review, B3), because
+// isRegisteredKeyBCA reads ONLY this cache, and a cache that stops
+// refreshing degrades to "uncertain" forever -- which IsStaticallyTrusted
+// then treats as "assume yes, refuse the exemption" for every issuer,
+// including the cluster CA's own operator-configured static anchors and
+// a test harness's ad-hoc CA, neither of which has anything to do with
+// Key B.
+func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
+	if cached := p.keyBCache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
+		return
+	}
+	box := p.provider.Load()
+	if box == nil || box.prov == nil {
+		return
+	}
+	src, ok := box.prov.(CertSource)
+	if !ok {
+		return
+	}
+	pems, err := src.CACertPEMs(ctx)
+	if err != nil {
+		return
+	}
+	keyBOnly := x509.NewCertPool()
+	for _, certPEM := range pems {
+		keyBOnly.AppendCertsFromPEM(certPEM)
+	}
+	p.keyBCache.Store(&keyBCacheEntry{built: time.Now(), pems: pems, keyBOnly: keyBOnly})
 }
