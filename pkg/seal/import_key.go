@@ -92,11 +92,11 @@ func (k *ImportedKey) Validate() error {
 // The RootKey field in the returned ImportedKey is SECURITY-CRITICAL. The
 // caller is responsible for transmitting it only over a mutually-authenticated,
 // encrypted channel (mTLS) and wiping it from memory after use.
-func (b *StorageBarrier) ExportRootKeyContext() (*ImportedKey, error) {
+func (b *StorageBarrier) ExportRootKeyContext(ctx context.Context) (*ImportedKey, error) {
 	if b.IsSealed() {
 		return nil, ErrSealed
 	}
-	rootKey, err := b.GetMasterKey()
+	rootKey, err := b.GetMasterKey(ctx)
 	if err != nil {
 		return nil, err
 	}

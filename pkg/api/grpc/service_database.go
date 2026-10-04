@@ -47,7 +47,7 @@ func (s *qrdbServiceServer) DatabaseCreate(ctx context.Context, req *pb.Database
 	var creds seal.Credentials
 	if b := req.GetBarrier(); b != nil {
 		var err error
-		if creds, err = seal.CredentialsFor([]byte(b.GetSecret())); err != nil {
+		if creds, err = seal.CredentialsFor(ctx, []byte(b.GetSecret())); err != nil {
 			return nil, mapServiceError(err)
 		}
 		defer creds.Secret.Destroy()
@@ -251,7 +251,7 @@ func (s *qrdbServiceServer) DatabaseUnseal(ctx context.Context, req *pb.Database
 	if s.databaseSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
-	creds, err := seal.CredentialsFor([]byte(req.GetSecret()))
+	creds, err := seal.CredentialsFor(ctx, []byte(req.GetSecret()))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

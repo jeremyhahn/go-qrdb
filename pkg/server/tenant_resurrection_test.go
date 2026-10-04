@@ -139,7 +139,7 @@ func newAllIsolationTenantService(t *testing.T) (*tenant.TenantService, *seal.Ba
 		t.Fatalf("pool Register: %v", err)
 	}
 
-	strategy, err := seal.NewSoftwareStrategy([]byte("tenant-delete-system-pass"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("tenant-delete-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

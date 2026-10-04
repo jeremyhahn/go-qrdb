@@ -16,13 +16,14 @@ package sealtest
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 func TestPlaintext_RoundTrip(t *testing.T) {
-	creds := seal.MustCredentials([]byte("correct horse battery staple"))
+	creds := seal.MustCredentials(context.Background(), []byte("correct horse battery staple"))
 	defer creds.Secret.Destroy()
 
 	got := Plaintext(t, creds)
@@ -47,7 +48,7 @@ func TestPlaintext_NoSecretIsNil(t *testing.T) {
 }
 
 func TestSnapshot_RoundTrip(t *testing.T) {
-	creds := seal.MustCredentials([]byte("snap"))
+	creds := seal.MustCredentials(context.Background(), []byte("snap"))
 	got := Snapshot(creds)
 	// The snapshot survives the owner destroying the credential — which is
 	// the reason a double takes one during the call.
@@ -64,7 +65,7 @@ func TestSnapshot_NoSecretIsNil(t *testing.T) {
 }
 
 func TestSnapshot_DestroyedCredentialPanics(t *testing.T) {
-	creds := seal.MustCredentials([]byte("gone"))
+	creds := seal.MustCredentials(context.Background(), []byte("gone"))
 	creds.Secret.Destroy()
 	defer func() {
 		if recover() == nil {

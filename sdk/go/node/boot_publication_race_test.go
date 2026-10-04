@@ -163,7 +163,7 @@ func TestNode_AccessorsRaceFreeDuringUnseal(t *testing.T) {
 	// the Unseal below overlaps the reads rather than following them.
 	ready.Wait()
 
-	require.NoError(t, n.Unseal(context.Background(), seal.MustCredentials([]byte(passphrase))))
+	require.NoError(t, n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte(passphrase))))
 
 	close(stop)
 	done.Wait()

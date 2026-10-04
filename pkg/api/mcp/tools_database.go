@@ -234,7 +234,7 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 				SharesTotal:    mcp.ParseInt(req, "barrier_shares_total", 0),
 			}
 			var err error
-			if creds, err = seal.CredentialsFor([]byte(mcp.ParseString(req, "barrier_secret", ""))); err != nil {
+			if creds, err = seal.CredentialsFor(ctx, []byte(mcp.ParseString(req, "barrier_secret", ""))); err != nil {
 				return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
 			}
 			defer creds.Secret.Destroy()

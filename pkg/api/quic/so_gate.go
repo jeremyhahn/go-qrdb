@@ -81,7 +81,7 @@ func (s *Server) enforceSOGate(ctx context.Context, conn *quicgo.Conn, method st
 	if _, gated := authmw.SOPermissions[perm]; !gated {
 		return nil
 	}
-	factor := authmw.NewSOFactor(soPINFromPayload(method, payload), true, conn.RemoteAddr().String())
+	factor := authmw.NewSOFactor(ctx, soPINFromPayload(method, payload), true, conn.RemoteAddr().String())
 	defer factor.Destroy()
 	return s.soGate.Enforce(authmw.WithSOFactor(ctx, factor), perm, method, "call")
 }

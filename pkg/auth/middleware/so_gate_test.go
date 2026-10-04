@@ -194,7 +194,7 @@ func allZero(b []byte) bool {
 // hand to reach a state NewSOFactor never produces.
 func sealedPIN(t *testing.T, pin string) *secure.Secret {
 	t.Helper()
-	s, err := secure.NewSecret([]byte(pin))
+	s, err := secure.NewSecret(t.Context(), []byte(pin))
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}
@@ -204,7 +204,7 @@ func sealedPIN(t *testing.T, pin string) *secure.Secret {
 // requireDestroyed fails unless the sealed PIN can no longer be opened.
 func requireDestroyed(t *testing.T, what string, s *secure.Secret) {
 	t.Helper()
-	buf, err := s.Open()
+	buf, err := s.Open(t.Context())
 	if err == nil {
 		buf.Destroy()
 		t.Fatalf("%s: the sealed PIN survived", what)
@@ -221,7 +221,7 @@ func TestNewSOFactor(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
 	pinBytes := []byte(soGatePIN)
-	f := NewSOFactor(pinBytes, true, "192.0.2.1:1")
+	f := NewSOFactor(t.Context(), pinBytes, true, "192.0.2.1:1")
 	defer f.Destroy()
 	if !allZero(pinBytes) {
 		t.Fatal("NewSOFactor left the caller's plaintext in place")
@@ -229,7 +229,7 @@ func TestNewSOFactor(t *testing.T) {
 	if !f.Secure || f.ClientIP != "192.0.2.1:1" || f.sealErr != nil {
 		t.Fatalf("factor = %+v", f)
 	}
-	got, err := openSOPIN(f.PIN)
+	got, err := openSOPIN(t.Context(), f.PIN)
 	if err != nil || string(got) != soGatePIN {
 		t.Fatalf("openSOPIN = %q, %v; want the presented PIN", got, err)
 	}
@@ -243,7 +243,7 @@ func TestNewSOFactor(t *testing.T) {
 		"no PIN":       {nil, true},
 		"empty PIN":    {[]byte{}, true},
 	} {
-		f := NewSOFactor(tc.pin, tc.isSecure, "")
+		f := NewSOFactor(t.Context(), tc.pin, tc.isSecure, "")
 		if f.PIN != nil || f.sealErr != nil || f.Secure != tc.isSecure {
 			t.Fatalf("%s: factor = %+v, want no PIN held", name, f)
 		}
@@ -260,7 +260,7 @@ func TestSOGate_EnforceDestroysThePresentedPIN(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 	gate, soRoleID := newTestSOGate(t)
 	for _, pinText := range []string{soGatePIN, "wrong"} {
-		f := NewSOFactor([]byte(pinText), true, "")
+		f := NewSOFactor(t.Context(), []byte(pinText), true, "")
 		_ = gate.Enforce(WithSOFactor(officerCtx(soRoleID), f), permission.SealRekey, "r", "a")
 		requireDestroyed(t, "PIN "+pinText, f.PIN)
 	}
@@ -285,7 +285,7 @@ func TestSOGate_EnforceDestroysThePresentedPIN(t *testing.T) {
 // TestWipeSOFactor: a transport that bound a factor and did not reach the
 // gate -- a request whose permission is not SO-gated -- still destroys it.
 func TestWipeSOFactor(t *testing.T) {
-	f := NewSOFactor([]byte("1234"), true, "")
+	f := NewSOFactor(t.Context(), []byte("1234"), true, "")
 	WipeSOFactor(WithSOFactor(context.Background(), f))
 	requireDestroyed(t, "WipeSOFactor", f.PIN)
 	WipeSOFactor(WithSOFactor(context.Background(), f)) // destroyed twice: no-op
@@ -338,7 +338,7 @@ func TestSOFactorFromHTTPRequest(t *testing.T) {
 	if !f.Secure || f.ClientIP != r.RemoteAddr {
 		t.Fatalf("TLS factor = %+v", f)
 	}
-	got, err := openSOPIN(f.PIN)
+	got, err := openSOPIN(t.Context(), f.PIN)
 	if err != nil || string(got) != soGatePIN {
 		t.Fatalf("TLS factor PIN = %q, %v; want the header", got, err)
 	}
@@ -367,7 +367,7 @@ func TestSOGate_LockedOutSOPINIsRateLimited(t *testing.T) {
 	clock := newManualClock(time.Now())
 	gate, soRoleID := newTestSOGate(t, auth.WithSOPINLockoutClock(clock.Now))
 	enforce := func(pinText string) error {
-		return gate.Enforce(WithSOFactor(officerCtx(soRoleID), NewSOFactor([]byte(pinText), true, "")), permission.SealRekey, "r", "a")
+		return gate.Enforce(WithSOFactor(officerCtx(soRoleID), NewSOFactor(t.Context(), []byte(pinText), true, "")), permission.SealRekey, "r", "a")
 	}
 	for i := 0; i < auth.SOPINFreeFailures; i++ {
 		var invalid *SOFactorError

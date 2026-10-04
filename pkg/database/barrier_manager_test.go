@@ -32,7 +32,7 @@ func testBarrierLogger() *slog.Logger {
 // testBarrierSoftwareStrategy creates a SoftwareStrategy with a test passphrase.
 func testBarrierSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 	t.Helper()
-	s, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	s, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -65,7 +65,7 @@ func newTestBarrierManager(t *testing.T) *DatabaseBarrierManager {
 
 // testCreds returns standard test credentials.
 func testCreds() seal.Credentials {
-	return seal.MustCredentials([]byte("test-password"))
+	return seal.MustCredentials(context.Background(), []byte("test-password"))
 }
 
 // ---------- NewDatabaseBarrierManager tests ----------
@@ -273,7 +273,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_Success(t *testing.T) {
 // UnsealDatabase validates the caller's credentials, and the comment there says
 // a bound strategy "would make wrong-secret unseal attempts succeed for the
 // lifetime of the process". Nothing enforced that: replacing the registration
-// with seal.NewSoftwareStrategy([]byte(creds.Secret)) left the whole
+// with seal.NewSoftwareStrategy(context.Background(), []byte(creds.Secret)) left the whole
 // pkg/database suite green (measured, go-qrdb#157). This test is the guard —
 // it fails against exactly that mutation.
 //
@@ -292,7 +292,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_WrongPassphraseRefused(t *testing
 		t.Fatalf("SealDatabase: %v", err)
 	}
 
-	wrong := seal.MustCredentials([]byte("not-the-test-password"))
+	wrong := seal.MustCredentials(context.Background(), []byte("not-the-test-password"))
 	if err := mgr.UnsealDatabase(ctx, "testdb", wrong); err == nil {
 		t.Fatal("go-qrdb#157: UnsealDatabase accepted a WRONG passphrase — " +
 			"the registered strategy is not checking credentials")

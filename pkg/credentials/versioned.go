@@ -173,7 +173,7 @@ func (s *CredentialService) RotateCredential(ctx context.Context, name string, o
 	var err error
 	switch s.strategy {
 	case StrategyManual:
-		result, err = s.rotateManual(name, opts)
+		result, err = s.rotateManual(ctx, name, opts)
 	case StrategyBarrier:
 		result, err = s.rotateBarrier(ctx, name, opts)
 	default:
@@ -210,7 +210,7 @@ func (s *CredentialService) RetrieveCredentialVersion(ctx context.Context, name 
 
 	switch s.strategy {
 	case StrategyManual:
-		return s.retrieveManualVersion(name, version)
+		return s.retrieveManualVersion(ctx, name, version)
 	case StrategyBarrier:
 		return s.retrieveBarrierVersion(ctx, name, version)
 	default:
@@ -291,7 +291,7 @@ func (s *CredentialService) ensureManualVersionStore() {
 	}
 }
 
-func (s *CredentialService) rotateManual(name string, opts RotateOptions) (*RotateResult, error) {
+func (s *CredentialService) rotateManual(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -335,7 +335,7 @@ func (s *CredentialService) rotateManual(name string, opts RotateOptions) (*Rota
 		prevValue.Destroy()
 	}
 
-	sec, err := newSecretCopy(opts.NewValue)
+	sec, err := newSecretCopy(ctx, opts.NewValue)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +358,7 @@ func (s *CredentialService) rotateManual(name string, opts RotateOptions) (*Rota
 	}, nil
 }
 
-func (s *CredentialService) retrieveManualVersion(name string, version uint64) ([]byte, error) {
+func (s *CredentialService) retrieveManualVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -367,7 +367,7 @@ func (s *CredentialService) retrieveManualVersion(name string, version uint64) (
 		// Legacy untracked credential = v1 only.
 		if version == 1 {
 			if sec, ok := s.manualCreds[name]; ok {
-				return openSecretCopy(sec)
+				return openSecretCopy(ctx, sec)
 			}
 			return nil, ErrCredentialNotFound
 		}
@@ -376,7 +376,7 @@ func (s *CredentialService) retrieveManualVersion(name string, version uint64) (
 
 	if version == meta.CurrentVersion {
 		if sec, ok := s.manualCreds[name]; ok {
-			return openSecretCopy(sec)
+			return openSecretCopy(ctx, sec)
 		}
 		return nil, ErrCredentialNotFound
 	}
@@ -391,7 +391,7 @@ func (s *CredentialService) retrieveManualVersion(name string, version uint64) (
 			return nil, ErrVersionExpired
 		}
 		if sec, ok := s.manualVersions[name][version]; ok {
-			return openSecretCopy(sec)
+			return openSecretCopy(ctx, sec)
 		}
 		return nil, ErrVersionExpired
 	}

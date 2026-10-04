@@ -91,7 +91,7 @@ func TestDatabaseBarrierManager_WithBarrierAuditTrail(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModePassphrase}
-	if err := mgr.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials([]byte("database-passphrase"))); err != nil {
+	if err := mgr.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials(context.Background(), []byte("database-passphrase"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := mgr.SealDatabase("vault"); err != nil {
@@ -115,7 +115,7 @@ func TestDatabaseBarrierManager_WithBarrierAuditTrail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := quiet.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials([]byte("database-passphrase"))); err != nil {
+	if err := quiet.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials(context.Background(), []byte("database-passphrase"))); err != nil {
 		t.Fatalf("a manager without a trail = %v", err)
 	}
 }

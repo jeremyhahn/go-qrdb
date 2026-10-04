@@ -66,7 +66,7 @@ func TestNode_EnableEncryption_TenantScope_AfterSystemRecycle(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("system-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("system-pass")),
 	}))
 	require.False(t, n.IsSealed())
 	require.NotSame(t, firstTenantSvc, n.Services().Tenant,
@@ -86,7 +86,7 @@ func TestNode_EnableEncryption_TenantScope_AfterSystemRecycle(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("acme-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("acme-pass")),
 	})
 	if err != nil {
 		require.Falsef(t, strings.Contains(err.Error(), "storage is closed"),

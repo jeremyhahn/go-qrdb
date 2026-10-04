@@ -61,7 +61,7 @@ func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare f
 	t.Cleanup(cancel)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sw, err := seal.NewSoftwareStrategy([]byte("test-master-key-32bytes!abcdefgh"))
+	sw, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-key-32bytes!abcdefgh"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

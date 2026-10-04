@@ -136,5 +136,5 @@ func SOFactorFromHTTPRequest(r *http.Request) SOFactor {
 			pin = []byte(h)
 		}
 	}
-	return NewSOFactor(pin, isSecure, r.RemoteAddr)
+	return NewSOFactor(r.Context(), pin, isSecure, r.RemoteAddr)
 }

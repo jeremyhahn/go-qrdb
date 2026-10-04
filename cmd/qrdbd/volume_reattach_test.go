@@ -60,7 +60,7 @@ func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegis
 		t.Fatalf("pool Register: %v", err)
 	}
 
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("reattach-system-pass"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("reattach-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

@@ -108,7 +108,7 @@ func newReplicatedNode(t *testing.T, rr *objpool.RoundRobinStrategy, slotStore S
 	// barrier is sealed: the tenant-root record they resolve from and write
 	// lives behind it. Every caller in this file registers a volume tenant, so
 	// the node's system barrier must be initialized up front.
-	if err := reg.SystemBarrier().Initialize(context.Background(), MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := reg.SystemBarrier().Initialize(context.Background(), MustCredentials(context.Background(), []byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 	return replicatedNode{reg: reg, roots: roots}

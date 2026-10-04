@@ -72,7 +72,7 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToPassphrase(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("tenant-migrate-pw")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("tenant-migrate-pw")),
 	}
 	if err := hostReg.MigrateEncryption(ctx, "vt", opts); err != nil {
 		t.Fatalf("MigrateEncryption: %v", err)
@@ -239,7 +239,7 @@ func TestTenantHostRegistry_MigrateEncryption_AlreadyKeyedRejected(t *testing.T)
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("pw")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("pw")),
 	}
 	if err := hostReg.MigrateEncryption(ctx, "vt2", opts); err != nil {
 		t.Fatalf("first MigrateEncryption: %v", err)
@@ -318,7 +318,7 @@ func TestScopedEncryptionMigrator_SharedBarrierImmutable(t *testing.T) {
 
 	m := &scopedEncryptionMigrator{tenants: hostReg, barrierReg: reg}
 	err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeTenant, TenantID: "not-a-tenant"},
-		seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase, Credentials: seal.MustCredentials([]byte("pw"))})
+		seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase, Credentials: seal.MustCredentials(context.Background(), []byte("pw"))})
 	if !errors.Is(err, service.ErrSharedBarrierImmutable) {
 		t.Fatalf("shared-barrier tenant = %v, want ErrSharedBarrierImmutable", err)
 	}
@@ -396,7 +396,7 @@ func TestScopedEncryptionMigrator_EntitlementGate(t *testing.T) {
 		tenantSvc:  denyBarrierModeChecker{deny: seal.StrategyPassphrase},
 	}
 	err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeTenant, TenantID: "ent"},
-		seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase, Credentials: seal.MustCredentials([]byte("pw"))})
+		seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase, Credentials: seal.MustCredentials(context.Background(), []byte("pw"))})
 	if err == nil {
 		t.Fatal("expected entitlement rejection for a non-entitled target strategy")
 	}

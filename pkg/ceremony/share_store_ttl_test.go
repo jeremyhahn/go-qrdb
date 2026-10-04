@@ -38,7 +38,7 @@ func heldFor(s *sealedShareStore, username string) *heldShare {
 // assertDestroyed fails unless sec has been destroyed.
 func assertDestroyed(t *testing.T, sec *secure.Secret, msg string) {
 	t.Helper()
-	buf, err := sec.Open()
+	buf, err := sec.Open(t.Context())
 	if buf != nil {
 		buf.Destroy()
 	}
@@ -54,15 +54,15 @@ func TestSealedShareStore_OverwriteDestroysThePriorEnclave(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`share-v1`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share-v1`)))
 	prior := heldFor(store, "alice")
 	require.NotNil(t, prior)
 
-	require.NoError(t, store.Store("alice", []byte(`share-v2`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share-v2`)))
 
 	assertDestroyed(t, prior.secret, "the replaced share's enclave must be destroyed, not merely unreferenced")
 
-	claimed, err := store.Claim("alice")
+	claimed, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.Equal(t, []byte(`share-v2`), claimed, "the replacement, not the original, is what the holder claims")
 }
@@ -73,15 +73,15 @@ func TestSealedShareStore_OverwriteDisarmsThePriorTimer(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`share-v1`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share-v1`)))
 	prior := heldFor(store, "alice")
-	require.NoError(t, store.Store("alice", []byte(`share-v2`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share-v2`)))
 
 	assert.False(t, prior.timer.Stop(), "Store must stop the replaced entry's timer")
 	store.expire("alice", prior)
 
 	assert.True(t, store.Exists("alice"), "a stale timer must not wipe the share that replaced its own")
-	claimed, err := store.Claim("alice")
+	claimed, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.Equal(t, []byte(`share-v2`), claimed)
 }
@@ -98,7 +98,7 @@ func TestSealedShareStore_ExpiryWipesAndReportsExpired(t *testing.T) {
 	store := newSealedShareStore(expiryTestTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`share`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share`)))
 	held := heldFor(store, "alice")
 	require.NotNil(t, held)
 
@@ -107,7 +107,7 @@ func TestSealedShareStore_ExpiryWipesAndReportsExpired(t *testing.T) {
 
 	assertDestroyed(t, held.secret, "expiry must destroy the enclave, not merely forget it")
 
-	_, err := store.Claim("alice")
+	_, err := store.Claim(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrShareExpired)
 	assert.False(t, store.Claimed("alice"), "an expired share was never claimed")
 }
@@ -118,12 +118,12 @@ func TestSealedShareStore_ExpiryIsNotNotFound(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`share`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share`)))
 	store.expire("alice", heldFor(store, "alice"))
 
-	_, err := store.Claim("alice")
+	_, err := store.Claim(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrShareExpired)
-	_, err = store.Claim("bob")
+	_, err = store.Claim(context.Background(), "bob")
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
@@ -133,15 +133,15 @@ func TestSealedShareStore_ClaimDisarmsTheTimer(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`share`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share`)))
 	held := heldFor(store, "alice")
-	_, err := store.Claim("alice")
+	_, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 
 	assert.False(t, held.timer.Stop(), "Claim must have stopped the expiry timer already")
 	store.expire("alice", held)
 
-	_, err = store.Claim("alice")
+	_, err = store.Claim(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrShareAlreadyClaimed, "a claimed share stays claimed, not expired")
 }
 
@@ -151,17 +151,17 @@ func TestSealedShareStore_RedistributionClearsExpiry(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`old`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`old`)))
 	store.expire("alice", heldFor(store, "alice"))
-	require.NoError(t, store.Store("alice", []byte(`new`)))
-	claimed, err := store.Claim("alice")
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`new`)))
+	claimed, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.Equal(t, []byte(`new`), claimed)
 
-	require.NoError(t, store.Store("bob", []byte(`old`)))
+	require.NoError(t, store.Store(context.Background(), "bob", []byte(`old`)))
 	store.expire("bob", heldFor(store, "bob"))
 	store.Reset()
-	_, err = store.Claim("bob")
+	_, err = store.Claim(context.Background(), "bob")
 	assert.ErrorIs(t, err, ErrShareNotFound, "Reset starts a fresh round with no expiry history")
 }
 
@@ -169,7 +169,7 @@ func TestSealedShareStore_RedistributionClearsExpiry(t *testing.T) {
 // armed timer behind to fire on a destroyed entry.
 func TestSealedShareStore_DestroyAllDisarmsTimers(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
-	require.NoError(t, store.Store("alice", []byte(`share`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share`)))
 	held := heldFor(store, "alice")
 
 	store.DestroyAll()

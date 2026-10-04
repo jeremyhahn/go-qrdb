@@ -328,7 +328,7 @@ func (p *ConfigProcessor) processMap(ctx context.Context, v reflect.Value, path 
 				result.Unresolved = append(result.Unresolved, keyPath)
 				continue
 			}
-			plain, ok := p.readResolved(sv, keyPath, result)
+			plain, ok := p.readResolved(ctx, sv, keyPath, result)
 			if !ok {
 				continue
 			}
@@ -443,7 +443,7 @@ func (p *ConfigProcessor) processString(ctx context.Context, v reflect.Value, pa
 		result.Unresolved = append(result.Unresolved, path)
 		return
 	}
-	plain, ok := p.readResolved(sv, path, result)
+	plain, ok := p.readResolved(ctx, sv, path, result)
 	if !ok {
 		return
 	}
@@ -458,9 +458,9 @@ func (p *ConfigProcessor) processString(ctx context.Context, v reflect.Value, pa
 // reference. Writing "" there instead would erase the reference and count an
 // empty credential as resolved, indistinguishable from a secret that is
 // legitimately empty.
-func (p *ConfigProcessor) readResolved(sv *SecretValue, path string, result *ProcessResult) (string, bool) {
+func (p *ConfigProcessor) readResolved(ctx context.Context, sv *SecretValue, path string, result *ProcessResult) (string, bool) {
 	defer sv.Clear()
-	plain, err := sv.readString()
+	plain, err := sv.readString(ctx)
 	if err != nil {
 		result.Errors = append(result.Errors, &ResolvedReadError{Path: path, Err: err})
 		result.Unresolved = append(result.Unresolved, path)

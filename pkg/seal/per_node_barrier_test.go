@@ -21,7 +21,7 @@ import (
 // barrier.
 func newSoftwareBarrierWithPass(t *testing.T, pass string) *StorageBarrier {
 	t.Helper()
-	strategy, err := NewSoftwareStrategy([]byte(pass))
+	strategy, err := NewSoftwareStrategy(context.Background(), []byte(pass))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -30,7 +30,7 @@ func newSoftwareBarrierWithPass(t *testing.T, pass string) *StorageBarrier {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := b.Initialize(context.Background(), MustCredentials([]byte(pass))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte(pass))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	return b
@@ -48,11 +48,11 @@ func TestPerNodeSaltIsolation_SamePassphraseDistinctDEKs(t *testing.T) {
 	b := newSoftwareBarrierWithPass(t, pass)
 
 	// Master (root) keys are independent per node.
-	ak, err := a.GetMasterKey()
+	ak, err := a.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey(a): %v", err)
 	}
-	bk, err := b.GetMasterKey()
+	bk, err := b.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey(b): %v", err)
 	}
@@ -103,7 +103,7 @@ func TestShamirOption3_SharedUnsealKeyPerNodeRootKeys(t *testing.T) {
 		t.Fatalf("PrepareRoster: %v", err)
 	}
 	wrapUnder := func(bar *StorageBarrier) []byte {
-		rk, err := bar.GetMasterKey()
+		rk, err := bar.GetMasterKey(context.Background())
 		if err != nil {
 			t.Fatalf("GetMasterKey: %v", err)
 		}

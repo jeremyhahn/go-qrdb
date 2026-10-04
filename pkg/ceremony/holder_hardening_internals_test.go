@@ -140,7 +140,7 @@ func TestHolderScope_StagedSetLifecycle(t *testing.T) {
 	h, err := newHolderScope(ScopeTenant("acme"), seal.DomainUnseal, "acme", seal.NewMemoryBackend(), DefaultShareTTL, func() bool { return false }, testLogger())
 	require.NoError(t, err)
 	staged := newSealedShareStore(DefaultShareTTL)
-	require.NoError(t, staged.Store("alice", []byte("envelope")))
+	require.NoError(t, staged.Store(context.Background(), "alice", []byte("envelope")))
 	h.staged, h.stagedDistribution = staged, "d2"
 
 	assert.False(t, h.promoteStaged("d1"), "another distribution's commit promotes nothing")

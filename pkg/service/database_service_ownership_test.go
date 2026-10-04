@@ -44,7 +44,7 @@ func newBarrierDBOwnedByTenant(t *testing.T, tenantID, dbName string) (*Database
 	cfg.TenantID = tenantID
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(bytes.Clone(secret))); err != nil {
+	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), bytes.Clone(secret))); err != nil {
 		t.Fatalf("setup CreateWithCredentials(%q owned by %q) error: %v", dbName, tenantID, err)
 	}
 	return svc, secret
@@ -72,7 +72,7 @@ func TestDatabaseService_BarrierOps_CrossTenantDenied(t *testing.T) {
 	})
 
 	t.Run("Unseal", func(t *testing.T) {
-		err := svc.UnsealDatabase(attackerCtx, dbName, seal.MustCredentials([]byte("s3cret-passphrase")))
+		err := svc.UnsealDatabase(attackerCtx, dbName, seal.MustCredentials(context.Background(), []byte("s3cret-passphrase")))
 		if !errors.As(err, &tade) {
 			t.Fatalf("UnsealDatabase cross-tenant = %v, want *database.NotFoundError", err)
 		}
@@ -108,7 +108,7 @@ func TestDatabaseService_BarrierOps_OwnerAllowed(t *testing.T) {
 	if err := svc.SealDatabase(ownerCtx, dbName); err != nil {
 		t.Fatalf("owner SealDatabase error: %v", err)
 	}
-	if err := svc.UnsealDatabase(ownerCtx, dbName, seal.MustCredentials(bytes.Clone(secret))); err != nil {
+	if err := svc.UnsealDatabase(ownerCtx, dbName, seal.MustCredentials(context.Background(), bytes.Clone(secret))); err != nil {
 		t.Fatalf("owner UnsealDatabase error: %v", err)
 	}
 }
@@ -129,7 +129,7 @@ func TestDatabaseService_BarrierOps_SystemConfined(t *testing.T) {
 	if err := svc.SealDatabase(sysCtx, dbName); !errors.As(err, &notFound) {
 		t.Fatalf("system SealDatabase = %v, want *database.NotFoundError", err)
 	}
-	if err := svc.UnsealDatabase(sysCtx, dbName, seal.MustCredentials(bytes.Clone(secret))); !errors.As(err, &notFound) {
+	if err := svc.UnsealDatabase(sysCtx, dbName, seal.MustCredentials(context.Background(), bytes.Clone(secret))); !errors.As(err, &notFound) {
 		t.Fatalf("system UnsealDatabase = %v, want *database.NotFoundError", err)
 	}
 	if _, err := svc.DatabaseBarrierStatus(tenant.WithTenantID(context.Background(), owner), dbName); err != nil {
@@ -149,7 +149,7 @@ func TestDatabaseService_BarrierOps_UnownedDatabaseSystemOnly(t *testing.T) {
 	cfg := testDBConfig(dbName)
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), []byte("s3cret"))); err != nil {
 		t.Fatalf("setup CreateWithCredentials error: %v", err)
 	}
 

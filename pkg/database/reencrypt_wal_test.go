@@ -49,7 +49,7 @@ func newNoneBarrier(t *testing.T, rootKeyPath string) *seal.StorageBarrier {
 // newKeyedBarrier returns an initialized+unsealed passphrase StorageBarrier.
 func newKeyedBarrier(t *testing.T, rootKeyPath, passphrase string) *seal.StorageBarrier {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte(passphrase))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -58,7 +58,7 @@ func newKeyedBarrier(t *testing.T, rootKeyPath, passphrase string) *seal.Storage
 	if err != nil {
 		t.Fatalf("NewStorageBarrier(keyed): %v", err)
 	}
-	if err := b.Initialize(context.Background(), seal.MustCredentials([]byte(passphrase))); err != nil {
+	if err := b.Initialize(context.Background(), seal.MustCredentials(context.Background(), []byte(passphrase))); err != nil {
 		t.Fatalf("Initialize(keyed): %v", err)
 	}
 	return b

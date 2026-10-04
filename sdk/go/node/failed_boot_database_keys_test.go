@@ -32,7 +32,9 @@ import (
 func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 	ctx := context.Background()
 	cfg := sealClustered(newRaftIsolationConfig(t))
-	creds := func() seal.Credentials { return seal.MustCredentials([]byte("failed-boot-db-keys")) }
+	creds := func() seal.Credentials {
+		return seal.MustCredentials(context.Background(), []byte("failed-boot-db-keys"))
+	}
 
 	n, err := NewClusteredNode(ctx, cfg, raftMembers(), nil,
 		WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
@@ -56,7 +58,7 @@ func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 			TenantID: "acme", Name: "secure", Engine: database.EngineKV, Backend: database.BackendMemory,
 			DataDir: t.TempDir(),
 			Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
-		}, seal.MustCredentials([]byte("db-pass-123456"))); err != nil {
+		}, seal.MustCredentials(context.Background(), []byte("db-pass-123456"))); err != nil {
 			t.Errorf("create the database mid-boot: %v", err)
 		}
 		if st, err := bm.BarrierStatus("secure"); err != nil || st.Sealed {

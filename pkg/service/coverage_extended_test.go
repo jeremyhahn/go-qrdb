@@ -532,7 +532,7 @@ func TestDatabaseService_UpdateBarrierForTenant_Success(t *testing.T) {
 	cfg.TenantID = "tenant-barrier"
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
+	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), []byte("s3cret"))); err != nil {
 		t.Fatalf("CreateWithCredentials() error: %v", err)
 	}
 
@@ -560,7 +560,7 @@ func TestDatabaseService_UpdateBarrierForTenant_SystemTenantRoutesToAdmin(t *tes
 	cfg := testDBConfig("sys-barrier-db")
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateForTenantWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
+	if _, err := svc.CreateForTenantWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), []byte("s3cret"))); err != nil {
 		t.Fatalf("CreateForTenantWithCredentials() as system error: %v", err)
 	}
 	info, err := svc.UpdateBarrierForTenant(context.Background(), "sys-barrier-db", &database.DatabaseBarrierConfig{

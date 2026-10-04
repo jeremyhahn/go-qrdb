@@ -276,7 +276,7 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 			SharesTotal:    req.Barrier.SharesTotal,
 		}
 		var err error
-		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+		if creds, err = seal.CredentialsFor(r.Context(), []byte(req.Barrier.Secret)); err != nil {
 			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}

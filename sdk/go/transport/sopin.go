@@ -80,7 +80,7 @@ func WithSOPIN(ctx context.Context, pin []byte) (context.Context, func(), error)
 	}
 	// NewSecret consumes its argument, so it is handed a copy: the caller's
 	// buffer stays the caller's.
-	sealed, err := secure.NewSecret(append([]byte(nil), pin...))
+	sealed, err := secure.NewSecret(ctx, append([]byte(nil), pin...))
 	if err != nil {
 		return ctx, func() {}, err
 	}
@@ -109,7 +109,7 @@ func SOPINFromContext(ctx context.Context) ([]byte, bool, error) {
 	if held.pin == nil {
 		return nil, false, nil
 	}
-	buf, err := held.pin.Open()
+	buf, err := held.pin.Open(ctx)
 	if err != nil {
 		return nil, false, err
 	}

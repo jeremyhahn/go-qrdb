@@ -879,7 +879,7 @@ func (h *holderScope) distribute(ctx context.Context, secret *secure.Buffer, ros
 			staged.DestroyAll()
 			return 0, err
 		}
-		if err := staged.Store(holder.Username, envelope); err != nil {
+		if err := staged.Store(ctx, holder.Username, envelope); err != nil {
 			staged.DestroyAll()
 			return 0, &ShareStoreError{Err: err}
 		}
@@ -1064,7 +1064,7 @@ func (h *holderScope) claim(ctx context.Context, username, nonceHex string, sign
 	if err := admit(rec.ShareIndex); err != nil {
 		return nil, err
 	}
-	envelope, err := h.store.Claim(username)
+	envelope, err := h.store.Claim(ctx, username)
 	if err != nil {
 		return nil, err
 	}

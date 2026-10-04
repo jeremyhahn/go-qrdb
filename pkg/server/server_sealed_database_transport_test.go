@@ -40,7 +40,7 @@ import (
 func newSealedDBBarrierManager(t *testing.T) *database.DatabaseBarrierManager {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	strategy, err := seal.NewSoftwareStrategy([]byte("sealed-db-transport-test"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("sealed-db-transport-test"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

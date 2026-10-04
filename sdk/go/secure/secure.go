@@ -266,11 +266,13 @@ func GuardBorrows(report func(format string, args ...any)) (stop func()) {
 }
 
 // NewSecret is the SDK re-export of secure.NewSecret.
-func NewSecret(src []byte) (*Secret, error) { return secure.NewSecret(src) }
+func NewSecret(ctx context.Context, src []byte) (*Secret, error) {
+	return secure.NewSecret(ctx, src)
+}
 
 // NewSecretFromBuffer is the SDK re-export of secure.NewSecretFromBuffer.
-func NewSecretFromBuffer(buf *Buffer) (*Secret, error) {
-	return secure.NewSecretFromBuffer(buf)
+func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
+	return secure.NewSecretFromBuffer(ctx, buf)
 }
 
 // NewBuffer is the SDK re-export of secure.NewBuffer.
@@ -354,4 +356,9 @@ func ProcessAllocator() (*Allocator, error) { return enclave.ProcessAllocator() 
 // It belongs to the BINARY, called on orderly shutdown (deferred at startup,
 // as cmd/qrdbd/start.go's runStart does) so the process's mlocked memory is
 // swept on every exit path. Library code in this repository never calls it.
-func WipeAll() (int, error) { return enclave.WipeAll() }
+//
+// ctx bounds the sweep: it is waited for while a borrow is held, while a
+// contended lock is retried, and while admission for a concurrent sweep is
+// queued. Give a shutdown sweep a deadline taken at shutdown rather than
+// context.Background(), which waits as long as the borrows it owes take.
+func WipeAll(ctx context.Context) (int, error) { return enclave.WipeAll(ctx) }

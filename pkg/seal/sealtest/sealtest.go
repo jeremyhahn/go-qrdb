@@ -45,11 +45,15 @@ func Plaintext(tb testing.TB, creds seal.Credentials) []byte {
 	if creds.Secret == nil {
 		return nil
 	}
-	opened, err := creds.Secret.Open()
+	opened, err := creds.Secret.Open(tb.Context())
 	if err != nil {
 		tb.Fatalf("sealtest: open credential secret: %v", err)
 	}
-	defer opened.Destroy()
+	defer func() {
+		if derr := opened.Destroy(); derr != nil {
+			tb.Logf("sealtest: releasing the opened credential enclave reported a non-fatal problem: %v", derr)
+		}
+	}()
 	// A COPY, taken under the borrow: MemoryEnclave.Open returns a view of
 	// the locked pages, and the Destroy above unmaps them on return.
 	var b []byte
@@ -72,11 +76,16 @@ func Snapshot(creds seal.Credentials) []byte {
 	if creds.Secret == nil {
 		return nil
 	}
-	opened, err := creds.Secret.Open()
+	opened, err := creds.Secret.Open(context.Background())
 	if err != nil {
 		panic("sealtest: open credential secret: " + err.Error())
 	}
-	defer opened.Destroy()
+	defer func() {
+		if derr := opened.Destroy(); derr != nil {
+			slog.Warn("sealtest: releasing the opened credential enclave reported a non-fatal problem",
+				slog.String("error", derr.Error()))
+		}
+	}()
 	var b []byte
 	if err := opened.WithBytes(func(view []byte) error {
 		b = append([]byte(nil), view...)
@@ -94,7 +103,8 @@ func Snapshot(creds seal.Credentials) []byte {
 func UnsealedBarrier(tb testing.TB) *seal.StorageBarrier {
 	tb.Helper()
 	const passphrase = "sealtest-unsealed-barrier"
-	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	ctx := tb.Context()
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte(passphrase))
 	if err != nil {
 		tb.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -103,12 +113,12 @@ func UnsealedBarrier(tb testing.TB) *seal.StorageBarrier {
 	if err != nil {
 		tb.Fatalf("NewStorageBarrier: %v", err)
 	}
-	creds := seal.MustCredentials([]byte(passphrase))
-	if err := barrier.Initialize(context.Background(), creds); err != nil {
+	creds := seal.MustCredentials(ctx, []byte(passphrase))
+	if err := barrier.Initialize(ctx, creds); err != nil {
 		tb.Fatalf("barrier.Initialize: %v", err)
 	}
 	if barrier.IsSealed() {
-		if err := barrier.Unseal(context.Background(), creds); err != nil {
+		if err := barrier.Unseal(ctx, creds); err != nil {
 			tb.Fatalf("barrier.Unseal: %v", err)
 		}
 	}

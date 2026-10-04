@@ -123,7 +123,7 @@ func (r *refusingTrail) Close() error { return nil }
 // barrier operation's outcome as it was.
 func TestComplianceAuditLogger_RefusedRecordDoesNotFailTheBarrier(t *testing.T) {
 	trail := &refusingTrail{}
-	strategy, err := NewSoftwareStrategy([]byte("compliance-passphrase"))
+	strategy, err := NewSoftwareStrategy(context.Background(), []byte("compliance-passphrase"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestComplianceAuditLogger_RefusedRecordDoesNotFailTheBarrier(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Initialize(context.Background(), MustCredentials([]byte("compliance-passphrase"))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("compliance-passphrase"))); err != nil {
 		t.Fatalf("Initialize with a refusing trail = %v", err)
 	}
 	if trail.calls == 0 {

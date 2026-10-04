@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -29,7 +30,7 @@ import (
 // binary-wide doubles (installTestSecureLifecycle); this layers a further,
 // per-test override on top so an individual test can inject a failure
 // without disturbing every other test that shares the process.
-func swapSecureLifecycle(t *testing.T, newAlloc func(int64) (*secure.Allocator, error), setAlloc func(*secure.Allocator) error, processAlloc func() (*secure.Allocator, error), wipe func() (int, error)) {
+func swapSecureLifecycle(t *testing.T, newAlloc func(int64) (*secure.Allocator, error), setAlloc func(*secure.Allocator) error, processAlloc func() (*secure.Allocator, error), wipe func(context.Context) (int, error)) {
 	t.Helper()
 	prevNew, prevSet, prevProcess, prevWipe := newSecureAllocator, setSecureAllocator, processSecureAllocator, wipeSecureMemory
 	if newAlloc != nil {
@@ -159,7 +160,7 @@ func TestRunStart_SecureMemoryAllocatorAlreadyInstalledIsNotFatal(t *testing.T) 
 		func(int64) (*secure.Allocator, error) { return nil, nil },
 		func(*secure.Allocator) error { return secure.ErrAllocatorInstalled },
 		func() (*secure.Allocator, error) { return installed, nil },
-		func() (int, error) { return 0, nil },
+		func(context.Context) (int, error) { return 0, nil },
 	)
 
 	err := runStart(&startFlags{secureMemoryBudgetMiB: budgetMiB, host: testBindHost})
@@ -236,7 +237,7 @@ func TestRunStart_SecureMemorySetAllocatorOtherErrorIsFatal(t *testing.T) {
 // surface as the caller's error — a silently discarded remaining count is
 // exactly what go-qrdb#114's review flagged.
 func TestRecordSecureMemoryWipe_IncompleteOnCleanRunSurfacesAsError(t *testing.T) {
-	swapSecureLifecycle(t, nil, nil, nil, func() (int, error) { return 3, nil })
+	swapSecureLifecycle(t, nil, nil, nil, func(context.Context) (int, error) { return 3, nil })
 
 	var err error
 	recordSecureMemoryWipe(&err)
@@ -254,7 +255,7 @@ func TestRecordSecureMemoryWipe_IncompleteOnCleanRunSurfacesAsError(t *testing.T
 // the same way, independently of the remaining count.
 func TestRecordSecureMemoryWipe_CorruptionSurfacesAsError(t *testing.T) {
 	sentinel := errors.New("enclave corrupted")
-	swapSecureLifecycle(t, nil, nil, nil, func() (int, error) { return 0, sentinel })
+	swapSecureLifecycle(t, nil, nil, nil, func(context.Context) (int, error) { return 0, sentinel })
 
 	var err error
 	recordSecureMemoryWipe(&err)
@@ -272,7 +273,7 @@ func TestRecordSecureMemoryWipe_CorruptionSurfacesAsError(t *testing.T) {
 // (nil) error.
 func TestRecordSecureMemoryWipe_CleanDoesNotMaskSuccess(t *testing.T) {
 	var wipeCalled bool
-	swapSecureLifecycle(t, nil, nil, nil, func() (int, error) { wipeCalled = true; return 0, nil })
+	swapSecureLifecycle(t, nil, nil, nil, func(context.Context) (int, error) { wipeCalled = true; return 0, nil })
 
 	var err error
 	recordSecureMemoryWipe(&err)
@@ -289,7 +290,7 @@ func TestRecordSecureMemoryWipe_CleanDoesNotMaskSuccess(t *testing.T) {
 // must not override the original failure — that is the one the caller needs
 // to act on.
 func TestRecordSecureMemoryWipe_DoesNotOverwriteAnExistingError(t *testing.T) {
-	swapSecureLifecycle(t, nil, nil, nil, func() (int, error) { return 5, nil })
+	swapSecureLifecycle(t, nil, nil, nil, func(context.Context) (int, error) { return 5, nil })
 
 	original := errors.New("resolveTLS: boom")
 	err := original

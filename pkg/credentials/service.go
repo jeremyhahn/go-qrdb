@@ -166,7 +166,7 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 
 	switch s.strategy {
 	case StrategyManual:
-		if err := s.storeManual(name, value); err != nil {
+		if err := s.storeManual(ctx, name, value); err != nil {
 			return err
 		}
 	case StrategyBarrier:
@@ -215,7 +215,7 @@ func (s *CredentialService) SubmitCredential(ctx context.Context, name string, v
 		return s.StoreCredential(ctx, name, value)
 	}
 
-	if err := s.submitManual(name, value); err != nil {
+	if err := s.submitManual(ctx, name, value); err != nil {
 		return err
 	}
 	s.emitAudit(ctx, "submit", name, nil)
@@ -262,10 +262,10 @@ func (s *CredentialService) AutoUnsealAvailable() bool {
 
 // newSecretCopy seals a copy of value into a go-enclave sealed enclave. The
 // caller's value is left intact (a throwaway copy is what NewSecret wipes).
-func newSecretCopy(value []byte) (*secure.Secret, error) {
+func newSecretCopy(ctx context.Context, value []byte) (*secure.Secret, error) {
 	tmp := make([]byte, len(value))
 	copy(tmp, value)
-	return secure.NewSecret(tmp) // wipes tmp
+	return secure.NewSecret(ctx, tmp) // wipes tmp
 }
 
 // openSecretCopy materializes a sealed secret's plaintext into a fresh
@@ -285,8 +285,8 @@ func newSecretCopy(value []byte) (*secure.Secret, error) {
 // Traced callees: secure.CopyOut's callback is make + copy and reaches nothing
 // in pkg/secure. Asserted under the borrow guard by
 // TestOpenSecretCopy_TakesNoNestedBorrow.
-func openSecretCopy(sec *secure.Secret) ([]byte, error) {
-	buf, err := sec.Open()
+func openSecretCopy(ctx context.Context, sec *secure.Secret) ([]byte, error) {
+	buf, err := sec.Open(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -296,8 +296,8 @@ func openSecretCopy(sec *secure.Secret) ([]byte, error) {
 
 // storeManual seals a credential into an in-memory go-enclave sealed enclave.
 // Any prior enclave for the same name is destroyed first.
-func (s *CredentialService) storeManual(name string, value []byte) error {
-	sec, err := newSecretCopy(value)
+func (s *CredentialService) storeManual(ctx context.Context, name string, value []byte) error {
+	sec, err := newSecretCopy(ctx, value)
 	if err != nil {
 		return err
 	}
@@ -326,7 +326,7 @@ func (s *CredentialService) retrieveManual(ctx context.Context, name string) ([]
 	s.mu.RLock()
 	sec, ok := s.manualCreds[name]
 	if ok {
-		out, err := openSecretCopy(sec)
+		out, err := openSecretCopy(ctx, sec)
 		s.mu.RUnlock()
 		return out, err
 	}
@@ -393,8 +393,8 @@ func (s *CredentialService) retrieveBarrier(ctx context.Context, name string) ([
 // submitManual submits a credential to the in-memory map and notifies
 // all registered waiters. Returns ErrCredentialAlreadySubmitted if the
 // credential has already been stored.
-func (s *CredentialService) submitManual(name string, value []byte) error {
-	sec, err := newSecretCopy(value)
+func (s *CredentialService) submitManual(ctx context.Context, name string, value []byte) error {
+	sec, err := newSecretCopy(ctx, value)
 	if err != nil {
 		return err
 	}

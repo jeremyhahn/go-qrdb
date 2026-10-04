@@ -109,7 +109,7 @@ type SecretValue struct {
 // a SecretValue whose accessors report empty, which a caller cannot tell
 // apart from a reference that legitimately resolves to nothing (go-qrdb#114
 // review).
-func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) (*SecretValue, error) {
+func NewSecretValue(ctx context.Context, raw string, value []byte, strategy ResolvedStrategy) (*SecretValue, error) {
 	sv := &SecretValue{Raw: raw, Strategy: strategy}
 	if len(value) == 0 {
 		return sv, nil
@@ -119,7 +119,7 @@ func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) (*Secre
 	// which is guarded above, or on a sealing failure, handled below.
 	cp := make([]byte, len(value))
 	copy(cp, value)
-	s, err := secure.NewSecret(cp)
+	s, err := secure.NewSecret(ctx, cp)
 	if err != nil {
 		return nil, &SealFailedError{Ref: redactRaw(raw, strategy), Err: err}
 	}
@@ -151,11 +151,11 @@ func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) (*Secre
 // every enclave its own independent lock, which is what removed the
 // process-wide contention the earlier, memguard-era version of this method
 // was written to avoid (go-qrdb#74, #145): that concern does not apply here.
-func (v *SecretValue) WithBytes(fn func([]byte) error) error {
+func (v *SecretValue) WithBytes(ctx context.Context, fn func([]byte) error) error {
 	if v.secret == nil {
 		return fn(nil)
 	}
-	buf, err := v.secret.Open()
+	buf, err := v.secret.Open(ctx)
 	if err != nil {
 		return err
 	}
@@ -166,11 +166,11 @@ func (v *SecretValue) WithBytes(fn func([]byte) error) error {
 // Open decrypts the secret into a new mlocked Buffer that the CALLER must
 // Destroy. Returns (nil, nil) for an empty value. Prefer WithBytes unless the
 // buffer must outlive a single callback.
-func (v *SecretValue) Open() (*secure.Buffer, error) {
+func (v *SecretValue) Open(ctx context.Context) (*secure.Buffer, error) {
 	if v.secret == nil {
 		return nil, nil
 	}
-	return v.secret.Open()
+	return v.secret.Open(ctx)
 }
 
 // Bytes materializes the plaintext into a NEW garbage-collected slice and
@@ -187,7 +187,12 @@ func (v *SecretValue) Bytes() []byte {
 	if v.secret == nil {
 		return nil
 	}
-	buf, err := v.secret.Open()
+	// Bytes predates context threading and keeps its established signature —
+	// it is deprecated and slated for removal in the stack's coordinated
+	// breaking release, not a request-path entry point a caller can hand a
+	// context into. The open is in-process AEAD work with no key-provider
+	// call for the strategies this package composes with.
+	buf, err := v.secret.Open(context.Background())
 	if err != nil {
 		return nil
 	}
@@ -230,7 +235,9 @@ func (v *SecretValue) String() string {
 	// result somewhere — the config walker above all — calls readString and
 	// fails closed instead, so an unreadable secret is never recorded as a
 	// resolved empty one.
-	s, _ := v.readString()
+	// String implements fmt.Stringer, whose signature is fixed — it cannot
+	// accept a context. Like Bytes, it is deprecated.
+	s, _ := v.readString(context.Background())
 	return s
 }
 
@@ -246,11 +253,11 @@ func (v *SecretValue) String() string {
 // empty source, which is what lets this tell "unmapped mid-read" from "an
 // empty secret". The intermediate slice is wiped; the string it produces can
 // never be, which is the exposure String is deprecated for.
-func (v *SecretValue) readString() (string, error) {
+func (v *SecretValue) readString(ctx context.Context) (string, error) {
 	if v.secret == nil {
 		return "", nil
 	}
-	buf, err := v.secret.Open()
+	buf, err := v.secret.Open(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -469,7 +476,7 @@ func (r *ResolverRegistry) Resolve(ctx context.Context, raw string) (*SecretValu
 	// scheme (owned by qrdb) is stripped so an operator can force-quote a value
 	// that would otherwise look like a secret reference; a bare value is used
 	// verbatim. Either way the result is tagged StrategyLiteral.
-	return NewSecretValue(raw, []byte(literalValue(raw)), StrategyLiteral)
+	return NewSecretValue(ctx, raw, []byte(literalValue(raw)), StrategyLiteral)
 }
 
 // IsSecretURI reports whether raw is a resolvable reference: either a

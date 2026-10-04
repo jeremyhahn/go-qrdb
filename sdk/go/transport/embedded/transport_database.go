@@ -75,7 +75,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	var creds seal.Credentials
 	if req.Barrier != nil {
 		var err error
-		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+		if creds, err = seal.CredentialsFor(ctx, []byte(req.Barrier.Secret)); err != nil {
 			return nil, err
 		}
 		defer creds.Secret.Destroy()

@@ -195,7 +195,7 @@ func TestNode_TenantIsolation_EnableEncryption(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("tenant-pass-beta")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("tenant-pass-beta")),
 	}
 	require.NoError(t, n.EnableEncryption(ctx,
 		service.BarrierScope{Kind: service.ScopeTenant, TenantID: "beta"}, opts),
@@ -425,7 +425,7 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("tenant-pass-beta")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("tenant-pass-beta")),
 	}
 	require.NoError(t, n.EnableEncryption(ctx,
 		service.BarrierScope{Kind: service.ScopeTenant, TenantID: "beta"}, opts),

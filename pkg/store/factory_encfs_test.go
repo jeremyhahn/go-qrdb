@@ -126,7 +126,7 @@ func newTestBarrier(t *testing.T, _ string) *seal.StorageBarrier {
 	ctx := context.Background()
 	memBackend := seal.NewMemoryBackend()
 	const passphrase = "factory-encfs-test-passphrase"
-	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte(passphrase))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -138,7 +138,7 @@ func newTestBarrier(t *testing.T, _ string) *seal.StorageBarrier {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	creds := seal.MustCredentials([]byte(passphrase))
+	creds := seal.MustCredentials(context.Background(), []byte(passphrase))
 	if err := barrier.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}

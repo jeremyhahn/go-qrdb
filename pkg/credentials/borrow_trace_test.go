@@ -32,13 +32,13 @@ func TestOpenSecretCopy_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
 	const material = "a credential worth protecting"
-	sec, err := newSecretCopy([]byte(material))
+	sec, err := newSecretCopy(t.Context(), []byte(material))
 	if err != nil {
 		t.Fatalf("newSecretCopy: %v", err)
 	}
 	defer sec.Destroy()
 
-	out, err := openSecretCopy(sec)
+	out, err := openSecretCopy(t.Context(), sec)
 	if err != nil {
 		t.Fatalf("openSecretCopy: %v", err)
 	}
@@ -56,13 +56,13 @@ func TestOpenSecretCopy_TakesNoNestedBorrow(t *testing.T) {
 func TestOpenSecretCopy_DestroyedSecretDoesNotBorrowNested(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	sec, err := newSecretCopy([]byte("about to be destroyed"))
+	sec, err := newSecretCopy(t.Context(), []byte("about to be destroyed"))
 	if err != nil {
 		t.Fatalf("newSecretCopy: %v", err)
 	}
 	sec.Destroy()
 
-	out, err := openSecretCopy(sec)
+	out, err := openSecretCopy(t.Context(), sec)
 	if err == nil {
 		t.Fatal("openSecretCopy on a destroyed secret returned no error")
 	}

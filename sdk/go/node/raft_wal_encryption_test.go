@@ -93,7 +93,7 @@ func singleMemberClustered(t *testing.T, sealed bool) (*Node, *qrdbconfig.Config
 	}
 	t.Cleanup(func() { _ = n.Close() })
 	if sealed {
-		if err := n.Unseal(context.Background(), seal.MustCredentials([]byte("wal-encryption-test"))); err != nil {
+		if err := n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte("wal-encryption-test"))); err != nil {
 			t.Fatalf("Unseal: %v", err)
 		}
 	}
@@ -168,7 +168,7 @@ func TestClusteredNode_ThreeSealedReplicasFormAndKeepKVOutOfTheWAL(t *testing.T)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = n.Unseal(context.Background(), seal.MustCredentials([]byte("wal-encryption-test")))
+			errs[i] = n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte("wal-encryption-test")))
 		}()
 	}
 	wg.Wait()
@@ -218,7 +218,7 @@ func TestClusteredNode_PlaintextEraWALIsRefusedUnderABarrier(t *testing.T) {
 		t.Fatalf("NewClusteredNode: %v", err)
 	}
 	t.Cleanup(func() { _ = n.Close() })
-	err = n.Unseal(context.Background(), seal.MustCredentials([]byte("wal-encryption-test")))
+	err = n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte("wal-encryption-test")))
 	var formatErr *database.RaftWALFormatError
 	if !errors.As(err, &formatErr) {
 		t.Fatalf("Unseal err = %T (%v), want *database.RaftWALFormatError", err, err)

@@ -64,7 +64,7 @@ func TestOpenWatch_EndsWhenClusterSealed(t *testing.T) {
 func clusterSealServer(t *testing.T, cs *testClusterSeal) *Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	strategy, err := seal.NewSoftwareStrategy([]byte("cluster-seal-transport"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("cluster-seal-transport"))
 	if err != nil {
 		t.Fatal(err)
 	}

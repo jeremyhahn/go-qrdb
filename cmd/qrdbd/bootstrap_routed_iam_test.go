@@ -67,7 +67,7 @@ func newBarrierIAMFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierReg
 		t.Fatalf("pool Register: %v", err)
 	}
 
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("barrier-iam-system-pass"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("barrier-iam-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

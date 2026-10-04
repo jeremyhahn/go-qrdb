@@ -61,7 +61,7 @@ func newGuardedTestBarrier(t *testing.T, base StorageBackend) *StorageBarrier {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := b.Initialize(context.Background(), MustCredentials([]byte("test-password"))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("test-password"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	return b

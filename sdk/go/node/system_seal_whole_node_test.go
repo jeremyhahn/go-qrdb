@@ -47,7 +47,7 @@ func addBothTenantKinds(t *testing.T, n *Node) {
 	if _, err := reg.RegisterTenantDefault("self"); err != nil {
 		t.Fatalf("register self: %v", err)
 	}
-	if err := reg.InitializeTenant(ctx, "self", seal.MustCredentials([]byte("self-pass"))); err != nil {
+	if err := reg.InitializeTenant(ctx, "self", seal.MustCredentials(context.Background(), []byte("self-pass"))); err != nil {
 		t.Fatalf("initialize self: %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestClusteredNode_ClusterSealSealsTheWholeNode(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = n.Unseal(context.Background(), seal.MustCredentials([]byte("wal-encryption-test")))
+			errs[i] = n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte("wal-encryption-test")))
 		}()
 	}
 	wg.Wait()

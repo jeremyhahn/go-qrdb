@@ -87,7 +87,7 @@ func TestServeSealedWindow_ReturnsOnUnseal(t *testing.T) {
 
 	// Drive the unseal the way an operator would through the barrier API
 	// (Initialize on a fresh barrier both initializes and unseals it).
-	creds := seal.MustCredentials([]byte("window-passphrase"))
+	creds := seal.MustCredentials(context.Background(), []byte("window-passphrase"))
 	initErr := n.barrier.Load().Initialize(context.Background(), creds)
 	if initErr != nil && !errors.Is(initErr, seal.ErrAlreadyInitialized) {
 		t.Fatalf("barrier initialize: %v", initErr)

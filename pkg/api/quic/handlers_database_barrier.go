@@ -54,7 +54,7 @@ func (s *Server) handleDatabaseUnseal(ctx context.Context, payload []byte) ([]by
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	creds, err := seal.CredentialsFor([]byte(req.GetSecret()))
+	creds, err := seal.CredentialsFor(ctx, []byte(req.GetSecret()))
 	if err != nil {
 		return nil, err
 	}

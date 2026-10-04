@@ -9,6 +9,7 @@
 package secure
 
 import (
+	"context"
 	"crypto/rand"
 	"testing"
 )
@@ -21,7 +22,7 @@ func BenchmarkSecret_OpenDestroy(b *testing.B) {
 	if _, err := rand.Read(key); err != nil {
 		b.Fatalf("rand.Read: %v", err)
 	}
-	sec, err := NewSecret(key)
+	sec, err := NewSecret(context.Background(), key)
 	if err != nil {
 		b.Fatalf("NewSecret: %v", err)
 	}
@@ -30,7 +31,7 @@ func BenchmarkSecret_OpenDestroy(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buf, err := sec.Open()
+		buf, err := sec.Open(context.Background())
 		if err != nil {
 			b.Fatalf("Open: %v", err)
 		}
@@ -59,7 +60,7 @@ func BenchmarkNewSecret(b *testing.B) {
 		if _, err := rand.Read(key); err != nil {
 			b.Fatalf("rand.Read: %v", err)
 		}
-		sec, err := NewSecret(key)
+		sec, err := NewSecret(context.Background(), key)
 		if err != nil {
 			b.Fatalf("NewSecret: %v", err)
 		}

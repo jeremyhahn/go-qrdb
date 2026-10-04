@@ -170,7 +170,7 @@ func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) 
 	ctx := context.Background()
 
 	sysBackend := seal.NewMemoryBackend()
-	sysStrategy, err := seal.NewSoftwareStrategy([]byte("sys-pass"))
+	sysStrategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("sys-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := sysBarrier.Initialize(ctx, seal.MustCredentials([]byte("sys-pass"))); err != nil {
+	if err := sysBarrier.Initialize(ctx, seal.MustCredentials(context.Background(), []byte("sys-pass"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	registry, err := seal.NewBarrierRegistry(logger, sysBarrier)
@@ -188,7 +188,7 @@ func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) 
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 	tenantBackend := seal.NewMemoryBackend()
-	tenantStrategy, err := seal.NewSoftwareStrategy([]byte("tenant-pass"))
+	tenantStrategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("tenant-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy (tenant): %v", err)
 	}
@@ -197,7 +197,7 @@ func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) 
 		t.Fatalf("RegisterTenant: %v", err)
 	}
 	// Initialize and unseal the tenant barrier so the service builds OK.
-	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials([]byte("tenant-pass"))); err != nil {
+	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials(context.Background(), []byte("tenant-pass"))); err != nil {
 		t.Fatalf("Initialize tenant: %v", err)
 	}
 

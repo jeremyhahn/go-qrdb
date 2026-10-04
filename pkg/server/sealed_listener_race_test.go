@@ -64,7 +64,7 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 	defer cancel()
 
 	secret := []byte("sealed-window-race-passphrase-32b")
-	sw, err := seal.NewSoftwareStrategy([]byte("test-master-key-32bytes!abcdefgh"))
+	sw, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-key-32bytes!abcdefgh"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

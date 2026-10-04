@@ -22,7 +22,7 @@ import (
 // suitable as the unseal authority for SystemBarrierStrategy tests.
 func newUnsealedSystemBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
-	strategy, err := NewSoftwareStrategy([]byte("system-master-pass"))
+	strategy, err := NewSoftwareStrategy(context.Background(), []byte("system-master-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestSystemBarrierStrategy_UnsealRootKey_WrongStrategy(t *testing.T) {
 		t.Fatalf("rand.Read: %v", err)
 	}
 	// Seal with the software strategy, which produces a StrategyPassphrase sealed key.
-	sw, err := NewSoftwareStrategy([]byte("passphrase"))
+	sw, err := NewSoftwareStrategy(context.Background(), []byte("passphrase"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

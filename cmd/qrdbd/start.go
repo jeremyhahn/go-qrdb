@@ -1021,6 +1021,14 @@ var (
 	wipeSecureMemory       = secure.WipeAll
 )
 
+// secureMemoryWipeTimeout bounds the shutdown sweep recordSecureMemoryWipe
+// runs. There is no caller context at process shutdown to inherit a deadline
+// from — this is the deliberate exception go-enclave's WipeAll documents:
+// give a shutdown sweep a deadline taken at shutdown rather than
+// context.Background() itself, which would wait as long as the borrows it
+// owes take.
+const secureMemoryWipeTimeout = 30 * time.Second
+
 // recordSecureMemoryWipe sweeps mlocked memory via wipeSecureMemory and
 // reports what it found. Split out of runStart, rather than inlined in its
 // defer, so it is unit-testable against a synthetic *error without driving
@@ -1034,7 +1042,9 @@ var (
 // caller checking runStart's return value cannot mistake an incomplete wipe
 // for success.
 func recordSecureMemoryWipe(err *error) {
-	remaining, werr := wipeSecureMemory()
+	ctx, cancel := context.WithTimeout(context.Background(), secureMemoryWipeTimeout)
+	defer cancel()
+	remaining, werr := wipeSecureMemory(ctx)
 	if remaining == 0 && werr == nil {
 		return
 	}

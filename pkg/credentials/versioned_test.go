@@ -354,7 +354,7 @@ func TestRetrieveCredentialVersion_HistoryWithoutStoredBytes(t *testing.T) {
 	// ErrVersionExpired.
 	svc := newManualService(t)
 	svc.ensureManualVersionStore()
-	curSec, err := newSecretCopy([]byte("current"))
+	curSec, err := newSecretCopy(context.Background(), []byte("current"))
 	if err != nil {
 		t.Fatalf("newSecretCopy: %v", err)
 	}

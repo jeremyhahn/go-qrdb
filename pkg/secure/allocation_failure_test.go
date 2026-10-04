@@ -16,6 +16,7 @@ package secure
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -245,7 +246,7 @@ func runSealUnderExhaustedBudgetChild() {
 		fail("probe allocation: %v, want ErrBudgetExhausted", perr)
 	}
 
-	sec, err := NewSecretFromBuffer(input)
+	sec, err := NewSecretFromBuffer(context.Background(), input)
 	if err != nil {
 		fail("NewSecretFromBuffer with the budget exhausted: %v -- "+
 			"it is admitting an intermediate plaintext copy", err)
@@ -257,7 +258,7 @@ func runSealUnderExhaustedBudgetChild() {
 
 	// Opening IS admitted; free the other page first.
 	spent.Destroy()
-	opened, err := sec.Open()
+	opened, err := sec.Open(context.Background())
 	if err != nil {
 		fail("Secret.Open: %v", err)
 	}

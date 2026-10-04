@@ -527,7 +527,7 @@ func TestLoadMigrationJournalReportsNoneAndThenTheJournal(t *testing.T) {
 func TestExportRootKeyContextRefusesASealedBarrier(t *testing.T) {
 	b := newSwapBarrier(t, "sys/root")
 
-	got, err := b.ExportRootKeyContext()
+	got, err := b.ExportRootKeyContext(context.Background())
 	if !errors.Is(err, ErrSealed) {
 		t.Fatalf("error = %v, want ErrSealed", err)
 	}
@@ -547,7 +547,7 @@ func TestExportRootKeyContextCarriesTheDerivationParameters(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	exported, err := b.ExportRootKeyContext()
+	exported, err := b.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -607,7 +607,7 @@ func TestImportRootKeyIsIdempotentOnAnInitializedBarrier(t *testing.T) {
 	if err := leader.Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("leader Initialize: %v", err)
 	}
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -633,7 +633,7 @@ func TestChangePasswordRefusesBeforeItTouchesKeyMaterial(t *testing.T) {
 
 	t.Run("sealed barrier", func(t *testing.T) {
 		b := newSwapBarrier(t, "sys/root")
-		if err := b.ChangePassword(ctx, MustCredentials([]byte("new-passphrase"))); !errors.Is(err, ErrSealed) {
+		if err := b.ChangePassword(ctx, MustCredentials(context.Background(), []byte("new-passphrase"))); !errors.Is(err, ErrSealed) {
 			t.Fatalf("error = %v, want ErrSealed", err)
 		}
 	})

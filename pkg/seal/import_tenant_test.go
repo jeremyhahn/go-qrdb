@@ -78,7 +78,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 		t.Fatalf("Initialize(leader tenant): %v", err)
 	}
 
-	exported, err := leaderTB.Barrier().ExportRootKeyContext()
+	exported, err := leaderTB.Barrier().ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 	}
 
 	// Master key on the follower must match the exported root key.
-	followerKey, err := followerTB.Barrier().GetMasterKey()
+	followerKey, err := followerTB.Barrier().GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey(follower): %v", err)
 	}
@@ -144,7 +144,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T
 		t.Fatalf("Encrypt(leader): %v", err)
 	}
 
-	exported, err := leaderTB.Barrier().ExportRootKeyContext()
+	exported, err := leaderTB.Barrier().ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("Initialize(idem-leader): %v", err)
 	}
-	exported, err := leaderTB.Barrier().ExportRootKeyContext()
+	exported, err := leaderTB.Barrier().ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}

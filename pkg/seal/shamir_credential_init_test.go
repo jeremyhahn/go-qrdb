@@ -29,7 +29,7 @@ import (
 // enrolled holders, may initialize one.
 func TestInitialize_RefusesShamirWithoutHolders(t *testing.T) {
 	ctx := context.Background()
-	creds, err := CredentialsFor([]byte("a passphrase that must not seed a shamir barrier"))
+	creds, err := CredentialsFor(context.Background(), []byte("a passphrase that must not seed a shamir barrier"))
 	if err != nil {
 		t.Fatal(err)
 	}

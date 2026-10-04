@@ -30,7 +30,7 @@ import (
 // directly instead of through this helper.
 func mustSecretValue(t *testing.T, raw string, value []byte, strategy secret.ResolvedStrategy) *secret.SecretValue {
 	t.Helper()
-	sv, err := secret.NewSecretValue(raw, value, strategy)
+	sv, err := secret.NewSecretValue(t.Context(), raw, value, strategy)
 	if err != nil {
 		t.Fatalf("secret.NewSecretValue(%q, ..., %v): %v", raw, strategy, err)
 	}

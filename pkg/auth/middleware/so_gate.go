@@ -60,14 +60,14 @@ type SOFactor struct {
 // held. A failure to seal is recorded in the factor, and the gate refuses an
 // SO-gated request carrying it with *SOPINUnavailableError; a request the
 // gate does not cover is unaffected.
-func NewSOFactor(pin []byte, isSecure bool, clientIP string) SOFactor {
+func NewSOFactor(ctx context.Context, pin []byte, isSecure bool, clientIP string) SOFactor {
 	f := SOFactor{Secure: isSecure, ClientIP: clientIP}
 	if !isSecure || len(pin) == 0 {
 		secure.Wipe(pin)
 		return f
 	}
 	// NewSecret wipes pin on every path, including failure.
-	f.PIN, f.sealErr = secure.NewSecret(pin)
+	f.PIN, f.sealErr = secure.NewSecret(ctx, pin)
 	return f
 }
 
@@ -195,7 +195,7 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 
 	// A PIN the node cannot open is a node-side fault, refused before any
 	// verification outcome is audited: the officer's PIN was never judged.
-	pin, err := openSOPIN(factor.PIN)
+	pin, err := openSOPIN(ctx, factor.PIN)
 	if err != nil {
 		return err
 	}
@@ -238,8 +238,8 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 // across it, so the verifier -- an injected implementation that may itself
 // use protected memory -- never runs inside a borrow. A PIN that cannot be
 // opened is *SOPINUnavailableError.
-func openSOPIN(sealed *secure.Secret) ([]byte, error) {
-	buf, err := sealed.Open()
+func openSOPIN(ctx context.Context, sealed *secure.Secret) ([]byte, error) {
+	buf, err := sealed.Open(ctx)
 	if err != nil {
 		return nil, &SOPINUnavailableError{Err: err}
 	}

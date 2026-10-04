@@ -25,6 +25,7 @@ package secure_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -129,7 +130,7 @@ func TestGuardBorrows_ReportsAViolationThroughTheSDK(t *testing.T) {
 			_ = buf.WithBytes(func([]byte) error {
 				// Purge-class inside a borrow — the self-deadlock, which the
 				// armed guard turns into a report.
-				if s, secErr := securesdk.NewSecret([]byte("inside the borrow")); secErr == nil {
+				if s, secErr := securesdk.NewSecret(context.Background(), []byte("inside the borrow")); secErr == nil {
 					s.Destroy()
 				}
 				return nil

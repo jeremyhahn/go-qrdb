@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,13 +31,13 @@ func TestSealedShareStore_StoreAndClaim(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
 	shareData := []byte(`{"index":1,"value":"abc123"}`)
-	err := store.Store("alice", shareData)
+	err := store.Store(context.Background(), "alice", shareData)
 	require.NoError(t, err)
 
 	assert.True(t, store.Exists("alice"))
 	assert.False(t, store.Claimed("alice"))
 
-	claimed, err := store.Claim("alice")
+	claimed, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.NotEmpty(t, claimed)
 
@@ -48,20 +49,20 @@ func TestSealedShareStore_StoreAndClaim(t *testing.T) {
 func TestSealedShareStore_ClaimNonexistent(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	_, err := store.Claim("nobody")
+	_, err := store.Claim(context.Background(), "nobody")
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
 func TestSealedShareStore_DoubleClaim(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("bob", []byte(`{"index":2,"value":"def456"}`))
+	err := store.Store(context.Background(), "bob", []byte(`{"index":2,"value":"def456"}`))
 	require.NoError(t, err)
 
-	_, err = store.Claim("bob")
+	_, err = store.Claim(context.Background(), "bob")
 	require.NoError(t, err)
 
-	_, err = store.Claim("bob")
+	_, err = store.Claim(context.Background(), "bob")
 	assert.ErrorIs(t, err, ErrShareAlreadyClaimed)
 }
 
@@ -73,13 +74,13 @@ func TestSealedShareStore_ExistsAndClaimed(t *testing.T) {
 	assert.False(t, store.Claimed("charlie"))
 
 	// After storing: exists, not claimed.
-	err := store.Store("charlie", []byte(`{"share":"data"}`))
+	err := store.Store(context.Background(), "charlie", []byte(`{"share":"data"}`))
 	require.NoError(t, err)
 	assert.True(t, store.Exists("charlie"))
 	assert.False(t, store.Claimed("charlie"))
 
 	// After claiming: not exists, claimed.
-	_, err = store.Claim("charlie")
+	_, err = store.Claim(context.Background(), "charlie")
 	require.NoError(t, err)
 	assert.False(t, store.Exists("charlie"))
 	assert.True(t, store.Claimed("charlie"))
@@ -88,11 +89,11 @@ func TestSealedShareStore_ExistsAndClaimed(t *testing.T) {
 func TestSealedShareStore_DestroyAll(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("alice", []byte(`share-a`))
+	err := store.Store(context.Background(), "alice", []byte(`share-a`))
 	require.NoError(t, err)
-	err = store.Store("bob", []byte(`share-b`))
+	err = store.Store(context.Background(), "bob", []byte(`share-b`))
 	require.NoError(t, err)
-	err = store.Store("charlie", []byte(`share-c`))
+	err = store.Store(context.Background(), "charlie", []byte(`share-c`))
 	require.NoError(t, err)
 
 	assert.True(t, store.Exists("alice"))
@@ -109,11 +110,11 @@ func TestSealedShareStore_DestroyAll(t *testing.T) {
 func TestSealedShareStore_Reset_ClearsClaimHistory(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("alice", []byte(`share-round-1`))
+	err := store.Store(context.Background(), "alice", []byte(`share-round-1`))
 	require.NoError(t, err)
 
 	// Round 1 claim.
-	_, err = store.Claim("alice")
+	_, err = store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.True(t, store.Claimed("alice"))
 
@@ -124,9 +125,9 @@ func TestSealedShareStore_Reset_ClearsClaimHistory(t *testing.T) {
 	assert.False(t, store.Claimed("alice"))
 
 	// Round 2: store and claim succeed.
-	err = store.Store("alice", []byte(`share-round-2`))
+	err = store.Store(context.Background(), "alice", []byte(`share-round-2`))
 	require.NoError(t, err)
-	got, err := store.Claim("alice")
+	got, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.Equal(t, []byte(`share-round-2`), got)
 }
@@ -134,9 +135,9 @@ func TestSealedShareStore_Reset_ClearsClaimHistory(t *testing.T) {
 func TestSealedShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("alice", []byte(`share-a`))
+	err := store.Store(context.Background(), "alice", []byte(`share-a`))
 	require.NoError(t, err)
-	err = store.Store("bob", []byte(`share-b`))
+	err = store.Store(context.Background(), "bob", []byte(`share-b`))
 	require.NoError(t, err)
 
 	store.Reset()
@@ -146,16 +147,16 @@ func TestSealedShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
 
 	// Claiming after Reset without a fresh Store reports not-found (NOT
 	// already-claimed).
-	_, err = store.Claim("alice")
+	_, err = store.Claim(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
 func TestSealedShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("alice", []byte(`share-a`))
+	err := store.Store(context.Background(), "alice", []byte(`share-a`))
 	require.NoError(t, err)
-	_, err = store.Claim("alice")
+	_, err = store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 
 	store.DestroyAll()
@@ -167,15 +168,15 @@ func TestSealedShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
 func TestSealedShareStore_StoreMultipleClaimOne(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("alice", []byte(`share-alice`))
+	err := store.Store(context.Background(), "alice", []byte(`share-alice`))
 	require.NoError(t, err)
-	err = store.Store("bob", []byte(`share-bob`))
+	err = store.Store(context.Background(), "bob", []byte(`share-bob`))
 	require.NoError(t, err)
-	err = store.Store("charlie", []byte(`share-charlie`))
+	err = store.Store(context.Background(), "charlie", []byte(`share-charlie`))
 	require.NoError(t, err)
 
 	// Claim only alice.
-	_, err = store.Claim("alice")
+	_, err = store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 
 	// Alice claimed, bob and charlie still exist.
@@ -190,16 +191,16 @@ func TestSealedShareStore_StoreMultipleClaimOne(t *testing.T) {
 func TestSealedShareStore_StoreOverwrite(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 
-	err := store.Store("alice", []byte(`share-v1`))
+	err := store.Store(context.Background(), "alice", []byte(`share-v1`))
 	require.NoError(t, err)
 
 	// Overwrite with a new share.
-	err = store.Store("alice", []byte(`share-v2`))
+	err = store.Store(context.Background(), "alice", []byte(`share-v2`))
 	require.NoError(t, err)
 
 	assert.True(t, store.Exists("alice"))
 
-	claimed, err := store.Claim("alice")
+	claimed, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.NotEmpty(t, claimed)
 }
@@ -221,7 +222,7 @@ func TestSealedShareStore_ConsumesTheCallerSlice(t *testing.T) {
 	original := make([]byte, len(shareJSON))
 	copy(original, shareJSON)
 
-	require.NoError(t, store.Store("alice", shareJSON))
+	require.NoError(t, store.Store(context.Background(), "alice", shareJSON))
 
 	assert.NotEqual(t, original, shareJSON,
 		"Store must wipe the caller's slice; leaving the plaintext share on the heap "+
@@ -229,7 +230,7 @@ func TestSealedShareStore_ConsumesTheCallerSlice(t *testing.T) {
 
 	// And the enclaved copy must still be intact and correct, or the wipe above
 	// would be destroying the share rather than protecting it.
-	claimed, err := store.Claim("alice")
+	claimed, err := store.Claim(context.Background(), "alice")
 	require.NoError(t, err)
 	assert.Equal(t, original, claimed,
 		"the claimed share must equal what the caller supplied")
@@ -248,10 +249,10 @@ func TestSealedShareStore_ClaimDestroysTheEnclave(t *testing.T) {
 	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
-	require.NoError(t, store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`{"index":1,"value":"abc123"}`)))
 	require.True(t, store.Exists("alice"))
 
-	if _, err := store.Claim("alice"); err != nil {
+	if _, err := store.Claim(context.Background(), "alice"); err != nil {
 		t.Fatalf("first Claim: %v", err)
 	}
 
@@ -260,7 +261,7 @@ func TestSealedShareStore_ClaimDestroysTheEnclave(t *testing.T) {
 	assert.True(t, store.Claimed("alice"),
 		"the claim must still be recorded so a second attempt is refused rather than served")
 
-	_, err := store.Claim("alice")
+	_, err := store.Claim(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrShareAlreadyClaimed)
 }
 
@@ -321,7 +322,7 @@ func runShareStoreWipeAllChild() {
 	}
 
 	store := newSealedShareStore(DefaultShareTTL)
-	if err := store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)); err != nil {
+	if err := store.Store(context.Background(), "alice", []byte(`{"index":1,"value":"abc123"}`)); err != nil {
 		fail("Store: %v", err)
 	}
 	if !store.Exists("alice") {
@@ -331,11 +332,11 @@ func runShareStoreWipeAllChild() {
 	// Destroys every live enclave in the process, this share's included, and
 	// the process Sealer's keys along with it — terminal for this process,
 	// which is exactly why it runs here rather than in the parent binary.
-	if _, err := enclave.WipeAll(); err != nil {
+	if _, err := enclave.WipeAll(context.Background()); err != nil {
 		fail("enclave.WipeAll: %v", err)
 	}
 
-	if _, err := store.Claim("alice"); err == nil {
+	if _, err := store.Claim(context.Background(), "alice"); err == nil {
 		fail("a claim on swept material must not report success")
 	}
 	if store.Claimed("alice") {

@@ -260,7 +260,7 @@ func TestSealedWindowMount_UnsealClosesEveryMountedTransport(t *testing.T) {
 	code, _ := h.do(t, http.MethodGet, "/v1/barrier/status", nil)
 	require.Equal(t, http.StatusOK, code)
 
-	creds := seal.MustCredentials([]byte("mount-passphrase"))
+	creds := seal.MustCredentials(context.Background(), []byte("mount-passphrase"))
 	if err := h.node.barrier.Load().Initialize(context.Background(), creds); err != nil && !errors.Is(err, seal.ErrAlreadyInitialized) {
 		t.Fatalf("barrier initialize: %v", err)
 	}

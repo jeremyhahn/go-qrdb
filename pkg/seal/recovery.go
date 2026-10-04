@@ -57,7 +57,7 @@ func (b *StorageBarrier) GenerateRecoveryKeys(ctx context.Context, threshold int
 	if exists {
 		return nil, ErrRecoveryKeysExist
 	}
-	rootKey, err := b.masterKeyBuffer()
+	rootKey, err := b.masterKeyBuffer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 	// newRecoveryStrategyFromBuffer consumes rootKey, so the key never
 	// passes through an ordinary heap slice; Close destroys the strategy's
 	// protected copy, which Barrier.Unseal does not retain.
-	recStrat, err := newRecoveryStrategyFn(rootKey, delegate)
+	recStrat, err := newRecoveryStrategyFn(ctx, rootKey, delegate)
 	if err != nil {
 		return err
 	}
@@ -149,8 +149,8 @@ var newRecoveryStrategyFn = newRecoveryStrategyFromBuffer
 // already in protected memory. It CONSUMES rootKey -- sealing it into the
 // strategy's enclave destroys the buffer -- so the key never passes through an
 // ordinary heap slice on the way in.
-func newRecoveryStrategyFromBuffer(rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
-	sec, err := secure.NewSecretFromBuffer(rootKey)
+func newRecoveryStrategyFromBuffer(ctx context.Context, rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
+	sec, err := secure.NewSecretFromBuffer(ctx, rootKey)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirSplitFailed, Op: "protect recovery key", Cause: err}
 	}
@@ -166,7 +166,7 @@ func (r *recoveryStrategy) SealRootKey(_ context.Context, _ []byte, _ Credential
 	return nil, ErrAlreadyInitialized
 }
 
-func (r *recoveryStrategy) UnsealRootKey(_ context.Context, _ *SealedRootKey, _ Credentials) ([]byte, error) {
+func (r *recoveryStrategy) UnsealRootKey(ctx context.Context, _ *SealedRootKey, _ Credentials) ([]byte, error) {
 	// Borrow the protected key only for the moment it takes to hand a copy to
 	// Barrier.Unseal, which owns and wipes the returned slice. The enclave is
 	// re-sealed the instant the buffer is destroyed.
@@ -182,7 +182,7 @@ func (r *recoveryStrategy) UnsealRootKey(_ context.Context, _ *SealedRootKey, _ 
 	// Traced callees: CopyOut's callback is make + copy. Nothing here reaches a
 	// SealingStrategy or the store, which is what makes THIS site convertible
 	// while Recover's own rootKey read (recovery.go, above) is not.
-	buf, err := r.rootKey.Open()
+	buf, err := r.rootKey.Open(ctx)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "open recovery key", Cause: err}
 	}

@@ -60,7 +60,7 @@ func (s *mockHardwareStrategy) Available() bool      { return true }
 func (s *mockHardwareStrategy) HardwareBacked() bool { return true }
 
 func (s *mockHardwareStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error) {
-	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	sw, swErr := NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if swErr != nil {
 		return nil, swErr
 	}
@@ -68,7 +68,7 @@ func (s *mockHardwareStrategy) SealRootKey(ctx context.Context, rootKey []byte, 
 }
 
 func (s *mockHardwareStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
-	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	sw, swErr := NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if swErr != nil {
 		return nil, swErr
 	}
@@ -111,7 +111,7 @@ func (s *mockFailingSealStrategy) Available() bool      { return true }
 func (s *mockFailingSealStrategy) HardwareBacked() bool { return false }
 
 func (s *mockFailingSealStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error) {
-	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	sw, swErr := NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if swErr != nil {
 		return nil, swErr
 	}
@@ -119,7 +119,7 @@ func (s *mockFailingSealStrategy) SealRootKey(ctx context.Context, rootKey []byt
 }
 
 func (s *mockFailingSealStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
-	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	sw, swErr := NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if swErr != nil {
 		return nil, swErr
 	}
@@ -200,7 +200,7 @@ func (s *fakeShamirStrategy) Available() bool      { return true }
 func (s *fakeShamirStrategy) HardwareBacked() bool { return false }
 
 func (s *fakeShamirStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error) {
-	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	sw, swErr := NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if swErr != nil {
 		return nil, swErr
 	}
@@ -208,7 +208,7 @@ func (s *fakeShamirStrategy) SealRootKey(ctx context.Context, rootKey []byte, cr
 }
 
 func (s *fakeShamirStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
-	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	sw, swErr := NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if swErr != nil {
 		return nil, swErr
 	}
@@ -244,7 +244,7 @@ func newBarrierWithAudit(t *testing.T) (*Barrier, *mockAuditLogger) {
 func initBarrier(t *testing.T, b *Barrier) Credentials {
 	t.Helper()
 	ctx := context.Background()
-	creds := MustCredentials([]byte("test-password-123"))
+	creds := MustCredentials(context.Background(), []byte("test-password-123"))
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestNewBarrier_CustomPreferenceOrder(t *testing.T) {
 func TestBarrier_Initialize_Success(t *testing.T) {
 	b, audit := newBarrierWithAudit(t)
 	ctx := context.Background()
-	creds := MustCredentials([]byte("strong-password"))
+	creds := MustCredentials(context.Background(), []byte("strong-password"))
 
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -375,7 +375,7 @@ func TestBarrier_Status_InitializedAtPopulatedAfterInitialize(t *testing.T) {
 			pre.InitializedAt)
 	}
 
-	if err := b.Initialize(ctx, MustCredentials([]byte("strong-password"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("strong-password"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -395,7 +395,7 @@ func TestBarrier_Status_InitializedAtPopulatedAfterInitialize(t *testing.T) {
 func TestBarrier_Status_InitializedAtPopulatedAfterUnseal(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	ctx := context.Background()
-	creds := MustCredentials([]byte("unseal-test-password"))
+	creds := MustCredentials(context.Background(), []byte("unseal-test-password"))
 
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -430,7 +430,7 @@ func TestBarrier_Status_InitializedAtPersistsAcrossWarmBoot(t *testing.T) {
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
-	creds := MustCredentials([]byte("warm-boot-password"))
+	creds := MustCredentials(context.Background(), []byte("warm-boot-password"))
 
 	// First boot: initialize over the shared store and capture the timestamp.
 	first, err := NewStorageBarrier(testLogger(), store, cfg, testSoftwareStrategy(t))
@@ -505,7 +505,7 @@ func TestBarrier_Status_StrategyPersistsAcrossWarmBoot(t *testing.T) {
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
-	creds := MustCredentials([]byte("warm-boot-password"))
+	creds := MustCredentials(context.Background(), []byte("warm-boot-password"))
 
 	// First boot: initialize with the keyed passphrase strategy.
 	first, err := NewStorageBarrier(testLogger(), store, cfg, testSoftwareStrategy(t))
@@ -604,7 +604,7 @@ func TestBarrier_Status_StrategyNoneSelfDescribesAcrossWarmBoot(t *testing.T) {
 func TestBarrier_Initialize_AlreadyInitialized(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	ctx := context.Background()
-	creds := MustCredentials([]byte("test-password"))
+	creds := MustCredentials(context.Background(), []byte("test-password"))
 
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("first Initialize: %v", err)
@@ -627,7 +627,7 @@ func TestBarrier_Initialize_NoAvailableStrategy(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	err = b.Initialize(context.Background(), MustCredentials([]byte("pw")))
+	err = b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw")))
 	if err != ErrNoAvailableStrategy {
 		t.Fatalf("expected ErrNoAvailableStrategy, got %v", err)
 	}
@@ -659,7 +659,7 @@ func TestBarrier_Initialize_BasePutFails(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	err = b.Initialize(context.Background(), MustCredentials([]byte("pw")))
+	err = b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw")))
 	if err == nil {
 		t.Fatal("expected error from base.Put failure")
 	}
@@ -682,7 +682,7 @@ func TestBarrier_Initialize_BarrierEncryptorFails(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	err = b.Initialize(context.Background(), MustCredentials([]byte("pw")))
+	err = b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw")))
 	if err == nil {
 		t.Fatal("expected error from BarrierEncryptor failure")
 	}
@@ -697,7 +697,7 @@ func TestBarrier_Initialize_BarrierEncryptorFails(t *testing.T) {
 func TestBarrier_Unseal_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	ctx := context.Background()
-	creds := MustCredentials([]byte("unseal-password"))
+	creds := MustCredentials(context.Background(), []byte("unseal-password"))
 
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -732,7 +732,7 @@ func TestBarrier_Unseal_AlreadyUnsealed(t *testing.T) {
 
 func TestBarrier_Unseal_NotInitialized(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	err := b.Unseal(context.Background(), MustCredentials([]byte("pw")))
+	err := b.Unseal(context.Background(), MustCredentials(context.Background(), []byte("pw")))
 	if err != ErrNotInitialized {
 		t.Fatalf("expected ErrNotInitialized, got %v", err)
 	}
@@ -750,7 +750,7 @@ func TestBarrier_Unseal_InvalidCredentials(t *testing.T) {
 		AuditLogger: audit,
 	}
 
-	correctStrat, err := NewSoftwareStrategy([]byte("correct-password"))
+	correctStrat, err := NewSoftwareStrategy(context.Background(), []byte("correct-password"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -765,7 +765,7 @@ func TestBarrier_Unseal_InvalidCredentials(t *testing.T) {
 	}
 
 	// Create a new barrier with a different passphrase for the same backend.
-	wrongStrat, err := NewSoftwareStrategy([]byte("wrong-password"))
+	wrongStrat, err := NewSoftwareStrategy(context.Background(), []byte("wrong-password"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestBarrier_Unseal_CorruptRootKey(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	err := b.Unseal(ctx, MustCredentials([]byte("pw")))
+	err := b.Unseal(ctx, MustCredentials(context.Background(), []byte("pw")))
 	if err != ErrCorruptRootKey {
 		t.Fatalf("expected ErrCorruptRootKey, got %v", err)
 	}
@@ -821,7 +821,7 @@ func TestBarrier_Unseal_StrategyNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	creds := MustCredentials([]byte("password"))
+	creds := MustCredentials(context.Background(), []byte("password"))
 	if err := b1.Initialize(context.Background(), creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -866,7 +866,7 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	creds := MustCredentials([]byte("pw"))
+	creds := MustCredentials(context.Background(), []byte("pw"))
 	if err := b.Initialize(context.Background(), creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -928,7 +928,7 @@ func TestBarrier_Seal_ZeroesDEK(t *testing.T) {
 	initBarrier(t, b)
 
 	// Verify we can get the master key before seal.
-	dek, err := b.GetMasterKey()
+	dek, err := b.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey: %v", err)
 	}
@@ -944,7 +944,7 @@ func TestBarrier_Seal_ZeroesDEK(t *testing.T) {
 	}
 
 	// After sealing, GetMasterKey should fail.
-	_, err = b.GetMasterKey()
+	_, err = b.GetMasterKey(context.Background())
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed after Seal, got %v", err)
 	}
@@ -963,7 +963,7 @@ func TestBarrier_Seal_WithHardwareEncryptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	if err := b.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1208,7 +1208,7 @@ func TestBarrier_GetMasterKey_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
 
-	dek, err := b.GetMasterKey()
+	dek, err := b.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey: %v", err)
 	}
@@ -1217,7 +1217,7 @@ func TestBarrier_GetMasterKey_Success(t *testing.T) {
 	}
 
 	// Verify it returns a copy.
-	dek2, err := b.GetMasterKey()
+	dek2, err := b.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey second call: %v", err)
 	}
@@ -1227,7 +1227,7 @@ func TestBarrier_GetMasterKey_Success(t *testing.T) {
 
 	// Modify the returned copy and verify internal state is unaffected.
 	dek[0] ^= 0xFF
-	dek3, err := b.GetMasterKey()
+	dek3, err := b.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey third call: %v", err)
 	}
@@ -1238,7 +1238,7 @@ func TestBarrier_GetMasterKey_Success(t *testing.T) {
 
 func TestBarrier_GetMasterKey_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	_, err := b.GetMasterKey()
+	_, err := b.GetMasterKey(context.Background())
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed, got %v", err)
 	}
@@ -1260,12 +1260,12 @@ func TestBarrier_GetMasterKey_HardwareEncryptor(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	if err := b.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
 	// Verify that GetMasterKey succeeds and returns a valid 32-byte root key.
-	key, err := b.GetMasterKey()
+	key, err := b.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey: expected success in hardware mode, got %v", err)
 	}
@@ -1313,7 +1313,7 @@ func TestBarrier_Status_HardwareBacked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	if err := b.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1561,7 +1561,7 @@ func TestBarrier_UnsealFromRootKey_ViaHolderQuorum(t *testing.T) {
 
 func TestBarrier_UnsealFromRootKey_RefusesWhenUnsealed(t *testing.T) {
 	f := newHolderFixture(t, 2, 3)
-	key, err := f.b.masterKeyBuffer()
+	key, err := f.b.masterKeyBuffer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1574,7 +1574,7 @@ func TestBarrier_UnsealFromRootKey_RefusesWhenUnsealed(t *testing.T) {
 func TestBarrier_UnsealFromRootKey_SealingStrategyNotRegistered(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
-	key, err := b.masterKeyBuffer()
+	key, err := b.masterKeyBuffer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1593,7 +1593,7 @@ func TestBarrier_UnsealFromRootKey_SealingStrategyNotRegistered(t *testing.T) {
 func TestBarrier_UnsealFromRootKey_EncryptorError(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
-	key, err := b.masterKeyBuffer()
+	key, err := b.masterKeyBuffer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1617,7 +1617,7 @@ func TestBarrier_UnsealFromRootKey_EncryptorError(t *testing.T) {
 func TestBarrier_UnsealThenDataRoundTrip(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	ctx := context.Background()
-	creds := MustCredentials([]byte("round-trip-pw"))
+	creds := MustCredentials(context.Background(), []byte("round-trip-pw"))
 
 	// Initialize and store data.
 	if err := b.Initialize(ctx, creds); err != nil {
@@ -1895,7 +1895,7 @@ func TestBarrier_SeedInvocationCounterOnUnseal(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	creds := MustCredentials([]byte("test-password-123"))
+	creds := MustCredentials(context.Background(), []byte("test-password-123"))
 	if err := b1.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -1943,7 +1943,7 @@ func newUnsealedStorageBarrier(t *testing.T) *StorageBarrier {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := b.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	return b
@@ -2032,7 +2032,7 @@ func TestPersistMetadata_PutError(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize without errors to set up the barrier.
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -2050,7 +2050,7 @@ func TestPersistMetadata_PutError(t *testing.T) {
 	// The PutIfAbsent for root key will succeed; the Put for .meta will fail.
 	fb2.putErr = errStorageInject
 
-	err = b2.Initialize(ctx, MustCredentials([]byte("pw")))
+	err = b2.Initialize(ctx, MustCredentials(context.Background(), []byte("pw")))
 	// Initialize will fail on either PutIfAbsent (root key write) or persistMetadata.
 	// Either error is acceptable — what matters is that Initialize returns an error.
 	if err == nil {
@@ -2071,7 +2071,7 @@ func TestLoadInitializedAt_GetError(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -2097,7 +2097,7 @@ func TestLoadInitializedAt_CorruptJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b1.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b1.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -2185,7 +2185,7 @@ func TestRestoreInitializedAt_LoadError(t *testing.T) {
 
 	// Initialize: this writes the root key AND metadata. The metadata Put
 	// succeeds here because metaFailBackend only fails on Get.
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := b.Seal(); err != nil {
@@ -2196,7 +2196,7 @@ func TestRestoreInitializedAt_LoadError(t *testing.T) {
 	// loadInitializedAt tries to Get the metadata key and gets an error.
 	// restoreInitializedAt logs it and falls back to time.Now() —
 	// Unseal must still succeed.
-	if err := b.Unseal(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Unseal(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Unseal with metadata Get error: %v", err)
 	}
 	if b.IsSealed() {
@@ -2222,7 +2222,7 @@ func TestBarrierInitialize_PutIfAbsentFails(t *testing.T) {
 	// PutIfAbsent will fail because fb.putErr is set.
 	fb.putErr = errStorageInject
 
-	err = b.Initialize(ctx, MustCredentials([]byte("pw")))
+	err = b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw")))
 	if err == nil {
 		t.Fatal("expected error when PutIfAbsent fails")
 	}
@@ -2243,7 +2243,7 @@ func TestInitializedAtOrPersisted_WarmBoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b1.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b1.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

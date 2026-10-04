@@ -252,7 +252,7 @@ func TestLocalCredentials_HeldRequestCredential(t *testing.T) {
 	writeCredential(t, dir, "system", "file-pass", 0o600)
 	l := NewLocalCredentials(dir)
 	m := systemMigration(2)
-	if err := l.Hold(m, []byte("request-pass")); err != nil {
+	if err := l.Hold(context.Background(), m, []byte("request-pass")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := credentialOf(t, l, m)
@@ -280,10 +280,10 @@ func TestLocalCredentials_HeldRequestCredential(t *testing.T) {
 func TestLocalCredentials_HoldReplacesAnEarlierGeneration(t *testing.T) {
 	l := NewLocalCredentials("")
 	old, cur := tenantMigration("acme", 1), tenantMigration("acme", 2)
-	if err := l.Hold(old, []byte("old")); err != nil {
+	if err := l.Hold(context.Background(), old, []byte("old")); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Hold(cur, []byte("new")); err != nil {
+	if err := l.Hold(context.Background(), cur, []byte("new")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := credentialOf(t, l, old); !errors.Is(err, ErrCredentialAwaited) {
@@ -298,7 +298,7 @@ func TestLocalCredentials_HoldReplacesAnEarlierGeneration(t *testing.T) {
 // TestLocalCredentials_HoldRefusesAnEmptyCredential proves there is nothing to
 // hold without a credential.
 func TestLocalCredentials_HoldRefusesAnEmptyCredential(t *testing.T) {
-	if err := NewLocalCredentials("").Hold(systemMigration(1), nil); !errors.Is(err, ErrEmptyCredential) {
+	if err := NewLocalCredentials("").Hold(context.Background(), systemMigration(1), nil); !errors.Is(err, ErrEmptyCredential) {
 		t.Fatalf("err = %v, want ErrEmptyCredential", err)
 	}
 }
@@ -317,7 +317,7 @@ func TestMigrationCredentialFileError_Message(t *testing.T) {
 func TestLocalCredentials_ReleaseLeavesOthersAlone(t *testing.T) {
 	l := NewLocalCredentials("")
 	l.Release(systemMigration(1)) // nothing held
-	if err := l.Hold(systemMigration(2), []byte("pass")); err != nil {
+	if err := l.Hold(context.Background(), systemMigration(2), []byte("pass")); err != nil {
 		t.Fatal(err)
 	}
 	l.Release(systemMigration(1))

@@ -58,7 +58,7 @@ func (s *Server) handleUnsealDatabase(w http.ResponseWriter, r *http.Request, na
 			return
 		}
 	}
-	creds, err := seal.CredentialsFor([]byte(req.Secret))
+	creds, err := seal.CredentialsFor(r.Context(), []byte(req.Secret))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

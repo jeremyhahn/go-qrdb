@@ -75,7 +75,7 @@ func newTestBarrier(t *testing.T) (
 	}
 	passphrase := []byte(hex.EncodeToString(buf[:]))
 
-	strategy, err := seal.NewSoftwareStrategy(passphrase)
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), passphrase)
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -93,7 +93,7 @@ func newTestBarrier(t *testing.T) (
 	// Initialize transitions the barrier to the unsealed state directly.
 	// A subsequent Unseal call is not needed and would return ErrAlreadyUnsealed.
 	ctx := context.Background()
-	if err := b.Initialize(ctx, seal.MustCredentials(bytes.Clone(passphrase))); err != nil {
+	if err := b.Initialize(ctx, seal.MustCredentials(context.Background(), bytes.Clone(passphrase))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

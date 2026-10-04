@@ -159,7 +159,7 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("enable-enc-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("enable-enc-pass")),
 	}
 	require.NoError(t, n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts))
 
@@ -309,7 +309,7 @@ func TestNode_EnableEncryption_InPlaceMechanism(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismInPlace,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("inplace-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("inplace-pass")),
 	}
 	require.NoError(t, n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts))
 

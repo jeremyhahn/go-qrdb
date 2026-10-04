@@ -389,7 +389,7 @@ func TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed(t *testing.T) {
 	// Simulate awaitUnseal: the admin initialized+unsealed the barrier with
 	// their passphrase out-of-band before daemon first-boot is reachable.
 	if err := reg.SystemBarrier().Initialize(context.Background(),
-		seal.MustCredentials([]byte("operator-passphrase"))); err != nil {
+		seal.MustCredentials(context.Background(), []byte("operator-passphrase"))); err != nil {
 		t.Fatalf("pre-initialize passphrase barrier: %v", err)
 	}
 	if reg.SystemBarrier().IsSealed() {
@@ -1285,7 +1285,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	reg, perTenantReg := newPooledRegistry(t)
 
 	err := InitializeTenantBarrier(context.Background(), "acme", StrategyPassphrase,
-		seal.MustCredentials([]byte("tenant-passphrase")), Dependencies{
+		seal.MustCredentials(context.Background(), []byte("tenant-passphrase")), Dependencies{
 			Barriers: reg, Logger: discardLogger(),
 		})
 	if err != nil {
@@ -1307,7 +1307,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	if err := reg.SealTenant("acme"); err != nil {
 		t.Fatalf("SealTenant: %v", err)
 	}
-	if err := reg.UnsealTenant(context.Background(), "acme", seal.MustCredentials([]byte("tenant-passphrase"))); err != nil {
+	if err := reg.UnsealTenant(context.Background(), "acme", seal.MustCredentials(context.Background(), []byte("tenant-passphrase"))); err != nil {
 		t.Fatalf("UnsealTenant with correct passphrase: %v", err)
 	}
 }
@@ -1718,7 +1718,7 @@ func (s *fakeSignerEmpty) SignAdminCSR(_ context.Context, _, _ string, _ []byte)
 // branch is unreachable through the public API (BootstrapSystem calls
 // validateStrategy first), but it is a defensive check that must be covered.
 func TestCredentialsForStrategy_InvalidStrategyReturnsError(t *testing.T) {
-	_, err := credentialsForStrategy(seal.StrategyID("tpm2"), passphraseBuffer(t, "ignored"))
+	_, err := credentialsForStrategy(t.Context(), seal.StrategyID("tpm2"), passphraseBuffer(t, "ignored"))
 	var want *UnsupportedStrategyError
 	if !errors.As(err, &want) {
 		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
@@ -1850,7 +1850,7 @@ func TestCredentialsForStrategy_DestroyedBufferIsAMissingPassphrase(t *testing.T
 	}
 	buf.Destroy()
 
-	_, err = credentialsForStrategy(StrategyPassphrase, buf)
+	_, err = credentialsForStrategy(t.Context(), StrategyPassphrase, buf)
 	var want *MissingPassphraseError
 	if !errors.As(err, &want) {
 		t.Fatalf("err = %v, want *MissingPassphraseError", err)
@@ -1863,7 +1863,7 @@ func TestCredentialsForStrategy_DestroyedBufferIsAMissingPassphrase(t *testing.T
 func TestCredentialsForStrategy_CopiesOutOfTheBuffer(t *testing.T) {
 	buf := passphraseBuffer(t, "correct horse battery staple")
 
-	creds, err := credentialsForStrategy(StrategyPassphrase, buf)
+	creds, err := credentialsForStrategy(t.Context(), StrategyPassphrase, buf)
 	if err != nil {
 		t.Fatalf("credentialsForStrategy: %v", err)
 	}
@@ -1882,7 +1882,7 @@ func TestCredentialsForStrategy_CopiesOutOfTheBuffer(t *testing.T) {
 // error for them.
 func TestCredentialsForStrategy_NonPassphraseStrategyNeedsNoBuffer(t *testing.T) {
 	for _, strategy := range []seal.StrategyID{StrategyNone, StrategyShamir} {
-		creds, err := credentialsForStrategy(strategy, nil)
+		creds, err := credentialsForStrategy(t.Context(), strategy, nil)
 		if err != nil {
 			t.Fatalf("credentialsForStrategy(%q, nil): %v", strategy, err)
 		}

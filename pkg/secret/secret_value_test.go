@@ -69,7 +69,7 @@ func TestSecretValue_WithBytes(t *testing.T) {
 	defer sv.Clear()
 
 	var seen string
-	if err := sv.WithBytes(func(b []byte) error {
+	if err := sv.WithBytes(t.Context(), func(b []byte) error {
 		seen = string(b)
 		return nil
 	}); err != nil {
@@ -84,7 +84,7 @@ func TestSecretValue_WithBytes_EmptyValue(t *testing.T) {
 	sv := mustSecretValue(t, "raw://x", nil, secret.StrategyLiteral)
 
 	called := false
-	if err := sv.WithBytes(func(b []byte) error {
+	if err := sv.WithBytes(t.Context(), func(b []byte) error {
 		called = true
 		if b != nil {
 			t.Errorf("WithBytes b = %v, want nil for empty value", b)
@@ -102,7 +102,7 @@ func TestSecretValue_Open(t *testing.T) {
 	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyCredential)
 	defer sv.Clear()
 
-	buf, err := sv.Open()
+	buf, err := sv.Open(t.Context())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSecretValue_Open(t *testing.T) {
 
 	// An empty value opens to a nil buffer with no error.
 	empty := mustSecretValue(t, "raw://y", nil, secret.StrategyLiteral)
-	eb, err := empty.Open()
+	eb, err := empty.Open(t.Context())
 	if err != nil {
 		t.Fatalf("Open empty: %v", err)
 	}

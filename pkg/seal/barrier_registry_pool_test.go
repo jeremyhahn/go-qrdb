@@ -46,7 +46,7 @@ func poolTestLogger() *slog.Logger {
 // barrier against a fresh per-tenant Pebble.
 func newPoolSoftwareStrategy(t *testing.T) *SoftwareStrategy {
 	t.Helper()
-	s, err := NewSoftwareStrategy([]byte("pool-test-pass"))
+	s, err := NewSoftwareStrategy(context.Background(), []byte("pool-test-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -142,7 +142,7 @@ func newPooledRegistry(t *testing.T) (*BarrierRegistry, []string, pebblestore.Pe
 func newPooledRegistryUnsealed(t *testing.T) (*BarrierRegistry, []string, pebblestore.PerTenantRegistry) {
 	t.Helper()
 	reg, roots, perTenantReg := newPooledRegistry(t)
-	if err := reg.SystemBarrier().Initialize(context.Background(), MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := reg.SystemBarrier().Initialize(context.Background(), MustCredentials(context.Background(), []byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 	return reg, roots, perTenantReg

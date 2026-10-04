@@ -68,7 +68,7 @@ func newFreshRegistryFixture(t *testing.T, ent *quota.Entitlements) (*freshRegis
 		t.Fatalf("pool Register: %v", err)
 	}
 
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("fresh-system-pass"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("fresh-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

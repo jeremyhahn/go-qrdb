@@ -546,7 +546,9 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot(t *testing.T) {
 		nodes[i] = n
 		t.Cleanup(func() { _ = n.Close() })
 	}
-	creds := func() seal.Credentials { return seal.MustCredentials([]byte("wal-encryption-test")) }
+	creds := func() seal.Credentials {
+		return seal.MustCredentials(context.Background(), []byte("wal-encryption-test"))
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(300*time.Millisecond, cancel)
@@ -615,7 +617,9 @@ func assertAllTenantBarriersSealed(t *testing.T, reg *seal.BarrierRegistry) {
 func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *testing.T) {
 	ctx := context.Background()
 	cfg := sealClustered(newRaftIsolationConfig(t))
-	creds := func() seal.Credentials { return seal.MustCredentials([]byte("tenant-seal-cancel-test")) }
+	creds := func() seal.Credentials {
+		return seal.MustCredentials(context.Background(), []byte("tenant-seal-cancel-test"))
+	}
 	const tenantCount = 6
 
 	// First boot, unsealed in full: create several auto-unseal volume tenants
@@ -795,7 +799,9 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	}
 	t.Cleanup(func() { _ = n.Close() })
 
-	creds := func() seal.Credentials { return seal.MustCredentials([]byte("accessor-cancel-test")) }
+	creds := func() seal.Credentials {
+		return seal.MustCredentials(context.Background(), []byte("accessor-cancel-test"))
+	}
 
 	if err := n.Unseal(ctx, creds()); err == nil {
 		_ = blocker.Close()

@@ -25,7 +25,7 @@ import (
 
 func TestNewCredentials_ConsumesTheSource(t *testing.T) {
 	src := []byte("correct horse battery staple")
-	creds, err := NewCredentials(src)
+	creds, err := NewCredentials(context.Background(), src)
 	if err != nil {
 		t.Fatalf("NewCredentials: %v", err)
 	}
@@ -44,9 +44,9 @@ func TestNewCredentials_ConsumesTheSource(t *testing.T) {
 }
 
 func TestNewCredentials_RefusesEmpty(t *testing.T) {
-	creds, err := NewCredentials(nil)
+	creds, err := NewCredentials(context.Background(), nil)
 	if err == nil {
-		t.Fatalf("NewCredentials(nil) = %+v, nil; want an error", creds)
+		t.Fatalf("NewCredentials(context.Background(), nil) = %+v, nil; want an error", creds)
 	}
 	if creds.Secret != nil {
 		t.Fatal("a refused credential must carry no secret")
@@ -55,7 +55,7 @@ func TestNewCredentials_RefusesEmpty(t *testing.T) {
 
 func TestCredentialsFor_BorrowsTheSource(t *testing.T) {
 	src := []byte("borrowed")
-	creds, err := CredentialsFor(src)
+	creds, err := CredentialsFor(context.Background(), src)
 	if err != nil {
 		t.Fatalf("CredentialsFor: %v", err)
 	}
@@ -75,12 +75,12 @@ func TestCredentialsFor_BorrowsTheSource(t *testing.T) {
 
 func TestCredentialsFor_EmptyIsNoCredentials(t *testing.T) {
 	for _, src := range [][]byte{nil, {}} {
-		creds, err := CredentialsFor(src)
+		creds, err := CredentialsFor(context.Background(), src)
 		if err != nil {
-			t.Fatalf("CredentialsFor(%v): %v", src, err)
+			t.Fatalf("CredentialsFor(context.Background(), %v): %v", src, err)
 		}
 		if creds.Secret != nil {
-			t.Fatalf("CredentialsFor(%v) built a secret from nothing", src)
+			t.Fatalf("CredentialsFor(context.Background(), %v) built a secret from nothing", src)
 		}
 		// The zero credential is refused by a strategy that authenticates:
 		// "no credentials supplied" is not a passphrase.
@@ -94,14 +94,14 @@ func TestCredentialsFor_EmptyIsNoCredentials(t *testing.T) {
 func TestMustCredentials_PanicsWhereNewCredentialsErrors(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("MustCredentials(nil) must panic")
+			t.Fatal("MustCredentials(context.Background(), nil) must panic")
 		}
 	}()
-	_ = MustCredentials(nil)
+	_ = MustCredentials(context.Background(), nil)
 }
 
 func TestMustCredentials_RoundTrip(t *testing.T) {
-	creds := MustCredentials([]byte("fixture"))
+	creds := MustCredentials(context.Background(), []byte("fixture"))
 	defer creds.Secret.Destroy()
 	if got := credentialPlaintext(t, creds); got != "fixture" {
 		t.Fatalf("MustCredentials holds %q", got)
@@ -113,7 +113,7 @@ func TestMustCredentials_RoundTrip(t *testing.T) {
 // without a cycle.
 func credentialPlaintext(t *testing.T, creds Credentials) string {
 	t.Helper()
-	opened, err := creds.Secret.Open()
+	opened, err := creds.Secret.Open(t.Context())
 	if err != nil {
 		t.Fatalf("open credential: %v", err)
 	}

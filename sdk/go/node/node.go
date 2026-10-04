@@ -2683,7 +2683,7 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 		// memory, and the credential is destroyed once this attempt has
 		// used it.
 		var err error
-		if creds, err = seal.CredentialsFor(passphrase); err != nil {
+		if creds, err = seal.CredentialsFor(ctx, passphrase); err != nil {
 			log.Warn("node: barrier credentials failed", "error", err)
 			return false
 		}

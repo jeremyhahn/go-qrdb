@@ -18,6 +18,7 @@
 package seal
 
 import (
+	"context"
 	"time"
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
@@ -71,8 +72,8 @@ var NewCredentials = quicraftseal.NewCredentials
 // would return, which at such a site is a programming error or a host that
 // cannot lock memory at all — not a condition the caller has a way to recover
 // from. Production code takes secrets from callers and uses NewCredentials.
-func MustCredentials(secret []byte) Credentials {
-	creds, err := NewCredentials(secret)
+func MustCredentials(ctx context.Context, secret []byte) Credentials {
+	creds, err := NewCredentials(ctx, secret)
 	if err != nil {
 		panic("qrdb/seal: MustCredentials: " + err.Error())
 	}
@@ -97,11 +98,11 @@ func MustCredentials(secret []byte) Credentials {
 //
 // The caller owns the result: destroy it when the operation it was built for
 // returns.
-func CredentialsFor(secret []byte) (Credentials, error) {
+func CredentialsFor(ctx context.Context, secret []byte) (Credentials, error) {
 	if len(secret) == 0 {
 		return Credentials{}, nil
 	}
-	return NewCredentials(append([]byte(nil), secret...))
+	return NewCredentials(ctx, append([]byte(nil), secret...))
 }
 
 // SealedRootKey is the persisted form of an encrypted root key.

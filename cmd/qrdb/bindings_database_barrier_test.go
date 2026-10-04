@@ -98,10 +98,10 @@ func TestDatabaseBinding_CreateWithBarrierInitialisesIt(t *testing.T) {
 	if err := svc.SealDatabase(ctx, "vaulted"); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
 	}
-	if err := svc.UnsealDatabase(ctx, "vaulted", seal.MustCredentials([]byte("not-the-passphrase"))); err == nil {
+	if err := svc.UnsealDatabase(ctx, "vaulted", seal.MustCredentials(context.Background(), []byte("not-the-passphrase"))); err == nil {
 		t.Fatal("a wrong passphrase unsealed the database")
 	}
-	if err := svc.UnsealDatabase(ctx, "vaulted", seal.MustCredentials([]byte(passphrase))); err != nil {
+	if err := svc.UnsealDatabase(ctx, "vaulted", seal.MustCredentials(context.Background(), []byte(passphrase))); err != nil {
 		t.Fatalf("the passphrase sent at create does not unseal the database: %v", err)
 	}
 }

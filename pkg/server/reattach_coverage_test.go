@@ -86,7 +86,7 @@ func TestReattachVolumeTenants_SkipsTenantAbsentFromRegistry(t *testing.T) {
 	}
 
 	// A registry that never had this tenant registered.
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("bare-vol-pass"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("bare-vol-pass"))
 	require.NoError(t, err)
 	bareSys, err := seal.NewStorageBarrier(reattachTestLogger(), seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "bare-vol/root-key"}, sysStrat)
@@ -149,7 +149,7 @@ func TestReattachRaftTenants_SkipsTenantAbsentFromRegistry(t *testing.T) {
 		t.Fatalf("CreateTenant(rreg-skip): %v", err)
 	}
 
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("bare-raft-pass"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("bare-raft-pass"))
 	require.NoError(t, err)
 	bareSys, err := seal.NewStorageBarrier(reattachTestLogger(), seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "bare-raft/root-key"}, sysStrat)

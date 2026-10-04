@@ -44,7 +44,7 @@ func volTestLogger() *slog.Logger {
 // software (passphrase) strategy, so tenants inherit an encrypted posture.
 func newVolumePooledRegistry(t *testing.T) *seal.BarrierRegistry {
 	t.Helper()
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("vol-host-test"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("vol-host-test"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

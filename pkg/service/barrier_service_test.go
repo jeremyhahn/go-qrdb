@@ -39,7 +39,7 @@ func testLogger() *slog.Logger {
 func newTestSoftwareBarrier(t *testing.T) (*seal.StorageBarrier, seal.SealingStrategy) {
 	t.Helper()
 	backend := seal.NewMemoryBackend()
-	sw, err := seal.NewSoftwareStrategy([]byte("test-master-key-32bytes!abcdefgh"))
+	sw, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-key-32bytes!abcdefgh"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

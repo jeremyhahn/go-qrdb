@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -88,11 +89,11 @@ func NewLocalCredentials(dir string) *LocalCredentials {
 // credential for m's generation. It is how the node that accepted a request
 // recycles with the request's own credential without writing it anywhere.
 // A later generation for the same barrier replaces it.
-func (l *LocalCredentials) Hold(m *ClusterMigration, credential []byte) error {
+func (l *LocalCredentials) Hold(ctx context.Context, m *ClusterMigration, credential []byte) error {
 	if len(credential) == 0 {
 		return ErrEmptyCredential
 	}
-	creds, err := seal.CredentialsFor(credential)
+	creds, err := seal.CredentialsFor(ctx, credential)
 	if err != nil {
 		return err
 	}
@@ -123,11 +124,11 @@ func (l *LocalCredentials) Release(m *ClusterMigration) {
 // credential for m's generation, or else the contents of this node's
 // credential file. ErrCredentialAwaited means neither is there yet;
 // *MigrationCredentialFileError means the file is there but refused.
-func (l *LocalCredentials) Credential(_ context.Context, m *ClusterMigration) ([]byte, error) {
+func (l *LocalCredentials) Credential(ctx context.Context, m *ClusterMigration) ([]byte, error) {
 	if v, ok := l.held.Load(scopeLabel(m.TenantID, m.Database)); ok {
 		h := v.(*heldCredential) //nolint:errcheck // type assertion on a value this map only ever holds
 		if h.generation == m.Generation {
-			return openCopy(h.creds)
+			return openCopy(ctx, h.creds)
 		}
 	}
 	if l.dir == "" {
@@ -141,12 +142,17 @@ func (l *LocalCredentials) Credential(_ context.Context, m *ClusterMigration) ([
 }
 
 // openCopy returns a copy of creds' secret that the caller owns and wipes.
-func openCopy(creds seal.Credentials) ([]byte, error) {
-	opened, err := creds.Secret.Open()
+func openCopy(ctx context.Context, creds seal.Credentials) ([]byte, error) {
+	opened, err := creds.Secret.Open(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer opened.Destroy()
+	defer func() {
+		if derr := opened.Destroy(); derr != nil {
+			slog.Warn("clustermig: releasing an opened credential enclave reported a non-fatal problem",
+				slog.String("error", derr.Error()))
+		}
+	}()
 	var out []byte
 	err = opened.WithBytes(func(b []byte) error {
 		out = bytes.Clone(b)

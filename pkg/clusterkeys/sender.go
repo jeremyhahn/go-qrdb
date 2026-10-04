@@ -287,7 +287,7 @@ func (s *Sender) DistributeTenantKey(
 // JSON, and delivers it via Deliver. The key material is wiped immediately after
 // Deliver returns.
 func (s *Sender) deliverSystemManaged(ctx context.Context, replica placement.Replica, meta keydelivery.Meta, b *seal.StorageBarrier) error {
-	imported, err := b.ExportRootKeyContext()
+	imported, err := b.ExportRootKeyContext(ctx)
 	if err != nil {
 		return err
 	}

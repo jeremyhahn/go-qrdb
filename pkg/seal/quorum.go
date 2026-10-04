@@ -521,7 +521,12 @@ func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, ou
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Cause: err}
 	}
-	defer secretEnclave.Destroy()
+	defer func() {
+		if derr := secretEnclave.Destroy(); derr != nil {
+			b.logger.Warn("reconstructed Shamir secret enclave release reported a non-fatal problem",
+				slog.String("error", derr.Error()))
+		}
+	}()
 	round.destroy()
 
 	keyBuf, err := copyEnclaveToBuffer(secretEnclave)

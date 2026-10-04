@@ -42,7 +42,7 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
-	creds, err := seal.CredentialsFor([]byte(secret))
+	creds, err := seal.CredentialsFor(ctx, []byte(secret))
 	if err != nil {
 		return delayed("UnsealDatabase", err)
 	}

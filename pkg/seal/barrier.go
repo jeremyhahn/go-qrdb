@@ -550,11 +550,14 @@ func (b *StorageBarrier) ShamirStrategy() *ShamirStrategy {
 //
 // For hardware-backed strategies where the key never leaves hardware,
 // the EpochBarrier returns an error.
-func (b *StorageBarrier) GetMasterKey() ([]byte, error) {
+//
+// ctx is the real caller context, not context.Background(): a hardware-backed
+// EpochBarrier may reach a key provider that blocks, and ctx bounds that call.
+func (b *StorageBarrier) GetMasterKey(ctx context.Context) ([]byte, error) {
 	if b.IsSealed() {
 		return nil, ErrSealed
 	}
-	return b.barrier.RootKey()
+	return b.barrier.RootKey(ctx)
 }
 
 // Encryptor returns nil for the refactored barrier. Encryption is now

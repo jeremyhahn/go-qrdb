@@ -16,6 +16,7 @@ package secure
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,7 +43,7 @@ const secretFromBufferRacePlaintext = "secret-from-buffer-must-hold-the-borrow-0
 // needs no external reference to destroy them while NewSealed is still
 // reading or wiping them. NewSecretFromBuffer now seals from inside the input
 // buffer's own go-enclave borrow, held for NewSealed's entire call, so a
-// racing WipeAll skips the buffer instead of unmapping underneath it.
+// racing WipeAll cannot unmap the buffer underneath it.
 //
 // newSealed is swapped for a delay-injecting wrapper around the real
 // enclave.NewSealed so the race window is reliably hit: the real call
@@ -50,6 +51,16 @@ const secretFromBufferRacePlaintext = "secret-from-buffer-must-hold-the-borrow-0
 // WipeAll against without instrumentation, and reverting the WithBytes fix
 // back to an unguarded Bytes()/Open() read would make this test fail (a
 // SIGSEGV in the subprocess) rather than pass vacuously.
+//
+// go-enclave v0.7.0-alpha changed WipeAll from a TryLock sweep that SKIPS a
+// held enclave to one that WAITS for its borrow to end before reclaiming it.
+// The race therefore drives WipeAll with a context bounded well short of
+// sealHold, exactly as a real shutdown sweep is given a deadline (see
+// go-enclave's WipeAll doc and cmd/qrdbd/start.go's recordSecureMemoryWipe):
+// the wait times out before the input buffer's borrow ends, so WipeAll
+// leaves it mapped and counted rather than destroying it once sealing
+// finishes -- still proving the plaintext is never corrupted mid-seal, under
+// the new contract.
 //
 // It runs in a SUBPROCESS for the same reason
 // pkg/secret/seal_failure_test.go's does: enclave.WipeAll is a one-shot,
@@ -92,24 +103,25 @@ func runSecretFromBufferRaceChild() {
 		fail("NewBufferFromBytes: %v", err)
 	}
 
-	// go-enclave's WipeAll retries a bounded number of passes with a short
-	// backoff (measured worst case ~7.5ms in go-enclave's own test suite)
-	// before giving up on a still-held enclave. Sleeping far longer than that
-	// while "sealing" means a WipeAll that runs concurrently is overwhelmingly
-	// likely to return (having found the input buffer still held) well
-	// before the seal does, rather than by coincidentally winning a tight
-	// race.
+	// wipeWait bounds the race's WipeAll call well short of sealHold, so the
+	// wait for the input buffer's borrow times out while sealing is still in
+	// flight -- go-enclave v0.7.0-alpha's WipeAll waits for a held enclave's
+	// borrow rather than skipping it.
+	const wipeWait = 20 * time.Millisecond
+	// Far longer than wipeWait, so the race's WipeAll call reliably times out
+	// waiting for the input buffer's borrow while sealing is still inside it,
+	// rather than by coincidentally winning a tight race.
 	const sealHold = 200 * time.Millisecond
 
 	started := make(chan struct{})
 	var observedBefore, observedAfter []byte
 	prevNewSealed := newSealed
-	newSealed = func(src []byte) (*enclave.SealedEnclave, error) {
+	newSealed = func(ctx context.Context, src []byte) (*enclave.SealedEnclave, error) {
 		observedBefore = append([]byte(nil), src...)
 		close(started)
 		time.Sleep(sealHold)
 		observedAfter = append([]byte(nil), src...)
-		return prevNewSealed(src)
+		return prevNewSealed(ctx, src)
 	}
 	defer func() { newSealed = prevNewSealed }()
 
@@ -118,7 +130,7 @@ func runSecretFromBufferRaceChild() {
 		err error
 	}, 1)
 	go func() {
-		sec, err := NewSecretFromBuffer(buf)
+		sec, err := NewSecretFromBuffer(context.Background(), buf)
 		done <- struct {
 			sec *Secret
 			err error
@@ -126,7 +138,12 @@ func runSecretFromBufferRaceChild() {
 	}()
 
 	<-started
-	remaining, wipeErr := enclave.WipeAll()
+	wipeCtx, cancel := context.WithTimeout(context.Background(), wipeWait)
+	defer cancel()
+	remaining, wipeErr := enclave.WipeAll(wipeCtx)
+	// A context that ends while the input buffer's borrow is still held is
+	// not an error (go-enclave's WipeAll doc): it is exactly the "left
+	// mapped and counted" outcome this race means to force.
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
@@ -146,7 +163,7 @@ func runSecretFromBufferRaceChild() {
 			"the input pages were mutated or unmapped out from under sealing", observedAfter, want)
 	}
 
-	opened, err := result.sec.Open()
+	opened, err := result.sec.Open(context.Background())
 	if err != nil {
 		fail("Secret.Open: %v", err)
 	}

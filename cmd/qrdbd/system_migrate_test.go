@@ -33,7 +33,7 @@ func validSystemMigrateOpts() seal.MigrationOptions {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("daemon-migrate-pw")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("daemon-migrate-pw")),
 	}
 }
 

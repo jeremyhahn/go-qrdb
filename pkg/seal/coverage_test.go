@@ -89,7 +89,7 @@ func TestStorageBarrier_Scan_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("test-password"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +243,7 @@ func TestRecoveryStrategy_Close(t *testing.T) {
 		t.Fatalf("newRecoveryStrategy: %v", err)
 	}
 	// Before Close the key is readable through the protected enclave.
-	buf, openErr := rs.rootKey.Open()
+	buf, openErr := rs.rootKey.Open(t.Context())
 	if openErr != nil {
 		t.Fatalf("root key should be openable before Close: %v", openErr)
 	}
@@ -254,7 +254,7 @@ func TestRecoveryStrategy_Close(t *testing.T) {
 	}
 	// After Close the protected enclave is destroyed: opening it must fail
 	// rather than yield readable key material.
-	if _, openErr := rs.rootKey.Open(); openErr == nil {
+	if _, openErr := rs.rootKey.Open(t.Context()); openErr == nil {
 		t.Error("Close should destroy the protected root key; Open still succeeded")
 	}
 }
@@ -311,7 +311,7 @@ func TestTenantBarrier_Scan_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := tb.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := tb.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -429,7 +429,7 @@ func TestStorageBarrier_Put_EncryptError(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -548,13 +548,13 @@ func TestQuorumUnseal_DestroysTheTemporaryStrategysRootKeyCopy(t *testing.T) {
 
 			var captured *recoveryStrategy
 			original := newRecoveryStrategyFn
-			newRecoveryStrategyFn = func(rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
-				rs, err := original(rootKey, delegate)
+			newRecoveryStrategyFn = func(ctx context.Context, rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
+				rs, err := original(ctx, rootKey, delegate)
 				if err != nil {
 					return nil, err
 				}
 				captured = rs
-				buf, openErr := captured.rootKey.Open()
+				buf, openErr := captured.rootKey.Open(ctx)
 				if openErr != nil {
 					t.Fatalf("the strategy was handed an unreadable root key; this test would prove nothing: %v", openErr)
 				}
@@ -573,7 +573,7 @@ func TestQuorumUnseal_DestroysTheTemporaryStrategysRootKeyCopy(t *testing.T) {
 			if captured == nil {
 				t.Fatal("no recovery strategy was built; the seam did not fire")
 			}
-			if _, openErr := captured.rootKey.Open(); openErr == nil {
+			if _, openErr := captured.rootKey.Open(t.Context()); openErr == nil {
 				t.Error("the temporary strategy's protected root-key copy was left readable after the unseal returned")
 			}
 		})
@@ -597,7 +597,7 @@ func TestRecoveryStrategy_CloseWipesItsRootKeyCopy(t *testing.T) {
 	for i := range key {
 		key[i] = 0
 	}
-	buf, openErr := recStrat.rootKey.Open()
+	buf, openErr := recStrat.rootKey.Open(t.Context())
 	if openErr != nil {
 		t.Fatalf("root key should be readable before Close: %v", openErr)
 	}
@@ -611,7 +611,7 @@ func TestRecoveryStrategy_CloseWipesItsRootKeyCopy(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	// After Close the protected enclave is destroyed: opening it must fail.
-	if _, openErr := recStrat.rootKey.Open(); openErr == nil {
+	if _, openErr := recStrat.rootKey.Open(t.Context()); openErr == nil {
 		t.Error("Close left the strategy's protected root-key copy readable")
 	}
 }

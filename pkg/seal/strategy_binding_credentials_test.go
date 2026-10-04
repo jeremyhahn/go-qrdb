@@ -35,12 +35,12 @@ import (
 func TestSoftwareStrategyBindingModes_CredentialSemantics(t *testing.T) {
 	ctx := context.Background()
 	const correctPassphrase = "correct-horse-battery-staple"
-	correct := MustCredentials([]byte(correctPassphrase))
-	wrong := MustCredentials([]byte("wrong-horse-battery-staple"))
+	correct := MustCredentials(context.Background(), []byte(correctPassphrase))
+	wrong := MustCredentials(context.Background(), []byte("wrong-horse-battery-staple"))
 	rootKey := bytes.Repeat([]byte{0xA5}, 32)
 
 	t.Run("bound ignores unseal credentials", func(t *testing.T) {
-		strategy, err := NewSoftwareStrategy([]byte(correctPassphrase))
+		strategy, err := NewSoftwareStrategy(context.Background(), []byte(correctPassphrase))
 		if err != nil {
 			t.Fatalf("NewSoftwareStrategy: %v", err)
 		}

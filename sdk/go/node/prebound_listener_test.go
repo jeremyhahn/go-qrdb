@@ -235,7 +235,7 @@ func TestNode_PreboundListenersSurviveMigration(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("prebound-survives-migration")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("prebound-survives-migration")),
 	}))
 
 	srv := n.Server()

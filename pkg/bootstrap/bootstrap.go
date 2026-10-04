@@ -239,7 +239,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 	default:
 		// Sealed AND uninitialized for none/passphrase: compute credentials
 		// (passphrase strategy demands a non-empty passphrase) and initialize.
-		creds, credErr := credentialsForStrategy(strategy, cfg.Passphrase)
+		creds, credErr := credentialsForStrategy(ctx, strategy, cfg.Passphrase)
 		if credErr != nil {
 			return nil, credErr
 		}
@@ -687,7 +687,7 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strategy seal
 // seal credentials for the chosen system strategy. The passphrase strategy
 // requires a non-empty passphrase with no derived default; none and shamir
 // carry no passphrase.
-func credentialsForStrategy(strategy seal.StrategyID, passphrase *secure.Buffer) (seal.Credentials, error) {
+func credentialsForStrategy(ctx context.Context, strategy seal.StrategyID, passphrase *secure.Buffer) (seal.Credentials, error) {
 	if err := validateStrategy(strategy); err != nil {
 		return seal.Credentials{}, err
 	}
@@ -727,7 +727,7 @@ func credentialsForStrategy(strategy seal.StrategyID, passphrase *secure.Buffer)
 		// without re-reading which one can lose a barrier.
 		return seal.Credentials{}, &MissingPassphraseError{}
 	}
-	return seal.NewCredentials(plain)
+	return seal.NewCredentials(ctx, plain)
 }
 
 // validateStrategy rejects strategies the bootstrap orchestrator does not

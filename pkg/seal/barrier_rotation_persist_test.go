@@ -20,11 +20,11 @@ func TestEpochRotationIsPersisted(t *testing.T) {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("correct horse battery staple"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("correct horse battery staple"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	before := b.barrier.CurrentEpoch()
-	newEpoch, err := b.barrier.Rotate()
+	newEpoch, err := b.barrier.Rotate(ctx)
 	if err != nil {
 		t.Fatalf("Rotate failed (StatePersister not wired?): %v", err)
 	}

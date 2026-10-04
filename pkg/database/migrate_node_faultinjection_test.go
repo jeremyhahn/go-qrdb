@@ -128,7 +128,7 @@ func (fm faultMigration) run(t *testing.T) error {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("fault-injection-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("fault-injection-pass")),
 	})
 }
 
@@ -162,7 +162,7 @@ func TestNodeStoreMigration_InvalidMechanism(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MigrationMechanism("bogus"),
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("fault-injection-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("fault-injection-pass")),
 	})
 	if !errors.Is(err, seal.ErrMigrationInvalidMechanism) {
 		t.Fatalf("Run err = %v, want ErrMigrationInvalidMechanism", err)

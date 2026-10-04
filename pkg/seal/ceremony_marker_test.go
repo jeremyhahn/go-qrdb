@@ -41,7 +41,7 @@ func (b *markerReadFailBackend) Get(ctx context.Context, key string) ([]byte, er
 
 func markerTestBarrier(t *testing.T, base StorageBackend) *StorageBarrier {
 	t.Helper()
-	sw, err := NewSoftwareStrategy([]byte("test-master-key-32bytes!abcdefgh"))
+	sw, err := NewSoftwareStrategy(context.Background(), []byte("test-master-key-32bytes!abcdefgh"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

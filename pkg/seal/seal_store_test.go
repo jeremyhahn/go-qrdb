@@ -28,7 +28,7 @@ func newTestSealStore(t *testing.T, prefix string) *SealStore {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("test-password"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	ss, err := NewSealStore(b, prefix, testLogger())
@@ -50,7 +50,7 @@ func newTestSealStoreWithBarrier(t *testing.T) (*SealStore, *StorageBarrier) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("test-password"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	ss, err := NewSealStore(b, "", testLogger())
@@ -484,7 +484,7 @@ func TestSealStore_NamespaceIsolation(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("test-password"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

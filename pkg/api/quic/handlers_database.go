@@ -67,7 +67,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 			SharesTotal:    req.Barrier.SharesTotal,
 		}
 		var err error
-		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+		if creds, err = seal.CredentialsFor(ctx, []byte(req.Barrier.Secret)); err != nil {
 			return nil, err
 		}
 		defer creds.Secret.Destroy()

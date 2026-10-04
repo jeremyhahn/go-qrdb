@@ -1647,7 +1647,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	creds := seal.Credentials{}
 	if seal.IsPassphraseStrategy(strategyID) {
 		var err error
-		if creds, err = seal.CredentialsFor(passphrase); err != nil {
+		if creds, err = seal.CredentialsFor(ctx, passphrase); err != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
 		}
 		defer creds.Secret.Destroy()
@@ -1830,7 +1830,7 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	// key is BORROWED: it is copied into protected memory and left for the
 	// caller to wipe, and the credential is destroyed once the unseal has
 	// used it.
-	creds, err := seal.CredentialsFor(key)
+	creds, err := seal.CredentialsFor(ctx, key)
 	if err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
 	}

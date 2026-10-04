@@ -66,7 +66,7 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs[i] = n.Unseal(context.Background(), seal.MustCredentials([]byte("wal-encryption-test")))
+				errs[i] = n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte("wal-encryption-test")))
 			}()
 		}
 		wg.Wait()

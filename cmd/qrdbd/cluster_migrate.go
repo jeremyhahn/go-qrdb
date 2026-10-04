@@ -133,7 +133,7 @@ func (r *daemonLocalRecycler) Recycle(ctx context.Context, m *clustermig.Cluster
 	// the root key under a zeroed passphrase. CredentialsFor decouples the two:
 	// it seals its own copy of the material and leaves the reconciler's buffer
 	// alone.
-	creds, err := seal.CredentialsFor(credential)
+	creds, err := seal.CredentialsFor(ctx, credential)
 	if err != nil {
 		return err
 	}
@@ -163,19 +163,24 @@ func (r *daemonLocalRecycler) Recycle(ctx context.Context, m *clustermig.Cluster
 }
 
 // withCredentialBytes opens a credential's protected secret and calls fn with
-// a read-only view of the plaintext, valid only for the call; fn must not
-// retain or write through it (the pages are frozen). A credential with no
-// secret yields fn(nil). The opened enclave is destroyed on return, so the
-// plaintext exists only in locked memory and only for the width of fn.
-func withCredentialBytes(creds seal.Credentials, fn func([]byte) error) error {
+// a view of the plaintext, valid only for the call; fn must not retain it. A
+// credential with no secret yields fn(nil). The opened enclave is destroyed
+// on return, so the plaintext exists only in locked memory and only for the
+// width of fn.
+func withCredentialBytes(ctx context.Context, creds seal.Credentials, fn func([]byte) error) error {
 	if creds.Secret == nil {
 		return fn(nil)
 	}
-	opened, err := creds.Secret.Open()
+	opened, err := creds.Secret.Open(ctx)
 	if err != nil {
 		return err
 	}
-	defer opened.Destroy()
+	defer func() {
+		if derr := opened.Destroy(); derr != nil {
+			slog.Warn("cluster migration: releasing an opened credential enclave reported a non-fatal problem",
+				slog.String("error", derr.Error()))
+		}
+	}()
 	return opened.WithBytes(fn)
 }
 
@@ -245,12 +250,12 @@ func (m *clusterCoordinatorMigrator) EnableEncryption(ctx context.Context, scope
 			return nil, nil
 		}
 		held := false
-		err := withCredentialBytes(opts.Credentials, func(credential []byte) error {
+		err := withCredentialBytes(ctx, opts.Credentials, func(credential []byte) error {
 			if len(credential) == 0 {
 				return nil
 			}
 			held = true
-			return m.credentials.Hold(rec, credential)
+			return m.credentials.Hold(ctx, rec, credential)
 		})
 		if err != nil || !held {
 			return nil, err

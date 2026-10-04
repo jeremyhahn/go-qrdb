@@ -804,7 +804,7 @@ func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
 	leaderDataRoot := t.TempDir()
 	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-sysmanaged")
 
-	leaderKey, err := leaderBarrier.GetMasterKey()
+	leaderKey, err := leaderBarrier.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey (leader): %v", err)
 	}
@@ -855,7 +855,7 @@ func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
 	if followerTB.IsSealed() {
 		t.Error("follower tenant barrier must be unsealed after system-managed import")
 	}
-	followerKey, err := followerTB.Barrier().GetMasterKey()
+	followerKey, err := followerTB.Barrier().GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey (follower): %v", err)
 	}

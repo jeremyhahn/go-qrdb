@@ -209,7 +209,7 @@ func (h *testHolder) answer(t testing.TB, ch *QuorumChallenge) []byte {
 // testBarrier returns an uninitialized passphrase barrier over memory.
 func testBarrier(t testing.TB) *seal.StorageBarrier {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	require.NoError(t, err)
 	b, err := seal.NewStorageBarrier(testLogger(), seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "test/root-key"}, strategy)
 	require.NoError(t, err)

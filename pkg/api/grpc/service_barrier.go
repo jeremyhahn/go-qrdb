@@ -179,7 +179,7 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(ctx context.Context, req *pb
 	// The request's passphrase is copied into protected memory and the
 	// decoded copy wiped at once — the credential is what the migration reads
 	// from here on, so nothing needs the request's plaintext past this line.
-	creds, err := seal.CredentialsFor(req.GetPassphrase())
+	creds, err := seal.CredentialsFor(ctx, req.GetPassphrase())
 	secure.Wipe(req.GetPassphrase())
 	if err != nil {
 		return nil, mapServiceError(err)

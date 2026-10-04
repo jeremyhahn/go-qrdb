@@ -16,6 +16,7 @@ package secret_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,13 +85,13 @@ func runSealFailureChild() {
 	// processSealer), so a WipeAll before anything has ever sealed has
 	// nothing to destroy. Seal once first to force it into existence, then
 	// wipe it.
-	warm, err := secret.NewSecretValue("raw://warm", []byte("warm up the sealer"), secret.StrategyLiteral)
+	warm, err := secret.NewSecretValue(context.Background(), "raw://warm", []byte("warm up the sealer"), secret.StrategyLiteral)
 	if err != nil {
 		fail("warm-up NewSecretValue: %v", err)
 	}
 	warm.Clear()
 
-	if _, err := enclave.WipeAll(); err != nil {
+	if _, err := enclave.WipeAll(context.Background()); err != nil {
 		fail("enclave.WipeAll: %v", err)
 	}
 
@@ -99,7 +100,7 @@ func runSealFailureChild() {
 	// the plaintext here. That is what makes every "does not contain s3cr3t"
 	// check below able to fail: with a reference that did not contain the
 	// secret, a Ref holding the raw reference verbatim would still pass them.
-	sv, err := secret.NewSecretValue("literal://s3cr3t", []byte("s3cr3t"), secret.StrategyLiteral)
+	sv, err := secret.NewSecretValue(context.Background(), "literal://s3cr3t", []byte("s3cr3t"), secret.StrategyLiteral)
 	if err == nil {
 		sv.Clear()
 		fail("NewSecretValue succeeded against a wiped Sealer; " +

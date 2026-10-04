@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -70,8 +71,8 @@ func newSealedShareStore(ttl time.Duration) *sealedShareStore {
 // holder has one share at a time, and dropping the old enclave without
 // destroying it would leave its pages locked and its plaintext recoverable
 // until the collector ran.
-func (s *sealedShareStore) Store(username string, shareJSON []byte) error {
-	sec, err := secure.NewSecret(shareJSON)
+func (s *sealedShareStore) Store(ctx context.Context, username string, shareJSON []byte) error {
+	sec, err := secure.NewSecret(ctx, shareJSON)
 	if err != nil {
 		// NewSecret wipes shareJSON only on success; defensively wipe on
 		// the error path so callers never leak bytes.
@@ -114,7 +115,7 @@ func (s *sealedShareStore) expire(username string, held *heldShare) {
 // share was previously claimed, ErrShareExpired if it was wiped unclaimed at
 // the end of its time-to-live, or ErrShareNotFound if no share was ever
 // stored for the username.
-func (s *sealedShareStore) Claim(username string) ([]byte, error) {
+func (s *sealedShareStore) Claim(ctx context.Context, username string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -131,7 +132,7 @@ func (s *sealedShareStore) Claim(username string) ([]byte, error) {
 	}
 	sec := held.secret
 
-	buf, err := sec.Open()
+	buf, err := sec.Open(ctx)
 	if err != nil {
 		return nil, err
 	}

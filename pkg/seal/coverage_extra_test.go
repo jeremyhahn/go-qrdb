@@ -33,7 +33,7 @@ func TestStorageBarrier_Encrypt_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,7 +74,7 @@ func TestStorageBarrier_Decrypt_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +124,7 @@ func TestStorageBarrier_NonceTracker(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,7 +152,7 @@ func TestNewStorageBarrier_WithOptionalConfig(t *testing.T) {
 		t.Fatalf("NewStorageBarrier with optional config: %v", err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestBarrierRegistry_RegisterTenant_WithStrategy(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := sysBarrier.Initialize(ctx, MustCredentials([]byte("sys-pw"))); err != nil {
+	if err := sysBarrier.Initialize(ctx, MustCredentials(context.Background(), []byte("sys-pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,7 +225,7 @@ func TestCountCurrentEntries_ListError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := b.Seal(); err != nil {
@@ -236,7 +236,7 @@ func TestCountCurrentEntries_ListError(t *testing.T) {
 	// The error should be silently logged, and Unseal should still succeed.
 	fb.listErr = errStorageInject
 
-	if err := b.Unseal(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Unseal(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Unseal with List error: %v", err)
 	}
 	if b.IsSealed() {
@@ -276,14 +276,14 @@ func TestChangePassword_PutError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("old-pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("old-pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
 	// Inject Put error so ChangePassword fails when writing the new blob.
 	fb.putErr = errStorageInject
 
-	err = b.ChangePassword(ctx, MustCredentials([]byte("new-pw")))
+	err = b.ChangePassword(ctx, MustCredentials(context.Background(), []byte("new-pw")))
 	if err == nil {
 		t.Fatal("expected error when Put fails in ChangePassword")
 	}
@@ -348,7 +348,7 @@ func TestSealStore_Get_NotFoundMapsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -378,7 +378,7 @@ func TestSealStore_Delete_NotFoundReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -409,7 +409,7 @@ func TestStorageBarrier_Scan_DecryptError(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 

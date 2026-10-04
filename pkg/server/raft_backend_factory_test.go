@@ -809,7 +809,7 @@ func TestManagerRaftInfoSource_NilManager(t *testing.T) {
 func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.MultiplexLogDB) {
 	t.Helper()
 	hostDir := t.TempDir()
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("mux-shared-wal-test"))
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("mux-shared-wal-test"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -819,7 +819,7 @@ func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.Multiplex
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	if err := sysBarrier.Initialize(context.Background(),
-		seal.MustCredentials([]byte("mux-shared-wal-test"))); err != nil {
+		seal.MustCredentials(context.Background(), []byte("mux-shared-wal-test"))); err != nil {
 		t.Fatalf("Initialize system barrier: %v", err)
 	}
 	sharedWAL, err := waldb.Open(filepath.Join(hostDir, "wal"),

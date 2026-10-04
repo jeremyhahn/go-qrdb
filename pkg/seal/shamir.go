@@ -82,7 +82,7 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, policy FactorPoli
 	if err := b.initializeShamirKey(ctx); err != nil {
 		return nil, err
 	}
-	rootKey, err := b.masterKeyBuffer()
+	rootKey, err := b.masterKeyBuffer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -144,8 +144,8 @@ func (b *StorageBarrier) rollbackInitialization(ctx context.Context) error {
 
 // masterKeyBuffer copies the in-memory root key of an unsealed barrier into
 // protected memory the caller must destroy.
-func (b *StorageBarrier) masterKeyBuffer() (*secure.Buffer, error) {
-	raw, err := b.GetMasterKey()
+func (b *StorageBarrier) masterKeyBuffer(ctx context.Context) (*secure.Buffer, error) {
+	raw, err := b.GetMasterKey(ctx)
 	if err != nil {
 		return nil, err
 	}

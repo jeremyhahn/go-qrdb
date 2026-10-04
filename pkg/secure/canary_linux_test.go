@@ -13,6 +13,7 @@ package secure
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -49,7 +50,7 @@ func TestCanary_SecretNeverOnHeap(t *testing.T) {
 	exStart := uintptr(unsafe.Pointer(&expected[0]))
 	exLen := uintptr(len(expected))
 
-	sec, err := NewSecret(raw)
+	sec, err := NewSecret(context.Background(), raw)
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}

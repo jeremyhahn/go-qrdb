@@ -16,6 +16,7 @@ package seal
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -32,7 +33,7 @@ func testLogger() *slog.Logger {
 // Shared across multiple test files.
 func testSoftwareStrategy(t *testing.T) *SoftwareStrategy {
 	t.Helper()
-	s, err := NewSoftwareStrategy([]byte("test-master-password"))
+	s, err := NewSoftwareStrategy(t.Context(), []byte("test-master-password"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -46,7 +47,7 @@ func newRecoveryStrategyForTest(key []byte, delegate SealingStrategy) (*recovery
 	if err != nil {
 		return nil, err
 	}
-	return newRecoveryStrategyFromBuffer(buf, delegate)
+	return newRecoveryStrategyFromBuffer(context.Background(), buf, delegate)
 }
 
 func TestItoa(t *testing.T) {

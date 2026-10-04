@@ -183,7 +183,7 @@ func TestExportRootKeyContext_Sealed(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 	// Barrier is sealed (never initialized).
-	_, exportErr := b.ExportRootKeyContext()
+	_, exportErr := b.ExportRootKeyContext(context.Background())
 	if exportErr != ErrSealed {
 		t.Errorf("expected ErrSealed, got %v", exportErr)
 	}
@@ -192,7 +192,7 @@ func TestExportRootKeyContext_Sealed(t *testing.T) {
 func TestExportRootKeyContext_Success(t *testing.T) {
 	leader := newLeaderBarrier(t)
 
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -223,12 +223,12 @@ func TestExportRootKeyContext_Success(t *testing.T) {
 func TestExportRootKeyContext_RootKeyMatchesMasterKey(t *testing.T) {
 	leader := newLeaderBarrier(t)
 
-	masterKey, err := leader.GetMasterKey()
+	masterKey, err := leader.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey: %v", err)
 	}
 
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestExportRootKeyContext_SealedAfterSeal(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	_, err := leader.ExportRootKeyContext()
+	_, err := leader.ExportRootKeyContext(context.Background())
 	if err != ErrSealed {
 		t.Errorf("expected ErrSealed after Seal(), got %v", err)
 	}
@@ -258,7 +258,7 @@ func TestImportRootKey_Success(t *testing.T) {
 	leader := newLeaderBarrier(t)
 	follower := newFollowerBarrier(t)
 
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestImportRootKey_MasterKeyMatchesLeader(t *testing.T) {
 	leader := newLeaderBarrier(t)
 	follower := newFollowerBarrier(t)
 
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestImportRootKey_MasterKeyMatchesLeader(t *testing.T) {
 		t.Fatalf("ImportRootKey: %v", err)
 	}
 
-	followerKey, err := follower.GetMasterKey()
+	followerKey, err := follower.GetMasterKey(context.Background())
 	if err != nil {
 		t.Fatalf("GetMasterKey (follower): %v", err)
 	}
@@ -309,7 +309,7 @@ func TestImportRootKey_CrossNodeDEKParity(t *testing.T) {
 		t.Fatalf("Encrypt (leader): %v", err)
 	}
 
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestImportRootKey_Idempotent(t *testing.T) {
 	leader := newLeaderBarrier(t)
 	follower := newFollowerBarrier(t)
 
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestImportRootKey_MetadataPersistsAcrossWarmBoot(t *testing.T) {
 	}
 
 	leader := newLeaderBarrier(t)
-	exported, err := leader.ExportRootKeyContext()
+	exported, err := leader.ExportRootKeyContext(context.Background())
 	if err != nil {
 		t.Fatalf("ExportRootKeyContext: %v", err)
 	}

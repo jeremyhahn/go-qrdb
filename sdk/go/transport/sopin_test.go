@@ -70,7 +70,7 @@ func TestWithSOPIN_SealsACopyAndReleaseDestroys(t *testing.T) {
 	// The SDK's copy is sealed in protected memory, and release destroys it.
 	sealed := ctx.Value(soPINKey{}).(*soPIN).pin
 	release()
-	if buf, err := sealed.Open(); err == nil {
+	if buf, err := sealed.Open(ctx); err == nil {
 		buf.Destroy()
 		t.Fatal("the released PIN can still be opened")
 	}
@@ -98,7 +98,7 @@ func TestSOPINFromContext_Unbound(t *testing.T) {
 // cannot open is an error every carrier returns, never a call sent without
 // its PIN.
 func TestSOPINFromContext_UnopenablePINRefusesTheCall(t *testing.T) {
-	sealed, err := secure.NewSecret([]byte("1234"))
+	sealed, err := secure.NewSecret(context.Background(), []byte("1234"))
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}

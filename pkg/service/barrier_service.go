@@ -337,7 +337,7 @@ func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.C
 // memory, the credential built from it is destroyed when the initialization
 // returns, and the caller's slice is left as it was for the caller to wipe.
 func (s *BarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
-	creds, err := seal.CredentialsFor(secret)
+	creds, err := seal.CredentialsFor(ctx, secret)
 	if err != nil {
 		return err
 	}
@@ -349,7 +349,7 @@ func (s *BarrierService) BarrierInitialize(ctx context.Context, secret []byte) e
 // to the StorageBarrier's Unseal method. secret is BORROWED, as in
 // BarrierInitialize.
 func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
-	creds, err := seal.CredentialsFor(secret)
+	creds, err := seal.CredentialsFor(ctx, secret)
 	if err != nil {
 		return err
 	}

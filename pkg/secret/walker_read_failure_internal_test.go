@@ -39,8 +39,8 @@ func (unreadableResolver) CanResolve(raw string) bool {
 
 func (unreadableResolver) Scheme() string { return "unreadable" }
 
-func (unreadableResolver) Resolve(_ context.Context, raw string) (*SecretValue, error) {
-	sv, err := NewSecretValue(raw, []byte("resolved-but-unreadable"), ResolvedStrategy("unreadable"))
+func (unreadableResolver) Resolve(ctx context.Context, raw string) (*SecretValue, error) {
+	sv, err := NewSecretValue(ctx, raw, []byte("resolved-but-unreadable"), ResolvedStrategy("unreadable"))
 	if err != nil {
 		return nil, err
 	}
@@ -121,23 +121,23 @@ func TestProcess_UnreadableResolvedStringFailsClosed(t *testing.T) {
 // TestSecretValue_ReadString_DistinguishesEmptyFromUnreadable pins readString's
 // contract, which the walker's fail-closed behaviour depends on.
 func TestSecretValue_ReadString_DistinguishesEmptyFromUnreadable(t *testing.T) {
-	empty, err := NewSecretValue("x://empty", nil, ResolvedStrategy("x"))
+	empty, err := NewSecretValue(context.Background(), "x://empty", nil, ResolvedStrategy("x"))
 	if err != nil {
 		t.Fatalf("NewSecretValue(empty): %v", err)
 	}
-	if s, err := empty.readString(); s != "" || err != nil {
+	if s, err := empty.readString(context.Background()); s != "" || err != nil {
 		t.Errorf("readString(empty) = (%q, %v), want (\"\", nil)", s, err)
 	}
 
-	full, err := NewSecretValue("x://full", []byte("value"), ResolvedStrategy("x"))
+	full, err := NewSecretValue(context.Background(), "x://full", []byte("value"), ResolvedStrategy("x"))
 	if err != nil {
 		t.Fatalf("NewSecretValue(full): %v", err)
 	}
-	if s, err := full.readString(); s != "value" || err != nil {
+	if s, err := full.readString(context.Background()); s != "value" || err != nil {
 		t.Errorf("readString(full) = (%q, %v), want (\"value\", nil)", s, err)
 	}
 	full.secret.Destroy()
-	if s, err := full.readString(); s != "" || err == nil {
+	if s, err := full.readString(context.Background()); s != "" || err == nil {
 		t.Errorf("readString(destroyed) = (%q, %v), want an error", s, err)
 	}
 }

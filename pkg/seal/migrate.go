@@ -551,7 +551,7 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 	if ierr := sib.initializeShamirKey(ctx); ierr != nil {
 		return nil, nil, ierr
 	}
-	rootKey, err := sib.masterKeyBuffer()
+	rootKey, err := sib.masterKeyBuffer(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

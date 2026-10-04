@@ -49,7 +49,7 @@ func initNoneBarrier(t *testing.T, backend seal.StorageBackend, rootKeyPath stri
 func initKeyedBarrier(t *testing.T, backend seal.StorageBackend, rootKeyPath, passphrase string) *seal.StorageBarrier {
 	t.Helper()
 	ctx := context.Background()
-	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte(passphrase))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -58,7 +58,7 @@ func initKeyedBarrier(t *testing.T, backend seal.StorageBackend, rootKeyPath, pa
 	if err != nil {
 		t.Fatalf("NewStorageBarrier(keyed): %v", err)
 	}
-	creds := seal.MustCredentials([]byte(passphrase))
+	creds := seal.MustCredentials(context.Background(), []byte(passphrase))
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize(keyed): %v", err)
 	}
@@ -103,7 +103,7 @@ func TestNodeStoreMigration_NoneToPassphrase(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte(passphrase)),
+		Credentials:    seal.MustCredentials(context.Background(), []byte(passphrase)),
 	}
 	if err := mig.Run(ctx, opts); err != nil {
 		t.Fatalf("migration Run: %v", err)
@@ -149,7 +149,7 @@ func TestNodeStoreMigration_NoneToPassphrase(t *testing.T) {
 func initReopenKeyed(t *testing.T, backend seal.StorageBackend, rootKeyPath, passphrase string) *seal.StorageBarrier {
 	t.Helper()
 	ctx := context.Background()
-	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte(passphrase))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -160,7 +160,7 @@ func initReopenKeyed(t *testing.T, backend seal.StorageBackend, rootKeyPath, pas
 	}
 	// Do NOT Initialize — the canonical root key already exists (committed by the
 	// migration). Unseal it directly.
-	if err := b.Unseal(ctx, seal.MustCredentials([]byte(passphrase))); err != nil {
+	if err := b.Unseal(ctx, seal.MustCredentials(context.Background(), []byte(passphrase))); err != nil {
 		t.Fatalf("Unseal reopened keyed barrier: %v", err)
 	}
 	return b
@@ -229,7 +229,7 @@ func TestNodeStoreMigration_InPlaceMechanism(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismInPlace,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte(passphrase)),
+		Credentials:    seal.MustCredentials(context.Background(), []byte(passphrase)),
 	}
 	if err := mig.Run(ctx, opts); err != nil {
 		t.Fatalf("in-place migration Run: %v", err)
@@ -267,7 +267,7 @@ func TestNodeStoreMigration_ReopenWithDeferredAndNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("target barrier: %v", err)
 	}
-	if err := target.Initialize(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := target.Initialize(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("init target: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestNodeStoreMigration_ReopenWithDeferredAndNone(t *testing.T) {
 	mig := &NodeStoreMigration{Source: source, Target: target, StoreDirs: []string{dir}, Logger: reencTestLogger()}
 	if err := mig.Run(ctx, seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte(pw)),
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials(context.Background(), []byte(pw)),
 	}); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestNodeStoreMigration_ReopenWithDeferredAndNone(t *testing.T) {
 	if got := reopened.PersistedStrategy(ctx); got != seal.StrategyPassphrase {
 		t.Fatalf("PersistedStrategy = %q, want passphrase", got)
 	}
-	if err := reopened.Unseal(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := reopened.Unseal(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("unseal reopened: %v", err)
 	}
 	got := readAll(t, dir, atrest.New(reopened))
@@ -329,13 +329,13 @@ func TestNodeStoreMigration_DiskSealStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("target: %v", err)
 	}
-	if err := target.Initialize(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := target.Initialize(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("init target: %v", err)
 	}
 	mig := &NodeStoreMigration{Source: source, Target: target, StoreDirs: []string{dir}, Logger: reencTestLogger()}
 	if err := mig.Run(ctx, seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte(pw)),
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials(context.Background(), []byte(pw)),
 	}); err != nil {
 		t.Fatalf("migration: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestNodeStoreMigration_DiskSealStoreReopen(t *testing.T) {
 	if got := reopened.PersistedStrategy(ctx); got != seal.StrategyPassphrase {
 		t.Fatalf("PersistedStrategy after disk reopen = %q, want passphrase", got)
 	}
-	if err := reopened.Unseal(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := reopened.Unseal(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("unseal after disk reopen: %v", err)
 	}
 	got := readAll(t, dir, atrest.New(reopened))
@@ -387,7 +387,7 @@ func TestRecoverInterruptedMigration_RollForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyed barrier: %v", err)
 	}
-	if err := keyed.Initialize(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := keyed.Initialize(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("init keyed: %v", err)
 	}
 	// The data dir is already the keyed copy (swap completed pre-crash).
@@ -428,7 +428,7 @@ func TestRecoverInterruptedMigration_RollForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if err := reopened.Unseal(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := reopened.Unseal(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("unseal recovered: %v", err)
 	}
 	got := readAll(t, dir, atrest.New(reopened))
@@ -542,7 +542,7 @@ func TestNodeStoreMigration_RecodeFailureRollsBack(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("pw")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("pw")),
 	}
 	err := mig.Run(ctx, opts)
 	var dirErr *MigrateStoreDirError
@@ -619,7 +619,7 @@ func TestRecoverInterruptedMigration_JournalStoreDirs_RollForward(t *testing.T) 
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if err := reopened.Unseal(ctx, seal.MustCredentials([]byte(pw))); err != nil {
+	if err := reopened.Unseal(ctx, seal.MustCredentials(context.Background(), []byte(pw))); err != nil {
 		t.Fatalf("unseal recovered: %v", err)
 	}
 	got := readAll(t, dir, atrest.New(reopened))
@@ -767,7 +767,7 @@ func TestNodeStoreMigration_JournalRecordsStoreDirs(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("pw")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("pw")),
 	}
 	if err := mig.Run(ctx, opts); err != nil {
 		t.Fatalf("Run: %v", err)

@@ -59,7 +59,7 @@ func newQuorumSealNode(t *testing.T, sealer *clustersealtest.Sealer) *quorumSeal
 	require.NoError(t, reg.InitializeTenant(ctx, "auto", seal.Credentials{}))
 	_, err = reg.RegisterTenant(ctx, "self", seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "tenants/self/root"}, seal.NewDeferredSoftwareStrategy())
 	require.NoError(t, err)
-	require.NoError(t, reg.InitializeTenant(ctx, "self", seal.MustCredentials([]byte("self-pass"))))
+	require.NoError(t, reg.InitializeTenant(ctx, "self", seal.MustCredentials(context.Background(), []byte("self-pass"))))
 
 	dbs := newPassphraseDatabases(t, e.barrier)
 
@@ -191,7 +191,7 @@ func newPassphraseDatabases(t *testing.T, system *seal.StorageBarrier) *database
 		TenantID: "acme", Name: "secure", Engine: database.EngineKV, Backend: database.BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
-	}, seal.MustCredentials([]byte("db-pass")))
+	}, seal.MustCredentials(context.Background(), []byte("db-pass")))
 	require.NoError(t, err)
 	return mgr
 }

@@ -69,7 +69,7 @@ func newPooledTestRegistryAt(t *testing.T, poolPath string, extra ...Option) (*B
 		t.Fatalf("pool Register: %v", err)
 	}
 
-	strategy, err := NewSoftwareStrategy([]byte("destroy-tenant-system-pass"))
+	strategy, err := NewSoftwareStrategy(context.Background(), []byte("destroy-tenant-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

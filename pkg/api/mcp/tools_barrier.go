@@ -151,7 +151,7 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		// decoded copy wiped at once — the credential is what the migration
 		// reads from here on.
 		passphrase := secretArg(req, "passphrase")
-		creds, err := seal.CredentialsFor(passphrase)
+		creds, err := seal.CredentialsFor(ctx, passphrase)
 		secure.Wipe(passphrase)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}

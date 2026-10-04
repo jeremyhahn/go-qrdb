@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"os"
@@ -466,7 +467,7 @@ func installTestSecureLifecycle() (restore func()) {
 	hardenSecureProcess = func(*slog.Logger) (secure.ProcessHardening, error) { return secure.ProcessHardened, nil }
 	newSecureAllocator = enclave.NewAllocator
 	setSecureAllocator = func(*secure.Allocator) error { return nil }
-	wipeSecureMemory = func() (int, error) { return 0, nil }
+	wipeSecureMemory = func(context.Context) (int, error) { return 0, nil }
 	// An unconfigured budget is derived from RLIMIT_MEMLOCK; reporting it
 	// unlimited keeps every runStart test in this binary off the host's own
 	// limit, for the same reason newSecureAllocator is not the RLIMIT-aware

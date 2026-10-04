@@ -229,7 +229,7 @@ func (f *fakeDatabases) SealBarrierDatabases() error {
 // unsealed and which holds an unsealed tenant barrier "acme".
 func newEnforcerRegistry(t *testing.T) *seal.BarrierRegistry {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte("enforcer-pass"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("enforcer-pass"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,7 @@ package secret_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,7 +83,7 @@ func runWithBytesRaceChild() {
 		os.Exit(1)
 	}
 
-	sv, err := secret.NewSecretValue("raw://race", []byte(withBytesRacePlaintext), secret.StrategyLiteral)
+	sv, err := secret.NewSecretValue(context.Background(), "raw://race", []byte(withBytesRacePlaintext), secret.StrategyLiteral)
 	if err != nil {
 		fail("NewSecretValue: %v", err)
 	}
@@ -100,7 +101,7 @@ func runWithBytesRaceChild() {
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- sv.WithBytes(func(b []byte) error {
+		done <- sv.WithBytes(context.Background(), func(b []byte) error {
 			before := string(b)
 			close(started)
 			time.Sleep(callbackHold)
@@ -117,7 +118,7 @@ func runWithBytesRaceChild() {
 	}()
 
 	<-started
-	remaining, wipeErr := enclave.WipeAll()
+	remaining, wipeErr := enclave.WipeAll(context.Background())
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}

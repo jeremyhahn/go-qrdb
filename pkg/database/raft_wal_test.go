@@ -33,11 +33,11 @@ func encryptingEpochBarrier(t *testing.T) *seal.EpochBarrier {
 	if err != nil {
 		t.Fatalf("new epoch barrier: %v", err)
 	}
-	strategy, err := seal.NewSoftwareStrategy([]byte("raft-wal-test"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("raft-wal-test"))
 	if err != nil {
 		t.Fatalf("software strategy: %v", err)
 	}
-	if err := b.Initialize(context.Background(), strategy, seal.MustCredentials([]byte("raft-wal-test"))); err != nil {
+	if err := b.Initialize(context.Background(), strategy, seal.MustCredentials(context.Background(), []byte("raft-wal-test"))); err != nil {
 		t.Fatalf("initialize epoch barrier: %v", err)
 	}
 	if b.IsPlaintextMode() {

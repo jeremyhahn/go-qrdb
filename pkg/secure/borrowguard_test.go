@@ -15,6 +15,7 @@
 package secure
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -78,7 +79,7 @@ func TestBorrowGuard_ReportsAPurgeClassOperationInsideABorrow(t *testing.T) {
 		_ = buf.WithBytes(func(b []byte) error {
 			// The offending act. Reached from the real call sites through
 			// injected interfaces, which is why reading the code is not enough.
-			sec, secErr := NewSecret([]byte("allocation inside a borrow"))
+			sec, secErr := NewSecret(context.Background(), []byte("allocation inside a borrow"))
 			if secErr == nil {
 				sec.Destroy()
 			}
@@ -125,17 +126,17 @@ func TestBorrowGuard_CoversEveryPurgeClassEntryPoint(t *testing.T) {
 			}
 		}},
 		{"NewSecret", func() {
-			if s, err := NewSecret([]byte("abcdefgh")); err == nil {
+			if s, err := NewSecret(context.Background(), []byte("abcdefgh")); err == nil {
 				s.Destroy()
 			}
 		}},
 		{"Secret.Open", func() {
-			s, err := NewSecret([]byte("abcdefgh"))
+			s, err := NewSecret(context.Background(), []byte("abcdefgh"))
 			if err != nil {
 				return
 			}
 			defer s.Destroy()
-			if b, openErr := s.Open(); openErr == nil {
+			if b, openErr := s.Open(context.Background()); openErr == nil {
 				b.Destroy()
 			}
 		}},

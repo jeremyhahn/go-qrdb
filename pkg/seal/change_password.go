@@ -72,7 +72,7 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// returns (mirrors MintKeyedShamirSibling's defer secure.Wipe(rootKey)) —
 	// otherwise a 32-byte plaintext root key, which derives every DEK, is left
 	// resident in memory after every password change.
-	rootKey, err := b.barrier.RootKey()
+	rootKey, err := b.barrier.RootKey(ctx)
 	if err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// fails authentication on the next Unseal. It must be the last mutation
 	// before marshalling: the MAC covers the ciphertext as well as the
 	// metadata carried forward.
-	if err := b.barrier.StampSealedStateMAC(sealed); err != nil {
+	if err := b.barrier.StampSealedStateMAC(ctx, sealed); err != nil {
 		_ = newStrat.Close()
 		return err
 	}

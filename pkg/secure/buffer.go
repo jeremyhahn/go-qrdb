@@ -16,6 +16,7 @@ package secure
 
 import (
 	"errors"
+	"log/slog"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-enclave"
@@ -158,7 +159,10 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 		return nil
 	}); werr != nil {
 		enclave.Wipe(src)
-		enc.Destroy()
+		if derr := enc.Destroy(); derr != nil {
+			slog.Warn("secure: releasing a failed NewBufferFromBytes allocation reported a non-fatal problem",
+				slog.String("error", derr.Error()))
+		}
 		return nil, werr
 	}
 	enclave.Wipe(src)
@@ -298,13 +302,13 @@ func (b *Buffer) Destroy() {
 // dropping.
 //
 // It returns nil for an ordinary release, and for a nil or already-destroyed
-// Buffer. Like the underlying enclave.MemoryEnclave.DestroyErr, it PANICS if
+// Buffer. Like the underlying enclave.MemoryEnclave.Destroy, it PANICS if
 // the canary guarding the enclave failed to verify: that means memory this
 // package did not own was written, and the state a caller would use to
 // recover is the state that is already wrong.
 //
 // The ErrReleasedWithoutWipe branch is delegated to
-// enclave.MemoryEnclave.DestroyErr rather than reproduced here, and go-qrdb's
+// enclave.MemoryEnclave.Destroy rather than reproduced here, and go-qrdb's
 // own test suite cannot force it: triggering a denied mprotect is exercised
 // only from INSIDE go-enclave's own package-internal tests (unexported
 // syscall seams), and reproducing it from this package would mean widening
@@ -317,7 +321,7 @@ func (b *Buffer) Destroy() {
 // below flips b.destroyed to true before the release runs, which is right for
 // the ordinary concurrent-Destroy case (only one caller proceeds; the rest see
 // nil immediately) but would be wrong for any attempt that never reaches the
-// end of b.enc.DestroyErr: a go-enclave panic after a failed unlock or unmap,
+// end of b.enc.Destroy: a go-enclave panic after a failed unlock or unmap,
 // or an armed borrow guard's violation handler panicking or calling
 // runtime.Goexit from checkNoBorrow before the release even starts. Without
 // the reset, a caller that recovers and retries would find b.destroyed already
@@ -341,7 +345,7 @@ func (b *Buffer) DestroyErr() error {
 		}
 	}()
 	checkNoBorrow("Buffer.Destroy")
-	err := b.enc.DestroyErr()
+	err := b.enc.Destroy()
 	completed = true
 	return err
 }

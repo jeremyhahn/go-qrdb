@@ -117,7 +117,7 @@ func testLogger() *slog.Logger {
 // testSoftwareStrategy creates a SoftwareStrategy for tests.
 func testSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 	t.Helper()
-	s, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	s, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-password"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}

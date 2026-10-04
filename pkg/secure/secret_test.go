@@ -10,6 +10,7 @@ package secure
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -35,7 +36,7 @@ func TestNewSecret(t *testing.T) {
 			src := append([]byte(nil), tc.in...)
 			want := append([]byte(nil), tc.in...)
 
-			sec, err := NewSecret(src)
+			sec, err := NewSecret(context.Background(), src)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error")
@@ -59,7 +60,7 @@ func TestNewSecret(t *testing.T) {
 				t.Fatalf("NewSecret did not wipe source slice")
 			}
 
-			buf, err := sec.Open()
+			buf, err := sec.Open(context.Background())
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
@@ -80,7 +81,7 @@ func TestNewSecretFromBuffer(t *testing.T) {
 		t.Fatalf("NewBufferFromBytes: %v", err)
 	}
 
-	sec, err := NewSecretFromBuffer(buf)
+	sec, err := NewSecretFromBuffer(context.Background(), buf)
 	if err != nil {
 		t.Fatalf("NewSecretFromBuffer: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestNewSecretFromBuffer(t *testing.T) {
 		t.Fatalf("after NewSecretFromBuffer, buf.Bytes() != nil")
 	}
 
-	open, err := sec.Open()
+	open, err := sec.Open(context.Background())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestNewSecretFromBuffer(t *testing.T) {
 }
 
 func TestNewSecretFromBuffer_Nil(t *testing.T) {
-	sec, err := NewSecretFromBuffer(nil)
+	sec, err := NewSecretFromBuffer(context.Background(), nil)
 	if err == nil || sec != nil {
 		t.Fatalf("expected error and nil Secret, got sec=%v err=%v", sec, err)
 	}
@@ -121,7 +122,7 @@ func TestNewSecretFromBuffer_Destroyed(t *testing.T) {
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	buf.Destroy()
-	sec, err := NewSecretFromBuffer(buf)
+	sec, err := NewSecretFromBuffer(context.Background(), buf)
 	if err == nil || sec != nil {
 		t.Fatalf("expected error for destroyed buffer")
 	}
@@ -138,7 +139,7 @@ func TestNewSecretFromBuffer_Destroyed(t *testing.T) {
 // this exercises the third guard: a live-looking Buffer whose enclave was
 // never allocated, where enc.Size() must report 0 rather than panic.
 func TestNewSecretFromBuffer_ZeroValue(t *testing.T) {
-	sec, err := NewSecretFromBuffer(&Buffer{})
+	sec, err := NewSecretFromBuffer(context.Background(), &Buffer{})
 	if err == nil || sec != nil {
 		t.Fatalf("expected error for a zero-value buffer, got sec=%v err=%v", sec, err)
 	}
@@ -149,13 +150,13 @@ func TestNewSecretFromBuffer_ZeroValue(t *testing.T) {
 }
 
 func TestSecret_OpenAfterDestroy(t *testing.T) {
-	sec, err := NewSecret([]byte("short-lived"))
+	sec, err := NewSecret(context.Background(), []byte("short-lived"))
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}
 	sec.Destroy()
 
-	buf, err := sec.Open()
+	buf, err := sec.Open(context.Background())
 	if err == nil || buf != nil {
 		t.Fatalf("expected error and nil Buffer after Destroy")
 	}
@@ -166,7 +167,7 @@ func TestSecret_OpenAfterDestroy(t *testing.T) {
 }
 
 func TestSecret_DoubleDestroyIsSafe(t *testing.T) {
-	sec, err := NewSecret([]byte("short-lived"))
+	sec, err := NewSecret(context.Background(), []byte("short-lived"))
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}
@@ -179,7 +180,7 @@ func TestSecret_NilReceiverIsSafe(t *testing.T) {
 	var sec *Secret
 	// Must not panic.
 	sec.Destroy()
-	buf, err := sec.Open()
+	buf, err := sec.Open(context.Background())
 	if err == nil || buf != nil {
 		t.Fatalf("expected error and nil Buffer")
 	}
@@ -190,7 +191,7 @@ func TestSecret_NilReceiverIsSafe(t *testing.T) {
 }
 
 func TestSecret_ConcurrentDestroyAndOpen(t *testing.T) {
-	sec, err := NewSecret([]byte("contended"))
+	sec, err := NewSecret(context.Background(), []byte("contended"))
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestSecret_ConcurrentDestroyAndOpen(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if b, err := sec.Open(); err == nil {
+			if b, err := sec.Open(context.Background()); err == nil {
 				b.Destroy()
 			}
 		}()
@@ -216,7 +217,7 @@ func TestSecret_ConcurrentDestroyAndOpen(t *testing.T) {
 
 func TestSecret_ZeroValueUnusable(t *testing.T) {
 	var sec Secret // zero value
-	if _, err := sec.Open(); err == nil {
+	if _, err := sec.Open(context.Background()); err == nil {
 		t.Fatalf("expected Open() on zero-value Secret to fail")
 	}
 	// Destroy on zero value must not panic.
@@ -232,7 +233,7 @@ func TestSecret_ZeroValueUnusable(t *testing.T) {
 // underlying go-enclave error.
 func TestSecret_Open_DecryptionFailure(t *testing.T) {
 	src := []byte("material-for-corruption-test")
-	sec, err := NewSecret(src)
+	sec, err := NewSecret(context.Background(), src)
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}
@@ -271,7 +272,7 @@ func TestSecret_Open_DecryptionFailure(t *testing.T) {
 		ct[i] ^= 0xFF
 	}
 
-	buf, err := sec.Open()
+	buf, err := sec.Open(context.Background())
 	if err == nil || buf != nil {
 		t.Fatalf("expected Open to fail after ciphertext corruption, got buf=%v err=nil", buf)
 	}

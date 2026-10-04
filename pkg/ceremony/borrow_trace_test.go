@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -32,11 +33,11 @@ func TestShareStoreClaim_TakesNoNestedBorrow(t *testing.T) {
 
 	store := newSealedShareStore(DefaultShareTTL)
 	const share = `{"index":1,"value":"abc123"}`
-	if err := store.Store("officer-1", []byte(share)); err != nil {
+	if err := store.Store(context.Background(), "officer-1", []byte(share)); err != nil {
 		t.Fatalf("Store: %v", err)
 	}
 
-	out, err := store.Claim("officer-1")
+	out, err := store.Claim(context.Background(), "officer-1")
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestShareStoreClaim_TakesNoNestedBorrow(t *testing.T) {
 
 	// A second claim must refuse, and the refusal path destroys nothing but
 	// still runs the same lookup — checked so the guard covers both outcomes.
-	if _, err := store.Claim("officer-1"); err == nil {
+	if _, err := store.Claim(context.Background(), "officer-1"); err == nil {
 		t.Error("the second Claim returned no error")
 	}
 }
@@ -58,7 +59,7 @@ func TestShareStoreStore_TakesNoNestedBorrow(t *testing.T) {
 
 	store := newSealedShareStore(DefaultShareTTL)
 	for _, officer := range []string{"officer-1", "officer-2", "officer-3"} {
-		if err := store.Store(officer, []byte(`{"index":1,"value":"abc"}`)); err != nil {
+		if err := store.Store(context.Background(), officer, []byte(`{"index":1,"value":"abc"}`)); err != nil {
 			t.Fatalf("Store(%s): %v", officer, err)
 		}
 	}

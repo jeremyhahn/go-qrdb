@@ -76,7 +76,7 @@ func enforceSOGateGRPC(ctx context.Context, gate *SOGate, fullMethod string) (co
 			pin = []byte(vals[0])
 		}
 	}
-	ctx = WithSOFactor(ctx, NewSOFactor(pin, isSecure, clientIP))
+	ctx = WithSOFactor(ctx, NewSOFactor(ctx, pin, isSecure, clientIP))
 	if err := gate.Enforce(ctx, perm, fullMethod, "call"); err != nil {
 		return ctx, GRPCError(err, codes.Unavailable)
 	}

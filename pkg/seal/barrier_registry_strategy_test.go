@@ -209,7 +209,7 @@ func TestRegisterTenantPooledSystemManaged_RegistrationSucceeds(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 
 	// Unseal the system barrier so the SystemBarrierStrategy is functional.
-	if err := reg.SystemBarrier().Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := reg.SystemBarrier().Initialize(ctx, MustCredentials(context.Background(), []byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 

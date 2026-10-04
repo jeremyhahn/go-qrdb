@@ -35,10 +35,10 @@ func TestHolderScope_CommittedWithoutStagedSetIsRefused(t *testing.T) {
 	h, err := newHolderScope(ScopeTenant("acme"), seal.DomainUnseal, "acme", seal.NewMemoryBackend(), DefaultShareTTL, func() bool { return false }, testLogger())
 	require.NoError(t, err)
 	inForce := newSealedShareStore(DefaultShareTTL)
-	require.NoError(t, inForce.Store("alice", []byte("envelope-d0")))
+	require.NoError(t, inForce.Store(context.Background(), "alice", []byte("envelope-d0")))
 	h.store = inForce
 	staged := newSealedShareStore(DefaultShareTTL)
-	require.NoError(t, staged.Store("alice", []byte("envelope-d2")))
+	require.NoError(t, staged.Store(context.Background(), "alice", []byte("envelope-d2")))
 	h.staged, h.stagedDistribution = staged, "d2"
 
 	err = h.committed(ctx, nil, &seal.HolderRoster{Domain: seal.DomainUnseal, Distribution: "d1"}, nil)

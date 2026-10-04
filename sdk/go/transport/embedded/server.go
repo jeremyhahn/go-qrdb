@@ -903,7 +903,7 @@ func (s *Server) setupBarrier(
 				return nil, nil, &BarrierPassphraseError{}
 			}
 			var credErr error
-			if softwareCreds, credErr = seal.NewCredentials(softwareSecret); credErr != nil {
+			if softwareCreds, credErr = seal.NewCredentials(ctx, softwareSecret); credErr != nil {
 				_ = sealStore.Close()
 				s.sealStore = nil
 				return nil, nil, &BarrierPassphraseError{Err: credErr}

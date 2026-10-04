@@ -48,11 +48,11 @@ func (r *vaultResolver) Scheme() string { return "vault" }
 
 func (r *vaultResolver) CanResolve(raw string) bool { return strings.HasPrefix(raw, vaultScheme) }
 
-func (r *vaultResolver) Resolve(_ context.Context, raw string) (*secret.SecretValue, error) {
+func (r *vaultResolver) Resolve(ctx context.Context, raw string) (*secret.SecretValue, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	return secret.NewSecretValue(raw, []byte(vaultPlaintext), secret.StrategyCredential)
+	return secret.NewSecretValue(ctx, raw, []byte(vaultPlaintext), secret.StrategyCredential)
 }
 
 // newVaultRegistry returns a registry holding a single healthy vaultResolver.
@@ -66,7 +66,7 @@ func newVaultRegistry() *secret.ResolverRegistry {
 func plaintextOf(t *testing.T, sv *secret.SecretValue) string {
 	t.Helper()
 	var got string
-	if err := sv.WithBytes(func(b []byte) error {
+	if err := sv.WithBytes(t.Context(), func(b []byte) error {
 		got = string(b)
 		return nil
 	}); err != nil {
@@ -1056,11 +1056,11 @@ func (r *flakyResolver) Scheme() string { return "vault" }
 
 func (r *flakyResolver) CanResolve(raw string) bool { return strings.HasPrefix(raw, vaultScheme) }
 
-func (r *flakyResolver) Resolve(_ context.Context, raw string) (*secret.SecretValue, error) {
+func (r *flakyResolver) Resolve(ctx context.Context, raw string) (*secret.SecretValue, error) {
 	if r.failing {
 		return nil, errRefreshFailed
 	}
-	return secret.NewSecretValue(raw, []byte(vaultPlaintext), secret.StrategyCredential)
+	return secret.NewSecretValue(ctx, raw, []byte(vaultPlaintext), secret.StrategyCredential)
 }
 
 var errRefreshFailed = errors.New("backend unavailable")
@@ -1087,7 +1087,7 @@ func TestProcess_FailedRefreshDoesNotLeaveStaleSecretUsable(t *testing.T) {
 	if got := plaintextOf(t, cfg.Password); got != "" {
 		t.Errorf("stale secret is still readable after a failed refresh: %q", got)
 	}
-	buf, err := cfg.Password.Open()
+	buf, err := cfg.Password.Open(t.Context())
 	if err == nil && buf != nil {
 		defer buf.Destroy()
 		t.Errorf("Open still yields a buffer of %d bytes after a failed refresh", buf.Size())

@@ -475,7 +475,7 @@ func (r *sealAfterResolveResolver) Resolve(context.Context, string) (kvstore.KVS
 func newSealAfterResolveResolver(t *testing.T) *sealAfterResolveResolver {
 	t.Helper()
 	barrier, _ := newTestSoftwareBarrier(t)
-	creds, err := seal.CredentialsFor([]byte("test-secret-32-bytes-long-enough"))
+	creds, err := seal.CredentialsFor(context.Background(), []byte("test-secret-32-bytes-long-enough"))
 	if err != nil {
 		t.Fatalf("CredentialsFor: %v", err)
 	}

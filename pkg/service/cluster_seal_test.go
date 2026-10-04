@@ -200,7 +200,7 @@ func newClusterDatabase(t *testing.T, sealer *clustersealtest.Sealer, name strin
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 	secret := []byte("db-secret")
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(bytes.Clone(secret))); err != nil {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), bytes.Clone(secret))); err != nil {
 		t.Fatal(err)
 	}
 	return svc, secret
@@ -247,7 +247,7 @@ func TestUnsealDatabase_ClearsASealedRecord(t *testing.T) {
 	if err := svc.SealDatabase(opsCtx(), "secure"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UnsealDatabase(opsCtx(), "secure", seal.MustCredentials(bytes.Clone(secret))); err != nil {
+	if err := svc.UnsealDatabase(opsCtx(), "secure", seal.MustCredentials(context.Background(), bytes.Clone(secret))); err != nil {
 		t.Fatal(err)
 	}
 	b := clusterseal.DatabaseBarrier(tenantid.System, "secure")
@@ -267,7 +267,7 @@ func TestUnsealDatabase_ClearFailureSealsAgain(t *testing.T) {
 	}
 	boom := &clusterseal.RecordNotConfirmedError{Barrier: clusterseal.DatabaseBarrier(tenantid.System, "secure"), Op: "clear", Err: errors.New("no quorum")}
 	sealer.SetClearErr(boom)
-	if err := svc.UnsealDatabase(opsCtx(), "secure", seal.MustCredentials(bytes.Clone(secret))); !errors.Is(err, boom) {
+	if err := svc.UnsealDatabase(opsCtx(), "secure", seal.MustCredentials(context.Background(), bytes.Clone(secret))); !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
 	}
 	if dbStatus(t, svc, "secure") != database.StatusSealed {
@@ -319,7 +319,7 @@ func TestDatabaseBarrierOps_OwnerOnly(t *testing.T) {
 			if err := svc.SealDatabase(tc.ctx, tc.db); !errors.As(err, &nf) {
 				t.Errorf("seal err = %v, want *database.NotFoundError", err)
 			}
-			if err := svc.UnsealDatabase(tc.ctx, tc.db, seal.MustCredentials(bytes.Clone(secret))); !errors.As(err, &nf) {
+			if err := svc.UnsealDatabase(tc.ctx, tc.db, seal.MustCredentials(context.Background(), bytes.Clone(secret))); !errors.As(err, &nf) {
 				t.Errorf("unseal err = %v, want *database.NotFoundError", err)
 			}
 			if _, err := svc.DatabaseBarrierStatus(tc.ctx, tc.db); !errors.As(err, &nf) {
@@ -395,7 +395,7 @@ func TestCreateDatabase_StaleRecordClearFailureRollsBack(t *testing.T) {
 	cfg := testDBConfig("secure")
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("db-secret"))); !errors.Is(err, boom) {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(context.Background(), []byte("db-secret"))); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want %v", err, boom)
 	}
 	var nf *database.NotFoundError
@@ -502,7 +502,7 @@ func TestUnsealDatabase_ClearsARecordThisNodeHasNotSeen(t *testing.T) {
 	if err := svc.SealDatabaseLocal(tenantid.System, "secure"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.UnsealDatabase(opsCtx(), "secure", seal.MustCredentials(bytes.Clone(secret))); err != nil {
+	if err := svc.UnsealDatabase(opsCtx(), "secure", seal.MustCredentials(context.Background(), bytes.Clone(secret))); err != nil {
 		t.Fatal(err)
 	}
 	b := clusterseal.DatabaseBarrier(tenantid.System, "secure")

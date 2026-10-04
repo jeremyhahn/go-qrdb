@@ -16,6 +16,7 @@ package seal
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -55,8 +56,17 @@ const copyEnclaveRacePlaintext = "copy-enclave-must-hold-both-borrows-0123"
 // bug SecretValue.WithBytes's round-3 fix and NewSecretFromBuffer's round-4
 // fix closed elsewhere in this same review. Nesting both enclaves' borrows
 // for the whole copy, as copyEnclaveToBuffer now does, makes a racing
-// WipeAll block against the destination's borrow instead of unmapping
-// underneath it.
+// WipeAll unable to unmap the destination underneath it.
+//
+// go-enclave v0.7.0-alpha changed WipeAll from a TryLock sweep that SKIPS a
+// held enclave to one that WAITS for its borrow to end before reclaiming it.
+// The race therefore drives WipeAll with a context bounded well short of
+// copyHold, exactly as a real shutdown sweep is given a deadline (see
+// go-enclave's WipeAll doc and cmd/qrdbd/start.go's recordSecureMemoryWipe):
+// the wait times out before the destination's borrow ends, so WipeAll leaves
+// it mapped and counted rather than destroying it once the copy finishes and
+// the test reads it back -- still proving the destination is never
+// corrupted mid-copy, under the new contract.
 //
 // It runs in a SUBPROCESS for the same reason
 // pkg/secret/seal_failure_test.go's does: enclave.WipeAll is a one-shot,
@@ -104,13 +114,14 @@ func runCopyEnclaveRaceChild() {
 	}
 	defer enc.Destroy()
 
-	// go-enclave's WipeAll retries a bounded number of passes with a short
-	// backoff (measured worst case ~7.5ms in go-enclave's own test suite)
-	// before giving up on a still-held enclave. Sleeping far longer than that
-	// inside the held borrow means a WipeAll that runs concurrently is
-	// overwhelmingly likely to return (having found the destination still
-	// held) well before the copy does, rather than by coincidentally winning
-	// a tight race.
+	// wipeWait bounds the race's WipeAll call well short of copyHold, so the
+	// wait for the destination's borrow times out while the copy is still in
+	// flight -- go-enclave v0.7.0-alpha's WipeAll waits for a held enclave's
+	// borrow rather than skipping it.
+	const wipeWait = 20 * time.Millisecond
+	// Far longer than wipeWait, so the race's WipeAll call reliably times out
+	// waiting for the destination's borrow while the copy is still inside
+	// it, rather than by coincidentally winning a tight race.
 	const copyHold = 200 * time.Millisecond
 
 	started := make(chan struct{})
@@ -134,7 +145,12 @@ func runCopyEnclaveRaceChild() {
 	}()
 
 	<-started
-	remaining, wipeErr := enclave.WipeAll()
+	wipeCtx, cancel := context.WithTimeout(context.Background(), wipeWait)
+	defer cancel()
+	remaining, wipeErr := enclave.WipeAll(wipeCtx)
+	// A context that ends while the destination's borrow is still held is
+	// not an error (go-enclave's WipeAll doc): it is exactly the "left
+	// mapped and counted" outcome this race means to force.
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}

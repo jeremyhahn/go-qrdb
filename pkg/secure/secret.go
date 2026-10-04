@@ -15,6 +15,8 @@
 package secure
 
 import (
+	"context"
+	"log/slog"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-enclave"
@@ -61,14 +63,18 @@ var newSealed = enclave.NewSealed
 // Secret. On return, src is wiped — the caller must not reuse it, on every
 // return path including failure. A nil or empty src returns
 // (nil, *InvalidSizeError).
-func NewSecret(src []byte) (*Secret, error) {
+//
+// ctx is the real caller context, not context.Background(): go-enclave's
+// Sealer may be backed by a provider that blocks, and ctx is checked before
+// the seal and passed through to it.
+func NewSecret(ctx context.Context, src []byte) (*Secret, error) {
 	if len(src) == 0 {
 		return nil, &InvalidSizeError{Size: len(src)}
 	}
 	checkNoBorrow("NewSecret")
 	// enclave.NewSealed takes ownership of src and wipes it on every path,
 	// including failure.
-	sealed, err := newSealed(src)
+	sealed, err := newSealed(ctx, src)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +105,11 @@ func NewSecret(src []byte) (*Secret, error) {
 // A sealing failure (enclave.ErrSealerWiped, enclave.ErrLockedMemoryUnavailable
 // for the key's pages, …) is returned unwrapped, and buf is consumed all the
 // same: NewSealed has already wiped the pages it was handed.
-func NewSecretFromBuffer(buf *Buffer) (*Secret, error) {
+//
+// ctx is the real caller context, not context.Background(): go-enclave's
+// Sealer may be backed by a provider that blocks, and ctx is checked before
+// the seal and passed through to it.
+func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
 	if buf == nil {
 		return nil, &NilBufferError{}
 	}
@@ -114,7 +124,7 @@ func NewSecretFromBuffer(buf *Buffer) (*Secret, error) {
 	withErr := buf.enc.WithBytes(func(plaintext []byte) error {
 		opened = true
 		var sealErr error
-		sealed, sealErr = newSealed(plaintext)
+		sealed, sealErr = newSealed(ctx, plaintext)
 		return sealErr
 	})
 	if withErr != nil {
@@ -135,7 +145,19 @@ func NewSecretFromBuffer(buf *Buffer) (*Secret, error) {
 // locked-memory budget. Returns (nil, *NilSecretError) if the Secret has
 // been destroyed or is a zero value. Wraps any underlying go-enclave failure
 // in *OpenError.
-func (s *Secret) Open() (*Buffer, error) {
+//
+// ctx is the real caller context, not context.Background(): in
+// [enclave.ModePerOperation] the open may reach a key provider that blocks,
+// and ctx bounds that call.
+//
+// go-enclave v0.7.0-alpha returns the recovered plaintext FROZEN — a write
+// through it faults. Buffer's documented contract is uniformly writable
+// regardless of constructor, so Open copies the frozen plaintext into a
+// fresh, writable, admitted Buffer and destroys the frozen source before
+// returning. A non-fatal release report from that destroy (go-qrdb's own
+// test suite cannot force this path; see Buffer.DestroyErr) is logged at
+// WARN rather than discarded, since Open has nowhere else to hand it.
+func (s *Secret) Open(ctx context.Context) (*Buffer, error) {
 	if s == nil {
 		return nil, &NilSecretError{}
 	}
@@ -148,11 +170,51 @@ func (s *Secret) Open() (*Buffer, error) {
 	if err != nil {
 		return nil, &OpenError{Err: err}
 	}
-	enc, err := sealed.OpenWith(a)
+	frozen, err := sealed.OpenWith(ctx, a)
 	if err != nil {
 		return nil, &OpenError{Err: err}
 	}
-	return &Buffer{enc: enc}, nil
+	buf, copyErr := copyFrozenToWritable(frozen)
+	if copyErr != nil {
+		return nil, &OpenError{Err: copyErr}
+	}
+	return buf, nil
+}
+
+// copyFrozenToWritable copies frozen's plaintext into a freshly allocated,
+// writable Buffer and destroys frozen, logging any non-fatal release report
+// at WARN. frozen is consumed on every return path, including failure.
+//
+// dst is allocated BEFORE frozen is borrowed, matching copyEnclaveToBuffer's
+// ordering (pkg/seal/shamir.go) and pkg/secure's own rule 6: no protected
+// allocation runs while an enclave borrow is held. The copy itself holds BOTH
+// enclaves' borrows for its whole duration — dst's via its own WithBytes, not
+// Bytes(), so a concurrent WipeAll cannot unmap dst mid-copy.
+func copyFrozenToWritable(frozen *enclave.MemoryEnclave) (*Buffer, error) {
+	size := frozen.Size()
+	buf, err := NewBuffer(size)
+	if err != nil {
+		if destroyErr := frozen.Destroy(); destroyErr != nil {
+			slog.Warn("secure: releasing a frozen enclave reported a non-fatal problem",
+				slog.String("error", destroyErr.Error()))
+		}
+		return nil, err
+	}
+	copyErr := buf.WithBytes(func(dst []byte) error {
+		return frozen.WithBytes(func(src []byte) error {
+			copy(dst, src)
+			return nil
+		})
+	})
+	if destroyErr := frozen.Destroy(); destroyErr != nil {
+		slog.Warn("secure: releasing a frozen enclave reported a non-fatal problem",
+			slog.String("error", destroyErr.Error()))
+	}
+	if copyErr != nil {
+		buf.Destroy()
+		return nil, copyErr
+	}
+	return buf, nil
 }
 
 // Destroy wipes the sealed enclave and releases its resources. Safe to call

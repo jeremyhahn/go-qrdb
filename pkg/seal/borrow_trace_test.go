@@ -38,7 +38,7 @@ func TestRecoveryStrategyUnsealRootKey_TakesNoNestedBorrow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBufferFromBytes: %v", err)
 	}
-	strategy, err := newRecoveryStrategyFromBuffer(buf, nil)
+	strategy, err := newRecoveryStrategyFromBuffer(context.Background(), buf, nil)
 	if err != nil {
 		t.Fatalf("newRecoveryStrategyFromBuffer: %v", err)
 	}

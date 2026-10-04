@@ -47,7 +47,7 @@ func newWholeNodeFixture(t *testing.T) *wholeNodeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sys.Initialize(ctx, seal.MustCredentials([]byte(wholeNodePass))); err != nil {
+	if err := sys.Initialize(ctx, seal.MustCredentials(context.Background(), []byte(wholeNodePass))); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := seal.NewBarrierRegistry(logger, sys)
@@ -64,7 +64,7 @@ func newWholeNodeFixture(t *testing.T) *wholeNodeFixture {
 	if _, err := reg.RegisterTenantDefault("self"); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.InitializeTenant(ctx, "self", seal.MustCredentials([]byte("self-pass"))); err != nil {
+	if err := reg.InitializeTenant(ctx, "self", seal.MustCredentials(context.Background(), []byte("self-pass"))); err != nil {
 		t.Fatal(err)
 	}
 	dbs := newPassphraseDatabases(t, sys)
@@ -146,7 +146,7 @@ func TestBarrierSeal_SealsTheWholeNode(t *testing.T) {
 	if !databaseKeyWiped(t, f.dbs, "secure") {
 		t.Fatal("the passphrase database was unsealed by the system unseal")
 	}
-	if err := f.dbs.BarrierManager().UnsealDatabase(ctx, "secure", seal.MustCredentials([]byte("db-pass"))); err != nil {
+	if err := f.dbs.BarrierManager().UnsealDatabase(ctx, "secure", seal.MustCredentials(context.Background(), []byte("db-pass"))); err != nil {
 		t.Fatalf("owner unseal of the database after the node unseal: %v", err)
 	}
 	if databaseKeyWiped(t, f.dbs, "secure") {

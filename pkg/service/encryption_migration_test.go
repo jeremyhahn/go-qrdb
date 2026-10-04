@@ -120,7 +120,7 @@ func validSwapOpts() seal.MigrationOptions {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.MustCredentials([]byte("migrate-pass")),
+		Credentials:    seal.MustCredentials(context.Background(), []byte("migrate-pass")),
 	}
 }
 
@@ -223,7 +223,7 @@ func TestEncryptionMigration_InvalidOptionsRejected(t *testing.T) {
 // initReopenKeyedService unseals an existing keyed root key (post-migration).
 func initReopenKeyedService(t *testing.T, backend seal.StorageBackend, rootKeyPath, passphrase string) *seal.StorageBarrier {
 	t.Helper()
-	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte(passphrase))
 	if err != nil {
 		t.Fatalf("strategy: %v", err)
 	}
@@ -232,7 +232,7 @@ func initReopenKeyedService(t *testing.T, backend seal.StorageBackend, rootKeyPa
 	if err != nil {
 		t.Fatalf("barrier: %v", err)
 	}
-	if err := b.Unseal(context.Background(), seal.MustCredentials([]byte(passphrase))); err != nil {
+	if err := b.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte(passphrase))); err != nil {
 		t.Fatalf("unseal: %v", err)
 	}
 	return b

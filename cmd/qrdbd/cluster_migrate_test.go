@@ -177,7 +177,7 @@ func TestDaemonLocalRecycler_AlreadyAtTarget(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 
 	// A keyed (software/passphrase) system barrier registry.
-	strategy, err := seal.NewSoftwareStrategy([]byte("pw"))
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("pw"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestDaemonLocalRecycler_AlreadyAtTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := sb.Initialize(ctx, seal.MustCredentials([]byte("pw"))); err != nil {
+	if err := sb.Initialize(ctx, seal.MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	reg, err := seal.NewBarrierRegistry(logger, sb)
@@ -377,7 +377,7 @@ func TestRunClusterMigReconciler_Tick(t *testing.T) {
 func validMigOpts() seal.MigrationOptions {
 	return seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials(context.Background(), []byte("pw")),
 	}
 }
 

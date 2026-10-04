@@ -49,35 +49,35 @@ func TestChangePassword_KeepsCheckingCredentials(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, NewDeferredSoftwareStrategy())
 	require.NoError(t, err)
-	require.NoError(t, b.Initialize(ctx, MustCredentials([]byte(original))))
+	require.NoError(t, b.Initialize(ctx, MustCredentials(context.Background(), []byte(original))))
 
 	// Baseline, asserted here rather than assumed: credential checking works
 	// BEFORE the password change. Without this, a future regression that broke
 	// checking at Initialize would leave the post-change assertions passing for
 	// the wrong reason.
 	require.NoError(t, b.Seal())
-	require.Error(t, b.Unseal(ctx, MustCredentials([]byte(wrong))),
+	require.Error(t, b.Unseal(ctx, MustCredentials(context.Background(), []byte(wrong))),
 		"baseline: a wrong passphrase must be refused before any password change")
-	require.NoError(t, b.Unseal(ctx, MustCredentials([]byte(original))),
+	require.NoError(t, b.Unseal(ctx, MustCredentials(context.Background(), []byte(original))),
 		"baseline: the original passphrase must be accepted")
 
-	require.NoError(t, b.ChangePassword(ctx, MustCredentials([]byte(updated))))
+	require.NoError(t, b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(updated))))
 
 	// (1) A wrong passphrase must still be refused. This is the bypass.
 	require.NoError(t, b.Seal())
-	require.Error(t, b.Unseal(ctx, MustCredentials([]byte(wrong))),
+	require.Error(t, b.Unseal(ctx, MustCredentials(context.Background(), []byte(wrong))),
 		"go-qrdb#157: a WRONG passphrase unsealed the barrier after ChangePassword")
 
 	// (2) The OLD passphrase must be refused — a rotated credential that still
 	// works has not been rotated.
 	require.NoError(t, b.Seal())
-	require.Error(t, b.Unseal(ctx, MustCredentials([]byte(original))),
+	require.Error(t, b.Unseal(ctx, MustCredentials(context.Background(), []byte(original))),
 		"go-qrdb#157: the OLD passphrase still unsealed the barrier after ChangePassword")
 
 	// (3) And the new passphrase must actually work, or the fix has traded a
 	// bypass for a lockout.
 	require.NoError(t, b.Seal())
-	require.NoError(t, b.Unseal(ctx, MustCredentials([]byte(updated))),
+	require.NoError(t, b.Unseal(ctx, MustCredentials(context.Background(), []byte(updated))),
 		"the new passphrase must unseal the barrier after ChangePassword")
 }
 
@@ -104,18 +104,18 @@ func TestChangePassword_ReSealedBlobUnsealsAfterRestart(t *testing.T) {
 
 	first, err := NewStorageBarrier(testLogger(), backend, cfg, NewDeferredSoftwareStrategy())
 	require.NoError(t, err)
-	require.NoError(t, first.Initialize(ctx, MustCredentials([]byte(original))))
-	require.NoError(t, first.ChangePassword(ctx, MustCredentials([]byte(updated))))
+	require.NoError(t, first.Initialize(ctx, MustCredentials(context.Background(), []byte(original))))
+	require.NoError(t, first.ChangePassword(ctx, MustCredentials(context.Background(), []byte(updated))))
 	require.NoError(t, first.Seal())
 
 	// "Restart": a brand-new barrier over the same persisted state.
 	second, err := NewStorageBarrier(testLogger(), backend, cfg, NewDeferredSoftwareStrategy())
 	require.NoError(t, err)
 
-	require.Error(t, second.Unseal(ctx, MustCredentials([]byte(wrong))),
+	require.Error(t, second.Unseal(ctx, MustCredentials(context.Background(), []byte(wrong))),
 		"a wrong passphrase must be refused after a restart")
-	require.Error(t, second.Unseal(ctx, MustCredentials([]byte(original))),
+	require.Error(t, second.Unseal(ctx, MustCredentials(context.Background(), []byte(original))),
 		"the pre-change passphrase must be refused after a restart")
-	require.NoError(t, second.Unseal(ctx, MustCredentials([]byte(updated))),
+	require.NoError(t, second.Unseal(ctx, MustCredentials(context.Background(), []byte(updated))),
 		"the new passphrase must unseal the persisted blob after a restart")
 }

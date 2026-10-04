@@ -104,7 +104,7 @@ func TestNode_CloseDuringUnseal_BlocksAndNeverRepublishes(t *testing.T) {
 	gate.armed.Store(true)
 	unsealDone := make(chan error, 1)
 	go func() {
-		unsealDone <- n.Unseal(context.Background(), seal.MustCredentials([]byte(passphrase)))
+		unsealDone <- n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte(passphrase)))
 	}()
 	<-gate.entered
 
@@ -144,7 +144,7 @@ func TestNode_UnsealAfterClose_Refused(t *testing.T) {
 	require.True(t, n.IsSealed())
 	require.NoError(t, n.Close())
 
-	err = n.Unseal(context.Background(), seal.MustCredentials([]byte(passphrase)))
+	err = n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte(passphrase)))
 	require.ErrorIs(t, err, ErrNodeClosed)
 	var unsealErr *UnsealError
 	require.False(t, errors.As(err, &unsealErr), "a closed node is not an unseal failure")
@@ -173,7 +173,7 @@ func TestNode_CloseDuringEnableEncryption_Ordered(t *testing.T) {
 			TargetStrategy: seal.StrategyPassphrase,
 			Mechanism:      seal.MechanismSwap,
 			Availability:   seal.AvailabilityQuiesced,
-			Credentials:    seal.MustCredentials([]byte("close-during-migration")),
+			Credentials:    seal.MustCredentials(context.Background(), []byte("close-during-migration")),
 		}
 		start := make(chan struct{})
 		var wg sync.WaitGroup

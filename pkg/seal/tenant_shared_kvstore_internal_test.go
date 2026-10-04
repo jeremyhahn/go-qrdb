@@ -42,7 +42,7 @@ func newTenantSharedStore(t *testing.T, shared kvstore.KVStore) *tenantSharedKVS
 	if err != nil {
 		t.Fatalf("NewTenantBarrier: %v", err)
 	}
-	if err := tb.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
+	if err := tb.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	store, err := NewTenantSharedKVStore(tb, shared)
@@ -69,7 +69,7 @@ func newTenantSharedStoreIface(t *testing.T, shared kvstore.KVStore) kvstore.KVS
 	if err != nil {
 		t.Fatalf("NewTenantBarrier: %v", err)
 	}
-	if err := tb.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
+	if err := tb.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	store, err := NewTenantSharedKVStore(tb, shared)

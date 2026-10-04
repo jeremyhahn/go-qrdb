@@ -275,7 +275,7 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 	// The request's passphrase is copied into protected memory and the
 	// decoded copy wiped at once — the credential is what the migration reads
 	// from here on, so nothing needs the request's plaintext past this line.
-	creds, err := seal.CredentialsFor(req.Passphrase)
+	creds, err := seal.CredentialsFor(r.Context(), req.Passphrase)
 	secure.Wipe(req.Passphrase)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

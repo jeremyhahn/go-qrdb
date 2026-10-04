@@ -37,7 +37,7 @@ func TestSealDatabase_NodeLocalEndsTheDatabasesStreams(t *testing.T) {
 	cfg := testDBConfig("secure")
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials([]byte("s3cret-passphrase"))); err != nil {
+	if _, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials(context.Background(), []byte("s3cret-passphrase"))); err != nil {
 		t.Fatal(err)
 	}
 	streams := deferred.Streams()

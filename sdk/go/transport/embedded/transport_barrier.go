@@ -223,7 +223,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	// decoded copy wiped at once -- the credential is what the migration
 	// reads from here on, so nothing needs the request's plaintext past this
 	// line.
-	creds, err := seal.CredentialsFor(req.Passphrase)
+	creds, err := seal.CredentialsFor(ctx, req.Passphrase)
 	secure.Wipe(req.Passphrase)
 	if err != nil {
 		return nil, delayed("BarrierEnableEncryption", err)
