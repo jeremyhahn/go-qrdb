@@ -47,6 +47,23 @@ func (m *memStore) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+// Delete implements Storage. Deleting an absent key is a no-op.
+func (m *memStore) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.kv, key)
+	return nil
+}
+
+// has reports whether key is still present, for tests asserting a delete
+// actually removed the persisted record.
+func (m *memStore) has(key string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.kv[key]
+	return ok
+}
+
 // faultyStore lets tests trigger storage failures on demand. Read/write
 // errors are independent so tests can simulate "load works, persist fails"
 // and vice versa.
@@ -55,8 +72,10 @@ type faultyStore struct {
 	kv       map[string][]byte
 	getErr   error // returned by Get when set (overrides not-found)
 	putErr   error // returned by Put when set
+	delErr   error // returned by Delete when set
 	getCalls int
 	putCalls int
+	delCalls int
 }
 
 func newFaultyStore() *faultyStore { return &faultyStore{kv: make(map[string][]byte)} }
@@ -86,6 +105,19 @@ func (f *faultyStore) Put(_ context.Context, key string, value []byte) error {
 		return f.putErr
 	}
 	f.kv[key] = value
+	return nil
+}
+
+// Delete implements Storage. Deleting an absent key is a no-op when delErr
+// is unset.
+func (f *faultyStore) Delete(_ context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.delCalls++
+	if f.delErr != nil {
+		return f.delErr
+	}
+	delete(f.kv, key)
 	return nil
 }
 

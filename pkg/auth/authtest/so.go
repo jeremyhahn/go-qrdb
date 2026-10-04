@@ -298,6 +298,14 @@ func (m *memPINStore) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+// Delete implements pin.Storage. Deleting an absent key is a no-op.
+func (m *memPINStore) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.kv, key)
+	return nil
+}
+
 // BarrierRekeyStart checks the SO PIN against PINs and records the rekey
 // round.
 func (b *Barrier) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {

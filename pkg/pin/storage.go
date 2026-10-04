@@ -35,6 +35,21 @@ type Storage interface {
 
 	// Put writes value under key, overwriting any prior value.
 	Put(ctx context.Context, key string, value []byte) error
+
+	// Delete removes the record stored under key. Deleting an absent key
+	// is NOT an error -- the record is already gone, which is the caller's
+	// goal either way -- so an implementation must not return ErrNotFound
+	// from Delete the way Get does.
+	//
+	// This exists for ProvisionRollback (go-qrdb#560 review D2):
+	// SoftwareBackend.RollbackProvision un-sets its in-memory PIN state on
+	// an aborted provisioning transaction, but before this method existed
+	// it had no way to remove the PERSISTED record Put already wrote, so a
+	// crash between the rollback and the next successful provisioning call
+	// left a stale record behind -- one that would reload on the next
+	// process start and require the aborted PIN, not the one the retry
+	// actually used, to unlock it.
+	Delete(ctx context.Context, key string) error
 }
 
 // ErrNotFound is returned by Storage implementations when a requested key

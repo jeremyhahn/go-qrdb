@@ -610,6 +610,19 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	s.barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: opts.Threshold, TotalShares: len(opts.Officers)})
 	params, err := s.InitializeShamir(ctx, opts.Policy)
 	if err != nil {
+		// go-qrdb#560 review D1: every officer in registered already
+		// committed above, exactly as one does inside the enrollment loop
+		// -- a failure HERE (the barrier's own Shamir split, or persisting
+		// its result) leaves the identical partial state a mid-loop
+		// failure would, and must roll back the same way: every officer,
+		// in reverse enrollment order, plus the SO/User PIN provisioning,
+		// through the SAME rollbackOfficerInit this function already uses.
+		// Without this, a retry after this specific failure could never
+		// re-enroll any of them (their usernames would stay permanently
+		// claimed by a ceremony that never became operational).
+		s.mu.Lock()
+		s.rollbackOfficerInit(ctx, registered)
+		s.mu.Unlock()
 		return nil, err
 	}
 

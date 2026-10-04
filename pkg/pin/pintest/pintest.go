@@ -60,6 +60,14 @@ func (s *Storage) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+// Delete implements pin.Storage. Deleting an absent key is a no-op.
+func (s *Storage) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, key)
+	return nil
+}
+
 // HashConfig is a low-cost Argon2id configuration for tests.
 func HashConfig() pin.HashConfig {
 	return pin.HashConfig{Algorithm: pin.HashArgon2id, Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16}

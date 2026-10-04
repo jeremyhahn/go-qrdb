@@ -55,6 +55,11 @@ func (s sealPINStore) Put(ctx context.Context, key string, value []byte) error {
 	return s.backend.Put(ctx, sealPINKeyPrefix+key, value)
 }
 
+// Delete removes the record under key.
+func (s sealPINStore) Delete(ctx context.Context, key string) error {
+	return s.backend.Delete(ctx, sealPINKeyPrefix+key)
+}
+
 // NewSealStorePINBackend returns the node's software PIN backend, persisted
 // in the node-local seal store. Every composer that does not inject a PIN
 // backend of its own (a hardware one, say) wires this one, so the SO and

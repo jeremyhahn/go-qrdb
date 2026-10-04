@@ -195,25 +195,33 @@ func (b *SoftwareBackend) ResetLockout(_ string) error { return nil }
 
 // RollbackProvision implements ProvisionRollback: it un-sets the in-memory
 // SO and User PIN state, so a subsequent Provision call within the SAME
-// process behaves exactly as if neither had ever been set.
+// process behaves exactly as if neither had ever been set, AND -- when a
+// Storage is configured -- removes the persisted records too (go-qrdb#560
+// review D2), so a crash between this call and the next successful
+// Provision no longer reloads the aborted PIN on the next process start and
+// requires IT, rather than whatever the retry actually used, to unlock the
+// node.
 //
-// The persisted record (when a Storage is configured) is NOT deleted --
-// Storage has no delete primitive, only Get/Put -- so it is left stale on
-// disk until the next successful SetSOPIN/SetUserPIN overwrites it. That
-// is safe for the one thing this exists for (a same-process retry after an
-// aborted multi-step provisioning transaction, go-qrdb#560 review B3):
-// SOPINSet/UserPINSet answer from the in-memory flag this clears, never
-// from storage presence, so the stale record is inert until this process
-// writes over it. A crash between this call and that retry would reload
-// the stale record on the NEXT process start and require the aborted PIN
-// to unlock it -- an accepted residual gap, since Storage's interface
-// offers no delete to close it.
+// Both deletes are always attempted regardless of whether the first one
+// failed, and any failures are joined into the returned error -- the
+// in-memory state above is cleared either way, so this call's own effect on
+// SOPINSet/UserPINSet never depends on Storage cooperating. Every existing
+// caller (rollbackOfficerInit) already treats this method's error as
+// best-effort -- logged, never propagated as the operation's own failure,
+// since the caller already has the real error that triggered the rollback
+// to report.
 func (b *SoftwareBackend) RollbackProvision() error {
 	b.soRecord.Store(nil)
 	b.userRecord.Store(nil)
 	b.soPINSet.Store(false)
 	b.userPINSet.Store(false)
-	return nil
+	if b.store == nil {
+		return nil
+	}
+	ctx := context.Background()
+	soErr := b.store.Delete(ctx, soPINStorageKey)
+	userErr := b.store.Delete(ctx, userPINStorageKey)
+	return errors.Join(soErr, userErr)
 }
 
 // VerifyFIDO2Hash verifies a CTAP2 PIN hash (SHA-256(PIN)[:16]) against

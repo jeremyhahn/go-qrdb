@@ -49,6 +49,12 @@ func (s *memPINStorage) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+// Delete implements Storage. Deleting an absent key is a no-op.
+func (s *memPINStorage) Delete(_ context.Context, key string) error {
+	delete(s.m, key)
+	return nil
+}
+
 // TestSoftwareBackend_KnownGoodRoundTrips persists and reloads the set, reads
 // none as empty, refuses a corrupt record, passes a store failure through, and
 // persists nothing without storage.

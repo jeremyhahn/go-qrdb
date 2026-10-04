@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -438,6 +440,129 @@ func TestInitialize_OfficerSigningFaultRollsBackEarlierOfficersAndPIN(t *testing
 	require.NoError(t, err, "a corrected retry must succeed")
 	assert.Equal(t, StateEnrolling, res.State)
 	require.Len(t, res.Holders, 2)
+}
+
+// toggleFailBackend wraps a REAL seal.StorageBackend (unlike failingBackend
+// in store_persistent_test.go, which is a stateless double), letting a test
+// force every write to fail until cleared while every read still reflects
+// genuinely persisted state. That is what makes "reconstruct a barrier over
+// the same backend after the fault clears" behave like an actual restart
+// against durable storage, rather than against a double that never really
+// wrote anything.
+type toggleFailBackend struct {
+	seal.StorageBackend
+	failWrites atomic.Bool
+	writeErr   error
+}
+
+func (b *toggleFailBackend) Put(ctx context.Context, key string, data []byte) error {
+	if b.failWrites.Load() {
+		return b.writeErr
+	}
+	return b.StorageBackend.Put(ctx, key, data)
+}
+
+func (b *toggleFailBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	if b.failWrites.Load() {
+		return false, b.writeErr
+	}
+	return b.StorageBackend.PutIfAbsent(ctx, key, data)
+}
+
+// TestInitialize_InitializeShamirFailureRollsBackEveryOfficerAndPIN is the
+// go-qrdb#560 review D1/D2 fix: InitializeShamir runs AFTER every officer in
+// the batch has already registered and persisted (the lock is released
+// first, since InitializeShamir calls back into this service). A failure
+// there -- the barrier's own Shamir split, or persisting its result -- used
+// to return directly, with none of rollbackOfficerInit's cleanup: every
+// officer stayed enrolled, and their usernames stayed permanently
+// unavailable, even though the call that was supposed to enroll them
+// reported failure. Unlike the sibling OfficerSigningFault test above
+// (which fails INSIDE the enrollment loop, on the second of two officers),
+// this fails AFTER the loop has fully committed all three.
+//
+// InitializeShamir's own barrier-level contract (pkg/seal/shamir.go) is that
+// a failed distribution needs a FRESH barrier instance to retry -- "the
+// in-memory epoch barrier cannot leave the initialized state within the
+// process" -- so the retry half of this test reconstructs a new
+// *seal.StorageBarrier and *CeremonyService over the SAME backend and the
+// SAME officer-registry DataDir, exactly as a real node restart would,
+// rather than reusing the first attempt's own barrier object.
+func TestInitialize_InitializeShamirFailureRollsBackEveryOfficerAndPIN(t *testing.T) {
+	ctx := context.Background()
+	wantErr := errors.New("shamir distribute: disk full")
+	backend := &toggleFailBackend{StorageBackend: seal.NewMemoryBackend(), writeErr: wantErr}
+	backend.failWrites.Store(true)
+	barrier := shamirBarrier(t, backend, 2, 3)
+
+	dataDir := t.TempDir()
+	pinStorage := pintest.NewStorage()
+	pins, err := pin.NewSoftwareBackend(pinStorage, pintest.HashConfig())
+	require.NoError(t, err)
+
+	e := &holderEnv{t: t, backend: backend, ca: testCA(t), pins: pins, factors: testFactors(t)}
+	e.barrier = barrier
+	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: dataDir}, barrier, testLogger())
+	require.NoError(t, err)
+	svc.SetCA(e.ca)
+	svc.SetFactorRegistry(e.factors)
+	svc.SetPINBackend(e.pins)
+	e.svc = svc
+
+	holders := []*testHolder{
+		newHolder(t, "alice", seal.RoleSecurityOfficer),
+		newHolder(t, "bob", seal.RoleSecurityOfficer),
+		newHolder(t, "carol", seal.RoleCustodian),
+	}
+	_, err = e.svc.Initialize(ctx, e.ca, initOpts(2, holders...))
+	require.ErrorIs(t, err, wantErr, "InitializeShamir's own failure must propagate unchanged")
+	assert.Equal(t, StateAwaitingInit, e.svc.State(),
+		"a refused init must leave the ceremony awaiting, not partially initialized, even when every officer had already committed")
+	assert.False(t, e.pins.SOPINSet(),
+		"every officer's successful enrolment must not leave the SO PIN provisioned once InitializeShamir's own failure is rolled back")
+	assert.False(t, e.pins.UserPINSet())
+
+	officers, lerr := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, lerr)
+	assert.Empty(t, officers, "every officer -- all three had already committed before InitializeShamir ran -- must be rolled back")
+
+	// go-qrdb#560 review D2: the PERSISTED PIN record, not only the
+	// in-memory flag above, must be gone -- otherwise a FRESH backend
+	// loading from the same pinStorage (the next assertion) would reload
+	// the aborted PIN as if it were still provisioned.
+	_, getErr := pinStorage.Get(ctx, "so-pin")
+	assert.ErrorIs(t, getErr, pin.ErrNotFound, "the persisted SO PIN record must be deleted, not merely unreferenced in memory")
+	_, getErr = pinStorage.Get(ctx, "user-pin")
+	assert.ErrorIs(t, getErr, pin.ErrNotFound, "the persisted User PIN record must be deleted")
+
+	// Cross-restart retry (go-qrdb#560 review D1/D2's own acceptance
+	// wording): clear the fault, and reconstruct EVERY in-memory object a
+	// real restart would -- a fresh barrier over the same backend, a fresh
+	// PIN backend over the same storage, and a fresh ceremony service over
+	// the same officer-registry DataDir -- then retry with a DIFFERENT
+	// SO/User PIN. This only succeeds if BOTH the officer rollback (D1) and
+	// the persisted PIN record's deletion (D2) actually took effect:
+	// pin.Provision's own idempotent re-verify would otherwise refuse a
+	// retry presenting a PIN that does not match whatever stayed
+	// provisioned, and a non-rolled-back officer would refuse as
+	// already-enrolled.
+	backend.failWrites.Store(false)
+	restartedBarrier := shamirBarrier(t, backend, 2, 3)
+	restartedPins, err := pin.NewSoftwareBackend(pinStorage, pintest.HashConfig())
+	require.NoError(t, err)
+	restartedSvc, err := NewCeremonyService(&CeremonyConfig{DataDir: dataDir}, restartedBarrier, testLogger())
+	require.NoError(t, err)
+	restartedSvc.SetCA(e.ca)
+	restartedSvc.SetFactorRegistry(e.factors)
+	restartedSvc.SetPINBackend(restartedPins)
+
+	retryOpts := initOpts(2, holders...)
+	retryOpts.SOPin = "a-different-so-pin"
+	retryOpts.UserPin = "a-different-user-pin"
+	res, err := restartedSvc.Initialize(ctx, e.ca, retryOpts)
+	require.NoError(t, err, "a cross-restart retry with a different PIN must succeed once the fault clears")
+	assert.Equal(t, StateEnrolling, res.State)
+	require.Len(t, res.Holders, 3)
 }
 
 // TestSignCSRInit_CAAssignsTheHolderIdentity pins the §6 fix: the CA assigns
