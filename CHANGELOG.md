@@ -11,6 +11,58 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: go-quicraft v0.17.0 and go-enclave v0.7.0-alpha.** Every qrdb
+  function that can reach a go-enclave sealer (a key provider that may block)
+  now takes a leading `ctx context.Context`, threaded from the real caller
+  context through every layer rather than `context.Background()`:
+  - `pkg/secure`: `NewSecret(ctx, src)`, `NewSecretFromBuffer(ctx, buf)`,
+    `(*Secret).Open(ctx)`.
+  - `sdk/go/secure`: the same two constructors, plus `WipeAll(ctx)`.
+  - `pkg/seal`: `MustCredentials(ctx, secret)`, `CredentialsFor(ctx, secret)`,
+    and the re-exported `NewCredentials`/`NewSoftwareStrategy`/
+    `NewSoftwareStrategyWithParams`/`NewSoftwareStrategyFIPS` (go-quicraft's
+    own signatures). `StorageBarrier.GetMasterKey(ctx)` and
+    `StorageBarrier.ExportRootKeyContext(ctx)`.
+  - `pkg/secret`: `NewSecretValue(ctx, raw, value, strategy)`,
+    `(*SecretValue).WithBytes(ctx, fn)`, `(*SecretValue).Open(ctx)`. The
+    deprecated `Bytes()`/`String()` accessors keep their fixed signatures
+    (the latter is `fmt.Stringer`) and open under `context.Background()`,
+    documented as the one exception.
+  - `pkg/auth/middleware`: `NewSOFactor(ctx, pin, isSecure, clientIP)`.
+  - `pkg/clustermig`: `(*LocalCredentials).Hold(ctx, m, credential)`.
+- **`(*secure.Secret).Open` copies a FROZEN plaintext into a fresh writable
+  buffer before returning.** go-enclave v0.7.0-alpha's `SealedEnclave.Open`/
+  `OpenWith` now return read-only memory — a write through it faults. Rather
+  than push that onto every caller, `Secret.Open` copies the recovered
+  plaintext into its own freshly allocated, writable `secure.Buffer` and
+  destroys the frozen source, so `Buffer`'s existing "always writable"
+  contract holds for every caller unchanged. This was the only production
+  write-into-an-opened-enclave site in the tree; every other opened buffer in
+  `pkg/seal`/`pkg/ceremony`/`pkg/credentials` already read through `WithBytes`
+  (safe on frozen memory) or was allocated directly via `secure.NewBuffer`
+  (never frozen).
+- `enclave.MemoryEnclave.Destroy` now returns an error (`DestroyErr` is
+  gone). `pkg/secure.Buffer.DestroyErr` keeps its own name and contract
+  unchanged; `pkg/seal`'s one direct `*enclave.MemoryEnclave.Destroy` call
+  (the reconstructed Shamir secret in quorum completion) now logs a non-fatal
+  release problem at WARN instead of silently discarding it.
+- Added `ErrDuplicateMemberAddress`, `ErrDuplicateMemberIdentity` and
+  `ErrSharedPeerCertificate` rows to `pkg/api/errclass`'s classification
+  table (`AlreadyExists` / `AlreadyExists` / `FailedPrecondition`), ahead of
+  `service.MembershipError`'s and `service.ShardStartError`'s blanket
+  `Internal` fallback, so a membership add or `StartShard` refused by one of
+  go-quicraft's new re-exported sentinels reports the right class on every
+  transport instead of a server fault.
+- `pkg/auth/middleware`'s `SOPINUnavailableError` classification now declines
+  (falls through to `errclass`'s `contextRules`) when the underlying cause is
+  a cancelled or timed-out context, rather than reporting every protected-
+  memory failure as `AuthFailureUnavailable`. go-enclave v0.7.0-alpha's
+  context contract means a context ending during the SO PIN's seal or open is
+  now a real, newly-possible cause of that error, and it must classify as a
+  cancellation/deadline, not a node-side fault.
+
 ## [0.40.1-alpha] - 2026-10-04
 
 A hotfix for v0.40.0-alpha, which could not boot multi-node clusters, plus durable leases and placement data-loss fixes. This release contains BREAKING changes; see the entries below. Highlights:
