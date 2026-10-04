@@ -262,8 +262,13 @@ func TestInit_CLI_SingleAdmin_PerProtocol(t *testing.T) {
 
 			// A second `qrdb init` on the same node must fail closed over
 			// the same protocol: the admin already holds a live binding.
+			// The SO PIN must be the SAME one the first call provisioned:
+			// the reissue path now verifies the SO PIN before anything
+			// else, including whether the admin is already bound, so a
+			// wrong PIN here would be refused for THAT reason instead of
+			// the one this test means to exercise.
 			out, err := runCLI(t, node.cli, append(append([]string{}, flags...),
-				"init", "--so-pin", "SOPIN2", "--user-pin", "USERPIN2", "--barrier-strategy", "none",
+				"init", "--so-pin", "SOPIN-"+proto.name, "--user-pin", "USERPIN-"+proto.name, "--barrier-strategy", "none",
 				"--admin-generate")...)
 			if err == nil {
 				t.Fatalf("[%s] second qrdb init should have failed; output: %s", proto.name, out)
@@ -458,8 +463,14 @@ func TestCLI_Init_FollowerRefusesNamingLeader(t *testing.T) {
 
 	var alreadyBoundHits, notLeaderHits int
 	for _, port := range adminPorts {
+		// The SO PIN must match the one the cluster was initialized with
+		// (harnessSOPIN/harnessUserPIN, via initAndUnsealBarrier): the
+		// reissue path now verifies the SO PIN before anything else,
+		// including whether the admin is already bound, so a non-matching
+		// PIN here would make the LEADER answer "pin: invalid PIN" instead
+		// of the "already bound" refusal this test asserts on.
 		out, err := runQRDB(t, cli, adminConnArgs(t, ca, port),
-			"init", "--so-pin", "RETRY-SO", "--user-pin", "RETRY-USER", "--barrier-strategy", "none",
+			"init", "--so-pin", harnessSOPIN, "--user-pin", harnessUserPIN, "--barrier-strategy", "none",
 			"--admin-generate")
 		if err == nil {
 			t.Fatalf("retry qrdb init on port %d should have been refused; output: %s", port, out)
