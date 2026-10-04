@@ -102,20 +102,18 @@ func TestBootstrap_CLI_ArbitraryPositionalArgs(t *testing.T) {
 	}
 }
 
-// TestBootstrap_CLI_UndocumentedFlagsRejected documents a gap between
-// cmd/qrdb/bootstrap.go's own Long help text (which advertises "spki --pin"
-// and "direct --ca-bundle" as the eventual per-mode flag surface, mirroring
-// the CLI-coverage audit's expectation) and the CURRENT implementation:
-// newBootstrapModeCmd registers Args: cobra.ArbitraryArgs (positional args
-// only) but calls cmd.Flags() nowhere, so no --pin or --ca-bundle flag is
-// actually registered on any mode subcommand. Passing one therefore fails
-// cobra's flag parsing with "unknown flag" BEFORE RunE ever runs, which is a
-// different, less specific error than the documented
+// TestBootstrap_CLI_UndocumentedFlagsRejected pins the CURRENT, fully
+// intentional flag surface of a bootstrap mode subcommand: newBootstrapModeCmd
+// (cmd/qrdb/bootstrap.go) registers Args: cobra.ArbitraryArgs (positional
+// args only) and calls cmd.Flags() nowhere, so no mode registers any flag at
+// all -- not "spki --pin" or "direct --ca-bundle" or anything else, and
+// bootstrap.go's own Long help text does not advertise any either. Passing
+// one therefore fails cobra's flag parsing with "unknown flag" BEFORE RunE
+// ever runs, which is a different, less specific error than the documented
 // PendingBootstrapBackendError stub every other case in this file asserts.
 // This is consistent with the mode being an intentional not-yet-implemented
-// stub (a flag with no consumer would be premature), so this test asserts
-// the OBSERVED behavior as a documented, non-blocking finding rather than
-// treating it as a defect to fix.
+// stub (a flag with no consumer would be premature), so this test pins the
+// OBSERVED behavior rather than treating it as a defect to fix.
 func TestBootstrap_CLI_UndocumentedFlagsRejected(t *testing.T) {
 	node := startMultiProtocolNode(t)
 	proto := multiProtocol{name: "rest", scheme: "https"}
@@ -125,7 +123,7 @@ func TestBootstrap_CLI_UndocumentedFlagsRejected(t *testing.T) {
 		t.Fatalf("expected qrdb bootstrap spki --pin to fail (flag not registered); output: %s", out)
 	}
 	if !strings.Contains(out, "unknown flag") {
-		t.Errorf("expected cobra's 'unknown flag' parse error (the --pin flag advertised in --help is not "+
-			"registered in cmd/qrdb/bootstrap.go), got: %s", out)
+		t.Errorf("expected cobra's 'unknown flag' parse error (no mode subcommand in "+
+			"cmd/qrdb/bootstrap.go registers a --pin flag, or any flag at all), got: %s", out)
 	}
 }
