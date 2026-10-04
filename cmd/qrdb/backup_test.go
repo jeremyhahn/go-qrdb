@@ -73,6 +73,47 @@ func executeBackupCmd(t *testing.T, backupSvc service.BackupServicer, args ...st
 	return buf.String(), execErr
 }
 
+// executeBackupCmdCapturingStderr behaves like executeBackupCmd but
+// captures the command's error stream (where warnPlaintextBackupCreate
+// writes) instead of relaying it to the real process stderr, so a test can
+// assert on it.
+func executeBackupCmdCapturingStderr(t *testing.T, backupSvc service.BackupServicer, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+
+	tr, trErr := embedded.New(&noopKVService{}, newMockAdminService(), embedded.WithBackupService(backupSvc))
+	if trErr != nil {
+		t.Fatalf("embedded.New: %v", trErr)
+	}
+
+	sdkClient, clientErr := sdk.NewClient(tr)
+	if clientErr != nil {
+		t.Fatalf("sdk.NewClient: %v", clientErr)
+	}
+	t.Cleanup(func() { _ = sdkClient.Close() })
+
+	oldClient := client
+	oldWriter := outputWriter
+	oldFormat := outputFormat
+	t.Cleanup(func() {
+		client = oldClient
+		outputWriter = oldWriter
+		outputFormat = oldFormat
+	})
+
+	client = sdkClient
+	outputFormat = "table"
+	var outBuf, errBuf bytes.Buffer
+	outputWriter = &outBuf
+
+	cmd := newBackupCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+
+	execErr := cmd.ExecuteContext(context.Background())
+	return outBuf.String(), errBuf.String(), execErr
+}
+
 // ---------------------------------------------------------------------------
 // backup create tests
 // ---------------------------------------------------------------------------
@@ -140,6 +181,63 @@ func TestBackupCreateCmd_WithEncryption(t *testing.T) {
 	}
 	if out == "" {
 		t.Fatal("expected output")
+	}
+}
+
+// TestBackupCreateCmd_UnsetEncryptionPassesThroughEmpty confirms the CLI
+// does not coerce an unset --encryption flag to "none": the request the
+// service sees carries an empty Encryption, letting the server apply its
+// own default (aes256, requiring a key) rather than the CLI silently
+// picking plaintext.
+func TestBackupCreateCmd_UnsetEncryptionPassesThroughEmpty(t *testing.T) {
+	var captured service.BackupOptions
+	svc := &mockBackupService{
+		createFn: func(_ context.Context, opts service.BackupOptions) (*service.BackupInfo, error) {
+			captured = opts
+			return &service.BackupInfo{ID: "bkp-001", Status: service.BackupStatusComplete}, nil
+		},
+	}
+	_, err := executeBackupCmd(t, svc, "create", "--destination", "/backups/test")
+	if err != nil {
+		t.Fatalf("backup create: %v", err)
+	}
+	if captured.Encryption != "" {
+		t.Fatalf("expected empty Encryption to pass through when --encryption is unset, got %q", captured.Encryption)
+	}
+}
+
+// TestBackupCreateCmd_ExplicitNoneWarns confirms --encryption none prints a
+// plaintext warning to the command's error stream before creating the
+// backup.
+func TestBackupCreateCmd_ExplicitNoneWarns(t *testing.T) {
+	svc := &mockBackupService{}
+	out, errOut, err := executeBackupCmdCapturingStderr(t, svc, "create",
+		"--destination", "/backups/plain", "--encryption", "none")
+	if err != nil {
+		t.Fatalf("backup create --encryption none: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected output")
+	}
+	if !strings.Contains(errOut, "plaintext") {
+		t.Fatalf("expected a plaintext warning on stderr, got: %q", errOut)
+	}
+	if !strings.Contains(errOut, "/backups/plain") {
+		t.Fatalf("expected the warning to name the destination, got: %q", errOut)
+	}
+}
+
+// TestBackupCreateCmd_AES256DoesNotWarn confirms an encrypted backup
+// request (the default) prints nothing to the error stream.
+func TestBackupCreateCmd_AES256DoesNotWarn(t *testing.T) {
+	svc := &mockBackupService{}
+	_, errOut, err := executeBackupCmdCapturingStderr(t, svc, "create",
+		"--destination", "/backups/encrypted", "--encryption", "aes256", "--encryption-key", "supersecret")
+	if err != nil {
+		t.Fatalf("backup create --encryption aes256: %v", err)
+	}
+	if errOut != "" {
+		t.Fatalf("expected no warning for an encrypted backup, got: %q", errOut)
 	}
 }
 
@@ -496,6 +594,21 @@ func TestParseEncryptionType_Valid(t *testing.T) {
 		if string(got) != tc.want {
 			t.Errorf("parseEncryptionType(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+// TestParseEncryptionType_UnsetPassesThrough confirms that an unset
+// --encryption flag (empty string, the flag's own default) is not coerced
+// to "none" by the CLI: it passes through empty so the server applies its
+// own default (aes256, requiring a key) instead of the CLI silently
+// choosing plaintext.
+func TestParseEncryptionType_UnsetPassesThrough(t *testing.T) {
+	got, err := parseEncryptionType("")
+	if err != nil {
+		t.Fatalf("parseEncryptionType(\"\"): %v", err)
+	}
+	if got != "" {
+		t.Fatalf("parseEncryptionType(\"\") = %q, want empty", got)
 	}
 }
 

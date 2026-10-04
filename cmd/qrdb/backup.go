@@ -95,6 +95,10 @@ func newBackupCreateCmd() *cobra.Command {
 				return err
 			}
 
+			if enc == transport.EncryptionNone {
+				warnPlaintextBackupCreate(cmd, destination)
+			}
+
 			req := &transport.BackupRequest{
 				Destination: destination,
 				Compression: comp,
@@ -121,10 +125,25 @@ func newBackupCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&destination, "destination", "", "Storage path or URI for the backup (e.g. /backups/daily or s3://bucket/prefix)")
 	_ = cmd.MarkFlagRequired("destination")
 	cmd.Flags().StringVar(&compression, "compression", "none", "Compression algorithm: none, zstd, snappy")
-	cmd.Flags().StringVar(&encryption, "encryption", "none", "Encryption algorithm: none, aes256")
-	cmd.Flags().StringVar(&encryptionKey, "encryption-key", "", "Encryption key material (required when --encryption is not none)")
+	cmd.Flags().StringVar(&encryption, "encryption", "", "Encryption algorithm: aes256 (default; requires --encryption-key or a configured KMS key), or none to explicitly write the backup in plaintext")
+	cmd.Flags().StringVar(&encryptionKey, "encryption-key", "", "Encryption key material (required unless --encryption is none, or a KMS key reference is configured)")
 
 	return cmd
+}
+
+// warnPlaintextBackupCreate prints a warning to cmd's error stream that the
+// backup about to be created is explicit plaintext. destination is named so
+// an operator scripting many backups can tell which one the warning is
+// about. The server independently logs and, where configured, audits the
+// same choice (service.BackupService.warnPlaintextBackup); this is the
+// CLI's own copy so the warning is visible at the point of the command too,
+// not only in server logs the operator may not be tailing.
+func warnPlaintextBackupCreate(cmd *cobra.Command, destination string) {
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"Warning: creating backup %q with encryption explicitly disabled (--encryption none). "+
+			"The backup is plaintext. If it covers the system shard (the default when --shards "+
+			"is not given), it carries the cluster CA and every tenant's login CA key material "+
+			"in the clear.\n", destination)
 }
 
 // newBackupListCmd creates the "backup list" subcommand.
@@ -400,8 +419,14 @@ var validEncryptionTypes = map[string]transport.EncryptionType{
 	"aes256": transport.EncryptionAES256,
 }
 
-// parseEncryptionType converts a string flag value to an EncryptionType.
+// parseEncryptionType converts a string flag value to an EncryptionType. An
+// unset flag (empty string) passes through as EncryptionType(""): the server
+// applies its own default (aes256, requiring a key) rather than the CLI
+// picking one, so --encryption left off is not the same as --encryption none.
 func parseEncryptionType(s string) (transport.EncryptionType, error) {
+	if s == "" {
+		return "", nil
+	}
 	if e, ok := validEncryptionTypes[strings.ToLower(s)]; ok {
 		return e, nil
 	}
