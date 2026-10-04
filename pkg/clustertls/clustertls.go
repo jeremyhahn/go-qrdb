@@ -39,7 +39,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
 
 const (
@@ -626,7 +626,7 @@ func PersistMaterial(m *Material, dataDir string) error {
 
 	for _, f := range files {
 		path := filepath.Join(dataDir, f.name)
-		if err := WriteFileAtomic(path, f.data, 0o600); err != nil {
+		if err := securefile.WriteFileAtomic(path, f.data, 0o600); err != nil {
 			return &WriteError{Path: path, Err: err}
 		}
 	}
@@ -652,70 +652,12 @@ func PersistCA(caCertPEM, caKeyPEM []byte, dataDir string) error {
 		{"ca-key.pem", caKeyPEM},
 	} {
 		path := filepath.Join(dataDir, f.name)
-		if err := WriteFileAtomic(path, f.data, 0o600); err != nil {
+		if err := securefile.WriteFileAtomic(path, f.data, 0o600); err != nil {
 			return &WriteError{Path: path, Err: err}
 		}
 	}
 
 	return nil
-}
-
-// WriteFileAtomic writes data to a uniquely named temporary file in the same
-// directory as path, fsyncs it, renames it into place, and then FSYNCS THE
-// CONTAINING DIRECTORY. The temporary file is removed on any error.
-//
-// The directory sync is not belt-and-braces. Atomic visibility to a concurrent
-// reader and durability across a crash are different properties, and rename
-// gives only the first: a reader sees either the old file or the new one and
-// never a mix, but the new DIRECTORY ENTRY lives in the directory's own
-// metadata and is not on stable storage until the directory is synced. Without
-// it, a power loss can recover a set of files in an order the writer never
-// wrote them in.
-//
-// That ordering is load-bearing for callers here. clusterenroll writes the
-// enrollment role BEFORE the CA material precisely so that material-without-
-// role can only mean "written by an older version"; if the role's directory
-// entry can be lost while the later material entries survive, a first node
-// recovers looking like a legacy directory and comes up with no enrollment
-// listener -- the exact silent failure that ordering exists to prevent
-// (go-qrdb#241).
-//
-// It applies to every caller, not that one: PersistMaterial and PersistCA have
-// always written through here, so their material is now crash-durable too.
-//
-// The rename and its directory sync are one operation, pkg/util/fsync.Rename.
-// That package owns the only implementation of the sync and the only seam for
-// failing it (fsync.SetForTest); this package had a second, identical copy of
-// both until go-qrdb#268 collapsed them. The post-state is identical whether
-// or not the sync happened, so a test has to observe the operation rather than
-// the result.
-func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	// Best-effort cleanup if we return before the rename succeeds.
-	defer func() { _ = os.Remove(tmpName) }()
-
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	// The temp file and the target share dir, so this syncs it exactly once.
-	return fsync.Rename(tmpName, path)
 }
 
 // fileExists returns true when path refers to an existing regular file.

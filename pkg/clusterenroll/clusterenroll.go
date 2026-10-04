@@ -56,6 +56,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
 
 const (
@@ -934,7 +935,7 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 		// path runs on EVERY boot of a first node rather than only the one
 		// that generated the CA, so a truncated key file now bricks every
 		// start instead of one.
-		if err := clustertls.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
+		if err := securefile.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
 			noiseKey.Destroy()
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}

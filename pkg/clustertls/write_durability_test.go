@@ -14,78 +14,21 @@
 
 // go-qrdb#241: atomic visibility and crash durability are different
 // properties, and WriteFileAtomic promises both.
+//
+// WriteFileAtomic's own durability tests
+// (TestWriteFileAtomic_DoesNotSucceedUntilTheDirectoryIsSynced,
+// TestWriteFileAtomic_SyncsTheDirectoryAfterEverySuccessfulWrite) moved to
+// pkg/util/securefile with the function itself (go-qrdb#580). The tests
+// below stay here: they pin PersistMaterial and PersistCA, which still live
+// in this package and now call through securefile.WriteFileAtomic.
 package clustertls
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
-
-// TestWriteFileAtomic_DoesNotSucceedUntilTheDirectoryIsSynced.
-//
-// rename gives a concurrent reader the old file or the new one and never a
-// mix. It says nothing about whether the new DIRECTORY ENTRY survives a power
-// loss: that entry is directory metadata and is not on stable storage until
-// the directory is fsynced. Without the sync, a crash can recover a set of
-// files in an order the writer never wrote them in -- which is what breaks
-// callers whose ORDERING is load-bearing, like clusterenroll writing the
-// enrollment role before the CA material.
-//
-// The post-state is byte-identical whether or not the directory was synced, so
-// this observes the OPERATION rather than the result: the sync is failed at
-// its boundary, and the write must report that failure instead of returning
-// success. A test that inspected the file afterwards would pass either way.
-func TestWriteFileAtomic_DoesNotSucceedUntilTheDirectoryIsSynced(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "durable.pem")
-
-	sentinel := errors.New("directory sync refused")
-	var syncedDirs []string
-	t.Cleanup(fsync.SetForTest(func(d string) error {
-		syncedDirs = append(syncedDirs, d)
-		return sentinel
-	}))
-
-	err := WriteFileAtomic(path, []byte("payload"), 0o600)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("WriteFileAtomic = %v; want the directory-sync failure. Returning success "+
-			"before the directory entry is durable is what lets a crash recover files in an "+
-			"order they were never written in", err)
-	}
-	if len(syncedDirs) != 1 || syncedDirs[0] != dir {
-		t.Errorf("synced dirs = %v; want exactly [%s] — the containing directory", syncedDirs, dir)
-	}
-}
-
-// TestWriteFileAtomic_SyncsTheDirectoryAfterEverySuccessfulWrite: the sync is
-// not conditional on the file being new. An overwrite replaces the directory
-// entry too, so it needs the same durability.
-func TestWriteFileAtomic_SyncsTheDirectoryAfterEverySuccessfulWrite(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "durable.pem")
-
-	var count int
-	// Count only; do not call fsync.Dir here -- Dir routes through the very
-	// seam this replaces, so calling it would recurse until the stack blows.
-	// The sync itself is exercised unseamed in pkg/util/fsync's own tests.
-	t.Cleanup(fsync.SetForTest(func(string) error { count++; return nil }))
-
-	for i := 0; i < 3; i++ {
-		if err := WriteFileAtomic(path, []byte{byte(i)}, 0o600); err != nil {
-			t.Fatalf("write %d: %v", i, err)
-		}
-	}
-	if count != 3 {
-		t.Errorf("directory synced %d times over 3 writes; want 3", count)
-	}
-	if got, err := os.ReadFile(path); err != nil || len(got) != 1 || got[0] != 2 {
-		t.Fatalf("final content = %v err=%v; want the last write", got, err)
-	}
-}
 
 // TestPersistMaterial_IsCrashDurable records that fixing the shared helper
 // fixed callers this change never touched. PersistMaterial and PersistCA have

@@ -34,8 +34,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
-	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
 
 // DefaultJoinPort is the default TCP port for the member-side CSR-sign
@@ -707,7 +707,7 @@ func loadOrGenerateJoinKey(keyPath string, logger *slog.Logger) (*noiseproto.Sta
 		key.Destroy()
 		return nil, &ServerError{Protocol: "join", Err: err}
 	}
-	if err := clustertls.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
+	if err := securefile.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
 		key.Destroy()
 		return nil, &ServerError{Protocol: "join", Err: err}
 	}

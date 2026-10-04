@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
 
 // RoleFile is the filename that records, in the data directory, what this
@@ -212,7 +213,7 @@ func persistRole(dataDir string, r Role) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return &clustertls.WriteError{Path: dataDir, Err: err}
 	}
-	// clustertls.WriteFileAtomic, NOT os.WriteFile. os.WriteFile opens with
+	// securefile.WriteFileAtomic, NOT os.WriteFile. os.WriteFile opens with
 	// O_TRUNC and writes in place, so a crash between the truncate and the
 	// write leaves an empty or partial role file -- and this file is the SOLE
 	// discriminator the cached path has. loadRole would then refuse it with
@@ -227,7 +228,7 @@ func persistRole(dataDir string, r Role) error {
 	// for exactly this reason, so the role is durable on the same terms as the
 	// material it describes.
 	path := filepath.Join(dataDir, RoleFile)
-	if err := clustertls.WriteFileAtomic(path, []byte(r), 0o600); err != nil {
+	if err := securefile.WriteFileAtomic(path, []byte(r), 0o600); err != nil {
 		return &clustertls.WriteError{Path: path, Err: err}
 	}
 	return nil
