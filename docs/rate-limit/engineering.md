@@ -55,6 +55,35 @@ type AuthMiddlewareConfig struct {
 }
 ```
 
+`sdk/go` (go-qrdb#398 -- an embedder consumes go-qrdb exclusively through
+`sdk/go`, so every type and constructor above is re-exported, under the
+`RateLimit*` prefix for the two ambiguous names):
+
+```go
+type RateLimitPolicy   = ratelimit.Policy
+type RateLimitRegistry = ratelimit.Registry
+type RateLimiter       = ratelimit.Limiter
+type TokenBucketLimiter = ratelimit.TokenBucketLimiter
+type TokenBucketOption  = ratelimit.TokenBucketOption
+
+func NewRateLimitRegistry() *RateLimitRegistry
+func NewTokenBucketLimiter(opts ...TokenBucketOption) *TokenBucketLimiter
+func WithIdleTTL(ttl time.Duration) TokenBucketOption
+func WithSweepInterval(interval time.Duration) TokenBucketOption
+```
+
+`sdk/go/node`:
+
+```go
+func WithRateLimitPolicies(policies *ratelimit.Registry) NodeOption
+func WithRateLimiter(l ratelimit.Limiter) NodeOption
+```
+
+Both thread into the same `wiring.AuthMiddlewareConfig` the embedded node's
+`wireClientAndServer` builds for `cmd/qrdbd` itself, so a Policy declared
+through the SDK is enforced identically on every transport the node's auth
+middleware fronts.
+
 ## Wiring
 
 `BuildAuthMiddleware` installs rate limiting **only** when
