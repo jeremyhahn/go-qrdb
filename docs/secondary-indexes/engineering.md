@@ -19,6 +19,33 @@ type AtomicKVStore = kvstore.AtomicKVStore
 var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
 var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 
+// The store Client.KVStore() returns now satisfies AtomicKVStore for real
+// (go-qrdb#589): it forwards PutIfAbsent/CompareAndSwap/CompareAndDelete to
+// the transport's GuardedKVClient capability, which every production
+// transport (REST, gRPC, QUIC, Unix, MCP, embedded) has carried since #119.
+// Before this the adapter implemented only the base KVStore, so
+// DAO.SaveIfAbsent always refused with AtomicWriteUnsupportedError
+// regardless of transport.
+//
+// CompareAndSwapWithCurrent composes CompareAndSwap with a follow-up Get on
+// a failed compare, so a contended counter (a PIN-lockout attempt count)
+// learns the value it should have compared against without a second,
+// separately-written round trip. The read is NOT part of the same atomic
+// step -- see the function's own doc for the window that leaves open.
+func CompareAndSwapWithCurrent(ctx context.Context, store AtomicKVStore, key string, expected, next []byte) (swapped bool, current []byte, err error)
+
+// FencedCreator is kvstore.FencedCreator's alias, for an embedder holding a
+// kvstore.KVStore it did not get from Client.KVStore() (a custom
+// seal.StorageBackend composition, for one) and needs to assert for the
+// same capability AtomicKVStore above is exported for. Neither it nor
+// kvstore.MultiGuardedBatchKVStore (the real atomic multi-key write
+// primitive pkg/dao.UnitOfWork uses when available) has a wire-level
+// implementation on any sdk/go/transport client today, so the type alias
+// does not make either capability newly reachable through
+// Client.KVStore() -- only through a store the caller built or received
+// some other way.
+type FencedCreator = kvstore.FencedCreator
+
 // DAO.SaveIfAbsent's refusal when the store cannot write atomically, whether
 // it is not an AtomicKVStore at all or refused the call (the store's refusal
 // is then reachable through Unwrap). It matches ErrKVAtomicWriteUnsupported,
@@ -45,6 +72,28 @@ var DAOWithShard, DAOWithCodec, DAOWithTimeout, DAOWithPartition, DAOWithDatabas
 const DAOCodecJSON, DAOCodecMsgPack, DAOCodecCBOR
 const DAOSortAscending, DAOSortDescending
 type DAOUnitOfWork, DAOTransactional[E], DAOVersioned, DAOTimestamped
+
+// DAOUnitOfWork.Commit uses kvstore.MultiGuardedBatchKVStore when the
+// underlying store offers it: every queued save/delete lands as ONE
+// guarded batch proposal (unconditional -- no guards -- but still atomic),
+// instead of the sequential apply-and-compensate path, which is NOT atomic
+// against a concurrent reader. This closes the move/rename case: a delete
+// and a put in the same UnitOfWork now commit together or not at all over
+// a store that supports it (go-qrdb#589).
+//
+// FieldHashGenerator and DynamicFieldHashGenerator hash a natural key with
+// FNV-1a, which has no resistance to a deliberately engineered collision.
+// CryptoFieldHashGenerator and CryptoDynamicFieldHashGenerator hash with
+// SHA-256 instead, for a NEW entity type that needs that resistance; the
+// FNV-1a generators are unchanged, since swapping their hash function in
+// place would orphan every entity already persisted under it.
+// VerifyNaturalKey(entity, entityType, fieldName, expected) detects a
+// collision AFTER a hash-derived Get, by comparing the read-back entity's
+// natural-key field against the one the caller looked up by -- the one
+// place a collision can still be caught, since nothing prevents one from
+// being written in the first place.
+var NewCryptoFieldHashGenerator, NewCryptoDynamicFieldHashGenerator
+var VerifyNaturalKey
 ```
 
 `sdk/go/transport`:
@@ -304,7 +353,8 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Store maintains no indexes — planned `Find().Where(...)` | full scan, correct results | **yes** — no plan routes to an index that does not exist |
 | Registration fails for any other reason | DAO construction fails | **yes** |
 | Shared store lacks compare-and-set — `tenantSharedKVStore.PutIfAbsent` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — never degrades to `Exists`-then-`Put` |
-| DAO `SaveIfAbsent` over a store with no atomic write, or one that refused it | `*dao.AtomicWriteUnsupportedError` (matches `kvstore.ErrAtomicWriteUnsupported`; a store refusal stays in the chain) | **yes** — never degrades to `Get`-then-`Save`; any other store error is returned unchanged as outcome-unknown |
+| DAO `SaveIfAbsent` / `CompareAndSwap` / `DeleteIfMatch` over a store with no atomic write, or one that refused it | `*dao.AtomicWriteUnsupportedError` (matches `kvstore.ErrAtomicWriteUnsupported`; a store refusal stays in the chain) | **yes** — never degrades to `Get`-then-`Save`; any other store error is returned unchanged as outcome-unknown |
+| DAO `CompareAndSwap` where `expected`/`next` carry different `EntityID()`s, or either `CompareAndSwap`/`DeleteIfMatch` on an entity with `EntityID() == 0` | `dao.InvalidEntityIDError` | **yes** |
 | Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |
 | Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
 | `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |
