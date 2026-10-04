@@ -222,6 +222,9 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 // DatabaseBarrierOfficerUnenrol removes a database holder before the
 // database's custody is initialized.
 func (t *Transport) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if err := t.gate("DatabaseBarrierOfficerUnenrol"); err != nil {
+		return err
+	}
 	if req == nil {
 		return &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerUnenrol"}
 	}
