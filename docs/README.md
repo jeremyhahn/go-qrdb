@@ -77,6 +77,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
 | [release](release/) | cutting a release: the Release workflow, VERSION as the release record, lockstep module tags, tag protection |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
+| [replica-forwarding](replica-forwarding/) | *(proposed)* a node that holds no replica of a database forwards the request to its replica leader, on the caller's behalf, on every transport |
 
 ### Security and identity
 
