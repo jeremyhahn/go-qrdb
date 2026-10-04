@@ -31,9 +31,20 @@ type remoteAddrContextKey struct{}
 // one source's wrong guesses lock out every other source on the same
 // listener. An empty addr is not stored: it carries no more information
 // than ctx already did.
+//
+// A nil ctx returns context.Background() decorated with addr, rather than
+// panicking the way context.WithValue(nil, ...) does: the embedded
+// transport's fixed "embedded" source is injected unconditionally
+// (sdk/go/transport/embedded's CeremonyInitialize/CeremonySignCSR), and a
+// caller reaching those methods with a nil context -- a real call site a
+// test caught -- must not turn this purely-additive instrumentation into a
+// crash.
 func WithRemoteAddr(ctx context.Context, addr string) context.Context {
 	if addr == "" {
 		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return context.WithValue(ctx, remoteAddrContextKey{}, addr)
 }
