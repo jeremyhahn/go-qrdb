@@ -101,6 +101,10 @@ func TestResolveTLS_ExplicitFiles(t *testing.T) {
 	if string(got.CACertPEM) != string(bundle.CACertPEM) {
 		t.Error("CACertPEM does not match fixture")
 	}
+	if !got.ExplicitTLS {
+		t.Error("ExplicitTLS = false, want true for the --tls-ca-file/--tls-cert-file/--tls-key-file path: " +
+			"CACertPEM here is the operator's own trust anchor, not qrdb's cluster CA key material")
+	}
 }
 
 func TestResolveTLS_ExplicitFiles_MissingFile(t *testing.T) {
@@ -148,6 +152,10 @@ func TestResolveTLS_ExistingCerts(t *testing.T) {
 	}
 	if len(got.CAKeyPEM) == 0 {
 		t.Fatal("expected CA key to be loaded from ca-key.pem")
+	}
+	if got.ExplicitTLS {
+		t.Error("ExplicitTLS = true, want false for the cached data-dir path: this is this node's own " +
+			"self-issued material, which must still be offered to the cluster CA provider")
 	}
 }
 

@@ -1741,3 +1741,82 @@ func TestBuildServices_ClusterCAProv_InjectedProviderReplacesBuiltin(t *testing.
 		t.Fatalf("injected provider must leave __sys:cluster_ca/ untouched, found %v", keys)
 	}
 }
+
+// TestBuildServices_NoClusterCAKey_LeavesClusterCAProvNil is the BYO-TLS
+// proof: Infra.NoClusterCAKey with no injected provider must leave
+// ClusterCAProv nil rather than stand up a built-in SoftwareProvider that
+// would generate (and persist) a self-issued Key A nobody asked for. Key B
+// (CertProv) is a separate trust domain and must be unaffected.
+func TestBuildServices_NoClusterCAKey_LeavesClusterCAProvNil(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		NoClusterCAKey:    true,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.ClusterCAProv != nil {
+		t.Fatalf("ClusterCAProv = %v, want nil with NoClusterCAKey set and no injected provider", node.ClusterCAProv)
+	}
+	if node.CertProv == nil {
+		t.Fatal("CertProv (Key B) is nil; NoClusterCAKey must not affect the separate login-CA trust domain")
+	}
+
+	keys, err := node.KV.List(context.Background(), "__sys:cluster_ca/")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("NoClusterCAKey must leave __sys:cluster_ca/ untouched, found %v", keys)
+	}
+}
+
+// TestBuildServices_NoClusterCAKey_InjectedProviderWins proves
+// Infra.ClusterCAKeyProvider still wins over NoClusterCAKey: an injected
+// provider is an explicit choice to serve Key A from elsewhere, and
+// NoClusterCAKey only withholds the BUILT-IN provider.
+func TestBuildServices_NoClusterCAKey_InjectedProviderWins(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	_, _, caCert, _, err := clustertls.GenerateCA(clustertls.CAValidity)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	injected := &stubClusterCAProvider{cert: caCert}
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:                 host,
+		WatchHub:             hub,
+		DataDir:              t.TempDir(),
+		SealBarrier:          barrier,
+		BarrierRegistry:      registry,
+		CredentialCoreSvc:    credSvc,
+		NoClusterCAKey:       true,
+		ClusterCAKeyProvider: injected,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.ClusterCAProv != cakey.Provider(injected) {
+		t.Fatalf("ClusterCAProv = %v, want the injected provider %v even with NoClusterCAKey set", node.ClusterCAProv, injected)
+	}
+}

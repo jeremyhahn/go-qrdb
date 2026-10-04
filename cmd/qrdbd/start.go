@@ -1660,9 +1660,18 @@ func runStart(f *startFlags) (err error) {
 				// Key A: in-memory bootstrap material (populated only when
 				// ca-key.pem still exists on disk this boot) for the built-in
 				// cakey.SoftwareProvider to adopt into the replicated store on
-				// first use. See confirmClusterCAPersisted below.
-				ClusterCACertPEM: bundle.CACertPEM,
-				ClusterCAKeyPEM:  bundle.CAKeyPEM,
+				// first use. See confirmClusterCAPersisted below. Withheld
+				// entirely for a BYO-TLS bundle (bundle.ExplicitTLS): its
+				// CACertPEM is the operator's own trust anchor, never
+				// material qrdb generated, so it must never be offered to
+				// the cluster CA provider as something to adopt.
+				ClusterCACertPEM: clusterCABootstrapCertPEM(bundle),
+				ClusterCAKeyPEM:  clusterCABootstrapKeyPEM(bundle),
+				// A BYO-TLS node has no cluster CA key of its own: leave
+				// ClusterCAProv nil rather than let the built-in provider
+				// silently generate and persist a self-issued one. See
+				// lifecycle.Infra.NoClusterCAKey.
+				NoClusterCAKey: bundle.ExplicitTLS,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -1726,6 +1735,17 @@ func runStart(f *startFlags) (err error) {
 						adminSvc.SetClusterJoinTokenStore(clusterJoinStore, f.clusterTrustDomain)
 					}
 				}
+			} else if f.clusterJoinEnabled {
+				// BYO-TLS (lifecycle.Infra.NoClusterCAKey): this node has no
+				// cluster CA key to sign a joiner's CSR with, so the join
+				// listener and route are never started -- the node still
+				// boots and serves, per the BYO-TLS ruling, but member-side
+				// CSR join is simply unavailable here. Logged so an operator
+				// who set --cluster-join-enabled on a BYO-TLS node learns why
+				// nothing is listening, rather than discovering it from a
+				// joiner's connection refused.
+				slog.Warn("member-side CSR join requested but this node has no cluster CA key (BYO-TLS); " +
+					"the join listener was not started. Inject a cakey.Provider or use a cluster-managed CA to enable it.")
 			}
 			// Guarded so the system-migration path (which closes svcNode early to
 			// release its vector-store Pebble lock for re-encryption, then nils it)

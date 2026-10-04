@@ -18,15 +18,101 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
+
+const (
+	// clusterCAPersistRetryDeadline bounds how long confirmClusterCAPersisted
+	// retries a transient *service.NotLeaderError before giving up. Right
+	// after waitForLeaderElection returns, the system shard's leader has
+	// been observed, but this node's own read of it can still race a brief
+	// settling window -- even on a single-node shard -- so the first
+	// answer this node sees can be "not leader, leader unknown". Bounded
+	// so a genuinely stuck shard still fails the boot instead of hanging
+	// it forever.
+	clusterCAPersistRetryDeadline = 30 * time.Second
+
+	// clusterCAPersistRetryBaseDelay is the first backoff interval between
+	// retries of a transient not-leader read.
+	clusterCAPersistRetryBaseDelay = 100 * time.Millisecond
+
+	// clusterCAPersistRetryMaxDelay caps the backoff interval, doubled on
+	// each retry starting from clusterCAPersistRetryBaseDelay.
+	clusterCAPersistRetryMaxDelay = 2 * time.Second
+)
+
+// clusterCABootstrapCertPEM returns the in-memory CA certificate to offer
+// the built-in cluster CA provider as bootstrap material, or nil for a
+// BYO-TLS bundle (bundle.ExplicitTLS): there, bundle.CACertPEM is the
+// operator's own trust anchor, never material this process generated, and
+// must never be adopted as Key A. See lifecycle.Infra.NoClusterCAKey, which
+// this node also sets so the built-in provider is never even constructed.
+func clusterCABootstrapCertPEM(bundle *TLSBundle) []byte {
+	if bundle.ExplicitTLS {
+		return nil
+	}
+	return bundle.CACertPEM
+}
+
+// clusterCABootstrapKeyPEM is clusterCABootstrapCertPEM's counterpart for
+// the CA private key. bundle.CAKeyPEM is already empty for an ExplicitTLS
+// bundle -- loadTLSFromFiles never populates it -- but withholding it
+// explicitly here keeps the two helpers symmetric and independent of that
+// detail.
+func clusterCABootstrapKeyPEM(bundle *TLSBundle) []byte {
+	if bundle.ExplicitTLS {
+		return nil
+	}
+	return bundle.CAKeyPEM
+}
+
+// awaitClusterCACertificate calls provider.Certificate, retrying with
+// bounded exponential backoff while the answer is a transient
+// *service.NotLeaderError -- the system shard's leadership can still be
+// settling immediately after waitForLeaderElection returns, even on a
+// single-node shard, and this node's own read can lose that race. Any
+// other error class (a corrupt record, a sealed barrier, no material at
+// all) is returned immediately: waiting cannot resolve those, and retrying
+// them would only slow down a boot that was always going to fail.
+//
+// Bounded by both ctx (so a shutdown signal during the retry loop is
+// honored immediately) and deadline, measured from the first call: a
+// genuinely stuck shard fails the boot rather than hanging it.
+func awaitClusterCACertificate(ctx context.Context, provider cakey.Provider, deadline, baseDelay, maxDelay time.Duration) (*x509.Certificate, error) {
+	giveUpAt := time.Now().Add(deadline)
+	delay := baseDelay
+	for {
+		cert, err := provider.Certificate(ctx)
+		if err == nil {
+			return cert, nil
+		}
+		var notLeader *service.NotLeaderError
+		if !errors.As(err, &notLeader) {
+			return nil, err
+		}
+		if !time.Now().Before(giveUpAt) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(delay):
+		}
+		if delay *= 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
 
 // confirmClusterCAPersisted triggers the cluster CA (Key A) provider's
 // lazy adopt-or-load (a Certificate call is enough; see
@@ -44,7 +130,8 @@ import (
 // leaves ca-key.pem (if present) as the only copy of a key this process
 // might not hold in memory on its next restart.
 func confirmClusterCAPersisted(ctx context.Context, provider cakey.Provider, dataDir string, hadLocalKey bool) error {
-	if _, err := provider.Certificate(ctx); err != nil {
+	if _, err := awaitClusterCACertificate(ctx, provider,
+		clusterCAPersistRetryDeadline, clusterCAPersistRetryBaseDelay, clusterCAPersistRetryMaxDelay); err != nil {
 		return &ClusterCAPersistError{Err: err}
 	}
 	if !hadLocalKey {

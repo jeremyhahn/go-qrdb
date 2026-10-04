@@ -28,12 +28,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // stubClusterCAProvider is a minimal cakey.Provider double.
@@ -231,5 +233,158 @@ func TestRecordOwnJoinIdentity_MalformedCertIsNoOp(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	if err := recordOwnJoinIdentity(context.Background(), store, []byte("not a certificate"), "test.cluster"); err != nil {
 		t.Fatalf("recordOwnJoinIdentity (malformed cert) = %v, want nil", err)
+	}
+}
+
+// TestClusterCABootstrapPEMs_WithholdForExplicitTLS is the BYO-TLS proof:
+// bundle.CACertPEM is the operator's own trust anchor for an ExplicitTLS
+// bundle, and must never be offered to the built-in cluster CA provider as
+// adopt material.
+func TestClusterCABootstrapPEMs_WithholdForExplicitTLS(t *testing.T) {
+	bundle := &TLSBundle{
+		CACertPEM:   []byte("operator ca cert"),
+		CAKeyPEM:    []byte("would never actually be set for this path"),
+		ExplicitTLS: true,
+	}
+	if got := clusterCABootstrapCertPEM(bundle); got != nil {
+		t.Fatalf("clusterCABootstrapCertPEM(ExplicitTLS) = %q, want nil", got)
+	}
+	if got := clusterCABootstrapKeyPEM(bundle); got != nil {
+		t.Fatalf("clusterCABootstrapKeyPEM(ExplicitTLS) = %q, want nil", got)
+	}
+}
+
+// TestClusterCABootstrapPEMs_PassThroughForSelfIssued covers every other
+// path (cached data-dir material, single-node, first-node, joining node):
+// this node's own material must still reach the cluster CA provider.
+func TestClusterCABootstrapPEMs_PassThroughForSelfIssued(t *testing.T) {
+	bundle := &TLSBundle{
+		CACertPEM: []byte("self-issued ca cert"),
+		CAKeyPEM:  []byte("self-issued ca key"),
+	}
+	if got := clusterCABootstrapCertPEM(bundle); string(got) != string(bundle.CACertPEM) {
+		t.Fatalf("clusterCABootstrapCertPEM(self-issued) = %q, want %q", got, bundle.CACertPEM)
+	}
+	if got := clusterCABootstrapKeyPEM(bundle); string(got) != string(bundle.CAKeyPEM) {
+		t.Fatalf("clusterCABootstrapKeyPEM(self-issued) = %q, want %q", got, bundle.CAKeyPEM)
+	}
+}
+
+// stubFlakyClusterCAProvider answers *service.NotLeaderError for the first
+// notLeaderUntil-1 calls (or forever, when notLeaderUntil <= 0), then
+// succeeds -- it drives awaitClusterCACertificate's transient-retry path
+// without a real Raft cluster.
+type stubFlakyClusterCAProvider struct {
+	mu             sync.Mutex
+	calls          int
+	notLeaderUntil int
+	otherErr       error
+}
+
+func (s *stubFlakyClusterCAProvider) Signer(context.Context) (crypto.Signer, error) { return nil, nil }
+
+func (s *stubFlakyClusterCAProvider) Certificate(context.Context) (*x509.Certificate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.otherErr != nil {
+		return nil, s.otherErr
+	}
+	if s.notLeaderUntil <= 0 || s.calls < s.notLeaderUntil {
+		return nil, &service.NotLeaderError{ShardID: 1}
+	}
+	return &x509.Certificate{}, nil
+}
+
+func (s *stubFlakyClusterCAProvider) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestAwaitClusterCACertificate_SucceedsImmediately proves the common case
+// -- no transient error at all -- makes exactly one call.
+func TestAwaitClusterCACertificate_SucceedsImmediately(t *testing.T) {
+	stub := &stubFlakyClusterCAProvider{notLeaderUntil: 1}
+	cert, err := awaitClusterCACertificate(context.Background(), stub, time.Second, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("awaitClusterCACertificate: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("expected a non-nil certificate")
+	}
+	if got := stub.callCount(); got != 1 {
+		t.Fatalf("Certificate called %d times, want 1 (no retry needed)", got)
+	}
+}
+
+// TestAwaitClusterCACertificate_RetriesTransientNotLeader proves a bounded
+// number of *service.NotLeaderError answers are retried until the
+// provider's read settles onto the leader, without the caller having to
+// distinguish this from any other kind of failure.
+func TestAwaitClusterCACertificate_RetriesTransientNotLeader(t *testing.T) {
+	stub := &stubFlakyClusterCAProvider{notLeaderUntil: 3}
+	cert, err := awaitClusterCACertificate(context.Background(), stub, time.Second, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("awaitClusterCACertificate: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("expected a non-nil certificate")
+	}
+	if got := stub.callCount(); got != 3 {
+		t.Fatalf("Certificate called %d times, want 3 (two transient refusals then success)", got)
+	}
+}
+
+// TestAwaitClusterCACertificate_OtherErrorsDoNotRetry proves a non-not-leader
+// error is returned on the FIRST call, with no backoff sleep and no retry:
+// waiting cannot fix a sealed barrier or corrupt material.
+func TestAwaitClusterCACertificate_OtherErrorsDoNotRetry(t *testing.T) {
+	boom := errors.New("store unreachable")
+	stub := &stubFlakyClusterCAProvider{otherErr: boom}
+	start := time.Now()
+	_, err := awaitClusterCACertificate(context.Background(), stub, time.Minute, 200*time.Millisecond, time.Second)
+	if !errors.Is(err, boom) {
+		t.Fatalf("awaitClusterCACertificate = %v, want %v", err, boom)
+	}
+	if elapsed := time.Since(start); elapsed >= 200*time.Millisecond {
+		t.Fatalf("awaitClusterCACertificate took %s, want an immediate return with no backoff sleep", elapsed)
+	}
+	if got := stub.callCount(); got != 1 {
+		t.Fatalf("Certificate called %d times, want 1 (no retry on a non-transient error)", got)
+	}
+}
+
+// TestAwaitClusterCACertificate_DeadlineExceededReturnsErr proves a
+// persistent not-leader answer eventually gives up rather than retrying
+// forever, once the deadline has passed, and still returns the typed
+// *service.NotLeaderError rather than a generic timeout.
+func TestAwaitClusterCACertificate_DeadlineExceededReturnsErr(t *testing.T) {
+	stub := &stubFlakyClusterCAProvider{notLeaderUntil: 0} // never succeeds
+	_, err := awaitClusterCACertificate(context.Background(), stub, 30*time.Millisecond, 10*time.Millisecond, 10*time.Millisecond)
+	var notLeader *service.NotLeaderError
+	if !errors.As(err, &notLeader) {
+		t.Fatalf("awaitClusterCACertificate = %v (%T), want *service.NotLeaderError", err, err)
+	}
+	if got := stub.callCount(); got < 2 {
+		t.Fatalf("Certificate called %d times, want at least 2 (at least one retry before the deadline)", got)
+	}
+}
+
+// TestAwaitClusterCACertificate_ContextCanceledReturnsErr proves a shutdown
+// signal during the retry loop is honored immediately rather than waiting
+// out the full backoff deadline.
+func TestAwaitClusterCACertificate_ContextCanceledReturnsErr(t *testing.T) {
+	stub := &stubFlakyClusterCAProvider{notLeaderUntil: 0} // never succeeds
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	_, err := awaitClusterCACertificate(ctx, stub, time.Minute, time.Minute, time.Minute)
+	var notLeader *service.NotLeaderError
+	if !errors.As(err, &notLeader) {
+		t.Fatalf("awaitClusterCACertificate = %v (%T), want *service.NotLeaderError", err, err)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("awaitClusterCACertificate took %s with an already-canceled context, want an immediate return", elapsed)
 	}
 }

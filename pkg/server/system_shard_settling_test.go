@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // The ReadIndex warm-up of a freshly elected leader is waited out; any
@@ -74,6 +75,34 @@ func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 	}
 
 	known := &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "192.0.2.2:5000"}
+	calls = 0
+	err = WhileSystemShardSettling(context.Background(), func() error { calls++; return known })
+	if !errors.Is(err, known) || calls != 1 {
+		t.Fatalf("err = %v after %d calls, want the known-leader error after 1", err, calls)
+	}
+}
+
+// TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer is the
+// embedded-transport proof: a caller one layer removed from the service
+// package (the feature gate's self-advertisement, writing through an
+// in-process sdk.Client) sees *transport.NotLeaderError, not
+// *service.NotLeaderError -- sdk/go/transport/embedded's translateError
+// reconstructs a fresh value with no Unwrap chain back to the service-layer
+// type -- and must be waited out exactly the same way.
+func TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer(t *testing.T) {
+	calls := 0
+	err := WhileSystemShardSettling(context.Background(), func() error {
+		calls++
+		if calls < 3 {
+			return &transport.NotLeaderError{ShardID: 1}
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("err = %v after %d calls, want nil after 3", err, calls)
+	}
+
+	known := &transport.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "192.0.2.2:5000"}
 	calls = 0
 	err = WhileSystemShardSettling(context.Background(), func() error { calls++; return known })
 	if !errors.Is(err, known) || calls != 1 {

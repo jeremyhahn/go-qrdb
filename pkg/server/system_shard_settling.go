@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // SystemShardSettleBudget bounds how long WhileSystemShardSettling waits out
@@ -62,10 +63,26 @@ func WhileSystemShardSettling(ctx context.Context, fn func() error) error {
 // SystemShardSettling reports whether err is the system shard settling: the
 // ReadIndex warm-up of a new leader, or no leader known while one is elected.
 // A not-leader answer that names a leader is not settling.
+//
+// Two typed not-leader errors are checked, not one: a caller fed through the
+// embedded transport (e.g. the feature gate's self-advertisement, which
+// writes through an in-process sdk.Client) sees *transport.NotLeaderError,
+// translated from *service.NotLeaderError at the transport boundary with no
+// Unwrap chain back to it (sdk/go/transport/embedded's translateError
+// deliberately reconstructs a fresh value, not a wrapper) -- so recognizing
+// only the service-layer type silently stopped retrying for every caller one
+// layer removed from the service package.
 func SystemShardSettling(err error) bool {
 	if errors.Is(err, quicraft.ErrReadIndexNotReady) {
 		return true
 	}
 	var nl *service.NotLeaderError
-	return errors.As(err, &nl) && nl.LeaderID == 0
+	if errors.As(err, &nl) {
+		return nl.LeaderID == 0
+	}
+	var tnl *transport.NotLeaderError
+	if errors.As(err, &tnl) {
+		return tnl.LeaderID == 0
+	}
+	return false
 }

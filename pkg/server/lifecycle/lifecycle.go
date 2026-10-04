@@ -286,10 +286,33 @@ type Infra struct {
 	// Both are empty on every boot after the key has been confirmed
 	// persisted into the replicated store — the caller's local cache of the
 	// key is deleted at that point, so there is nothing left to pass.
-	// Ignored when ClusterCAKeyProvider is set. See
-	// cakey.SoftwareProvider.AdoptIfAbsent for the adoption semantics.
+	// Ignored when ClusterCAKeyProvider is set, or when NoClusterCAKey is
+	// true. See cakey.SoftwareProvider.AdoptIfAbsent for the adoption
+	// semantics.
 	ClusterCACertPEM []byte
 	ClusterCAKeyPEM  []byte
+
+	// NoClusterCAKey, when true and ClusterCAKeyProvider is nil, leaves
+	// Node.ClusterCAProv nil instead of constructing the built-in
+	// cakey.SoftwareProvider. This node has no cluster CA key of its own,
+	// by the operator's choice -- a BYO-TLS deployment (explicit
+	// --tls-ca-file/--tls-cert-file/--tls-key-file) whose operator-supplied
+	// CA certificate is a trust anchor qrdb was never handed the private
+	// key for, not bootstrap material for Key A. See
+	// docs/certificate-authority/architecture.md, "server TLS identity and
+	// the cluster/login CA are separate concerns".
+	//
+	// Every CA-dependent verb already refuses with its own typed error when
+	// ClusterCAProv (or the CeremonyCA it backs) is nil -- ceremony-sign-csr
+	// and officer-register return ErrCANotInitialized, and
+	// AdminService.MintJoinToken returns ClusterJoinTokenNotConfiguredError
+	// because cmd/qrdbd never calls SetClusterJoinTokenStore without a
+	// provider. Setting NoClusterCAKey only stops the built-in provider from
+	// silently generating -- and persisting -- a self-issued cluster CA key
+	// nobody asked this node to hold. CertProv (Key B, the per-tenant login
+	// CA) is unaffected: it is a different trust domain and is built
+	// unconditionally in the same block.
+	NoClusterCAKey bool
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -346,10 +369,12 @@ type Node struct {
 
 	// ClusterCAProv is the cluster CA (Key A) provider: the built-in
 	// cakey.SoftwareProvider over the replicated store, or
-	// Infra.ClusterCAKeyProvider when one was injected. Non-nil exactly
-	// when CertProv is (both are built in the same BarrierRegistry-gated
-	// block). Used for node-leaf issuance and member-side cluster-join CSR
-	// signing (pkg/clusterenroll).
+	// Infra.ClusterCAKeyProvider when one was injected. Nil when neither
+	// exists -- a BYO-TLS node built with Infra.NoClusterCAKey and no
+	// injected provider -- in which case CertProv (Key B) is still
+	// non-nil: the two keys are separate trust domains, and only Key A is
+	// ever withheld this way. Used for node-leaf issuance and member-side
+	// cluster-join CSR signing (pkg/clusterenroll).
 	ClusterCAProv cakey.Provider
 
 	// StoreResolver maps a tenant ID to the KVStore backing its IAM data.
@@ -1007,9 +1032,16 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// not yet readable immediately after BuildServices runs in Raft
 		// mode -- the shard has no leader yet -- so reading it here would
 		// race that window on every single boot, not only the bootstrap one.
-		if infra.ClusterCAKeyProvider != nil {
+		switch {
+		case infra.ClusterCAKeyProvider != nil:
 			n.ClusterCAProv = infra.ClusterCAKeyProvider
-		} else {
+		case infra.NoClusterCAKey:
+			// This node has no cluster CA key, by the operator's choice,
+			// and none is injected: leave ClusterCAProv nil rather than
+			// stand up a built-in provider that would generate (and
+			// persist) a self-issued Key A nobody asked for. See
+			// Infra.NoClusterCAKey.
+		default:
 			n.ClusterCAProv = clusterca.NewProvider(certStore, infra.SealBarrier,
 				cakey.WithAdoptMaterial(infra.ClusterCAKeyPEM, infra.ClusterCACertPEM))
 		}

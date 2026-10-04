@@ -83,6 +83,17 @@ type TLSBundle struct {
 	// Reloader provides atomic TLS certificate hot-reload. When non-nil,
 	// the TLSConfig.GetCertificate callback is wired to use this reloader.
 	Reloader *CertReloader
+
+	// ExplicitTLS is true only for resolveTLS's path 1 (--tls-ca-file,
+	// --tls-cert-file and --tls-key-file all supplied): CACertPEM is then
+	// an operator-supplied trust anchor qrdb was never handed the private
+	// key for, not bootstrap material for the cluster CA (Key A). It is
+	// false for every other path, including path 2 (cached certs in
+	// data-dir), which is this same node's own earlier self-issued
+	// material and must still be offered to the cluster CA provider. See
+	// docs/certificate-authority/architecture.md, "server TLS identity and
+	// the cluster/login CA are separate concerns".
+	ExplicitTLS bool
 }
 
 // localSANs discovers all local DNS names and IP addresses suitable for

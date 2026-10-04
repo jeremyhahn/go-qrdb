@@ -73,6 +73,10 @@ func resolveTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, *bootstrapServe
 		if err != nil {
 			return nil, nil, err
 		}
+		// This node's CA certificate came from the operator, not from
+		// qrdb's own key material: it must never be offered to the
+		// cluster CA provider as bootstrap material. See TLSBundle.ExplicitTLS.
+		bundle.ExplicitTLS = true
 		return bundle, nil, nil
 	}
 
