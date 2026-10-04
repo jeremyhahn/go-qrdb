@@ -63,6 +63,31 @@ func Provision(ctx context.Context, backend PINBackend, soPIN, userPIN string) e
 	return backend.SetUserPIN(soPIN, userPIN)
 }
 
+// ProvisionRollback is an OPTIONAL capability a PINBackend may implement to
+// undo a Provision call whose caller failed LATER in the same logical
+// transaction (go-qrdb#560 review B3): ceremony Initialize provisions the
+// SO/User PINs before enrolling M-of-N officers, and a failure partway
+// through that enrollment -- a CA signing fault, a persist I/O error --
+// must not leave the PINs provisioned while the officers that would have
+// made the ceremony usable are rolled back, since Provision's own
+// idempotent re-verify would then force a corrected retry to supply the
+// SAME PINs rather than genuinely new ones.
+//
+// Reached by type assertion, exactly like FIDO2HashVerifier above: not
+// every backend can support it. *SoftwareBackend un-sets its in-memory
+// state so a retry within the SAME process provisions cleanly; a hardware
+// backend (TPM2, PKCS#11) that has already committed an irreversible
+// native provisioning step must not claim to -- RollbackProvision's
+// absence (no type assertion match) is the correct answer for one, not an
+// error, and ceremony.Initialize's rollback is best-effort for exactly
+// that reason.
+type ProvisionRollback interface {
+	// RollbackProvision reverts a Provision call that has not been acted on
+	// by anything outside the caller's own failed transaction. It is always
+	// safe to call when nothing was ever provisioned (a no-op).
+	RollbackProvision() error
+}
+
 // RequireProvisionedSOPIN gates an operation that is meaningful only once the
 // node has an SO PIN -- a rekey, a holder revocation -- behind it. Unlike
 // RequireSOPIN it does not admit the call when no SO PIN has been

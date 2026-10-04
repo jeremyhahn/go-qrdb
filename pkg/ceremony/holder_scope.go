@@ -384,15 +384,87 @@ type officerKeyFingerprint struct {
 	encKey []byte
 }
 
-// validateOfficerCredentials pre-validates EVERY officer's CSR (present,
-// parseable), key kind, encryption KEM/key, and factor set, and refuses a
-// key any TWO officers in the SAME batch share -- all PURE checks, no side
-// effect -- before ANY of them is enrolled (go-qrdb#560 review B3, "a
-// refused M-of-N init leaves partial state behind"). Without this, a batch
-// of N officers where only the LAST one is malformed enrolled (signed a
-// certificate, persisted a record for) the first N-1 before discovering
-// the last one's CSR does not even parse: Initialize then refused the
-// whole call, but with N-1 holders already committed.
+// validateOfficerEnrolment performs every PURE, no-side-effect check an
+// officer's enrolment request must pass -- shared by a single live
+// enrolment (enrol) and the batch admitted together at ceremony Initialize
+// (validateOfficerCredentials), so the two can never drift apart
+// (go-qrdb#560 review B3): role validity, the principal name,
+// self-enrolment, the CSR's presence and parseability, its key kind, the
+// encryption KEM/key, and the resolved factor set including the designated
+// factor.
+//
+// Before this existed, validateOfficerCredentials carried its OWN partial
+// copy of these checks -- CSR/key/KEM/factors only, missing role validity,
+// validPrincipalName and ErrSelfEnrolment -- so a batch where only a LATER
+// officer had a bad username, a bad role, or named itself as its own
+// enroller slipped past the batch pre-flight entirely: enrol's full set of
+// checks caught it, but only after every officer before it in the loop was
+// already signed and persisted, and a corrected retry then refused on
+// "name already taken" forever.
+//
+// req.Role is defaulted to seal.RoleSecurityOfficer IN PLACE when empty,
+// exactly as enrol always has, so the caller's req reflects the same
+// default the rest of enrolment uses.
+//
+// It does NOT check uniqueness against anything already persisted
+// (duplicate certificate/encryption key, a name collision) or scope
+// capacity: those need a comparison set the caller supplies -- the other
+// officers already seen in the SAME batch, or the live registry/barrier
+// state for a single enrolment -- which differs between the two callers.
+func validateOfficerEnrolment(d *HolderDeps, req *RegisterOfficerRequest) (csr *x509.CertificateRequest, spki []byte, encKEM string, encKey []byte, resolved []authfactors.Factor, designated string, err error) {
+	if req.Role == "" {
+		req.Role = seal.RoleSecurityOfficer
+	}
+	if !req.Role.Valid() {
+		return nil, nil, "", nil, nil, "", ErrInvalidHolderRole
+	}
+	if !validPrincipalName(req.Username) {
+		if req.Username == "" {
+			return nil, nil, "", nil, nil, "", ErrMissingUsername
+		}
+		return nil, nil, "", nil, nil, "", &InvalidHolderNameError{Name: req.Username}
+	}
+	if req.Enroller != "" && req.Enroller == req.Username {
+		return nil, nil, "", nil, nil, "", ErrSelfEnrolment
+	}
+	if len(req.CSRPEM) == 0 {
+		return nil, nil, "", nil, nil, "", ErrMissingCSRPEM
+	}
+	csr, err = parseCSR(req.CSRPEM)
+	if err != nil {
+		return nil, nil, "", nil, nil, "", err
+	}
+	if _, ok := mtls.PublicKeyKind(csr.PublicKey); !ok {
+		return nil, nil, "", nil, nil, "", &UnsupportedHolderKeyError{Algorithm: csr.PublicKeyAlgorithm.String()}
+	}
+	spki, err = x509.MarshalPKIXPublicKey(csr.PublicKey)
+	if err != nil {
+		return nil, nil, "", nil, nil, "", &CSRParseError{Err: err}
+	}
+	encKEM, encKey, err = enrolmentEncryptionKey(req.EncryptionKey, csr)
+	if err != nil {
+		return nil, nil, "", nil, nil, "", err
+	}
+	resolved, err = resolveFactors(d, *req)
+	if err != nil {
+		return nil, nil, "", nil, nil, "", err
+	}
+	designated, err = designatedFactor(*req)
+	if err != nil {
+		return nil, nil, "", nil, nil, "", err
+	}
+	return csr, spki, encKEM, encKey, resolved, designated, nil
+}
+
+// validateOfficerCredentials pre-validates EVERY officer in the batch
+// through validateOfficerEnrolment, and additionally refuses a key any TWO
+// officers in the SAME batch share -- all PURE checks, no side effect --
+// before ANY of them is enrolled (go-qrdb#560 review B3, "a refused M-of-N
+// init leaves partial state behind"). Without this, a batch of N officers
+// where only the LAST one is invalid enrolled (signed a certificate,
+// persisted a record for) the first N-1 before discovering the last one's
+// defect: Initialize then refused the whole call, but with N-1 holders
+// already committed.
 //
 // Called by Initialize alongside validateInitOptions and
 // validateAdminCredentialInputs, before pin.Provision, the TLS issue and
@@ -402,28 +474,21 @@ type officerKeyFingerprint struct {
 // will use to resolve factor implementations; its Factors registry is
 // configured independently of CA, which Initialize has not yet stored
 // into a deps value at this point, so this check does not need d.CA.
-func validateOfficerCredentials(d *HolderDeps, officers []OfficerConfig) error {
+// enroller is opts.Enroller, the one principal (if any) enrolling the
+// whole batch -- OfficerConfig carries no per-officer Enroller field, so
+// it is threaded through here the same way Initialize's real registration
+// loop threads it into each RegisterOfficerRequest.
+func validateOfficerCredentials(d *HolderDeps, officers []OfficerConfig, enroller string) error {
 	seen := make([]officerKeyFingerprint, 0, len(officers))
 	for _, o := range officers {
-		if len(o.CSRPEM) == 0 {
-			return ErrMissingCSRPEM
+		req := RegisterOfficerRequest{
+			Username: o.Username, Role: o.Role, CSRPEM: o.CSRPEM,
+			Factors: o.Factors, Designated: o.Designated, Enroller: enroller,
 		}
-		csr, err := parseCSR(o.CSRPEM)
-		if err != nil {
-			return err
-		}
-		if _, ok := mtls.PublicKeyKind(csr.PublicKey); !ok {
-			return &UnsupportedHolderKeyError{Algorithm: csr.PublicKeyAlgorithm.String()}
-		}
-		spki, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
-		if err != nil {
-			return &CSRParseError{Err: err}
-		}
-		var encReq *EncryptionKeyEnrolment
 		if o.EncryptionKEM != "" || len(o.EncryptionKey) > 0 {
-			encReq = &EncryptionKeyEnrolment{KEM: o.EncryptionKEM, PublicKey: o.EncryptionKey}
+			req.EncryptionKey = &EncryptionKeyEnrolment{KEM: o.EncryptionKEM, PublicKey: o.EncryptionKey}
 		}
-		encKEM, encKey, err := enrolmentEncryptionKey(encReq, csr)
+		_, spki, encKEM, encKey, _, _, err := validateOfficerEnrolment(d, &req)
 		if err != nil {
 			return err
 		}
@@ -433,17 +498,6 @@ func validateOfficerCredentials(d *HolderDeps, officers []OfficerConfig) error {
 			}
 		}
 		seen = append(seen, officerKeyFingerprint{spki: spki, encKEM: encKEM, encKey: encKey})
-
-		req := RegisterOfficerRequest{
-			Username: o.Username, Role: o.Role, CSRPEM: o.CSRPEM,
-			Factors: o.Factors, Designated: o.Designated,
-		}
-		if _, err := resolveFactors(d, req); err != nil {
-			return err
-		}
-		if _, err := designatedFactor(req); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -456,23 +510,15 @@ func validateOfficerCredentials(d *HolderDeps, officers []OfficerConfig) error {
 // admit is called once the request is validated and before the first effect
 // (the certificate's issue); its error refuses the enrolment unchanged.
 func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest, admit func() error) (*RegisterOfficerResult, error) {
-	if req.Role == "" {
-		req.Role = seal.RoleSecurityOfficer
-	}
-	if !req.Role.Valid() {
-		return nil, ErrInvalidHolderRole
-	}
-	if !validPrincipalName(req.Username) {
-		if req.Username == "" {
-			return nil, ErrMissingUsername
-		}
-		return nil, &InvalidHolderNameError{Name: req.Username}
-	}
-	if req.Enroller != "" && req.Enroller == req.Username {
-		return nil, ErrSelfEnrolment
-	}
-	if len(req.CSRPEM) == 0 {
-		return nil, ErrMissingCSRPEM
+	// Every pure, no-side-effect check (role validity, principal name,
+	// self-enrolment, CSR presence/parseability/key kind, encryption
+	// KEM/key, factor resolution) runs through the SAME validator
+	// validateOfficerCredentials applies to a whole batch at Initialize
+	// (go-qrdb#560 review B3), so the two can never drift apart. It
+	// defaults req.Role in place, exactly as this function always has.
+	_, spki, encKEM, encKey, resolved, designated, err := validateOfficerEnrolment(d, &req)
+	if err != nil {
+		return nil, err
 	}
 	if d.CA == nil {
 		return nil, ErrCANotInitialized
@@ -493,22 +539,6 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 		return nil, err
 	}
 
-	csr, err := parseCSR(req.CSRPEM)
-	if err != nil {
-		return nil, err
-	}
-	if _, ok := mtls.PublicKeyKind(csr.PublicKey); !ok {
-		return nil, &UnsupportedHolderKeyError{Algorithm: csr.PublicKeyAlgorithm.String()}
-	}
-	spki, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
-	if err != nil {
-		return nil, &CSRParseError{Err: err}
-	}
-
-	encKEM, encKey, err := enrolmentEncryptionKey(req.EncryptionKey, csr)
-	if err != nil {
-		return nil, err
-	}
 	// One person holds one share per scope, whatever their role: the
 	// certificate key and the encryption key must be new to the scope.
 	for _, other := range h.registry.Cached() {
@@ -524,17 +554,6 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	profile, ok := holderProfiles[req.Role]
 	if !ok {
 		return nil, ErrInvalidHolderRole
-	}
-	if !validPrincipalName(req.Username) {
-		return nil, &InvalidHolderNameError{Name: req.Username}
-	}
-	resolved, err := resolveFactors(d, req)
-	if err != nil {
-		return nil, err
-	}
-	designated, err := designatedFactor(req)
-	if err != nil {
-		return nil, err
 	}
 	if err := admit(); err != nil {
 		return nil, err

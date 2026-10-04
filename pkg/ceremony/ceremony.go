@@ -103,7 +103,7 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 		config:            config,
 		barrier:           barrier,
 		logger:            logger,
-		state:             StateAwaitingInit,
+		state:             restoreState(context.Background(), barrier),
 		system:            system,
 		recovery:          recovery,
 		thresholdRegistry: NewThresholdRegistry(),
@@ -111,6 +111,60 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 	barrier.SetCeremonyDistributor(s)
 	barrier.SetHolderVerifier(s)
 	return s, nil
+}
+
+// restoreState derives the ceremony's state at construction from the
+// replicated and seal-store records that already exist, rather than
+// leaving every freshly-constructed *CeremonyService at StateAwaitingInit
+// regardless of whether this barrier was already taken through the
+// ceremony in an EARLIER process (go-qrdb#560 review: "after a restart the
+// ceremony state is lost" -- NewCeremonyService started in StateAwaitingInit
+// and nothing restored it, so a composer's awaiting-passthrough
+// (service.CeremonyServiceWithAdminRebind) ran a FULL Initialize against an
+// already-initialized ceremony: it could mint an unbound admin certificate
+// and re-provision the SO/User PINs for whoever called first after a
+// restart).
+//
+// No new node-local state file: the reads are of records a DIFFERENT
+// restart-survival path (EnrollmentOpen, "the ceremony's in-memory state is
+// gone") already relies on, in the barrier's own plaintext base store --
+// readable even while the barrier is sealed, which is the point.
+//
+//   - barrier.CeremonyOperational: set by becomeOperationalLocked the
+//     moment EITHER path reaches operational (single-admin, immediately
+//     within Initialize; M-of-N, once CompleteClaimShare sees every
+//     officer's envelope claimed) -- true here means StateOperational,
+//     covering both paths uniformly.
+//   - barrier.Initialized, but ONLY under Shamir custody
+//     (barrier.Status().ShamirThreshold >= 2): M-of-N's InitializeShamir is
+//     the LAST barrier-related effect of an Initialize call that has
+//     ALREADY fully committed by the time it runs -- the SO/User PINs
+//     provisioned, every officer validated as a batch and enrolled
+//     (go-qrdb#560 review B3's pre-flight, plus its rollback of anything
+//     that still fails after it) -- so Initialized here safely means
+//     "reached StateEnrolling", not "crashed mid-call". Single-admin's OWN
+//     Initialize brings the barrier up FIRST, before the admin credential
+//     is even issued, so Initialized alone cannot tell a completed
+//     single-admin ceremony from one that crashed mid-call -- and the
+//     crash case's own documented retry-after-crash convergence
+//     (initializeSystemBarrierLocked) NEEDS this to stay
+//     StateAwaitingInit, exactly as it always has; that is why this check
+//     is Shamir-only.
+//   - Neither record present (or, for a non-Shamir barrier, no operational
+//     record at all): this barrier has genuinely never completed the
+//     ceremony, or a single-admin attempt crashed before completing it.
+//     StateAwaitingInit is correct either way -- Initialize's own
+//     crash-retry convergence handles the latter, as it always has.
+func restoreState(ctx context.Context, barrier *seal.StorageBarrier) CeremonyState {
+	if operational, err := barrier.CeremonyOperational(ctx); err == nil && operational {
+		return StateOperational
+	}
+	if status := barrier.Status(); status.ShamirThreshold >= 2 {
+		if initialized, err := barrier.Initialized(ctx); err == nil && initialized {
+			return StateEnrolling
+		}
+	}
+	return StateAwaitingInit
 }
 
 // Barrier returns the barrier the service is the distributor and holder
@@ -348,7 +402,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// first. opts.Threshold < 2 means no officers are enrolled at all
 	// (the single-admin path below), so there is nothing to validate here.
 	if opts.Threshold >= 2 {
-		if err := validateOfficerCredentials(&s.deps, opts.Officers); err != nil {
+		if err := validateOfficerCredentials(&s.deps, opts.Officers, opts.Enroller); err != nil {
 			return nil, err
 		}
 	}
@@ -513,6 +567,18 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		return result, nil
 	}
 
+	// registered tracks every officer THIS call has already enrolled, so a
+	// later officer's failure can roll them back (go-qrdb#560 review B3):
+	// validateOfficerCredentials catches every INPUT defect pre-flight
+	// (role, name, self-enrolment, CSR/key/KEM/factors, a duplicate key
+	// within the batch), but what can still fail HERE, after that
+	// validation, is a real side effect itself -- the CA signing fault, a
+	// persist I/O error, or a duplicate-key race against a holder another
+	// call enrolled concurrently. Without the rollback below, an officer
+	// enrolled earlier in this SAME loop would stay persisted -- and its
+	// username permanently unavailable -- even though the call that was
+	// supposed to enroll it reported failure.
+	var registered []string
 	for _, o := range opts.Officers {
 		req := RegisterOfficerRequest{
 			Username:   o.Username,
@@ -530,9 +596,11 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// there is no second registration path for the rich holder data.
 		reg, rerr := s.system.register(ctx, &s.deps, req)
 		if rerr != nil {
+			s.rollbackOfficerInit(ctx, registered)
 			s.mu.Unlock()
 			return nil, rerr
 		}
+		registered = append(registered, o.Username)
 		result.Holders = append(result.Holders, reg)
 	}
 	s.mu.Unlock()
@@ -577,6 +645,45 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 	barrier := s.barrier
 	s.mu.Unlock()
 	return s.recovery.generateRecoveryKeys(ctx, &s.mu, barrier, threshold, policy)
+}
+
+// rollbackOfficerInit undoes a partially-committed M-of-N officer batch
+// (go-qrdb#560 review B3): it removes every officer in registered, in
+// reverse enrollment order, from the (still not-yet-initialized) system
+// scope, and best-effort un-provisions the SO/User PINs via
+// pin.ProvisionRollback when the backend supports it.
+//
+// It never masks the caller's own failure: every error here is LOGGED, not
+// returned -- the caller already has the real error (the officer
+// registration that failed) to report, and a rollback failure must not
+// replace a meaningful diagnostic with a bookkeeping one. It is
+// best-effort rather than guaranteed for two independent reasons: removing
+// an officer can itself fail (the same class of fault that triggered the
+// rollback), and a hardware PINBackend may have no way to undo a native
+// provisioning step at all (pin.ProvisionRollback's own doc comment). When
+// the PIN stays provisioned, a retry supplying the SAME SOPin/UserPin still
+// succeeds (pin.Provision's own idempotent re-verify); only a retry that
+// changes either PIN is affected.
+//
+// Must be called with s.mu held, matching every other call site inside
+// Initialize's critical section; it does not unlock.
+func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []string) {
+	for i := len(registered) - 1; i >= 0; i-- {
+		username := registered[i]
+		if err := s.system.removeEnrolled(ctx, username, func() error { return nil }); err != nil {
+			s.logger.Error("ceremony: failed to roll back a partially-registered officer after a later officer's enrolment failed",
+				slog.String("username", username), slog.Any("error", err))
+		}
+	}
+	if s.pins == nil {
+		return
+	}
+	if r, ok := s.pins.(pin.ProvisionRollback); ok {
+		if err := r.RollbackProvision(); err != nil {
+			s.logger.Error("ceremony: failed to roll back SO/User PIN provisioning after a batch officer enrolment failed",
+				slog.Any("error", err))
+		}
+	}
 }
 
 // initializeSystemBarrierLocked brings the system barrier up as part of

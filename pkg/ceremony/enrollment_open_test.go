@@ -31,9 +31,11 @@ func TestEnrollmentOpen_FreshCeremony(t *testing.T) {
 }
 
 // TestEnrollmentOpen_ClosedWhenOperationalAndAfterRestart: reaching
-// operational closes enrollment, records the marker on the barrier, and the
-// marker keeps it closed for a fresh service over the same barrier -- a
-// restart -- even though that service's own state starts over.
+// operational closes enrollment and records the marker on the barrier, and
+// a fresh service over the same barrier -- a restart -- restores
+// StateOperational from that SAME marker (go-qrdb#560 review: "after a
+// restart the ceremony state is lost"), so enrollment stays closed for the
+// same reason twice over: the restored state AND the marker both say so.
 func TestEnrollmentOpen_ClosedWhenOperationalAndAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
@@ -52,7 +54,8 @@ func TestEnrollmentOpen_ClosedWhenOperationalAndAfterRestart(t *testing.T) {
 	require.True(t, marked, "reaching operational must record the marker on the barrier")
 
 	restarted := e.newService(e.barrier)
-	require.Equal(t, StateAwaitingInit, restarted.State())
+	require.Equal(t, StateOperational, restarted.State(),
+		"a fresh service over an already-operational barrier must restore StateOperational, not start over")
 	require.False(t, restarted.EnrollmentOpen(ctx), "the marker must keep enrollment closed after a restart")
 }
 

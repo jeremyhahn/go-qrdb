@@ -17,6 +17,7 @@ package ceremony
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,6 +86,72 @@ func TestInitialize_SingleAdmin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StateOperational, res.State)
 	assert.Empty(t, res.Holders)
+}
+
+// TestInitialize_RestoresStateAcrossRestart is the go-qrdb#560 review fix:
+// "after a restart the ceremony state is lost" -- NewCeremonyService always
+// started at StateAwaitingInit, so a fresh *CeremonyService over an
+// ALREADY-initialized barrier (the shape every restart takes: the barrier
+// and its records are durable, but this Go value is not) looked exactly
+// like a brand-new, never-initialized ceremony. Covers both the
+// single-admin path (operational immediately) and Shamir custody (where an
+// in-progress enrolment must restore to StateEnrolling, not
+// StateAwaitingInit -- which would let a caller replay Initialize over an
+// already-enrolled roster -- and not StateOperational, which the claims
+// have not yet proven).
+func TestInitialize_RestoresStateAcrossRestart(t *testing.T) {
+	t.Run("single-admin: operational immediately", func(t *testing.T) {
+		barrier := noneStrategyBarrier(t)
+		svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, barrier)
+		_, err := svc.Initialize(context.Background(), testCA(t), initOpts(0))
+		require.NoError(t, err)
+		require.Equal(t, StateOperational, svc.State())
+
+		restarted, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+		require.NoError(t, err)
+		assert.Equal(t, StateOperational, restarted.State())
+	})
+
+	t.Run("shamir: never initialized stays awaiting", func(t *testing.T) {
+		barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 2)
+		restarted, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+		require.NoError(t, err)
+		assert.Equal(t, StateAwaitingInit, restarted.State())
+	})
+
+	t.Run("shamir: enrolling but not all claimed restores to enrolling", func(t *testing.T) {
+		e := newHolderEnv(t, 2, 2)
+		alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+		bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+		res, err := e.svc.Initialize(context.Background(), e.ca, initOpts(2, alice, bob))
+		require.NoError(t, err)
+		require.Equal(t, StateEnrolling, res.State)
+		alice.recordCert(t, res.Holders[0].CertPEM)
+		e.claim(seal.DomainUnseal, alice) // one of two holders claims; bob does not
+		require.Equal(t, StateEnrolling, e.svc.State())
+
+		restarted, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, e.barrier, testLogger())
+		require.NoError(t, err)
+		assert.Equal(t, StateEnrolling, restarted.State(),
+			"an in-progress enrolment must restore to StateEnrolling, not StateAwaitingInit or StateOperational")
+	})
+
+	t.Run("shamir: all claimed restores to operational", func(t *testing.T) {
+		e := newHolderEnv(t, 2, 2)
+		alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+		bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+		res, err := e.svc.Initialize(context.Background(), e.ca, initOpts(2, alice, bob))
+		require.NoError(t, err)
+		alice.recordCert(t, res.Holders[0].CertPEM)
+		bob.recordCert(t, res.Holders[1].CertPEM)
+		e.claim(seal.DomainUnseal, alice)
+		e.claim(seal.DomainUnseal, bob)
+		require.Equal(t, StateOperational, e.svc.State())
+
+		restarted, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, e.barrier, testLogger())
+		require.NoError(t, err)
+		assert.Equal(t, StateOperational, restarted.State())
+	})
 }
 
 // TestInitialize_FailsClosedWithoutAPINBackend pins ruling 7.
@@ -244,6 +311,133 @@ func TestInitialize_DuplicateOfficerKeyWithinBatchRefusedBeforeEitherPersists(t 
 	officers, lerr := e.svc.ListOfficers(ctx, seal.DomainUnseal)
 	require.NoError(t, lerr)
 	assert.Empty(t, officers, "alice must not be enrolled just because she was first in the batch")
+}
+
+// TestInitialize_SecondOfficerBadInputRefusesBeforeEitherPersists is the
+// go-qrdb#560 re-review's B3 finding: validateOfficerCredentials's batch
+// pre-flight used to carry only a PARTIAL copy of enrol's own checks --
+// CSR/key kind/KEM/factors -- missing role validity, validPrincipalName and
+// ErrSelfEnrolment. A batch where only the SECOND officer had a bad
+// username, a bad role, or named itself as its own enroller slipped past
+// the pre-flight entirely: enrol's own, fuller check caught it, but only
+// after the FIRST officer in the loop was already signed and persisted,
+// and a corrected retry then refused forever on "name already taken".
+//
+// validateOfficerEnrolment is now the ONE validator both enrol and the
+// batch pre-flight call, so every one of these three bad-input shapes on
+// the SECOND officer refuses the whole call with NOTHING persisted for
+// either officer, and a corrected retry succeeds cleanly.
+func TestInitialize_SecondOfficerBadInputRefusesBeforeEitherPersists(t *testing.T) {
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+
+	cases := []struct {
+		name    string
+		mutate  func(opts *InitializeOptions)
+		wantErr error
+	}{
+		{
+			name:    "bad username",
+			mutate:  func(opts *InitializeOptions) { opts.Officers[1].Username = "bob smith!" },
+			wantErr: nil, // *InvalidHolderNameError, checked via errorAs below
+		},
+		{
+			name:    "bad role",
+			mutate:  func(opts *InitializeOptions) { opts.Officers[1].Role = seal.HolderRole("bogus") },
+			wantErr: ErrInvalidHolderRole,
+		},
+		{
+			name:    "self-enrolment",
+			mutate:  func(opts *InitializeOptions) { opts.Enroller = "bob" },
+			wantErr: ErrSelfEnrolment,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			e := newHolderEnv(t, 2, 2)
+			opts := initOpts(2, alice, bob)
+			tc.mutate(opts)
+
+			_, err := e.svc.Initialize(ctx, e.ca, opts)
+			if tc.wantErr != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+			} else {
+				assert.True(t, errorAs[*InvalidHolderNameError](err), "err = %v", err)
+			}
+			assert.Equal(t, StateAwaitingInit, e.svc.State(),
+				"a refused init must leave the ceremony awaiting, not partially initialized")
+			assert.False(t, e.pins.SOPINSet(), "a refused init must not have provisioned the SO PIN either")
+
+			officers, lerr := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+			require.NoError(t, lerr)
+			assert.Empty(t, officers, "alice must not be enrolled just because she was first in the batch")
+
+			// A corrected retry must succeed cleanly: the refusal above must
+			// not have left any state that would make this retry behave any
+			// differently from a genuinely first attempt.
+			retryOpts := initOpts(2, alice, bob)
+			res, err := e.svc.Initialize(ctx, e.ca, retryOpts)
+			require.NoError(t, err, "a corrected retry must succeed")
+			assert.Equal(t, StateEnrolling, res.State)
+			require.Len(t, res.Holders, 2)
+		})
+	}
+}
+
+// failAfterNCA wraps a real CeremonyCA and fails SignCSR starting on its
+// (n+1)th call, simulating a genuine post-validation fault (a transient CA
+// / HSM failure) that validateOfficerEnrolment cannot catch pre-flight
+// because it never calls the CA at all.
+type failAfterNCA struct {
+	CeremonyCA
+	n     int
+	calls int
+}
+
+func (c *failAfterNCA) SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
+	c.calls++
+	if c.calls > c.n {
+		return nil, errors.New("simulated CA signing fault")
+	}
+	return c.CeremonyCA.SignCSR(ctx, csrPEM, opts)
+}
+
+// TestInitialize_OfficerSigningFaultRollsBackEarlierOfficersAndPIN is the
+// go-qrdb#560 review B3 "transactional Initialize" half: a fault that
+// survives validateOfficerEnrolment's pre-flight entirely -- the CA itself
+// fails to sign the SECOND officer's certificate -- must not leave the
+// FIRST officer persisted, nor the SO/User PINs provisioned, so a corrected
+// retry (here, against a CA that works) succeeds cleanly.
+func TestInitialize_OfficerSigningFaultRollsBackEarlierOfficersAndPIN(t *testing.T) {
+	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+	opts := initOpts(2, alice, bob)
+
+	faultyCA := &failAfterNCA{CeremonyCA: e.ca, n: 1}
+	_, err := e.svc.Initialize(ctx, faultyCA, opts)
+	require.Error(t, err, "bob's simulated CA fault must refuse the whole call")
+	assert.Equal(t, StateAwaitingInit, e.svc.State(),
+		"a refused init must leave the ceremony awaiting, not partially initialized")
+	assert.False(t, e.pins.SOPINSet(),
+		"alice's successful enrolment must not leave the SO PIN provisioned once bob's enrolment is rolled back")
+	assert.False(t, e.pins.UserPINSet())
+
+	officers, lerr := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, lerr)
+	assert.Empty(t, officers, "alice must be rolled back, not left as orphaned partial state")
+
+	// A corrected retry, against a CA that actually works, must succeed
+	// cleanly -- including re-using alice's own username and certificate,
+	// which would be refused as already-taken had the rollback not run.
+	retryOpts := initOpts(2, alice, bob)
+	res, err := e.svc.Initialize(ctx, e.ca, retryOpts)
+	require.NoError(t, err, "a corrected retry must succeed")
+	assert.Equal(t, StateEnrolling, res.State)
+	require.Len(t, res.Holders, 2)
 }
 
 // TestSignCSRInit_CAAssignsTheHolderIdentity pins the §6 fix: the CA assigns

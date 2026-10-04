@@ -161,27 +161,49 @@ func TestReplaceCA_DoesNotOverwriteInitializeCA(t *testing.T) {
 }
 
 // TestReplaceCA_PostOperationalSigningSurvivesRestart drives the exact
-// scenario the B4 ruling asks for: a ceremony that has already become
-// operational (Initialize ran) is still signing with its OWN CA, not
-// whatever lifecycle wiring's ReplaceCA attempt offered -- simulating
-// cmd/qrdbd's boot sequence trying to install the by-then-available cluster
-// CA provider on a restart, exactly as lifecycle.BuildServices does on
-// EVERY boot, operational ceremony or not.
+// scenario the B4 ruling asks for, through a GENUINE restart: a fresh
+// *CeremonyService constructed over the SAME barrier an earlier process's
+// Initialize already took operational (go-qrdb#560 re-review: the previous
+// version of this test never constructed a second service at all, so it
+// could not have caught restoreState leaving a restarted ceremony at
+// StateAwaitingInit -- see TestInitialize_RestoresStateAcrossRestart for
+// that fix directly).
+//
+// deps.CA itself is in-memory only and never survives the process boundary
+// on its own -- the composer's boot sequence re-wires the SAME underlying
+// CA key material via SetCA on every boot, operational ceremony or not,
+// which is what makes ReplaceCA's guard (go-qrdb#560 review B4: "never
+// overwrite an already-initialized ceremony's own CA") meaningful here: it
+// holds only because restoreState correctly reports StateOperational
+// across the restart, not StateAwaitingInit.
 func TestReplaceCA_PostOperationalSigningSurvivesRestart(t *testing.T) {
-	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
+	barrier := noneStrategyBarrier(t)
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, barrier)
 	initCA := testCA(t)
 	_, err := svc.Initialize(context.Background(), initCA, initOpts(0))
 	require.NoError(t, err)
 	require.Equal(t, StateOperational, svc.State())
 
-	// Simulate the restart's lifecycle wiring trying to install the
-	// (by-then-available) cluster CA provider.
-	svc.ReplaceCA(testCA(t))
-	require.Same(t, CeremonyCA(initCA), svc.CA(),
-		"ReplaceCA must not touch an operational ceremony's own CA")
+	// A genuine restart: a fresh service over the SAME barrier, not the
+	// same Go value Initialize already ran on.
+	restarted, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	require.NoError(t, err)
+	require.Equal(t, StateOperational, restarted.State(),
+		"state must be restored across the restart for ReplaceCA's guard below to mean anything")
+
+	// The boot sequence re-wires the SAME underlying CA key material via
+	// SetCA, exactly as it does on every boot.
+	restarted.SetCA(initCA)
+	require.Same(t, CeremonyCA(initCA), restarted.CA())
+
+	// Simulate the restart's lifecycle wiring LATER trying to install the
+	// (by-then-available) cluster CA provider via ReplaceCA.
+	restarted.ReplaceCA(testCA(t))
+	require.Same(t, CeremonyCA(initCA), restarted.CA(),
+		"ReplaceCA must not touch an operational ceremony's own CA, even across a restart")
 
 	csrPEM := generateTestCSRPEM(t, "post-restart-officer")
-	cert, err := svc.CA().SignCSR(context.Background(), csrPEM, &SignCSROptions{
+	cert, err := restarted.CA().SignCSR(context.Background(), csrPEM, &SignCSROptions{
 		Username: "officer1",
 		TenantID: tenantid.System,
 	})

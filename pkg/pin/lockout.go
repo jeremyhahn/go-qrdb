@@ -266,6 +266,16 @@ func (b *lockoutBackend) VerifyFIDO2Hash(hash []byte) bool {
 	return false
 }
 
+// RollbackProvision delegates to the decorated backend's ProvisionRollback,
+// and reports nil (nothing to undo) when it has none -- the lockout
+// decoration itself carries no provisioned-PIN state of its own to revert.
+func (b *lockoutBackend) RollbackProvision() error {
+	if r, ok := b.PINBackend.(ProvisionRollback); ok {
+		return r.RollbackProvision()
+	}
+	return nil
+}
+
 // check runs verify, the decorated backend's SO PIN comparison, through the
 // shared lockout on this view's counter. A refusal while locked out is
 // *SOPINLockedError, and verify did not run; so is the refusal of a backend

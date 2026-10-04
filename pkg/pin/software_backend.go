@@ -193,6 +193,29 @@ func (b *SoftwareBackend) GetLockoutStatus() *LockoutStatus { return nil }
 // ResetLockout is a no-op for the software backend.
 func (b *SoftwareBackend) ResetLockout(_ string) error { return nil }
 
+// RollbackProvision implements ProvisionRollback: it un-sets the in-memory
+// SO and User PIN state, so a subsequent Provision call within the SAME
+// process behaves exactly as if neither had ever been set.
+//
+// The persisted record (when a Storage is configured) is NOT deleted --
+// Storage has no delete primitive, only Get/Put -- so it is left stale on
+// disk until the next successful SetSOPIN/SetUserPIN overwrites it. That
+// is safe for the one thing this exists for (a same-process retry after an
+// aborted multi-step provisioning transaction, go-qrdb#560 review B3):
+// SOPINSet/UserPINSet answer from the in-memory flag this clears, never
+// from storage presence, so the stale record is inert until this process
+// writes over it. A crash between this call and that retry would reload
+// the stale record on the NEXT process start and require the aborted PIN
+// to unlock it -- an accepted residual gap, since Storage's interface
+// offers no delete to close it.
+func (b *SoftwareBackend) RollbackProvision() error {
+	b.soRecord.Store(nil)
+	b.userRecord.Store(nil)
+	b.soPINSet.Store(false)
+	b.userPINSet.Store(false)
+	return nil
+}
+
 // VerifyFIDO2Hash verifies a CTAP2 PIN hash (SHA-256(PIN)[:16]) against
 // the cached value in constant time. Returns false when no hash is
 // cached (the user has not yet successfully verified post-restart).
