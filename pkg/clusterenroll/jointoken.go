@@ -56,6 +56,7 @@ import (
 // uniform randomness underneath it), so a second encryption layer would
 // repeat B1's own mistake of adding protection that is actually a
 // liability once the record is replicated.
+// #nosec G101 -- replicated-store key-space prefix, not a credential.
 const joinTokenPrefix = "__sys:cluster_join_tokens/"
 
 // joinIdentityPrefix records, per node identity, either that it has been
@@ -504,7 +505,7 @@ func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStor
 // longer held the exact PENDING value this call expected -- reported at
 // WARN, the lost-race case the earlier, discarding implementation of this
 // cleanup did not surface at all, rather than silently treated as
-// "nothing to do."
+// "nothing to do".
 func ReleaseJoinIdentityReservation(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, pending []byte) (released bool, err error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), promoteReleaseTimeout)
 	defer cancel()

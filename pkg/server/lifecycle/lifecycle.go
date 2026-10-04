@@ -1081,7 +1081,6 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			log.Info("migrated tenant metadata from local seal store to replicated store",
 				slog.Int("count", migrated))
 		}
-
 	}
 
 	return nil

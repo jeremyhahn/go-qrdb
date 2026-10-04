@@ -81,10 +81,9 @@ func (h *hardConfinedWatch) WatchPrefix(ctx context.Context, prefix string, opts
 // WatchResponse event whose key lies in the hard-confined namespace
 // before it reaches the caller.
 type hardConfinedFilteredWatcher struct {
-	inner    watch.Watcher
-	events   chan watch.WatchResponse
-	done     chan struct{}
-	closeErr error
+	inner  watch.Watcher
+	events chan watch.WatchResponse
+	done   chan struct{}
 }
 
 func newHardConfinedFilteredWatcher(inner watch.Watcher) *hardConfinedFilteredWatcher {

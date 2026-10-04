@@ -25,6 +25,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"sync"
@@ -663,12 +664,18 @@ var _ crypto.Signer = (*barrierCheckedSigner)(nil)
 // directly would let a caller corrupt the signer's key by mutating the
 // "public" key it received, or walk the embedded-struct layout to reach D.
 func (s *barrierCheckedSigner) Public() crypto.PublicKey {
-	pub := s.key.PublicKey
-	return &ecdsa.PublicKey{
-		Curve: pub.Curve,
-		X:     new(big.Int).Set(pub.X),
-		Y:     new(big.Int).Set(pub.Y),
+	raw, err := s.key.PublicKey.Bytes()
+	if err != nil {
+		// The key was already validated when this signer was constructed;
+		// re-encoding it here cannot fail without that invariant having
+		// already been violated elsewhere, which is a programming error.
+		panic(fmt.Sprintf("cakey: barrierCheckedSigner holds an unencodable public key: %v", err))
 	}
+	pub, err := ecdsa.ParseUncompressedPublicKey(s.key.PublicKey.Curve, raw)
+	if err != nil {
+		panic(fmt.Sprintf("cakey: barrierCheckedSigner's own encoding did not round-trip: %v", err))
+	}
+	return pub
 }
 
 // Sign produces a signature over digest, refusing with *BarrierSealedError

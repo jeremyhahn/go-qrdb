@@ -841,6 +841,9 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 // configured with no store, but the two are indistinguishable to a caller
 // and the real AdminService answers the same error for both.
 func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
+	if err := t.gate("MintJoinToken"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
