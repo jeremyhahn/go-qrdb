@@ -53,6 +53,24 @@ func mapLeaseAbsent(method string, leaseID int64, err error) error {
 	return &transport.LeaseNotFoundError{LeaseID: leaseID}
 }
 
+// mapOpsNotFoundError mirrors sdk/go/transport/grpc's function of the same
+// name: ExecuteTransaction and ExecuteBatch's only NotFound-classed outcome
+// is a write naming a lease the state machine does not hold, so the lease ID
+// is read back out of the request's own ops rather than guessed from the
+// server's message text. See the grpc package's copy for the full rationale.
+func mapOpsNotFoundError(method string, ops []transport.Op, err error) error {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		return mapGRPCError(method, err)
+	}
+	for _, op := range ops {
+		if op.LeaseID != 0 {
+			return &transport.LeaseNotFoundError{LeaseID: op.LeaseID}
+		}
+	}
+	return mapGRPCError(method, err)
+}
+
 // LeaseGrant creates a new lease with the specified TTL in seconds.
 func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.LeaseInfo, error) {
 	if t.closed.Load() {

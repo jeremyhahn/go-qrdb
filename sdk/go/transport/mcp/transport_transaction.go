@@ -158,7 +158,8 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 
 	text, callErr := t.callTool(ctx, "qrdb_tx_execute", args)
 	if callErr != nil {
-		return nil, callErr
+		ops := append(append([]transport.Op{}, req.SuccessOps...), req.FailureOps...)
+		return nil, mapOpsNotFoundError(ops, callErr)
 	}
 
 	var raw serverTxResponse

@@ -435,7 +435,8 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 
 	resp, err := t.call(ctx, "tx.Transaction", payload)
 	if err != nil {
-		return nil, err
+		ops := append(append([]transport.Op{}, req.SuccessOps...), req.FailureOps...)
+		return nil, mapOpsNotFoundError(ops, err)
 	}
 
 	var pbResp pb.TransactionResponse
@@ -480,7 +481,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 
 	resp, err := t.call(ctx, "batch.Batch", payload)
 	if err != nil {
-		return nil, err
+		return nil, mapOpsNotFoundError(ops, err)
 	}
 
 	var pbResp pb.BatchResponse
@@ -625,6 +626,27 @@ func mapLeaseAbsent(leaseID int64, err error) error {
 		return &transport.LeaseExpiredError{LeaseID: leaseID}
 	}
 	return &transport.LeaseNotFoundError{LeaseID: leaseID}
+}
+
+// mapOpsNotFoundError is mapLeaseAbsent for ExecuteTransaction and
+// ExecuteBatch: checkResultError's only NotFound-classed outcome for a
+// transaction or batch command is a write naming a lease the state machine
+// does not hold, so a wire not-found here is unambiguous too, and the
+// offending lease ID is read back out of the SAME ops the caller sent
+// (success ops before failure ops) rather than guessed from the server's
+// message text. See sdk/go/transport/grpc's copy of this function for the
+// full rationale, including the known limitation when success and failure
+// branches each name a different lease.
+func mapOpsNotFoundError(ops []transport.Op, err error) error {
+	if !isWireNotFound(err) {
+		return err
+	}
+	for _, op := range ops {
+		if op.LeaseID != 0 {
+			return &transport.LeaseNotFoundError{LeaseID: op.LeaseID}
+		}
+	}
+	return err
 }
 
 // LeaseGrant creates a new lease with the specified TTL in seconds

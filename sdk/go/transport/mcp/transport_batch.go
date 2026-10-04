@@ -55,7 +55,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 
 	text, callErr := t.callTool(ctx, "qrdb_batch_execute", args)
 	if callErr != nil {
-		return nil, callErr
+		return nil, mapOpsNotFoundError(ops, callErr)
 	}
 
 	var raw []serverOpResponse

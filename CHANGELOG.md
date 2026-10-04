@@ -392,6 +392,36 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   certificate. Both now resolve and return the specific tenant's own
   certificate directly from its `cakey.Provider`, never through the shared
   cache.
+- **`TestGuardedVerbConformanceMatrix`'s leased-transaction-write assertion
+  was pinning behavior the product had already and deliberately stopped
+  having.** "statemachine: the KV state machines keep durable leases" gave
+  every KV-family `raft.sm_type` (`memory`/`standard`, `fast`, `disk`, and
+  their siblings) a real lease table, so a transaction write naming a lease
+  the state machine actually granted now binds its key to it; only the
+  legacy `regular` type still refuses one outright. The conformance test
+  still asserted a blanket capability refusal for every non-default
+  `sm_type`, which that change made false without updating it. The
+  assertion now grants a real lease and expects the bound write to succeed,
+  and separately proves an unknown lease ID is still refused with
+  `*transport.LeaseNotFoundError` -- not a capability refusal, since the
+  capability is present and only the named lease is missing.
+  `docs/transactions/architecture.md` and `docs/key-value/engineering.md`
+  carried the same stale claim and are corrected alongside it.
+- **`ExecuteTransaction` and `ExecuteBatch` mapped every remote transport's
+  "lease not found" refusal to a generic not-found error instead of
+  `*transport.LeaseNotFoundError`**, on gRPC, Unix, QUIC, MCP and REST. Each
+  transport's generic not-found mapping has no way to know a NotFound
+  response is about a lease rather than a key -- unlike the dedicated
+  lease-by-ID RPCs, which already carry this disambiguation because the
+  caller supplies the lease ID being asked about. `checkResultError`'s only
+  NotFound-classed outcome for a transaction or batch command is exactly
+  this refusal, so each transport now reconstructs the typed error from the
+  lease ID already present in the request's own ops, the same structural
+  certainty the lease-by-ID endpoints already relied on, rather than
+  guessing from the server's message text (the substring classification
+  go-qrdb#289 deleted). The embedded transport was unaffected: it decodes
+  `service.LeaseNotFoundError` directly instead of going through a shared
+  status code.
 
 ## [0.40.1-alpha] - 2026-10-04
 

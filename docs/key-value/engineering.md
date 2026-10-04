@@ -375,8 +375,12 @@ middle decided nowhere.
   same application error, because answering "revision 0" for every key would
   let two read-then-CAS writers both win. A separate MVCC keyspace was the
   alternative and was rejected: a compare there cannot see a plain `Put`, so a
-  guarded batch fenced on a claim would fence on nothing. A lease-bearing write
-  is refused, since none of these state machines can attach a key to a lease.
+  guarded batch fenced on a claim would fence on nothing. A lease-bearing
+  write binds its key to the lease in the same commit, except on the legacy
+  `regular` state machine, which keeps no lease table and refuses the whole
+  set outright; on every other state machine an unknown lease ID refuses the
+  set with `lease-not-found`, the same answer a plain lease-bound `Put`
+  naming it would give.
 - **The commit is all or nothing.** Transactions and batches commit through
   `Backend.ApplyAtomic`, a required method. `disk` commits the set as one
   `storage.Batch` carrying the entry's applied index; every other backend

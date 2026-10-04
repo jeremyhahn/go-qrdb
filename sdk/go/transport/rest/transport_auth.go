@@ -59,6 +59,28 @@ func userNotFound(id uint64, err error) error {
 	return err
 }
 
+// mapOpsNotFoundError is userNotFound for ExecuteTransaction and
+// ExecuteBatch: checkResultError's only not-found-classed outcome for a
+// transaction or batch command is a write naming a lease the state machine
+// does not hold, so a 404 here is unambiguous too, and the offending lease
+// ID is read back out of the SAME ops the caller sent (success ops before
+// failure ops) rather than guessed from the server's message text. See
+// sdk/go/transport/grpc's copy of this function for the full rationale,
+// including the known limitation when success and failure branches each
+// name a different lease.
+func mapOpsNotFoundError(ops []transport.Op, err error) error {
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotFound {
+		return err
+	}
+	for _, op := range ops {
+		if op.LeaseID != 0 {
+			return &transport.LeaseNotFoundError{LeaseID: op.LeaseID}
+		}
+	}
+	return err
+}
+
 // CreateUser creates a new passwordless user. Maps to POST /users.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
 	if t.closed.Load() {

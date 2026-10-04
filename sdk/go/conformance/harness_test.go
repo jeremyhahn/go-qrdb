@@ -394,6 +394,7 @@ type clients struct {
 	txn     transport.TransactionClient
 	mvcc    transport.MVCCClient
 	watch   transport.WatchClient
+	lease   transport.LeaseClient
 }
 
 // boot brings the cell up and returns a client for it.
@@ -441,7 +442,7 @@ func (c cell) boot(t *testing.T) clients {
 	if !ok {
 		t.Fatalf("%s: the embedded KV client does not implement transport.GuardedKVClient", c.name())
 	}
-	return clients{kv: embeddedKV, guarded: guarded, txn: n.Client().Transaction()}
+	return clients{kv: embeddedKV, guarded: guarded, txn: n.Client().Transaction(), lease: n.Client().Lease()}
 }
 
 // remoteServerTLS builds the mTLS material a remote listener needs. Every qrdb
@@ -502,6 +503,7 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 			permission.KVPut, permission.KVGet, permission.KVDelete,
 			permission.KVList, permission.KVExists,
 			permission.TransactionExecute,
+			permission.LeaseGrant, permission.LeaseRevoke,
 			permission.AdminHealth, permission.AdminStatus,
 		},
 	})
@@ -556,7 +558,7 @@ func dialRemote(t *testing.T, c cell, n *node.Node, ca *qrdbdharness.CA, kp *qrd
 	if !ok {
 		t.Fatalf("the %s KV client does not implement transport.GuardedKVClient", c.transport)
 	}
-	return clients{kv: kv, guarded: guarded, txn: sdkClient.Transaction()}
+	return clients{kv: kv, guarded: guarded, txn: sdkClient.Transaction(), lease: sdkClient.Lease()}
 }
 
 // dial constructs the SDK transport for this kind against the node's bound

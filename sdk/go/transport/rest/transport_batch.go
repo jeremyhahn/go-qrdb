@@ -67,7 +67,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 
 	var wireResp batchWireResponse
 	if err := t.postJSONDecode(ctx, "ExecuteBatch", "/batch", wireReq, &wireResp); err != nil {
-		return nil, err
+		return nil, mapOpsNotFoundError(ops, err)
 	}
 
 	responses := make([]transport.OpResponse, len(wireResp.Responses))

@@ -81,33 +81,69 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 	assertSingleKeyGuardedVerbsWork(t, cl)
 	assertTransactionsWork(t, c, cl)
 	if c.mode == raft && c.smType != "" {
-		assertLeasedWriteRefusedSafely(t, c, cl)
+		assertLeasedWriteBindsAndRefusesUnknownLease(t, c, cl)
 	}
 }
 
-// assertLeasedWriteRefusedSafely pins the one write the non-default raft
-// sm_types refuse: a transaction write bound to a lease. No state machine in
-// pkg/statemachine can attach a key to a lease, and applying the write without
-// its lease would make a key meant to expire live forever, so the whole
-// transaction is refused with a typed capability error — on every transport —
-// and writes nothing.
+// assertLeasedWriteBindsAndRefusesUnknownLease pins the non-default raft
+// sm_types' lease-bearing transaction write.
+//
+// Every `pkg/statemachine` KV family (`memory`/`standard`, `fast`, `disk`,
+// and their siblings) keeps a durable lease table of its own since
+// go-qrdb's "the KV state machines keep durable leases" change — only the
+// legacy `regular` type refuses one at all. A transaction write naming a
+// lease this state machine actually granted binds the key to it, the same
+// as a plain `Put` naming one would; this is no longer a capability gap, so
+// asserting a blanket refusal (as this test did before that change shipped)
+// pins behavior the product deliberately stopped having. A lease ID the
+// state machine's own table does NOT hold is still refused — the same
+// `lease-not-found` answer a plain lease-bound `Put` naming it would give,
+// typed `*transport.LeaseNotFoundError` rather than a capability refusal,
+// since the capability to bind a lease is present; the named one just does
+// not exist.
 //
 // Refusing must not cost the shard. Before go-qrdb#129 a refused verb tripped
 // the shard's circuit breaker, after which every proposal failed including a
 // plain Put, and a linearizable read never returned; the Put and Get after the
 // refusal are that regression's pin.
-func assertLeasedWriteRefusedSafely(t *testing.T, c cell, cl clients) {
+func assertLeasedWriteBindsAndRefusesUnknownLease(t *testing.T, c cell, cl clients) {
 	t.Helper()
 	ctx := boundedCtx(t)
 
-	_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
-		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("leased"), Value: []byte("v"), LeaseID: 42}},
-	})
-	assertCapabilityRefusal(t, "ExecuteTransaction(leased write)", err)
-
-	if got, gerr := cl.kv.Get(ctx, "leased"); gerr == nil {
-		t.Errorf("%s: a refused leased write stored leased=%q", c.name(), got)
+	granted, err := cl.lease.LeaseGrant(ctx, 60)
+	if err != nil {
+		t.Fatalf("%s: LeaseGrant: %v", c.name(), err)
 	}
+
+	resp, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
+		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("leased"), Value: []byte("v"), LeaseID: granted.ID}},
+	})
+	if err != nil {
+		t.Fatalf("%s: ExecuteTransaction(leased write, granted lease): %v", c.name(), err)
+	}
+	if !resp.Succeeded {
+		t.Errorf("%s: ExecuteTransaction(leased write, granted lease) did not take the success branch", c.name())
+	}
+	if got, gerr := cl.kv.Get(ctx, "leased"); gerr != nil || string(got) != "v" {
+		t.Errorf("%s: Get(leased)=%q err=%v after a lease-bound write; want %q", c.name(), got, gerr, "v")
+	}
+
+	// A lease ID the table does not hold: revoking the one just granted
+	// guarantees it is unknown rather than merely unlikely.
+	if err := cl.lease.LeaseRevoke(ctx, granted.ID); err != nil {
+		t.Fatalf("%s: LeaseRevoke: %v", c.name(), err)
+	}
+	_, err = cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
+		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("unknown-lease"), Value: []byte("v"), LeaseID: granted.ID}},
+	})
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Errorf("%s: ExecuteTransaction(leased write, revoked lease) = %v, want *transport.LeaseNotFoundError", c.name(), err)
+	}
+	if got, gerr := cl.kv.Get(ctx, "unknown-lease"); gerr == nil {
+		t.Errorf("%s: a refused leased write stored unknown-lease=%q", c.name(), got)
+	}
+
 	if err := cl.kv.Put(ctx, "after", []byte("2")); err != nil {
 		t.Fatalf("%s: a plain Put FAILED after the refusal (%v). Refusing an unsupported "+
 			"write must not cost the cluster its shard (go-qrdb#129)", c.name(), err)

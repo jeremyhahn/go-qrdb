@@ -87,7 +87,8 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 		FailureOps: pbFailureOps,
 	})
 	if err != nil {
-		return nil, mapGRPCError("ExecuteTransaction", err)
+		ops := append(append([]transport.Op{}, req.SuccessOps...), req.FailureOps...)
+		return nil, mapOpsNotFoundError("ExecuteTransaction", ops, err)
 	}
 
 	responses := make([]transport.OpResponse, len(resp.GetResponses()))

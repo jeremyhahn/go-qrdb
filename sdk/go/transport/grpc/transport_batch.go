@@ -47,7 +47,7 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 		Ops: pbOps,
 	})
 	if err != nil {
-		return nil, mapGRPCError("ExecuteBatch", err)
+		return nil, mapOpsNotFoundError("ExecuteBatch", ops, err)
 	}
 
 	responses := make([]transport.OpResponse, len(resp.GetResponses()))

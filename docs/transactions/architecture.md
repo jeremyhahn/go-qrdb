@@ -82,9 +82,13 @@ against its own keyspace with the same compare semantics:
   machine`, before anything is evaluated. Answering "revision 0" for every
   key would let two read-then-CAS writers both win and lose an update with no
   signal.
-- **A write that carries a lease is refused** on the `pkg/statemachine` types,
-  which cannot attach a key to a lease; applying it without the lease would
-  make a key meant to expire live forever.
+- **A write that carries a lease binds its key to that lease**, on every
+  `pkg/statemachine` type except the legacy `regular`, which keeps no lease
+  table and refuses the whole set with a capability error. A lease ID the
+  state machine's own table does not hold refuses the whole set with the same
+  `lease-not-found` error a plain lease-bound `Put` naming it would give — not
+  a capability refusal, since the state machine can bind leases and applying
+  the write without one would make a key meant to expire live forever.
 - **An empty key is refused**, by the service layer before it is proposed and
   by every state machine at apply.
 

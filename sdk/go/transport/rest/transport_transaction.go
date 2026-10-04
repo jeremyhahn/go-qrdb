@@ -126,7 +126,8 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 
 	var wireResp txWireResponse
 	if err := t.postJSONDecode(ctx, "ExecuteTransaction", "/tx", wireReq, &wireResp); err != nil {
-		return nil, err
+		ops := append(append([]transport.Op{}, req.SuccessOps...), req.FailureOps...)
+		return nil, mapOpsNotFoundError(ops, err)
 	}
 
 	responses := make([]transport.OpResponse, len(wireResp.Responses))
