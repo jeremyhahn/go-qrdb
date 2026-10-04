@@ -412,6 +412,43 @@ func TestRESTMiddleware_AuthzPublicPath_Allowed(t *testing.T) {
 	}
 }
 
+// TestRESTMiddleware_AuthzPublicPath_RefusesHolderIdentity is the regression
+// test for go-qrdb#560 review: a holder certificate (an officer's or
+// custodian's, signed by the ceremony CA) carries no roles by design and is
+// admitted only for its own narrow set of IdentityGated verbs -- never for
+// an authenticated-only route like /metrics, which checks no permission at
+// all. Contrast TestRESTMiddleware_AuthzPublicPath_Allowed immediately
+// above: the SAME route, the SAME "authenticated is enough" contract, but
+// refused here because THIS identity is a holder's.
+func TestRESTMiddleware_AuthzPublicPath_RefusesHolderIdentity(t *testing.T) {
+	authn := &mockAuthenticator{
+		name: "test-authn",
+		identity: &auth.Identity{
+			Subject: "officer-1", TenantID: "t1",
+			Metadata: map[string]string{auth.HolderProfileMetadataKey: "so"},
+		},
+	}
+	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if called {
+		t.Error("a holder identity must never reach /metrics: it has no business outside its own ceremony verbs")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UnaryInterceptor – public gRPC method pass-through
 // ---------------------------------------------------------------------------

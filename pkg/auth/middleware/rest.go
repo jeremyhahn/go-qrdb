@@ -219,7 +219,18 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		switch kind {
 		case RESTRoutePublic, RESTRouteAuthenticated:
 			// Public routes normally short-circuit above; authenticated-only
-			// routes (/metrics) require no specific permission.
+			// routes (/metrics) require no specific permission -- EXCEPT a
+			// holder certificate (go-qrdb#560 review), which carries no
+			// roles by design and is admitted only for the specific
+			// IdentityGated verbs its ceremony enrolment grants. Those
+			// verbs are RESTRoutePermission routes checked below, never
+			// RESTRouteAuthenticated ones, so a holder identity reaching
+			// this branch at all has no business here.
+			if auth.IsHolderIdentity(identity) {
+				err := &HolderIdentityNotPermittedError{Method: r.Method, Path: r.URL.Path}
+				writeJSONError(w, mapHTTPAuthError(err), err.Error())
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}

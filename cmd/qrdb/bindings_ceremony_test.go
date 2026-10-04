@@ -124,6 +124,35 @@ func TestCeremonyBinding_Initialize_GeneratePath_SavesKeyLocally(t *testing.T) {
 	}
 }
 
+// TestCeremonyBinding_Initialize_GeneratePath_RefusesLocallyBeforeCallingServerWhenUnsavable
+// is the regression test for go-qrdb#560 review: when the local admin-key
+// output path cannot be written, Initialize must refuse BEFORE asking the
+// server to mint the credential at all. Discovering the save failure only
+// AFTER the server had already issued the credential and recorded the
+// pending-admin-cert hand-off would leave the bootstrap admin eventually
+// bound to a key nobody holds.
+func TestCeremonyBinding_Initialize_GeneratePath_RefusesLocallyBeforeCallingServerWhenUnsavable(t *testing.T) {
+	configDir := t.TempDir()
+	// A regular file sits exactly where the "qrdb" subdirectory needs to
+	// be created, so os.MkdirAll fails regardless of process privilege
+	// (unlike a permission-bit probe, which a root-run test would ignore).
+	if err := os.WriteFile(filepath.Join(configDir, "qrdb"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seeding blocker file: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	svc := &capturingCeremonyService{}
+	b := newCeremonyTestBinding(t, svc)
+
+	_, err := b.Initialize(&transport.CeremonyInitializeRequest{AdminGenerate: true})
+	if err == nil {
+		t.Fatal("expected Initialize to refuse when the local admin-key output path is not writable")
+	}
+	if svc.gotOpts != nil {
+		t.Fatal("the server must never be asked to mint the credential when the local save path is not writable")
+	}
+}
+
 func TestCeremonyBinding_Initialize_HoldersMapped(t *testing.T) {
 	svc := &capturingCeremonyService{}
 	b := newCeremonyTestBinding(t, svc)
@@ -156,19 +185,35 @@ func TestCeremonyBinding_Initialize_ServiceError(t *testing.T) {
 	}
 }
 
-func TestCeremonyBinding_Initialize_SecretIsClonedNotShared(t *testing.T) {
-	svc := &capturingCeremonyService{}
+func TestCeremonyBinding_Initialize_SecretIsClonedThenBothWiped(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	svc := &capturingGeneratingCeremonyService{adminKeyPEM: []byte("-----BEGIN PRIVATE KEY-----\nmock\n-----END PRIVATE KEY-----")}
 	b := newCeremonyTestBinding(t, svc)
 
 	req := &transport.CeremonyInitializeRequest{Secret: []byte("barrier-secret"), AdminGenerate: true}
 	if _, err := b.Initialize(req); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	// The caller's own req.Secret must survive untouched: Initialize clones
-	// it before wiping its own copy.
-	if string(req.Secret) != "barrier-secret" {
-		t.Errorf("caller's req.Secret was mutated: %q", req.Secret)
+	// go-qrdb#560 review: the caller's own req.Secret must be wiped too,
+	// not only Initialize's own clone -- nothing in this process needs it
+	// once the call has gone out, and it carries the same sensitive
+	// secret the clone does.
+	if !allZero(req.Secret) {
+		t.Errorf("caller's req.Secret was not wiped: %q", req.Secret)
 	}
+}
+
+// allZero reports whether every byte of b is zero -- what secure.Wipe
+// leaves behind, as opposed to a shortened or untouched slice.
+func allZero(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return len(b) > 0
 }
 
 // ---------------------------------------------------------------------------

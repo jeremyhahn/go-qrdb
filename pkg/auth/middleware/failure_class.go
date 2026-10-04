@@ -427,6 +427,14 @@ var authFailureRules = []struct {
 		var e *AwaitingAdminCredentialError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
+	// A holder certificate reaching an authenticated-only route it has no
+	// business on (go-qrdb#560 review): the credential is valid and the
+	// caller IS authenticated, but this way in is not one a holder
+	// certificate may use, exactly like AuthMethodNotPermittedError above.
+	{"HolderIdentityNotPermittedError", func(err error) (AuthFailureClass, bool) {
+		var e *HolderIdentityNotPermittedError
+		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
 }
 
 // ClassifyAuthError reports what kind of failure err represents, or

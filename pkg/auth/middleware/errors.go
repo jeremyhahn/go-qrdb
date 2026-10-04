@@ -367,3 +367,33 @@ type TargetBodyTooLargeError struct {
 func (e *TargetBodyTooLargeError) Error() string {
 	return "auth/middleware: request body exceeds " + strconv.FormatInt(e.Limit, 10) + " bytes"
 }
+
+// HolderIdentityNotPermittedError is returned when a holder certificate
+// (auth.IsHolderIdentity: an officer's or custodian's, signed by the
+// ceremony CA) authenticates successfully against a route that requires
+// authentication but checks no specific permission (RESTRouteAuthenticated
+// -- e.g. GET /metrics) or its gRPC/MCP equivalent (go-qrdb#560 review).
+//
+// A holder identity carries no roles by design (pkg/auth/middleware's own
+// finalizeIdentity: it proves who holds a share, never a user login) and
+// is admitted ONLY for the specific IdentityGated verbs its ceremony
+// enrolment grants (share claim begin/complete, quorum begin/submit),
+// which check the holder binding directly rather than through RBAC.
+// RESTRouteAuthenticated/its equivalents have no permission to check at
+// all, so without this refusal a holder certificate -- never meant to
+// reach anything outside its own narrow verb set -- would pass them like
+// any other authenticated peer. The credential is valid; this WAY in is
+// simply not one a holder certificate may use, and retrying it will never
+// work (matching AuthMethodNotPermittedError's own reasoning).
+type HolderIdentityNotPermittedError struct {
+	// Method and Path name the refused request, for the operator-facing
+	// message; neither is a secret.
+	Method string
+	Path   string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *HolderIdentityNotPermittedError) Error() string {
+	return "auth/middleware: a holder certificate may not reach " + e.Method + " " + e.Path +
+		": holder certificates are admitted only for their own ceremony verbs"
+}

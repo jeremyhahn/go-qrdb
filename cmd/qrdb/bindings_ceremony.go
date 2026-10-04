@@ -101,8 +101,29 @@ func (b *CeremonyBinding) Initialize(req *transport.CeremonyInitializeRequest) (
 		return nil, err
 	}
 
+	// The generated admin key is never returned to the page and never
+	// re-sent: it exists only in this call's memory, saved to a local
+	// file before being wiped (see saveAdminKeyLocally below). If that
+	// save cannot succeed, the server must never be asked to mint the
+	// credential in the first place -- discovering the failure only
+	// AFTER the server has already issued it and recorded the
+	// pending-admin-cert hand-off first boot will bind would leave the
+	// bootstrap admin eventually bound to a key nobody holds (go-qrdb#560
+	// review).
+	if req.AdminGenerate {
+		if err := ensureAdminKeySavable(); err != nil {
+			b.logger.Error("Initialize: local admin key output path is not writable", "error", err)
+			return nil, err
+		}
+	}
+
 	call := *req
 	call.Secret = bytes.Clone(req.Secret)
+	// req belongs to the caller (see this method's own doc comment), but
+	// nothing else in this process needs it once cloned, and it carries
+	// the same sensitive secret call.Secret does -- wipe it too
+	// (go-qrdb#560 review), not only the clone.
+	defer secure.Wipe(req.Secret)
 	defer secure.Wipe(call.Secret)
 
 	resp, err := cl.Ceremony().CeremonyInitialize(context.Background(), &call)
@@ -137,15 +158,13 @@ func (b *CeremonyBinding) Initialize(req *transport.CeremonyInitializeRequest) (
 	return result, nil
 }
 
-// saveAdminKeyLocally writes a generated bootstrap admin private key to a
-// fresh file under this machine's qrdb config directory (the same
-// directory EmbeddedServerBinding.resolveDataDir's sibling "data" lives
-// under), mode 0600, and returns its path. The key is NEVER returned to
-// the page: this is the "never through the page" save the dev/test/
-// evaluation-only --admin-generate path requires, mirroring how
-// cmd/qrdb/init.go prints the same key to the operator's own terminal --
-// a channel the page is not.
-func saveAdminKeyLocally(keyPEM []byte) (string, error) {
+// adminKeyDir resolves (creating if absent) this machine's qrdb config
+// directory the generated bootstrap admin private key is saved under --
+// the same directory EmbeddedServerBinding.resolveDataDir's sibling "data"
+// lives under. Shared by ensureAdminKeySavable's pre-flight and
+// saveAdminKeyLocally's actual write, so the two can never resolve to
+// different paths.
+func adminKeyDir() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", &DataDirCreateError{Path: "~/.config", Err: err}
@@ -153,6 +172,48 @@ func saveAdminKeyLocally(keyPEM []byte) (string, error) {
 	dir := filepath.Join(configDir, "qrdb")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", &DataDirCreateError{Path: dir, Err: err}
+	}
+	return dir, nil
+}
+
+// ensureAdminKeySavable verifies the local admin-key output directory is
+// creatable AND WRITABLE, before Initialize ever asks the server to mint
+// the generated admin key (go-qrdb#560 review): a save failure discovered
+// only after the server has already committed to the credential would
+// leave the bootstrap admin eventually bound to a key nobody holds -- the
+// key exists only in this process's memory and is wiped on return, with
+// no local copy ever written if the save fails. It writes and removes a
+// zero-byte probe file rather than only checking the directory's
+// permission bits, which can lie (e.g. a read-only filesystem mounted
+// under a directory whose own bits say 0700).
+func ensureAdminKeySavable() error {
+	dir, err := adminKeyDir()
+	if err != nil {
+		return err
+	}
+	probe := filepath.Join(dir, fmt.Sprintf(".write-probe-%d", time.Now().UnixNano()))
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		return &FileWriteError{Path: probe, Err: err}
+	}
+	// The write succeeded, which is what this probe exists to prove;
+	// failing to remove it afterward (a stray zero-byte file) is not
+	// evidence the directory is unwritable and must not refuse the
+	// ceremony over a best-effort cleanup.
+	_ = os.Remove(probe)
+	return nil
+}
+
+// saveAdminKeyLocally writes a generated bootstrap admin private key to a
+// fresh file under this machine's qrdb config directory, mode 0600, and
+// returns its path. The key is NEVER returned to the page: this is the
+// "never through the page" save the dev/test/evaluation-only
+// --admin-generate path requires, mirroring how cmd/qrdb/init.go prints
+// the same key to the operator's own terminal -- a channel the page is
+// not.
+func saveAdminKeyLocally(keyPEM []byte) (string, error) {
+	dir, err := adminKeyDir()
+	if err != nil {
+		return "", err
 	}
 	path := filepath.Join(dir, fmt.Sprintf("admin-key-%d.pem", time.Now().UnixNano()))
 	if err := os.WriteFile(path, keyPEM, 0o600); err != nil {
