@@ -2007,6 +2007,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.authMW != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	if fwd, ok := s.replicaForwarding(); ok {
+		quicOpts = append(quicOpts, quicapi.WithReplicaForwarding(fwd))
+	}
 	if s.opts.sealedWindowProbe != nil {
 		if s.opts.sealedWindowListener {
 			quicOpts = append(quicOpts, quicapi.WithSealedWindowListener(s.listenerProbe()))

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
 // internalErrorMessage is what a caller is told when the server cannot say
@@ -31,6 +32,9 @@ const internalErrorMessage = "internal server error"
 func errorPayloadOf(err error) wire.ErrorPayload {
 	p := wire.ErrorPayload{Message: err.Error()}
 	p.RetryAfter, p.HasRetryAfter = errclass.RetryAfter(err)
+	if reason, md, ok := replicaforward.Refusal(err); ok {
+		p.Info = &wire.ErrorInfo{Domain: replicaforward.ErrorDomain, Reason: reason, Metadata: md}
+	}
 	return p
 }
 

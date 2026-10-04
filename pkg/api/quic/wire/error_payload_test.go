@@ -16,6 +16,7 @@ package wire
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ func TestErrorPayload_RoundTrips(t *testing.T) {
 		"with a delay":      {Message: "SO PIN locked", RetryAfter: 1500 * time.Millisecond, HasRetryAfter: true},
 		"retry now":         {Message: "throttled", HasRetryAfter: true},
 		"no message at all": {},
+		"with a reason":     {Message: "not a replica", Info: &ErrorInfo{Domain: "qrdb.v1", Reason: "NOT_A_REPLICA", Metadata: map[string]string{"replicas": "1"}}},
+		"with both":         {Message: "throttled", HasRetryAfter: true, RetryAfter: time.Second, Info: &ErrorInfo{Domain: "qrdb.v1", Reason: "NOT_LEADER", Metadata: map[string]string{"leader_raft_addr": "192.0.2.2:7000"}}},
 	} {
 		body, err := EncodeErrorPayload(StatusResourceExhausted, p)
 		if err != nil {
@@ -44,7 +47,7 @@ func TestErrorPayload_RoundTrips(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: decode: %v", name, err)
 		}
-		if got != p {
+		if !reflect.DeepEqual(got, p) {
 			t.Errorf("%s: round trip = %+v, want %+v", name, got, p)
 		}
 	}

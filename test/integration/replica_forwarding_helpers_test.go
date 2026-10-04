@@ -48,6 +48,7 @@ type fwdNode struct {
 	raftAddr string
 	admin    int
 	grpc     int
+	quic     int
 	stopped  bool
 }
 
@@ -81,6 +82,7 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 	raftPorts := allocatePorts(t, n)
 	adminPorts := allocateTCPPorts(t, n)
 	grpcPorts := allocateTCPPorts(t, n)
+	quicPorts := allocatePorts(t, n)
 	peers := buildPeersFlag(raftPorts)
 
 	nodeCerts := make([]string, n)
@@ -96,7 +98,7 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 	dataDirs := make([]string, n)
 	for i := range n {
 		dataDirs[i] = t.TempDir()
-		node := &fwdNode{raftAddr: fmt.Sprintf("127.0.0.1:%d", raftPorts[i]), admin: adminPorts[i], grpc: grpcPorts[i]}
+		node := &fwdNode{raftAddr: fmt.Sprintf("127.0.0.1:%d", raftPorts[i]), admin: adminPorts[i], grpc: grpcPorts[i], quic: quicPorts[i]}
 		node.cmd = exec.Command(bin,
 			"start",
 			"--config", writeIsolationRaftConfig(t, t.TempDir(), peerAdminURLs),
@@ -111,6 +113,8 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--enable-quic",
+			"--quic-port", fmt.Sprintf("%d", quicPorts[i]),
 			"--cluster-trust-domain", fwdTrustDomain,
 			"--tls-ca-file", ca.CertPath,
 			"--tls-cert-file", nodeCerts[i],

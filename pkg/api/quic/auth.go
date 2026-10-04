@@ -51,6 +51,19 @@ func (s *Server) authenticate(ctx context.Context, conn *quicgo.Conn) (context.C
 	return authCtx, nil
 }
 
+// authenticateOnBehalf authenticates a request a cluster peer forwarded on a
+// caller's behalf: the connection's peer must be a cluster node, and the
+// envelope's assertion must be bound to method and payload.
+func (s *Server) authenticateOnBehalf(ctx context.Context, conn *quicgo.Conn, method string, payload []byte, env *wire.OnBehalf) (context.Context, error) {
+	tlsState := conn.ConnectionState().TLS
+	ctx = auth.WithTLSState(ctx, &tlsState)
+	authCtx, err := s.authMW.AuthenticateQUICOnBehalf(ctx, method, payload, env.Assertion, env.Signature)
+	if err != nil {
+		return ctx, &AuthenticationError{Reason: err.Error()}
+	}
+	return authCtx, nil
+}
+
 // authorize checks whether the authenticated caller has permission for
 // the given QUIC method, resolving the required permission from the
 // registration-site methodPerms registry (DEFAULT-DENY for unregistered

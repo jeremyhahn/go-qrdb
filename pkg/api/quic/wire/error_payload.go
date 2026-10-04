@@ -47,6 +47,18 @@ type ErrorPayload struct {
 
 	// HasRetryAfter reports whether the failure names a delay.
 	HasRetryAfter bool
+
+	// Info is the failure's structured reason, a google.rpc.ErrorInfo detail
+	// -- a replica refusal's replica set, for one -- or nil.
+	Info *ErrorInfo
+}
+
+// ErrorInfo is a google.rpc.ErrorInfo: a reason within a domain, with
+// metadata a reader acts on without parsing the message.
+type ErrorInfo struct {
+	Domain   string
+	Reason   string
+	Metadata map[string]string
 }
 
 // EncodeErrorPayload renders p as the body of an error frame whose status is
@@ -71,6 +83,13 @@ func EncodeErrorPayload(status uint16, p ErrorPayload) ([]byte, error) {
 		}
 		st.Details = append(st.Details, detail)
 	}
+	if p.Info != nil {
+		detail, err := anypb.New(&errdetails.ErrorInfo{Domain: p.Info.Domain, Reason: p.Info.Reason, Metadata: p.Info.Metadata})
+		if err != nil {
+			return nil, &PayloadEncodeError{Err: err}
+		}
+		st.Details = append(st.Details, detail)
+	}
 	b, err := proto.Marshal(st)
 	if err != nil {
 		return nil, &PayloadEncodeError{Err: err}
@@ -89,18 +108,23 @@ func DecodeErrorPayload(b []byte) (ErrorPayload, error) {
 	}
 	p := ErrorPayload{Message: st.GetMessage()}
 	for _, detail := range st.GetDetails() {
-		if !detail.MessageIs((*errdetails.RetryInfo)(nil)) {
-			continue
+		switch {
+		case detail.MessageIs((*errdetails.RetryInfo)(nil)) && !p.HasRetryAfter:
+			var ri errdetails.RetryInfo
+			if err := detail.UnmarshalTo(&ri); err != nil {
+				return ErrorPayload{}, &PayloadDecodeError{Err: err}
+			}
+			if err := ri.GetRetryDelay().CheckValid(); err != nil {
+				return ErrorPayload{}, &PayloadDecodeError{Err: err}
+			}
+			p.RetryAfter, p.HasRetryAfter = ri.GetRetryDelay().AsDuration(), true
+		case detail.MessageIs((*errdetails.ErrorInfo)(nil)) && p.Info == nil:
+			var ei errdetails.ErrorInfo
+			if err := detail.UnmarshalTo(&ei); err != nil {
+				return ErrorPayload{}, &PayloadDecodeError{Err: err}
+			}
+			p.Info = &ErrorInfo{Domain: ei.GetDomain(), Reason: ei.GetReason(), Metadata: ei.GetMetadata()}
 		}
-		var ri errdetails.RetryInfo
-		if err := detail.UnmarshalTo(&ri); err != nil {
-			return ErrorPayload{}, &PayloadDecodeError{Err: err}
-		}
-		if err := ri.GetRetryDelay().CheckValid(); err != nil {
-			return ErrorPayload{}, &PayloadDecodeError{Err: err}
-		}
-		p.RetryAfter, p.HasRetryAfter = ri.GetRetryDelay().AsDuration(), true
-		break
 	}
 	return p, nil
 }

@@ -24,6 +24,7 @@ package integration_test
 import (
 	"strconv"
 	"testing"
+	"time"
 )
 
 // fwdCaller names who makes a request.
@@ -69,6 +70,11 @@ type fwdAnswer struct {
 // fwdTransport is one network transport's client side of the suite.
 type fwdTransport interface {
 	name() string
+	// reportsServedBy says whether the transport's answer names the replica
+	// that served a forward (x-qrdb-forwarded-to). One that cannot is
+	// checked by the success alone: a node holding no replica refuses
+	// every request it does not forward.
+	reportsServedBy() bool
 	put(t *testing.T, c *fwdCluster, node int, caller fwdCaller, db, key, value string) fwdAnswer
 	get(t *testing.T, c *fwdCluster, node int, caller fwdCaller, db, key string) fwdAnswer
 	// watch opens the transport's stream on db and returns its first answer.
@@ -76,7 +82,7 @@ type fwdTransport interface {
 }
 
 // fwdTransports is every network transport the suite runs over.
-var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}}
+var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}, quicFwdTransport{}}
 
 // TestReplicaForwarding: three nodes and a single-replica database, so two
 // nodes hold no replica of it; the same command set over every transport.
@@ -95,7 +101,7 @@ func TestReplicaForwarding(t *testing.T) {
 			t.Run("writes and reads through a non-replica reach the replica", func(t *testing.T) {
 				for _, i := range others {
 					key, value := tr.name()+"-via-"+strconv.Itoa(i+1), "v"+strconv.Itoa(i+1)
-					if a := tr.put(t, c, i, fwdAsWriter, db, key, value); !a.ok || a.servedBy != replicaID {
+					if a := tr.put(t, c, i, fwdAsWriter, db, key, value); !a.ok || (tr.reportsServedBy() && a.servedBy != replicaID) {
 						t.Fatalf("put through non-replica node %d = %s, served by %q; want replica %s", i+1, a.detail, a.servedBy, replicaID)
 					}
 				}
@@ -137,9 +143,25 @@ func TestReplicaForwarding(t *testing.T) {
 	c.stop(t, replica)
 	for _, tr := range fwdTransports {
 		t.Run(tr.name()+"/with the replica down the non-replica refuses with the replica set", func(t *testing.T) {
-			a := tr.put(t, c, others[0], fwdAsWriter, db, tr.name()+"-after-stop", "v")
-			if a.refusal == nil || a.refusal["replica_0_raft_addr"] != c.nodes[replica].raftAddr {
-				t.Fatalf("put with the replica down = %s; want the refusal naming it, never a local answer", a.detail)
+			// A forward already bound for the replica as it died fails with the
+			// transport's unavailability -- what it did there is unknown -- and
+			// the next finds it unreachable and refuses. No answer is a local one.
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				a := tr.put(t, c, others[0], fwdAsWriter, db, tr.name()+"-after-stop", "v")
+				if a.ok {
+					t.Fatalf("put with the replica down succeeded (%s); a non-replica must never answer locally", a.detail)
+				}
+				if a.refusal != nil {
+					if a.refusal["replica_0_raft_addr"] != c.nodes[replica].raftAddr {
+						t.Fatalf("refusal %v does not name the stopped replica", a.refusal)
+					}
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("put with the replica down = %s; want the refusal naming it", a.detail)
+				}
+				time.Sleep(200 * time.Millisecond)
 			}
 		})
 	}
@@ -167,7 +189,7 @@ func TestReplicaForwarding_KillTheLeader(t *testing.T) {
 	via := others[0]
 
 	for _, tr := range fwdTransports {
-		if a := tr.put(t, c, via, fwdAsWriter, db, tr.name()+"-before", "v1"); !a.ok || a.servedBy == "" {
+		if a := tr.put(t, c, via, fwdAsWriter, db, tr.name()+"-before", "v1"); !a.ok || (tr.reportsServedBy() && a.servedBy == "") {
 			t.Fatalf("%s: put through the non-replica = %s, served by %q; want it forwarded", tr.name(), a.detail, a.servedBy)
 		}
 	}
@@ -180,7 +202,7 @@ func TestReplicaForwarding_KillTheLeader(t *testing.T) {
 	for _, tr := range fwdTransports {
 		t.Run(tr.name(), func(t *testing.T) {
 			a := tr.put(t, c, via, fwdAsWriter, db, tr.name()+"-after", "v2")
-			if !a.ok || a.servedBy == "" || a.servedBy == killed {
+			if !a.ok || (tr.reportsServedBy() && (a.servedBy == "" || a.servedBy == killed)) {
 				t.Fatalf("put through the non-replica after replica %s died = %s, served by %q; want a surviving replica", killed, a.detail, a.servedBy)
 			}
 			for key, want := range map[string]string{tr.name() + "-before": "v1", tr.name() + "-after": "v2"} {

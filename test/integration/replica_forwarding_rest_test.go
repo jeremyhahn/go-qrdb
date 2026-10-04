@@ -32,6 +32,8 @@ type restFwdTransport struct{}
 
 func (restFwdTransport) name() string { return "rest" }
 
+func (restFwdTransport) reportsServedBy() bool { return true }
+
 // do sends one request to node i as caller, scoped to db.
 func (restFwdTransport) do(t *testing.T, c *fwdCluster, i int, caller fwdCaller, method, path, db, body string) fwdAnswer {
 	t.Helper()

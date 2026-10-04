@@ -39,6 +39,8 @@ type grpcFwdTransport struct{}
 
 func (grpcFwdTransport) name() string { return "grpc" }
 
+func (grpcFwdTransport) reportsServedBy() bool { return true }
+
 // client is a gRPC client of node i authenticated as caller.
 func (grpcFwdTransport) client(t *testing.T, c *fwdCluster, i int, caller fwdCaller) pb.QRDBServiceClient {
 	t.Helper()

@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 )
 
 // AuthenticateQUIC performs authentication for a QUIC request. The
@@ -29,6 +30,24 @@ func (m *AuthMiddleware) AuthenticateQUIC(ctx context.Context) (context.Context,
 		return ctx, authnErr
 	}
 	return ctx, nil
+}
+
+// AuthenticateQUICOnBehalf authenticates a QUIC request a cluster peer
+// forwarded on a caller's behalf (wire.MethodOnBehalf): the peer must present
+// a verified cluster node certificate (onBehalfPeerGate), and the assertion
+// must be bound to the inner method and payload. The returned context
+// carries the ORIGINAL caller's identity, with roles this node resolves. The
+// context must already carry the connection's TLS state (auth.WithTLSState).
+func (m *AuthMiddleware) AuthenticateQUICOnBehalf(ctx context.Context, method string, payload []byte, assertion, sig string) (context.Context, error) {
+	chains, err := auth.ResolveVerifiedChains(ctx, auth.TLSStateFromContext(ctx), m.issuerVerifier)
+	if err != nil {
+		return ctx, err
+	}
+	if gerr := m.onBehalfPeerGate(ctx, chains); gerr != nil {
+		return ctx, gerr
+	}
+	ctx, _, err = m.authenticateOnBehalfBinding(ctx, chains[0][0], assertion, sig, forward.RPCBinding("quic", method, payload))
+	return ctx, err
 }
 
 // AuthorizeQUIC checks whether the authenticated caller in the context has

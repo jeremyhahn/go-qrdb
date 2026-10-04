@@ -21,6 +21,7 @@ package quic
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"runtime/debug"
@@ -41,6 +42,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -135,6 +138,12 @@ type Server struct {
 	// registration site; AuthorizeQUIC consults it with DEFAULT-DENY
 	// semantics, and the startup assertion walks the dispatch map against it.
 	methodPerms *authmw.QUICMethodRegistry
+
+	// replicaForwarding, when set, makes the listener forward what it
+	// refuses as a non-replica (WithReplicaForwarding); forwarder is built
+	// from it at Start, over the listener's TLS identity, and closed at Stop.
+	replicaForwarding *replicaforward.Config
+	forwarder         *replicaForwarder
 
 	closed atomic.Bool
 	wg     sync.WaitGroup
@@ -528,6 +537,10 @@ func (s *Server) Start() error {
 		return &StartError{Addr: s.addr, Err: &tlsRequiredError{}}
 	}
 
+	if s.replicaForwarding != nil {
+		s.forwarder = newReplicaForwarder(*s.replicaForwarding, s.tlsConfig)
+	}
+
 	tlsCfg := quicOnlyTLSConfig(s.tlsConfig)
 
 	// 0-RTT stays off (Allow0RTT is false). Early data is replayable: an
@@ -680,6 +693,9 @@ func (s *Server) Stop() {
 	}
 	s.closed.Store(true)
 	_ = s.listener.Close()
+	if s.forwarder != nil {
+		s.forwarder.close()
+	}
 
 	// Close stream admission BEFORE waiting: handleConnection's Add-then-spawn
 	// for a new stream must not be able to happen after streamWG.Wait has
@@ -840,6 +856,22 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 
 	start := time.Now()
 
+	// A request a cluster peer forwarded on a caller's behalf carries the
+	// caller's method and payload in an envelope. It is served as that
+	// method, as that caller once the assertion verifies -- and, being a
+	// forward already, it is never forwarded again.
+	var onBehalf *wire.OnBehalf
+	if method == wire.MethodOnBehalf {
+		env, derr := wire.DecodeOnBehalf(payload)
+		if derr != nil {
+			st, body := errorFrame(wire.StatusInvalidArgument, derr)
+			_ = s.writeResponse(stream, requestID, st, body)
+			s.logRequest(method, requestID, st, start)
+			return
+		}
+		onBehalf, method, payload = &env, env.Method, env.Payload
+	}
+
 	// Build context with connection state for auth and the database scope for
 	// per-(tenant, database) service resolution. The tenant dimension flows
 	// separately from the authenticated identity (set during authenticate);
@@ -851,7 +883,11 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 
 	// Auth: authenticate and authorize if middleware is configured.
 	if s.authMW != nil {
-		ctx, err = s.authenticate(ctx, conn)
+		if onBehalf != nil {
+			ctx, err = s.authenticateOnBehalf(ctx, conn, method, payload, onBehalf)
+		} else {
+			ctx, err = s.authenticate(ctx, conn)
+		}
 		if err != nil {
 			st, body := errorFrame(wire.StatusUnauthenticated, err)
 			_ = s.writeResponse(stream, requestID, st, body)
@@ -926,6 +962,15 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 
 	resp, handlerErr := handler(ctx, payload)
 	if handlerErr != nil {
+		if s.forwarder != nil && onBehalf == nil {
+			if refusal, ok := errors.AsType[*placement.NotAReplicaError](handlerErr); ok {
+				if st, body, forwarded := s.forwarder.forward(ctx, method, database, payload, refusal); forwarded {
+					_ = s.writeResponse(stream, requestID, st, body)
+					s.logRequest(method, requestID, st, start)
+					return
+				}
+			}
+		}
 		statusCode, errPayload := mapServiceError(handlerErr)
 		_ = s.writeResponse(stream, requestID, statusCode, errPayload)
 		s.logRequest(method, requestID, statusCode, start)
