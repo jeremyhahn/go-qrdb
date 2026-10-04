@@ -216,10 +216,26 @@ type KVStore interface {
 	ScanCompoundIndex(ctx context.Context, indexName string, prefixValues [][]byte, rangeStart, rangeEnd []byte) (map[string][][]byte, error)
 }
 
-// KV is one key-value pair in a guarded multi-key write.
+// KV is one write in a guarded multi-key batch: a put, or a delete when
+// Delete is true.
+//
+// Delete exists so a batch can REMOVE a key as part of the same atomic step
+// that writes others -- a move/rename deletes the old key and puts the new
+// one together, and a batch that could only put would have to delete the
+// old key in a second, separate operation, reopening exactly the
+// non-atomic window GuardedBatchKVStore exists to close (go-qrdb#589). It
+// defaults to false, so every KV literal written before this field existed
+// still means "put": go-quicraft#21 and go-qrdb#555's original callers are
+// unaffected.
+//
+// When Delete is true, Value is ignored -- a delete removes whatever is
+// stored under Key regardless of its current bytes. A caller that needs a
+// CONDITIONAL delete (remove only if the value still matches) expresses
+// that as a Guard on Key instead, exactly as it would for a conditional put.
 type KV struct {
-	Key   string
-	Value []byte
+	Key    string
+	Value  []byte
+	Delete bool
 }
 
 // GuardedBatchKVStore is a KVStore that can apply several writes atomically,

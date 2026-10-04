@@ -14,6 +14,7 @@
 package dao
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -145,5 +146,47 @@ func (g *DynamicFieldHashGenerator) NextID(entity Entity) uint64 {
 
 // FieldName returns the field name used for hashing.
 func (g *DynamicFieldHashGenerator) FieldName() string {
+	return g.fieldName
+}
+
+// CryptoDynamicFieldHashGenerator is DynamicFieldHashGenerator's
+// collision-resistant counterpart, hashing the named Fields map entry with
+// SHA-256 folded to 64 bits (foldSHA256ToUint64) instead of FNV-1a. See
+// CryptoFieldHashGenerator's doc for what this does and does not add over
+// the FNV-1a generator: the same 64-bit ID space and birthday bound, but a
+// preimage attack is required to engineer a chosen collision rather than
+// none at all. DynamicFieldHashGenerator itself is unchanged for the same
+// reason FieldHashGenerator is: changing its hash in place would silently
+// orphan every entity already persisted under it (go-qrdb#589).
+type CryptoDynamicFieldHashGenerator struct {
+	fieldName string
+}
+
+// NewCryptoDynamicFieldHashGenerator creates a CryptoDynamicFieldHashGenerator
+// that hashes the value of the named field from DynamicEntity.Fields to
+// produce entity IDs.
+func NewCryptoDynamicFieldHashGenerator(fieldName string) *CryptoDynamicFieldHashGenerator {
+	return &CryptoDynamicFieldHashGenerator{fieldName: fieldName}
+}
+
+// NextID extracts the named field from the DynamicEntity's Fields map and
+// returns the SHA-256 digest of its string form, folded to 64 bits. Returns
+// 0 if the entity is not a DynamicEntity or the field is not found,
+// matching DynamicFieldHashGenerator's contract.
+func (g *CryptoDynamicFieldHashGenerator) NextID(entity Entity) uint64 {
+	de, ok := entity.(*DynamicEntity)
+	if !ok || de.Fields == nil {
+		return 0
+	}
+	val, exists := de.Fields[g.fieldName]
+	if !exists {
+		return 0
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprint(val)))
+	return foldSHA256ToUint64(sum)
+}
+
+// FieldName returns the field name used for hashing.
+func (g *CryptoDynamicFieldHashGenerator) FieldName() string {
 	return g.fieldName
 }

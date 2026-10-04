@@ -347,6 +347,69 @@ func TestExecuteGuardedBatch_SendsWritesAsSuccessOps(t *testing.T) {
 	}
 }
 
+// TestExecuteGuardedBatch_DeleteWriteBecomesOpDelete confirms a KV with
+// Delete set translates to service.OpDelete, carrying no Value, rather than
+// a put of whatever bytes happened to be set (go-qrdb#589): a batch that
+// could only put would need the delete half of a move/rename as a second,
+// non-atomic operation.
+func TestExecuteGuardedBatch_DeleteWriteBecomesOpDelete(t *testing.T) {
+	var gotSuccess []service.Op
+	tx := &mockTransactionServicer{executeFn: func(_ context.Context, _ []service.Compare, success, _ []service.Op) (*service.TransactionResponse, error) {
+		gotSuccess = success
+		return &service.TransactionResponse{Succeeded: true}, nil
+	}}
+	applied, err := ExecuteGuardedBatch(context.Background(), tx, nil, []kvstore.KV{
+		{Key: "old", Delete: true},
+		{Key: "new", Value: []byte("v")},
+	})
+	if err != nil || !applied {
+		t.Fatalf("ExecuteGuardedBatch = (%v, %v), want (true, nil)", applied, err)
+	}
+	if len(gotSuccess) != 2 {
+		t.Fatalf("success ops = %+v, want 2", gotSuccess)
+	}
+	if gotSuccess[0].Type != service.OpDelete || string(gotSuccess[0].Key) != "old" || gotSuccess[0].Value != nil {
+		t.Errorf("ops[0] = %+v, want OpDelete(old) with no value", gotSuccess[0])
+	}
+	if gotSuccess[1].Type != service.OpPut || string(gotSuccess[1].Key) != "new" || string(gotSuccess[1].Value) != "v" {
+		t.Errorf("ops[1] = %+v, want OpPut(new)=v", gotSuccess[1])
+	}
+}
+
+// TestGuardedKVStoreAdapter_PutAllIfAllUnchanged_MovesAKeyAtomically is the
+// move/rename shape go-qrdb#589 asked for: delete the old key and put the
+// new one in the SAME guarded batch, backed by the real MVCC evaluator
+// rather than a mock, so this would catch a regression in how the delete
+// half is proposed, not just how it is translated.
+func TestGuardedKVStoreAdapter_PutAllIfAllUnchanged_MovesAKeyAtomically(t *testing.T) {
+	ctx := context.Background()
+	tx := newEvaluatingTxService()
+	tx.put("old-name", []byte("payload"))
+
+	store, err := NewGuardedKVStoreAdapter(&mockKVServicer{}, nil, tx)
+	if err != nil {
+		t.Fatalf("NewGuardedKVStoreAdapter: %v", err)
+	}
+	multi := store.(kvstore.MultiGuardedBatchKVStore)
+
+	applied, err := multi.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "old-name", Delete: true},
+		{Key: "new-name", Value: []byte("payload")},
+	})
+	if err != nil {
+		t.Fatalf("PutAllIfAllUnchanged: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected the move to apply")
+	}
+	if _, stillThere := tx.data["old-name"]; stillThere {
+		t.Error("old-name is still present after the move")
+	}
+	if v, ok := tx.data["new-name"]; !ok || string(v.Value) != "payload" {
+		t.Errorf("new-name = %+v, want payload", tx.data["new-name"])
+	}
+}
+
 // TestExecuteGuardedBatch_ProvenNotStoredIsNotApplied pins the translation
 // that lets role/user reconciliation return at once: any error the service
 // layer marks service.ErrNotStored — a propose-time NotLeader here — reaches

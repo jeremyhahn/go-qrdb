@@ -96,6 +96,77 @@ func TestGuardedMemoryStore_PutAllIfAllUnchanged_RefusesWhenAnyGuardFails(t *tes
 	}
 }
 
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_DeleteMovesAKeyAtomically is
+// the move/rename shape go-qrdb#589 asked for: a KV with Delete removes its
+// key instead of writing it, so a batch can delete the old name and put the
+// new one in the same atomic step.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_DeleteMovesAKeyAtomically(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	ctx := context.Background()
+	if err := s.Put(ctx, "old-name", []byte("payload")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	applied, err := s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "old-name", Delete: true},
+		{Key: "new-name", Value: []byte("payload")},
+	})
+	if err != nil {
+		t.Fatalf("PutAllIfAllUnchanged: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected the move to apply")
+	}
+	if v, _ := s.Get(ctx, "old-name"); v != nil {
+		t.Fatalf("Get(old-name) = %q, want nil (deleted)", v)
+	}
+	if v, err := s.Get(ctx, "new-name"); err != nil || string(v) != "payload" {
+		t.Fatalf("Get(new-name) = %q, %v; want %q, nil", v, err, "payload")
+	}
+}
+
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackADeleteOnMidBatchFailure
+// proves a delete earlier in a batch is undone, like a put is, when a LATER
+// write in the same batch fails -- here a unique-index collision on the
+// second write, mirroring
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackOnMidBatchWriteFailure
+// but with the first write a delete instead of a put. The batch is
+// all-or-nothing regardless of which kind of operation failed.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackADeleteOnMidBatchFailure(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	ctx := context.Background()
+
+	if err := s.RegisterEntityIndexes("widget", []kvstore.EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+	if err := s.Put(ctx, "widget/old-name", []byte(`{"name":"mine"}`)); err != nil {
+		t.Fatalf("Put (seed old-name): %v", err)
+	}
+	if err := s.Put(ctx, "widget/existing", []byte(`{"name":"taken"}`)); err != nil {
+		t.Fatalf("Put (seed existing): %v", err)
+	}
+
+	applied, err := s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "widget/old-name", Delete: true},
+		{Key: "widget/new-name", Value: []byte(`{"name":"taken"}`)}, // collides with widget/existing
+	})
+	if err == nil {
+		t.Fatal("PutAllIfAllUnchanged with a unique-index collision on the second write succeeded, want an error")
+	}
+	if applied {
+		t.Fatal("PutAllIfAllUnchanged reported applied=true despite the second write failing")
+	}
+
+	if v, err := s.Get(ctx, "widget/old-name"); err != nil || string(v) != `{"name":"mine"}` {
+		t.Fatalf("Get(widget/old-name) after rollback = %q, %v; want the deleted key restored", v, err)
+	}
+	if v, _ := s.Get(ctx, "widget/new-name"); v != nil {
+		t.Fatalf("Get(widget/new-name) after rollback = %q, want nil (never applied)", v)
+	}
+}
+
 func TestGuardedMemoryStore_PutAllIfUnchanged_SingleGuard(t *testing.T) {
 	s := NewGuardedMemoryStore()
 	ctx := context.Background()

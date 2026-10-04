@@ -54,6 +54,33 @@ type FieldHashGenerator = dao.FieldHashGenerator
 // struct field name.
 var NewFieldHashGenerator = dao.NewFieldHashGenerator
 
+// CryptoFieldHashGenerator is FieldHashGenerator's collision-resistant
+// counterpart: it hashes the named struct field with SHA-256 instead of
+// FNV-1a, so engineering a second natural-key value that lands on a chosen
+// target's ID requires a preimage attack rather than none at all. It
+// shares FieldHashGenerator's 64-bit ID space and birthday bound, so a
+// caller that must DETECT a collision rather than merely resist one being
+// engineered deliberately still needs VerifyNaturalKey on every read
+// (go-qrdb#589).
+type CryptoFieldHashGenerator = dao.CryptoFieldHashGenerator
+
+// NewCryptoFieldHashGenerator creates a new CryptoFieldHashGenerator for
+// the given struct field name.
+var NewCryptoFieldHashGenerator = dao.NewCryptoFieldHashGenerator
+
+// NaturalKeyMismatchError is returned by VerifyNaturalKey when an entity
+// read back by a hash-derived ID does not carry the natural-key value the
+// caller looked it up by -- two distinct natural keys hashed to the same ID.
+type NaturalKeyMismatchError = dao.NaturalKeyMismatchError
+
+// VerifyNaturalKey reads fieldName off entity and reports a
+// *NaturalKeyMismatchError when its string form does not equal expected.
+// Call it after Get when entity's ID came from a hash-derived generator
+// (FieldHashGenerator, CryptoFieldHashGenerator, DynamicFieldHashGenerator,
+// CryptoDynamicFieldHashGenerator) and silently accepting a DIFFERENT
+// entity that happened to hash to the same ID is not acceptable.
+var VerifyNaturalKey = dao.VerifyNaturalKey
+
 // WithIDGenerator configures a GenericDAO to use a custom ID generator.
 var WithIDGenerator = dao.WithIDGenerator
 
@@ -157,6 +184,15 @@ type DynamicFieldHashGenerator = dao.DynamicFieldHashGenerator
 // NewDynamicFieldHashGenerator creates a new DynamicFieldHashGenerator for
 // the given field name.
 var NewDynamicFieldHashGenerator = dao.NewDynamicFieldHashGenerator
+
+// CryptoDynamicFieldHashGenerator is DynamicFieldHashGenerator's
+// collision-resistant counterpart; see CryptoFieldHashGenerator for what
+// SHA-256 adds over FNV-1a and what it does not.
+type CryptoDynamicFieldHashGenerator = dao.CryptoDynamicFieldHashGenerator
+
+// NewCryptoDynamicFieldHashGenerator creates a new
+// CryptoDynamicFieldHashGenerator for the given field name.
+var NewCryptoDynamicFieldHashGenerator = dao.NewCryptoDynamicFieldHashGenerator
 
 // ---------------------------------------------------------------------------
 // DAO Factory

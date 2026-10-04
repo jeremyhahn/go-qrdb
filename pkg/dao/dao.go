@@ -127,6 +127,53 @@ type GenericDAO[E Entity] interface {
 	// Returns nil if the entity doesn't exist (idempotent).
 	Delete(ctx context.Context, entity E) error
 
+	// CompareAndSwap persists next only while the entity currently stored
+	// under next's ID still marshals to EXACTLY the bytes expected last
+	// marshaled to, reporting whether this call wrote it.
+	//
+	// Unlike SaveWithCondition, the comparison and the write are ONE guarded
+	// store operation (kvstore.AtomicKVStore.CompareAndSwap): no caller can
+	// observe expected's bytes, decide to write, and lose a race to another
+	// caller doing the same between its read and its write. swapped=false
+	// with a nil error means the stored bytes had already changed and
+	// storage is unchanged; a non-nil error means the outcome is unknown.
+	//
+	// expected and next must share an EntityID; InvalidEntityIDError is
+	// returned otherwise, since a CAS that compared one key and wrote
+	// another would not be comparing anything the caller thought it was.
+	//
+	// It requires the underlying KVStore to implement kvstore.AtomicKVStore
+	// and returns *AtomicWriteUnsupportedError (matching
+	// kvstore.ErrAtomicWriteUnsupported) when it does not, exactly as
+	// SaveIfAbsent does: a store that cannot evaluate the compare and the
+	// write together must not be allowed to silently decay into a racy
+	// Get-then-Save (go-qrdb#589).
+	//
+	// The codec must serialize the same logical value to the same bytes
+	// every time for this to mean anything -- encoding/json does for a
+	// struct (field order is declaration order) and for a map (keys are
+	// sorted), but a codec that is not byte-deterministic across equal
+	// values makes every CompareAndSwap against a value read earlier fail
+	// spuriously.
+	CompareAndSwap(ctx context.Context, expected, next E) (swapped bool, err error)
+
+	// DeleteIfMatch removes entity only while the value currently stored
+	// under its ID still marshals to exactly entity's own bytes, reporting
+	// whether this call deleted it.
+	//
+	// It is the delete that completes CompareAndSwap and SaveIfAbsent: Delete
+	// above is unconditional, so a caller that read entity, decided it was
+	// safe to remove, and called Delete can race a concurrent writer that
+	// replaced it in between -- the unconditional Delete then destroys the
+	// WINNER's record with no signal. DeleteIfMatch closes that window the
+	// same way CompareAndSwap closes SaveWithCondition's: the compare and the
+	// delete are ONE guarded store operation
+	// (kvstore.AtomicKVStore.CompareAndDelete).
+	//
+	// Requires kvstore.AtomicKVStore; refuses with *AtomicWriteUnsupportedError
+	// exactly as SaveIfAbsent and CompareAndSwap do.
+	DeleteIfMatch(ctx context.Context, entity E) (deleted bool, err error)
+
 	// Count returns the total number of entities of this type.
 	Count(ctx context.Context) (int, error)
 

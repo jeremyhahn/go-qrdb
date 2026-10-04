@@ -422,7 +422,7 @@ func (s *namespacedKVStore) routeGuards(guards []Guard) []Guard {
 func (s *namespacedKVStore) routeWrites(writes []KV) []KV {
 	routed := make([]KV, len(writes))
 	for i, w := range writes {
-		routed[i] = KV{Key: s.route(w.Key), Value: w.Value}
+		routed[i] = KV{Key: s.route(w.Key), Value: w.Value, Delete: w.Delete}
 	}
 	return routed
 }

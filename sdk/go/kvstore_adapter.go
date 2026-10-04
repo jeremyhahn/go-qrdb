@@ -64,8 +64,12 @@ type kvStoreAdapter struct {
 	index transport.IndexClient
 }
 
-// Compile-time interface assertion.
+// Compile-time interface assertions. kvStoreAdapter satisfies
+// kvstore.AtomicKVStore unconditionally -- see PutIfAbsent below for why
+// that is correct even though not every transport.KVClient carries the
+// capability it forwards to.
 var _ kvstore.KVStore = (*kvStoreAdapter)(nil)
+var _ kvstore.AtomicKVStore = (*kvStoreAdapter)(nil)
 
 // Put stores a key-value pair by delegating to the transport's KVClient.
 func (a *kvStoreAdapter) Put(ctx context.Context, key string, value []byte) error {
@@ -97,6 +101,55 @@ func (a *kvStoreAdapter) Get(ctx context.Context, key string) ([]byte, error) {
 // Delete removes a key by delegating to the transport's KVClient.
 func (a *kvStoreAdapter) Delete(ctx context.Context, key string) error {
 	return a.kv.Delete(ctx, key)
+}
+
+// PutIfAbsent stores value under key only when key is absent, delegating to
+// the transport's GuardedKVClient capability.
+//
+// Every production transport (REST, gRPC, QUIC, Unix, MCP, embedded)
+// implements transport.GuardedKVClient today, so this reaches a real
+// server-evaluated conditional write in practice. The type assertion exists
+// for the transport that does not -- a future or a caller-supplied
+// transport.KVClient this adapter did not originate -- and its failure
+// returns kvstore.ErrAtomicWriteUnsupported rather than a panic.
+//
+// This is why kvStoreAdapter satisfies kvstore.AtomicKVStore
+// UNCONDITIONALLY: the Go interface is about having the three METHODS, and
+// kvstore.AtomicKVStore's own doc is explicit that a store which "has the
+// method but not the capability" reports ErrAtomicWriteUnsupported from the
+// call rather than refusing the type assertion -- pkg/dao.GenericDAO's
+// SaveIfAbsent already reads that error as the identical refusal
+// *AtomicWriteUnsupportedError gives when the assertion itself fails (go-qrdb#589).
+func (a *kvStoreAdapter) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	guarded, ok := a.kv.(transport.GuardedKVClient)
+	if !ok {
+		return false, kvstore.ErrAtomicWriteUnsupported
+	}
+	return guarded.PutIfAbsent(ctx, key, value)
+}
+
+// CompareAndDelete removes key only when its stored value still equals
+// expected, delegating to the transport's GuardedKVClient capability. See
+// PutIfAbsent for why the capability check cannot fail in practice and what
+// it reports when it does.
+func (a *kvStoreAdapter) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	guarded, ok := a.kv.(transport.GuardedKVClient)
+	if !ok {
+		return false, kvstore.ErrAtomicWriteUnsupported
+	}
+	return guarded.CompareAndDelete(ctx, key, expected)
+}
+
+// CompareAndSwap replaces key's value with next only when its stored value
+// still equals expected, delegating to the transport's GuardedKVClient
+// capability. See PutIfAbsent for why the capability check cannot fail in
+// practice and what it reports when it does.
+func (a *kvStoreAdapter) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	guarded, ok := a.kv.(transport.GuardedKVClient)
+	if !ok {
+		return false, kvstore.ErrAtomicWriteUnsupported
+	}
+	return guarded.CompareAndSwap(ctx, key, expected, next)
 }
 
 // Scan iterates over key-value pairs with the given prefix, invoking fn

@@ -554,11 +554,13 @@ func (a *guardedKVStoreAdapter) PutAllIfAllUnchanged(ctx context.Context, guards
 // cannot drift between composers.
 //
 // It proposes ONE transaction: the compares guardCompares derives from
-// guards, with writes as its success operations. The compares and the writes
-// are evaluated together inside the state machine, in a single revision, which
-// is the whole point: a caller doing this with single-key verbs — check,
-// write, check, write — still loses if a guard changes between one check and
-// its write (go-qrdb#21, go-qrdb#555).
+// guards, with writes as its success operations -- a put for each KV, or a
+// delete when KV.Delete is set, so a batch can remove one key and write
+// others in the same atomic step a move/rename needs (go-qrdb#589). The
+// compares and the writes are evaluated together inside the state machine,
+// in a single revision, which is the whole point: a caller doing this with
+// single-key verbs — check, write, check, write — still loses if a guard
+// changes between one check and its write (go-qrdb#21, go-qrdb#555).
 //
 // A transaction whose compare fails is a RESULT, not an error: applied=false
 // with a nil error, and the store is unchanged. A non-nil error means the
@@ -582,6 +584,10 @@ func ExecuteGuardedBatch(ctx context.Context, tx service.TransactionServicer, gu
 	}
 	ops := make([]service.Op, 0, len(writes))
 	for _, w := range writes {
+		if w.Delete {
+			ops = append(ops, service.Op{Type: service.OpDelete, Key: []byte(w.Key)})
+			continue
+		}
 		ops = append(ops, service.Op{
 			Type:  service.OpPut,
 			Key:   []byte(w.Key),

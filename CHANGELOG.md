@@ -380,6 +380,38 @@ are not reconstructed here — their history is in the git log.
   generate and persist one, producing a leaf signed by whichever key lost
   the race to be cached in memory while a DIFFERENT key was the one actually
   persisted last.
+- **A memory-engine node no longer needs a vector data directory
+  (#578).** `pkg/storage/vector.MemoryVectorStorage` implements
+  `vector.Storage` entirely in process memory; `BuildServices` selects it
+  when `infra.DataDir` is empty instead of returning
+  `EmptyVectorDataDirError` (removed).
+- **`sdk/go` re-exports the atomic, mode-enforcing file writer (#580).**
+  `pkg/util/securefile.WriteFileAtomic` (moved out of `pkg/clustertls`, now
+  refuses a pre-existing symlink at its target with a typed
+  `*SymlinkRefusedError`) and new `CreateExclusive` (O_EXCL, create-only,
+  typed `*FileExistsError`) are re-exported from `sdk/go`.
+- **`sdk/go` re-exports `pkg/ratelimit`, wired into the embedded node
+  (#398).** `WithRateLimitPolicies` and `WithRateLimiter` are new
+  `sdk/go/node.NodeOption`s, threaded into the same
+  `wiring.AuthMiddlewareConfig` the daemon builds.
+- **DAO atomic primitives reach every SDK transport (#589).**
+  `sdk.KVStoreAdapter` now forwards `PutIfAbsent`/`CompareAndSwap`/
+  `CompareAndDelete` to the transport's `GuardedKVClient` capability, so
+  `GenericDAO.SaveIfAbsent` works over every transport instead of always
+  refusing with `AtomicWriteUnsupportedError`. `GenericDAO` gains
+  `CompareAndSwap` and `DeleteIfMatch`, both single guarded store
+  operations rather than `SaveWithCondition`'s read-then-write.
+  `kvstore.KV` gains a `Delete` field so a guarded batch can remove one key
+  and write others in the same atomic step, and `UnitOfWork.Commit` uses
+  `MultiGuardedBatchKVStore` when the store offers it instead of its
+  sequential compensating apply. `kvstore.CompareAndSwapWithCurrent` returns
+  the current value on a failed compare. `dao.CryptoFieldHashGenerator` /
+  `CryptoDynamicFieldHashGenerator` hash a natural key with SHA-256 instead
+  of FNV-1a, and `dao.VerifyNaturalKey` detects a collision on read;
+  `FieldHashGenerator`/`DynamicFieldHashGenerator` are unchanged, since
+  swapping their hash in place would orphan already-persisted entities. A
+  move to string entity IDs (the issue's other suggested option) is an
+  architecture decision left to the owner.
 
 ## [0.41.0-alpha] - 2026-10-04
 

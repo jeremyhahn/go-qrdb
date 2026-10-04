@@ -97,6 +97,9 @@ func (s *GuardedMemoryStore) PutAllIfUnchanged(ctx context.Context, guardKey str
 // applying any of them and rolls every already-applied write back the
 // moment one fails, rather than leaving a prefix of the batch in the store
 // with the rest refused.
+//
+// A KV with Delete set removes its key instead of writing it, so a batch
+// can delete one key and put others in the same atomic step (go-qrdb#589).
 func (s *GuardedMemoryStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
 	s.batchMu.Lock()
 	defer s.batchMu.Unlock()
@@ -134,7 +137,13 @@ func (s *GuardedMemoryStore) PutAllIfAllUnchanged(ctx context.Context, guards []
 
 	applied := make([]string, 0, len(writes))
 	for _, w := range writes {
-		if err := s.Put(ctx, w.Key, w.Value); err != nil {
+		var err error
+		if w.Delete {
+			err = s.Delete(ctx, w.Key)
+		} else {
+			err = s.Put(ctx, w.Key, w.Value)
+		}
+		if err != nil {
 			s.rollback(applied, snapshot)
 			return false, err
 		}

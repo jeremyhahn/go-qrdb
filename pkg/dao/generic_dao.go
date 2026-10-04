@@ -298,6 +298,78 @@ func (d *genericDAO[E]) SaveIfAbsent(ctx context.Context, entity E) (bool, error
 	return stored, err
 }
 
+// CompareAndSwap persists next only while the stored bytes under next's ID
+// still equal expected's marshaled bytes. See the GenericDAO interface for
+// the contract: this is a single guarded store operation, not a read
+// followed by a write, and is refused on a non-atomic store rather than
+// emulated.
+func (d *genericDAO[E]) CompareAndSwap(ctx context.Context, expected, next E) (bool, error) {
+	if expected.EntityID() != next.EntityID() {
+		return false, InvalidEntityIDError{
+			EntityType: d.entityType,
+			Reason:     "CompareAndSwap requires expected and next to share an EntityID",
+		}
+	}
+	if next.EntityID() == 0 {
+		return false, InvalidEntityIDError{EntityType: d.entityType, Reason: "cannot CompareAndSwap entity with ID 0"}
+	}
+
+	atomicStore, ok := d.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType}
+	}
+
+	expectedData, err := d.codec.Marshal(expected)
+	if err != nil {
+		return false, SerializationFailedError{EntityType: d.entityType, Cause: err}
+	}
+	nextData, err := d.codec.Marshal(next)
+	if err != nil {
+		return false, SerializationFailedError{EntityType: d.entityType, Cause: err}
+	}
+
+	ctx, cancel := d.ensureTimeout(ctx)
+	defer cancel()
+
+	swapped, err := atomicStore.CompareAndSwap(ctx, d.makeKey(next.EntityID()), expectedData, nextData)
+	if err != nil && errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		// Same distinction SaveIfAbsent draws: the store has the method but
+		// not the capability, which is the identical refusal as having
+		// neither.
+		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType, Err: err}
+	}
+	return swapped, err
+}
+
+// DeleteIfMatch removes entity only while the stored bytes under its ID
+// still equal entity's own marshaled bytes. See the GenericDAO interface for
+// the contract.
+func (d *genericDAO[E]) DeleteIfMatch(ctx context.Context, entity E) (bool, error) {
+	id := entity.EntityID()
+	if id == 0 {
+		return false, InvalidEntityIDError{EntityType: d.entityType, Reason: "cannot DeleteIfMatch entity with ID 0"}
+	}
+
+	atomicStore, ok := d.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType}
+	}
+
+	expectedData, err := d.codec.Marshal(entity)
+	if err != nil {
+		return false, SerializationFailedError{EntityType: d.entityType, Cause: err}
+	}
+
+	ctx, cancel := d.ensureTimeout(ctx)
+	defer cancel()
+
+	deleted, err := atomicStore.CompareAndDelete(ctx, d.makeKey(id), expectedData)
+	if err != nil && errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType, Err: err}
+	}
+	return deleted, err
+}
+
 // SaveWithCondition persists an entity only if the given condition is
 // satisfied. See the GenericDAO interface for the contract: the condition is
 // evaluated with a read followed by a write, so the single-operation

@@ -42,6 +42,31 @@ import "github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 // pkg/kvstore, which consumers may not import.
 type AtomicKVStore = kvstore.AtomicKVStore
 
+// FencedCreator is the optional capability of creating a key only while it
+// AND a set of other keys -- its fences -- are all absent, decided as one
+// atomic step. It exists for a create that another operation retires through
+// a DIFFERENT key (see kvstore.FencedCreator for the tombstone example a
+// plain PutIfAbsent cannot see).
+//
+// Like AtomicKVStore, it is discovered by type assertion against whatever
+// kvstore.KVStore the embedder's own composition produced -- an engine's
+// store, a barrier-backed store -- rather than something kvStoreAdapter
+// forwards: no sdk/go transport.KVClient wire contract carries a
+// fenced-create verb today, so a store reached through Client.KVStore()
+// never satisfies this. An embedder holding a store directly (go-xkms's
+// seal.StorageBackend composition, for one) asserts for it the same way:
+//
+//	fenced, ok := store.(sdk.FencedCreator)
+type FencedCreator = kvstore.FencedCreator
+
+// CompareAndSwapWithCurrent calls store.CompareAndSwap and, on a mismatch,
+// reads the key back so the caller learns what it should have compared
+// against without a second round trip -- useful for a contended counter (a
+// PIN-lockout attempt count) that retries on every failed compare. See
+// kvstore.CompareAndSwapWithCurrent for the window this does and does not
+// close.
+var CompareAndSwapWithCurrent = kvstore.CompareAndSwapWithCurrent
+
 // NewMemoryKVStore returns an in-process KVStore that supports atomic
 // conditional writes and maintains registered secondary indexes for real.
 //

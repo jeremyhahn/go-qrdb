@@ -39,10 +39,16 @@ type opSnapshot struct {
 	existed bool
 }
 
-// UnitOfWork coordinates atomic operations across multiple DAOs.
-// All registered operations are committed atomically or rolled back together.
-// It operates at the raw key-value level, collecting serialized operations
-// from multiple DAOs and applying them in a single batch.
+// UnitOfWork coordinates operations across multiple DAOs, collecting
+// serialized operations from multiple DAOs at the raw key-value level and
+// applying them in a single batch at Commit.
+//
+// Whether that batch is genuinely atomic depends on what store backs it: see
+// Commit's doc. Over a store implementing kvstore.MultiGuardedBatchKVStore,
+// it is -- one guarded proposal, all operations landing together or not at
+// all, which is what a move/rename needs. Over anything else it is the
+// pre-go-qrdb#589 sequential apply with best-effort compensation on failure,
+// which is NOT atomic against a concurrent reader.
 //
 // Example:
 //
@@ -146,12 +152,24 @@ func RegisterDelete[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) erro
 	return nil
 }
 
-// Commit atomically applies all queued operations to the underlying KVStore.
-// Operations are applied in registration order. If any operation fails,
-// a best-effort compensating rollback is attempted for already-applied
-// operations: saves are compensated by restoring the previous value (or
-// deleting if the key did not exist), and deletes are compensated by
-// restoring the previously read value.
+// Commit applies all queued operations to the underlying KVStore.
+// Operations are applied in registration order.
+//
+// When store implements kvstore.MultiGuardedBatchKVStore, every operation is
+// applied as ONE guarded batch write (PutAllIfAllUnchanged with no guards --
+// every operation is unconditional, but the whole batch is still ONE atomic
+// step): no reader can observe the batch partially applied, which matters
+// for a move/rename that deletes one key and puts another and must never be
+// visible with the delete done and the put not yet landed, or the reverse
+// (go-qrdb#589).
+//
+// Otherwise, Commit falls back to applying operations one at a time; if any
+// operation fails, a best-effort compensating rollback is attempted for
+// already-applied operations: saves are compensated by restoring the
+// previous value (or deleting if the key did not exist), and deletes are
+// compensated by restoring the previously read value. That sequence is NOT
+// atomic against a concurrent reader -- it is the pre-go-qrdb#589 behavior,
+// kept for a store that offers no batch primitive to use instead.
 //
 // After Commit (success or failure), the UnitOfWork is closed and cannot
 // be reused.
@@ -173,6 +191,42 @@ func (uow *UnitOfWork) Commit(ctx context.Context) error {
 		defer cancel()
 	}
 
+	if multi, ok := uow.store.(kvstore.MultiGuardedBatchKVStore); ok {
+		return uow.commitAtomic(ctx, multi)
+	}
+	return uow.commitWithCompensation(ctx)
+}
+
+// commitAtomic applies every queued operation as one guarded batch write.
+// See Commit's doc for why an empty guard list still means atomic, not
+// unconditional-and-unordered: PutAllIfAllUnchanged proposes the whole batch
+// as a single state-machine transaction regardless of how many guards it
+// carries.
+func (uow *UnitOfWork) commitAtomic(ctx context.Context, store kvstore.MultiGuardedBatchKVStore) error {
+	writes := make([]kvstore.KV, len(uow.ops))
+	for i, op := range uow.ops {
+		writes[i] = kvstore.KV{Key: op.key, Value: op.value, Delete: op.isDelete}
+	}
+
+	applied, err := store.PutAllIfAllUnchanged(ctx, nil, writes)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		// Reachable only if a future MultiGuardedBatchKVStore implementation
+		// can refuse a batch carrying zero guards for some reason other than
+		// an error; today none does, since there is nothing for zero guards
+		// to fail. Reported honestly rather than assumed impossible.
+		return kvstore.ErrNotApplied
+	}
+	return nil
+}
+
+// commitWithCompensation applies each queued operation one at a time,
+// compensating already-applied operations on failure. See Commit's doc for
+// why this is not atomic against a concurrent reader; it runs only when the
+// store offers no batch primitive to use instead.
+func (uow *UnitOfWork) commitWithCompensation(ctx context.Context) error {
 	// Collect snapshots of existing values for compensation on failure.
 	snapshots := make([]opSnapshot, 0, len(uow.ops))
 
