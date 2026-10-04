@@ -207,9 +207,12 @@ func TestValidate_ClusterJoinAndBootstrapJoin(t *testing.T) {
 			mutate: func(c *Config) {
 				c.ClusterJoin.Enabled = true
 				c.ClusterJoin.ListenHost = "127.0.0.1"
-				// Seal.Enabled left at its default (false): member-side CSR
-				// signing has no meaning with no barrier to gate Key A
-				// behind.
+				// Seal.Enabled now defaults to true (go-qrdb#548: `qrdb
+				// init` needs the system barrier up even under strategy
+				// "none"), so "disabled" must be set explicitly here --
+				// member-side CSR signing has no meaning with no barrier
+				// to gate Key A behind.
+				c.Seal.Enabled = false
 			},
 			wantErr: true,
 		},

@@ -100,13 +100,13 @@ func TestSetCA_DoesNotOverwrite(t *testing.T) {
 // TestSetCA_DoesNotOverwriteInitializeCA verifies the Initialize-then-SetCA
 // ordering: the ceremony-established CA wins.
 func TestSetCA_DoesNotOverwriteInitializeCA(t *testing.T) {
-	e := newHolderEnv(t, 2, 2)
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
 	initCA := testCA(t)
-	_, err := e.svc.Initialize(context.Background(), initCA, initOpts(0))
+	_, err := svc.Initialize(context.Background(), initCA, initOpts(0))
 	require.NoError(t, err)
 
-	e.svc.SetCA(testCA(t))
-	assert.Same(t, CeremonyCA(initCA), e.svc.CA())
+	svc.SetCA(testCA(t))
+	assert.Same(t, CeremonyCA(initCA), svc.CA())
 }
 
 // ---------------------------------------------------------------------------
@@ -143,21 +143,21 @@ func TestReplaceCA_NilIsNoOp(t *testing.T) {
 }
 
 // TestReplaceCA_DoesNotOverwriteInitializeCA proves ReplaceCA respects the
-// SAME authority rule SetCA does: once the full M-of-N ceremony has run and
-// established its own CA, ReplaceCA from lifecycle wiring (e.g. a later
-// boot's cluster CA provider becoming available) must not clobber it. This
-// is the "post-operational ceremony signing works after a restart" case: a
-// node that completed its ceremony keeps signing with the CA Initialize
-// chose, not whatever cmd/qrdbd's boot sequence tries to install next.
+// SAME authority rule SetCA does: once Initialize has run and established
+// its own CA, ReplaceCA from lifecycle wiring (e.g. a later boot's cluster
+// CA provider becoming available) must not clobber it. This is the
+// "post-operational ceremony signing works after a restart" case: a node
+// that completed its ceremony keeps signing with the CA Initialize chose,
+// not whatever cmd/qrdbd's boot sequence tries to install next.
 func TestReplaceCA_DoesNotOverwriteInitializeCA(t *testing.T) {
-	e := newHolderEnv(t, 2, 2)
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
 	initCA := testCA(t)
-	_, err := e.svc.Initialize(context.Background(), initCA, initOpts(0))
+	_, err := svc.Initialize(context.Background(), initCA, initOpts(0))
 	require.NoError(t, err)
-	require.Equal(t, StateOperational, e.svc.State())
+	require.Equal(t, StateOperational, svc.State())
 
-	e.svc.ReplaceCA(testCA(t))
-	assert.Same(t, CeremonyCA(initCA), e.svc.CA())
+	svc.ReplaceCA(testCA(t))
+	assert.Same(t, CeremonyCA(initCA), svc.CA())
 }
 
 // TestReplaceCA_PostOperationalSigningSurvivesRestart drives the exact
@@ -168,20 +168,20 @@ func TestReplaceCA_DoesNotOverwriteInitializeCA(t *testing.T) {
 // CA provider on a restart, exactly as lifecycle.BuildServices does on
 // EVERY boot, operational ceremony or not.
 func TestReplaceCA_PostOperationalSigningSurvivesRestart(t *testing.T) {
-	e := newHolderEnv(t, 2, 2)
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
 	initCA := testCA(t)
-	_, err := e.svc.Initialize(context.Background(), initCA, initOpts(0))
+	_, err := svc.Initialize(context.Background(), initCA, initOpts(0))
 	require.NoError(t, err)
-	require.Equal(t, StateOperational, e.svc.State())
+	require.Equal(t, StateOperational, svc.State())
 
 	// Simulate the restart's lifecycle wiring trying to install the
 	// (by-then-available) cluster CA provider.
-	e.svc.ReplaceCA(testCA(t))
-	require.Same(t, CeremonyCA(initCA), e.svc.CA(),
+	svc.ReplaceCA(testCA(t))
+	require.Same(t, CeremonyCA(initCA), svc.CA(),
 		"ReplaceCA must not touch an operational ceremony's own CA")
 
 	csrPEM := generateTestCSRPEM(t, "post-restart-officer")
-	cert, err := e.svc.CA().SignCSR(context.Background(), csrPEM, &SignCSROptions{
+	cert, err := svc.CA().SignCSR(context.Background(), csrPEM, &SignCSROptions{
 		Username: "officer1",
 		TenantID: tenantid.System,
 	})

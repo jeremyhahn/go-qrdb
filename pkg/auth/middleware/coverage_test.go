@@ -148,6 +148,7 @@ func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 		WithAuthenticator(authn),
 		WithUserService(primary),
 		WithUserServiceFallback(fallback),
+		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
 
 	_, identity, err := m.authenticate(context.Background())
@@ -901,6 +902,7 @@ func TestAuthenticateQUIC_FallbackUsed(t *testing.T) {
 		WithAuthenticator(authn),
 		WithUserService(primary),
 		WithUserServiceFallback(fallback),
+		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
 
 	ctx, err := m.AuthenticateQUIC(context.Background())

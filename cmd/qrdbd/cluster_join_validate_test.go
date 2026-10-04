@@ -21,6 +21,12 @@ import (
 
 func TestValidateClusterJoinFlags_EnabledWithoutSealRefused(t *testing.T) {
 	f := resolveWithArgs(t, "--cluster-join-enabled")
+	// qrdbconfig.DefaultConfig's Seal.Enabled defaults to true (go-qrdb#548:
+	// `qrdb init` needs the system barrier up even under strategy "none",
+	// since the bootstrap admin's certificate binding depends on it), so
+	// "no seal configured" must be set explicitly here rather than relied
+	// on as resolveWithArgs' implicit default.
+	f.sealConfig.Enabled = false
 
 	err := validateClusterJoinFlags(f)
 	var sealErr *ClusterJoinRequiresSealError

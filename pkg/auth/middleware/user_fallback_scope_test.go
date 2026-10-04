@@ -101,6 +101,7 @@ func TestFallbackUserStore_StillServesTheSystemTenant(t *testing.T) {
 		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
 		WithUserService(&mockUserServicer{err: context.DeadlineExceeded}),
 		WithUserServiceFallback(fallback),
+		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
 
 	_, got, err := m.authenticate(context.Background())
