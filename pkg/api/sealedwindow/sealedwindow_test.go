@@ -545,6 +545,74 @@ func TestTransitionDerivations(t *testing.T) {
 	}
 }
 
+// TestAwaitingAdminCredentialDerivations covers every transport's
+// derivation of AwaitingAdminCredentialVerbs (go-qrdb#548 review item 3):
+// ceremony status and ceremony-initialize, and nothing else.
+func TestAwaitingAdminCredentialDerivations(t *testing.T) {
+	if got, want := sealedwindow.AwaitingAdminCredentialVerbs, []sealedwindow.Verb{
+		sealedwindow.VerbCeremonyStatus, sealedwindow.VerbCeremonyInitialize,
+	}; len(got) != len(want) {
+		t.Fatalf("AwaitingAdminCredentialVerbs = %v, want %v", got, want)
+	} else {
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("AwaitingAdminCredentialVerbs[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	}
+
+	rest := sealedwindow.RESTAwaitingAdminCredential()
+	wantREST := []string{"/v1/ceremony/status", "/v1/ceremony/initialize"}
+	if len(rest) != len(wantREST) {
+		t.Fatalf("RESTAwaitingAdminCredential = %v, want %v", rest, wantREST)
+	}
+	for i := range wantREST {
+		if rest[i] != wantREST[i] {
+			t.Errorf("RESTAwaitingAdminCredential[%d] = %q, want %q", i, rest[i], wantREST[i])
+		}
+	}
+
+	grpcSet := sealedwindow.GRPCFullMethodAwaitingAdminCredential("qrdb.v1.QRDBService")
+	if len(grpcSet) != 2 {
+		t.Fatalf("GRPCFullMethodAwaitingAdminCredential has %d entries, want 2: %v", len(grpcSet), grpcSet)
+	}
+	for _, m := range []string{"/qrdb.v1.QRDBService/CeremonyStatus", "/qrdb.v1.QRDBService/CeremonyInitialize"} {
+		if _, ok := grpcSet[m]; !ok {
+			t.Errorf("GRPCFullMethodAwaitingAdminCredential missing %q: %v", m, grpcSet)
+		}
+	}
+
+	quicSet := sealedwindow.QUICAwaitingAdminCredential()
+	if len(quicSet) != 2 {
+		t.Fatalf("QUICAwaitingAdminCredential has %d entries, want 2: %v", len(quicSet), quicSet)
+	}
+	for _, m := range []string{"ceremony.Status", "ceremony.Initialize"} {
+		if _, ok := quicSet[m]; !ok {
+			t.Errorf("QUICAwaitingAdminCredential missing %q: %v", m, quicSet)
+		}
+	}
+
+	mcpSet := sealedwindow.MCPAwaitingAdminCredential()
+	if len(mcpSet) != 2 {
+		t.Fatalf("MCPAwaitingAdminCredential has %d entries, want 2: %v", len(mcpSet), mcpSet)
+	}
+	for _, m := range []string{"qrdb_ceremony_status", "qrdb_ceremony_initialize"} {
+		if _, ok := mcpSet[m]; !ok {
+			t.Errorf("MCPAwaitingAdminCredential missing %q: %v", m, mcpSet)
+		}
+	}
+
+	embeddedSet := sealedwindow.EmbeddedAwaitingAdminCredential()
+	if len(embeddedSet) != 2 {
+		t.Fatalf("EmbeddedAwaitingAdminCredential has %d entries, want 2: %v", len(embeddedSet), embeddedSet)
+	}
+	for _, m := range []string{"CeremonyStatus", "CeremonyInitialize"} {
+		if _, ok := embeddedSet[m]; !ok {
+			t.Errorf("EmbeddedAwaitingAdminCredential missing %q: %v", m, embeddedSet)
+		}
+	}
+}
+
 // TestAdmission: shared admissions run together; a transition waits for them
 // and excludes new ones until it is released.
 func TestAdmission(t *testing.T) {
