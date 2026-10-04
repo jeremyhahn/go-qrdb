@@ -208,7 +208,7 @@ running server actually resolved.
 | QUIC | 63004 | — |
 | MySQL | 3306 | `server.mysql_port` |
 | PostgreSQL | 5432 | `server.pgsql_port` |
-| etcd | 2379 | `databases[].protocol.etcd.listen_addr` |
+| etcd | 2379 | `databases[].etcd.listen_addr` |
 
 ## The full reference
 

@@ -733,28 +733,29 @@ Configures named databases with per-database protocol support. Each database
 entry defines an isolated data store with its own engine, backend, and optional
 protocol endpoints.
 
-| Field      | Type   | Default | Required | Description                           |
-|------------|--------|---------|----------|---------------------------------------|
-| `name`     | string | --      | yes      | Unique database name                  |
-| `engine`   | string | `kv`    | yes      | Store engine (`kv` or `mvcc`)         |
-| `backend`  | string | `raft`  | yes      | Replication backend (`raft`)          |
-| `protocol` | object | --      | no       | Per-database protocol configuration   |
+| Field        | Type   | Default | Required | Description                                    |
+|--------------|--------|---------|----------|-------------------------------------------------|
+| `name`       | string | --      | yes      | Unique database name                           |
+| `engine`     | string | `kv`    | yes      | Store engine (`kv` or `mvcc`)                  |
+| `backend`    | string | `raft`  | yes      | Replication backend (`raft`)                   |
+| `mysql`      | bool   | `false` | no       | Enable the MySQL wire protocol for this database |
+| `postgresql` | bool   | `false` | no       | Enable the PostgreSQL wire protocol for this database |
+| `etcd`       | object | --      | no       | etcd v3 gRPC protocol configuration (below)    |
 
-#### ProtocolConfig
-
-The `protocol` field within each database entry configures wire protocol
-endpoints. This replaced the former top-level `SQLConfig` and now supports
-`mysql`, `postgresql`, and `etcd` alongside each other.
-
-| Field        | Type   | Default | Description                         |
-|--------------|--------|---------|-------------------------------------|
-| `mysql`      | object | --      | MySQL wire protocol configuration   |
-| `postgresql` | object | --      | PostgreSQL wire protocol configuration |
-| `etcd`       | object | --      | etcd v3 gRPC protocol configuration |
+`mysql`, `postgresql` and `etcd` sit directly on the database entry — flat,
+there is no `protocol` wrapper field. (Corrected 2026-10-03: earlier
+versions of this section showed a nested `protocol:` object with `mysql`
+and `postgresql` themselves as nested objects; `config.DatabaseConfig` has
+no `protocol` field, `MySQL`/`PostgreSQL` are plain booleans, and a nested
+block here is silently dropped by the YAML decoder rather than applied.)
+`mysql`/`postgresql` replaced the former top-level `SQLConfig`.
 
 #### EtcdConfig
 
-Configures the etcd-compatible gRPC endpoint for a database.
+Configures the etcd-compatible gRPC endpoint for a database. `etcd` is the
+one of the three protocol fields that is an object rather than a boolean,
+because it needs a listen address and advertise URLs; it is still flat on
+the database entry, not nested under anything else.
 
 | Field                   | Type     | Default  | Required | Description                                      |
 |-------------------------|----------|----------|----------|--------------------------------------------------|
@@ -775,16 +776,13 @@ databases:
   - name: k8s-prod
     engine: kv
     backend: raft
-    protocol:
-      etcd:
-        enabled: true
-        listen_addr: ":2379"
-        advertise_client_urls:
-          - "https://node1:2379"
-      mysql:
-        enabled: false
-      postgresql:
-        enabled: false
+    etcd:
+      enabled: true
+      listen_addr: ":2379"
+      advertise_client_urls:
+        - "https://node1:2379"
+    mysql: false
+    postgresql: false
 ```
 
 **Notes:**
@@ -1308,4 +1306,4 @@ precedence. The following table maps CLI flags to their YAML equivalents.
 | Raft    | 63001       | QUIC (internal) | `raft.raft_address`  |
 | REST    | 63002       | HTTPS           | `server.admin_port`  |
 | gRPC    | 63003       | gRPC + TLS      | `server.grpc_port`   |
-| etcd    | 2379        | gRPC + mTLS     | `databases[].protocol.etcd.listen_addr` |
+| etcd    | 2379        | gRPC + mTLS     | `databases[].etcd.listen_addr` |

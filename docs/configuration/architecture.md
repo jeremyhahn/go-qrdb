@@ -116,7 +116,7 @@ reference with defaults is [12-configuration.md](../12-configuration.md).
 | QUIC | 63004 | QUIC | — |
 | MySQL | 3306 | MySQL wire | `server.mysql_port` |
 | PostgreSQL | 5432 | PostgreSQL wire | `server.pgsql_port` |
-| etcd | 2379 | gRPC + mTLS | `databases[].protocol.etcd.listen_addr` |
+| etcd | 2379 | gRPC + mTLS | `databases[].etcd.listen_addr` |
 
 ## Trust boundaries
 

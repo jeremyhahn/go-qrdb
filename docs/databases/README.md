@@ -153,31 +153,34 @@ databases:
 
 ### Per-database protocol configuration
 
-Each database can expose additional wire protocol endpoints via the
-`protocol` field. Supported protocols are MySQL, PostgreSQL, and etcd.
-Protocol configuration replaced the former top-level `SQLConfig`.
+Each database can expose additional wire protocol endpoints. Supported
+protocols are MySQL, PostgreSQL, and etcd. `mysql` and `postgresql` are
+plain booleans directly on the database entry; `etcd` is a block with its
+own `enabled`/`listen_addr`/`advertise_client_urls` fields, also directly
+on the entry. None of the three is nested under a `protocol:` key:
+`config.DatabaseConfig` has no such field, and a nested block is silently
+dropped by the YAML decoder rather than applied. There is also no
+per-database `port` — the MySQL and PostgreSQL ports are server-wide
+(`server.mysql_port` / `server.pgsql_port`, or `--mysql-port` /
+`--pgsql-port`), not configured per database. (Corrected 2026-10-03; an
+earlier version of this example showed a nested `protocol:` shape with a
+per-database `port` that never matched what the loader reads.)
 
 ```yaml
 databases:
   - name: production
     engine: kv
     backend: raft
-    protocol:
-      etcd:
-        enabled: true
-        listen_addr: ":2379"
-        advertise_urls:
-          - "https://node1:2379"
+    etcd:
+      enabled: true
+      listen_addr: ":2379"
+      advertise_client_urls:
+        - "https://node1:2379"
   - name: analytics
     engine: kv
     backend: raft
-    protocol:
-      mysql:
-        enabled: true
-        port: 3306
-      postgresql:
-        enabled: true
-        port: 5432
+    mysql: true
+    postgresql: true
 ```
 
 ### Tenant-aware databases

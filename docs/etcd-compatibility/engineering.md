@@ -9,19 +9,24 @@
 
 etcd compatibility is configured **per database**, not globally:
 
-etcd compatibility is configured per-database in the database configuration:
+etcd compatibility is configured per-database in the database configuration.
+`etcd` sits directly on the database entry — flat, the same as `mysql` and
+`postgresql` — not nested under a `protocol:` key: `config.DatabaseConfig`
+has no `protocol` field, and a nested block here is silently dropped by the
+YAML decoder rather than applied (corrected 2026-10-03; an earlier version
+of this example showed a nested `protocol.etcd` shape that never matched
+what the loader reads).
 
 ```yaml
 databases:
   - name: k8s-prod
     engine: kv
     backend: raft
-    protocol:
-      etcd:
-        enabled: true
-        listen_addr: ":2379"
-        advertise_client_urls:
-          - "https://node1:2379"
+    etcd:
+      enabled: true
+      listen_addr: ":2379"
+      advertise_client_urls:
+        - "https://node1:2379"
 ```
 
 **Validation:** TLS and auth must be enabled when the etcd protocol is active. The database `engine` must be `kv` and `backend` must be `raft`.
