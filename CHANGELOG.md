@@ -82,6 +82,30 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   now a real, newly-possible cause of that error, and it must classify as a
   cancellation/deadline, not a node-side fault.
 
+### Fixed
+
+- **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
+  `barrier-rekey` were non-functional on every real boot with auth enabled
+  (the default) — a 501 `Unimplemented` ("database share holders service is
+  not configured") on every transport.** `NewProvisioningAuthorizedDatabaseService`
+  wraps `databaseSvc` whenever auth is enabled, and embeds the
+  `service.DatabaseServicer` *interface*, not the concrete `*DatabaseService`.
+  Embedding an interface value only promotes that interface's own methods,
+  never an additive interface the underlying concrete value also satisfies —
+  so `s.databaseSvc.(service.DatabaseHolderServicer)` failed in production
+  even though `*DatabaseService` has always implemented it.
+  `provisioningAuthorizedDatabaseService` now declares all ten
+  `DatabaseHolderServicer` methods itself as pure passthroughs to the inner
+  service, guarded by a compile-time assertion
+  (`var _ service.DatabaseHolderServicer = (*provisioningAuthorizedDatabaseService)(nil)`)
+  and a unit test that a capability-only inner is never delegated to while a
+  holder-capable inner always is, so a wrapper that embeds an interface
+  instead of the concrete type can't silently drop methods again.
+- **`docs/databases/cli.md`** still said `--barrier-strategy shamir` was
+  refused with `UnsupportedBarrierStrategyError` "until per-database Shamir
+  share holders ship" — stale; the feature has shipped. Corrected and
+  cross-linked to the Share-holder verbs section.
+
 ## [0.40.1-alpha] - 2026-10-04
 
 A hotfix for v0.40.0-alpha, which could not boot multi-node clusters, plus durable leases and placement data-loss fixes. This release contains BREAKING changes; see the entries below. Highlights:
