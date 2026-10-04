@@ -86,6 +86,13 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 	sink := backupsink.New(backupStore)
 	provider := service.NewHostShardSnapshotProvider(newHostAdapter(host))
 	backupSvc := service.NewBackupService(provider, service.WithBackupSink(sink))
+	// NewBackupService always returns *service.BackupService; the type
+	// assertion only reaches DecryptBackupShard, a capability outside the
+	// BackupServicer interface (see that method's own doc comment for why).
+	bs, ok := backupSvc.(*service.BackupService)
+	if !ok {
+		return &RestoreBackupError{Phase: "open-backup-store", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: &RestoreBackupServiceTypeError{}}
+	}
 
 	slog.Info("offline restore: verifying backup", "backup_id", f.restoreBackupID, "shard_id", shardCfg.ShardID)
 	verifyResult, err := backupSvc.VerifyBackup(ctx, f.restoreBackupID)
@@ -96,12 +103,16 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 		return &RestoreBackupVerifyError{BackupID: f.restoreBackupID, Result: *verifyResult}
 	}
 
-	shards, err := sink.ReadShards(ctx, f.restoreBackupID)
+	// DecryptBackupShard resolves and unwraps the backup's envelope (a
+	// no-op for an EncryptionNone backup) and returns this shard's
+	// plaintext -- reading shard bytes any other way here would import
+	// ciphertext directly for an encrypted backup.
+	data, err := bs.DecryptBackupShard(ctx, f.restoreBackupID, shardCfg.ShardID, f.restoreDecryptionKeyRef)
 	if err != nil {
-		return &RestoreBackupError{Phase: "read-artifact", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
-	}
-	data, ok := shards[shardCfg.ShardID]
-	if !ok {
+		var decFailed *service.BackupDecryptionFailedError
+		if errors.As(err, &decFailed) {
+			return &RestoreBackupError{Phase: "decrypt", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
+		}
 		return &RestoreBackupShardNotInArtifactError{BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID}
 	}
 

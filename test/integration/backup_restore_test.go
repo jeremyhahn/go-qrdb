@@ -54,6 +54,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -266,7 +267,11 @@ func TestBackupRestore_CLI_DisasterRecovery(t *testing.T) {
 	}
 
 	// --- backup create + verify into the durable repository -------------
-	out, err := runQRDB(t, cli, node.connArgs, "--output", "json", "backup", "create", "--destination", "/backups/dr")
+	// Explicit "none": this test's own subject is the offline restore
+	// sequence, not encryption -- TestBackupRestore_CLI_DisasterRecovery_Encrypted
+	// covers the encrypted path, including that it still recovers correctly.
+	out, err := runQRDB(t, cli, node.connArgs, "--output", "json", "backup", "create",
+		"--destination", "/backups/dr", "--encryption", "none")
 	if err != nil {
 		t.Fatalf("backup create: %v\noutput: %s", err, out)
 	}
@@ -336,12 +341,144 @@ func TestBackupRestore_CLI_DisasterRecovery(t *testing.T) {
 	}
 }
 
+// TestBackupRestore_CLI_DisasterRecovery_Encrypted is
+// TestBackupRestore_CLI_DisasterRecovery's encrypted counterpart: the same
+// total-loss-and-recover workflow, but with a real --encryption-key-file
+// backup. It additionally proves the backup is genuinely unreadable
+// without the KEK -- every file under the durable, file-backed repository
+// is read directly off disk and checked for the seeded plaintext, which
+// must appear nowhere -- and that the offline, boot-time restore path
+// (cmd/qrdbd/restore.go's restoreShardFromBackup, which reads shard bytes
+// directly from the BackupSink rather than through BackupService's own
+// RestoreBackup dispatch) decrypts correctly via DecryptBackupShard rather
+// than importing ciphertext.
+func TestBackupRestore_CLI_DisasterRecovery_Encrypted(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	node := startRestoreDRNode(t, bin, "[dr-restore-enc] ")
+
+	// The key file lives OUTSIDE --data-dir, in its own temp directory, so
+	// it survives the simulated total-loss wipe below -- exactly like
+	// node.backupDir does, and for the same reason.
+	keyDir := t.TempDir()
+	keyPath := keyDir + "/backup.key"
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+
+	// A long, distinctive value unlikely to appear in ciphertext, nonces,
+	// checksums, or any other incidental byte sequence the backup format
+	// carries -- what the "unreadable without the KEK" check greps for.
+	const distinctivePlaintext = "qrdb-dr-encrypted-fixture-07f3c9a1-do-not-leak-me"
+
+	seed := map[string]string{
+		"dr-enc/alpha": distinctivePlaintext,
+		"dr-enc/bravo": "two",
+	}
+	for k, v := range seed {
+		out, err := runQRDB(t, cli, node.connArgs, "kv", "put", k, v)
+		if err != nil {
+			t.Fatalf("kv put %s: %v\noutput: %s", k, err, out)
+		}
+	}
+
+	// --- backup create, encrypted ---------------------------------------
+	out, err := runQRDB(t, cli, node.connArgs, "--output", "json", "backup", "create",
+		"--destination", "/backups/dr-encrypted", "--encryption-key-file", keyPath)
+	if err != nil {
+		t.Fatalf("backup create (encrypted): %v\noutput: %s", err, out)
+	}
+	created := decodeBackupInfoDisplay(t, out)
+	if created.Status != "complete" || created.Size <= 0 {
+		t.Fatalf("backup create (encrypted): got %+v, want Status=complete Size>0", created)
+	}
+	if created.Encryption != "aes256" {
+		t.Fatalf("backup create (encrypted): Encryption=%q, want aes256", created.Encryption)
+	}
+	id := created.ID
+
+	out, err = runQRDB(t, cli, node.connArgs, "--output", "json", "backup", "verify", id)
+	if err != nil {
+		t.Fatalf("backup verify %s: %v\noutput: %s", id, err, out)
+	}
+	verify := decodeBackupVerifyDisplay(t, out)
+	if !verify.Valid || !verify.ChecksumMatch {
+		t.Fatalf("backup verify %s: Valid=%t ChecksumMatch=%t, want true/true", id, verify.Valid, verify.ChecksumMatch)
+	}
+
+	// --- unreadable without the KEK: the durable repository's own files,
+	// read directly off disk, must not contain the seeded plaintext -------
+	assertBackupDirHasNoPlaintext(t, node.backupDir, distinctivePlaintext)
+
+	// --- simulate total loss of the node, then recover via the offline,
+	// boot-time restore workflow -- this exercises DecryptBackupShard
+	// (cmd/qrdbd/restore.go), not merely BackupService.RestoreBackup -------
+	node.restartWithOfflineRestore(t, bin, "[dr-restore-enc-2] ", id, true /* wipe data dir */)
+
+	for k, v := range seed {
+		out, err := runQRDB(t, cli, node.connArgs, "kv", "get", k)
+		if err != nil {
+			t.Fatalf("post-restore kv get %s: %v\noutput: %s", k, err, out)
+		}
+		if strings.TrimSpace(out) != v {
+			t.Fatalf("post-restore kv get %s = %q, want %q (ENCRYPTED DATA NOT RECOVERED)", k, strings.TrimSpace(out), v)
+		}
+	}
+}
+
+// assertBackupDirHasNoPlaintext walks every file under dir (the durable,
+// file-backed backup repository) and fails the test if any of them
+// contain plaintext as a byte substring -- the integration-level proof
+// that an encrypted backup's artifact is genuine ciphertext, not merely
+// labeled "aes256".
+func assertBackupDirHasNoPlaintext(t *testing.T, dir, plaintext string) {
+	t.Helper()
+	needle := []byte(plaintext)
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if bytes.Contains(data, needle) {
+			t.Fatalf("backup artifact %s contains the seeded plaintext %q in the clear -- the backup was not actually encrypted", path, plaintext)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("assertBackupDirHasNoPlaintext: walking %s: %v", dir, err)
+	}
+}
+
+// jsonObjectSuffix returns out starting at its first '{', so a leading
+// line runCLI's CombinedOutput merged in ahead of the JSON payload --
+// e.g. an explicit `--encryption none`'s plaintext warning, written to
+// stderr before the command's own JSON response hits stdout -- does not
+// break decoding. Already-bare JSON (no such prefix) is returned
+// unchanged.
+func jsonObjectSuffix(out string) string {
+	if i := strings.IndexByte(out, '{'); i >= 0 {
+		return out[i:]
+	}
+	return out
+}
+
 // decodeBackupInfoDisplay decodes a `backup create`/`backup get` JSON
 // response into backupInfoDisplay (declared in backup_cli_test.go).
 func decodeBackupInfoDisplay(t *testing.T, out string) backupInfoDisplay {
 	t.Helper()
 	var info backupInfoDisplay
-	if err := json.Unmarshal([]byte(out), &info); err != nil {
+	if err := json.Unmarshal([]byte(jsonObjectSuffix(out)), &info); err != nil {
 		t.Fatalf("decode backup info JSON: %v\noutput: %s", err, out)
 	}
 	return info
@@ -352,7 +489,7 @@ func decodeBackupInfoDisplay(t *testing.T, out string) backupInfoDisplay {
 func decodeBackupVerifyDisplay(t *testing.T, out string) backupVerifyDisplay {
 	t.Helper()
 	var v backupVerifyDisplay
-	if err := json.Unmarshal([]byte(out), &v); err != nil {
+	if err := json.Unmarshal([]byte(jsonObjectSuffix(out)), &v); err != nil {
 		t.Fatalf("decode backup verify JSON: %v\noutput: %s", err, out)
 	}
 	return v

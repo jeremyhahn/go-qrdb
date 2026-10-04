@@ -58,26 +58,49 @@ func (e *BackupEncryptionKeyRequiredError) Error() string {
 
 // BackupEncryptionRequiredError is returned when a backup request supplies
 // neither an explicit encryption choice (BackupOptions.Encryption is empty)
-// nor an encryption key. The default is EncryptionAES256, so defaulting
-// into it without key material would either mint a key this package does
-// not have, or silently fall back to plaintext -- both wrong. The caller
-// must choose: supply an encryption key (or a KMS key reference, where the
-// deployment provides one) to keep the default, or set
+// nor a key reference. The default is EncryptionAES256, so defaulting into
+// it without key material would either mint a key this package does not
+// have, or silently fall back to plaintext -- both wrong. The caller must
+// choose: supply BackupOptions.KeyRef (a key-file path for the built-in
+// "software" keywrap provider, or a hardware/cloud-KMS reference a
+// go-xkms-registered provider resolves) to keep the default, or set
 // BackupOptions.Encryption to EncryptionNone outright to get plaintext.
 type BackupEncryptionRequiredError struct{}
 
 // Error returns a human-readable description.
 func (e *BackupEncryptionRequiredError) Error() string {
-	return "service: backups are encrypted by default (aes256); supply an encryption key (or KMS key reference), or explicitly request encryption \"none\""
+	return "service: backups are encrypted by default (aes256); supply a key reference, or explicitly request encryption \"none\""
 }
 
-// BackupDecryptionKeyRequiredError is returned when restoring an
-// encrypted backup without providing a decryption key.
-type BackupDecryptionKeyRequiredError struct{}
+// BackupDecryptionFailedError is returned when a backup's envelope cannot
+// be processed: resolving its keywrap.Provider failed (an unregistered
+// KeyProviderID, at either create or restore time), wrapping or unwrapping
+// its DEK failed (a bad key reference, the wrong KEK, or a tampered
+// wrapped DEK), or a shard's own AES-256-GCM authentication failed
+// (tampered ciphertext) during restore. All of these collapse to this one
+// typed, fail-closed error -- deliberately not distinguished from each
+// other -- so a caller cannot use the difference to narrow down a correct
+// key.
+type BackupDecryptionFailedError struct {
+	BackupID string
+	Err      error
+}
 
 // Error returns a human-readable description.
-func (e *BackupDecryptionKeyRequiredError) Error() string {
-	return "service: decryption key is required for encrypted backups"
+func (e *BackupDecryptionFailedError) Error() string {
+	msg := "service: backup decryption failed"
+	if e.BackupID != "" {
+		msg += " for " + e.BackupID
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupDecryptionFailedError) Unwrap() error {
+	return e.Err
 }
 
 // BackupCreateError is returned when backup creation fails.

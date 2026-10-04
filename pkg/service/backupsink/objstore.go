@@ -19,11 +19,16 @@
 //
 // Layout within the store:
 //
-//	meta/<id>  JSON-encoded BackupInfo (cheap to list/read)
-//	data/<id>  gob-encoded map[shardID][]byte (the shard payloads)
+//	meta/<id>      JSON-encoded BackupInfo (cheap to list/read)
+//	data/<id>      gob-encoded map[shardID][]byte (the shard payloads)
+//	envelope/<id>  JSON-encoded service.BackupEnvelope (encrypted backups only)
 //
 // Keeping metadata separate from payloads lets List and ReadInfo avoid loading
-// the dataset.
+// the dataset. The envelope -- the wrapped DEK, key reference, provider ID,
+// and format version -- is likewise separate from BackupInfo: it is never
+// surfaced on the wire (see service.BackupInfo's own doc comment), so it
+// must not ride along with the metadata record every GetBackup/ListBackups
+// call reads.
 package backupsink
 
 import (
@@ -39,8 +44,9 @@ import (
 )
 
 const (
-	metaPrefix = "meta/"
-	dataPrefix = "data/"
+	metaPrefix     = "meta/"
+	dataPrefix     = "data/"
+	envelopePrefix = "envelope/"
 )
 
 // Sink persists backups to a storage.Storage. It satisfies service.BackupSink.
@@ -58,8 +64,9 @@ func New(store storage.Storage) *Sink {
 	return &Sink{store: store}
 }
 
-// Write persists a backup's metadata and shard payloads.
-func (s *Sink) Write(_ context.Context, info service.BackupInfo, shards map[uint64][]byte) error {
+// Write persists a backup's metadata, shard payloads, and -- when encrypted
+// -- its envelope. envelope is nil for an EncryptionNone backup.
+func (s *Sink) Write(_ context.Context, info service.BackupInfo, shards map[uint64][]byte, envelope *service.BackupEnvelope) error {
 	metaBytes, err := json.Marshal(info)
 	if err != nil {
 		return &EncodeError{ID: info.ID, Err: err}
@@ -71,10 +78,23 @@ func (s *Sink) Write(_ context.Context, info service.BackupInfo, shards map[uint
 	if err := s.store.Set([]byte(dataPrefix+info.ID), buf.Bytes()); err != nil {
 		return err
 	}
-	// Write metadata last so a listed backup always has readable payloads.
+	if envelope != nil {
+		envBytes, err := json.Marshal(envelope)
+		if err != nil {
+			_ = s.store.Delete([]byte(dataPrefix + info.ID))
+			return &EncodeError{ID: info.ID, Err: err}
+		}
+		if err := s.store.Set([]byte(envelopePrefix+info.ID), envBytes); err != nil {
+			_ = s.store.Delete([]byte(dataPrefix + info.ID))
+			return err
+		}
+	}
+	// Write metadata last so a listed backup always has readable payloads
+	// (and envelope, when present).
 	if err := s.store.Set([]byte(metaPrefix+info.ID), metaBytes); err != nil {
-		// Best-effort rollback of the orphaned payload.
+		// Best-effort rollback of the orphaned payload and envelope.
 		_ = s.store.Delete([]byte(dataPrefix + info.ID))
+		_ = s.store.Delete([]byte(envelopePrefix + info.ID))
 		return err
 	}
 	return nil
@@ -112,6 +132,24 @@ func (s *Sink) ReadShards(_ context.Context, id string) (map[uint64][]byte, erro
 	return shards, nil
 }
 
+// ReadEnvelope loads a backup's envelope metadata. Returns a nil envelope
+// (and a nil error) when the backup carries none (an EncryptionNone
+// backup never has one written).
+func (s *Sink) ReadEnvelope(_ context.Context, id string) (*service.BackupEnvelope, error) {
+	raw, err := s.store.Get([]byte(envelopePrefix + id))
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+	var envelope service.BackupEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, &DecodeError{ID: id, Err: err}
+	}
+	return &envelope, nil
+}
+
 // List returns metadata for all persisted backups, newest first.
 func (s *Sink) List(ctx context.Context) ([]service.BackupInfo, error) {
 	keys, err := s.store.List([]byte(metaPrefix))
@@ -133,10 +171,15 @@ func (s *Sink) List(ctx context.Context) ([]service.BackupInfo, error) {
 	return result, nil
 }
 
-// Delete removes a persisted backup's metadata and payloads.
+// Delete removes a persisted backup's metadata, payloads, and envelope (if
+// any -- deleting an absent envelope key is a no-op for every
+// storage.Storage implementation this sink is used with).
 func (s *Sink) Delete(_ context.Context, id string) error {
 	// Delete metadata first so a partially-deleted backup is not listed.
 	if err := s.store.Delete([]byte(metaPrefix + id)); err != nil {
+		return err
+	}
+	if err := s.store.Delete([]byte(envelopePrefix + id)); err != nil {
 		return err
 	}
 	return s.store.Delete([]byte(dataPrefix + id))

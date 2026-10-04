@@ -2318,6 +2318,16 @@ func TestEmbeddedTranslateBackupError(t *testing.T) {
 			t.Fatalf("got %T", got)
 		}
 	})
+	t.Run("DecryptionFailed", func(t *testing.T) {
+		got := translateBackupError(&service.BackupDecryptionFailedError{BackupID: "b1", Err: errors.New("wrong key")})
+		var want *transport.BackupDecryptionFailedError
+		if !errors.As(got, &want) {
+			t.Fatalf("got %T", got)
+		}
+		if want.BackupID != "b1" {
+			t.Fatalf("BackupID = %q, want %q", want.BackupID, "b1")
+		}
+	})
 	t.Run("Passthrough", func(t *testing.T) {
 		want := errors.New("other")
 		got := translateBackupError(want)

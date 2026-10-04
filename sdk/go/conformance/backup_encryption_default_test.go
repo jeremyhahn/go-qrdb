@@ -17,6 +17,8 @@ package conformance
 import (
 	"context"
 	"crypto/tls"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -29,10 +31,23 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// backupEncryptionKey is a fixed, well-formed AES-256 key used across every
-// cell -- the OWNER-RULING scenarios care about the DEFAULT applying and a
-// key being present, not about key management.
-var backupEncryptionKey = []byte("secret-key-32-bytes-long-12345!")
+// writeBackupKeyFile writes a fixed, well-formed 32-byte key file under
+// t.TempDir() and returns its path, for use as BackupRequest.KeyRef /
+// RestoreRequest.DecryptionKeyRef against the "software" keywrap provider
+// -- the OWNER-RULING scenarios care about the DEFAULT applying and a key
+// being present, not about key management.
+func writeBackupKeyFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "backup.key")
+	key := make([]byte, 32) // the software keywrap provider requires exactly 32
+	for i := range key {
+		key[i] = byte('a' + i%26)
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		t.Fatalf("writing backup key file: %v", err)
+	}
+	return path
+}
 
 // bootBackupCell starts a real raft-mode node (backup is a raft-mode
 // capability; see docs/backup-restore/architecture.md's "Run-mode
@@ -125,9 +140,10 @@ func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 			}
 
 			// Scenario 2: default, with a key -- encrypts and restores.
+			keyPath := writeBackupKeyFile(t)
 			created, err := bc.CreateBackup(ctx, &transport.BackupRequest{
-				Destination:   "conformance/default-with-key",
-				EncryptionKey: backupEncryptionKey,
+				Destination: "conformance/default-with-key",
+				KeyRef:      keyPath,
 			})
 			if err != nil {
 				t.Fatalf("%s: CreateBackup with the default encryption and a key: %v", tk, err)
@@ -136,9 +152,10 @@ func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 				t.Fatalf("%s: Encryption = %q, want %q (the default must resolve to aes256, not merely pass validation)",
 					tk, created.Encryption, transport.EncryptionAES256)
 			}
+			// No decryption key needed: the envelope's own stored key
+			// reference is resolved automatically.
 			if _, err := bc.RestoreBackup(ctx, &transport.RestoreRequest{
-				BackupID:      created.ID,
-				DecryptionKey: backupEncryptionKey,
+				BackupID: created.ID,
 			}); err != nil {
 				t.Fatalf("%s: RestoreBackup with the matching key: %v", tk, err)
 			}

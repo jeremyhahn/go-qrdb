@@ -350,32 +350,15 @@ func TestHandleBackupCreate_MissingDestination(t *testing.T) {
 	}
 }
 
-func TestHandleBackupCreate_BadBase64Key(t *testing.T) {
-	svc := newStubMCPBackupService()
-	handler := handleBackupCreate(svc)
-	req := buildCallToolRequest(t, "qrdb_backup_create", map[string]any{
-		"destination":    "/tmp",
-		"encryption_key": "!!!not-base64!!!",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for bad base64 key")
-	}
-}
-
 func TestHandleBackupCreate_Success(t *testing.T) {
 	svc := newStubMCPBackupService()
 	handler := handleBackupCreate(svc)
 
-	encKey := base64.StdEncoding.EncodeToString([]byte("test-key"))
 	req := buildCallToolRequest(t, "qrdb_backup_create", map[string]any{
-		"destination":    "/backups",
-		"compression":    "zstd",
-		"encryption":     "aes256",
-		"encryption_key": encKey,
+		"destination": "/backups",
+		"compression": "zstd",
+		"encryption":  "aes256",
+		"key_ref":     "/etc/qrdb/backup.key",
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -536,31 +519,14 @@ func TestHandleBackupRestore_MissingBackupID(t *testing.T) {
 	}
 }
 
-func TestHandleBackupRestore_BadBase64DecryptionKey(t *testing.T) {
-	svc := newStubMCPBackupService()
-	handler := handleBackupRestore(svc)
-	req := buildCallToolRequest(t, "qrdb_backup_restore", map[string]any{
-		"backup_id":      "bkp-1",
-		"decryption_key": "!!!not-base64!!!",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for bad base64 decryption key")
-	}
-}
-
 func TestHandleBackupRestore_Success(t *testing.T) {
 	svc := newStubMCPBackupService()
 	handler := handleBackupRestore(svc)
-	decKey := base64.StdEncoding.EncodeToString([]byte("dec-key"))
 	req := buildCallToolRequest(t, "qrdb_backup_restore", map[string]any{
-		"backup_id":      "bkp-1",
-		"target_shards":  []interface{}{float64(1)},
-		"validate_first": true,
-		"decryption_key": decKey,
+		"backup_id":          "bkp-1",
+		"target_shards":      []interface{}{float64(1)},
+		"validate_first":     true,
+		"decryption_key_ref": "/etc/qrdb/backup.key",
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {

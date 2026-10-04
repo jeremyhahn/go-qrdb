@@ -621,9 +621,13 @@ var backupRules = []rule{
 	as(&service.BackupEmptyIDError{}, InvalidArgument),
 	as(&service.BackupEncryptionKeyRequiredError{}, InvalidArgument),
 	as(&service.BackupEncryptionRequiredError{}, InvalidArgument),
-	as(&service.BackupDecryptionKeyRequiredError{}, InvalidArgument),
 	as(&service.BackupInvalidCompressionError{}, InvalidArgument),
 	as(&service.BackupInvalidEncryptionError{}, InvalidArgument),
+	// Covers both directions: an unregistered keywrap.Provider (create or
+	// restore) and an Unwrap/shard-GCM authentication failure (restore) --
+	// a caller-supplied credential or reference that does not work, not a
+	// server-side failure.
+	as(&service.BackupDecryptionFailedError{}, InvalidArgument),
 	// The artifact is not in a restorable state; retrying the same restore
 	// will not change that.
 	as(&service.BackupChecksumMismatchError{}, FailedPrecondition),

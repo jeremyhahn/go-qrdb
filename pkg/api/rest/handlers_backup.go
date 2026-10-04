@@ -39,7 +39,8 @@ type createBackupRequest struct {
 	Destination   string            `json:"destination"`
 	Compression   string            `json:"compression,omitempty"`
 	Encryption    string            `json:"encryption,omitempty"`
-	EncryptionKey []byte            `json:"encryption_key,omitempty"`
+	KeyProviderID string            `json:"key_provider_id,omitempty"`
+	KeyRef        string            `json:"key_ref,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 	ShardIDs      []uint64          `json:"shard_ids,omitempty"`
 }
@@ -47,26 +48,27 @@ type createBackupRequest struct {
 // restoreBackupRequest is the JSON payload for POST /v1/backups/restore. An
 // empty target_shards list restores every shard captured in the backup.
 type restoreBackupRequest struct {
-	BackupID      string   `json:"backup_id"`
-	TargetShards  []uint64 `json:"target_shards,omitempty"`
-	ValidateFirst bool     `json:"validate_first,omitempty"`
-	DecryptionKey []byte   `json:"decryption_key,omitempty"`
+	BackupID         string   `json:"backup_id"`
+	TargetShards     []uint64 `json:"target_shards,omitempty"`
+	ValidateFirst    bool     `json:"validate_first,omitempty"`
+	DecryptionKeyRef string   `json:"decryption_key_ref,omitempty"`
 }
 
 // backupResponse is the JSON representation of a backup artifact's metadata.
 type backupResponse struct {
-	ID           string            `json:"id"`
-	Timestamp    string            `json:"timestamp"`
-	Size         int64             `json:"size"`
-	ShardCount   int               `json:"shard_count"`
-	Status       string            `json:"status"`
-	Checksum     string            `json:"checksum"`
-	Destination  string            `json:"destination"`
-	Compression  string            `json:"compression"`
-	Encryption   string            `json:"encryption"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	DurationMs   int64             `json:"duration_ms"`
-	ErrorMessage string            `json:"error_message,omitempty"`
+	ID            string            `json:"id"`
+	Timestamp     string            `json:"timestamp"`
+	Size          int64             `json:"size"`
+	ShardCount    int               `json:"shard_count"`
+	Status        string            `json:"status"`
+	Checksum      string            `json:"checksum"`
+	Destination   string            `json:"destination"`
+	Compression   string            `json:"compression"`
+	Encryption    string            `json:"encryption"`
+	KeyProviderID string            `json:"key_provider_id,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	DurationMs    int64             `json:"duration_ms"`
+	ErrorMessage  string            `json:"error_message,omitempty"`
 }
 
 // listBackupsResponse is the JSON payload returned by GET /v1/backups/list.
@@ -121,7 +123,8 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		Destination:   req.Destination,
 		Compression:   service.CompressionType(req.Compression),
 		Encryption:    service.EncryptionType(req.Encryption),
-		EncryptionKey: req.EncryptionKey,
+		KeyProviderID: req.KeyProviderID,
+		KeyRef:        req.KeyRef,
 		Metadata:      req.Metadata,
 		ShardIDs:      req.ShardIDs,
 	})
@@ -174,10 +177,10 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), backupRequestTimeout)
 	defer cancel()
 	result, err := s.backupSvc.RestoreBackup(ctx, service.RestoreOptions{
-		BackupID:      req.BackupID,
-		TargetShards:  req.TargetShards,
-		ValidateFirst: req.ValidateFirst,
-		DecryptionKey: req.DecryptionKey,
+		BackupID:         req.BackupID,
+		TargetShards:     req.TargetShards,
+		ValidateFirst:    req.ValidateFirst,
+		DecryptionKeyRef: req.DecryptionKeyRef,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -289,17 +292,18 @@ func backupToResponse(info *service.BackupInfo) *backupResponse {
 		return nil
 	}
 	return &backupResponse{
-		ID:           info.ID,
-		Timestamp:    info.Timestamp.Format(time.RFC3339),
-		Size:         info.Size,
-		ShardCount:   info.ShardCount,
-		Status:       string(info.Status),
-		Checksum:     info.Checksum,
-		Destination:  info.Destination,
-		Compression:  string(info.Compression),
-		Encryption:   string(info.Encryption),
-		Metadata:     info.Metadata,
-		DurationMs:   info.Duration.Milliseconds(),
-		ErrorMessage: info.ErrorMessage,
+		ID:            info.ID,
+		Timestamp:     info.Timestamp.Format(time.RFC3339),
+		Size:          info.Size,
+		ShardCount:    info.ShardCount,
+		Status:        string(info.Status),
+		Checksum:      info.Checksum,
+		Destination:   info.Destination,
+		Compression:   string(info.Compression),
+		Encryption:    string(info.Encryption),
+		KeyProviderID: info.KeyProviderID,
+		Metadata:      info.Metadata,
+		DurationMs:    info.Duration.Milliseconds(),
+		ErrorMessage:  info.ErrorMessage,
 	}
 }

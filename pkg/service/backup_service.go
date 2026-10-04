@@ -15,9 +15,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"log/slog"
 	"sort"
 	"sync"
@@ -28,6 +34,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,9 +65,11 @@ const (
 	// quietly on a caller's behalf.
 	EncryptionNone EncryptionType = "none"
 
-	// EncryptionAES256 encrypts the backup with AES-256-GCM under
-	// BackupOptions.EncryptionKey. It is CreateBackup's default when
-	// BackupOptions.Encryption is left empty -- see
+	// EncryptionAES256 encrypts the backup with a fresh per-backup
+	// AES-256-GCM data-encrypting key (DEK), itself wrapped under a
+	// key-encrypting key (KEK) resolved through pkg/keywrap (see
+	// BackupOptions.KeyProviderID / KeyRef). It is CreateBackup's default
+	// when BackupOptions.Encryption is left empty -- see
 	// BackupEncryptionRequiredError.
 	EncryptionAES256 EncryptionType = "aes256"
 )
@@ -80,30 +90,83 @@ type BackupOptions struct {
 	Compression CompressionType
 
 	// Encryption selects the encryption algorithm. Left empty, CreateBackup
-	// defaults it to EncryptionAES256 and then requires EncryptionKey: the
+	// defaults it to EncryptionAES256 and then requires KeyRef: the
 	// default is encrypted, not plaintext, and a caller that wants
 	// plaintext must say EncryptionNone outright rather than get it by
 	// omission. See BackupEncryptionRequiredError.
-	Encryption    EncryptionType
-	EncryptionKey []byte
-	Metadata      map[string]string
-	ShardIDs      []uint64
+	Encryption EncryptionType
+
+	// KeyProviderID names the registered keywrap.Provider to wrap this
+	// backup's DEK with. Defaults to keywrap.SoftwareProviderID ("software")
+	// when KeyRef is set and this is left empty.
+	KeyProviderID string
+
+	// KeyRef is the key reference the named provider resolves -- a
+	// key-file path for the "software" provider, an HSM slot/handle or a
+	// KMS key ARN for a hardware or cloud-KMS provider go-xkms registers.
+	// Required whenever Encryption resolves to EncryptionAES256 (whether
+	// defaulted or named explicitly): there is no inline raw-key escape
+	// hatch -- every KEK is referenced through a provider, never passed as
+	// bytes through this struct.
+	KeyRef string
+
+	Metadata map[string]string
+	ShardIDs []uint64
 }
 
 // BackupInfo contains metadata about a backup.
 type BackupInfo struct {
-	ID           string
-	Timestamp    time.Time
-	Size         int64
-	ShardCount   int
-	Status       BackupStatus
-	Checksum     string
-	Destination  string
-	Compression  CompressionType
-	Encryption   EncryptionType
+	ID          string
+	Timestamp   time.Time
+	Size        int64
+	ShardCount  int
+	Status      BackupStatus
+	Checksum    string
+	Destination string
+	Compression CompressionType
+	Encryption  EncryptionType
+
+	// KeyProviderID is the keywrap.Provider that wrapped this backup's DEK.
+	// Empty for an EncryptionNone backup. Never accompanied on this type by
+	// the wrapped DEK, the key reference, or the envelope format version --
+	// those live only in the backup's own persisted envelope (see
+	// BackupEnvelope), read back internally by RestoreBackup/VerifyBackup.
+	KeyProviderID string
+
 	Metadata     map[string]string
 	Duration     time.Duration
 	ErrorMessage string
+}
+
+// BackupEnvelope carries a backup's envelope-encryption metadata: which
+// KEK provider wrapped this backup's DEK, the key reference it was wrapped
+// under, the wrapped DEK itself, and the envelope format version. It is
+// never exposed on BackupInfo -- only BackupInfo.KeyProviderID is -- and is
+// persisted alongside a backup's metadata and shard data wherever those
+// already live: the in-memory registry, or the configured BackupSink. Read
+// back only by RestoreBackup and VerifyBackup.
+type BackupEnvelope struct {
+	// FormatVersion is recorded, not inferred, so a future envelope format
+	// change can still read an old backup correctly. Version 1 is AES-256-GCM
+	// at both layers with AAD binding each shard to this backup's metadata
+	// (see buildShardAAD).
+	FormatVersion uint32
+
+	// ProviderID is the keywrap.Provider that wrapped WrappedDEK. Resolved
+	// through the registry at restore time -- a backup never chooses a
+	// different provider than the one that wrapped its DEK.
+	ProviderID string
+
+	// KeyRef is the key reference ProviderID was asked to Wrap/Unwrap
+	// under -- a key-file path for the software provider. Restore may
+	// override this with RestoreOptions.DecryptionKeyRef (e.g. the key
+	// file moved, or restore runs on a different node), but defaults to
+	// this stored value.
+	KeyRef string
+
+	// WrappedDEK is this backup's single per-backup data-encrypting key,
+	// wrapped under the KEK ProviderID/KeyRef name. Never the DEK itself.
+	WrappedDEK []byte
 }
 
 // RestoreOptions contains parameters for restoring a backup.
@@ -111,7 +174,15 @@ type RestoreOptions struct {
 	BackupID      string
 	TargetShards  []uint64
 	ValidateFirst bool
-	DecryptionKey []byte
+
+	// DecryptionKeyRef overrides the key reference stored in the backup's
+	// own envelope (BackupEnvelope.KeyRef) -- useful when restoring on a
+	// different node, or after the key file has moved. Left empty, the
+	// stored reference is used. The provider actually used to Unwrap is
+	// always whichever one the backup was created under
+	// (BackupEnvelope.ProviderID); this field never selects a different
+	// provider than that.
+	DecryptionKeyRef string
 }
 
 // RestoreResult describes the outcome of a restore operation.
@@ -167,14 +238,21 @@ type ShardSnapshotProvider interface {
 // sink (see pkg/service/backupsink). When no sink is configured the service
 // keeps backups in memory only (non-durable; suitable for tests).
 type BackupSink interface {
-	// Write persists a backup's metadata and shard data.
-	Write(ctx context.Context, info BackupInfo, shards map[uint64][]byte) error
+	// Write persists a backup's metadata, shard data, and (for an
+	// encrypted backup) its envelope. envelope is nil for an EncryptionNone
+	// backup.
+	Write(ctx context.Context, info BackupInfo, shards map[uint64][]byte, envelope *BackupEnvelope) error
 
 	// ReadInfo returns a backup's metadata without loading its shard data.
 	ReadInfo(ctx context.Context, id string) (*BackupInfo, error)
 
 	// ReadShards loads a backup's shard data.
 	ReadShards(ctx context.Context, id string) (map[uint64][]byte, error)
+
+	// ReadEnvelope loads a backup's envelope metadata. Returns a nil
+	// envelope (and a nil error) for an EncryptionNone backup, which
+	// carries none.
+	ReadEnvelope(ctx context.Context, id string) (*BackupEnvelope, error)
 
 	// List returns metadata for all persisted backups.
 	List(ctx context.Context) ([]BackupInfo, error)
@@ -213,10 +291,11 @@ type BackupServicer interface {
 // BackupService implementation
 // ---------------------------------------------------------------------------
 
-// backupEntry stores backup metadata and data together.
+// backupEntry stores backup metadata, data, and envelope together.
 type backupEntry struct {
-	info   BackupInfo
-	shards map[uint64][]byte
+	info     BackupInfo
+	shards   map[uint64][]byte
+	envelope *BackupEnvelope
 }
 
 // BackupService implements BackupServicer using a ShardSnapshotProvider
@@ -227,6 +306,18 @@ type BackupService struct {
 	mu       sync.RWMutex
 	backups  map[string]*backupEntry
 	idGen    func() string
+
+	// keyWrap resolves the keywrap.Provider a backup's KeyProviderID names.
+	// Defaults to keywrap.NewDefaultRegistry() (pre-populated with
+	// "software") when no WithKeyWrapRegistry/WithKeyWrapProvider option is
+	// applied, so the common case -- a key-file path and nothing else --
+	// works with no composition required.
+	keyWrap keywrap.Registry
+
+	// keyWrapExtra is a single additional provider WithKeyWrapProvider
+	// supplies, registered into keyWrap at construction time under its own
+	// ProviderID.
+	keyWrapExtra keywrap.Provider
 
 	// audit is an optional compliance-grade audit logger. When set, a
 	// backup created with encryption explicitly disabled (EncryptionNone)
@@ -268,6 +359,28 @@ func WithBackupSink(sink BackupSink) BackupServiceOption {
 func WithAuditLogger(logger audit.AuditLogger) BackupServiceOption {
 	return func(s *BackupService) {
 		s.audit = logger
+	}
+}
+
+// WithKeyWrapRegistry configures the keywrap.Registry used to resolve a
+// backup's KeyProviderID, replacing the default (software-only) registry.
+// go-xkms and other embedders use this to install a registry carrying
+// hardware or cloud-KMS providers, the same With* composition shape
+// seal.WithStrategyRegistry uses for sealing strategies.
+func WithKeyWrapRegistry(r keywrap.Registry) BackupServiceOption {
+	return func(s *BackupService) {
+		s.keyWrap = r
+	}
+}
+
+// WithKeyWrapProvider registers a single additional keywrap.Provider under
+// its own ProviderID into the (default, software-only, unless
+// WithKeyWrapRegistry was also applied) registry. The narrower sibling of
+// WithKeyWrapRegistry for an embedder with exactly one extra provider and
+// no registry of its own to supply.
+func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption {
+	return func(s *BackupService) {
+		s.keyWrapExtra = p
 	}
 }
 
@@ -334,6 +447,18 @@ func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOptio
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.keyWrap == nil {
+		s.keyWrap = keywrap.NewDefaultRegistry()
+	}
+	if s.keyWrapExtra != nil {
+		// Best-effort: a duplicate ID (e.g. an embedder re-registering
+		// "software") is a composition-time configuration mistake the
+		// embedder's own tests should catch, not something this
+		// constructor can surface (BackupServiceOption returns nothing).
+		_ = s.keyWrap.Register(s.keyWrapExtra.ProviderID(), func() (keywrap.Provider, error) {
+			return s.keyWrapExtra, nil
+		})
+	}
 	return s
 }
 
@@ -348,6 +473,142 @@ var validCompressions = map[CompressionType]struct{}{
 var validEncryptions = map[EncryptionType]struct{}{
 	EncryptionNone:   {},
 	EncryptionAES256: {},
+}
+
+// envelopeFormatVersion is the current BackupEnvelope format: AES-256-GCM
+// at both the DEK-wrap and shard-payload layers, with AAD binding each
+// shard to this backup's own metadata (buildShardAAD).
+const envelopeFormatVersion uint32 = 1
+
+// dekLength is the size, in bytes, of every backup's fresh per-backup
+// data-encrypting key.
+const dekLength = 32
+
+// shardNonceLength is the AES-256-GCM nonce length used when encrypting
+// each shard's payload under the backup's DEK.
+const shardNonceLength = 12
+
+// keyWrapRegistry returns the configured keywrap.Registry.
+func (s *BackupService) keyWrapRegistry() keywrap.Registry {
+	return s.keyWrap
+}
+
+// buildShardAAD derives the additional authenticated data AES-256-GCM
+// binds a shard's ciphertext to: this backup's ID, destination, the
+// specific shard ID this piece belongs to, and the envelope format
+// version. Each field is length-prefixed so no ambiguity is possible
+// across field boundaries. Recomputed identically at restore time from the
+// backup's own trusted metadata -- never read back from the (until
+// authenticated) stored artifact itself -- so a shard swapped in from a
+// different backup, or between two shards of the same backup, fails
+// authentication on Open rather than decrypting into the wrong place
+// silently.
+func buildShardAAD(backupID, destination string, shardID uint64, formatVersion uint32) []byte {
+	var buf bytes.Buffer
+	writeLenPrefixed(&buf, []byte(backupID))
+	writeLenPrefixed(&buf, []byte(destination))
+	var shardIDBuf [8]byte
+	binary.BigEndian.PutUint64(shardIDBuf[:], shardID)
+	writeLenPrefixed(&buf, shardIDBuf[:])
+	var versionBuf [4]byte
+	binary.BigEndian.PutUint32(versionBuf[:], formatVersion)
+	writeLenPrefixed(&buf, versionBuf[:])
+	return buf.Bytes()
+}
+
+// writeLenPrefixed appends a 4-byte big-endian length prefix followed by
+// data to buf.
+func writeLenPrefixed(buf *bytes.Buffer, data []byte) {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
+	buf.Write(lenBuf[:])
+	buf.Write(data)
+}
+
+// newShardGCM constructs an AES-256-GCM cipher.AEAD over dek.
+func newShardGCM(dek []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(dek)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// encryptShard seals plaintext under gcm, binding it to aad, and returns a
+// fresh 12-byte nonce prepended to the ciphertext.
+func encryptShard(gcm cipher.AEAD, aad, plaintext []byte) ([]byte, error) {
+	nonce := make([]byte, shardNonceLength)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
+}
+
+// decryptShard splits stored into its nonce and ciphertext and opens it
+// under gcm, checking aad. Returns *UnwrapFailedError-shaped failure
+// (surfaced by callers as *BackupDecryptionFailedError) on a too-short
+// payload or an authentication failure -- never distinguished from each
+// other in what is returned.
+func decryptShard(gcm cipher.AEAD, aad, stored []byte) ([]byte, error) {
+	if len(stored) < shardNonceLength {
+		return nil, &keywrap.UnwrapFailedError{}
+	}
+	nonce, ciphertext := stored[:shardNonceLength], stored[shardNonceLength:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
+	if err != nil {
+		return nil, &keywrap.UnwrapFailedError{}
+	}
+	return plaintext, nil
+}
+
+// envelopeSetup is the result of preparing an encrypted backup's envelope
+// before any shard is captured: a ready AEAD cipher to seal each shard's
+// payload, and everything needed to persist the envelope once capture
+// succeeds.
+type envelopeSetup struct {
+	gcm        cipher.AEAD
+	providerID string
+	keyRef     string
+	wrappedDEK []byte
+}
+
+// prepareEnvelope resolves opts' key-wrap provider, generates a fresh DEK,
+// and wraps it, returning a ready envelopeSetup. Called before any shard is
+// captured, so a bad key reference or an unregistered provider is refused
+// up front rather than after work has been done.
+func (s *BackupService) prepareEnvelope(ctx context.Context, opts BackupOptions) (*envelopeSetup, error) {
+	providerID := opts.KeyProviderID
+	if providerID == "" {
+		providerID = keywrap.SoftwareProviderID
+	}
+
+	provider, err := keywrap.Lookup(s.keyWrapRegistry(), providerID)
+	if err != nil {
+		return nil, &BackupDecryptionFailedError{Err: err}
+	}
+
+	dek := make([]byte, dekLength)
+	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
+		return nil, &BackupCreateError{Err: err}
+	}
+	defer secure.Wipe(dek)
+
+	gcm, err := newShardGCM(dek)
+	if err != nil {
+		return nil, &BackupCreateError{Err: err}
+	}
+
+	wrappedDEK, err := provider.Wrap(ctx, opts.KeyRef, dek)
+	if err != nil {
+		return nil, &BackupDecryptionFailedError{Err: err}
+	}
+
+	return &envelopeSetup{
+		gcm:        gcm,
+		providerID: providerID,
+		keyRef:     opts.KeyRef,
+		wrappedDEK: wrappedDEK,
+	}, nil
 }
 
 // CreateBackup creates a new backup by iterating shard snapshots.
@@ -380,7 +641,7 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 		return nil, &BackupInvalidEncryptionError{Encryption: string(encryption)}
 	}
 
-	if encryption != EncryptionNone && len(opts.EncryptionKey) == 0 {
+	if encryption != EncryptionNone && opts.KeyRef == "" {
 		if defaulted {
 			return nil, &BackupEncryptionRequiredError{}
 		}
@@ -389,6 +650,19 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 
 	if encryption == EncryptionNone {
 		s.warnPlaintextBackup(ctx, opts.Destination)
+	}
+
+	// Resolve the key-wrap provider and wrap a fresh DEK BEFORE touching
+	// any shard: a bad key reference or an unregistered provider is
+	// refused up front, matching the "refused before any shard is
+	// captured" invariant.
+	var envSetup *envelopeSetup
+	if encryption != EncryptionNone {
+		var err error
+		envSetup, err = s.prepareEnvelope(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	start := time.Now()
@@ -402,6 +676,9 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 		Compression: compression,
 		Encryption:  encryption,
 		Metadata:    opts.Metadata,
+	}
+	if envSetup != nil {
+		info.KeyProviderID = envSetup.providerID
 	}
 
 	// Determine which shards to back up.
@@ -421,7 +698,11 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 	// Sort shard IDs for deterministic checksum computation.
 	sort.Slice(shardIDs, func(i, j int) bool { return shardIDs[i] < shardIDs[j] })
 
-	// Capture shard snapshots.
+	// Capture shard snapshots, encrypting each one under the backup's DEK
+	// when encryption applies. The checksum covers exactly what is
+	// stored -- ciphertext for an encrypted backup, plaintext for "none"
+	// -- consistent with the checksum being an integrity (not
+	// authenticity) property: Verify never needs key material.
 	shardData := make(map[uint64][]byte, len(shardIDs))
 	var totalSize int64
 	hasher := sha256.New()
@@ -444,10 +725,24 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 			return &info, &BackupCreateError{Err: err}
 		}
 
-		shardData[shardID] = data
-		totalSize += int64(len(data))
+		stored := data
+		if envSetup != nil {
+			aad := buildShardAAD(id, opts.Destination, shardID, envelopeFormatVersion)
+			ciphertext, encErr := encryptShard(envSetup.gcm, aad, data)
+			if encErr != nil {
+				info.Status = BackupStatusFailed
+				info.ErrorMessage = encErr.Error()
+				info.Duration = time.Since(start)
+				s.storeBackup(id, &backupEntry{info: info})
+				return &info, &BackupCreateError{Err: encErr}
+			}
+			stored = ciphertext
+		}
+
+		shardData[shardID] = stored
+		totalSize += int64(len(stored))
 		// hasher.Write never returns an error per the hash.Hash contract.
-		_, _ = hasher.Write(data)
+		_, _ = hasher.Write(stored)
 	}
 
 	info.Size = totalSize
@@ -456,10 +751,20 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 	info.Status = BackupStatusComplete
 	info.Duration = time.Since(start)
 
+	var envelope *BackupEnvelope
+	if envSetup != nil {
+		envelope = &BackupEnvelope{
+			FormatVersion: envelopeFormatVersion,
+			ProviderID:    envSetup.providerID,
+			KeyRef:        envSetup.keyRef,
+			WrappedDEK:    envSetup.wrappedDEK,
+		}
+	}
+
 	// With a durable sink, persist shard data to the repository and keep only
 	// metadata resident — the dataset is never pinned in process memory.
 	if s.sink != nil {
-		if err := s.sink.Write(ctx, info, shardData); err != nil {
+		if err := s.sink.Write(ctx, info, shardData, envelope); err != nil {
 			info.Status = BackupStatusFailed
 			info.ErrorMessage = err.Error()
 			info.Duration = time.Since(start)
@@ -470,13 +775,14 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 		return &info, nil
 	}
 
-	s.storeBackup(id, &backupEntry{info: info, shards: shardData})
+	s.storeBackup(id, &backupEntry{info: info, shards: shardData, envelope: envelope})
 	return &info, nil
 }
 
-// loadEntry returns a backup entry with its shard data populated. When the
-// in-memory entry holds metadata only (sink-backed mode), the shard data is
-// read from the sink on demand.
+// loadEntry returns a backup entry with its shard data (and envelope, when
+// encrypted) populated. When the in-memory entry holds metadata only
+// (sink-backed mode), the shard data and envelope are read from the sink on
+// demand.
 func (s *BackupService) loadEntry(ctx context.Context, id string) (*backupEntry, error) {
 	s.mu.RLock()
 	entry, ok := s.backups[id]
@@ -506,7 +812,14 @@ func (s *BackupService) loadEntry(ctx context.Context, id string) (*backupEntry,
 	if err != nil {
 		return nil, err
 	}
-	return &backupEntry{info: info, shards: shards}, nil
+	var envelope *BackupEnvelope
+	if info.Encryption != EncryptionNone {
+		envelope, err = s.sink.ReadEnvelope(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &backupEntry{info: info, shards: shards, envelope: envelope}, nil
 }
 
 // ListBackups returns metadata for all available backups sorted by
@@ -568,6 +881,42 @@ func (s *BackupService) DeleteBackup(ctx context.Context, id string) error {
 	return nil
 }
 
+// resolveDEK resolves entry's key-wrap provider and unwraps its DEK,
+// returning a ready AEAD cipher for decrypting its shards. keyRefOverride,
+// when non-empty, is used in place of the envelope's own stored KeyRef --
+// the provider is always the one the envelope names; only the reference is
+// overridable. Returns *BackupDecryptionFailedError on an unregistered
+// provider or an Unwrap failure (wrong KEK or a tampered wrapped DEK),
+// deliberately not distinguishing the two.
+func (s *BackupService) resolveDEK(ctx context.Context, entry *backupEntry, keyRefOverride string) (cipher.AEAD, error) {
+	envelope := entry.envelope
+	if envelope == nil {
+		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: &keywrap.UnwrapFailedError{}}
+	}
+
+	provider, err := keywrap.Lookup(s.keyWrapRegistry(), envelope.ProviderID)
+	if err != nil {
+		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: err}
+	}
+
+	keyRef := envelope.KeyRef
+	if keyRefOverride != "" {
+		keyRef = keyRefOverride
+	}
+
+	dek, err := provider.Unwrap(ctx, keyRef, envelope.WrappedDEK)
+	if err != nil {
+		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: err}
+	}
+	defer secure.Wipe(dek)
+
+	gcm, err := newShardGCM(dek)
+	if err != nil {
+		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: err}
+	}
+	return gcm, nil
+}
+
 // RestoreBackup restores data from a backup. When ValidateFirst is set,
 // the backup is verified before restoration begins.
 func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) (*RestoreResult, error) {
@@ -578,11 +927,6 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 	entry, err := s.loadEntry(ctx, opts.BackupID)
 	if err != nil {
 		return nil, err
-	}
-
-	// Check if decryption key is needed.
-	if entry.info.Encryption != EncryptionNone && len(opts.DecryptionKey) == 0 {
-		return nil, &BackupDecryptionKeyRequiredError{}
 	}
 
 	start := time.Now()
@@ -598,6 +942,19 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 				Expected: verifyResult.ExpectedChecksum,
 				Actual:   verifyResult.ActualChecksum,
 			}
+		}
+	}
+
+	// Resolve and unwrap the backup's DEK once, up front: a wrong KEK or an
+	// unregistered provider cannot decrypt ANY shard (they all share the
+	// same DEK), so it is a whole-restore failure before any shard is
+	// touched -- unlike a single tampered shard's ciphertext, which is a
+	// per-shard failure (see the loop below).
+	var gcm cipher.AEAD
+	if entry.info.Encryption != EncryptionNone {
+		gcm, err = s.resolveDEK(ctx, entry, opts.DecryptionKeyRef)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -637,6 +994,22 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 			continue
 		}
 
+		plaintext := data
+		if gcm != nil {
+			aad := buildShardAAD(entry.info.ID, entry.info.Destination, shardID, entry.envelope.FormatVersion)
+			decrypted, decErr := decryptShard(gcm, aad, data)
+			if decErr != nil {
+				errMu.Lock()
+				errs = append(errs, ShardError{
+					ShardID: shardID,
+					Message: (&BackupDecryptionFailedError{BackupID: entry.info.ID, Err: decErr}).Error(),
+				})
+				errMu.Unlock()
+				continue
+			}
+			plaintext = decrypted
+		}
+
 		// Prefer the SAFETY-GUARDED online path when the provider supports
 		// it: the shard may still be RUNNING (this is the live REST/gRPC/CLI
 		// restore path), and plain RestoreShard's ImportSnapshot always
@@ -644,7 +1017,7 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 		// OnlineShardRestorer (e.g. a simple test double) falls back to
 		// RestoreShard, which requires the shard to already be stopped —
 		// exactly the OFFLINE boot-time restore pattern.
-		restoreErr := s.restoreShard(ctx, shardID, data)
+		restoreErr := s.restoreShard(ctx, shardID, plaintext)
 		if restoreErr != nil {
 			errMu.Lock()
 			errs = append(errs, ShardError{
@@ -704,6 +1077,50 @@ func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
 	p.mu.Unlock()
 }
 
+// DecryptBackupShard returns shardID's plaintext from backup id, resolving
+// and unwrapping the backup's envelope exactly as RestoreBackup does.
+// decryptionKeyRef overrides the envelope's own stored key reference,
+// exactly like RestoreOptions.DecryptionKeyRef; left empty, the stored
+// reference is used.
+//
+// It exists for callers that must read and apply a single shard OUTSIDE
+// RestoreBackup's own per-shard dispatch (which prefers
+// OnlineShardRestorer.RestoreShardOnline and its live-restore safety
+// guards) -- currently only qrdbd's offline, boot-time disaster-recovery
+// restore (cmd/qrdbd/restore.go), which stops and restarts the shard
+// around the import in a sequence RestoreBackup's own online dispatch does
+// not perform. An EncryptionNone backup's shard is returned unchanged.
+func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shardID uint64, decryptionKeyRef string) ([]byte, error) {
+	if id == "" {
+		return nil, &BackupEmptyIDError{}
+	}
+
+	entry, err := s.loadEntry(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	data, ok := entry.shards[shardID]
+	if !ok {
+		return nil, &BackupDecryptionFailedError{BackupID: id, Err: &keywrap.UnwrapFailedError{}}
+	}
+
+	if entry.info.Encryption == EncryptionNone {
+		return data, nil
+	}
+
+	gcm, err := s.resolveDEK(ctx, entry, decryptionKeyRef)
+	if err != nil {
+		return nil, err
+	}
+	aad := buildShardAAD(entry.info.ID, entry.info.Destination, shardID, entry.envelope.FormatVersion)
+	plaintext, err := decryptShard(gcm, aad, data)
+	if err != nil {
+		return nil, &BackupDecryptionFailedError{BackupID: id, Err: err}
+	}
+	return plaintext, nil
+}
+
 // VerifyBackup verifies the integrity of a backup by recomputing the
 // checksum and comparing it to the stored value.
 func (s *BackupService) VerifyBackup(ctx context.Context, id string) (*VerifyResult, error) {
@@ -720,6 +1137,10 @@ func (s *BackupService) VerifyBackup(ctx context.Context, id string) (*VerifyRes
 }
 
 // verifyEntry performs the actual checksum verification on a backup entry.
+// The checksum covers exactly what is stored -- ciphertext for an
+// encrypted backup -- so verification never needs key material: it is an
+// integrity check (SHA-256), not an authenticity check (that is what
+// decrypting at restore time confirms).
 func (s *BackupService) verifyEntry(entry *backupEntry) (*VerifyResult, error) {
 	hasher := sha256.New()
 

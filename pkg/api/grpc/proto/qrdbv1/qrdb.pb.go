@@ -20950,14 +20950,23 @@ func (x *CredentialGCResponse) GetReaped() int32 {
 
 // BackupCreateRequest describes a backup to capture. An empty shard_ids list
 // backs up every shard on the host.
+//
+// field 4 (encryption_key) carried the retired inline-raw-key escape hatch
+// and is permanently reserved: every KEK is referenced through a
+// keywrap.Provider now (key_provider_id/key_ref), never passed as bytes.
 type BackupCreateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Destination   string                 `protobuf:"bytes,1,opt,name=destination,proto3" json:"destination,omitempty"`
-	Compression   string                 `protobuf:"bytes,2,opt,name=compression,proto3" json:"compression,omitempty"`
-	Encryption    string                 `protobuf:"bytes,3,opt,name=encryption,proto3" json:"encryption,omitempty"`
-	EncryptionKey []byte                 `protobuf:"bytes,4,opt,name=encryption_key,json=encryptionKey,proto3" json:"encryption_key,omitempty"`
-	Metadata      map[string]string      `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	ShardIds      []uint64               `protobuf:"varint,6,rep,packed,name=shard_ids,json=shardIds,proto3" json:"shard_ids,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Destination string                 `protobuf:"bytes,1,opt,name=destination,proto3" json:"destination,omitempty"`
+	Compression string                 `protobuf:"bytes,2,opt,name=compression,proto3" json:"compression,omitempty"`
+	Encryption  string                 `protobuf:"bytes,3,opt,name=encryption,proto3" json:"encryption,omitempty"`
+	Metadata    map[string]string      `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ShardIds    []uint64               `protobuf:"varint,6,rep,packed,name=shard_ids,json=shardIds,proto3" json:"shard_ids,omitempty"`
+	// key_provider_id names the registered keywrap.Provider to wrap this
+	// backup's DEK with. Empty defaults to "software" when key_ref is set.
+	KeyProviderId string `protobuf:"bytes,7,opt,name=key_provider_id,json=keyProviderId,proto3" json:"key_provider_id,omitempty"`
+	// key_ref is the key reference the named provider resolves -- a
+	// key-file path for "software".
+	KeyRef        string `protobuf:"bytes,8,opt,name=key_ref,json=keyRef,proto3" json:"key_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -21013,13 +21022,6 @@ func (x *BackupCreateRequest) GetEncryption() string {
 	return ""
 }
 
-func (x *BackupCreateRequest) GetEncryptionKey() []byte {
-	if x != nil {
-		return x.EncryptionKey
-	}
-	return nil
-}
-
 func (x *BackupCreateRequest) GetMetadata() map[string]string {
 	if x != nil {
 		return x.Metadata
@@ -21034,21 +21036,38 @@ func (x *BackupCreateRequest) GetShardIds() []uint64 {
 	return nil
 }
 
+func (x *BackupCreateRequest) GetKeyProviderId() string {
+	if x != nil {
+		return x.KeyProviderId
+	}
+	return ""
+}
+
+func (x *BackupCreateRequest) GetKeyRef() string {
+	if x != nil {
+		return x.KeyRef
+	}
+	return ""
+}
+
 // BackupInfo is the metadata describing a stored backup artifact.
 type BackupInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	TimestampNs   int64                  `protobuf:"varint,2,opt,name=timestamp_ns,json=timestampNs,proto3" json:"timestamp_ns,omitempty"`
-	Size          int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
-	ShardCount    int32                  `protobuf:"varint,4,opt,name=shard_count,json=shardCount,proto3" json:"shard_count,omitempty"`
-	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
-	Checksum      string                 `protobuf:"bytes,6,opt,name=checksum,proto3" json:"checksum,omitempty"`
-	Destination   string                 `protobuf:"bytes,7,opt,name=destination,proto3" json:"destination,omitempty"`
-	Compression   string                 `protobuf:"bytes,8,opt,name=compression,proto3" json:"compression,omitempty"`
-	Encryption    string                 `protobuf:"bytes,9,opt,name=encryption,proto3" json:"encryption,omitempty"`
-	Metadata      map[string]string      `protobuf:"bytes,10,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	DurationNs    int64                  `protobuf:"varint,11,opt,name=duration_ns,json=durationNs,proto3" json:"duration_ns,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,12,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TimestampNs  int64                  `protobuf:"varint,2,opt,name=timestamp_ns,json=timestampNs,proto3" json:"timestamp_ns,omitempty"`
+	Size         int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	ShardCount   int32                  `protobuf:"varint,4,opt,name=shard_count,json=shardCount,proto3" json:"shard_count,omitempty"`
+	Status       string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	Checksum     string                 `protobuf:"bytes,6,opt,name=checksum,proto3" json:"checksum,omitempty"`
+	Destination  string                 `protobuf:"bytes,7,opt,name=destination,proto3" json:"destination,omitempty"`
+	Compression  string                 `protobuf:"bytes,8,opt,name=compression,proto3" json:"compression,omitempty"`
+	Encryption   string                 `protobuf:"bytes,9,opt,name=encryption,proto3" json:"encryption,omitempty"`
+	Metadata     map[string]string      `protobuf:"bytes,10,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DurationNs   int64                  `protobuf:"varint,11,opt,name=duration_ns,json=durationNs,proto3" json:"duration_ns,omitempty"`
+	ErrorMessage string                 `protobuf:"bytes,12,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// key_provider_id is the keywrap.Provider that wrapped this backup's
+	// DEK. Empty for a "none" backup.
+	KeyProviderId string `protobuf:"bytes,13,opt,name=key_provider_id,json=keyProviderId,proto3" json:"key_provider_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -21163,6 +21182,13 @@ func (x *BackupInfo) GetDurationNs() int64 {
 func (x *BackupInfo) GetErrorMessage() string {
 	if x != nil {
 		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *BackupInfo) GetKeyProviderId() string {
+	if x != nil {
+		return x.KeyProviderId
 	}
 	return ""
 }
@@ -21305,14 +21331,23 @@ func (x *BackupDeleteRequest) GetId() string {
 
 // BackupRestoreRequest restores shards from a stored backup. An empty
 // target_shards list restores every shard captured in the backup.
+//
+// field 4 (decryption_key) carried the retired inline-raw-key escape hatch
+// and is permanently reserved; see BackupCreateRequest.
 type BackupRestoreRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
 	TargetShards  []uint64               `protobuf:"varint,2,rep,packed,name=target_shards,json=targetShards,proto3" json:"target_shards,omitempty"`
 	ValidateFirst bool                   `protobuf:"varint,3,opt,name=validate_first,json=validateFirst,proto3" json:"validate_first,omitempty"`
-	DecryptionKey []byte                 `protobuf:"bytes,4,opt,name=decryption_key,json=decryptionKey,proto3" json:"decryption_key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// decryption_key_ref overrides the key reference stored in the
+	// backup's own envelope -- useful when restoring on a different node,
+	// or after the key file has moved. Left empty, the stored reference is
+	// used. The provider actually used to unwrap is always whichever one
+	// the backup was created under; this field never selects a different
+	// provider than that.
+	DecryptionKeyRef string `protobuf:"bytes,5,opt,name=decryption_key_ref,json=decryptionKeyRef,proto3" json:"decryption_key_ref,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *BackupRestoreRequest) Reset() {
@@ -21366,11 +21401,11 @@ func (x *BackupRestoreRequest) GetValidateFirst() bool {
 	return false
 }
 
-func (x *BackupRestoreRequest) GetDecryptionKey() []byte {
+func (x *BackupRestoreRequest) GetDecryptionKeyRef() string {
 	if x != nil {
-		return x.DecryptionKey
+		return x.DecryptionKeyRef
 	}
-	return nil
+	return ""
 }
 
 // ShardError reports a per-shard failure during restore.
@@ -29182,19 +29217,20 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x13CredentialGCRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\".\n" +
 	"\x14CredentialGCResponse\x12\x16\n" +
-	"\x06reaped\x18\x01 \x01(\x05R\x06reaped\"\xc2\x02\n" +
+	"\x06reaped\x18\x01 \x01(\x05R\x06reaped\"\xf2\x02\n" +
 	"\x13BackupCreateRequest\x12 \n" +
 	"\vdestination\x18\x01 \x01(\tR\vdestination\x12 \n" +
 	"\vcompression\x18\x02 \x01(\tR\vcompression\x12\x1e\n" +
 	"\n" +
 	"encryption\x18\x03 \x01(\tR\n" +
-	"encryption\x12%\n" +
-	"\x0eencryption_key\x18\x04 \x01(\fR\rencryptionKey\x12F\n" +
+	"encryption\x12F\n" +
 	"\bmetadata\x18\x05 \x03(\v2*.qrdb.v1.BackupCreateRequest.MetadataEntryR\bmetadata\x12\x1b\n" +
-	"\tshard_ids\x18\x06 \x03(\x04R\bshardIds\x1a;\n" +
+	"\tshard_ids\x18\x06 \x03(\x04R\bshardIds\x12&\n" +
+	"\x0fkey_provider_id\x18\a \x01(\tR\rkeyProviderId\x12\x17\n" +
+	"\akey_ref\x18\b \x01(\tR\x06keyRef\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xce\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x04\x10\x05R\x0eencryption_key\"\xf6\x03\n" +
 	"\n" +
 	"BackupInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
@@ -29213,7 +29249,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	" \x03(\v2!.qrdb.v1.BackupInfo.MetadataEntryR\bmetadata\x12\x1f\n" +
 	"\vduration_ns\x18\v \x01(\x03R\n" +
 	"durationNs\x12#\n" +
-	"\rerror_message\x18\f \x01(\tR\ferrorMessage\x1a;\n" +
+	"\rerror_message\x18\f \x01(\tR\ferrorMessage\x12&\n" +
+	"\x0fkey_provider_id\x18\r \x01(\tR\rkeyProviderId\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"C\n" +
@@ -29222,12 +29259,12 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x10BackupGetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"%\n" +
 	"\x13BackupDeleteRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xa6\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xc3\x01\n" +
 	"\x14BackupRestoreRequest\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
 	"\rtarget_shards\x18\x02 \x03(\x04R\ftargetShards\x12%\n" +
-	"\x0evalidate_first\x18\x03 \x01(\bR\rvalidateFirst\x12%\n" +
-	"\x0edecryption_key\x18\x04 \x01(\fR\rdecryptionKey\"A\n" +
+	"\x0evalidate_first\x18\x03 \x01(\bR\rvalidateFirst\x12,\n" +
+	"\x12decryption_key_ref\x18\x05 \x01(\tR\x10decryptionKeyRefJ\x04\b\x04\x10\x05R\x0edecryption_key\"A\n" +
 	"\n" +
 	"ShardError\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x18\n" +

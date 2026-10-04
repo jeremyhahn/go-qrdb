@@ -4167,29 +4167,43 @@ message CredentialGCResponse {
 
 // BackupCreateRequest describes a backup to capture. An empty shard_ids list
 // backs up every shard on the host.
+//
+// field 4 (encryption_key) carried the retired inline-raw-key escape hatch
+// and is permanently reserved: every KEK is referenced through a
+// keywrap.Provider now (key_provider_id/key_ref), never passed as bytes.
 message BackupCreateRequest {
-    string              destination    = 1;
-    string              compression    = 2;
-    string              encryption     = 3;
-    bytes               encryption_key = 4;
-    map<string, string> metadata       = 5;
-    repeated uint64     shard_ids      = 6;
+    reserved 4;
+    reserved "encryption_key";
+    string              destination     = 1;
+    string              compression     = 2;
+    string              encryption      = 3;
+    map<string, string> metadata        = 5;
+    repeated uint64     shard_ids       = 6;
+    // key_provider_id names the registered keywrap.Provider to wrap this
+    // backup's DEK with. Empty defaults to "software" when key_ref is set.
+    string              key_provider_id = 7;
+    // key_ref is the key reference the named provider resolves -- a
+    // key-file path for "software".
+    string              key_ref         = 8;
 }
 
 // BackupInfo is the metadata describing a stored backup artifact.
 message BackupInfo {
-    string              id            = 1;
-    int64               timestamp_ns  = 2;
-    int64               size          = 3;
-    int32               shard_count   = 4;
-    string              status        = 5;
-    string              checksum      = 6;
-    string              destination   = 7;
-    string              compression   = 8;
-    string              encryption    = 9;
-    map<string, string> metadata      = 10;
-    int64               duration_ns   = 11;
-    string              error_message = 12;
+    string              id              = 1;
+    int64               timestamp_ns    = 2;
+    int64               size            = 3;
+    int32               shard_count     = 4;
+    string              status          = 5;
+    string              checksum        = 6;
+    string              destination     = 7;
+    string              compression     = 8;
+    string              encryption      = 9;
+    map<string, string> metadata        = 10;
+    int64               duration_ns     = 11;
+    string              error_message   = 12;
+    // key_provider_id is the keywrap.Provider that wrapped this backup's
+    // DEK. Empty for a "none" backup.
+    string              key_provider_id = 13;
 }
 
 // BackupListResponse enumerates stored backups. Artifact contents are never
@@ -4210,11 +4224,22 @@ message BackupDeleteRequest {
 
 // BackupRestoreRequest restores shards from a stored backup. An empty
 // target_shards list restores every shard captured in the backup.
+//
+// field 4 (decryption_key) carried the retired inline-raw-key escape hatch
+// and is permanently reserved; see BackupCreateRequest.
 message BackupRestoreRequest {
-    string          backup_id      = 1;
-    repeated uint64 target_shards  = 2;
-    bool            validate_first = 3;
-    bytes           decryption_key = 4;
+    reserved 4;
+    reserved "decryption_key";
+    string          backup_id          = 1;
+    repeated uint64 target_shards      = 2;
+    bool            validate_first     = 3;
+    // decryption_key_ref overrides the key reference stored in the
+    // backup's own envelope -- useful when restoring on a different node,
+    // or after the key file has moved. Left empty, the stored reference is
+    // used. The provider actually used to unwrap is always whichever one
+    // the backup was created under; this field never selects a different
+    // provider than that.
+    string          decryption_key_ref = 5;
 }
 
 // ShardError reports a per-shard failure during restore.

@@ -8,9 +8,29 @@ package integration
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// writeKeyFile writes a fresh 32-byte key file under t.TempDir() and
+// returns its path, for use as --encryption-key-file /
+// --decryption-key-file: the server under test here is a real subprocess
+// on this same machine, so a temp file written by the test is exactly what
+// its "software" keywrap provider reads.
+func writeKeyFile(t *testing.T, fill byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "backup.key")
+	data := make([]byte, 32)
+	for i := range data {
+		data[i] = fill + byte(i)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("writeKeyFile: %v", err)
+	}
+	return path
+}
 
 // ---------------------------------------------------------------------------
 // Wire-format mirrors
@@ -281,22 +301,22 @@ func TestCLIMultiProtocolBackupCreateGetListVerifyRestoreDeleteLifecycle(t *test
 
 // TestCLIMultiProtocolBackupCompressionEncryptionPermutations creates
 // backups across every valid --compression value (none, zstd, snappy) and
-// exercises --encryption aes256 with --encryption-key, verifying the
+// exercises --encryption aes256 with --encryption-key-file, verifying the
 // requested algorithms round-trip through BackupInfo.
 func TestCLIMultiProtocolBackupCompressionEncryptionPermutations(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
 
 	tests := []struct {
-		name          string
-		compression   string
-		encryption    string
-		encryptionKey string
+		name        string
+		compression string
+		encryption  string
+		useKeyFile  bool
 	}{
-		{"none-none", "none", "none", ""},
-		{"zstd-none", "zstd", "none", ""},
-		{"snappy-none", "snappy", "none", ""},
-		{"none-aes256", "none", "aes256", "integration-test-key-material"},
+		{"none-none", "none", "none", false},
+		{"zstd-none", "zstd", "none", false},
+		{"snappy-none", "snappy", "none", false},
+		{"none-aes256", "none", "aes256", true},
 	}
 
 	for _, proto := range AllProtocols() {
@@ -316,8 +336,8 @@ func TestCLIMultiProtocolBackupCompressionEncryptionPermutations(t *testing.T) {
 						"--compression", tc.compression,
 						"--encryption", tc.encryption,
 					}
-					if tc.encryptionKey != "" {
-						args = append(args, "--encryption-key", tc.encryptionKey)
+					if tc.useKeyFile {
+						args = append(args, "--encryption-key-file", writeKeyFile(t, 0x10))
 					}
 
 					stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, args...)
@@ -343,13 +363,18 @@ func TestCLIMultiProtocolBackupCompressionEncryptionPermutations(t *testing.T) {
 // encrypted backup restore requires a decryption key
 // ---------------------------------------------------------------------------
 
-// TestCLIMultiProtocolBackupRestoreEncryptedRequiresDecryptionKey verifies
-// that restoring a backup created with --encryption aes256 is rejected
-// without --decryption-key (BackupDecryptionKeyRequiredError), and that
-// supplying one clears that gate (the subsequent per-shard import still
-// fails on this single live-shard deployment, per the primary lifecycle
-// test's documented behavior).
-func TestCLIMultiProtocolBackupRestoreEncryptedRequiresDecryptionKey(t *testing.T) {
+// TestCLIMultiProtocolBackupRestoreEncryptedNeedsNoKeyByDefault verifies
+// that restoring a backup created with --encryption aes256 needs NO key
+// flag at all: the backup's own envelope records the key reference it was
+// wrapped under, so restore resolves and unwraps it automatically (the
+// subsequent per-shard import still fails on this single live-shard
+// deployment, per the primary lifecycle test's documented behavior -- the
+// distinction this test pins is that the failure is never about a missing
+// or wrong key). It also verifies a WRONG --decryption-key-file override is
+// refused with a decryption error, proving the override path is honored
+// and fails closed rather than silently falling back to the stored
+// reference.
+func TestCLIMultiProtocolBackupRestoreEncryptedNeedsNoKeyByDefault(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
 
@@ -361,12 +386,13 @@ func TestCLIMultiProtocolBackupRestoreEncryptedRequiresDecryptionKey(t *testing.
 
 			ensureShardSnapshot(t, cfg, proto)
 
+			keyPath := writeKeyFile(t, 0x20)
 			destination := fmt.Sprintf("/tmp/qrdb-backups/enc-%s-%d", proto, testTimestamp())
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
 				"--output", "json", "backup", "create",
 				"--destination", destination,
 				"--encryption", "aes256",
-				"--encryption-key", "integration-test-key-material",
+				"--encryption-key-file", keyPath,
 			)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -380,26 +406,32 @@ func TestCLIMultiProtocolBackupRestoreEncryptedRequiresDecryptionKey(t *testing.
 				execCLIWithProtocol(t, cfg, proto, "backup", "delete", info.ID) //nolint:errcheck
 			})
 
-			// Restoring an encrypted backup without --decryption-key must
-			// fail before any shard import is attempted.
-			_, _, err = execCLIWithProtocol(t, cfg, proto, "backup", "restore", "--id", info.ID)
-			assertError(t, err, fmt.Sprintf("[%s] restoring an encrypted backup without --decryption-key should error", proto))
-
-			// Supplying a decryption key clears the missing-key gate, which
-			// is what this test is about. The restore then still fails on
-			// the live system-tenant shard, so the distinction being pinned
-			// here is the reason: no longer "decryption key required".
+			// No key flag at all: the envelope's own stored reference
+			// resolves automatically. The restore then still fails on the
+			// live system-tenant shard (same as every other restore in
+			// this harness), so the distinction pinned here is the
+			// reason: never "decryption key required" or "decryption
+			// failed".
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"--output", "json", "backup", "restore",
-				"--id", info.ID, "--decryption-key", "integration-test-key-material",
+				"--output", "json", "backup", "restore", "--id", info.ID,
 			)
 			assertError(t, err, fmt.Sprintf(
 				"[%s] restoring into the live system-tenant shard must fail the command", proto))
-			assertNotContains(t, stderr, "decryption key",
-				fmt.Sprintf("[%s] with a key supplied, the failure must not be about the key", proto))
+			assertNotContains(t, stderr, "decryption",
+				fmt.Sprintf("[%s] with no key override, the failure must not be about decryption", proto))
 			rr := parseBackupRestoreResult(t, proto, stdout)
 			assertEqual(t, 0, rr.ShardsRestored,
 				fmt.Sprintf("[%s] restore of a live single-node shard must report 0 shards restored", proto))
+
+			// A WRONG --decryption-key-file override IS refused with a
+			// decryption error -- the override is honored, not ignored.
+			wrongKeyPath := writeKeyFile(t, 0x30)
+			_, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"backup", "restore", "--id", info.ID, "--decryption-key-file", wrongKeyPath,
+			)
+			assertError(t, err, fmt.Sprintf("[%s] restoring with the wrong key file override should error", proto))
+			assertContains(t, stderr, "decryption",
+				fmt.Sprintf("[%s] the wrong key file override should fail with a decryption error", proto))
 		})
 	}
 }
@@ -437,7 +469,7 @@ func TestCLIMultiProtocolBackupNegativeCases(t *testing.T) {
 			)
 			assertError(t, err, fmt.Sprintf("[%s] backup create with an invalid --encryption should error", proto))
 
-			// aes256 without --encryption-key is rejected server-side
+			// aes256 without --encryption-key-file is rejected server-side
 			// (service.BackupEncryptionKeyRequiredError).
 			_, _, err = execCLIWithProtocol(t, cfg, proto, "backup", "create",
 				"--destination", "/tmp/qrdb-backups/missing-key",

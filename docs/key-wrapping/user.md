@@ -38,13 +38,23 @@ inside a qrdb backup itself, which is exactly the thing it protects.
 ## Restoring
 
 ```bash
+qrdb backup restore --id bkp-20261004-0300 --validate
+```
+
+No key flag needed: qrdb remembers which key file (and provider) a backup
+was wrapped under and resolves it automatically. You only need
+`--decryption-key-file` to OVERRIDE that — the key file moved, or you are
+restoring on a different machine than the one that created the backup:
+
+```bash
 qrdb backup restore --id bkp-20261004-0300 \
      --decryption-key-file /etc/qrdb/backup.key --validate
 ```
 
-Use the SAME key file you created with. A different file — even one that
-is a valid 32 bytes — is refused rather than silently producing garbage:
-qrdb tells you the key did not match, not "corrupted" or "invalid data".
+Either way, the SAME key the backup was created with is what matters. A
+different file — even one that is a valid 32 bytes — is refused rather than
+silently producing garbage: qrdb tells you the key did not match, not
+"corrupted" or "invalid data".
 
 ## If you don't have a key file set up yet
 
@@ -58,17 +68,15 @@ silently write a backup in plaintext. See
 [backup-restore/user.md](../backup-restore/user.md) for the full
 encrypt-by-default behavior.
 
-## Passing the key directly instead of a file
+## There is no "pass the key directly" option
 
-```bash
-qrdb backup create --destination /backups/daily \
-     --encryption-key "$(base64 -w0 /etc/qrdb/backup.key)"
-```
-
-This works, and qrdb will warn you: the value is visible in `ps` and in
-your shell's history for as long as those retain it. Prefer the key-file
-form above unless you have a specific reason not to (a secrets manager
-that already injects values as command arguments, for instance).
+An earlier draft of this feature let you pass the key's bytes straight on
+the command line (`--encryption-key`). That option is gone: a key's bytes
+never ride in a flag value, an environment variable, or over the wire to
+the server — only a file PATH does, and the server reads that path itself.
+If you are scripting around a secrets manager, have it write the key to a
+file (with tight permissions) and pass that file's path, rather than
+injecting the bytes as an argument.
 
 ## Hardware-backed keys (TPM, HSM, cloud KMS)
 

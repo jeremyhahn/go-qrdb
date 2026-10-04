@@ -74,10 +74,11 @@ func newBackupCmd() *cobra.Command {
 // newBackupCreateCmd creates the "backup create" subcommand.
 func newBackupCreateCmd() *cobra.Command {
 	var (
-		destination   string
-		compression   string
-		encryption    string
-		encryptionKey string
+		destination      string
+		compression      string
+		encryption       string
+		encryptionKeyRef string
+		keyProvider      string
 	)
 
 	cmd := &cobra.Command{
@@ -100,13 +101,11 @@ func newBackupCreateCmd() *cobra.Command {
 			}
 
 			req := &transport.BackupRequest{
-				Destination: destination,
-				Compression: comp,
-				Encryption:  enc,
-			}
-
-			if encryptionKey != "" {
-				req.EncryptionKey = []byte(encryptionKey)
+				Destination:   destination,
+				Compression:   comp,
+				Encryption:    enc,
+				KeyProviderID: keyProvider,
+				KeyRef:        encryptionKeyRef,
 			}
 
 			bc, err := backupClient(client)
@@ -125,8 +124,9 @@ func newBackupCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&destination, "destination", "", "Storage path or URI for the backup (e.g. /backups/daily or s3://bucket/prefix)")
 	_ = cmd.MarkFlagRequired("destination")
 	cmd.Flags().StringVar(&compression, "compression", "none", "Compression algorithm: none, zstd, snappy")
-	cmd.Flags().StringVar(&encryption, "encryption", "", "Encryption algorithm: aes256 (default; requires --encryption-key or a configured KMS key), or none to explicitly write the backup in plaintext")
-	cmd.Flags().StringVar(&encryptionKey, "encryption-key", "", "Encryption key material (required unless --encryption is none, or a KMS key reference is configured)")
+	cmd.Flags().StringVar(&encryption, "encryption", "", "Encryption algorithm: aes256 (default; requires --encryption-key-file), or none to explicitly write the backup in plaintext")
+	cmd.Flags().StringVar(&encryptionKeyRef, "encryption-key-file", "", "Path to the 32-byte key file the key-wrap provider resolves (required unless --encryption is none)")
+	cmd.Flags().StringVar(&keyProvider, "key-provider", "", "The registered keywrap.Provider to wrap this backup's DEK with (default: software)")
 
 	return cmd
 }
@@ -224,10 +224,10 @@ func newBackupDeleteCmd() *cobra.Command {
 // newBackupRestoreCmd creates the "backup restore" subcommand.
 func newBackupRestoreCmd() *cobra.Command {
 	var (
-		backupID      string
-		validate      bool
-		decryptionKey string
-		targetShards  string
+		backupID         string
+		validate         bool
+		decryptionKeyRef string
+		targetShards     string
 	)
 
 	cmd := &cobra.Command{
@@ -236,12 +236,9 @@ func newBackupRestoreCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.RestoreRequest{
-				BackupID:      backupID,
-				ValidateFirst: validate,
-			}
-
-			if decryptionKey != "" {
-				req.DecryptionKey = []byte(decryptionKey)
+				BackupID:         backupID,
+				ValidateFirst:    validate,
+				DecryptionKeyRef: decryptionKeyRef,
 			}
 
 			if targetShards != "" {
@@ -278,7 +275,7 @@ func newBackupRestoreCmd() *cobra.Command {
 	cmd.Flags().StringVar(&backupID, "id", "", "Backup ID to restore from")
 	_ = cmd.MarkFlagRequired("id")
 	cmd.Flags().BoolVar(&validate, "validate", false, "Run integrity verification before restoring")
-	cmd.Flags().StringVar(&decryptionKey, "decryption-key", "", "Decryption key material (required for encrypted backups)")
+	cmd.Flags().StringVar(&decryptionKeyRef, "decryption-key-file", "", "Overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used")
 	cmd.Flags().StringVar(&targetShards, "shards", "", "Comma-separated shard IDs to restore (default: all shards)")
 
 	return cmd
@@ -324,6 +321,9 @@ func printBackupInfo(info *transport.BackupInfo) error {
 		_, _ = fmt.Fprintf(outputWriter, "Shards:      %d\n", info.ShardCount)
 		_, _ = fmt.Fprintf(outputWriter, "Compression: %s\n", info.Compression)
 		_, _ = fmt.Fprintf(outputWriter, "Encryption:  %s\n", info.Encryption)
+		if info.KeyProviderID != "" {
+			_, _ = fmt.Fprintf(outputWriter, "KeyProvider: %s\n", info.KeyProviderID)
+		}
 		_, _ = fmt.Fprintf(outputWriter, "Checksum:    %s\n", info.Checksum)
 		_, _ = fmt.Fprintf(outputWriter, "Duration:    %s\n", info.Duration)
 		if info.ErrorMessage != "" {

@@ -458,6 +458,18 @@ func (e *RestoreBackupSourceRequiredError) Error() string {
 	return "cli: --restore-backup-id requires --backup-dir to locate the backup"
 }
 
+// RestoreBackupServiceTypeError is returned when service.NewBackupService
+// does not return a *service.BackupService -- a programming-error
+// invariant violation, since that constructor's own contract guarantees
+// the concrete type; this only exists to keep the offline restore path
+// (restore.go) a type assertion away from a panic rather than one.
+type RestoreBackupServiceTypeError struct{}
+
+// Error returns a human-readable description.
+func (e *RestoreBackupServiceTypeError) Error() string {
+	return "cli: internal error: service.NewBackupService did not return *service.BackupService"
+}
+
 // RestoreBackupError is returned when a step of the offline, boot-time
 // backup restore sequence (see restore.go) fails.
 type RestoreBackupError struct {

@@ -135,7 +135,7 @@ func TestSink_Write_SetDataFails(t *testing.T) {
 	fail.setFailAt = 1 // fail on the first Set (data key)
 
 	sink := backupsink.New(fail)
-	err := sink.Write(ctx, service.BackupInfo{ID: "b1"}, map[uint64][]byte{1: []byte("payload")})
+	err := sink.Write(ctx, service.BackupInfo{ID: "b1"}, map[uint64][]byte{1: []byte("payload")}, nil)
 	require.Error(t, err, "Write must propagate a storage error on the data key Set")
 }
 
@@ -146,13 +146,107 @@ func TestSink_Write_SetMetaFailsRollsBackData(t *testing.T) {
 	fail.setFailAt = 2 // second Set call (meta key) fails
 
 	sink := backupsink.New(fail)
-	err := sink.Write(ctx, service.BackupInfo{ID: "b2"}, map[uint64][]byte{1: []byte("payload")})
+	err := sink.Write(ctx, service.BackupInfo{ID: "b2"}, map[uint64][]byte{1: []byte("payload")}, nil)
 	require.Error(t, err, "Write must propagate a storage error on the meta key Set")
 
 	// The data key must have been deleted by the best-effort rollback.
 	v, getErr := inner.Get([]byte("data/b2"))
 	require.NoError(t, getErr)
 	assert.Nil(t, v, "data key must be rolled back when the meta write fails")
+}
+
+// --- Write: envelope branches ---
+
+func TestSink_Write_WithEnvelope_RoundTrips(t *testing.T) {
+	ctx := context.Background()
+	sink := newMemSink(t)
+	envelope := &service.BackupEnvelope{
+		FormatVersion: 1,
+		ProviderID:    "software",
+		KeyRef:        "/etc/qrdb/backup.key",
+		WrappedDEK:    []byte("wrapped-dek-bytes"),
+	}
+
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "enc-1"}, map[uint64][]byte{1: []byte("ciphertext")}, envelope))
+
+	got, err := sink.ReadEnvelope(ctx, "enc-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, envelope.FormatVersion, got.FormatVersion)
+	assert.Equal(t, envelope.ProviderID, got.ProviderID)
+	assert.Equal(t, envelope.KeyRef, got.KeyRef)
+	assert.Equal(t, envelope.WrappedDEK, got.WrappedDEK)
+}
+
+func TestSink_Write_EnvelopeSetFailsRollsBackData(t *testing.T) {
+	ctx := context.Background()
+	inner, fail := newFailStore(t)
+	fail.setErr = errors.New("envelope write error")
+	fail.setFailAt = 2 // second Set call (envelope key) fails
+
+	sink := backupsink.New(fail)
+	envelope := &service.BackupEnvelope{FormatVersion: 1, ProviderID: "software", KeyRef: "k", WrappedDEK: []byte("x")}
+	err := sink.Write(ctx, service.BackupInfo{ID: "enc-2"}, map[uint64][]byte{1: []byte("payload")}, envelope)
+	require.Error(t, err, "Write must propagate a storage error on the envelope key Set")
+
+	v, getErr := inner.Get([]byte("data/enc-2"))
+	require.NoError(t, getErr)
+	assert.Nil(t, v, "data key must be rolled back when the envelope write fails")
+}
+
+func TestSink_Write_MetaFailsRollsBackEnvelopeAndData(t *testing.T) {
+	ctx := context.Background()
+	inner, fail := newFailStore(t)
+	fail.setErr = errors.New("meta write error")
+	fail.setFailAt = 3 // third Set call (meta key, after data and envelope) fails
+
+	sink := backupsink.New(fail)
+	envelope := &service.BackupEnvelope{FormatVersion: 1, ProviderID: "software", KeyRef: "k", WrappedDEK: []byte("x")}
+	err := sink.Write(ctx, service.BackupInfo{ID: "enc-3"}, map[uint64][]byte{1: []byte("payload")}, envelope)
+	require.Error(t, err)
+
+	v, getErr := inner.Get([]byte("data/enc-3"))
+	require.NoError(t, getErr)
+	assert.Nil(t, v, "data key must be rolled back when the meta write fails")
+
+	ev, getErr := inner.Get([]byte("envelope/enc-3"))
+	require.NoError(t, getErr)
+	assert.Nil(t, ev, "envelope key must be rolled back when the meta write fails")
+}
+
+// --- ReadEnvelope: missing, corrupt, storage error ---
+
+func TestSink_ReadEnvelope_MissingReturnsNilNil(t *testing.T) {
+	sink := newMemSink(t)
+	envelope, err := sink.ReadEnvelope(context.Background(), "none-backup")
+	require.NoError(t, err)
+	assert.Nil(t, envelope, "a backup with no persisted envelope (an EncryptionNone backup) must report nil, nil")
+}
+
+func TestSink_ReadEnvelope_StoreError(t *testing.T) {
+	ctx := context.Background()
+	_, fail := newFailStore(t)
+	fail.getErr = errors.New("get failure")
+
+	sink := backupsink.New(fail)
+	_, err := sink.ReadEnvelope(ctx, "anyid")
+	require.ErrorIs(t, err, fail.getErr, "ReadEnvelope must propagate a storage.Get error")
+}
+
+func TestSink_ReadEnvelope_CorruptData(t *testing.T) {
+	ctx := context.Background()
+	inner, err := objstore.New("memory", map[string]string{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = inner.Close() })
+
+	require.NoError(t, inner.Set([]byte("envelope/myid"), []byte("not-json")))
+
+	sink := backupsink.New(inner)
+	_, err = sink.ReadEnvelope(ctx, "myid")
+
+	var decErr *backupsink.DecodeError
+	require.ErrorAs(t, err, &decErr)
+	assert.Equal(t, "myid", decErr.ID)
 }
 
 // --- ReadShards: not-found, corrupt data, storage error ---
@@ -250,8 +344,8 @@ func TestSink_List_SortNewestFirst(t *testing.T) {
 		Status:    service.BackupStatusComplete,
 	}
 
-	require.NoError(t, sink.Write(ctx, older, map[uint64][]byte{1: []byte("a")}))
-	require.NoError(t, sink.Write(ctx, newer, map[uint64][]byte{1: []byte("b")}))
+	require.NoError(t, sink.Write(ctx, older, map[uint64][]byte{1: []byte("a")}, nil))
+	require.NoError(t, sink.Write(ctx, newer, map[uint64][]byte{1: []byte("b")}, nil))
 
 	infos, err := sink.List(ctx)
 	require.NoError(t, err)
@@ -290,11 +384,22 @@ func TestSink_Delete_MetaFails(t *testing.T) {
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate a meta-key deletion error")
 }
 
+func TestSink_Delete_EnvelopeFails(t *testing.T) {
+	ctx := context.Background()
+	_, fail := newFailStore(t)
+	fail.deleteErr = errors.New("delete envelope failure")
+	fail.deleteFailAt = 2 // fail on the second Delete (envelope key)
+
+	sink := backupsink.New(fail)
+	err := sink.Delete(ctx, "someid")
+	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate an envelope-key deletion error")
+}
+
 func TestSink_Delete_DataFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
 	fail.deleteErr = errors.New("delete data failure")
-	fail.deleteFailAt = 2 // fail on the second Delete (data key)
+	fail.deleteFailAt = 3 // fail on the third Delete (data key)
 
 	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")

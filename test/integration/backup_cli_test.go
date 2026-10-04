@@ -86,9 +86,29 @@ package integration_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// writeIntegrationKeyFile writes a fresh 32-byte key file under t.TempDir()
+// and returns its path, for use as --encryption-key-file /
+// --decryption-key-file against the real CLI binary: the process under
+// test runs in this same test binary's filesystem, so a temp file written
+// here is exactly what the server-side "software" keywrap provider reads.
+func writeIntegrationKeyFile(t *testing.T, fill byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "backup.key")
+	data := make([]byte, 32)
+	for i := range data {
+		data[i] = fill + byte(i)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("writeIntegrationKeyFile: %v", err)
+	}
+	return path
+}
 
 // backupInfoDisplay mirrors cmd/qrdb/backup.go's printBackupInfo JSON shape
 // (transport.BackupInfo), decoded from `backup get/create --output json`.
@@ -183,8 +203,12 @@ func testBackupCommandTreeOverProtocol(t *testing.T, node *multiProtoNode, proto
 	}
 
 	// --- backup create: now produces a REAL, non-empty, checksummed
-	// snapshot artifact -- the Part 2 fix under test -------------------------
-	out, err := runCLIProto(t, node, proto, "--output", "json", "backup", "create", "--destination", destination)
+	// snapshot artifact -- the Part 2 fix under test. Explicit "none": this
+	// subtest's own subject is the snapshot-capture plumbing, not
+	// encryption (covered separately below and in
+	// sdk/go/conformance/backup_encryption_default_test.go) -------------------
+	out, err := runCLIProto(t, node, proto, "--output", "json", "backup", "create",
+		"--destination", destination, "--encryption", "none")
 	if err != nil {
 		t.Fatalf("[%s] backup create: %v\noutput: %s", proto.name, err, out)
 	}
@@ -223,7 +247,7 @@ func testBackupCommandTreeOverProtocol(t *testing.T, node *multiProtoNode, proto
 		"--destination", destination+"-encrypted",
 		"--compression", "zstd",
 		"--encryption", "aes256",
-		"--encryption-key", "a-32-byte-test-encryption-key!!",
+		"--encryption-key-file", writeIntegrationKeyFile(t, 0x01),
 	)
 	if err != nil {
 		t.Fatalf("[%s] backup create (compressed+encrypted): %v\noutput: %s", proto.name, err, out)

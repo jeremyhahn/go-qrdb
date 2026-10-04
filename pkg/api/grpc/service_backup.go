@@ -34,18 +34,19 @@ func backupInfoToProto(b *service.BackupInfo) *pb.BackupInfo {
 		return nil
 	}
 	return &pb.BackupInfo{
-		Id:           b.ID,
-		TimestampNs:  b.Timestamp.UnixNano(),
-		Size:         b.Size,
-		ShardCount:   int32(b.ShardCount),
-		Status:       string(b.Status),
-		Checksum:     b.Checksum,
-		Destination:  b.Destination,
-		Compression:  string(b.Compression),
-		Encryption:   string(b.Encryption),
-		Metadata:     b.Metadata,
-		DurationNs:   int64(b.Duration),
-		ErrorMessage: b.ErrorMessage,
+		Id:            b.ID,
+		TimestampNs:   b.Timestamp.UnixNano(),
+		Size:          b.Size,
+		ShardCount:    int32(b.ShardCount),
+		Status:        string(b.Status),
+		Checksum:      b.Checksum,
+		Destination:   b.Destination,
+		Compression:   string(b.Compression),
+		Encryption:    string(b.Encryption),
+		Metadata:      b.Metadata,
+		DurationNs:    int64(b.Duration),
+		ErrorMessage:  b.ErrorMessage,
+		KeyProviderId: b.KeyProviderID,
 	}
 }
 
@@ -71,7 +72,8 @@ func (s *qrdbServiceServer) BackupCreate(ctx context.Context, req *pb.BackupCrea
 		Destination:   req.GetDestination(),
 		Compression:   service.CompressionType(req.GetCompression()),
 		Encryption:    service.EncryptionType(req.GetEncryption()),
-		EncryptionKey: req.GetEncryptionKey(),
+		KeyProviderID: req.GetKeyProviderId(),
+		KeyRef:        req.GetKeyRef(),
 		Metadata:      req.GetMetadata(),
 		ShardIDs:      req.GetShardIds(),
 	})
@@ -126,10 +128,10 @@ func (s *qrdbServiceServer) BackupRestore(ctx context.Context, req *pb.BackupRes
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	result, err := s.backupSvc.RestoreBackup(ctx, service.RestoreOptions{
-		BackupID:      req.GetBackupId(),
-		TargetShards:  req.GetTargetShards(),
-		ValidateFirst: req.GetValidateFirst(),
-		DecryptionKey: req.GetDecryptionKey(),
+		BackupID:         req.GetBackupId(),
+		TargetShards:     req.GetTargetShards(),
+		ValidateFirst:    req.GetValidateFirst(),
+		DecryptionKeyRef: req.GetDecryptionKeyRef(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)

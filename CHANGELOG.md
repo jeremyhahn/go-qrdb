@@ -1527,27 +1527,50 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
 
 ### Security
 
-- **BREAKING: backups are encrypted (`aes256`) by default, on every
-  surface.** `BackupOptions.Encryption`/`BackupRequest.Encryption` left empty
-  no longer means plaintext: it now defaults to AES-256-GCM and then
-  requires an encryption key (or a server-side KMS key reference, where the
-  deployment provides one), refusing with a new typed error,
-  `BackupEncryptionRequiredError` (`InvalidArgument`), when neither is
-  supplied. Plaintext is now reachable only by naming `Encryption: "none"`
-  explicitly, which is logged at WARN and, where a compliance audit logger
-  is configured (`BackupService.WithAuditLogger`/`SetAuditLogger`), recorded
-  in the audit trail. **Any script or CI job that relied on the old
-  plaintext default must now pass an encryption key or
-  `--encryption none`** (CLI), or the equivalent explicit field on the REST,
-  gRPC, QUIC, MCP, Unix and embedded transports, the Go and TypeScript SDKs,
-  and the desktop/web Backup Manager. The CLI's `--encryption` flag now
-  defaults to unset (not `none`) and passes that through so the server's
-  default applies; an explicit `--encryption none` prints a warning naming
-  the destination. The desktop/web UI's encryption selector defaulted to
-  `"none"` and used the wrong wire value (`"aes256gcm"` instead of the
-  server's `"aes256"`) -- both are fixed, and the UI now always sends the
-  field explicitly rather than omitting it on a plaintext choice, with an
-  inline warning when plaintext is selected.
+- **BREAKING: backups are genuinely encrypted (`aes256`) by default, on
+  every surface, through a new KEK-provider seam (`pkg/keywrap`).**
+  `BackupOptions.Encryption`/`BackupRequest.Encryption` left empty no
+  longer means plaintext: it now defaults to AES-256-GCM and then requires
+  a key reference (`BackupOptions.KeyRef` / `key_ref` on the wire),
+  refusing with a new typed error, `BackupEncryptionRequiredError`
+  (`InvalidArgument`), when neither is supplied. Plaintext is now reachable
+  only by naming `Encryption: "none"` explicitly, which is logged at WARN
+  and, where a compliance audit logger is configured
+  (`BackupService.WithAuditLogger`/`SetAuditLogger`), recorded in the audit
+  trail. Each backup now mints a fresh per-backup data-encrypting key
+  (DEK), encrypts every shard under it with AES-256-GCM (AAD binds a shard
+  to its own backup), and wraps the DEK under a key-encrypting key (KEK)
+  resolved through `keywrap.Provider` — qrdb ships a `"software"` provider
+  (a 32-byte key file); go-xkms registers hardware or cloud-KMS providers
+  via `WithKeyWrapRegistry`/`WithKeyWrapProvider`. The wrapped DEK, key
+  reference, and provider ID are persisted in the backup's own envelope
+  (`BackupInfo.KeyProviderID` is the only piece exposed on the wire);
+  restore resolves and unwraps it automatically, needing no key material
+  supplied at all in the common case. A wrong key, an unregistered
+  provider, or tampered ciphertext all refuse with the same typed
+  `BackupDecryptionFailedError` (`InvalidArgument`), deliberately not
+  distinguished from each other.
+  **BREAKING: the inline raw-key path is retired, not merely
+  deprecated — `BackupOptions.EncryptionKey`/`RestoreOptions.DecryptionKey`
+  (Go SDK), `encryption_key`/`decryption_key` (REST/gRPC/QUIC/MCP wire
+  fields), and the CLI's `--encryption-key`/`--decryption-key` flags are
+  all removed.** Every key is now referenced through a provider —
+  `BackupOptions.KeyRef`/`RestoreOptions.DecryptionKeyRef`, `key_ref`/
+  `decryption_key_ref` on the wire, `--encryption-key-file`/
+  `--decryption-key-file` on the CLI — never passed as bytes over the wire
+  or in a flag value. **Any script or CI job that relied on the old
+  plaintext default, or on `--encryption-key`, must now pass
+  `--encryption-key-file <path>` or `--encryption none`** (CLI), or the
+  equivalent field on the REST, gRPC, QUIC, MCP, Unix and embedded
+  transports, the Go and TypeScript SDKs, and the desktop/web Backup
+  Manager. The desktop/web UI's encryption selector defaulted to `"none"`
+  and used the wrong wire value (`"aes256gcm"` instead of the server's
+  `"aes256"`) -- both are fixed, and the UI now always sends the field
+  explicitly rather than omitting it on a plaintext choice, with an inline
+  warning when plaintext is selected; its key field is now a key-file-path
+  reference, not a secret-bytes input. See
+  [docs/key-wrapping/](docs/key-wrapping/architecture.md) and
+  [docs/backup-restore/](docs/backup-restore/architecture.md).
 
 ## [0.41.0-alpha] - 2026-10-04
 

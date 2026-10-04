@@ -16,6 +16,8 @@ package backupsink_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -129,6 +131,56 @@ func TestBackupSink_DurableRoundTrip(t *testing.T) {
 	_, err = restarted.GetBackup(ctx, "backup-123")
 	var nf *service.BackupNotFoundError
 	assert.ErrorAs(t, err, &nf)
+}
+
+// TestBackupSink_EncryptedBackup_DurableRoundTrip proves an encrypted
+// backup's envelope (wrapped DEK, key reference, provider ID) persists to
+// the object store alongside its ciphertext shard data and metadata, and
+// that a "restarted" service (fresh in-memory registry, same sink)
+// resolves it correctly on restore -- the sink-backed counterpart of
+// pkg/service's own in-memory envelope tests.
+func TestBackupSink_EncryptedBackup_DurableRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	sink := newMemSink(t)
+
+	keyPath := filepath.Join(t.TempDir(), "backup.key")
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	require.NoError(t, os.WriteFile(keyPath, key, 0o600))
+
+	shards := map[uint64][]byte{1: []byte("shard-one"), 2: []byte("shard-two")}
+	provider := newFakeProvider(shards)
+
+	svc := service.NewBackupService(provider,
+		service.WithBackupSink(sink),
+		service.WithIDGenerator(func() string { return "backup-enc-1" }),
+	)
+
+	info, err := svc.CreateBackup(ctx, service.BackupOptions{Destination: "objstore://repo", KeyRef: keyPath})
+	require.NoError(t, err)
+	require.Equal(t, service.EncryptionAES256, info.Encryption)
+	require.Equal(t, "software", info.KeyProviderID)
+
+	// The envelope persisted to the sink is readable directly.
+	envelope, err := sink.ReadEnvelope(ctx, "backup-enc-1")
+	require.NoError(t, err)
+	require.NotNil(t, envelope)
+	assert.Equal(t, "software", envelope.ProviderID)
+	assert.Equal(t, keyPath, envelope.KeyRef)
+	assert.NotEmpty(t, envelope.WrappedDEK)
+
+	// Simulate a process restart: a brand-new service, same sink.
+	freshProvider := newFakeProvider(map[uint64][]byte{})
+	restarted := service.NewBackupService(freshProvider, service.WithBackupSink(sink))
+
+	rr, err := restarted.RestoreBackup(ctx, service.RestoreOptions{BackupID: "backup-enc-1"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, rr.ShardsRestored)
+	assert.Empty(t, rr.Errors)
+	assert.Equal(t, []byte("shard-one"), freshProvider.restored[1])
+	assert.Equal(t, []byte("shard-two"), freshProvider.restored[2])
 }
 
 // TestBackupSink_GetMissing verifies a missing backup reports not-found.

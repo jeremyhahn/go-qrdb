@@ -29,17 +29,19 @@ Selective at both ends: back up specific shards, restore specific shards.
   under load, not portable across topologies, and it captures nothing about
   which shards it holds.
 - **A silently-minted encryption key.** Rejected: a caller that asks for the
-  default (leaves `Encryption` unset) and supplies no key is refused outright
-  (`BackupEncryptionRequiredError`), naming both ways out -- supply a key (or
-  a KMS key reference, where the deployment provides one), or choose `none`
+  default (leaves `Encryption` unset) and supplies no key reference is
+  refused outright (`BackupEncryptionRequiredError`), naming both ways out --
+  supply a `KeyRef` (a key-file path for the built-in provider, or a
+  hardware/cloud-KMS reference a go-xkms-registered provider resolves; see
+  [../key-wrapping/](../key-wrapping/architecture.md)), or choose `none`
   explicitly. This package never invents key material on a caller's behalf.
 - **Plaintext as the default.** Rejected: `aes256` is the default encryption
   algorithm on every backup surface (all transports, both SDKs, the CLI, the
   desktop and web UI). A caller that wants plaintext must set `Encryption` to
   `none` outright; that choice is logged at WARN and, where a compliance audit
   logger is configured, recorded in the audit trail. Restoring an encrypted
-  backup without a key is refused the same way it always was. There is no path
-  that silently writes or reads plaintext.
+  backup resolves its key reference automatically from the backup's own
+  envelope; there is no path that silently writes or reads plaintext.
 - **Verification folded into restore.** Rejected as mandatory: verification is a
   separate operation you can run on a schedule, and `ValidateFirst` makes it
   optional-but-available on restore. A backup you have never verified is a

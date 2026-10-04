@@ -1337,7 +1337,7 @@ type stubBackupSink struct {
 	listOut   []service.BackupInfo
 }
 
-func (s *stubBackupSink) Write(_ context.Context, _ service.BackupInfo, _ map[uint64][]byte) error {
+func (s *stubBackupSink) Write(_ context.Context, _ service.BackupInfo, _ map[uint64][]byte, _ *service.BackupEnvelope) error {
 	return nil
 }
 
@@ -1347,6 +1347,10 @@ func (s *stubBackupSink) ReadInfo(_ context.Context, id string) (*service.Backup
 
 func (s *stubBackupSink) ReadShards(_ context.Context, id string) (map[uint64][]byte, error) {
 	return nil, &service.BackupNotFoundError{ID: id}
+}
+
+func (s *stubBackupSink) ReadEnvelope(_ context.Context, id string) (*service.BackupEnvelope, error) {
+	return nil, nil
 }
 
 func (s *stubBackupSink) List(_ context.Context) ([]service.BackupInfo, error) {

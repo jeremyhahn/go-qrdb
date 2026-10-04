@@ -46,13 +46,16 @@
   // the default to match the server's own default, matching the server
   // refusing a request that names neither a key nor an explicit "none".
   let newEncryption = $state<"aes256" | "none">("aes256");
-  let newEncryptionKey: string = $state("");
+  // keyRef names the key-wrap provider's reference -- a key-file path on
+  // the SERVER's own node for the built-in "software" provider, never raw
+  // key bytes: there is no inline-key field on this surface any more.
+  let newKeyRef: string = $state("");
 
   // Restore form
   let showRestoreModal: boolean = $state(false);
   let restoreLoading: boolean = $state(false);
   let restoreValidateFirst: boolean = $state(true);
-  let restoreDecryptionKey: string = $state("");
+  let restoreDecryptionKeyRef: string = $state("");
 
   // Delete confirmation
   let showDeleteConfirm: boolean = $state(false);
@@ -89,7 +92,7 @@
     newDestination = "";
     newCompression = "zstd";
     newEncryption = "aes256";
-    newEncryptionKey = "";
+    newKeyRef = "";
   }
 
   // ---------------------------------------------------------------------------
@@ -125,7 +128,7 @@
         // plaintext. The server independently logs and audits an explicit
         // "none".
         encryption: newEncryption,
-        ...(newEncryptionKey.trim() !== "" ? { encryptionKey: newEncryptionKey.trim() } : {}),
+        ...(newKeyRef.trim() !== "" ? { keyRef: newKeyRef.trim() } : {}),
       });
       showToast("success", `Backup "${info.id}" created (${info.status}).`);
       if (newEncryption === "none") {
@@ -166,7 +169,7 @@
       const result = await client.backups.restore({
         backupId: selectedBackup.id,
         validateFirst: restoreValidateFirst,
-        ...(restoreDecryptionKey.trim() !== "" ? { decryptionKey: restoreDecryptionKey.trim() } : {}),
+        ...(restoreDecryptionKeyRef.trim() !== "" ? { decryptionKeyRef: restoreDecryptionKeyRef.trim() } : {}),
       });
       const errorCount = (result.errors ?? []).length;
       showToast(
@@ -174,7 +177,7 @@
         `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.duration}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
       );
       showRestoreModal = false;
-      restoreDecryptionKey = "";
+      restoreDecryptionKeyRef = "";
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -330,13 +333,18 @@
       </label>
       {#if newEncryption !== "none"}
         <label class="form-control w-full">
-          <div class="label"><span class="label-text">Encryption Key (base64)</span></div>
+          <div class="label"><span class="label-text">Key File Path</span></div>
           <input
             type="text"
             class="input input-bordered w-full font-mono text-xs"
-            placeholder="base64-encoded key material"
-            bind:value={newEncryptionKey}
+            placeholder="/etc/qrdb/backup.key"
+            bind:value={newKeyRef}
           />
+          <div class="label">
+            <span class="label-text-alt">
+              A path on the server's own node, resolved by the key-wrap provider -- not a secret value typed here.
+            </span>
+          </div>
         </label>
       {:else}
         <div class="alert alert-warning py-2 text-xs">
@@ -373,12 +381,12 @@
         <span class="label-text">Validate backup integrity before restoring</span>
       </label>
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Decryption Key (base64, if encrypted)</span></div>
+        <div class="label"><span class="label-text">Key File Path Override (optional)</span></div>
         <input
           type="text"
           class="input input-bordered w-full font-mono text-xs"
-          placeholder="base64-encoded key material"
-          bind:value={restoreDecryptionKey}
+          placeholder="Leave blank to use the backup's own stored key reference"
+          bind:value={restoreDecryptionKeyRef}
         />
       </label>
     </div>

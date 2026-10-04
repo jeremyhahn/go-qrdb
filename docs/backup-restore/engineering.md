@@ -38,34 +38,36 @@ const (
 )
 
 type BackupRequest struct {
-	Destination   string            `json:"destination"`              // required
+	Destination   string            `json:"destination"`                 // required
 	Compression   CompressionType   `json:"compression,omitempty"`
-	Encryption    EncryptionType    `json:"encryption,omitempty"`     // empty defaults to aes256 server-side, NOT none
-	EncryptionKey []byte            `json:"encryption_key,omitempty"` // required unless Encryption is explicitly none
+	Encryption    EncryptionType    `json:"encryption,omitempty"`        // empty defaults to aes256 server-side, NOT none
+	KeyProviderID string            `json:"key_provider_id,omitempty"`   // the keywrap.Provider to wrap this backup's DEK with; defaults to "software" when KeyRef is set
+	KeyRef        string            `json:"key_ref,omitempty"`          // the key reference the named provider resolves; required unless Encryption is explicitly none -- see ../key-wrapping/
 	Metadata      map[string]string `json:"metadata,omitempty"`
-	ShardIDs      []uint64          `json:"shard_ids,omitempty"`      // empty = all shards
+	ShardIDs      []uint64          `json:"shard_ids,omitempty"`         // empty = all shards
 }
 
 type BackupInfo struct {
-	ID           string            `json:"id"`
-	Timestamp    time.Time         `json:"timestamp"`
-	Size         int64             `json:"size"`
-	ShardCount   int               `json:"shard_count"`
-	Status       BackupStatus      `json:"status"`
-	Checksum     string            `json:"checksum"`
-	Destination  string            `json:"destination"`
-	Compression  CompressionType   `json:"compression"`
-	Encryption   EncryptionType    `json:"encryption"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	Duration     time.Duration     `json:"duration,omitempty"`
-	ErrorMessage string            `json:"error_message,omitempty"`
+	ID            string            `json:"id"`
+	Timestamp     time.Time         `json:"timestamp"`
+	Size          int64             `json:"size"`
+	ShardCount    int               `json:"shard_count"`
+	Status        BackupStatus      `json:"status"`
+	Checksum      string            `json:"checksum"`
+	Destination   string            `json:"destination"`
+	Compression   CompressionType   `json:"compression"`
+	Encryption    EncryptionType    `json:"encryption"`
+	KeyProviderID string            `json:"key_provider_id,omitempty"` // empty for a "none" backup -- see ../key-wrapping/
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	Duration      time.Duration     `json:"duration,omitempty"`
+	ErrorMessage  string            `json:"error_message,omitempty"`
 }
 
 type RestoreRequest struct {
-	BackupID      string   `json:"backup_id"`                // required
-	TargetShards  []uint64 `json:"target_shards,omitempty"`  // empty = all
-	ValidateFirst bool     `json:"validate_first,omitempty"`
-	DecryptionKey []byte   `json:"decryption_key,omitempty"` // required for encrypted backups
+	BackupID         string   `json:"backup_id"`                   // required
+	TargetShards     []uint64 `json:"target_shards,omitempty"`     // empty = all
+	ValidateFirst    bool     `json:"validate_first,omitempty"`
+	DecryptionKeyRef string   `json:"decryption_key_ref,omitempty"` // overrides the key reference stored in the backup's own envelope; usually left empty -- see ../key-wrapping/
 }
 
 type RestoreResult struct {
@@ -101,12 +103,20 @@ type VerifyResult struct {
   reachable only by setting `Encryption` to `EncryptionNone` explicitly, and
   that choice is logged at WARN and, where a compliance audit logger is
   configured, recorded in the audit trail.
-- **Encryption is conditional in both directions, and the condition is
-  enforced in both**: a request with `Encryption` empty or `aes256` and no
-  `EncryptionKey` is refused (`BackupEncryptionRequiredError` when empty,
-  `BackupEncryptionKeyRequiredError` when `aes256` was named explicitly), and
-  restoring an encrypted backup without `DecryptionKey` is refused. No path
-  silently writes or reads plaintext.
+- **Encryption on create is conditional, and the condition is enforced**: a
+  request with `Encryption` empty or `aes256` and no `KeyRef` is refused
+  (`BackupEncryptionRequiredError` when empty, `BackupEncryptionKeyRequiredError`
+  when `aes256` was named explicitly). No path silently writes plaintext.
+  `KeyRef` is a provider-resolved reference (a key-file path for the
+  built-in `"software"` provider), never raw key bytes — see
+  [../key-wrapping/](../key-wrapping/architecture.md) for the full envelope
+  design and the owner ruling that retired the inline-bytes path this
+  document originally shipped with.
+- **Restore needs no key material at all, in the common case.** The
+  backup's own envelope records the key reference it was wrapped under, so
+  `RestoreRequest.DecryptionKeyRef` left empty still resolves and decrypts
+  correctly; it exists only to override that stored reference (the key
+  file moved, or restore runs on a different node).
 - **`ValidateFirst` runs verification before touching shard state.** A checksum
   mismatch aborts the restore rather than half-applying it.
 - **Restore reports per-shard errors.** `RestoreResult.Errors` is a
@@ -153,7 +163,7 @@ proves the refusal.
 | `BackupCreateError` | snapshot capture failed | yes |
 | `BackupEmptyIDError` | ID empty on get/delete/verify/restore | yes |
 | `BackupNotFoundError` | no backup with that ID | yes |
-| `BackupDecryptionKeyRequiredError` | encrypted backup, no decryption key | **yes** |
+| `BackupDecryptionFailedError` | an unregistered `KeyProviderID` (create or restore), a bad/wrong key reference, or a tampered shard — see [../key-wrapping/](../key-wrapping/engineering.md) | **yes** |
 | `BackupChecksumMismatchError` | `ValidateFirst` verification failed | **yes** — restore aborts |
 | `BackupRestoreError` | context cancelled, or verification failed | **yes** |
 
@@ -172,9 +182,9 @@ Cloud destinations require the corresponding go-objstore build tag
 (`WITH_AWS_S3`, `WITH_MINIO`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
 `WITH_GLACIER`, `WITH_AZURE_ARCHIVE`).
 
-`EncryptionKey` and `DecryptionKey` are key material and should be resolved
-through the secret-reference SPI rather than passed as literals where the
-deployment allows — see [../credentials/](../credentials/).
+`KeyRef`/`DecryptionKeyRef` name key material by reference (a key-file path
+for the built-in `"software"` keywrap provider); they are never raw key
+bytes — see [../key-wrapping/](../key-wrapping/architecture.md).
 
 ## Persistence
 
@@ -190,9 +200,11 @@ path.
 
 - **Unit**: create with each compression and encryption combination, the
   default-with-no-key refusal, the explicit-encryption-with-no-key refusal,
-  the decryption-key-required refusal, checksum computation and mismatch
-  detection, selective shard capture and restore, per-shard error reporting,
-  and `ListBackups` ordering.
+  the wrong-key-reference and tampered-ciphertext refusals (both
+  `*BackupDecryptionFailedError` — see
+  [../key-wrapping/engineering.md](../key-wrapping/engineering.md)),
+  checksum computation and mismatch detection, selective shard capture and
+  restore, per-shard error reporting, and `ListBackups` ordering.
 - **The encryption-required refusals are security tests.** They are what stop
   a backup being written in plaintext by omission -- the default is
   encrypted, and getting plaintext takes an explicit, visible choice.

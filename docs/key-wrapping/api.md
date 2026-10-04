@@ -22,13 +22,15 @@ the fields this feature adds or changes to that existing schema.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `key_provider_id` | string | the registered `keywrap.Provider` ID to wrap this backup's DEK with. Empty defaults to `"software"` when `key_ref` or `encryption_key` is set. |
-| `key_ref` | string | the key reference the named provider resolves — a key-file path for `"software"`. Mutually exclusive with `encryption_key`. |
-| `encryption_key` | bytes (base64 on the wire) | **kept, unchanged on the wire**: 32 raw KEK bytes used directly through an inline, unregistered software provider. Mutually exclusive with `key_ref`. |
+| `key_provider_id` | string | the registered `keywrap.Provider` ID to wrap this backup's DEK with. Empty defaults to `"software"` when `key_ref` is set. |
+| `key_ref` | string | the key reference the named provider resolves — a key-file path for `"software"`. |
 
-Exactly one of `key_ref` / `encryption_key` may be set when `encryption` is
-`"aes256"` (or defaulted to it); both set, or `key_ref` naming an
-unregistered `key_provider_id`, is refused before any shard is captured.
+**`encryption_key` is retired** (owner ruling — see
+[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired)):
+the field, and the raw-bytes-over-the-wire path it carried, no longer exist
+on this message. `key_ref` is required when `encryption` is `"aes256"` (or
+defaulted to it); `key_ref` naming an unregistered `key_provider_id` is
+refused before any shard is captured.
 
 ## Response — `BackupInfo`, new field
 
@@ -52,14 +54,15 @@ DEK, the envelope's nonce, or the format version is surfaced here — see
 { "backup_id": "bkp-20261004-0300",
   "target_shards": [1, 2],
   "validate_first": true,
-  "decryption_key_ref": "/etc/qrdb/backup.key",
-  "decryption_key": "<base64, kept>" }
+  "decryption_key_ref": "/etc/qrdb/backup.key" }
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
-| `decryption_key_ref` | string | the key reference to resolve through the backup's own stored `key_provider_id`. Mirrors `key_ref` on create. |
-| `decryption_key` | bytes (base64 on the wire) | **kept, unchanged on the wire**: the inline path's counterpart. |
+| `decryption_key_ref` | string | overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node). Left empty, the stored reference is used — restore needs no key material supplied at all in the common case. Mirrors `key_ref` on create. |
+
+**`decryption_key` is retired** alongside `encryption_key` — see
+[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired).
 
 The provider actually used to `Unwrap` is whichever `key_provider_id` the
 backup itself was created under — a restore request does not choose a
@@ -77,9 +80,8 @@ the matrix in [backup-restore/api.md](../backup-restore/api.md#capability-matrix
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Both `key_ref` and `encryption_key` set | 400 | `INVALID_ARGUMENT` |
-| `key_provider_id` names an unregistered provider | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
-| Wrong key (file or inline) on restore | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
+| `key_provider_id` names an unregistered provider (create or restore) | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
+| Wrong key file on restore (an explicit `decryption_key_ref` override, or the stored reference, that does not match) | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
 | Tampered shard ciphertext on restore | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
 
 These join, not replace, the existing mapping table in

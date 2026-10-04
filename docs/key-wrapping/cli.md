@@ -10,48 +10,50 @@ document covers only the flags this feature adds or changes; every other
 
 ## `qrdb backup create` — new and changed flags
 
+**`--encryption-key` is retired** (owner ruling — see
+[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired)):
+there is no flag that takes key bytes directly any more.
+
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--encryption-key-file` | string | — | path to a 32-byte key file for the `"software"` key-wrap provider; `-` reads the key from stdin instead |
-| `--encryption-key` | string | — | **kept, with a warning**: the 32-byte key as a flag value directly (base64) |
-| `--key-provider` | string | `software` when a key is supplied | the registered `keywrap.Provider` ID to wrap this backup's DEK with |
+| `--encryption-key-file` | string | — | the key reference the key-wrap provider resolves on the SERVER's own node — a 32-byte key-file path for the `"software"` provider |
+| `--key-provider` | string | `software` when a key reference is supplied | the registered `keywrap.Provider` ID to wrap this backup's DEK with |
 
-`--encryption-key-file` and `--encryption-key` are mutually exclusive;
-supplying both is refused the same way `--encryption` and no key at all is
-refused. `--key-provider` is meaningful only alongside `--encryption-key-file`
-(or a future provider-specific reference flag go-xkms's own CLI extension
-adds) — `--encryption-key`'s inline path always uses the built-in software
-provider and ignores `--key-provider` if given.
+`--encryption-key-file` names a path on the node running the backup
+service, not the CLI operator's own machine — the CLI never opens it, it
+only forwards the string. This is also why there is no `-` (stdin) form: an
+earlier draft of this feature read a key's bytes from stdin and sent them
+inline, which is exactly the path the owner ruling retired.
 
 ```bash
-# The documented way: a key file the operator controls the permissions of.
 qrdb backup create --destination /backups/daily \
      --encryption-key-file /etc/qrdb/backup.key
 
-# Equivalent, reading the key from stdin instead of a file on disk.
-cat /etc/qrdb/backup.key | qrdb backup create --destination /backups/daily \
-     --encryption-key-file -
-
-# Kept, with a warning printed to stderr naming the exposure:
-#   "Warning: --encryption-key is visible in `ps` and shell history for the
-#   life of this process; prefer --encryption-key-file."
+# A non-default provider (go-xkms-registered hardware or cloud KMS):
 qrdb backup create --destination /backups/daily \
-     --encryption-key "$(base64 -w0 /etc/qrdb/backup.key)"
+     --key-provider aws-kms --encryption-key-file arn:aws:kms:...
 ```
 
-**`--encryption-key-file` is the documented way.** The file's contents never
-appear in a flag value, an environment variable, or a process listing; only
-its path does. See
+**`--encryption-key-file` is the only way.** The key file's contents never
+appear in a flag value, an environment variable, or a process listing on
+either the CLI operator's machine or the wire; only its path does, and that
+path never leaves the server. See
 [architecture.md's Key hygiene section](architecture.md#key-hygiene-the-key-never-rides-in-a-flag-value).
 
 ## `qrdb backup restore` — new flags
 
+**`--decryption-key` is retired** alongside `--encryption-key`.
+
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--decryption-key-file` | string | — | path to the SAME 32-byte key file used at create time; `-` for stdin |
-| `--decryption-key` | string | — | **kept, with the same warning** as `--encryption-key` |
+| `--decryption-key-file` | string | — | overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used |
 
 ```bash
+# The common case: no key flag at all -- the envelope's own stored
+# reference resolves automatically.
+qrdb backup restore --id bkp-20261004-0300 --validate
+
+# Only needed when the key file has moved, or restore runs elsewhere.
 qrdb backup restore --id bkp-20261004-0300 \
      --decryption-key-file /etc/qrdb/backup.key --validate
 ```

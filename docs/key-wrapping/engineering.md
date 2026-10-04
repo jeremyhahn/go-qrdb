@@ -55,9 +55,8 @@ type BackupOptions struct {
 	Destination   string
 	Compression   CompressionType
 	Encryption    EncryptionType
-	KeyProviderID string // defaults to "software" when EncryptionKey or KeyRef is set
-	KeyRef        string // mutually exclusive with EncryptionKey
-	EncryptionKey []byte // mutually exclusive with KeyRef; inline 32-byte KEK
+	KeyProviderID string // defaults to "software" when KeyRef is set
+	KeyRef        string // required when Encryption resolves to "aes256"
 	Metadata      map[string]string
 	ShardIDs      []uint64
 }
@@ -67,9 +66,25 @@ type BackupInfo struct {
 	KeyProviderID string // empty for "none" backups
 }
 
+type RestoreOptions struct {
+	// ... existing fields unchanged ...
+
+	// DecryptionKeyRef overrides the key reference stored in the backup's
+	// own envelope. Left empty, the stored reference is used -- restore
+	// needs no key material supplied at all in the common case.
+	DecryptionKeyRef string
+}
+
 func WithKeyWrapRegistry(r keywrap.Registry) BackupServiceOption
 func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption
 ```
+
+**`EncryptionKey`/`DecryptionKey` (raw KEK bytes) are retired, not merely
+deprecated** — owner ruling, see
+[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired).
+There is no inline-bytes path on `BackupOptions` or `RestoreOptions`; `KeyRef`
+is the only way to name a key, and it is always a provider-resolved
+reference (a key-file path for `"software"`), never raw bytes.
 
 ## Invariants
 
@@ -106,16 +121,27 @@ func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption
 - **A registered provider ID is immutable once registered; `Register`
   refuses a duplicate.** Matches `seal.StrategyRegistry`'s own rule — a
   caller wanting replacement semantics must `Unregister` first.
-- **`EncryptionKey` and `KeyRef` are mutually exclusive.** Supplying both
-  is refused (`*BackupInvalidEncryptionError`-shaped: a malformed request,
-  not a missing-key one) before any shard is touched.
-- **Restoring an unknown `KeyProviderID` is refused, not silently treated
-  as unencrypted.** `*ProviderNotRegisteredError` (keywrap) surfaces as
-  `*BackupDecryptionFailedError` (service) — the backup names a provider
-  this node does not have registered, which is an environment/deployment
-  problem, not a wrong-key one, but gets the same fail-closed typed
-  refusal rather than a different one that would let a caller distinguish
-  "provider missing" from "key wrong" and narrow a guess between them.
+- **`KeyRef` empty on an `"aes256"` (defaulted or explicit) create request
+  is refused.** `*BackupEncryptionRequiredError` when the default applied,
+  `*BackupEncryptionKeyRequiredError` when `"aes256"` was named explicitly
+  — the same two-error split `backup-restore/engineering.md` already
+  documents, now keyed off `KeyRef` instead of a raw key byte slice.
+- **An unregistered `KeyProviderID` is refused, not silently treated as
+  unencrypted, at EITHER create or restore time.**
+  `*ProviderNotRegisteredError` (keywrap) surfaces as
+  `*BackupDecryptionFailedError` (service) in both directions — at create,
+  a `KeyProviderID` naming a provider this node does not have registered
+  is a configuration mistake caught before any shard is captured; at
+  restore, it means a provider the backup was created under is no longer
+  registered on this node, an environment/deployment problem rather than a
+  wrong-key one, but given the same fail-closed typed refusal rather than
+  a distinguishable one that would let a caller narrow a guess between
+  "provider missing" and "key wrong".
+- **Restore needs no key material supplied at all, in the common case.**
+  The backup's own envelope stores the `KeyRef` it was wrapped under, so
+  `RestoreOptions.DecryptionKeyRef` left empty still resolves and unwraps
+  correctly — only an override (the key file moved, or restore runs on a
+  different node) needs to name anything.
 
 ## Error semantics
 
@@ -132,12 +158,15 @@ func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption
 
 | Error type | Condition | Fails closed? |
 |---|---|---|
-| `BackupDecryptionFailedError` | `Unwrap` failed, or a shard/artifact's GCM `Open` failed, during restore | **yes** |
+| `BackupDecryptionFailedError` | An unregistered `KeyProviderID` (create or restore), a `Wrap`/`Unwrap` failure (bad key reference, wrong KEK, or a tampered wrapped DEK), or a shard's own GCM `Open` failure during restore | **yes** |
 
-Both `UnwrapFailedError` and `BackupDecryptionFailedError` map to
-`InvalidArgument` on every transport (`pkg/api/errclass`), the same class
-`BackupDecryptionKeyRequiredError` already uses — a caller-supplied
-credential that does not work, not a server-side failure.
+`BackupDecryptionFailedError` retires `BackupDecryptionKeyRequiredError`:
+restore no longer requires the caller to supply anything (the envelope's
+own stored `KeyRef` resolves it), so there is nothing left for a
+"decryption key required" refusal to fire on. Both `UnwrapFailedError` and
+`BackupDecryptionFailedError` map to `InvalidArgument` on every transport
+(`pkg/api/errclass`) — a caller-supplied credential or reference that does
+not work, not a server-side failure.
 
 ## Test strategy
 

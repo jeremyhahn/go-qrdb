@@ -3080,15 +3080,24 @@ export interface BackupRequest {
     readonly compression?: string;
     /**
      * Encryption algorithm to apply: "aes256" or "none". Left unset, the
-     * server defaults to "aes256" and then requires `encryptionKey` (or a
-     * server-side KMS key reference, where the deployment provides one);
-     * it never defaults to plaintext. Set explicitly to "none" to write
-     * the backup unencrypted -- the server logs that choice and, where a
-     * compliance audit logger is configured, records it.
+     * server defaults to "aes256" and then requires `keyRef`; it never
+     * defaults to plaintext. Set explicitly to "none" to write the backup
+     * unencrypted -- the server logs that choice and, where a compliance
+     * audit logger is configured, records it.
      */
     readonly encryption?: string;
-    /** Encryption key material (base64-encoded). Required unless encryption is explicitly "none". */
-    readonly encryptionKey?: string;
+    /**
+     * The registered key-wrap provider to wrap this backup's DEK with.
+     * Defaults to "software" when `keyRef` is set and this is left unset.
+     */
+    readonly keyProviderId?: string;
+    /**
+     * The key reference the named provider resolves -- a key-file path on
+     * the SERVER's own node for the built-in "software" provider. Required
+     * unless encryption is explicitly "none". There is no inline raw-key
+     * field: a key's bytes never travel over the wire.
+     */
+    readonly keyRef?: string;
     /** Arbitrary metadata to embed in the backup manifest. */
     readonly metadata?: Record<string, string>;
     /** Specific shard IDs to include; omit to back up all shards. */
@@ -3115,6 +3124,8 @@ export interface BackupInfo {
     readonly compression: string;
     /** Encryption algorithm used. */
     readonly encryption: string;
+    /** The key-wrap provider that wrapped this backup's DEK. Empty for a "none" backup. */
+    readonly keyProviderId?: string;
     /** Metadata embedded in the backup manifest. */
     readonly metadata: Record<string, string>;
     /** Human-readable backup duration. */
@@ -3131,8 +3142,13 @@ export interface RestoreRequest {
     readonly targetShards?: number[];
     /** When true, verify the backup integrity before restoring. */
     readonly validateFirst?: boolean;
-    /** Decryption key material (base64-encoded) when the backup is encrypted. */
-    readonly decryptionKey?: string;
+    /**
+     * Overrides the key reference stored in the backup's own envelope (e.g.
+     * the key file moved, or restore runs on a different node). Left unset,
+     * the stored reference is used -- restore needs no key material
+     * supplied at all in the common case.
+     */
+    readonly decryptionKeyRef?: string;
 }
 
 /** Result of a restore operation. */

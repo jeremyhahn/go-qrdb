@@ -19,17 +19,18 @@ This is disaster recovery. For undoing a handful of keys, use
 ## Encryption is the default
 
 **Backups are encrypted (`aes256`) unless you say otherwise.** Leave
-`--encryption` off and supply `--encryption-key` (or rely on a server-side KMS
-key reference, where the deployment provides one) to keep the default. Want
-plaintext? Say so outright with `--encryption none` — that choice is logged
-and, where a compliance audit trail is configured, recorded. There is no
-silent fallback either way: omitting both the key and `--encryption none`
-is refused.
+`--encryption` off and supply `--encryption-key-file` (a path to a 32-byte
+key file — see [../key-wrapping/user.md](../key-wrapping/user.md) for the
+full key-management story) to keep the default. Want plaintext? Say so
+outright with `--encryption none` — that choice is logged and, where a
+compliance audit trail is configured, recorded. There is no silent fallback
+either way: omitting both the key file and `--encryption none` is refused.
 
 ## First run
 
 ```bash
-qrdb backup create --destination /backups/daily --encryption-key "$BACKUP_KEY"
+openssl rand -out /etc/qrdb/backup.key 32 && chmod 600 /etc/qrdb/backup.key
+qrdb backup create --destination /backups/daily --encryption-key-file /etc/qrdb/backup.key
 qrdb backup list
 ```
 
@@ -42,14 +43,15 @@ the box.
 
 ```bash
 qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption-key "$BACKUP_KEY"
+     --compression zstd --encryption-key-file /etc/qrdb/backup.key
 ```
 
 `--encryption aes256` is implied here; naming it is optional as long as a key
-is supplied.
+reference is supplied.
 
-Keep `$BACKUP_KEY` somewhere you will still have it when the machine you are
-backing up is gone. A backup you cannot decrypt is not a backup.
+Keep `/etc/qrdb/backup.key` somewhere you will still have it when the
+machine you are backing up is gone. A backup you cannot decrypt is not a
+backup.
 
 **Verify on a schedule, not only when you need it.**
 
@@ -75,11 +77,19 @@ aborts instead of half-applying.
 qrdb backup restore --id bkp-20260819-0300 --shards 1,2 --validate
 ```
 
-**Restore an encrypted backup.**
+**Restore an encrypted backup.** No key flag needed — qrdb remembers which
+key file a backup was wrapped under and resolves it automatically.
+
+```bash
+qrdb backup restore --id bkp-20260819-0300 --validate
+```
+
+Supply `--decryption-key-file` only to OVERRIDE the stored reference (the
+key file moved, or you're restoring on a different machine):
 
 ```bash
 qrdb backup restore --id bkp-20260819-0300 \
-     --decryption-key "$BACKUP_KEY" --validate
+     --decryption-key-file /etc/qrdb/backup.key --validate
 ```
 
 **Write a backup in plaintext, deliberately.** Only when you have a specific
@@ -107,19 +117,22 @@ job, same as creating them.
 ## Troubleshooting
 
 **"backups are encrypted by default".** You left `--encryption` unset (or
-named `aes256` explicitly) and supplied no `--encryption-key`. The default is
-encrypted, not plaintext, so this is refused rather than minting a key you
-don't have or falling back to plaintext you didn't ask for. Supply a key, or
-say `--encryption none` if you actually want plaintext.
+named `aes256` explicitly) and supplied no `--encryption-key-file`. The
+default is encrypted, not plaintext, so this is refused rather than minting
+a key you don't have or falling back to plaintext you didn't ask for.
+Supply a key file, or say `--encryption none` if you actually want
+plaintext.
 
 **"encryption key required".** Same refusal, phrased slightly differently in
 older releases that required `--encryption aes256` to be named explicitly.
-Either way, the fix is the same: supply `--encryption-key`, or choose
+Either way, the fix is the same: supply `--encryption-key-file`, or choose
 `--encryption none`.
 
-**"decryption key required".** The backup was encrypted. Without the key it
-cannot be restored — there is no recovery path. This is why the key belongs in
-your key management, not on the machine being backed up.
+**A typed refusal on restore naming the key.** The backup's own stored key
+reference did not resolve (the key file is gone, or you overrode it with
+the wrong path via `--decryption-key-file`). There is no recovery path
+without the matching key file — this is why the key file belongs in your
+key management, not only on the machine being backed up.
 
 **Restore aborted with a checksum mismatch.** `--validate` did its job: the
 backup is corrupt or truncated, and nothing was written. Try an older backup.

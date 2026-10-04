@@ -50,7 +50,8 @@ func (t *Transport) CreateBackup(ctx context.Context, req *transport.BackupReque
 		Destination:   req.Destination,
 		Compression:   service.CompressionType(req.Compression),
 		Encryption:    service.EncryptionType(req.Encryption),
-		EncryptionKey: req.EncryptionKey,
+		KeyProviderID: req.KeyProviderID,
+		KeyRef:        req.KeyRef,
 		Metadata:      req.Metadata,
 		ShardIDs:      req.ShardIDs,
 	}
@@ -138,10 +139,10 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 		return nil, &NilServiceError{Service: "BackupServicer"}
 	}
 	opts := service.RestoreOptions{
-		BackupID:      req.BackupID,
-		TargetShards:  req.TargetShards,
-		ValidateFirst: req.ValidateFirst,
-		DecryptionKey: req.DecryptionKey,
+		BackupID:         req.BackupID,
+		TargetShards:     req.TargetShards,
+		ValidateFirst:    req.ValidateFirst,
+		DecryptionKeyRef: req.DecryptionKeyRef,
 	}
 	result, err := t.backupSvc.RestoreBackup(ctx, opts)
 	if err != nil {
@@ -178,18 +179,19 @@ func (t *Transport) VerifyBackup(ctx context.Context, id string) (*transport.Ver
 // transport.BackupInfo.
 func toTransportBackupInfo(info *service.BackupInfo) *transport.BackupInfo {
 	return &transport.BackupInfo{
-		ID:           info.ID,
-		Timestamp:    info.Timestamp,
-		Size:         info.Size,
-		ShardCount:   info.ShardCount,
-		Status:       transport.BackupStatus(info.Status),
-		Checksum:     info.Checksum,
-		Destination:  info.Destination,
-		Compression:  transport.CompressionType(info.Compression),
-		Encryption:   transport.EncryptionType(info.Encryption),
-		Metadata:     info.Metadata,
-		Duration:     info.Duration,
-		ErrorMessage: info.ErrorMessage,
+		ID:            info.ID,
+		Timestamp:     info.Timestamp,
+		Size:          info.Size,
+		ShardCount:    info.ShardCount,
+		Status:        transport.BackupStatus(info.Status),
+		Checksum:      info.Checksum,
+		Destination:   info.Destination,
+		Compression:   transport.CompressionType(info.Compression),
+		Encryption:    transport.EncryptionType(info.Encryption),
+		KeyProviderID: info.KeyProviderID,
+		Metadata:      info.Metadata,
+		Duration:      info.Duration,
+		ErrorMessage:  info.ErrorMessage,
 	}
 }
 
@@ -274,9 +276,9 @@ func translateBackupError(err error) error {
 		return &transport.BackupCreateError{Err: encReq}
 	}
 
-	var dkr *service.BackupDecryptionKeyRequiredError
-	if errors.As(err, &dkr) {
-		return &transport.BackupRestoreError{Err: dkr}
+	var bdf *service.BackupDecryptionFailedError
+	if errors.As(err, &bdf) {
+		return &transport.BackupDecryptionFailedError{BackupID: bdf.BackupID, Err: bdf.Err}
 	}
 
 	var bic *service.BackupInvalidCompressionError

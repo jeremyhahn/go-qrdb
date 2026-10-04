@@ -33,7 +33,8 @@ it is an operation on the cluster, taking a backup as input.
 { "destination": "s3://acme-backups/qrdb",
   "compression": "zstd",
   "encryption": "aes256",
-  "encryption_key": "<base64>",
+  "key_provider_id": "software",
+  "key_ref": "/etc/qrdb/backup.key",
   "metadata": { "schedule": "nightly" },
   "shard_ids": [1, 2, 3] }
 ```
@@ -41,8 +42,12 @@ it is an operation on the cluster, taking a backup as input.
 `destination` is required; a local path or an object-store URI. `shard_ids`
 empty means **all shards**. `encryption` left unset (or empty string on the
 wire) defaults to `aes256` -- it is **not** plaintext by omission. In either
-case (unset or explicitly `aes256`) `encryption_key` is **required**; a
-caller that wants plaintext must send `encryption: "none"` outright.
+case (unset or explicitly `aes256`) `key_ref` is **required**; a caller that
+wants plaintext must send `encryption: "none"` outright. `key_ref` is a
+key-wrap provider reference (a key-file path for the built-in `"software"`
+provider), never raw key bytes — see
+[../key-wrapping/api.md](../key-wrapping/api.md) for the full schema this
+feature adds.
 
 Response — `BackupInfo`:
 
@@ -51,12 +56,14 @@ Response — `BackupInfo`:
   "size": 4823945216, "shard_count": 3, "status": "complete",
   "checksum": "sha256:…", "destination": "s3://acme-backups/qrdb",
   "compression": "zstd", "encryption": "aes256",
+  "key_provider_id": "software",
   "metadata": { "schedule": "nightly" },
   "duration": 184000000000, "error_message": "" }
 ```
 
 `status`: `pending` · `running` · `complete` · `failed` (with `error_message`).
 A failed create is **recorded**, not discarded, so it appears in `list`.
+`key_provider_id` is empty for a `"none"` backup.
 
 `GET /v1/backups/list` returns `BackupInfo` entries **sorted by timestamp
 descending**.
@@ -67,8 +74,15 @@ descending**.
 { "backup_id": "bkp-20260819-0300",
   "target_shards": [1, 2],
   "validate_first": true,
-  "decryption_key": "<base64>" }
+  "decryption_key_ref": "/etc/qrdb/backup.key" }
 ```
+
+`decryption_key_ref` is optional and usually omitted: the backup's own
+envelope records the key reference it was wrapped under, so restore
+resolves and decrypts it with no key material supplied at all in the
+common case. Supply it only to override that stored reference (the key
+file moved, or restore runs on a different node) — see
+[../key-wrapping/api.md](../key-wrapping/api.md).
 
 Response — `RestoreResult`:
 
@@ -103,12 +117,12 @@ into one failure.
 | `none` | plaintext — only by explicit request; logged at WARN and, where a compliance audit logger is configured, recorded |
 
 **BREAKING:** `aes256` became the default; it was previously `none`. A caller
-that relied on the old plaintext default must now send `encryption_key` (or
-configure a server-side KMS key reference), or send `encryption: "none"`
-explicitly to keep writing plaintext. A request that names neither is
-refused with `BackupEncryptionRequiredError` (`INVALID_ARGUMENT`), distinct
-from the pre-existing `BackupEncryptionKeyRequiredError` that fires when
-`aes256` is named explicitly without a key.
+that relied on the old plaintext default must now send `key_ref`, or send
+`encryption: "none"` explicitly to keep writing plaintext. A request that
+names neither is refused with `BackupEncryptionRequiredError`
+(`INVALID_ARGUMENT`), distinct from the pre-existing
+`BackupEncryptionKeyRequiredError` that fires when `aes256` is named
+explicitly without a key reference.
 
 The checksum provides **integrity**; authenticated encryption provides
 **authenticity**. They are different properties, and now both default to on.
@@ -120,9 +134,9 @@ The checksum provides **integrity**; authenticated encryption provides
 | Success | 200 | `OK` |
 | Empty destination / empty ID | 400 | `INVALID_ARGUMENT` |
 | Unsupported compression or encryption type | 400 | `INVALID_ARGUMENT` |
-| Default encryption (unset) and no key | 400 | `INVALID_ARGUMENT` — `BackupEncryptionRequiredError`, **fail closed** |
-| Encryption explicitly requested without a key | 400 | `INVALID_ARGUMENT` — `BackupEncryptionKeyRequiredError`, **fail closed** |
-| Encrypted backup restored without a decryption key | 400 | `INVALID_ARGUMENT` — **fail closed** |
+| Default encryption (unset) and no key reference | 400 | `INVALID_ARGUMENT` — `BackupEncryptionRequiredError`, **fail closed** |
+| Encryption explicitly requested without a key reference | 400 | `INVALID_ARGUMENT` — `BackupEncryptionKeyRequiredError`, **fail closed** |
+| Unregistered `key_provider_id`, wrong key reference, or tampered ciphertext on restore | 400 | `INVALID_ARGUMENT` — `BackupDecryptionFailedError`, **fail closed** (see [../key-wrapping/api.md](../key-wrapping/api.md)) |
 | Backup not found | 404 | `NOT_FOUND` |
 | Checksum mismatch under `validate_first` | 409 | `FAILED_PRECONDITION` — restore aborts before touching shards |
 | Snapshot capture failed | 500 | `INTERNAL` — recorded as `status: failed` |

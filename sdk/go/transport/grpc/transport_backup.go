@@ -37,7 +37,8 @@ func (t *Transport) CreateBackup(ctx context.Context, req *transport.BackupReque
 		Destination:   req.Destination,
 		Compression:   string(req.Compression),
 		Encryption:    string(req.Encryption),
-		EncryptionKey: req.EncryptionKey,
+		KeyProviderId: req.KeyProviderID,
+		KeyRef:        req.KeyRef,
 		Metadata:      req.Metadata,
 		ShardIds:      req.ShardIDs,
 	})
@@ -98,10 +99,10 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 	}
 
 	resp, err := t.client.BackupRestore(ctx, &pb.BackupRestoreRequest{
-		BackupId:      req.BackupID,
-		TargetShards:  req.TargetShards,
-		ValidateFirst: req.ValidateFirst,
-		DecryptionKey: req.DecryptionKey,
+		BackupId:         req.BackupID,
+		TargetShards:     req.TargetShards,
+		ValidateFirst:    req.ValidateFirst,
+		DecryptionKeyRef: req.DecryptionKeyRef,
 	})
 	if err != nil {
 		return nil, mapGRPCError("RestoreBackup", err)
@@ -144,17 +145,18 @@ func protoToBackupInfo(b *pb.BackupInfo) *transport.BackupInfo {
 		return nil
 	}
 	return &transport.BackupInfo{
-		ID:           b.GetId(),
-		Timestamp:    time.Unix(0, b.GetTimestampNs()),
-		Size:         b.GetSize(),
-		ShardCount:   int(b.GetShardCount()),
-		Status:       transport.BackupStatus(b.GetStatus()),
-		Checksum:     b.GetChecksum(),
-		Destination:  b.GetDestination(),
-		Compression:  transport.CompressionType(b.GetCompression()),
-		Encryption:   transport.EncryptionType(b.GetEncryption()),
-		Metadata:     b.GetMetadata(),
-		Duration:     time.Duration(b.GetDurationNs()),
-		ErrorMessage: b.GetErrorMessage(),
+		ID:            b.GetId(),
+		Timestamp:     time.Unix(0, b.GetTimestampNs()),
+		Size:          b.GetSize(),
+		ShardCount:    int(b.GetShardCount()),
+		Status:        transport.BackupStatus(b.GetStatus()),
+		Checksum:      b.GetChecksum(),
+		Destination:   b.GetDestination(),
+		Compression:   transport.CompressionType(b.GetCompression()),
+		Encryption:    transport.EncryptionType(b.GetEncryption()),
+		KeyProviderID: b.GetKeyProviderId(),
+		Metadata:      b.GetMetadata(),
+		Duration:      time.Duration(b.GetDurationNs()),
+		ErrorMessage:  b.GetErrorMessage(),
 	}
 }

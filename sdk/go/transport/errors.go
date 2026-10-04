@@ -641,6 +641,34 @@ func (e *BackupChecksumMismatchError) Error() string {
 	return "transport: backup checksum mismatch: expected " + e.Expected + ", got " + e.Actual
 }
 
+// BackupDecryptionFailedError is returned when a backup's envelope cannot
+// be processed: an unregistered key-wrap provider (create or restore), a
+// bad key reference, the wrong KEK, a tampered wrapped DEK, or a tampered
+// shard's own AES-256-GCM authentication failure. These are deliberately
+// not distinguished from each other -- see
+// service.BackupDecryptionFailedError, which this mirrors.
+type BackupDecryptionFailedError struct {
+	BackupID string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *BackupDecryptionFailedError) Error() string {
+	msg := "transport: backup decryption failed"
+	if e.BackupID != "" {
+		msg += " for " + e.BackupID
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupDecryptionFailedError) Unwrap() error {
+	return e.Err
+}
+
 // ---------------------------------------------------------------------------
 // Rebalance errors
 // ---------------------------------------------------------------------------

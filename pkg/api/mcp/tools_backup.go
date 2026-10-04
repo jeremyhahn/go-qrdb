@@ -16,7 +16,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -67,10 +66,13 @@ func toolBackupCreate() mcp.Tool {
 			mcp.Description("Compression algorithm: 'none' (default), 'zstd', or 'snappy'."),
 		),
 		mcp.WithString("encryption",
-			mcp.Description("Encryption algorithm: 'aes256' (default; requires encryption_key) or 'none' (explicit plaintext override)."),
+			mcp.Description("Encryption algorithm: 'aes256' (default; requires key_ref) or 'none' (explicit plaintext override)."),
 		),
-		mcp.WithString("encryption_key",
-			mcp.Description("Base64-encoded encryption key. Required unless encryption is explicitly 'none'."),
+		mcp.WithString("key_provider_id",
+			mcp.Description("The registered keywrap.Provider to wrap this backup's DEK with. Defaults to 'software' when key_ref is set."),
+		),
+		mcp.WithString("key_ref",
+			mcp.Description("The key reference the named provider resolves -- a key-file path for 'software'. Required unless encryption is explicitly 'none'."),
 		),
 		mcp.WithArray("shard_ids",
 			mcp.Description("Optional list of shard IDs to back up. Empty backs up all shards."),
@@ -86,20 +88,12 @@ func handleBackupCreate(svc service.BackupServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("destination is required"), nil
 		}
 
-		var encKey []byte
-		if encoded := mcp.ParseString(req, "encryption_key", ""); encoded != "" {
-			decoded, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil {
-				return mcp.NewToolResultError("encryption_key must be base64-encoded"), nil
-			}
-			encKey = decoded
-		}
-
 		info, err := svc.CreateBackup(ctx, service.BackupOptions{
 			Destination:   destination,
 			Compression:   service.CompressionType(mcp.ParseString(req, "compression", "")),
 			Encryption:    service.EncryptionType(mcp.ParseString(req, "encryption", "")),
-			EncryptionKey: encKey,
+			KeyProviderID: mcp.ParseString(req, "key_provider_id", ""),
+			KeyRef:        mcp.ParseString(req, "key_ref", ""),
 			ShardIDs:      parseShardIDs(req, "shard_ids"),
 		})
 		if err != nil {
@@ -193,8 +187,8 @@ func toolBackupRestore() mcp.Tool {
 		mcp.WithBoolean("validate_first",
 			mcp.Description("Verify backup integrity before restoring."),
 		),
-		mcp.WithString("decryption_key",
-			mcp.Description("Base64-encoded decryption key. Required for encrypted backups."),
+		mcp.WithString("decryption_key_ref",
+			mcp.Description("Overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node). Left unset, the stored reference is used."),
 		),
 	)
 }
@@ -207,20 +201,11 @@ func handleBackupRestore(svc service.BackupServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("backup_id is required"), nil
 		}
 
-		var decKey []byte
-		if encoded := mcp.ParseString(req, "decryption_key", ""); encoded != "" {
-			decoded, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil {
-				return mcp.NewToolResultError("decryption_key must be base64-encoded"), nil
-			}
-			decKey = decoded
-		}
-
 		result, err := svc.RestoreBackup(ctx, service.RestoreOptions{
-			BackupID:      backupID,
-			TargetShards:  parseShardIDs(req, "target_shards"),
-			ValidateFirst: mcp.ParseBoolean(req, "validate_first", false),
-			DecryptionKey: decKey,
+			BackupID:         backupID,
+			TargetShards:     parseShardIDs(req, "target_shards"),
+			ValidateFirst:    mcp.ParseBoolean(req, "validate_first", false),
+			DecryptionKeyRef: mcp.ParseString(req, "decryption_key_ref", ""),
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_backup_restore", Err: err}

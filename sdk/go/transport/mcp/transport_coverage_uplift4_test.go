@@ -28,8 +28,8 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// CreateBackup — optional compression/encryption/encryption_key/shard_ids
-// (75.0%)
+// CreateBackup — optional compression/encryption/key_provider_id/key_ref/
+// shard_ids (75.0%)
 // ---------------------------------------------------------------------------
 
 func TestMCP_Backup_CreateBackup_AllParams(t *testing.T) {
@@ -40,7 +40,8 @@ func TestMCP_Backup_CreateBackup_AllParams(t *testing.T) {
 		Destination:   "/tmp/bk",
 		Compression:   transport.CompressionZstd,
 		Encryption:    transport.EncryptionAES256,
-		EncryptionKey: []byte("my-key"),
+		KeyProviderID: "software",
+		KeyRef:        "/etc/qrdb/backup.key",
 		ShardIDs:      []uint64{1, 2, 3},
 		Metadata:      map[string]string{"env": "test"},
 	})
@@ -50,8 +51,8 @@ func TestMCP_Backup_CreateBackup_AllParams(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RestoreBackup — optional target_shards / validate_first / decryption_key
-// (76.5%)
+// RestoreBackup — optional target_shards / validate_first /
+// decryption_key_ref (76.5%)
 // ---------------------------------------------------------------------------
 
 func TestMCP_Backup_RestoreBackup_AllParams(t *testing.T) {
@@ -59,10 +60,10 @@ func TestMCP_Backup_RestoreBackup_AllParams(t *testing.T) {
 	defer cleanup()
 
 	_, err := tr.RestoreBackup(context.Background(), &transport.RestoreRequest{
-		BackupID:      "bk-1",
-		TargetShards:  []uint64{1, 2},
-		ValidateFirst: true,
-		DecryptionKey: []byte("my-key"),
+		BackupID:         "bk-1",
+		TargetShards:     []uint64{1, 2},
+		ValidateFirst:    true,
+		DecryptionKeyRef: "/etc/qrdb/backup.key",
 	})
 	if err != nil {
 		t.Logf("RestoreBackup with all params: %v", err)

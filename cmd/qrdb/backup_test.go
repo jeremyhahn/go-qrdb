@@ -175,7 +175,7 @@ func TestBackupCreateCmd_WithCompression(t *testing.T) {
 func TestBackupCreateCmd_WithEncryption(t *testing.T) {
 	svc := &mockBackupService{}
 	out, err := executeBackupCmd(t, svc, "create", "--destination", "/backups/test",
-		"--encryption", "aes256", "--encryption-key", "supersecret")
+		"--encryption", "aes256", "--encryption-key-file", "/etc/qrdb/backup.key")
 	if err != nil {
 		t.Fatalf("backup create --encryption aes256: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestBackupCreateCmd_ExplicitNoneWarns(t *testing.T) {
 func TestBackupCreateCmd_AES256DoesNotWarn(t *testing.T) {
 	svc := &mockBackupService{}
 	_, errOut, err := executeBackupCmdCapturingStderr(t, svc, "create",
-		"--destination", "/backups/encrypted", "--encryption", "aes256", "--encryption-key", "supersecret")
+		"--destination", "/backups/encrypted", "--encryption", "aes256", "--encryption-key-file", "/etc/qrdb/backup.key")
 	if err != nil {
 		t.Fatalf("backup create --encryption aes256: %v", err)
 	}

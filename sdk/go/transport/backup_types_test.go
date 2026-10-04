@@ -29,7 +29,8 @@ func TestBackupRequest_JSON_Roundtrip(t *testing.T) {
 		Destination:   "/backups/daily",
 		Compression:   CompressionZstd,
 		Encryption:    EncryptionAES256,
-		EncryptionKey: []byte("secret-key"),
+		KeyProviderID: "software",
+		KeyRef:        "/etc/qrdb/backup.key",
 		Metadata:      map[string]string{"env": "production"},
 		ShardIDs:      []uint64{1, 2, 3},
 	}
@@ -54,8 +55,11 @@ func TestBackupRequest_JSON_Roundtrip(t *testing.T) {
 	if decoded.Encryption != req.Encryption {
 		t.Fatalf("expected encryption %q, got %q", req.Encryption, decoded.Encryption)
 	}
-	if string(decoded.EncryptionKey) != string(req.EncryptionKey) {
-		t.Fatalf("expected encryption key %q, got %q", req.EncryptionKey, decoded.EncryptionKey)
+	if decoded.KeyProviderID != req.KeyProviderID {
+		t.Fatalf("expected key provider id %q, got %q", req.KeyProviderID, decoded.KeyProviderID)
+	}
+	if decoded.KeyRef != req.KeyRef {
+		t.Fatalf("expected key ref %q, got %q", req.KeyRef, decoded.KeyRef)
 	}
 	if decoded.Metadata["env"] != "production" {
 		t.Fatalf("expected metadata env=production, got %q", decoded.Metadata["env"])
@@ -150,10 +154,10 @@ func TestBackupInfo_JSON_Roundtrip(t *testing.T) {
 
 func TestRestoreRequest_JSON_Roundtrip(t *testing.T) {
 	req := RestoreRequest{
-		BackupID:      "backup-456",
-		TargetShards:  []uint64{1, 3},
-		ValidateFirst: true,
-		DecryptionKey: []byte("decrypt-key"),
+		BackupID:         "backup-456",
+		TargetShards:     []uint64{1, 3},
+		ValidateFirst:    true,
+		DecryptionKeyRef: "/etc/qrdb/backup.key",
 	}
 
 	data, err := json.Marshal(req)
@@ -176,8 +180,8 @@ func TestRestoreRequest_JSON_Roundtrip(t *testing.T) {
 	if !decoded.ValidateFirst {
 		t.Fatal("expected ValidateFirst to be true")
 	}
-	if string(decoded.DecryptionKey) != string(req.DecryptionKey) {
-		t.Fatalf("expected decryption key %q, got %q", req.DecryptionKey, decoded.DecryptionKey)
+	if decoded.DecryptionKeyRef != req.DecryptionKeyRef {
+		t.Fatalf("expected decryption key ref %q, got %q", req.DecryptionKeyRef, decoded.DecryptionKeyRef)
 	}
 }
 

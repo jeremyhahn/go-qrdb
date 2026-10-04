@@ -254,6 +254,14 @@ type startFlags struct {
 	// before any API listener opens. It requires backupDir. See restore.go.
 	restoreBackupID string
 
+	// restoreDecryptionKeyRef overrides the key reference stored in the
+	// restored backup's own envelope -- useful when the key file named at
+	// create time is not at that path on this node. Left empty, the
+	// stored reference is used, which is the common case since the key
+	// file is typically kept OUTSIDE --data-dir and so survives whatever
+	// loss --restore-backup-id is recovering from. See restore.go.
+	restoreDecryptionKeyRef string
+
 	// databases holds the database configurations loaded from the YAML
 	// config file. When no config file is provided, this defaults to a
 	// single "default" KV database with a pebble backend.
@@ -585,6 +593,8 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 		"Directory for a durable, file-backed backup repository (empty = in-memory only, lost on restart)")
 	cmd.Flags().StringVar(&f.restoreBackupID, "restore-backup-id", "",
 		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
+	cmd.Flags().StringVar(&f.restoreDecryptionKeyRef, "restore-decryption-key-file", "",
+		"Overrides the key reference stored in the restored backup's own envelope (only needed if the key file named at create time is not at that path on this node)")
 
 	return cmd, f
 }

@@ -15,13 +15,33 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 )
+
+// writeTestKeyFile writes a fresh 32-byte key file under t.TempDir() and
+// returns its path, suitable for use as BackupOptions.KeyRef /
+// RestoreOptions.DecryptionKeyRef against the "software" keywrap provider.
+func writeTestKeyFile(t *testing.T, fill byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "backup.key")
+	data := make([]byte, 32)
+	for i := range data {
+		data[i] = fill + byte(i)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
 
 // ---------------------------------------------------------------------------
 // Mock snapshot provider
@@ -240,12 +260,13 @@ func TestBackupService_CreateBackup_DefaultEncryptionWithoutKey(t *testing.T) {
 func TestBackupService_CreateBackup_WithEncryption(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	svc := NewBackupService(provider)
+	keyPath := writeTestKeyFile(t, 0x01)
 
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
-		Destination:   "/backups/encrypted",
-		Encryption:    EncryptionAES256,
-		EncryptionKey: []byte("secret-key-32-bytes-long-12345!"),
+		Destination: "/backups/encrypted",
+		Encryption:  EncryptionAES256,
+		KeyRef:      keyPath,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup with encryption returned error: %v", err)
@@ -253,23 +274,28 @@ func TestBackupService_CreateBackup_WithEncryption(t *testing.T) {
 	if info.Encryption != EncryptionAES256 {
 		t.Fatalf("expected encryption aes256, got %s", info.Encryption)
 	}
+	if info.KeyProviderID != keywrap.SoftwareProviderID {
+		t.Fatalf("KeyProviderID = %q, want %q", info.KeyProviderID, keywrap.SoftwareProviderID)
+	}
 }
 
 // TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores is the
 // OWNER-RULING conformance scenario "default with a key produces an
 // encrypted backup that restores": BackupOptions.Encryption left entirely
 // EMPTY (the default applies) with a key supplied succeeds, records
-// EncryptionAES256 (not merely "not none"), and the backup restores with
-// the matching decryption key.
+// EncryptionAES256 (not merely "not none"), and the backup restores
+// automatically -- RestoreOptions needs no key at all, because the
+// envelope stores the key reference used at create time and the service
+// resolves it itself.
 func TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	svc := NewBackupService(provider)
 	ctx := context.Background()
+	keyPath := writeTestKeyFile(t, 0x02)
 
-	key := []byte("secret-key-32-bytes-long-12345!")
 	created, err := svc.CreateBackup(ctx, BackupOptions{
-		Destination:   "/backups/default-encrypted",
-		EncryptionKey: key,
+		Destination: "/backups/default-encrypted",
+		KeyRef:      keyPath,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup with the default encryption and a key: %v", err)
@@ -278,20 +304,11 @@ func TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores(t *testing.
 		t.Fatalf("Encryption = %q, want %q: the default must resolve to aes256, not merely survive validation", created.Encryption, EncryptionAES256)
 	}
 
-	// Restoring without a decryption key is refused, exactly as it would
-	// be for an explicitly-named aes256 backup.
-	if _, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID}); err == nil {
-		t.Fatal("RestoreBackup without a decryption key succeeded, want a refusal")
-	} else {
-		var keyRequired *BackupDecryptionKeyRequiredError
-		if !errors.As(err, &keyRequired) {
-			t.Fatalf("expected BackupDecryptionKeyRequiredError, got %T: %v", err, err)
-		}
-	}
-
-	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, DecryptionKey: key})
+	// Restoring with no override at all succeeds: the envelope's own
+	// stored key reference is used automatically.
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
 	if err != nil {
-		t.Fatalf("RestoreBackup with the matching key: %v", err)
+		t.Fatalf("RestoreBackup using the stored key reference: %v", err)
 	}
 	if result.ShardsRestored == 0 {
 		t.Fatal("RestoreBackup restored 0 shards, want the backup's full shard set")
@@ -780,29 +797,62 @@ func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 	}
 }
 
-func TestBackupService_RestoreBackup_DecryptionKeyRequired(t *testing.T) {
+// TestBackupService_RestoreBackup_WrongKeyFileRefused proves a restore
+// naming a DecryptionKeyRef override pointing at the WRONG key file is
+// refused with the typed, fail-closed *BackupDecryptionFailedError -- not
+// silently restoring garbage, and not distinguishing "wrong key" from
+// "tampered" in what it returns.
+func TestBackupService_RestoreBackup_WrongKeyFileRefused(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
 	created, err := svc.CreateBackup(ctx, BackupOptions{
-		Destination:   "/backups/encrypted",
-		Encryption:    EncryptionAES256,
-		EncryptionKey: []byte("secret-key-32-bytes-long-12345!"),
+		Destination: "/backups/encrypted",
+		Encryption:  EncryptionAES256,
+		KeyRef:      writeTestKeyFile(t, 0x10),
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
 
 	_, err = svc.RestoreBackup(ctx, RestoreOptions{
-		BackupID: created.ID,
+		BackupID:         created.ID,
+		DecryptionKeyRef: writeTestKeyFile(t, 0x20), // a DIFFERENT 32-byte key
 	})
 	if err == nil {
-		t.Fatal("expected error when decryption key is missing")
+		t.Fatal("expected error when the wrong key file is supplied")
 	}
-	var dkr *BackupDecryptionKeyRequiredError
-	if !errors.As(err, &dkr) {
-		t.Fatalf("expected BackupDecryptionKeyRequiredError, got %T: %v", err, err)
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
+	}
+}
+
+// TestBackupService_RestoreBackup_UnregisteredProviderRefused proves a
+// backup whose envelope names a KeyProviderID this node's registry does
+// not have registered is refused with *BackupDecryptionFailedError, the
+// same typed error an Unwrap failure gets -- an environment/deployment
+// problem, not a wrong-key one, but given the same fail-closed refusal
+// rather than a distinguishable one.
+func TestBackupService_RestoreBackup_UnregisteredProviderRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+
+	registry := keywrap.NewRegistry() // deliberately empty -- no "software"
+	svc := NewBackupService(provider, WithKeyWrapRegistry(registry))
+
+	ctx := context.Background()
+	_, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/no-provider",
+		Encryption:  EncryptionAES256,
+		KeyRef:      writeTestKeyFile(t, 0x30),
+	})
+	if err == nil {
+		t.Fatal("expected error when the registry has no provider registered")
+	}
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
 	}
 }
 
@@ -900,9 +950,9 @@ func TestBackupErrors_Messages(t *testing.T) {
 			expected: "service: encryption key is required when encryption is enabled",
 		},
 		{
-			name:     "BackupDecryptionKeyRequiredError",
-			err:      &BackupDecryptionKeyRequiredError{},
-			expected: "service: decryption key is required for encrypted backups",
+			name:     "BackupDecryptionFailedError",
+			err:      &BackupDecryptionFailedError{BackupID: "abc", Err: errors.New("wrong key")},
+			expected: "service: backup decryption failed for abc: wrong key",
 		},
 		{
 			name:     "BackupCreateError",
@@ -949,6 +999,7 @@ func TestBackupErrors_Unwrap(t *testing.T) {
 	}{
 		{name: "BackupCreateError", err: &BackupCreateError{Err: inner}},
 		{name: "BackupRestoreError", err: &BackupRestoreError{BackupID: "x", Err: inner}},
+		{name: "BackupDecryptionFailedError", err: &BackupDecryptionFailedError{BackupID: "x", Err: inner}},
 	}
 
 	for _, tt := range tests {
@@ -1110,8 +1161,8 @@ func TestBackupService_CreateBackup_EncryptedDoesNotAudit(t *testing.T) {
 
 	ctx := context.Background()
 	if _, err := svc.CreateBackup(ctx, BackupOptions{
-		Destination:   "/backups/encrypted-not-audited",
-		EncryptionKey: []byte("secret-key-32-bytes-long-12345!"),
+		Destination: "/backups/encrypted-not-audited",
+		KeyRef:      writeTestKeyFile(t, 0x40),
 	}); err != nil {
 		t.Fatalf("CreateBackup with the default encryption and a key: %v", err)
 	}
@@ -1135,5 +1186,498 @@ func TestBackupService_CreateBackup_ExplicitNoneWithoutAuditLoggerStillSucceeds(
 		Encryption:  EncryptionNone,
 	}); err != nil {
 		t.Fatalf("CreateBackup with explicit EncryptionNone and no audit logger configured: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Envelope encryption: the backup is actually encrypted, not merely labeled
+// ---------------------------------------------------------------------------
+
+// knownPlaintextFixtures are the shard payloads mockSnapshotProvider
+// returns (see newMockSnapshotProvider): the "not the plaintext" assertions
+// below check for their absence in stored bytes.
+var knownPlaintextFixtures = [][]byte{
+	[]byte("shard-1-data"),
+	[]byte("shard-2-data"),
+	[]byte("shard-3-data"),
+}
+
+// storedShardBytes reads a backup's raw stored shard bytes directly out of
+// BackupService's in-memory registry, bypassing RestoreBackup entirely --
+// exactly what "read the sink/registry's raw stored bytes directly" in
+// docs/key-wrapping/engineering.md's test strategy calls for.
+func storedShardBytes(t *testing.T, svc BackupServicer, id string) map[uint64][]byte {
+	t.Helper()
+	bs, ok := svc.(*BackupService)
+	if !ok {
+		t.Fatal("storedShardBytes: svc is not *BackupService")
+	}
+	bs.mu.RLock()
+	entry, ok := bs.backups[id]
+	bs.mu.RUnlock()
+	if !ok {
+		t.Fatalf("storedShardBytes: no entry for %q", id)
+	}
+	return entry.shards
+}
+
+// TestBackupService_EncryptedBackup_StoredBytesAreNotPlaintext proves an
+// aes256 backup's persisted shard bytes are genuine ciphertext: none of the
+// known plaintext fixtures mockSnapshotProvider hands CreateBackup appear
+// anywhere in what is actually stored.
+func TestBackupService_EncryptedBackup_StoredBytesAreNotPlaintext(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/ciphertext-check",
+		KeyRef:      writeTestKeyFile(t, 0x50),
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	shards := storedShardBytes(t, svc, created.ID)
+	if len(shards) == 0 {
+		t.Fatal("expected at least one stored shard")
+	}
+	for shardID, stored := range shards {
+		for _, fixture := range knownPlaintextFixtures {
+			if bytes.Contains(stored, fixture) {
+				t.Fatalf("shard %d's stored bytes contain the known plaintext fixture %q -- the backup was not actually encrypted", shardID, fixture)
+			}
+		}
+	}
+
+	// And it restores correctly with the matching key file.
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	if err != nil {
+		t.Fatalf("RestoreBackup: %v", err)
+	}
+	if result.ShardsRestored != len(shards) {
+		t.Fatalf("ShardsRestored = %d, want %d", result.ShardsRestored, len(shards))
+	}
+}
+
+// TestBackupService_PlaintextBackup_StoredBytesArePlaintext is the negative
+// control for the assertion above: an explicit EncryptionNone backup's
+// stored bytes ARE exactly the plaintext fixtures, proving the "not the
+// plaintext" check above is meaningful rather than vacuous.
+func TestBackupService_PlaintextBackup_StoredBytesArePlaintext(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/plaintext-check",
+		Encryption:  EncryptionNone,
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	shards := storedShardBytes(t, svc, created.ID)
+	for shardID, stored := range shards {
+		found := false
+		for _, fixture := range knownPlaintextFixtures {
+			if bytes.Equal(stored, fixture) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("shard %d's stored bytes are not one of the known plaintext fixtures: %q", shardID, stored)
+		}
+	}
+}
+
+// TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError proves a
+// single-bit flip in a stored shard's ciphertext is detected as a per-shard
+// ShardError carrying *BackupDecryptionFailedError's message, rather than
+// decrypting into silently-wrong bytes -- other shards still restore.
+func TestBackupService_RestoreBackup_TamperedCiphertextGivesTypedError(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/tamper-check",
+		KeyRef:      writeTestKeyFile(t, 0x60),
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	shards := storedShardBytes(t, svc, created.ID)
+	var tamperedShard uint64
+	for id := range shards {
+		tamperedShard = id
+		break
+	}
+	shards[tamperedShard][len(shards[tamperedShard])-1] ^= 0xFF
+
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	if err != nil {
+		t.Fatalf("RestoreBackup should not return a top-level error for a per-shard tamper: %v", err)
+	}
+	if result.ShardsRestored != len(shards)-1 {
+		t.Fatalf("ShardsRestored = %d, want %d (every shard but the tampered one)", result.ShardsRestored, len(shards)-1)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected exactly 1 shard error, got %d", len(result.Errors))
+	}
+	if result.Errors[0].ShardID != tamperedShard {
+		t.Fatalf("ShardID = %d, want %d", result.Errors[0].ShardID, tamperedShard)
+	}
+	if result.Errors[0].Message == "" {
+		t.Fatal("expected a non-empty error message for the tampered shard")
+	}
+}
+
+// TestBackupService_RestoreBackup_UnregisteredProviderAtRestoreRefused
+// proves a backup whose envelope names a provider this node's registry no
+// longer has registered (e.g. an embedder removed it between create and
+// restore) is refused with *BackupDecryptionFailedError at RESTORE time,
+// before any shard is touched.
+func TestBackupService_RestoreBackup_UnregisteredProviderAtRestoreRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/provider-removed",
+		KeyRef:      writeTestKeyFile(t, 0x70),
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	// Simulate the provider having been removed from the registry between
+	// create and restore by mutating the stored envelope's ProviderID.
+	bs := svc.(*BackupService)
+	bs.mu.Lock()
+	bs.backups[created.ID].envelope.ProviderID = "no-longer-registered"
+	bs.mu.Unlock()
+
+	_, err = svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	if err == nil {
+		t.Fatal("expected error when the envelope names an unregistered provider")
+	}
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fake KEK provider: key rotation, unwrap with an old key ID
+// ---------------------------------------------------------------------------
+
+// fakeKeyWrapProvider is a same-shaped keywrap.Provider test double: it
+// treats keyRef itself as the KEK material (XOR), appending a 4-byte
+// checksum of keyRef so Unwrap can detect a mismatched keyRef
+// deterministically, mirroring go-xkms's own hardware providers without
+// needing real key custody for this test.
+type fakeKeyWrapProvider struct {
+	id string
+}
+
+func (p *fakeKeyWrapProvider) ProviderID() string { return p.id }
+
+func (p *fakeKeyWrapProvider) Wrap(_ context.Context, keyRef string, dek []byte) ([]byte, error) {
+	wrapped := xorWithKeyRef(keyRef, dek)
+	sum := keyRefChecksum(keyRef)
+	return append(wrapped, sum[:]...), nil
+}
+
+func (p *fakeKeyWrapProvider) Unwrap(_ context.Context, keyRef string, wrapped []byte) ([]byte, error) {
+	if len(wrapped) < 4 {
+		return nil, &keywrap.UnwrapFailedError{}
+	}
+	data, tag := wrapped[:len(wrapped)-4], wrapped[len(wrapped)-4:]
+	want := keyRefChecksum(keyRef)
+	if !bytes.Equal(tag, want[:]) {
+		return nil, &keywrap.UnwrapFailedError{}
+	}
+	return xorWithKeyRef(keyRef, data), nil
+}
+
+func keyRefChecksum(keyRef string) [4]byte {
+	var sum [4]byte
+	for i := 0; i < len(keyRef); i++ {
+		sum[i%4] ^= keyRef[i]
+	}
+	return sum
+}
+
+func xorWithKeyRef(keyRef string, data []byte) []byte {
+	out := make([]byte, len(data))
+	for i, b := range data {
+		out[i] = b ^ keyRef[i%len(keyRef)]
+	}
+	return out
+}
+
+var _ keywrap.Provider = (*fakeKeyWrapProvider)(nil)
+
+// TestBackupService_FakeProvider_KeyRotation_OldKeyIDStillUnwraps proves
+// that rotating which key reference NEW backups use does not break
+// restoring an OLDER backup: each backup's own envelope pins the key
+// reference it was wrapped under, so an old backup restores under its own
+// (now "rotated away from") key reference even after a newer one has
+// become the one new backups use.
+func TestBackupService_FakeProvider_KeyRotation_OldKeyIDStillUnwraps(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	fake := &fakeKeyWrapProvider{id: "fake-hsm"}
+	svc := NewBackupService(provider, WithKeyWrapProvider(fake))
+	ctx := context.Background()
+
+	old, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/rotation-old",
+		KeyProviderID: "fake-hsm",
+		KeyRef:        "key-id-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup (v1): %v", err)
+	}
+
+	// "Rotate": new backups now use a different key id.
+	current, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/rotation-current",
+		KeyProviderID: "fake-hsm",
+		KeyRef:        "key-id-v2",
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup (v2): %v", err)
+	}
+
+	// The OLD backup still restores under its OWN (now-superseded) key id --
+	// nothing about creating the v2 backup touched it.
+	oldResult, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: old.ID})
+	if err != nil {
+		t.Fatalf("RestoreBackup (v1, old key id): %v", err)
+	}
+	if oldResult.ShardsRestored == 0 {
+		t.Fatal("expected the old backup to restore under its own key id")
+	}
+
+	currentResult, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: current.ID})
+	if err != nil {
+		t.Fatalf("RestoreBackup (v2, current key id): %v", err)
+	}
+	if currentResult.ShardsRestored == 0 {
+		t.Fatal("expected the current backup to restore under its own key id")
+	}
+
+	// ListBackups confirms KeyProviderID on BackupInfo matches for both --
+	// the service layer never special-cases "software" anywhere in its own
+	// logic; a non-"software" provider round-trips through create, list,
+	// and restore identically.
+	list, err := svc.ListBackups(ctx)
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	seen := map[string]string{}
+	for _, info := range list {
+		seen[info.ID] = info.KeyProviderID
+	}
+	if seen[old.ID] != "fake-hsm" {
+		t.Fatalf("ListBackups KeyProviderID for %q = %q, want %q", old.ID, seen[old.ID], "fake-hsm")
+	}
+	if seen[current.ID] != "fake-hsm" {
+		t.Fatalf("ListBackups KeyProviderID for %q = %q, want %q", current.ID, seen[current.ID], "fake-hsm")
+	}
+}
+
+// TestBackupService_FakeProvider_WrongKeyIDRefused proves the fake
+// provider's own Unwrap failure (a keyRef mismatch) surfaces as
+// *BackupDecryptionFailedError through the service layer, the same as the
+// software provider's.
+func TestBackupService_FakeProvider_WrongKeyIDRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	fake := &fakeKeyWrapProvider{id: "fake-hsm"}
+	svc := NewBackupService(provider, WithKeyWrapProvider(fake))
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/wrong-key-id",
+		KeyProviderID: "fake-hsm",
+		KeyRef:        "key-id-v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	_, err = svc.RestoreBackup(ctx, RestoreOptions{
+		BackupID:         created.ID,
+		DecryptionKeyRef: "key-id-WRONG",
+	})
+	if err == nil {
+		t.Fatal("expected error for the wrong key id")
+	}
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
+	}
+}
+
+// TestBackupService_WithKeyWrapRegistry_ReplacesDefault proves
+// WithKeyWrapRegistry installs the supplied registry wholesale (not merged
+// with the default), matching its doc comment: a registry with no
+// "software" entry means a plain KeyRef-only aes256 request (which
+// defaults KeyProviderID to "software") fails to resolve a provider.
+func TestBackupService_WithKeyWrapRegistry_ReplacesDefault(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	registry := keywrap.NewRegistry()
+	fake := &fakeKeyWrapProvider{id: "only-this-one"}
+	if err := registry.Register("only-this-one", func() (keywrap.Provider, error) { return fake, nil }); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	svc := NewBackupService(provider, WithKeyWrapRegistry(registry))
+	ctx := context.Background()
+
+	// The default provider id ("software") is NOT in this registry.
+	_, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/replaced-registry",
+		KeyRef:      "some-key-ref",
+	})
+	if err == nil {
+		t.Fatal("expected error: the default registry's \"software\" provider was replaced wholesale")
+	}
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
+	}
+
+	// But the explicitly-named provider in the replacement registry works.
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/replaced-registry-named",
+		KeyProviderID: "only-this-one",
+		KeyRef:        "some-key-ref",
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup naming the replacement registry's own provider: %v", err)
+	}
+	if created.KeyProviderID != "only-this-one" {
+		t.Fatalf("KeyProviderID = %q, want %q", created.KeyProviderID, "only-this-one")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DecryptBackupShard: the offline-restore (qrdbd boot-time) seam
+// ---------------------------------------------------------------------------
+
+// TestBackupService_DecryptBackupShard_EncryptedRoundTrips proves
+// DecryptBackupShard returns the exact plaintext RestoreBackup itself
+// would apply -- the seam cmd/qrdbd/restore.go's offline disaster-recovery
+// boot path uses instead of reading raw (ciphertext, for an encrypted
+// backup) shard bytes directly.
+func TestBackupService_DecryptBackupShard_EncryptedRoundTrips(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+	keyPath := writeTestKeyFile(t, 0x90)
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-restore", KeyRef: keyPath})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	for shardID, plaintext := range provider.shards {
+		got, err := bs.DecryptBackupShard(ctx, created.ID, shardID, "")
+		if err != nil {
+			t.Fatalf("DecryptBackupShard(shard %d): %v", shardID, err)
+		}
+		if string(got) != string(plaintext) {
+			t.Fatalf("DecryptBackupShard(shard %d) = %q, want %q", shardID, got, plaintext)
+		}
+	}
+}
+
+// TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough proves
+// an EncryptionNone backup's shard comes back unchanged -- no envelope, no
+// decryption attempted.
+func TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-restore-plain", Encryption: EncryptionNone})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	for shardID, plaintext := range provider.shards {
+		got, err := bs.DecryptBackupShard(ctx, created.ID, shardID, "")
+		if err != nil {
+			t.Fatalf("DecryptBackupShard(shard %d): %v", shardID, err)
+		}
+		if string(got) != string(plaintext) {
+			t.Fatalf("DecryptBackupShard(shard %d) = %q, want %q", shardID, got, plaintext)
+		}
+	}
+}
+
+// TestBackupService_DecryptBackupShard_WrongKeyRefused proves a wrong
+// DecryptBackupShard override gives *BackupDecryptionFailedError, matching
+// RestoreBackup's own refusal for the same condition.
+func TestBackupService_DecryptBackupShard_WrongKeyRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-wrong-key", KeyRef: writeTestKeyFile(t, 0xA0)})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	var shardID uint64
+	for id := range provider.shards {
+		shardID = id
+		break
+	}
+
+	_, err = bs.DecryptBackupShard(ctx, created.ID, shardID, writeTestKeyFile(t, 0xB0))
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
+	}
+}
+
+// TestBackupService_DecryptBackupShard_EmptyIDRefused proves the same
+// empty-ID guard every other id-taking method has.
+func TestBackupService_DecryptBackupShard_EmptyIDRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	bs := svc.(*BackupService)
+
+	_, err := bs.DecryptBackupShard(context.Background(), "", 1, "")
+	var emptyID *BackupEmptyIDError
+	if !errors.As(err, &emptyID) {
+		t.Fatalf("expected BackupEmptyIDError, got %T: %v", err, err)
+	}
+}
+
+// TestBackupService_DecryptBackupShard_UnknownShardRefused proves a shard
+// ID not present in the backup's own artifact is refused rather than
+// returning a zero-value plaintext.
+func TestBackupService_DecryptBackupShard_UnknownShardRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-unknown-shard", Encryption: EncryptionNone})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	_, err = bs.DecryptBackupShard(ctx, created.ID, 99999, "")
+	if err == nil {
+		t.Fatal("expected error for an unknown shard ID")
 	}
 }

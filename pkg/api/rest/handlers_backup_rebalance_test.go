@@ -498,7 +498,7 @@ func TestMapBackupError_AllCases(t *testing.T) {
 		{"empty_dest", &service.BackupEmptyDestinationError{}, http.StatusBadRequest},
 		{"empty_id", &service.BackupEmptyIDError{}, http.StatusBadRequest},
 		{"enc_key_req", &service.BackupEncryptionKeyRequiredError{}, http.StatusBadRequest},
-		{"dec_key_req", &service.BackupDecryptionKeyRequiredError{}, http.StatusBadRequest},
+		{"decryption_failed", &service.BackupDecryptionFailedError{}, http.StatusBadRequest},
 		{"inv_comp", &service.BackupInvalidCompressionError{}, http.StatusBadRequest},
 		{"inv_enc", &service.BackupInvalidEncryptionError{}, http.StatusBadRequest},
 		{"checksum", &service.BackupChecksumMismatchError{}, http.StatusConflict},

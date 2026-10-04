@@ -49,8 +49,9 @@ const (
 
 	// EncryptionAES256 uses AES-256-GCM encryption. It is the server's
 	// default when BackupRequest.Encryption is left empty, which then
-	// requires EncryptionKey (or a server-side KMS key reference, where
-	// the deployment provides one).
+	// requires BackupRequest.KeyRef (a key-file path for the built-in
+	// "software" keywrap provider, or a hardware/cloud-KMS reference a
+	// go-xkms-registered provider resolves).
 	EncryptionAES256 EncryptionType = "aes256"
 )
 
@@ -84,16 +85,23 @@ type BackupRequest struct {
 	Compression CompressionType `json:"compression,omitempty"`
 
 	// Encryption selects the encryption algorithm. Left empty, the server
-	// defaults it to EncryptionAES256 and then requires EncryptionKey: the
+	// defaults it to EncryptionAES256 and then requires KeyRef: the
 	// default is encrypted, not plaintext. A caller that wants plaintext
 	// must set this to EncryptionNone outright rather than get it by
 	// omission.
 	Encryption EncryptionType `json:"encryption,omitempty"`
 
-	// EncryptionKey is the encryption key material. Required unless
-	// Encryption is EncryptionNone (or the server has a KMS key reference
-	// configured for the default).
-	EncryptionKey []byte `json:"encryption_key,omitempty"`
+	// KeyProviderID names the registered keywrap.Provider to wrap this
+	// backup's DEK with. Defaults to "software" when KeyRef is set and
+	// this is left empty.
+	KeyProviderID string `json:"key_provider_id,omitempty"`
+
+	// KeyRef is the key reference the named provider resolves -- a
+	// key-file path for the "software" provider. Required whenever
+	// Encryption resolves to EncryptionAES256 (whether defaulted or named
+	// explicitly): every KEK is referenced through a provider, never
+	// passed as raw bytes through this struct.
+	KeyRef string `json:"key_ref,omitempty"`
 
 	// Metadata holds arbitrary user-supplied metadata tags.
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -132,6 +140,10 @@ type BackupInfo struct {
 	// Encryption is the encryption algorithm used.
 	Encryption EncryptionType `json:"encryption"`
 
+	// KeyProviderID is the keywrap.Provider that wrapped this backup's DEK.
+	// Empty for an EncryptionNone backup.
+	KeyProviderID string `json:"key_provider_id,omitempty"`
+
 	// Metadata holds the user-supplied metadata tags.
 	Metadata map[string]string `json:"metadata,omitempty"`
 
@@ -155,9 +167,13 @@ type RestoreRequest struct {
 	// ValidateFirst runs a verification check before restoring.
 	ValidateFirst bool `json:"validate_first,omitempty"`
 
-	// DecryptionKey is the decryption key material. Required when
-	// the backup was encrypted.
-	DecryptionKey []byte `json:"decryption_key,omitempty"`
+	// DecryptionKeyRef overrides the key reference stored in the backup's
+	// own envelope -- useful when restoring on a different node, or after
+	// the key file has moved. Left empty, the stored reference is used.
+	// The provider actually used to decrypt is always whichever one the
+	// backup was created under; this field never selects a different
+	// provider than that.
+	DecryptionKeyRef string `json:"decryption_key_ref,omitempty"`
 }
 
 // RestoreResult describes the outcome of a restore operation.

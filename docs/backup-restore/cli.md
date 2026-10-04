@@ -16,28 +16,32 @@ standalone mode they refuse with `requires mode: raft`.
 | `--destination` | string | — | storage path or URI, e.g. `/backups/daily` or `s3://bucket/prefix` |
 | `--compression` | string | `none` | `none \| zstd \| snappy` |
 | `--encryption` | string | *(unset)* | `aes256 \| none` — unset defaults to `aes256` server-side |
-| `--encryption-key` | string | — | **required unless `--encryption` is explicitly `none`** |
+| `--encryption-key-file` | string | — | **required unless `--encryption` is explicitly `none`**: the key reference the key-wrap provider resolves — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
+| `--key-provider` | string | `software` | the registered `keywrap.Provider` to wrap this backup's DEK with — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
 
 **BREAKING (since the encrypt-by-default change): `--encryption` left unset no
 longer means plaintext.** The server defaults an unset `--encryption` to
-`aes256` and then requires `--encryption-key` (or a server-side KMS key
-reference, where the deployment provides one). A script that relied on the
-old plaintext default must now pass `--encryption-key`, or pass
+`aes256` and then requires `--encryption-key-file`. A script that relied on
+the old plaintext default must now pass `--encryption-key-file`, or pass
 `--encryption none` to keep writing plaintext.
 
 ```bash
-qrdb backup create --destination /backups/daily --encryption-key "$BACKUP_KEY"
+qrdb backup create --destination /backups/daily --encryption-key-file /etc/qrdb/backup.key
 
 qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption-key "$BACKUP_KEY"
+     --compression zstd --encryption-key-file /etc/qrdb/backup.key
 
 # Explicit plaintext override -- the CLI warns, the server logs and audits it.
 qrdb backup create --destination /backups/scratch --encryption none
 ```
 
-Creating with the default (or an explicit `aes256`) and no key is refused.
-Backing up specific shards is an API-level option (`shard_ids`) and has no CLI
-flag; the CLI captures all shards.
+Creating with the default (or an explicit `aes256`) and no key reference is
+refused. Backing up specific shards is an API-level option (`shard_ids`) and
+has no CLI flag; the CLI captures all shards.
+
+The envelope mechanics — what the key reference names, how the DEK is
+wrapped, hardware/cloud-KMS providers — are [../key-wrapping/](../key-wrapping/architecture.md)'s
+own scope; this document covers only that a key reference is required.
 
 The response carries the backup `id` and its `checksum` — record both.
 
@@ -52,7 +56,8 @@ qrdb backup list --output json
 ## `qrdb backup get <id>`
 
 Retrieve one backup's details: size, shard count, status, checksum,
-destination, compression, encryption, duration, and any error message. No flags.
+destination, compression, encryption, key provider, duration, and any error
+message. No flags.
 
 ```bash
 qrdb backup get bkp-20260819-0300 --output json
@@ -79,19 +84,20 @@ Restore shard data from a backup. **This overwrites shard state.**
 | `--id` | string | — | backup ID to restore from |
 | `--shards` | string | all shards | comma-separated shard IDs to restore |
 | `--validate` | bool | false | run integrity verification **before** restoring |
-| `--decryption-key` | string | — | **required for encrypted backups** |
+| `--decryption-key-file` | string | — | overrides the key reference stored in the backup's own envelope; usually left unset — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
 
 ```bash
-# Verify then restore everything
+# Verify then restore everything -- no key flag needed, even for an
+# encrypted backup: the envelope's own stored key reference resolves it.
 qrdb backup restore --id bkp-20260819-0300 --validate
 
-# Restore two shards from an encrypted backup
+# Restore two shards, overriding the key reference (the key file moved).
 qrdb backup restore --id bkp-20260819-0300 --shards 1,2 \
-     --decryption-key "$BACKUP_KEY" --validate
+     --decryption-key-file /etc/qrdb/backup.key --validate
 ```
 
 With `--validate`, a checksum mismatch aborts before any shard is touched.
-Restoring an encrypted backup without `--decryption-key` is refused.
+A wrong key reference (stored or overridden) is refused.
 
 The result reports how many shards were restored and lists **per-shard errors**,
 so a partial restore names exactly what failed.

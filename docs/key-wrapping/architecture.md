@@ -238,45 +238,52 @@ reference, not merely a raw key byte slice.** `CreateBackup`'s refusal when
 the default applies and nothing is configured — `BackupEncryptionRequiredError`
 — is unchanged in spirit and in when it fires; what changed is what
 satisfies it: a `KeyProviderID` + `KeyRef` pair that resolves through the
-registry, OR (see [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value))
-an inline 32-byte key for the common case where an operator has not set up a
-key file or a hardware provider.
+registry. There is no raw-bytes escape hatch (see
+[Owner ruling: the inline key is retired](#owner-ruling-the-inline-key-is-retired)
+below) — every KEK is referenced through a provider, never passed as bytes
+through this struct or over the wire.
 
 ```go
 type BackupOptions struct {
-	Destination   string
-	Compression   CompressionType
-	Encryption    EncryptionType // unchanged: "aes256" (default) | "none"
+	Destination string
+	Compression CompressionType
+	Encryption  EncryptionType // unchanged: "aes256" (default) | "none"
 
 	// KeyProviderID names the registered keywrap.Provider to wrap this
-	// backup's DEK with. Defaults to "software" when EncryptionKey or
-	// KeyRef is set and this is left empty.
+	// backup's DEK with. Defaults to "software" when KeyRef is set and
+	// this is left empty.
 	KeyProviderID string
 
-	// KeyRef is the key reference the named provider resolves --
-	// typically a key-file path for "software". Mutually exclusive with
-	// EncryptionKey.
+	// KeyRef is the key reference the named provider resolves -- a
+	// key-file path for "software". Required whenever Encryption
+	// resolves to "aes256" (whether defaulted or named explicitly).
 	KeyRef string
-
-	// EncryptionKey, when set, is used directly as 32 raw KEK bytes
-	// through an unregistered, in-memory SoftwareProvider instance --
-	// the inline path. Mutually exclusive with KeyRef. Deprecated in
-	// favor of KeyRef pointing at a key file: see Key hygiene.
-	EncryptionKey []byte
 
 	Metadata map[string]string
 	ShardIDs []uint64
 }
 ```
 
-**Open design question for owner review**, flagged rather than decided
-silently: keeping `EncryptionKey` as an inline-bytes escape hatch alongside
-the new `KeyRef` is this document's proposal for backward compatibility with
-the already-shipped `--encryption-key` flag and the SDK field of the same
-name; an alternative is retiring `EncryptionKey` entirely in favor of
-`KeyRef` pointing at a (possibly temp) file, closing the "key rides in a
-flag value" gap outright instead of merely warning about it. This document
-takes the warn-and-keep position; the owner's call stands if it differs.
+### Owner ruling: the inline key is retired
+
+This document's own first draft flagged an open design question: keep
+`EncryptionKey` as an inline-bytes escape hatch alongside `KeyRef` (for
+backward compatibility with the already-shipped `--encryption-key` flag and
+the SDK field of the same name), or retire it outright in favor of `KeyRef`
+alone. **The owner's ruling: retire it.** `EncryptionKey` (Go SDK),
+`encryption_key` (REST/gRPC/QUIC/MCP wire field), `DecryptionKey`, and
+`decryption_key` are removed from every surface in the same change that
+lands this document, not merely deprecated — closing the "key rides in a
+flag value or over the wire" exposure outright, which is exactly the
+alternative [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value)
+below originally proposed only warning about. `--encryption-key` and
+`--decryption-key` are removed from the CLI alongside them; only
+`--encryption-key-file` / `--decryption-key-file` (and `--key-provider`)
+remain. `KeyRef` is always a reference the server resolves on its own
+node — a key-file path for `"software"` — never bytes a client transmits;
+this is also why `--encryption-key-file` has no stdin form (`-`): there is
+no client-to-server channel for raw key bytes to travel over any more, so
+there is nothing for stdin to feed.
 
 `BackupInfo` gains one new field, safe to expose on every transport because
 it names a provider, not a key: `KeyProviderID string` (empty for `none`
@@ -295,24 +302,23 @@ at a time.
 
 ## Key hygiene: the key never rides in a flag value, by default
 
-**`--encryption-key-file <path>` (and `-` for stdin) is the documented way**
-to supply the software provider's 32-byte key: the CLI reads it once, passes
-only the resulting bytes to `KeyRef`'s underlying file read (for a path) or
-directly to an inline provider construction (for stdin, which has no
-path to re-read), and never echoes it.
+**`--encryption-key-file <path>` is the only way** to supply the software
+provider's 32-byte key: the CLI passes the path straight through as `KeyRef`,
+and the server's own `SoftwareProvider` reads and validates it on its own
+node when it actually wraps or unwraps the DEK. The CLI itself never opens
+the file.
 
-**`--encryption-key <base64>` is kept, with a warning.** A key passed as a
-flag value is visible in `ps`, in shell history, and in any process-listing
-tool on the host for the life of the process — a strictly worse exposure
-than a file the operator controls the permissions of. The CLI prints a
-warning naming this exposure when `--encryption-key` is used; it is not
-refused, because an operator scripting around a secrets manager that already
-injects the value as an argument has a working setup this flag should not
-break.
+**`--encryption-key <base64>` is retired, not merely deprecated** — see
+[Owner ruling: the inline key is retired](#owner-ruling-the-inline-key-is-retired)
+above. A key passed as a flag value was visible in `ps`, in shell history,
+and in any process-listing tool on the host for the life of the process —
+closing that gap outright (there is no flag that accepts key bytes at all
+any more) is strictly better than warning about it on use, which is what an
+earlier draft of this document proposed.
 
-The desktop/web UI's key field is a password-masked input (`type="password"`
-/ the Svelte equivalent), not a plaintext field, regardless of which path
-(inline key or key-file reference) the operator chooses.
+The desktop/web UI's key-reference field is a plain text input (it carries a
+path, not a secret): the key file's bytes never pass through the browser or
+the Wails bridge in either direction.
 
 ## Target: KMS references are not re-added here
 
@@ -385,8 +391,9 @@ shape.
   permissions, at-rest encryption of the file itself, and backup of the key
   file (never inside a qrdb backup) are the operator's responsibility,
   exactly as for every other software-custody key in this repository.
-- **`--encryption-key`'s flag-value exposure is a documented, warned trade-off**,
-  not a silent one — see [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value).
+- **There is no flag-value key exposure to trade off.** The inline-bytes
+  path (`--encryption-key`) that would have created one is retired — see
+  [Key hygiene](#key-hygiene-the-key-never-rides-in-a-flag-value).
 
 ## What this feature deliberately does not do
 

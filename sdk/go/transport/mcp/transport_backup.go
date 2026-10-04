@@ -16,7 +16,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"time"
 
@@ -30,35 +29,37 @@ var _ transport.BackupClient = (*Transport)(nil)
 // marshal the service-layer BackupInfo directly (PascalCase field names, no
 // json tags). Duration is encoded as integer nanoseconds.
 type mcpBackupInfo struct {
-	ID           string
-	Timestamp    time.Time
-	Size         int64
-	ShardCount   int
-	Status       string
-	Checksum     string
-	Destination  string
-	Compression  string
-	Encryption   string
-	Metadata     map[string]string
-	Duration     time.Duration
-	ErrorMessage string
+	ID            string
+	Timestamp     time.Time
+	Size          int64
+	ShardCount    int
+	Status        string
+	Checksum      string
+	Destination   string
+	Compression   string
+	Encryption    string
+	KeyProviderID string
+	Metadata      map[string]string
+	Duration      time.Duration
+	ErrorMessage  string
 }
 
 // toBackupInfo converts the MCP wire shape to the transport contract.
 func (m *mcpBackupInfo) toBackupInfo() *transport.BackupInfo {
 	return &transport.BackupInfo{
-		ID:           m.ID,
-		Timestamp:    m.Timestamp,
-		Size:         m.Size,
-		ShardCount:   m.ShardCount,
-		Status:       transport.BackupStatus(m.Status),
-		Checksum:     m.Checksum,
-		Destination:  m.Destination,
-		Compression:  transport.CompressionType(m.Compression),
-		Encryption:   transport.EncryptionType(m.Encryption),
-		Metadata:     m.Metadata,
-		Duration:     m.Duration,
-		ErrorMessage: m.ErrorMessage,
+		ID:            m.ID,
+		Timestamp:     m.Timestamp,
+		Size:          m.Size,
+		ShardCount:    m.ShardCount,
+		Status:        transport.BackupStatus(m.Status),
+		Checksum:      m.Checksum,
+		Destination:   m.Destination,
+		Compression:   transport.CompressionType(m.Compression),
+		Encryption:    transport.EncryptionType(m.Encryption),
+		KeyProviderID: m.KeyProviderID,
+		Metadata:      m.Metadata,
+		Duration:      m.Duration,
+		ErrorMessage:  m.ErrorMessage,
 	}
 }
 
@@ -71,8 +72,11 @@ func (t *Transport) CreateBackup(ctx context.Context, req *transport.BackupReque
 	if req.Encryption != "" {
 		args["encryption"] = string(req.Encryption)
 	}
-	if len(req.EncryptionKey) > 0 {
-		args["encryption_key"] = base64.StdEncoding.EncodeToString(req.EncryptionKey)
+	if req.KeyProviderID != "" {
+		args["key_provider_id"] = req.KeyProviderID
+	}
+	if req.KeyRef != "" {
+		args["key_ref"] = req.KeyRef
 	}
 	if len(req.ShardIDs) > 0 {
 		args["shard_ids"] = req.ShardIDs
@@ -136,8 +140,8 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 	if req.ValidateFirst {
 		args["validate_first"] = true
 	}
-	if len(req.DecryptionKey) > 0 {
-		args["decryption_key"] = base64.StdEncoding.EncodeToString(req.DecryptionKey)
+	if req.DecryptionKeyRef != "" {
+		args["decryption_key_ref"] = req.DecryptionKeyRef
 	}
 
 	text, err := t.callTool(ctx, "qrdb_backup_restore", args)
