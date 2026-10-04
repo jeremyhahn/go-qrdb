@@ -16,7 +16,9 @@ package replicaforward
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -105,7 +107,32 @@ const maxAnswers = 2
 // retry; it is skipped for the next replica, each replica at most once. It
 // returns the target that served, or *NoTargetServedError when none did --
 // the caller then answers with the original refusal -- or send's error.
+//
+// Every forward is counted in qrdb_replica_forward_total and timed in
+// qrdb_replica_forward_duration_seconds, by protocol.
 func (l *Locator) Forward(ctx context.Context, refusal *placement.NotAReplicaError, proto cluster.APIProtocol, send SendFunc) (Target, error) {
+	start := time.Now()
+	sends := 0
+	t, err := l.forward(ctx, refusal, proto, func(ctx context.Context, t Target) (Result, error) {
+		sends++
+		return send(ctx, t)
+	})
+	outcome := outcomeError
+	var none *NoTargetServedError
+	switch {
+	case err == nil && sends == 1:
+		outcome = outcomeOK
+	case err == nil:
+		outcome = outcomeRetriedOK
+	case errors.As(err, &none):
+		outcome = outcomeRefused
+	}
+	observe(proto, outcome, start)
+	return t, err
+}
+
+// forward is Forward without its accounting.
+func (l *Locator) forward(ctx context.Context, refusal *placement.NotAReplicaError, proto cluster.APIProtocol, send SendFunc) (Target, error) {
 	var view *memberView
 	next, ok := l.cached(refusal, proto)
 	if !ok {
