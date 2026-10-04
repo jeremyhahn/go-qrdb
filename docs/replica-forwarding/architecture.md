@@ -1,11 +1,10 @@
 # Replica Forwarding — Architecture
 
-> **Status: PROPOSED — contract for implementation; decision D1 blocks the
-> build.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: IN PROGRESS — contract for implementation; every decision is
+> ruled.** · Scope: go-qrdb · Last verified: 2026-10-05
 >
-> Nothing in this folder is built yet. Identifiers marked *(new)* do not exist.
-> The owner's rulings are recorded under [Rulings](#rulings); the open decision
-> is under [PROPOSED — needs sign-off](#proposed--needs-sign-off).
+> Identifiers marked *(new)* do not exist yet. The owner's rulings are
+> recorded under [Rulings](#rulings).
 
 ## The problem
 
@@ -55,6 +54,28 @@ replica in placement order.
 (`cluster.Member`, keyed by node, carrying `APIEndpoints` per protocol). The
 forward uses the endpoint for the node-to-node protocol of the ingress
 transport (below). A member that does not advertise that protocol is skipped.
+Every raft-mode node publishes its member record, with or without dynamic
+membership (ruling 6).
+
+**A per-shard leader cache** (ruling 7) remembers, for each database shard,
+the replica the last successful forward reached and its resolved member
+endpoints. A hit skips the placement read and the member lookup. The cache
+never decides correctness, only where to try first:
+
+- **On a forward's outcome.** A `NotLeader` naming a new leader updates the
+  entry to that leader. A transport error, a `NotAReplica` from the target, or
+  a `NotLeader` that names no leader evicts it.
+- **On a placement change.** The placement table's update path -- create,
+  drop, move, rebalance, replica add and remove -- invalidates the shard's
+  entry, and every node watches the placement keys and drops its own entry
+  when one changes. No node keeps forwarding to a replica a rebalance removed.
+- **On a member change.** A member record that changes (a new endpoint) or
+  disappears (lease expiry) invalidates every entry pointing at that member.
+
+On a miss, or after an eviction, the target is resolved again: placement, then
+member records, then the one bounded retry. The cache is per node and in
+memory. It holds no data and no identity, only addresses, and it is read
+lock-free (a copy-on-write map behind an atomic pointer).
 
 **Identity** travels as the existing signed on-behalf assertion
 (`pkg/auth/forward.CallerAssertion`). The forwarding node has already
@@ -173,8 +194,9 @@ holds no data for it.
   existing write forwarding to the system leader, unchanged.
 - It does not change who may do what. Authorization happens at ingress and
   again at the target, as the caller both times.
-- It does not cache placements or leaders across requests. Each forward reads
-  the placement through the node's replicated store.
+- It does not cache anything but the per-shard leader hint (ruling 7), and
+  it never serves from that cache: a cached target is only where the forward
+  goes first.
 
 ## Rulings
 
@@ -192,29 +214,24 @@ From the owner, recorded verbatim in substance:
    set; the client redials.
 5. On BYO-TLS nodes the operator's peer CA counts as the cluster CA for
    on-behalf verification (Key B lane, `IsClusterCA`).
+6. (D1, option a) Every raft-mode node always publishes its lease-backed member
+   record -- API endpoints and liveness -- through the existing
+   `cluster.Advertiser`, without the dynamic-membership reconfiguration loop.
+7. A per-shard leader cache, keyed by shard ID, holding the leader's replica
+   ID and its resolved member endpoints, lock-free where practical:
+   - updated by a `NotLeader` naming a new leader;
+   - evicted by a transport error, `NotAReplica` or an unknown leader;
+   - invalidated on every node by placement changes (move, rebalance, replica
+     add and remove) and by member-record changes.
 
-## PROPOSED — needs sign-off
+   A miss resolves again from placement, then member records, then the one
+   bounded retry.
 
-- **D1. Where endpoints come from in a static cluster. Blocking.** Member
-  records carrying `APIEndpoints` are written only by dynamic membership, which
-  is off by default (`--dynamic-membership`). In a default static cluster there
-  is no member record, so ruling 1 finds no endpoint and every forward falls
-  back to the refusal.
-  - (a) Publish each node's lease-backed member record in every raft-mode
-    node, independent of dynamic membership. The `cluster.Advertiser` already
-    does exactly this for dynamic membership; this runs it always, without the
-    membership reconfiguration loop.
-  - (b) Carry `APIEndpoints` in the feature-gate advertisement
-    (`__sys:cluster/features/nodes/{replicaID}`), which every node already
-    publishes under a lease.
-  - (c) Forward only in clusters running dynamic membership, and document the
-    refusal everywhere else.
+## Decisions taken
 
-  **Recommendation: (a).** One record per node already has the right shape
-  and lifecycle (lease-bound, so a dead node disappears), and (b) would give
-  the feature gate a second job. This changes default boot behaviour: every
-  raft node writes one lease-backed record. That is why it needs sign-off.
-- **D2. The BYO-TLS dependency.** On-behalf verification on BYO-TLS nodes
-  needs `IsClusterCA` from the Key B lane. **Recommendation:** build against
-  the existing cluster-CA check, and add the Key B call when that lane lands.
-  The BYO-TLS integration test is written now and goes green with it.
+- **D1 → ruling 6.** Option (a): every raft-mode node publishes its member
+  record. The alternatives (endpoints in the feature-gate advertisement;
+  forwarding only under dynamic membership) were rejected.
+- **D2.** Build against the existing cluster-CA check. The Key B lane wires
+  `IsClusterCA` for BYO-TLS nodes, and the BYO-TLS integration case turns green
+  with it.

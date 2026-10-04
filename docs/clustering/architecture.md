@@ -379,6 +379,19 @@ lookup) so it is testable and embeddable without import cycles. The in-process
 and watch subsystem also backs the SDK `Lease()`/`Watch()` surface that the
 service registry uses — one source of truth, two consumers.
 
+**The member record is always published.** Every raft-mode node -- `qrdbd`
+and the embeddable clustered node alike -- publishes its own lease-backed member
+entry (Raft address, the API endpoints it serves per protocol, its features,
+and its liveness), whether or not dynamic membership is on. Without dynamic
+membership the record is published by `cluster.Advertiser` alone
+(`sdk.Client.NewNodeAdvertiser`; qrdbd logs `member record published`), with
+no reconfiguration loop; with it, the membership manager publishes the same
+record as part of its own start. Replica forwarding resolves the node it
+forwards to from these records ([../replica-forwarding/](../replica-forwarding/)).
+The endpoints a node publishes come from one derivation,
+`config.(*Config).AdvertisedAPIEndpoints`: the advertise host (else the Raft
+address's host) with the port of every client protocol the node serves.
+
 **Safety:** dynamic membership is **opt-in and off by default**. Raft
 reconfiguration only occurs when a `Reconfigurer` is supplied and the local node
 is the leader. A **quorum guard** (`MinQuorum`) refuses to remove a replica when

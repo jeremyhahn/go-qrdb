@@ -4,8 +4,8 @@
 > Last verified: 2026-10-05
 >
 > Identifiers marked *(new)* do not exist yet. Identifiers not so marked were
-> grepped on the date above. The endpoint source assumes decision D1 (a) in
-> [architecture.md](architecture.md#proposed--needs-sign-off).
+> grepped on the date above. Rulings 6 (member records on every raft node) and
+> 7 (the leader cache) are in [architecture.md](architecture.md#rulings).
 
 ## Exported surface
 
@@ -54,6 +54,23 @@ func (l *Locator) Targets(ctx context.Context, refusal *placement.NotAReplicaErr
 // NotLeader names (resolved to its endpoint), otherwise the second target.
 func (l *Locator) Retry(ctx context.Context, first Target, leaderRaftAddr string, rest []Target, proto cluster.APIProtocol) (Target, bool)
 
+// LeaderCache is the per-shard leader hint (ruling 7): shard ID -> the
+// replica the last forward reached and its member endpoints. Reads are
+// lock-free (copy-on-write map behind an atomic.Pointer); writes serialize.
+type LeaderCache struct{ /* ... */ }
+
+func NewLeaderCache() *LeaderCache
+func (c *LeaderCache) Get(shardID uint64) (CachedLeader, bool)
+func (c *LeaderCache) Put(shardID uint64, leader CachedLeader)
+func (c *LeaderCache) Evict(shardID uint64)
+func (c *LeaderCache) EvictMember(replicaID uint64) // every entry pointing at it
+
+type CachedLeader struct {
+	ReplicaID uint64
+	RaftAddr  string
+	Endpoints map[cluster.APIProtocol]string
+}
+
 // Binding is what an assertion is bound to, for any transport.
 type Binding struct {
 	Protocol string // "rest", "grpc", "quic", "mcp"
@@ -93,6 +110,18 @@ The carrier per transport:
 `pkg/server` wires all of them from the node's member store, its node key and
 its SPIFFE node id, in raft mode. Standalone mode has no replicas to forward
 to, and wires none.
+
+### Cache invalidation hooks
+
+| Event | Hook | Effect |
+|---|---|---|
+| a forward answered `NotLeader{leader}` | the forwarding layer | `Put` the named leader |
+| a transport error, `NotAReplica`, or `NotLeader` with no leader | the forwarding layer | `Evict(shard)` |
+| a placement record written or deleted (create, drop, move, rebalance, add/remove replica) | a Watch on the placement prefix (`__sys:placement/`), on every node | `Evict(shard)` |
+| a member record changed or expired | a Watch on `cluster.MembershipPrefix`, on every node | `EvictMember(replica)` |
+
+Both watches re-subscribe after a feed ends, as the membership manager's
+does. When a watch is down, the cache is cleared rather than trusted.
 
 ## Invariants
 
@@ -149,6 +178,10 @@ the contract.
 
 ## Persistence
 
+The leader cache is in memory, per node, and holds addresses only. Nothing
+about it is persisted or replicated.
+
+
 None of its own. The feature reads the placement table and the member records
 (`__sys:cluster/members/{node}`), both replicated. Under decision D1 (a),
 every raft node publishes its member record under a lease, as dynamic
@@ -170,6 +203,11 @@ membership already does.
   - no retry on a post-send timeout;
   - streams refused.
 
+**Cache (unit, `pkg/replicaforward`):** a hit skips the placement read; a
+`NotLeader` updates the entry; a transport error evicts it; a placement-key
+event evicts the shard; a member event evicts the entries pointing at it; a
+watch outage clears the cache.
+
 **Integration (`test/integration/`), one per transport, three nodes, RF=1 so
 two nodes hold no replica:**
 
@@ -181,6 +219,9 @@ two nodes hold no replica:**
   forward still lands through the one retry;
 - the replica node is stopped, and the non-replica node answers the typed
   refusal with the replica set, never a local answer;
+- with RF=3, the leader of the database's group is killed, and the next request
+  forwarded through a non-replica reaches the new leader (cache updated or
+  evicted, not trusted);
 - a stream (watch) through the non-replica node is refused with the replica
   set.
 
