@@ -163,6 +163,54 @@ func exprImplies(expr constraint.Expr, forced ...string) bool {
 	return true
 }
 
+// TestExprImplies exercises exprImplies directly, independent of the file
+// walk: the property under test is implication of a parsed //go:build
+// expression, and the cases that matter -- a bare OR escaping the forced
+// tags, a negation, a forced tag itself inside a larger expression -- are
+// each a one-line constraint, not something worth a fixture file for.
+func TestExprImplies(t *testing.T) {
+	tests := []struct {
+		name   string
+		expr   string
+		forced []string
+		want   bool
+	}{
+		// Positive: the expression cannot be satisfied with every forced
+		// tag off.
+		{"bare tag", "qrdb_sql", []string{"qrdb_sql"}, true},
+		{"tag anded with an unrelated free tag", "qrdb_sql && !integration", []string{"qrdb_sql"}, true},
+		{"tag anded with an unrelated free tag, other order", "integration && qrdb_sql", []string{"qrdb_sql"}, true},
+		{"forced tag anded with an always-true free tag", "qrdb_etcd && (foo || !foo)", []string{"qrdb_etcd"}, true},
+		{"single family member implies the whole family", "qrdb_mysql", []string{"qrdb_sql", "qrdb_mysql", "qrdb_pgsql"}, true},
+		{"family OR implies the family", "qrdb_sql || qrdb_mysql || qrdb_pgsql", []string{"qrdb_sql", "qrdb_mysql", "qrdb_pgsql"}, true},
+		{"no free tags at all, forced true", "qrdb_etcd", []string{"qrdb_etcd"}, true},
+
+		// Negative: some assignment with every forced tag off still
+		// satisfies the expression.
+		{"bare OR escapes the forced tag", "qrdb_sql || foo", []string{"qrdb_sql"}, false},
+		{"unrelated tag alone", "foo", []string{"qrdb_sql"}, false},
+		{"negation of the forced tag is satisfied exactly when it is off", "!qrdb_etcd", []string{"qrdb_etcd"}, false},
+		{"family OR with an escaping extra disjunct", "qrdb_sql || qrdb_mysql || qrdb_pgsql || foo", []string{"qrdb_sql", "qrdb_mysql", "qrdb_pgsql"}, false},
+		{"AND of two non-forced tags never forces the forced tag", "foo && bar", []string{"qrdb_sql"}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line := "//go:build " + tc.expr
+			if !constraint.IsGoBuild(line) {
+				t.Fatalf("test case constraint line is not a valid //go:build line: %q", line)
+			}
+			expr, err := constraint.Parse(line)
+			if err != nil {
+				t.Fatalf("constraint.Parse(%q): %v", line, err)
+			}
+			if got := exprImplies(expr, tc.forced...); got != tc.want {
+				t.Errorf("exprImplies(%q, %v) = %v, want %v", tc.expr, tc.forced, got, tc.want)
+			}
+		})
+	}
+}
+
 // goFilesUnder returns every .go file under dir, relative to dir, sorted.
 func goFilesUnder(t *testing.T, dir string) []string {
 	t.Helper()
