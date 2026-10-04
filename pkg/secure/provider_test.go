@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -255,14 +256,29 @@ func TestNewStdinProvider(t *testing.T) {
 
 // TestNewStdinProvider_PassphraseUsesOSStdin verifies that a StdinProvider
 // constructed via NewStdinProvider() (reader == nil) falls back to os.Stdin.
-// Under go test, os.Stdin is connected to /dev/null, so ReadBytes returns
-// (nil, io.EOF) immediately — empty input — which the provider converts to
-// *ProviderError wrapping errEmptyPassphrase. This exercises the
-// "r = os.Stdin" fallback branch.
+// The test points os.Stdin at a pipe whose write end is already closed, so
+// the read sees io.EOF immediately — empty input — which the provider converts
+// to *ProviderError wrapping errEmptyPassphrase. This exercises the
+// "r = os.Stdin" fallback branch without depending on the process's inherited
+// stdin, which is an open terminal or pipe whenever the test binary runs
+// outside `go test` (a coverage run, a background job) and would block.
 func TestNewStdinProvider_PassphraseUsesOSStdin(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing the pipe's write end: %v", err)
+	}
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		_ = r.Close()
+	})
+
 	p := NewStdinProvider()
 	buf, err := p.Passphrase(context.Background(), "")
-	// os.Stdin under go test is /dev/null: empty read → errEmptyPassphrase.
 	if err == nil || buf != nil {
 		t.Fatalf("expected *ProviderError from empty stdin, got buf=%v err=nil", buf)
 	}
