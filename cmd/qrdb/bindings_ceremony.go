@@ -17,11 +17,47 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// CeremonyHolderCertificate is one enrolled holder's CA-issued certificate,
+// part of a successful CeremonyInitializeResult. Mirrors
+// transport.CeremonyHolderCert with camelCase JSON tags, the desktop
+// binding convention (BootstrapResult, SealStatus, ...).
+type CeremonyHolderCertificate struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	CertPEM  string `json:"certPem"`
+}
+
+// CeremonyInitializeResult mirrors transport.CeremonyInitializeResponse for
+// the desktop GUI, with one deliberate difference: AdminKeyPath replaces
+// AdminKeyPEM. When the bootstrap admin's credential is generated, its
+// private key is saved to a local file by THIS process -- the desktop's own
+// machine -- and never crosses the Wails IPC boundary to the page at all;
+// AdminKeyPath names where it was written. Unlike REST (where the
+// generated key is returned to the browser because there is no "local
+// machine" of its own to save it to), the desktop binding IS already
+// running on the user's own machine, so saving it here is the local save,
+// not an extra hop.
+type CeremonyInitializeResult struct {
+	SPKIPin               string                      `json:"spkiPin"`
+	CACertPEM             string                      `json:"caCertPem"`
+	TLSCertPEM            string                      `json:"tlsCertPem"`
+	State                 string                      `json:"state"`
+	ShareCount            int                         `json:"shareCount"`
+	Holders               []CeremonyHolderCertificate `json:"holders,omitempty"`
+	AdminCertPEM          string                      `json:"adminCertPem,omitempty"`
+	AdminKeyPath          string                      `json:"adminKeyPath,omitempty"`
+	AdminCredentialSource string                      `json:"adminCredentialSource,omitempty"`
+}
 
 // CeremonyBinding exposes the initialization ceremony -- `qrdb init`'s
 // server-side counterpart -- to the desktop GUI by delegating to the SDK
@@ -49,17 +85,15 @@ func NewCeremonyBinding(log *logger.Logger, conn *ConnectionBinding) *CeremonyBi
 // unmarshaled it, so it is cloned into this call's own copy before being
 // wiped.
 //
-// resp.AdminKeyPEM, when present, is NOT wiped here. It is the one copy
-// the caller receives, and this method's "write" of it is Wails' own JSON
-// marshal of the return value, which happens after this method returns --
-// there is no later hook in this process to wipe after that write
-// completes, unlike REST/gRPC/QUIC/MCP, which write the response
-// synchronously inside the handler body before any deferred wipe fires
-// (go-qrdb#560 review item 7 applies the same reasoning at every transport
-// boundary; this boundary's answer is "don't wipe here," matching how
-// cmd/qrdb/init.go leaves the CLI's own copy to its own deferred wipe only
-// after printing it).
-func (b *CeremonyBinding) Initialize(req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+// resp.AdminKeyPEM, when present (the admin-generate path), is never
+// returned to the page at all: it is saved to a local file by this
+// process -- see saveAdminKeyLocally -- and wiped from memory immediately
+// after, before this method returns. Every other field crosses the Wails
+// IPC boundary unchanged; this is the one field that does not, by design
+// (go-qrdb#560 review item 7's wipe-ordering reasoning does not apply
+// here, because the key is never handed to Wails to marshal in the first
+// place).
+func (b *CeremonyBinding) Initialize(req *transport.CeremonyInitializeRequest) (*CeremonyInitializeResult, error) {
 	b.logger.Debug("Initialize called")
 	cl, err := b.conn.loadClient()
 	if err != nil {
@@ -76,8 +110,55 @@ func (b *CeremonyBinding) Initialize(req *transport.CeremonyInitializeRequest) (
 		b.logger.Error("Initialize failed", "error", err)
 		return nil, err
 	}
-	b.logger.Debug("Initialize completed", "state", resp.State)
-	return resp, nil
+	defer secure.Wipe(resp.AdminKeyPEM)
+
+	result := &CeremonyInitializeResult{
+		SPKIPin:               resp.SPKIPin,
+		CACertPEM:             resp.CACertPEM,
+		TLSCertPEM:            resp.TLSCertPEM,
+		State:                 resp.State,
+		ShareCount:            resp.ShareCount,
+		AdminCertPEM:          resp.AdminCertPEM,
+		AdminCredentialSource: resp.AdminCredentialSource,
+	}
+	for _, h := range resp.Holders {
+		result.Holders = append(result.Holders, CeremonyHolderCertificate{Username: h.Username, Role: h.Role, CertPEM: h.CertPEM})
+	}
+	if len(resp.AdminKeyPEM) > 0 {
+		path, serr := saveAdminKeyLocally(resp.AdminKeyPEM)
+		if serr != nil {
+			b.logger.Error("Initialize: failed to save the generated admin key locally", "error", serr)
+			return nil, serr
+		}
+		result.AdminKeyPath = path
+		b.logger.Info("Initialize: generated admin key saved locally", "path", path)
+	}
+	b.logger.Debug("Initialize completed", "state", result.State)
+	return result, nil
+}
+
+// saveAdminKeyLocally writes a generated bootstrap admin private key to a
+// fresh file under this machine's qrdb config directory (the same
+// directory EmbeddedServerBinding.resolveDataDir's sibling "data" lives
+// under), mode 0600, and returns its path. The key is NEVER returned to
+// the page: this is the "never through the page" save the dev/test/
+// evaluation-only --admin-generate path requires, mirroring how
+// cmd/qrdb/init.go prints the same key to the operator's own terminal --
+// a channel the page is not.
+func saveAdminKeyLocally(keyPEM []byte) (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", &DataDirCreateError{Path: "~/.config", Err: err}
+	}
+	dir := filepath.Join(configDir, "qrdb")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", &DataDirCreateError{Path: dir, Err: err}
+	}
+	path := filepath.Join(dir, fmt.Sprintf("admin-key-%d.pem", time.Now().UnixNano()))
+	if err := os.WriteFile(path, keyPEM, 0o600); err != nil {
+		return "", &FileWriteError{Path: path, Err: err}
+	}
+	return path, nil
 }
 
 // Status returns the current ceremony state.

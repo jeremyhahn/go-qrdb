@@ -2135,8 +2135,20 @@ export interface CeremonyInitializeResponse {
      * `adminCredentialSource` is `"generated"`. Returned exactly once;
      * the server retains no copy -- capture it immediately, there is no
      * way to retrieve it again.
+     *
+     * The desktop (Wails) client never populates this: it saves the key
+     * to a local file on the user's own machine instead and reports
+     * where through {@link adminKeyPath}, never handing the raw key to
+     * this page. REST has no such "local machine" to save to, so it
+     * returns the key here for the caller to capture itself.
      */
     readonly adminKeyPem?: string;
+    /**
+     * Where the desktop (Wails) client saved the generated admin key, when
+     * `adminCredentialSource` is `"generated"`. Mutually exclusive with
+     * {@link adminKeyPem}: set by Wails instead of it, never both.
+     */
+    readonly adminKeyPath?: string;
     /** Which path produced `adminCertPem`: `"csr"`, `"byoc"` or `"generated"`. */
     readonly adminCredentialSource?: string;
 }

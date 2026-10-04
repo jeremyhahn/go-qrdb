@@ -15,11 +15,13 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, OfficerStatus } from "@qrdb/sdk";
-  import { ShieldCheck, AlertCircle, AlertTriangle, RefreshCw, CheckCircle, Clock } from "lucide-svelte";
+  import type { Client, CeremonyHolderCertificate, CeremonyInitializeRequest, CeremonyOfficerRequest, OfficerStatus } from "@qrdb/sdk";
+  import { ShieldCheck, AlertCircle, AlertTriangle, RefreshCw, CheckCircle, Clock, Copy, Download } from "lucide-svelte";
   import StepIndicator from "./wizard/StepIndicator.svelte";
   import StepGlobalBarrier from "./wizard/setup/StepGlobalBarrier.svelte";
-  import HolderEnrolmentForms from "./wizard/HolderEnrolmentForms.svelte";
+  import StepAdminCredential from "./wizard/setup/StepAdminCredential.svelte";
+  import type { AdminCredentialMode } from "./wizard/setup/StepAdminCredential.svelte";
+  import CeremonyOfficerForms from "./wizard/CeremonyOfficerForms.svelte";
   import { setupWizardStore } from "$stores/setup-wizard.svelte.ts";
 
   // ---------------------------------------------------------------------------
@@ -38,19 +40,22 @@
   // Wizard state
   // ---------------------------------------------------------------------------
 
-  // "officers" step only appears for shamir mode.
-  type InitStep = "barrier" | "officers" | "applying" | "complete";
+  // "officers" only appears for shamir mode. "admin" always appears: the
+  // same ceremony.initialize call that brings up the barrier also issues
+  // the bootstrap admin's certificate (go-qrdb#4578 review item 2).
+  type InitStep = "barrier" | "officers" | "admin" | "applying" | "complete";
 
   const allStepLabels: Readonly<Record<InitStep, string>> = {
     barrier: "Barrier",
     officers: "Officers",
+    admin: "Admin",
     applying: "Apply",
     complete: "Done",
   } as const;
 
   // Step sequences differ by barrier mode.
-  const shamirStepOrder: readonly InitStep[] = ["barrier", "officers", "applying", "complete"] as const;
-  const simpleStepOrder: readonly InitStep[] = ["barrier", "applying", "complete"] as const;
+  const shamirStepOrder: readonly InitStep[] = ["barrier", "officers", "admin", "applying", "complete"] as const;
+  const simpleStepOrder: readonly InitStep[] = ["barrier", "admin", "applying", "complete"] as const;
 
   let currentStep: InitStep = $state("barrier");
   let applyError: string = $state("");
@@ -62,41 +67,48 @@
   let currentIndex = $derived(stepOrder.indexOf(currentStep));
   let indicatorLabels = $derived(stepOrder.map((s) => allStepLabels[s]));
 
-  // Shamir init metadata (share-free). Populated only when barrier mode is shamir.
-  let shamirThreshold: number = $state(0);
-  let shamirShareCount: number = $state(0);
-  let rootToken: string = $state("");
+  // ceremony.initialize's result (share-free, admin-key-free -- see below).
+  let shareCount: number = $state(0);
+  let issuedAdminCertPem: string = $state("");
+  let adminKeyPath: string = $state("");
+  let adminCredentialSource: string = $state("");
+  let issuedHolders: readonly CeremonyHolderCertificate[] = $state([]);
 
   // Holder claim status (polled after shamir init).
   let officerStatuses: OfficerStatus[] = $state([]);
   let claimStatusLoading: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
-  // Holder-enrolment step state
+  // Holder-collection step state
   // ---------------------------------------------------------------------------
 
-  /** Holders enrolled so far, bound from HolderEnrolmentForms. */
-  let registeredCount: number = $state(0);
+  /** Every filled-in holder, bound from CeremonyOfficerForms. Collected
+   *  locally: `qrdb init` is the ONLY system bootstrap, so no holder can
+   *  be registered before this wizard's single ceremony.initialize call. */
+  let officers: CeremonyOfficerRequest[] = $state([]);
 
   /** Holders needed: the Shamir share count (N). */
   let totalOfficers = $derived(setupWizardStore.barrierConfig.shamirShares);
 
-  /** Whether every holder is enrolled, gating the Initialize button. */
-  let allOfficersRegistered = $derived(registeredCount === totalOfficers && totalOfficers > 0);
+  /** Whether every holder form is filled in, gating the Officers step's Next. */
+  let allOfficersFilled = $derived(officers.length === totalOfficers && totalOfficers > 0);
+
+  // ---------------------------------------------------------------------------
+  // Admin-credential step state
+  // ---------------------------------------------------------------------------
+
+  let adminMode: AdminCredentialMode = $state("csr");
+  let adminCsrPem: string = $state("");
+  let adminCertPem: string = $state("");
+  let adminCertPoolPem: string = $state("");
 
   // ---------------------------------------------------------------------------
   // Navigation
   // ---------------------------------------------------------------------------
 
-  async function handleBarrierNext(): Promise<void> {
+  function handleBarrierNext(): void {
     applyError = "";
-    const cfg = setupWizardStore.barrierConfig;
-    if (cfg.mode === "shamir") {
-      currentStep = "officers";
-    } else {
-      currentStep = "applying";
-      await applyBarrier();
-    }
+    currentStep = setupWizardStore.barrierConfig.mode === "shamir" ? "officers" : "admin";
   }
 
   function handleBarrierBack(): void {
@@ -108,36 +120,75 @@
     applyError = "";
   }
 
-  async function handleOfficersNext(): Promise<void> {
-    if (!allOfficersRegistered) return;
+  function handleOfficersNext(): void {
+    if (!allOfficersFilled) return;
     applyError = "";
-    currentStep = "applying";
-    await applyBarrier();
+    currentStep = "admin";
   }
 
-  async function applyBarrier(): Promise<void> {
+  function handleAdminBack(): void {
+    currentStep = setupWizardStore.barrierConfig.mode === "shamir" ? "officers" : "barrier";
+    applyError = "";
+  }
+
+  async function handleAdminNext(): Promise<void> {
+    applyError = "";
+    currentStep = "applying";
+    await initializeCeremony();
+  }
+
+  /**
+   * Runs the initialization ceremony: brings up the barrier (passphrase or
+   * Shamir custody over `officers`) and resolves the bootstrap admin's
+   * credential, all in the one call `qrdb init` itself makes
+   * (client.ceremony.initialize). Replaces the former two-call
+   * seal.initialize/initializeShamir + officers.registerOfficer flow,
+   * which `qrdb init` being the ONLY system bootstrap retired
+   * (go-qrdb#4578 review item 2): no holder can be registered before this
+   * call, so every holder is collected locally (CeremonyOfficerForms) and
+   * sent together with it.
+   */
+  async function initializeCeremony(): Promise<void> {
     try {
       const cfg = setupWizardStore.barrierConfig;
 
-      if (cfg.mode === "passphrase") {
-        await client.seal.initialize(cfg.passphrase);
-      } else if (cfg.mode === "shamir") {
-        const result = await client.seal.initializeShamir({
-          threshold: cfg.shamirThreshold,
-          totalShares: cfg.shamirShares,
-        });
-        shamirThreshold = result.threshold;
-        shamirShareCount = result.shareCount;
-        rootToken = result.rootToken;
+      // CeremonyInitializeRequest's fields are readonly, so the request is
+      // built in one literal from each step's own fields rather than
+      // assigned onto incrementally.
+      const barrierFields: Partial<CeremonyInitializeRequest> =
+        cfg.mode === "passphrase" ? { secret: cfg.passphrase } :
+        cfg.mode === "shamir" ? { threshold: cfg.shamirThreshold, officers } :
+        {}; // mode === "none": no secret, no officers.
+
+      const adminFields: Partial<CeremonyInitializeRequest> =
+        adminMode === "csr" ? { adminCsrPem: adminCsrPem.trim() } :
+        adminMode === "byoc" ? {
+          adminCertPem: adminCertPem.trim(),
+          ...(adminCertPoolPem.trim() !== "" ? { adminCertPoolPem: adminCertPoolPem.trim() } : {}),
+        } :
+        { adminGenerate: true };
+
+      const req: CeremonyInitializeRequest = { ...barrierFields, ...adminFields };
+
+      const result = await client.ceremony.initialize(req);
+      shareCount = result.shareCount;
+      issuedAdminCertPem = result.adminCertPem ?? "";
+      // adminKeyPem is intentionally never read here: on the desktop
+      // (Wails) client it is never populated in the first place -- the
+      // generated key is saved to a local file by Go and reported only
+      // through adminKeyPath, never through this page.
+      adminKeyPath = result.adminKeyPath ?? "";
+      adminCredentialSource = result.adminCredentialSource ?? "";
+      issuedHolders = result.holders ?? [];
+
+      if (cfg.mode === "shamir") {
         await pollClaimStatus();
       }
-      // mode === "none": no barrier initialization needed.
 
       currentStep = "complete";
     } catch (err: unknown) {
-      applyError = err instanceof Error ? err.message : "Failed to initialize barrier";
-      // Return to officers step for shamir (so they can retry), barrier for others.
-      currentStep = setupWizardStore.barrierConfig.mode === "shamir" ? "officers" : "barrier";
+      applyError = err instanceof Error ? err.message : "Failed to initialize the server";
+      currentStep = "admin";
     }
   }
 
@@ -179,6 +230,20 @@
     } finally {
       claimStatusLoading = false;
     }
+  }
+
+  function copyText(text: string): void {
+    void navigator.clipboard.writeText(text);
+  }
+
+  function downloadText(text: string, filename: string): void {
+    const blob = new Blob([text], { type: "application/x-pem-file" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
 </script>
@@ -229,38 +294,51 @@
               <p class="text-base-content/70 mt-2 text-sm">
                 Each holder — a Security Officer or a key custodian — provides a
                 CSR generated offline. The server's CA issues the holder
-                certificate, which you hand back to the holder out of band. No
-                share exists yet: initialization seals one to each holder, who
-                claims it with its own keys from the qrdb CLI or the desktop app.
+                certificate once initialization runs (next step), which you
+                hand back to the holder out of band. No share exists yet:
+                initialization seals one to each holder, who claims it with
+                its own keys from the qrdb CLI or the desktop app.
               </p>
             </div>
 
-            {#if applyError}
-              <div role="alert" class="alert alert-error text-sm" data-testid="officer-apply-error">
-                <AlertCircle class="h-4 w-4 shrink-0" />
-                <span>{applyError}</span>
-              </div>
-            {/if}
-
-            <HolderEnrolmentForms {client} count={totalOfficers} bind:registeredCount />
+            <CeremonyOfficerForms count={totalOfficers} bind:officers />
 
             <div class="flex justify-between mt-2">
-              <button class="btn btn-ghost" onclick={handleOfficersBack}>
+              <button class="btn btn-ghost" onclick={handleOfficersBack} data-testid="officers-back-btn">
                 Back
               </button>
               <button
                 class="btn btn-primary"
-                onclick={() => void handleOfficersNext()}
-                disabled={!allOfficersRegistered}
-                data-testid="initialize-btn"
+                onclick={handleOfficersNext}
+                disabled={!allOfficersFilled}
+                data-testid="officers-next-btn"
               >
-                Initialize
-                {#if !allOfficersRegistered}
-                  <span class="text-xs opacity-70">({registeredCount}/{totalOfficers})</span>
+                Next
+                {#if !allOfficersFilled}
+                  <span class="text-xs opacity-70">({officers.length}/{totalOfficers})</span>
                 {/if}
               </button>
             </div>
           </div>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- Step: admin credential                                             -->
+        <!-- ------------------------------------------------------------------ -->
+        {:else if currentStep === "admin"}
+          {#if applyError}
+            <div role="alert" class="alert alert-error mb-4 text-sm" data-testid="admin-apply-error">
+              <AlertCircle class="h-4 w-4 shrink-0" />
+              <span>{applyError}</span>
+            </div>
+          {/if}
+          <StepAdminCredential
+            bind:mode={adminMode}
+            bind:csrPem={adminCsrPem}
+            bind:certPem={adminCertPem}
+            bind:certPoolPem={adminCertPoolPem}
+            onNext={() => void handleAdminNext()}
+            onBack={handleAdminBack}
+          />
 
         <!-- ------------------------------------------------------------------ -->
         <!-- Step: applying                                                      -->
@@ -271,7 +349,8 @@
             <div class="text-center">
               <h2 class="text-xl font-semibold">Initializing Server</h2>
               <p class="text-base-content/60 mt-1 text-sm">
-                Applying encryption barrier configuration...
+                Applying encryption barrier configuration and issuing the
+                admin certificate...
               </p>
             </div>
           </div>
@@ -280,22 +359,60 @@
         <!-- Step: complete                                                      -->
         <!-- ------------------------------------------------------------------ -->
         {:else if currentStep === "complete"}
-          {#if shamirShareCount > 0}
-            <!-- -----------------------------------------------------------
-              Shamir initialization complete: holder claim status panel.
-              No share is ever shown here. Each holder claims its sealed
-              envelope with its own keys from the qrdb CLI or the desktop app.
-            ----------------------------------------------------------- -->
-            <div class="flex flex-col gap-5 py-2">
-              <div class="flex flex-col items-center gap-2 text-center">
-                <ShieldCheck class="text-success h-12 w-12" strokeWidth={1.5} />
-                <h2 class="text-2xl font-bold">Shamir Barrier Initialized</h2>
-              </div>
+          <div class="flex flex-col gap-5 py-2">
+            <div class="flex flex-col items-center gap-2 text-center">
+              <ShieldCheck class="text-success h-12 w-12" strokeWidth={1.5} />
+              <h2 class="text-2xl font-bold">Server Initialized</h2>
+            </div>
 
+            <!-- Bootstrap admin certificate -->
+            <div class="form-control">
+              <div class="flex items-center justify-between mb-1">
+                <span class="label-text font-semibold">Admin Certificate (source: {adminCredentialSource})</span>
+                <div class="flex gap-1">
+                  <button class="btn btn-ghost btn-xs gap-1" onclick={() => copyText(issuedAdminCertPem)} aria-label="Copy admin certificate" data-testid="copy-admin-cert-btn">
+                    <Copy class="h-3 w-3" />
+                    Copy
+                  </button>
+                  <button class="btn btn-ghost btn-xs gap-1" onclick={() => downloadText(issuedAdminCertPem, "admin-cert.pem")} aria-label="Download admin certificate" data-testid="download-admin-cert-btn">
+                    <Download class="h-3 w-3" />
+                    Download
+                  </button>
+                </div>
+              </div>
+              <textarea
+                class="textarea textarea-bordered textarea-xs font-mono text-xs leading-tight bg-base-300"
+                rows={4}
+                readonly
+                value={issuedAdminCertPem}
+                data-testid="admin-cert-pem-issued"
+              ></textarea>
+            </div>
+
+            {#if adminKeyPath}
+              <div role="alert" class="alert alert-warning text-sm" data-testid="admin-key-saved-notice">
+                <AlertTriangle class="h-5 w-5 shrink-0" />
+                <span>
+                  The generated admin private key was saved to
+                  <span class="font-mono" data-testid="admin-key-path">{adminKeyPath}</span>
+                  on this machine. It is returned exactly once and is never
+                  shown on this page; this is dev/test/evaluation ONLY and
+                  does not meet FedRAMP, HIPAA or PCI DSS 4.0.
+                </span>
+              </div>
+            {/if}
+
+            {#if shareCount > 0}
+              <!-- -----------------------------------------------------------
+                Shamir initialization: holder certificates and claim status.
+                No share is ever shown here. Each holder claims its sealed
+                envelope with its own keys from the qrdb CLI or the desktop app.
+              ----------------------------------------------------------- -->
               <div role="alert" class="alert alert-info text-sm">
                 <AlertTriangle class="h-5 w-5 shrink-0" />
                 <span>
-                  The barrier has been initialized with a <strong>{shamirThreshold}-of-{shamirShareCount}</strong>
+                  The barrier has been initialized with a
+                  <strong>{setupWizardStore.barrierConfig.shamirThreshold}-of-{shareCount}</strong>
                   Shamir scheme. Each holder's share is sealed to that holder.
                   Every holder now claims its envelope, exactly once, over its
                   <strong>own holder certificate</strong> from the qrdb CLI
@@ -304,15 +421,35 @@
                 </span>
               </div>
 
-              {#if rootToken}
+              {#if issuedHolders.length > 0}
                 <div class="form-control">
-                  <span class="label-text font-semibold">Root Token</span>
-                  <div class="bg-base-200 mt-1 flex items-center gap-2 rounded-lg p-3">
-                    <span data-testid="root-token" class="flex-1 break-all font-mono text-sm">{rootToken}</span>
+                  <span class="label-text font-semibold mb-2">Holder Certificates</span>
+                  <div class="flex flex-col gap-2">
+                    {#each issuedHolders as holder (holder.username)}
+                      <div class="card border border-base-300 bg-base-200">
+                        <div class="card-body gap-2 p-3">
+                          <div class="flex items-center justify-between">
+                            <span class="font-mono text-sm">{holder.username} ({holder.role})</span>
+                            <div class="flex gap-1">
+                              <button class="btn btn-ghost btn-xs gap-1" onclick={() => copyText(holder.certPem)} aria-label={`Copy ${holder.username}'s certificate`} data-testid={`copy-holder-cert-${holder.username}`}>
+                                <Copy class="h-3 w-3" />
+                              </button>
+                              <button class="btn btn-ghost btn-xs gap-1" onclick={() => downloadText(holder.certPem, `holder-${holder.username}-cert.pem`)} aria-label={`Download ${holder.username}'s certificate`} data-testid={`download-holder-cert-${holder.username}`}>
+                                <Download class="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                          <textarea
+                            class="textarea textarea-bordered textarea-xs font-mono text-xs leading-tight bg-base-300"
+                            rows={3}
+                            readonly
+                            value={holder.certPem}
+                            data-testid={`holder-cert-${holder.username}`}
+                          ></textarea>
+                        </div>
+                      </div>
+                    {/each}
                   </div>
-                  <p class="text-base-content/50 mt-1 text-xs">
-                    Store this token securely. It can be regenerated from a share quorum if lost.
-                  </p>
                 </div>
               {/if}
 
@@ -320,7 +457,7 @@
               <div class="form-control">
                 <div class="flex items-center justify-between mb-2">
                   <span class="label-text font-semibold">
-                    Holder Claim Status ({officerStatuses.filter((o) => o.claimedAt).length}/{shamirShareCount} claimed)
+                    Holder Claim Status ({officerStatuses.filter((o) => o.claimedAt).length}/{shareCount} claimed)
                   </span>
                   <button
                     class="btn btn-ghost btn-xs gap-1"
@@ -391,31 +528,21 @@
                   window needs a rekey.
                 </p>
               </div>
+            {:else}
+              <p class="text-base-content/60 text-center text-sm">
+                The encryption barrier has been configured successfully.
+                Your server is ready to use.
+              </p>
+            {/if}
 
-              <button
-                class="btn btn-primary btn-block"
-                onclick={onComplete}
-                data-testid="open-database-btn"
-              >
-                Open Database
-              </button>
-            </div>
-          {:else}
-            <!-- Passphrase / none: simple success -->
-            <div class="flex flex-col items-center gap-6 py-8">
-              <ShieldCheck class="text-success h-16 w-16" strokeWidth={1.5} />
-              <div class="text-center">
-                <h2 class="text-2xl font-bold">Server Initialized</h2>
-                <p class="text-base-content/60 mt-2 text-sm">
-                  The encryption barrier has been configured successfully.
-                  Your server is ready to use.
-                </p>
-              </div>
-              <button class="btn btn-primary btn-wide" onclick={onComplete}>
-                Open Database
-              </button>
-            </div>
-          {/if}
+            <button
+              class="btn btn-primary btn-block"
+              onclick={onComplete}
+              data-testid="open-database-btn"
+            >
+              Open Database
+            </button>
+          </div>
         {/if}
 
       </div>

@@ -51,6 +51,7 @@ export type {
     SQLClient,
     SealClient,
     OfficerClient,
+    CeremonyClient,
     EmbeddedServerClient,
     DaemonClient,
     TenantClient,
@@ -350,6 +351,15 @@ export type {
     DatabaseShamirInitializeRequest,
     DatabaseShamirInitializeResponse,
     TenantRekeyStartRequest,
+
+    // Ceremony
+    CeremonyOfficerRequest,
+    CeremonyInitializeRequest,
+    CeremonyHolderCertificate,
+    CeremonyInitializeResponse,
+    CeremonyStatusResponse,
+    CeremonySignCSRRequest,
+    CeremonySignCSRResponse,
 
     // Tenant management
     TenantIsolationType,

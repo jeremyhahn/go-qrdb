@@ -1,6 +1,6 @@
 # Desktop GUI and TypeScript SDK — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
 
 ## Build tags
 
@@ -21,7 +21,7 @@ requires the desktop/GUI build.
 **Go side** — Wails bindings in `cmd/qrdb/bindings_*.go`, one file per subject
 area (kv, mvcc, sql, vector, timeseries, seal, tenant, database, collection,
 index, lease, lock, watch, batch, transaction, users, roles, certs, credential,
-officer, backup, rebalance, daemon, config, server). Several have `_stub.go`
+officer, ceremony, backup, rebalance, daemon, config, server). Several have `_stub.go`
 counterparts for builds without the corresponding feature tag, so the binding
 surface exists whether or not the feature is compiled in.
 
@@ -131,6 +131,37 @@ management, feature errors), watch streaming and npm packaging are documented in
   run (`db-holders-over-limit`), offers no further enrolment, and is cleared
   by removing the extra holders.
 
+- **`ServerInitWizard` drives `ceremony.initialize`, not the former
+  `seal.initialize`/`initializeShamir` + `officers.registerOfficer` two-call
+  flow.** `qrdb init` is the ONLY system bootstrap, so a holder cannot be
+  registered on a ceremony-backed system barrier before that one call:
+  `BarrierInitializeShamir` on it refuses outright
+  (`*SystemBarrierInitRefusedError`). Share holders are collected locally by
+  `CeremonyOfficerForms` -- no server call per holder -- and sent together
+  with the chosen barrier secret (passphrase mode) or officer list (Shamir
+  mode) and the bootstrap admin credential (`StepAdminCredential`: CSR,
+  bring-your-own-certificate, or dev/test/evaluation-only generate) in the
+  one request. The response carries every holder's issued certificate
+  already, so the "complete" step shows them directly instead of through a
+  second round trip.
+- **The generated admin key never reaches this page on the desktop
+  (Wails) path.** `CeremonyBinding.Initialize`
+  (`cmd/qrdb/bindings_ceremony.go`) intercepts
+  `CeremonyInitializeResponse.AdminKeyPEM` when the admin-generate path was
+  used, writes it to a local file under this machine's own qrdb config
+  directory (`os.UserConfigDir()/qrdb/admin-key-<ts>.pem`, mode 0600), wipes
+  it from memory, and returns `AdminKeyPath` -- where it was saved -- in
+  place of the key itself. `CeremonyInitializeResponse.adminKeyPem` is
+  therefore **never populated on the Wails client**; only
+  `adminKeyPath` is. REST has no such "local machine" of its own to save the
+  key to, so it returns `admin_key_pem` to the browser directly, same as
+  before -- the TypeScript type carries both fields for this reason, mutually
+  exclusive by transport. This is accepted as the desktop path's answer to
+  the generated-admin-key wipe-ordering limitation other transports solve by
+  wiping after a synchronous write: the key is generated and saved locally
+  in Go, so there is nothing to wipe-after-write across the Wails IPC
+  boundary in the first place.
+
 ## App shell states
 
 `loading` → (`wizard` on first run) → `unseal` if sealed → `main`.
@@ -204,7 +235,15 @@ closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
   `e2e/fixtures/database-create-capture.ts`. On the Go side,
   `TestDatabaseBinding_CreateWithBarrierInitialisesIt` drives a barrier create
   through the binding into a real barrier manager and proves the passphrase it
-  sent is the one that unseals the database.
+  sent is the one that unseals the database. `ServerInitWizard`'s
+  ceremony.initialize flow is covered by `e2e/ceremony-init-wizard.spec.ts`
+  (mocked tier): the exact request for both passphrase and Shamir modes,
+  that holder collection makes no network call, that every holder's
+  certificate is shown from the single response, that a refusal returns to
+  the admin step without losing the already-collected holders, and that a
+  generated admin key is never printed on the page. `CeremonyBinding` itself,
+  including `saveAdminKeyLocally`'s local-file behavior, is covered by
+  `cmd/qrdb/bindings_ceremony_test.go` on the Go side.
 
 ## Observability
 
