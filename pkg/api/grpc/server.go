@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -49,16 +50,40 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
-// MaxImportMessageSize is the maximum gRPC message size accepted by the
-// server, sized to carry a BatchImport request's file payload. It mirrors
-// the REST /batch/import 100 MB bound plus headroom for the other
-// BatchImportRequest fields and protobuf/HTTP2 framing overhead. gRPC's
-// default max receive message size (4 MB) would otherwise reject any
-// import file larger than a few megabytes before the handler ever runs;
-// this option is applied to both the TCP gRPC server (this package) and
-// the Unix domain socket server, which shares this server's
-// QRDBServiceServer implementation.
+// MaxImportMessageSize is the maximum gRPC message size needed to carry a
+// BatchImport request's file payload. It mirrors the REST /batch/import
+// 100 MB bound plus headroom for the other BatchImportRequest fields and
+// protobuf/HTTP2 framing overhead.
+//
+// It is NOT applied by default (go-qrdb#576): grpc-go buffers an incoming
+// message up to the server's configured max receive size BEFORE any
+// interceptor -- so before authentication -- runs, so leaving every RPC able
+// to accept a 101 MiB message lets an unauthenticated peer force that much
+// allocation per call with no rate limit of its own. An embedder that needs
+// BatchImport over gRPC opts in explicitly with WithMaxImportMessageSize(
+// MaxImportMessageSize); every other RPC is bounded by DefaultMaxRecvMsgSize.
 const MaxImportMessageSize = 100<<20 + 1<<20
+
+// DefaultMaxRecvMsgSize is the server's default per-message receive bound
+// when WithMaxImportMessageSize is not used. It equals grpc-go's own
+// historical compiled-in default (4 MiB), made explicit here so it reads as
+// a chosen bound rather than an accident of the library.
+const DefaultMaxRecvMsgSize = 4 << 20
+
+// DefaultMaxConcurrentStreams bounds the number of simultaneously active
+// RPCs grpc-go admits on a single HTTP/2 connection. Stream creation (HEADERS
+// frames) happens in the HTTP/2 transport before any unary/stream
+// interceptor runs, so an unauthenticated peer that can open a connection
+// can otherwise open an unbounded number of concurrent streams on it. The
+// bound is generous for a legitimate multiplexing client and still finite.
+const DefaultMaxConcurrentStreams = uint32(1000)
+
+// DefaultKeepaliveMinTime is the minimum interval a client is permitted to
+// send keepalive pings on an otherwise idle connection (no active RPCs)
+// before grpc-go's keepalive enforcement policy closes the connection with
+// ENHANCE_YOUR_CALM. It bounds a ping-flood that would otherwise cost the
+// server a goroutine wakeup per ping with no rate limit of its own.
+const DefaultKeepaliveMinTime = 5 * time.Second
 
 // Server is the gRPC server for QRDB. It registers the QRDBService with
 // recovery and logging interceptors for both unary and streaming RPCs.
@@ -128,6 +153,15 @@ type Server struct {
 	// (WithListener, go-qrdb#374). When set, Start serves on it instead of
 	// binding addr. The server owns it from Start on.
 	preboundListener net.Listener
+
+	// maxRecvMsgSize is the server's configured max receive message size.
+	// Zero means DefaultMaxRecvMsgSize; see WithMaxImportMessageSize.
+	maxRecvMsgSize int
+
+	// maxConcurrentStreams is the server's configured per-connection stream
+	// cap. Zero means DefaultMaxConcurrentStreams; see
+	// WithMaxConcurrentStreams.
+	maxConcurrentStreams uint32
 }
 
 // ServerOption configures optional Server dependencies.
@@ -175,6 +209,26 @@ func WithTLS(cfg *tls.Config) ServerOption {
 				c.MinVersion = tls.VersionTLS13
 			}
 		})
+	}
+}
+
+// WithMaxImportMessageSize raises the server's max receive message size to n
+// bytes. Pass MaxImportMessageSize to accept BatchImport over gRPC; leaving
+// this option unset keeps every RPC bounded at DefaultMaxRecvMsgSize
+// (go-qrdb#576). n applies to every RPC the server exposes, not BatchImport
+// alone -- grpc-go has no per-method receive-size hook -- so an embedder that
+// opts in accepts the larger bound server-wide.
+func WithMaxImportMessageSize(n int) ServerOption {
+	return func(s *Server) {
+		s.maxRecvMsgSize = n
+	}
+}
+
+// WithMaxConcurrentStreams overrides DefaultMaxConcurrentStreams, the number
+// of simultaneously active RPCs grpc-go admits on one HTTP/2 connection.
+func WithMaxConcurrentStreams(n uint32) ServerOption {
+	return func(s *Server) {
+		s.maxConcurrentStreams = n
 	}
 }
 
@@ -565,10 +619,23 @@ func (s *Server) Start() error {
 		streamInterceptors = append(streamInterceptors,
 			sealedWindowStream(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
+	recvMsgSize := s.maxRecvMsgSize
+	if recvMsgSize == 0 {
+		recvMsgSize = DefaultMaxRecvMsgSize
+	}
+	maxStreams := s.maxConcurrentStreams
+	if maxStreams == 0 {
+		maxStreams = DefaultMaxConcurrentStreams
+	}
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
 		grpc.ChainStreamInterceptor(streamInterceptors...),
-		grpc.MaxRecvMsgSize(MaxImportMessageSize),
+		grpc.MaxRecvMsgSize(recvMsgSize),
+		grpc.MaxConcurrentStreams(maxStreams),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             DefaultKeepaliveMinTime,
+			PermitWithoutStream: false,
+		}),
 	}
 
 	// TLS credentials, unconditionally: Start returned TLSNotConfiguredError

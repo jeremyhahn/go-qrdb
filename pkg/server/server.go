@@ -301,6 +301,17 @@ type serverOptions struct {
 	restListener   net.Listener
 	restPacketConn net.PacketConn
 	grpcListener   net.Listener
+
+	// grpcMaxImportMessageSize and grpcMaxConcurrentStreams carry an
+	// embedder's explicit opt-in into the TCP gRPC and Unix socket servers'
+	// hardening bounds; see WithGRPCMaxImportMessageSize and
+	// WithGRPCMaxConcurrentStreams. Zero leaves each server's own default.
+	grpcMaxImportMessageSize int
+	grpcMaxConcurrentStreams uint32
+
+	// mcpMaxConnections overrides the MCP server's DefaultMaxConnections; see
+	// WithMCPMaxConnections. Zero leaves the MCP server's own default.
+	mcpMaxConnections int
 }
 
 // SealedWindowProbe is the abstraction the sealed-window middleware /
@@ -408,6 +419,36 @@ func WithRESTPacketConn(pc net.PacketConn) ServerOption {
 func WithGRPCListener(ln net.Listener) ServerOption {
 	return func(o *serverOptions) {
 		o.grpcListener = ln
+	}
+}
+
+// WithGRPCMaxImportMessageSize opts the TCP gRPC and Unix socket servers into
+// a max receive message size of n bytes, in place of their own
+// DefaultMaxRecvMsgSize (go-qrdb#576). Pass grpcapi.MaxImportMessageSize to
+// accept BatchImport over gRPC or the Unix socket; n then applies to every
+// RPC both servers expose, not BatchImport alone, since grpc-go has no
+// per-method receive-size hook.
+func WithGRPCMaxImportMessageSize(n int) ServerOption {
+	return func(o *serverOptions) {
+		o.grpcMaxImportMessageSize = n
+	}
+}
+
+// WithGRPCMaxConcurrentStreams overrides the TCP gRPC and Unix socket
+// servers' DefaultMaxConcurrentStreams, the number of simultaneously active
+// RPCs grpc-go admits on one HTTP/2 connection.
+func WithGRPCMaxConcurrentStreams(n uint32) ServerOption {
+	return func(o *serverOptions) {
+		o.grpcMaxConcurrentStreams = n
+	}
+}
+
+// WithMCPMaxConnections overrides the MCP server's DefaultMaxConnections, the
+// number of simultaneously open connections its /mcp listener admits
+// (go-qrdb#576).
+func WithMCPMaxConnections(n int) ServerOption {
+	return func(o *serverOptions) {
+		o.mcpMaxConnections = n
 	}
 }
 
@@ -1814,6 +1855,12 @@ func (s *Server) startGRPC() error {
 		}
 		grpcOpts = append(grpcOpts, grpcapi.WithListener(ln))
 	}
+	if s.opts.grpcMaxImportMessageSize != 0 {
+		grpcOpts = append(grpcOpts, grpcapi.WithMaxImportMessageSize(s.opts.grpcMaxImportMessageSize))
+	}
+	if s.opts.grpcMaxConcurrentStreams != 0 {
+		grpcOpts = append(grpcOpts, grpcapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
+	}
 	if s.opts.userSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithUserService(s.opts.userSvc))
 	}
@@ -2079,6 +2126,12 @@ func (s *Server) startUnix() error {
 		return err
 	}
 	unixOpts = append(unixOpts, unixapi.WithTLS(tlsCfg))
+	if s.opts.grpcMaxImportMessageSize != 0 {
+		unixOpts = append(unixOpts, unixapi.WithMaxImportMessageSize(s.opts.grpcMaxImportMessageSize))
+	}
+	if s.opts.grpcMaxConcurrentStreams != 0 {
+		unixOpts = append(unixOpts, unixapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
+	}
 	if s.opts.userSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserService(s.opts.userSvc))
 	}
@@ -2218,6 +2271,9 @@ func (s *Server) startMCP() error {
 		return err
 	}
 	mcpOpts = append(mcpOpts, mcpapi.WithTLS(tlsCfg))
+	if s.opts.mcpMaxConnections != 0 {
+		mcpOpts = append(mcpOpts, mcpapi.WithMaxConnections(s.opts.mcpMaxConnections))
+	}
 	if s.opts.authMW != nil {
 		// Authenticate the mTLS peer and authorize every tool call
 		// (default-deny). Parity with REST/gRPC/QUIC.

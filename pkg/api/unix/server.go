@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
@@ -110,10 +111,37 @@ type Server struct {
 	server               *grpc.Server
 	listener             net.Listener
 	serveWg              sync.WaitGroup
+
+	// maxRecvMsgSize is the server's configured max receive message size.
+	// Zero means grpcpkg.DefaultMaxRecvMsgSize; see WithMaxImportMessageSize.
+	maxRecvMsgSize int
+
+	// maxConcurrentStreams is the server's configured per-connection stream
+	// cap. Zero means grpcpkg.DefaultMaxConcurrentStreams; see
+	// WithMaxConcurrentStreams.
+	maxConcurrentStreams uint32
 }
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithMaxImportMessageSize raises the server's max receive message size to n
+// bytes, exactly as the TCP gRPC server's option of the same name
+// (pkg/api/grpc.WithMaxImportMessageSize) -- see its doc comment for why the
+// default is bounded and what opting in costs.
+func WithMaxImportMessageSize(n int) ServerOption {
+	return func(s *Server) {
+		s.maxRecvMsgSize = n
+	}
+}
+
+// WithMaxConcurrentStreams overrides grpcpkg.DefaultMaxConcurrentStreams, the
+// number of simultaneously active RPCs grpc-go admits on one connection.
+func WithMaxConcurrentStreams(n uint32) ServerOption {
+	return func(s *Server) {
+		s.maxConcurrentStreams = n
+	}
+}
 
 // WithTLS configures the Unix socket gRPC server with TLS credentials.
 // The Unix transport is "verified TLS 1.3 only": the socket-file mode
@@ -570,10 +598,23 @@ func (s *Server) Start() error {
 		streamInterceptors = append(streamInterceptors, sealedStream)
 	}
 
+	recvMsgSize := s.maxRecvMsgSize
+	if recvMsgSize == 0 {
+		recvMsgSize = grpcpkg.DefaultMaxRecvMsgSize
+	}
+	maxStreams := s.maxConcurrentStreams
+	if maxStreams == 0 {
+		maxStreams = grpcpkg.DefaultMaxConcurrentStreams
+	}
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
 		grpc.ChainStreamInterceptor(streamInterceptors...),
-		grpc.MaxRecvMsgSize(grpcpkg.MaxImportMessageSize),
+		grpc.MaxRecvMsgSize(recvMsgSize),
+		grpc.MaxConcurrentStreams(maxStreams),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             grpcpkg.DefaultKeepaliveMinTime,
+			PermitWithoutStream: false,
+		}),
 	}
 
 	// TLS credentials, unconditionally: the Unix transport is TLS-only, and

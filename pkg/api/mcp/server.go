@@ -26,6 +26,7 @@ import (
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"golang.org/x/net/netutil"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
@@ -139,7 +140,19 @@ type Server struct {
 	// ProtectedResourceMetadataPath. The embedder supplies the document;
 	// qrdb performs no OAuth processing of its own.
 	protectedResourceMetadata []byte
+
+	// maxConnections bounds the number of simultaneously open TCP connections
+	// to the /mcp listener. Zero means DefaultMaxConnections; see
+	// WithMaxConnections.
+	maxConnections int
 }
+
+// DefaultMaxConnections bounds simultaneously open connections to the MCP
+// listener when WithMaxConnections is not used. Each accepted connection can
+// read a full request body up to requestBodyLimit before authenticating
+// (go-qrdb#576), so an unbounded connection count turns a request-body bound
+// into only a per-connection one; this caps the aggregate.
+const DefaultMaxConnections = 1024
 
 // ProtectedResourceMetadataPath is the well-known path at which the
 // embedder-supplied RFC 9728 Protected Resource Metadata document is served
@@ -178,6 +191,14 @@ func WithTLS(cfg *tls.Config) ServerOption {
 				c.MinVersion = tls.VersionTLS13
 			}
 		})
+	}
+}
+
+// WithMaxConnections overrides DefaultMaxConnections, the number of
+// simultaneously open connections the /mcp listener admits.
+func WithMaxConnections(n int) ServerOption {
+	return func(s *Server) {
+		s.maxConnections = n
 	}
 }
 
@@ -748,6 +769,16 @@ func (s *Server) Start() error {
 	if err != nil {
 		return &StartError{Addr: s.addr, Err: err}
 	}
+
+	// Bound the number of simultaneously open connections BEFORE anything
+	// else touches them: an unauthenticated caller can hold a connection open
+	// without ever completing a request, and the request-body bound below
+	// only limits what ONE connection can cost (go-qrdb#576).
+	maxConns := s.maxConnections
+	if maxConns == 0 {
+		maxConns = DefaultMaxConnections
+	}
+	ln = netutil.LimitListener(ln, maxConns)
 
 	// Report every accepted connection to the modules that observe them.
 	// Wrapped BENEATH the TLS listener, so http.Server still sees a *tls.Conn.
