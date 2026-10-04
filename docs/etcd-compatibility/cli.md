@@ -37,9 +37,9 @@ reports `unknown command` — and `database create` has no `--etcd`,
 mirrors this on every transport, CLI included: enabling etcd on any database
 — through `create`, `update-etcd`, or a YAML `databases[].etcd` block in
 `qrdbd`'s own configuration file — is refused before anything is persisted,
-with a typed error whose message is `database: etcd wire protocol not
-compiled in: requires build tag qrdb_etcd`, rather than accepting the
-setting and never actually starting a listener.
+with a typed error whose message, exactly as printed, is `service: database:
+etcd wire protocol not compiled in: requires build tag qrdb_etcd`, rather
+than accepting the setting and never actually starting a listener.
 
 ## Driving it with etcd's own tools
 
