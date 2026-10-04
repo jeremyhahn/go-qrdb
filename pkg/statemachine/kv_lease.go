@@ -97,18 +97,6 @@ func (k *KVStateMachine) bound(key []byte) bool {
 	return k.lessor.LeaseOf(key) != lease.NoLease
 }
 
-// leaseRefusal returns the result that refuses a write naming a lease this
-// state machine does not hold, as an application error every replica returns
-// alike. lease.NoLease is always accepted.
-func (k *KVStateMachine) leaseRefusal(leaseIDs ...int64) (sm.Result, bool) {
-	for _, id := range leaseIDs {
-		if id != lease.NoLease && !k.lessor.Has(id) {
-			return sm.Result{Data: protocol.EncodeLeaseNotFoundError(id)}, true
-		}
-	}
-	return sm.Result{}, false
-}
-
 // restoreLessor rebuilds the Lessor's in-memory state from the lease table in
 // the backend. A table that does not read or validate is returned and leaves
 // the Lessor as it was: the table is the only record of which keys a lease
@@ -225,7 +213,7 @@ func (k *KVStateMachine) handleNativeMVCCPut(payload []byte, revision uint64) (s
 	if kerr := validateClientKey("put", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
-	if res, refused := k.leaseRefusal(leaseID); refused {
+	if res, refused := LeaseRefusal(k.lessor, leaseID); refused {
 		return res, nil
 	}
 	muts := []Mutation{{Key: key, Value: value}}

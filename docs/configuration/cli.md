@@ -56,7 +56,7 @@ config: unknown key "storage.cach_size" in /etc/qrdb/qrdb.yaml:14
 | `--compaction-overhead` | `raft.compaction_overhead` |
 | `--max-in-mem-log-size` | `raft.max_in_mem_log_size` |
 | `--max-total-in-mem-log-size` | `raft.max_total_in_mem_log_size` |
-| `--sm` | `raft.sm_type` — `pebble` (default), `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf` or `regular`; every type serves transactions and guarded batches ([what differs](../run-modes/architecture.md#raft--single--or-multi-node)) |
+| `--sm` | `raft.sm_type` — `pebble` (default), `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk` or `highperf`; every type serves transactions, guarded batches and durable leases ([what differs](../run-modes/architecture.md#raft--single--or-multi-node)). The legacy `regular` is refused at start (`SMLeasesUnsupportedError`): it keeps no leases, which cluster membership requires; use `standard` |
 | `--tls-ca-file` | `tls.ca_file` |
 | `--tls-cert-file` | `tls.cert_file` |
 | `--tls-key-file` | `tls.key_file` |

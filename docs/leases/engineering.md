@@ -323,7 +323,11 @@ keep-alive starts returning not-found does anyway.
   own storage, and a corrupt table fails its open. Removing any one of the
   table restore on snapshot recovery, the restore on open, the release on a
   plain write, the reset on create, the revoke's deletes, or the client-write
-  refusal turns a case red.
+  refusal turns a case red. `kv_lease_bytes_lookup_test.go` holds the
+  non-allocating point reads to the same rule: go-quicraft routes a `[]byte`
+  query to `BytesLookup`, not `Lookup`, so the disk and highperf adapters'
+  `BytesLookup` (and highperf's `BytesLookupInto`) return nothing for the
+  `seq`, `l/<id>` and `b/<key>` records.
 - **State machine**: `pkg/store/lease_binding_test.go` runs every case against
   both lease-capable state machines through committed commands only. It covers
   re-put under another lease, re-put without a lease, base KV put,

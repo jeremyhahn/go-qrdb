@@ -79,13 +79,23 @@ func (a *HighPerfAdapter) GetHash() (uint64, error) {
 }
 
 // BytesLookup implements sm.NALookup for zero-allocation point lookups.
+// go-quicraft's rsm routes a []byte query here rather than to Lookup, so a
+// state machine key reads as absent here too, exactly as it does through
+// lookupKey.
 func (a *HighPerfAdapter) BytesLookup(key []byte) ([]byte, error) {
+	if isStateMachineKey(key) {
+		return nil, nil
+	}
 	return a.backend.BytesLookup(key)
 }
 
 // BytesLookupInto implements sm.NALookupInto for zero-allocation point
-// lookups with a caller-provided destination buffer.
+// lookups with a caller-provided destination buffer. A state machine key
+// reads as absent, as through BytesLookup.
 func (a *HighPerfAdapter) BytesLookupInto(key, dst []byte) ([]byte, error) {
+	if isStateMachineKey(key) {
+		return nil, nil
+	}
 	return a.backend.BytesLookupInto(key, dst)
 }
 

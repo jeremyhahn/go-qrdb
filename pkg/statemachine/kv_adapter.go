@@ -303,7 +303,14 @@ func (a *DiskAdapter) GetHash() (uint64, error) {
 
 // BytesLookup implements sm.NALookup.BytesLookup. It performs a
 // non-allocating point lookup by key.
+//
+// go-quicraft's rsm routes a []byte query here rather than to Lookup, so a
+// state machine key reads as absent here too, exactly as it does through
+// lookupKey.
 func (a *DiskAdapter) BytesLookup(key []byte) ([]byte, error) {
+	if isStateMachineKey(key) {
+		return nil, nil
+	}
 	val, err := a.backend.Get(key)
 	if err != nil {
 		return nil, err
