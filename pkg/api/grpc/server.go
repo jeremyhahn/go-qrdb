@@ -582,6 +582,12 @@ func (s *Server) Start() error {
 	// through unauthenticated during the sealed window — possession of
 	// the unseal credential is the authorization (Vault model).
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		// Unconditional (go-qrdb#560 review C): a node with NO AuthMiddleware
+		// configured still runs the SO PIN gate on ceremony-initialize's
+		// admin-credential retry, which needs a per-source identity for
+		// auth.CallerPrincipal's lockout regardless of whether anything else
+		// here authenticates the caller. See RemoteAddrUnaryInterceptor.
+		authmw.RemoteAddrUnaryInterceptor,
 		recoveryInterceptor,
 		loggingInterceptor,
 		DatabaseScopeUnaryInterceptor,

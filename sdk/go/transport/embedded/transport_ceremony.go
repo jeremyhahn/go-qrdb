@@ -58,6 +58,14 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if req == nil {
 		return nil, &InvalidRequestError{Method: "CeremonyInitialize"}
 	}
+	// The embedded transport's one fixed source (go-qrdb#560 review C):
+	// there is no network peer to derive a per-caller address from, but an
+	// unauthenticated SO PIN check still must not share auth.CallerPrincipal's
+	// "" bucket with every other transport's own anonymous callers on this
+	// same node -- an embedder guessing the node SO PIN through this
+	// in-process call must not be able to lock out a REST or gRPC caller
+	// guessing from a different source, or vice versa.
+	ctx = auth.WithRemoteAddr(ctx, "embedded")
 	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, holderwire.CeremonyInitFrom(req))
 	if err != nil {
 		return nil, delayed("CeremonyInitialize", err)
@@ -139,6 +147,10 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if req == nil {
 		return nil, &InvalidRequestError{Method: "CeremonySignCSR"}
 	}
+	// See CeremonyInitialize's identical injection: this is also an SO
+	// PIN check (req.SOPin), so it needs the same fixed per-transport
+	// source (go-qrdb#560 review C).
+	ctx = auth.WithRemoteAddr(ctx, "embedded")
 	result, err := t.ceremonySvc.CeremonySignCSR(ctx, req.Username, req.SOPin, req.CSRPEM, req.Role)
 	if err != nil {
 		return nil, delayed("CeremonySignCSR", err)

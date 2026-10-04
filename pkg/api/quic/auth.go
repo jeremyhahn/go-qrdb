@@ -27,10 +27,21 @@ import (
 )
 
 // withConnectionState injects the QUIC connection's TLS state into the
-// context for the auth middleware.
+// context for the auth middleware, along with the connection's remote
+// address (go-qrdb#560 review C) for auth.CallerPrincipal's anonymous
+// fallback. Both are injected here, UNCONDITIONALLY, before the
+// awaiting-admin-credential gate in server.go's request dispatch -- the one
+// gate that skips authentication entirely for a method it allows, which is
+// exactly the caller CallerPrincipal would otherwise classify as the one
+// shared "" anonymous principal, letting one peer's wrong guesses lock out
+// every other peer's legitimate attempts on this listener.
 func withConnectionState(ctx context.Context, conn *quicgo.Conn) context.Context {
 	tlsState := conn.ConnectionState().TLS
-	return auth.WithTLSState(ctx, &tlsState)
+	ctx = auth.WithTLSState(ctx, &tlsState)
+	if addr := conn.RemoteAddr(); addr != nil {
+		ctx = auth.WithRemoteAddr(ctx, addr.String())
+	}
+	return ctx
 }
 
 // authenticate extracts the TLS peer certificate from the QUIC connection

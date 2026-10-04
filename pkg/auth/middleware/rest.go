@@ -49,6 +49,15 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		// The caller's remote address (go-qrdb#560 review C), injected
+		// unconditionally and before the public-allowlist short-circuit
+		// below: an unauthenticated SO PIN check -- ceremony-initialize's
+		// admin-credential retry is on the public allowlist -- still needs
+		// a per-source identity for auth.CallerPrincipal's lockout, or
+		// every anonymous caller on this transport would share one lockout
+		// bucket regardless of which remote address is actually guessing.
+		ctx = auth.WithRemoteAddr(ctx, r.RemoteAddr)
+
 		// Inject TLS connection state into context so the mTLS
 		// authenticator can extract peer certificate identity.
 		if r.TLS != nil {

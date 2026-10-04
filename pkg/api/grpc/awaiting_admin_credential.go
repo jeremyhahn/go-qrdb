@@ -94,6 +94,16 @@ func ChainStreamServerInterceptors(interceptors ...grpc.StreamServerInterceptor)
 // rather than reimplementing it.
 func AwaitingAdminCredentialUnaryInterceptor(probe awaitingAdminCredentialProbe, allowlist map[string]struct{}, chain grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		// The caller's remote address (go-qrdb#560 review C) is injected
+		// HERE, unconditionally and before the awaiting check: a reissue
+		// reaching ceremony-initialize while awaiting takes the bypass
+		// below, straight to handler, skipping chain entirely -- and with
+		// it chain's own InjectGRPCRemoteAddr (pkg/auth/middleware), since
+		// there is no bound identity to authenticate as. Without this,
+		// every awaiting-mode SO PIN check would fall back to
+		// auth.CallerPrincipal's "" and share one lockout bucket across
+		// every unauthenticated caller on this listener.
+		ctx = authmw.InjectGRPCRemoteAddr(ctx)
 		if probe == nil || !probe.AwaitingAdminCredential() {
 			return chain(ctx, req, info, handler)
 		}

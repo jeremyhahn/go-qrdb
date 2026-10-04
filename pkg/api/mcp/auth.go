@@ -40,6 +40,17 @@ import (
 // the identity is always already bound and this hook only reuses it. It
 // remains the tool gate's second line, not its first.
 func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.Context {
+	// The caller's remote address (go-qrdb#560 review C), injected first
+	// and unconditionally: this hook is the ONE place every MCP HTTP
+	// request's context is built, reached regardless of whether auth
+	// middleware is configured or the awaiting-admin-credential gate later
+	// restricts which tools are callable. Without it, an unauthenticated SO
+	// PIN check here -- ceremony-initialize's admin-credential retry -- would
+	// fall back to auth.CallerPrincipal's "" and share one lockout bucket
+	// with every other unauthenticated source reaching this listener.
+	if r != nil {
+		ctx = auth.WithRemoteAddr(ctx, r.RemoteAddr)
+	}
 	// The SO second factor rides the HTTP request, and this hook is the one
 	// place the tool path can see it. It is bound before the early return
 	// below so a request authenticateHandler already authenticated carries

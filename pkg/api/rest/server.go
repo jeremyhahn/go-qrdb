@@ -1055,6 +1055,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// path. See canonicalPathMiddleware. The HTTP/3 server serves this same
 	// handler, so both listeners get it.
 	handler = canonicalPathMiddleware(handler)
+	// TRULY outermost: remoteAddrMiddleware wraps even canonicalPathMiddleware,
+	// so it runs ahead of the awaiting-admin-credential gate's bypass to the
+	// raw router above -- the one path a bound identity's own TLS-state
+	// injection (RESTMiddleware) never reaches. See its doc for why.
+	handler = remoteAddrMiddleware(handler)
 
 	s.server = &http.Server{
 		Handler:      handler,

@@ -34,12 +34,19 @@ import (
 //
 // Each key (the node, or a tenant) counts:
 //
-//   - one anonymous counter, for checks made by a caller that is neither
-//     authenticated nor presenting a TLS-verified certificate -- the
-//     sealed-window caller;
-//   - one counter PER AUTHENTICATED PRINCIPAL (CallerPrincipal): the
-//     authenticated identity, or else the verified client certificate;
-//   - one aggregate cap over every authenticated principal together.
+//   - one counter PER PRINCIPAL (CallerPrincipal): the authenticated
+//     identity, the verified client certificate, or -- for a caller that is
+//     neither, such as the sealed-window caller or an
+//     awaiting-admin-credential reissue -- the caller's own remote address
+//     (go-qrdb#560 review C), so that one source's wrong guesses never lock
+//     out a different, unrelated source making the identical kind of
+//     anonymous check;
+//   - one anonymous counter shared only by checks made under a context that
+//     carries no identity, certificate OR remote address at all -- every
+//     production transport records one, so this is reached only when a
+//     caller (chiefly a test) builds its own bare context;
+//   - one aggregate cap over every principal with a recorded identity
+//     together (anything other than the bare anonymous counter above).
 //
 // Only a wrong PIN counts. The first SOPINFreeFailures failures in a row on a
 // counter cost nothing; every failure from then on locks that counter for a
@@ -182,14 +189,24 @@ func (e *SOPINLockedError) Error() string {
 func (e *SOPINLockedError) Unwrap() error { return ErrSOPINLocked }
 
 // CallerPrincipal names the principal an SO PIN check made under ctx counts
-// against, and "" for an anonymous caller. An authenticated identity the
-// sealed window did not admit anonymously is "id:<tenant>/<subject>", or
-// "holder:<tenant>/<subject>" when it authenticated with a holder certificate
-// (IsHolderIdentity) -- a holder named "alice" is not the user alice, and
-// shares neither her counter nor her known-good status;
-// otherwise a TLS connection whose certificate the TLS stack verified is
-// "cert:<SHA-256 of the leaf certificate>". Each distinct principal has its
-// own lockout counter, so one principal's wrong PINs never lock another out.
+// against. An authenticated identity the sealed window did not admit
+// anonymously is "id:<tenant>/<subject>", or "holder:<tenant>/<subject>"
+// when it authenticated with a holder certificate (IsHolderIdentity) -- a
+// holder named "alice" is not the user alice, and shares neither her
+// counter nor her known-good status; otherwise a TLS connection whose
+// certificate the TLS stack verified is "cert:<SHA-256 of the leaf
+// certificate>". Each distinct principal has its own lockout counter, so
+// one principal's wrong PINs never lock another out.
+//
+// A caller that is NEITHER authenticated NOR presenting a TLS-verified
+// certificate -- the sealed-window caller, or an awaiting-admin-credential
+// reissue, both of which run before any identity binds -- falls back to
+// "addr:<remote>" when WithRemoteAddr recorded one (go-qrdb#560 review C):
+// without a per-source identity here, every such caller on a listener
+// shared this ONE "" bucket, so one source's wrong guesses locked out every
+// other source's legitimate attempts. Only a ctx with no remote address at
+// all (a context no transport ever decorated, as in most unit tests) falls
+// all the way back to "".
 func CallerPrincipal(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -213,6 +230,9 @@ func CallerPrincipal(ctx context.Context) string {
 	if st := TLSStateFromContext(ctx); st != nil && len(st.VerifiedChains) > 0 && len(st.VerifiedChains[0]) > 0 {
 		sum := sha256.Sum256(st.VerifiedChains[0][0].Raw)
 		return "cert:" + hex.EncodeToString(sum[:])
+	}
+	if addr, ok := RemoteAddrFromContext(ctx); ok {
+		return "addr:" + addr
 	}
 	return ""
 }

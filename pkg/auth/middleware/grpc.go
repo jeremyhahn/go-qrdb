@@ -296,9 +296,37 @@ func (w *wrappedStream) Context() context.Context {
 	return w.ctx
 }
 
-// injectTLSState extracts TLS connection state from the gRPC peer info
-// and stores it in the context for the mTLS authenticator. Returns the
-// context unchanged if no TLS info is available.
+// InjectGRPCRemoteAddr carries the gRPC peer's network address into ctx
+// through auth.WithRemoteAddr, the per-source fallback auth.CallerPrincipal
+// uses for an SO PIN check made by a caller neither authenticated nor
+// presenting a TLS-verified certificate (go-qrdb#560 review C). Unix shares
+// this helper, so a Unix domain socket peer's address (a constant pseudo-
+// address Go's net package reports for every unnamed client socket, since a
+// unix socket carries no routable per-connection identity) is injected the
+// same way -- distinct from every OTHER transport's own address format, if
+// not from one Unix connection to the next.
+func InjectGRPCRemoteAddr(ctx context.Context) context.Context {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return ctx
+	}
+	return auth.WithRemoteAddr(ctx, p.Addr.String())
+}
+
+// RemoteAddrUnaryInterceptor is InjectGRPCRemoteAddr as a
+// grpc.UnaryServerInterceptor, installed UNCONDITIONALLY -- regardless of
+// whether AuthMiddleware itself is configured -- at the front of both the
+// gRPC and Unix transports' own interceptor chains (go-qrdb#560 review C).
+// A node with auth entirely disabled still runs the SO PIN gate on
+// ceremony-initialize's admin-credential retry, and that gate is exactly
+// the case this fixes: with no AuthMiddleware there is no UnaryInterceptor
+// to carry the injection, so without this standalone interceptor such a
+// node's anonymous callers would silently fall back to sharing ONE lockout
+// bucket again.
+func RemoteAddrUnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return handler(InjectGRPCRemoteAddr(ctx), req)
+}
+
 func injectTLSState(ctx context.Context) context.Context {
 	p, ok := peer.FromContext(ctx)
 	if !ok {

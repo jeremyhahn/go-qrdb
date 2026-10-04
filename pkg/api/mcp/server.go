@@ -821,14 +821,17 @@ func (s *Server) Start() error {
 	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
 
-	// Create the Streamable HTTP handler from the MCP server. When auth is
-	// configured, install the HTTP context func that authenticates the mTLS
-	// peer and injects the resulting identity into the per-request context so
-	// the tool-handler authorization middleware can enforce permissions.
-	var streamOpts []mcpserver.StreamableHTTPOption
-	if s.authMW != nil || s.soGate != nil {
-		streamOpts = append(streamOpts, mcpserver.WithHTTPContextFunc(s.authHTTPContext))
-	}
+	// Create the Streamable HTTP handler from the MCP server. The HTTP
+	// context func is installed UNCONDITIONALLY (go-qrdb#560 review C):
+	// authHTTPContext's remote-address injection must run even with NO
+	// AuthMiddleware and NO SO gate configured, because a node with auth
+	// entirely disabled still runs the SO PIN gate on ceremony-initialize's
+	// admin-credential retry, which needs a per-source identity for
+	// auth.CallerPrincipal's lockout regardless of whether anything else
+	// here authenticates the caller. authHTTPContext itself remains a
+	// no-op for authentication purposes when s.authMW is nil (its own
+	// early return), so this adds no behavior beyond that injection.
+	streamOpts := []mcpserver.StreamableHTTPOption{mcpserver.WithHTTPContextFunc(s.authHTTPContext)}
 	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
 
 	// The MCP endpoint handler, from the outside in:

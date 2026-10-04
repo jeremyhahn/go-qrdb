@@ -575,6 +575,10 @@ func (s *Server) Start() error {
 	// letting RBAC-gated RPCs bypass authorization on this transport; it
 	// is now applied identically to TCP gRPC.
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		// Unconditional (go-qrdb#560 review C): see pkg/api/grpc/server.go's
+		// identical entry -- a node with no AuthMiddleware still runs the SO
+		// PIN gate on ceremony-initialize's admin-credential retry.
+		authmw.RemoteAddrUnaryInterceptor,
 		recoveryInterceptor,
 		loggingInterceptor,
 		grpcpkg.DatabaseScopeUnaryInterceptor,
