@@ -72,6 +72,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // coldSealedWindowProtocols is the set of CLI-selectable transports able to
@@ -443,9 +445,9 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 
 			// Officers register against the sealed-window listener (no RBAC
 			// there) over the SAME protocol under test.
-			alice := registerOfficer(t, node.cli, workDir, flags, "alice-"+proto.name, false)
-			bob := registerOfficer(t, node.cli, workDir, flags, "bob-"+proto.name, false)
-			registerOfficer(t, node.cli, workDir, flags, "carol-"+proto.name, false)
+			alice := registerOfficer(t, node.cli, workDir, flags, systemScope(transport.DomainUnseal), "alice-"+proto.name)
+			bob := registerOfficer(t, node.cli, workDir, flags, systemScope(transport.DomainUnseal), "bob-"+proto.name)
+			registerOfficer(t, node.cli, workDir, flags, systemScope(transport.DomainUnseal), "carol-"+proto.name)
 
 			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
 				"barrier", "init-shamir",
@@ -464,10 +466,10 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 			node.waitForFullBoot(t)
 
 			ep := endpoint{serverURL: node.serverURLFor(proto), caFile: node.ca.CertPath}
-			claimEnvelope(t, node.cli, workDir, ep, alice, false)
-			claimEnvelope(t, node.cli, workDir, ep, bob, false)
+			claimEnvelope(t, node.cli, workDir, ep, systemScope(transport.DomainUnseal), alice)
+			claimEnvelope(t, node.cli, workDir, ep, systemScope(transport.DomainUnseal), bob)
 
-			quorumAll(t, node.cli, ep, "unseal", "seal", alice, bob)
+			quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "seal", alice, bob)
 			status = barrierStatus(t, node.cli, flags)
 			if !status.Sealed {
 				t.Fatalf("[%s] expected barrier to be sealed after the seal quorum", proto.name)
@@ -475,7 +477,7 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 
 			// A below-threshold round is progress, not an error, and leaves
 			// the barrier sealed.
-			if out := quorumAll(t, node.cli, ep, "unseal", "unseal", alice); out.Complete {
+			if out := quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "unseal", alice); out.Complete {
 				t.Fatalf("[%s] one of two submissions completed the round: %+v", proto.name, out)
 			}
 			status = barrierStatus(t, node.cli, flags)
@@ -483,7 +485,7 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] a below-threshold round must not unseal the barrier", proto.name)
 			}
 
-			if out := quorumAll(t, node.cli, ep, "unseal", "unseal", bob); !out.Complete {
+			if out := quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "unseal", bob); !out.Complete {
 				t.Fatalf("[%s] the second submission did not complete the round: %+v", proto.name, out)
 			}
 			status = barrierStatus(t, node.cli, flags)
@@ -491,7 +493,7 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] expected barrier to be unsealed after the unseal quorum", proto.name)
 			}
 
-			if out := quorumAll(t, node.cli, ep, "unseal", "root-token", alice, bob); !out.Complete || out.RootToken == "" {
+			if out := quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "root-token", alice, bob); !out.Complete || out.RootToken == "" {
 				t.Fatalf("[%s] root-token round = %+v, want a root token", proto.name, out)
 			}
 

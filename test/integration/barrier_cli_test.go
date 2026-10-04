@@ -345,16 +345,62 @@ func barrierHasRecoveryKeys(t *testing.T, cli string, flags []string) bool {
 	return resp.HasKeys
 }
 
-// quorumAll submits each holder's claimed envelope to the op's quorum round,
-// in order, and returns the last outcome. `barrier seal` unconditionally
-// rejects a Shamir-protected barrier (ErrShamirBarrierRequiresQuorum); the
-// quorum is the only way to seal, unseal, mint a root token or complete a
-// rekey on one.
-func quorumAll(t *testing.T, cli string, ep endpoint, domain, op string, holders ...*officer) *transport.QuorumOutcome {
+// barrierScope names one holderTarget's CLI surface: the command words
+// that reach its officer/quorum/rekey verbs, and the flag (and value) that
+// binds them to one barrier instance. cmd/qrdb/barrier_holders.go's
+// holderTarget backs the system (barrier --domain), tenant (tenant
+// barrier-officer --tenant-id) and database (database barrier-officer
+// --database) scopes with one implementation each; this lets every
+// share-holder helper below drive all three through a single parameter
+// instead of one copy per scope.
+type barrierScope struct {
+	officer []string
+	quorum  []string
+	rekey   []string
+	flag    string
+	value   string
+}
+
+// scopeArgs returns the flag/value pair that selects s's barrier
+// instance, appended after a verb's own flags.
+func (s barrierScope) scopeArgs() []string {
+	return []string{s.flag, s.value}
+}
+
+// systemScope is the system barrier in the given quorum domain ("unseal"
+// or "recovery").
+func systemScope(domain string) barrierScope {
+	return barrierScope{
+		officer: []string{"barrier", "officer"},
+		quorum:  []string{"barrier", "quorum"},
+		rekey:   []string{"barrier", "rekey"},
+		flag:    "--domain",
+		value:   domain,
+	}
+}
+
+// databaseScope is database dbName's barrier, resolved in the caller's
+// tenant.
+func databaseScope(dbName string) barrierScope {
+	return barrierScope{
+		officer: []string{"database", "barrier-officer"},
+		quorum:  []string{"database", "barrier-quorum"},
+		rekey:   []string{"database", "barrier-rekey"},
+		flag:    "--database",
+		value:   dbName,
+	}
+}
+
+// quorumAll submits each holder's claimed envelope to the op's quorum
+// round, in order, and returns the last outcome. A Shamir-protected
+// barrier unconditionally rejects a single-caller seal/unseal; the quorum
+// is the only way to seal, unseal, mint a root token or complete a rekey
+// on one.
+func quorumAll(t *testing.T, cli string, ep endpoint, scope barrierScope, op string, holders ...*officer) *transport.QuorumOutcome {
 	t.Helper()
 	var out *transport.QuorumOutcome
 	for _, h := range holders {
-		o, stderr, err := quorumSubmit(t, cli, ep, domain, op, h)
+		o, stderr, err := quorumSubmit(t, cli, ep, scope, op, h)
 		if err != nil {
 			t.Fatalf("quorum submit --op %s %s: %v\nstderr: %s", op, h.username, err, stderr)
 		}
@@ -363,13 +409,16 @@ func quorumAll(t *testing.T, cli string, ep endpoint, domain, op string, holders
 	return out
 }
 
-// quorumSubmit submits one holder's claimed envelope to the op's round over
-// the holder's own connection, answering the mtls factor with its key.
-func quorumSubmit(t *testing.T, cli string, ep endpoint, domain, op string, h *officer) (*transport.QuorumOutcome, string, error) {
+// quorumSubmit submits one holder's claimed envelope to the op's round,
+// over the holder's own connection, presenting its certificate for the
+// mtls factor.
+func quorumSubmit(t *testing.T, cli string, ep endpoint, scope barrierScope, op string, h *officer) (*transport.QuorumOutcome, string, error) {
 	t.Helper()
-	args := append(h.flags(ep), "--output", "json", "barrier", "quorum", "submit",
-		"--domain", domain, "--op", op, "--username", h.username,
+	args := append(h.flags(ep), "--output", "json")
+	args = append(args, scope.quorum...)
+	args = append(args, "submit", "--op", op, "--username", h.username,
 		"--envelope", h.envelope, "--key", h.keyPath)
+	args = append(args, scope.scopeArgs()...)
 	stdout, stderr, err := runCLISplit(t, cli, args...)
 	if err != nil {
 		return nil, stderr, err
@@ -478,20 +527,17 @@ func signNonceASN1(t *testing.T, key *ecdsa.PrivateKey, nonce []byte) []byte {
 	return sig
 }
 
-// registerOfficer generates a CSR for username, registers it against the
-// barrier's officer registry using the admin identity, and writes the
-// server-signed certificate alongside the officer's own private key. When
-// recovery is true the `barrier recovery officer` scope is used instead of
-// the unseal `barrier officer` scope.
-func registerOfficer(t *testing.T, cli, dir string, adminFlags []string, username string, recovery bool) *officer {
+// registerOfficer generates a CSR for username, registers it against
+// scope's officer registry using the admin identity, and writes the
+// server-signed certificate alongside the officer's own private key.
+func registerOfficer(t *testing.T, cli, dir string, adminFlags []string, scope barrierScope, username string) *officer {
 	t.Helper()
 	csrPath, key := generateOfficerCSR(t, dir, username)
 
-	args := append(append([]string{}, adminFlags...), "--output", "json", "barrier", "officer", "register",
-		"--username", username, "--csr-file", csrPath)
-	if recovery {
-		args = append(args, "--domain", "recovery")
-	}
+	args := append(append([]string{}, adminFlags...), "--output", "json")
+	args = append(args, scope.officer...)
+	args = append(args, "register", "--username", username, "--csr-file", csrPath)
+	args = append(args, scope.scopeArgs()...)
 
 	stdout, stderr, err := runCLISplit(t, cli, args...)
 	if err != nil {
@@ -510,15 +556,12 @@ func registerOfficer(t *testing.T, cli, dir string, adminFlags []string, usernam
 // mTLS connection and records where it was written. Every other claim
 // consumer opens the envelope with the holder's key; this helper never
 // sees a share.
-func claimEnvelope(t *testing.T, cli, dir string, ep endpoint, off *officer, recovery bool) {
+func claimEnvelope(t *testing.T, cli, dir string, ep endpoint, scope barrierScope, off *officer) {
 	t.Helper()
-	domain := "unseal"
-	if recovery {
-		domain = "recovery"
-	}
-	off.envelope = filepath.Join(dir, fmt.Sprintf("%s-%s-%d.env", off.username, domain, time.Now().UnixNano()))
-	args := append(off.flags(ep), "barrier", "officer", "claim", "--domain", domain,
-		"--username", off.username, "--key", off.keyPath, "--out", off.envelope)
+	off.envelope = filepath.Join(dir, fmt.Sprintf("%s-%s-%d.env", off.username, scope.value, time.Now().UnixNano()))
+	args := append(off.flags(ep), scope.officer...)
+	args = append(args, "claim", "--username", off.username, "--key", off.keyPath, "--out", off.envelope)
+	args = append(args, scope.scopeArgs()...)
 	if stdout, stderr, err := runCLISplit(t, cli, args...); err != nil {
 		t.Fatalf("claim %s: %v\nstdout:%s\nstderr:%s", off.username, err, stdout, stderr)
 	}
@@ -661,9 +704,9 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	// ceremony registry caches records until the barrier is first seen
 	// unsealed, and the SAME ceremony service is threaded from the pre-host
 	// sealed listener into the post-unseal boot.
-	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
-	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
-	registerOfficer(t, cli, workDir, flags, "carol", false)
+	alice := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainUnseal), "alice")
+	bob := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainUnseal), "bob")
+	registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainUnseal), "carol")
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "init-shamir",
@@ -683,11 +726,11 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
 
-	claimEnvelope(t, cli, workDir, ep, alice, false)
-	claimEnvelope(t, cli, workDir, ep, bob, false)
+	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainUnseal), alice)
+	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainUnseal), bob)
 	firstAlice, firstBob := *alice, *bob
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "seal", alice, bob)
 	status = barrierStatus(t, cli, flags)
 	if !status.Sealed {
 		t.Fatal("expected barrier to be sealed after the seal quorum")
@@ -695,7 +738,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 
 	// A below-threshold round is progress, not an error, and leaves the
 	// barrier sealed.
-	out := quorumAll(t, cli, ep, "unseal", "unseal", alice)
+	out := quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "unseal", alice)
 	if out.Complete || out.Submitted != 1 || out.Required != threshold {
 		t.Fatalf("one of two submissions = %+v, want 1/2 incomplete", out)
 	}
@@ -703,17 +746,17 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 		t.Fatal("a below-threshold round must not unseal the barrier")
 	}
 	// A holder counts once per round.
-	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", alice); err == nil {
+	if _, _, err := quorumSubmit(t, cli, ep, systemScope(transport.DomainUnseal), "unseal", alice); err == nil {
 		t.Fatal("a second submission from the same holder was accepted")
 	}
-	if out = quorumAll(t, cli, ep, "unseal", "unseal", bob); !out.Complete {
+	if out = quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "unseal", bob); !out.Complete {
 		t.Fatalf("second holder's submission = %+v, want complete", out)
 	}
 	if status = barrierStatus(t, cli, flags); status.Sealed {
 		t.Fatal("expected barrier to be unsealed after the unseal quorum")
 	}
 
-	out = quorumAll(t, cli, ep, "unseal", "root-token", alice, bob)
+	out = quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "root-token", alice, bob)
 	if !out.Complete || out.RootToken == "" {
 		t.Fatalf("root-token round = %+v, want a root token", out)
 	}
@@ -722,13 +765,13 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
 		t.Fatalf("barrier rekey: %v\nstderr: %s", err, stderr)
 	}
-	if out = quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
+	if out = quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "rekey", alice, bob); !out.Complete {
 		t.Fatalf("rekey round = %+v, want complete", out)
 	}
-	claimEnvelope(t, cli, workDir, ep, alice, false)
-	claimEnvelope(t, cli, workDir, ep, bob, false)
+	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainUnseal), alice)
+	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainUnseal), bob)
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "seal", alice, bob)
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatal("expected barrier to be sealed after the post-rekey seal quorum")
 	}
@@ -736,15 +779,15 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	// Negative: the pre-rekey envelopes are cryptographically revoked. Each
 	// is still its holder's, so it is admitted, but the quorum it forms
 	// reconstructs a key that no longer opens the barrier.
-	quorumAll(t, cli, ep, "unseal", "unseal", &firstAlice)
-	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", &firstBob); err == nil {
+	quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "unseal", &firstAlice)
+	if _, _, err := quorumSubmit(t, cli, ep, systemScope(transport.DomainUnseal), "unseal", &firstBob); err == nil {
 		t.Fatal("a quorum of pre-rekey envelopes completed")
 	}
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatal("revoked envelopes must not unseal the barrier")
 	}
 
-	quorumAll(t, cli, ep, "unseal", "unseal", alice, bob)
+	quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "unseal", alice, bob)
 	if status = barrierStatus(t, cli, flags); status.Sealed {
 		t.Fatal("expected barrier to be unsealed with the post-rekey envelopes")
 	}
@@ -752,8 +795,8 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	// The recovery key: an independent domain with its own holders.
 	// Generate + status while unsealed, then seal through the unseal-domain
 	// quorum before exercising recover (which requires the barrier sealed).
-	dave := registerOfficer(t, cli, workDir, flags, "dave", true)
-	erin := registerOfficer(t, cli, workDir, flags, "erin", true)
+	dave := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainRecovery), "dave")
+	erin := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainRecovery), "erin")
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", soPIN)...); err != nil {
@@ -763,15 +806,15 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 		t.Fatal("expected recovery keys to be present after generate")
 	}
 
-	claimEnvelope(t, cli, workDir, ep, dave, true)
-	claimEnvelope(t, cli, workDir, ep, erin, true)
+	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainRecovery), dave)
+	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainRecovery), erin)
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "seal", alice, bob)
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatal("expected barrier to be sealed before exercising recover")
 	}
 
-	if out = quorumAll(t, cli, ep, "recovery", "recover", dave, erin); !out.Complete {
+	if out = quorumAll(t, cli, ep, systemScope(transport.DomainRecovery), "recover", dave, erin); !out.Complete {
 		t.Fatalf("recover round = %+v, want complete", out)
 	}
 	if status = barrierStatus(t, cli, flags); status.Sealed {
