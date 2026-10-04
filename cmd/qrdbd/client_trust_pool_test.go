@@ -134,6 +134,24 @@ func getConfigForClient(t *testing.T, bundle *TLSBundle) *tls.Config {
 	return cfg
 }
 
+// assertTrustedByConnection proves cert would be accepted as a presented
+// client certificate on cfg's VerifyConnection hook -- the widened pool's
+// real verification surface since pkg/clienttrust.Pool.configForClient
+// (go-qrdb#591's review, B2): cfg.ClientCAs is deliberately the static
+// baseline only, never the widened pool, so asserting trust via
+// x509.Verify(Roots: cfg.ClientCAs) would no longer test what this bundle
+// actually enforces. A self-signed CA certificate presented as its own
+// leaf verifies trivially against a pool containing it.
+func assertTrustedByConnection(t *testing.T, cfg *tls.Config, cert *x509.Certificate) {
+	t.Helper()
+	if cfg.VerifyConnection == nil {
+		t.Fatal("expected VerifyConnection to be installed on the widened config")
+	}
+	if err := cfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}); err != nil {
+		t.Errorf("VerifyConnection rejected a certificate expected to be trusted: %v", err)
+	}
+}
+
 // TestTLSBundle_TrustPoolIsTheWiredInstance proves bundle.TrustPool()
 // returns the SAME *clienttrust.Pool that SetKeyBProvider/SetClusterCA
 // populate and Wire installed on TLSConfig -- the object a composer passes
@@ -177,9 +195,6 @@ func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("expected a widened config, got the static fallback (nil)")
 	}
-	if cfg.ClientCAs == nil {
-		t.Fatal("expected ClientCAs to be set on the widened config")
-	}
 
 	block, _ := pem.Decode(keyB)
 	if block == nil {
@@ -189,9 +204,7 @@ func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificate: %v", err)
 	}
-	if _, err := keyBCert.Verify(x509.VerifyOptions{Roots: cfg.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key B CA certificate was not added to the widened pool: %v", err)
-	}
+	assertTrustedByConnection(t, cfg, keyBCert)
 
 	block, _ = pem.Decode(bundle.CACertPEM)
 	if block == nil {
@@ -201,9 +214,7 @@ func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificate (Key A): %v", err)
 	}
-	if _, err := keyACert.Verify(x509.VerifyOptions{Roots: cfg.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key A was dropped from the widened pool: %v", err)
-	}
+	assertTrustedByConnection(t, cfg, keyACert)
 }
 
 func TestWireClientTrustPool_ProviderErrorFallsBackToStatic(t *testing.T) {
@@ -247,7 +258,5 @@ func TestWireClientTrustPool_NoClusterCA_KeyBStillWidensOnPerTenantBindingAlone(
 	if err != nil {
 		t.Fatalf("ParseCertificate: %v", err)
 	}
-	if _, err := keyBCert.Verify(x509.VerifyOptions{Roots: cfg.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key B CA certificate was not added to the widened pool: %v", err)
-	}
+	assertTrustedByConnection(t, cfg, keyBCert)
 }

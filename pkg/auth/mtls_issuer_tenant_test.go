@@ -135,6 +135,16 @@ func (f *fakeIssuerVerifier) IsClusterCA(issuer *x509.Certificate) bool {
 	return bytes.Equal(f.clusterCA.Raw, issuer.Raw)
 }
 
+// VerifyPeerChain is never exercised by this file's tests: every one of
+// them constructs tls.ConnectionState.VerifiedChains directly and
+// non-empty, so ResolveVerifiedChain never reaches its fallback branch.
+// It errors unconditionally rather than fabricating a chain, so a future
+// test that DOES rely on the fallback fails loudly here instead of
+// silently asserting a defect is correct.
+func (f *fakeIssuerVerifier) VerifyPeerChain(context.Context, *x509.Certificate, []*x509.Certificate) ([]*x509.Certificate, error) {
+	return nil, errors.New("fakeIssuerVerifier: VerifyPeerChain not implemented; this fake's tests supply VerifiedChains directly")
+}
+
 func (f *fakeIssuerVerifier) isStaticallyTrusted(issuer *x509.Certificate) bool {
 	if f.staticallyTrusted == nil || issuer == nil {
 		return false

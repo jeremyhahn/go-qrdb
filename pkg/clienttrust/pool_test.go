@@ -15,6 +15,7 @@
 package clienttrust
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -24,7 +25,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
+	"net"
 	"testing"
 	"time"
 
@@ -152,6 +155,60 @@ func genCAPEM(t testing.TB) ([]byte, *x509.Certificate) {
 	return certPEM, c
 }
 
+// genCAWithKey generates a throwaway self-signed CA certificate with the
+// given CommonName (distinct names matter when a test compares subjects
+// to prove one is NOT another's) and returns its PEM encoding alongside
+// the parsed certificate and its signing key, for a caller that also
+// needs to sign a leaf with it.
+func genCAWithKey(t testing.TB, cn string) ([]byte, *x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	return pemEncode(der), c, key
+}
+
+// genLeafTLSCert signs a client-auth leaf certificate under caCert/caKey
+// and returns it as a tls.Certificate ready for tls.Config.Certificates.
+func genLeafTLSCert(t testing.TB, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) tls.Certificate {
+	t.Helper()
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (leaf): %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate (leaf): %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der, caCert.Raw}, PrivateKey: leafKey}
+}
+
 func baseConfig(t testing.TB, keyA *x509.CertPool) *tls.Config {
 	t.Helper()
 	return &tls.Config{
@@ -171,6 +228,38 @@ func getConfigForClient(t testing.TB, cfg *tls.Config) *tls.Config {
 		t.Fatalf("GetConfigForClient: %v", err)
 	}
 	return got
+}
+
+// assertTrustedByConnection proves cert would be accepted as a presented
+// client certificate on got's VerifyConnection hook -- the widened pool's
+// real verification surface since configForClient (go-qrdb#591's review,
+// B2): got.ClientCAs is deliberately the static baseline only, never the
+// widened pool, so a test asserting trust via x509.Verify(Roots:
+// got.ClientCAs) would no longer be testing what this Pool actually
+// enforces. A self-signed CA certificate presented as its own leaf
+// verifies trivially against a pool containing it, which is sufficient to
+// prove membership in the widened set without needing to mint a separate
+// leaf per fixture.
+func assertTrustedByConnection(t testing.TB, got *tls.Config, cert *x509.Certificate) {
+	t.Helper()
+	if got.VerifyConnection == nil {
+		t.Fatal("expected VerifyConnection to be installed on the widened config")
+	}
+	if err := got.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}); err != nil {
+		t.Errorf("VerifyConnection rejected a certificate expected to be trusted: %v", err)
+	}
+}
+
+// assertNotTrustedByConnection is assertTrustedByConnection's negative:
+// cert must NOT verify against the widened pool.
+func assertNotTrustedByConnection(t testing.TB, got *tls.Config, cert *x509.Certificate) {
+	t.Helper()
+	if got.VerifyConnection == nil {
+		t.Fatal("expected VerifyConnection to be installed on the widened config")
+	}
+	if err := got.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}); err == nil {
+		t.Error("VerifyConnection accepted a certificate expected to be untrusted")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -205,9 +294,7 @@ func TestPool_NoClusterCA_KeyBStillWidensOnPerTenantBindingAlone(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected a widened config even with no ClusterCA configured")
 	}
-	if _, err := keyBCert.Verify(x509.VerifyOptions{Roots: got.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key B CA certificate was not added to the widened pool: %v", err)
-	}
+	assertTrustedByConnection(t, got, keyBCert)
 }
 
 func TestPool_ClusterCATransientError_KeyBNotTrustedThisCallOnly(t *testing.T) {
@@ -255,15 +342,8 @@ func TestPool_WidensPoolWithKeyBCerts(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected a widened config, got the static fallback (nil)")
 	}
-	if got.ClientCAs == nil {
-		t.Fatal("expected ClientCAs to be set on the widened config")
-	}
-	if _, err := keyBCert.Verify(x509.VerifyOptions{Roots: got.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key B CA certificate was not added to the widened pool: %v", err)
-	}
-	if _, err := keyACert.Verify(x509.VerifyOptions{Roots: got.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key A was dropped from the widened pool: %v", err)
-	}
+	assertTrustedByConnection(t, got, keyBCert)
+	assertTrustedByConnection(t, got, keyACert)
 }
 
 func TestPool_PreservesOtherConfigFields(t *testing.T) {
@@ -285,8 +365,17 @@ func TestPool_PreservesOtherConfigFields(t *testing.T) {
 	if got.MinVersion != cfg.MinVersion {
 		t.Errorf("MinVersion = %v, want %v", got.MinVersion, cfg.MinVersion)
 	}
-	if got.ClientAuth != cfg.ClientAuth {
-		t.Errorf("ClientAuth = %v, want %v", got.ClientAuth, cfg.ClientAuth)
+	// ClientAuth is remapped, not preserved: cfg's VerifyClientCertIfGiven
+	// would have crypto/tls verify the presented certificate against
+	// ClientCAs itself, which configForClient deliberately narrows to the
+	// static baseline (go-qrdb#591's review, B2) -- so a Key-B-issued
+	// certificate would fail crypto/tls's own verification before
+	// VerifyConnection ever saw it. The non-verifying counterpart keeps
+	// "is a certificate required at all" unchanged while moving
+	// verification to VerifyConnection, which configForClient always
+	// installs.
+	if got.ClientAuth != tls.RequestClientCert {
+		t.Errorf("ClientAuth = %v, want %v (VerifyClientCertIfGiven's remapped counterpart)", got.ClientAuth, tls.RequestClientCert)
 	}
 	if got.GetConfigForClient != nil {
 		t.Error("expected GetConfigForClient to be cleared on the returned clone")
@@ -321,9 +410,7 @@ func TestPool_NoKeyBCertsYetStillTrustsClusterCA(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected a config (possibly equivalent to the static one)")
 	}
-	if _, err := keyACert.Verify(x509.VerifyOptions{Roots: got.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("expected Key A still trusted: %v", err)
-	}
+	assertTrustedByConnection(t, got, keyACert)
 }
 
 func TestPool_ProviderWithoutCertSourceFallsBackToStatic(t *testing.T) {
@@ -370,9 +457,7 @@ func TestPool_NilStaticClientCAs(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected a widened config even when the base ClientCAs was nil")
 	}
-	if _, err := keyBCert.Verify(x509.VerifyOptions{Roots: got.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("Key B CA certificate was not added to the pool: %v", err)
-	}
+	assertTrustedByConnection(t, got, keyBCert)
 }
 
 // ---------------------------------------------------------------------------
@@ -419,9 +504,7 @@ func TestPool_SetKeyBProviderInvalidatesCache(t *testing.T) {
 	if calls2 != 1 {
 		t.Errorf("expected the new provider to be consulted immediately after SetKeyBProvider, calls=%d", calls2)
 	}
-	if _, err := keyBCert2.Verify(x509.VerifyOptions{Roots: got.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		t.Errorf("expected the NEW provider's cert in the pool: %v", err)
-	}
+	assertTrustedByConnection(t, got, keyBCert2)
 }
 
 // ---------------------------------------------------------------------------
@@ -735,7 +818,7 @@ func (m *manyTenantProvider) IsTenantIssuer(context.Context, string, *x509.Certi
 	return false, nil
 }
 
-func newManyTenantProvider(b *testing.B, n int) *manyTenantProvider {
+func newManyTenantProvider(b testing.TB, n int) *manyTenantProvider {
 	b.Helper()
 	pems := make([][]byte, n)
 	for i := range pems {
@@ -778,6 +861,128 @@ func BenchmarkPool_ResolveClientCAs_1000Tenants_Cached(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := pool.resolveClientCAs(ctx, nil); err != nil {
 			b.Fatalf("resolveClientCAs: %v", err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// B2: a real TLS handshake, at scale, never advertises a tenant's CA name.
+// ---------------------------------------------------------------------------
+
+// TestPool_RealHandshake_3000Tenants_AdvertisesNoTenantCA is go-qrdb#591's
+// B2 regression proof over an ACTUAL crypto/tls handshake, not a unit check
+// of Pool's internal state: with 3,000 tenant Key B CAs behind the pool --
+// twice the point past which a naive ClientCAs assignment (every tenant's
+// Subject in the TLS CertificateRequest's certificate_authorities
+// extension) exceeds the protocol's 64 KiB handshake message limit and
+// fails EVERY mTLS login, Key A and the operator's own static CA included
+// -- the handshake still completes, and the server's CertificateRequest
+// advertises NONE of the 3,000 tenant CAs: AcceptableCAs (captured via the
+// client's own GetClientCertificate hook, exactly what a real peer sees)
+// stays empty, because configForClient leaves ClientCAs at the static
+// baseline and moves verification to VerifyConnection (see
+// configForClient's own doc comment). A client certificate issued by ONE
+// of the 3,000 tenant CAs -- picked arbitrarily, not the first or last --
+// still authenticates, proving the widened pool verifies it despite never
+// naming it.
+func TestPool_RealHandshake_3000Tenants_AdvertisesNoTenantCA(t *testing.T) {
+	const tenantCount = 3000
+	const trustedTenantIndex = 1500
+
+	_, operatorCACert, operatorCAKey := genCAWithKey(t, "operator-static-ca")
+	operatorPool := x509.NewCertPool()
+	operatorPool.AddCert(operatorCACert)
+
+	// serverLeaf: the listener's OWN identity, signed by the operator CA --
+	// irrelevant to what this test measures (the CLIENT's view of the
+	// handshake), but tls.Config.Certificates must be non-empty for the
+	// server side to complete a handshake at all.
+	serverLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
+
+	tenantCAPEMs := make([][]byte, tenantCount)
+	var trustedTenantCACert *x509.Certificate
+	var trustedTenantCAKey *ecdsa.PrivateKey
+	for i := 0; i < tenantCount; i++ {
+		pem, cert, key := genCAWithKey(t, fmt.Sprintf("tenant-%d-key-b-ca", i))
+		tenantCAPEMs[i] = pem
+		if i == trustedTenantIndex {
+			trustedTenantCACert, trustedTenantCAKey = cert, key
+		}
+	}
+	if trustedTenantCACert == nil {
+		t.Fatal("trustedTenantIndex out of range")
+	}
+	clientLeaf := genLeafTLSCert(t, trustedTenantCACert, trustedTenantCAKey)
+
+	serverCfg := &tls.Config{
+		Certificates: []tls.Certificate{serverLeaf},
+		ClientCAs:    operatorPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	pool := New()
+	pool.Wire(serverCfg)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: tenantCAPEMs})
+
+	var acceptableCAs [][]byte
+	clientCfg := &tls.Config{
+		InsecureSkipVerify: true, // this test measures the SERVER's advertised CAs, not the client's verification of the server
+		MinVersion:         tls.VersionTLS13,
+		GetClientCertificate: func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			acceptableCAs = info.AcceptableCAs
+			return &clientLeaf, nil
+		},
+	}
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	// Bounded, not context.Background(): an unbounded ClientCAs assignment
+	// (the regression this test guards) does not merely error on a
+	// net.Pipe -- a CertificateRequest this large blocks on the
+	// unbuffered pipe's synchronous write with nothing reading the other
+	// half yet, hanging the handshake rather than failing it fast. The
+	// deadline turns that hang into a reported failure instead of a test
+	// that never returns.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- tls.Server(serverConn, serverCfg).HandshakeContext(ctx)
+	}()
+
+	clientTLS := tls.Client(clientConn, clientCfg)
+	if err := clientTLS.HandshakeContext(ctx); err != nil {
+		t.Fatalf("client handshake failed with %d tenant CAs behind the pool: %v", tenantCount, err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server handshake failed with %d tenant CAs behind the pool: %v", tenantCount, err)
+	}
+
+	// Exactly the operator's static baseline (one CA) is advertised, never
+	// the dynamic pool: a plain ClientCAs assignment would have exploded
+	// this to 1 + 3,000 and failed the handshake outright past the 64 KiB
+	// message limit, which the earlier success check already disproves;
+	// here the concern is which CAs the message actually NAMES.
+	if len(acceptableCAs) != 1 {
+		t.Fatalf("CertificateRequest advertised %d acceptable CA(s), want exactly 1 (the operator's static baseline)", len(acceptableCAs))
+	}
+	if !bytes.Equal(acceptableCAs[0], operatorCACert.RawSubject) {
+		t.Error("the one advertised CA is not the operator's static baseline")
+	}
+	for i, tenantPEM := range tenantCAPEMs {
+		block, _ := pem.Decode(tenantPEM)
+		if block == nil {
+			t.Fatalf("tenant %d: genCAWithKey did not produce valid PEM", i)
+		}
+		tenantCert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			t.Fatalf("tenant %d: ParseCertificate: %v", i, err)
+		}
+		if bytes.Equal(acceptableCAs[0], tenantCert.RawSubject) {
+			t.Fatalf("tenant %d's CA subject was advertised in the CertificateRequest", i)
 		}
 	}
 }

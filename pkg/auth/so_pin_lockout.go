@@ -200,6 +200,16 @@ func CallerPrincipal(ctx context.Context) string {
 		}
 		return "id:" + tenantid.Normalize(id.TenantID) + "/" + id.Subject
 	}
+	// Deliberately VerifiedChains only, never PeerCertificates: an
+	// unverified leaf is not a principal this counts against, because the
+	// SAME counter identity must not be mintable at will by an attacker
+	// presenting a fresh, never-checked certificate on every guess. A
+	// connection pkg/clienttrust.Pool.Wire touched -- which empties
+	// VerifiedChains at the TLS layer, see ResolveVerifiedChains' own doc
+	// comment -- reaches this branch only for a caller Authenticate never
+	// resolved an identity for (the sealed-window path above handles the
+	// ordinary authenticated case): such a caller counts as anonymous
+	// here, same as one presenting no certificate at all.
 	if st := TLSStateFromContext(ctx); st != nil && len(st.VerifiedChains) > 0 && len(st.VerifiedChains[0]) > 0 {
 		sum := sha256.Sum256(st.VerifiedChains[0][0].Raw)
 		return "cert:" + hex.EncodeToString(sum[:])

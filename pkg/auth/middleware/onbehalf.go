@@ -82,10 +82,11 @@ func hasOnBehalfAssertion(r *http.Request) bool {
 // The request body is buffered to compute its digest for binding verification
 // and then restored on r so the downstream handler reads the identical bytes.
 func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, *auth.Identity, error) {
-	peerCert, err := verifiedPeerCertificate(r.TLS)
+	chains, err := auth.ResolveVerifiedChains(ctx, r.TLS, m.issuerVerifier)
 	if err != nil {
 		return ctx, nil, err
 	}
+	peerCert := chains[0][0]
 
 	// A REVOKED forwarding node must not be able to forward. This path never
 	// runs the authenticator chain, so it does not inherit the mTLS
@@ -112,13 +113,12 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 	// cluster CA (Key A) here, explicitly, and unknown fails closed
 	// (go-qrdb#560 review, B2-1).
 	if m.issuerVerifier != nil {
-		chains := r.TLS.VerifiedChains
 		trusted := false
-		for _, chain := range chains {
-			if len(chain) < 2 {
+		for _, c := range chains {
+			if len(c) < 2 {
 				continue
 			}
-			if m.issuerVerifier.IsClusterCA(chain[1]) {
+			if m.issuerVerifier.IsClusterCA(c[1]) {
 				trusted = true
 				break
 			}
@@ -185,21 +185,33 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 	return m.finalizeIdentity(ctx, identity, unknownMethod())
 }
 
-// verifiedPeerCertificate returns the leaf of the first verified chain from the
-// TLS state, or an auth error when no verified peer certificate is present. A
-// forwarded on-behalf assertion is only honored over a mutually-authenticated
-// connection whose peer certificate was verified against the cluster CA.
+// verifiedPeerCertificate returns the connection's peer certificate leaf,
+// or an auth error when none is present.
+//
+// Every caller of this function runs strictly AFTER the authenticator
+// chain already resolved an identity for this same TLS state via
+// auth.ResolveVerifiedChain (cert_binding.go and peer_attestation.go both
+// read an already-resolved auth.Identity from context before reaching
+// here; authenticateOnBehalf, above, now calls ResolveVerifiedChain
+// itself directly rather than this function). So when state.VerifiedChains
+// is empty -- which it always is on a connection pkg/clienttrust.Pool.Wire
+// touched, see ResolveVerifiedChain's own doc comment -- that emptiness
+// was ALREADY resolved once, successfully, by whichever authenticator
+// admitted this request; state.PeerCertificates[0] is the identical leaf
+// ResolveVerifiedChain would return again, without re-deriving the chain
+// a second time for what is a SECONDARY check (cert-binding, peer
+// attestation), not a fresh trust decision.
 func verifiedPeerCertificate(state *tls.ConnectionState) (*x509.Certificate, error) {
 	if state == nil {
 		return nil, auth.ErrNoPeerCertificate
 	}
-	if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
-		if len(state.PeerCertificates) == 0 {
-			return nil, auth.ErrNoPeerCertificate
-		}
-		return nil, auth.ErrInvalidCertificate
+	if len(state.VerifiedChains) > 0 && len(state.VerifiedChains[0]) > 0 {
+		return state.VerifiedChains[0][0], nil
 	}
-	return state.VerifiedChains[0][0], nil
+	if len(state.PeerCertificates) == 0 {
+		return nil, auth.ErrNoPeerCertificate
+	}
+	return state.PeerCertificates[0], nil
 }
 
 // drainAndRestoreBody reads the request body under limit and restores it on r

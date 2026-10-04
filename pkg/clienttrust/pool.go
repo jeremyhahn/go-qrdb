@@ -322,18 +322,111 @@ func (p *Pool) Wire(cfg *tls.Config) {
 
 // configForClient builds the per-connection config GetConfigForClient
 // returns, or (nil, nil) to keep base unchanged.
+//
+// clone.ClientCAs is deliberately left as base's own static baseline --
+// NEVER the widened pool -- because crypto/tls derives the
+// CertificateRequest message's advertised acceptable-CA list directly
+// from ClientCAs, with no way to use a pool for verification without
+// also advertising it (go-qrdb#591's review, B2): every tenant's Key B
+// CA subject would otherwise be sent, in the clear, to any client that
+// merely initiates a handshake, and past roughly 1,500 tenants the
+// message exceeds the TLS 64 KiB limit, failing EVERY mTLS login on the
+// listener, Key A and the operator's own static CAs included.
+//
+// Verification against the full widened pool moves to VerifyConnection
+// (below) instead, which crypto/tls runs for every connection regardless
+// of ClientAuth. ClientAuth itself is remapped so crypto/tls does not
+// ALSO attempt its own verification against the now-deliberately-narrow
+// ClientCAs and reject a Key-B-issued cert before VerifyConnection ever
+// sees it: a mode requiring verification becomes the matching mode that
+// requires a certificate but performs none, preserving whether a
+// certificate is required at all -- the operator's own
+// mtls_binding_policy choice -- while moving ALL verification to one
+// place for both Key A and Key B.
 func (p *Pool) configForClient(base *tls.Config) (*tls.Config, error) {
 	pool, err := p.resolveClientCAs(context.Background(), base.ClientCAs)
 	if err != nil {
 		return nil, nil
 	}
 	clone := base.Clone()
-	clone.ClientCAs = pool
+	switch clone.ClientAuth {
+	case tls.RequireAndVerifyClientCert:
+		clone.ClientAuth = tls.RequireAnyClientCert
+	case tls.VerifyClientCertIfGiven:
+		clone.ClientAuth = tls.RequestClientCert
+	}
+	clone.VerifyConnection = func(cs tls.ConnectionState) error {
+		return p.verifyPeerConnection(cs, pool)
+	}
 	// crypto/tls invokes GetConfigForClient at most once per handshake, so
 	// this is not re-entered for the connection being set up; nil it anyway
 	// so the clone is never mistaken for a second, live hook.
 	clone.GetConfigForClient = nil
 	return clone, nil
+}
+
+// verifyPeerConnection is Wire's VerifyConnection hook: the manual
+// verification configForClient's ClientAuth remap makes crypto/tls skip
+// automatically. A connection with no presented certificate is left to
+// whatever remapped ClientAuth mode decided (an optional mode lets it
+// through; a required one never reaches here with an empty list at all,
+// since crypto/tls refuses the handshake before VerifyConnection runs).
+// ExtKeyUsageAny, not ExtKeyUsageClientAuth specifically, matches
+// IsStaticallyTrusted's own verification above for the same reason: a
+// leaf this codebase issues for client authentication is not guaranteed
+// to carry that EKU explicitly, and this is the TRUST decision, not an
+// EKU policy one.
+func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool) error {
+	if len(cs.PeerCertificates) == 0 {
+		return nil
+	}
+	intermediates := x509.NewCertPool()
+	for _, c := range cs.PeerCertificates[1:] {
+		intermediates.AddCert(c)
+	}
+	_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
+		Roots:         pool,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	if err != nil {
+		return &PeerCertificateNotTrustedError{Err: err}
+	}
+	return nil
+}
+
+// VerifyPeerChain verifies leaf (with optional intermediates) against
+// this Pool's current widened trust pool -- the SAME verification
+// verifyPeerConnection performs during the TLS handshake -- for a caller
+// that needs to re-derive the chain crypto/tls itself no longer builds:
+// ClientAuth's remap in configForClient means tls.ConnectionState.
+// VerifiedChains is never populated for a connection this Pool wired,
+// so pkg/auth's authenticator (every request, not merely the handshake --
+// see its own doc comment on why) calls this instead whenever
+// VerifiedChains comes back empty on a connection Wire touched, rather
+// than treating an unverified PeerCertificates list as good enough.
+// Returns the verified chain (leaf first) on success.
+func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
+	if leaf == nil {
+		return nil, &PeerCertificateNotTrustedError{}
+	}
+	pool, err := p.resolveClientCAs(ctx, p.staticBase.Load())
+	if err != nil {
+		return nil, &PeerCertificateNotTrustedError{Err: err}
+	}
+	inter := x509.NewCertPool()
+	for _, c := range intermediates {
+		inter.AddCert(c)
+	}
+	chains, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         pool,
+		Intermediates: inter,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	if err != nil {
+		return nil, &PeerCertificateNotTrustedError{Err: err}
+	}
+	return chains[0], nil
 }
 
 // resolveClientCAs returns the widened ClientCAs pool (the cluster CA, when

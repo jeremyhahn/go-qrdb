@@ -73,6 +73,15 @@ func (f *wiringFakeIssuerVerifier) IsClusterCA(issuer *x509.Certificate) bool {
 	return bytes.Equal(f.clusterCA.Raw, issuer.Raw)
 }
 
+// VerifyPeerChain is unexercised by this file's tests: this fake is only
+// used to confirm BuildAuthMiddleware WIRES the verifier through, not to
+// drive the authenticator's own chain-resolution fallback, so it errors
+// unconditionally rather than fabricating a chain a test here never asks
+// for.
+func (f *wiringFakeIssuerVerifier) VerifyPeerChain(context.Context, *x509.Certificate, []*x509.Certificate) ([]*x509.Certificate, error) {
+	return nil, errors.New("wiringFakeIssuerVerifier: VerifyPeerChain not implemented")
+}
+
 func (f *wiringFakeIssuerVerifier) VerifyIssuer(_ context.Context, tenantID string, issuer *x509.Certificate) error {
 	if f.IsClusterCA(issuer) {
 		return nil

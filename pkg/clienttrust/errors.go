@@ -92,3 +92,27 @@ func (e *IssuerNotTrustedError) Error() string {
 func (e *IssuerNotTrustedError) Unwrap() error {
 	return e.Err
 }
+
+// PeerCertificateNotTrustedError reports that a presented client
+// certificate's chain does not verify against the pool's current widened
+// trust set. It is returned both by Wire's VerifyConnection hook (crypto/tls
+// aborts the handshake) and by VerifyPeerChain (the authenticator's
+// per-request re-derivation of the chain crypto/tls no longer builds for a
+// connection Wire touched -- see VerifyPeerChain's own doc comment).
+type PeerCertificateNotTrustedError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *PeerCertificateNotTrustedError) Error() string {
+	msg := "clienttrust: peer certificate chain is not trusted"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error.
+func (e *PeerCertificateNotTrustedError) Unwrap() error {
+	return e.Err
+}

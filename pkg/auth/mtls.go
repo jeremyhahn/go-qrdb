@@ -90,6 +90,18 @@ type MTLSAuthenticator struct {
 // dynamic trust pool verifies the SIGNATURE, not which tenant the signing
 // CA was issued for.
 type IssuerVerifier interface {
+	// VerifyPeerChain verifies leaf (with optional intermediates) against
+	// the dynamic trust pool's current widened set, returning the verified
+	// chain (leaf first) on success. ResolveVerifiedChain calls this
+	// instead of trusting state.VerifiedChains when the latter is empty:
+	// pkg/clienttrust.Pool.Wire remaps a verifying ClientAuth mode to a
+	// non-verifying one so crypto/tls's own CertificateRequest never
+	// advertises every tenant's Key B CA subject (go-qrdb#591's review,
+	// B2), which means crypto/tls itself never builds VerifiedChains for a
+	// connection Wire touched -- this is the ONE place that verification
+	// still happens, now explicit rather than automatic.
+	VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error)
+
 	// IsClusterCA reports whether issuer is the CURRENT cluster CA
 	// certificate (Key A), resolved fresh on every call. Unknown (no
 	// cluster CA configured, or a transient failure resolving it) is never
@@ -226,6 +238,55 @@ func TenantFromClientCert(cert *x509.Certificate, pinnedTrustDomain string) (ten
 	}
 }
 
+// ResolveVerifiedChains returns every candidate verified chain for the TLS
+// peer (leaf first in each), from state.VerifiedChains when crypto/tls
+// already built one, or a single-chain slice derived by calling
+// verifier.VerifyPeerChain when state.VerifiedChains is empty -- which it
+// always is on a connection pkg/clienttrust.Pool.Wire touched, since Wire
+// remaps a verifying ClientAuth mode to a non-verifying one specifically
+// so crypto/tls never advertises every tenant's Key B CA subject in its
+// CertificateRequest (go-qrdb#591's review, B2). verifier is typically the
+// SAME IssuerVerifier an authenticator already holds; nil (no dynamic
+// trust pool wired) preserves the original behavior exactly: an empty
+// VerifiedChains with no verifier to ask is ErrInvalidCertificate, same as
+// it always was before Wire could ever leave it empty.
+//
+// crypto/tls can report MORE THAN ONE verified chain for the same leaf
+// when multiple roots in a pool could validate it; verifyIssuer's own
+// contract is to accept as soon as ANY one's direct issuer satisfies the
+// binding, not only the first, so every candidate crypto/tls built is
+// preserved here rather than collapsed to one.
+//
+// Every caller of this function MUST be reachable only on a connection
+// whose listener either wired Wire (so a non-nil verifier is exactly
+// correct and Wire already vetted the chain's trust during the
+// handshake) or never calls it at all (nil verifier, original strict
+// behavior unchanged) -- never a THIRD case where ClientAuth was
+// independently relaxed without Wire's own VerifyConnection hook also
+// being installed, which would make this function trust an unverified
+// certificate. No code in this tree creates that case: ClientAuth's
+// remap and VerifyConnection's installation happen together, in
+// Pool.configForClient, with no seam for one without the other.
+func ResolveVerifiedChains(ctx context.Context, state *tls.ConnectionState, verifier IssuerVerifier) ([][]*x509.Certificate, error) {
+	if state == nil {
+		return nil, ErrNoPeerCertificate
+	}
+	if len(state.VerifiedChains) > 0 && len(state.VerifiedChains[0]) > 0 {
+		return state.VerifiedChains, nil
+	}
+	if len(state.PeerCertificates) == 0 {
+		return nil, ErrNoPeerCertificate
+	}
+	if verifier == nil {
+		return nil, ErrInvalidCertificate
+	}
+	chain, err := verifier.VerifyPeerChain(ctx, state.PeerCertificates[0], state.PeerCertificates[1:])
+	if err != nil {
+		return nil, ErrInvalidCertificate
+	}
+	return [][]*x509.Certificate{chain}, nil
+}
+
 // Authenticate extracts identity from the TLS peer certificate.
 // The TLS connection state must be stored in context via WithTLSState.
 func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error) {
@@ -234,14 +295,12 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 		return nil, ErrNoPeerCertificate
 	}
 
-	if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
-		if len(state.PeerCertificates) == 0 {
-			return nil, ErrNoPeerCertificate
-		}
-		return nil, ErrInvalidCertificate
+	chains, err := ResolveVerifiedChains(ctx, state, a.issuerVerifier)
+	if err != nil {
+		return nil, err
 	}
 
-	cert := state.VerifiedChains[0][0]
+	cert := chains[0][0]
 
 	// Revocation is enforced HERE, on every request, before any identity is
 	// derived from the certificate. A TLS handshake callback would not do: it
@@ -281,7 +340,7 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	// check tenant A's CA could mint a leaf that authenticates as tenant B
 	// simply by setting its Subject OU to B.
 	if a.issuerVerifier != nil {
-		if err := a.verifyIssuer(ctx, tenantID, state.VerifiedChains); err != nil {
+		if err := a.verifyIssuer(ctx, tenantID, chains); err != nil {
 			return nil, err
 		}
 	}
