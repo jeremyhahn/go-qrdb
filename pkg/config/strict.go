@@ -55,7 +55,13 @@ func validateKnownFields(path string, data []byte) error {
 // every map-typed field in Config (e.g. ObjstoreConfig.Settings) is an
 // intentionally open, provider-defined bag whose keys are not part of this
 // schema.
+//
+// node is resolved through any YAML alias first (e.g. "tls: *common_tls"),
+// so a typo inside an aliased block is still caught rather than skipped
+// because the node's own Kind looked like a plain alias rather than a
+// mapping or sequence.
 func checkNode(node *yaml.Node, t reflect.Type, path, file string) error {
+	node = resolveAlias(node)
 	if node == nil {
 		return nil
 	}
@@ -75,8 +81,49 @@ func checkNode(node *yaml.Node, t reflect.Type, path, file string) error {
 	}
 }
 
+// resolveAlias follows node through any chain of YAML aliases (an alias may
+// itself point at another alias) and returns the node it ultimately
+// resolves to, or the node itself when it is not an alias. It returns nil
+// rather than hang when the chain cycles back on itself -- not reachable
+// through ordinary YAML text (an alias can only name an anchor that
+// appears earlier in the document), but a defensive floor under anything
+// that constructs a *yaml.Node graph by hand.
+func resolveAlias(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	seen := make(map[*yaml.Node]bool)
+	for node != nil && node.Kind == yaml.AliasNode {
+		if seen[node] {
+			return nil
+		}
+		seen[node] = true
+		node = node.Alias
+	}
+	return node
+}
+
+// mergeKeyTag is the YAML type yaml.v3 assigns to the "<<" mapping key
+// (the language-independent merge-key type, tag:yaml.org,2002:merge).
+const mergeKeyTag = "!!merge"
+
+// isMergeKey reports whether keyNode is a YAML merge key ("<<"). Checking
+// the resolved tag rather than the literal text handles a merge key
+// written with an explicit "!!merge" tag of its own; checking the text
+// too covers a node tree built by hand without going through the YAML
+// resolver.
+func isMergeKey(keyNode *yaml.Node) bool {
+	return keyNode.Tag == mergeKeyTag || keyNode.Value == "<<"
+}
+
 // checkStructNode refuses the first key under node that does not name a
 // field of struct type t.
+//
+// A "<<" merge key ("<<: *defaults" or "<<: [*a, *b]") is standard YAML
+// that both yaml.v3 and Viper honour: its value is merged into the SAME
+// mapping, at the SAME level, as every sibling key, so the mapping(s) it
+// names are validated against this same (t, path) rather than treated as
+// an unknown key or a nested field.
 func checkStructNode(node *yaml.Node, t reflect.Type, path, file string) error {
 	if node.Kind != yaml.MappingNode {
 		// Not a mapping (null, a scalar where a section was expected, ...).
@@ -88,6 +135,12 @@ func checkStructNode(node *yaml.Node, t reflect.Type, path, file string) error {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		valNode := node.Content[i+1]
+		if isMergeKey(keyNode) {
+			if err := checkMergeValue(valNode, t, path, file); err != nil {
+				return err
+			}
+			continue
+		}
 		field, ok := fields[keyNode.Value]
 		if !ok {
 			return &UnknownFieldError{File: file, Path: joinField(path, keyNode.Value), Line: keyNode.Line}
@@ -97,6 +150,39 @@ func checkStructNode(node *yaml.Node, t reflect.Type, path, file string) error {
 		}
 	}
 	return nil
+}
+
+// checkMergeValue validates the value of a "<<" merge key: either a single
+// mapping ("<<: *defaults") or a sequence of mappings ("<<: [*a, *b]"),
+// each resolved through any alias first. Every merged-in mapping is
+// checked against the same struct type and path as the mapping it merges
+// into -- that is what "merge" means in YAML, so a typo inside it is
+// exactly as much an unknown key as a typo written directly.
+func checkMergeValue(node *yaml.Node, t reflect.Type, path, file string) error {
+	node = resolveAlias(node)
+	if node == nil {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.MappingNode:
+		return checkStructNode(node, t, path, file)
+	case yaml.SequenceNode:
+		for _, elem := range node.Content {
+			elem = resolveAlias(elem)
+			if elem == nil {
+				continue
+			}
+			if elem.Kind != yaml.MappingNode {
+				continue
+			}
+			if err := checkStructNode(elem, t, path, file); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
 }
 
 // checkSliceNode validates every element of a YAML sequence node against
@@ -122,12 +208,32 @@ func joinField(parent, key string) string {
 	return parent + "." + key
 }
 
-// structYAMLFields returns t's exported fields keyed by the name their
-// "yaml" struct tag decodes from -- the same name Viper's mapstructure
-// decode step (TagName: "yaml") resolves against, so this is exactly the
-// known-key set Load actually honors.
+// structYAMLFields returns t's own and inlined fields keyed by the name
+// they decode from -- the same names Viper's mapstructure decode step
+// (TagName: "yaml") resolves against, so this is exactly the known-key set
+// Load actually honors.
+//
+// Config has no inline or anonymous-embedded field today, but a future one
+// would otherwise make every one of its promoted fields read as "unknown":
+// an inlined struct's keys live at the SAME level as its parent's, exactly
+// like a "<<" merge's do, so they are flattened into the same map rather
+// than nested under the embedding field's own name. visited guards against
+// an embedding cycle between struct types (never legitimate Go, but cheap
+// to make non-fatal rather than infinite).
 func structYAMLFields(t reflect.Type) map[string]reflect.StructField {
 	fields := make(map[string]reflect.StructField, t.NumField())
+	addYAMLFields(t, fields, map[reflect.Type]bool{})
+	return fields
+}
+
+// addYAMLFields adds t's fields into fields, recursing into any inline or
+// anonymous-embedded struct field so its keys land in the same map as
+// everything else at this level.
+func addYAMLFields(t reflect.Type, fields map[string]reflect.StructField, visited map[reflect.Type]bool) {
+	if visited[t] {
+		return
+	}
+	visited[t] = true
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if f.PkgPath != "" {
@@ -135,31 +241,58 @@ func structYAMLFields(t reflect.Type) map[string]reflect.StructField {
 			// struct.
 			continue
 		}
-		name, ok := yamlFieldName(f)
+		name, inline, ok := yamlFieldName(f)
 		if !ok {
+			continue
+		}
+		if inline {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				addYAMLFields(ft, fields, visited)
+			}
 			continue
 		}
 		fields[name] = f
 	}
-	return fields
 }
 
-// yamlFieldName returns the YAML key f decodes from, and whether f
-// participates in YAML decoding at all ("yaml:\"-\"" opts out).
-func yamlFieldName(f reflect.StructField) (name string, ok bool) {
+// yamlFieldName returns the YAML key f decodes from, whether f is inlined
+// into its parent rather than decoding under a key of its own, and whether
+// f participates in YAML decoding at all ("yaml:\"-\"" opts out).
+//
+// Mirrors yaml.v3's own field rules: an explicit ",inline" option inlines
+// a struct or map field; an anonymous (embedded) field inlines the same
+// way UNLESS its tag gives it an explicit name, in which case it decodes
+// under that name like any other field rather than being promoted.
+func yamlFieldName(f reflect.StructField) (name string, inline bool, ok bool) {
 	tag, has := f.Tag.Lookup("yaml")
 	if !has {
-		return strings.ToLower(f.Name), true
+		if f.Anonymous {
+			return "", true, true
+		}
+		return strings.ToLower(f.Name), false, true
 	}
 	if tag == "-" {
-		return "", false
+		// The exact, comma-less tag "-" opts out; "-," names the field "-"
+		// literally and falls through to the general case below like any
+		// other name, matching yaml.v3's own distinction.
+		return "", false, false
 	}
-	name = tag
-	if idx := strings.IndexByte(tag, ','); idx >= 0 {
-		name = tag[:idx]
+	parts := strings.Split(tag, ",")
+	name = parts[0]
+	for _, opt := range parts[1:] {
+		if opt == "inline" {
+			return "", true, true
+		}
 	}
 	if name == "" {
+		if f.Anonymous {
+			return "", true, true
+		}
 		name = strings.ToLower(f.Name)
 	}
-	return name, true
+	return name, false, true
 }
