@@ -131,7 +131,51 @@ func (f *fakeKV) ExistsWithConsistency(_ context.Context, key string, _ consiste
 	return ok, nil
 }
 
+func (f *fakeKV) PutEntity(ctx context.Context, req *PutEntityRequest) (*PutEntityResponse, error) {
+	if err := f.Put(ctx, entityKey(req.EntityType, req.ID), req.Data); err != nil {
+		return nil, err
+	}
+	return &PutEntityResponse{}, nil
+}
+
+func (f *fakeKV) GetEntity(ctx context.Context, req *GetEntityRequest) (*GetEntityResponse, error) {
+	data, err := f.Get(ctx, entityKey(req.EntityType, req.ID))
+	if err != nil {
+		return nil, err
+	}
+	return &GetEntityResponse{Data: data}, nil
+}
+
+func (f *fakeKV) DeleteEntity(ctx context.Context, req *DeleteEntityRequest) (*DeleteEntityResponse, error) {
+	if err := f.Delete(ctx, entityKey(req.EntityType, req.ID)); err != nil {
+		return nil, err
+	}
+	return &DeleteEntityResponse{Deleted: true}, nil
+}
+
+func (f *fakeKV) ListEntities(ctx context.Context, req *ListEntitiesRequest) (*ListEntitiesResponse, error) {
+	typePrefix := entityPrefix(req.EntityType)
+	keys, err := f.List(ctx, typePrefix+req.Prefix)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, k[len(typePrefix):])
+	}
+	return &ListEntitiesResponse{Keys: ids, TotalCount: int64(len(ids))}, nil
+}
+
 const confinedKey = hardConfinedPrefix + "material"
+
+// confinedEntityType and confinedEntityID compose, via entityKey, to
+// exactly confinedKey -- "{entityType}/{id}" is "__sys:cluster_ca/material"
+// -- proving an entity-typed call can address the real record precisely,
+// the same way a literal key string can.
+const (
+	confinedEntityType = EntityType("__sys:cluster_ca")
+	confinedEntityID   = "material"
+)
 
 func TestNewHardConfinedKV_NilServicePassesThroughNil(t *testing.T) {
 	if got := NewHardConfinedKV(nil); got != nil {
@@ -286,6 +330,79 @@ func TestHardConfinedKV_EnumerationMethodsFilterTheConfinedKeyFromABroaderSweep(
 		if k == confinedKey {
 			t.Fatal("ListAll(\"\") returned the confined key despite ListAll's own filtering override")
 		}
+	}
+}
+
+// TestHardConfinedKV_EntityMethodsRefuseTheConfinedKey is go-qrdb#555's B2b
+// regression proof: entityKey(EntityType, ID) composes "{EntityType}/{ID}",
+// so EntityType: "__sys:cluster_ca", ID: "material" addresses the exact
+// confined key the point-key methods already refuse. Before this fix these
+// four methods were promoted through embedding straight to the raw fake,
+// which has no confinement logic of its own, so a removed override makes
+// this panic (a nil KVServicer method call) rather than merely fail --
+// still a red signal, just a louder one.
+func TestHardConfinedKV_EntityMethodsRefuseTheConfinedKey(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeKV()
+	fake.store[confinedKey] = []byte("the cluster CA's private key")
+	kv := NewHardConfinedKV(fake)
+
+	assertConfined := func(t *testing.T, err error) {
+		t.Helper()
+		var confErr *HardConfinedKeyError
+		if !errors.As(err, &confErr) {
+			t.Fatalf("error = %v (%T), want *HardConfinedKeyError", err, err)
+		}
+	}
+
+	if _, err := kv.GetEntity(ctx, &GetEntityRequest{EntityType: confinedEntityType, ID: confinedEntityID}); err == nil {
+		t.Fatal("GetEntity succeeded for the confined entity, want a refusal")
+	} else {
+		assertConfined(t, err)
+	}
+	if _, err := kv.PutEntity(ctx, &PutEntityRequest{EntityType: confinedEntityType, ID: confinedEntityID, Data: []byte("overwrite")}); err == nil {
+		t.Fatal("PutEntity succeeded for the confined entity, want a refusal")
+	} else {
+		assertConfined(t, err)
+	}
+	if _, err := kv.DeleteEntity(ctx, &DeleteEntityRequest{EntityType: confinedEntityType, ID: confinedEntityID}); err == nil {
+		t.Fatal("DeleteEntity succeeded for the confined entity, want a refusal")
+	} else {
+		assertConfined(t, err)
+	}
+	if _, err := kv.ListEntities(ctx, &ListEntitiesRequest{EntityType: confinedEntityType}); err == nil {
+		t.Fatal("ListEntities(confinedEntityType) succeeded, want a refusal")
+	} else {
+		assertConfined(t, err)
+	}
+
+	// PutEntity's refusal must never have reached the underlying store.
+	if string(fake.store[confinedKey]) != "the cluster CA's private key" {
+		t.Fatalf("confined key's value changed to %q despite PutEntity being refused", fake.store[confinedKey])
+	}
+}
+
+// TestHardConfinedKV_ListEntitiesFiltersTheConfinedKeyFromABroaderSweep
+// proves ListEntities under an UNconfined entity type still excludes an
+// entry that happens to compose to the confined key, and corrects
+// TotalCount by exactly what it removed.
+func TestHardConfinedKV_ListEntitiesFiltersTheConfinedKeyFromABroaderSweep(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeKV()
+	// A broader, UNconfined entity type ("__sys:cluster_ca" has no trailing
+	// "config" segment in this store) whose own IDs are ordinary, plus the
+	// confined key living directly under the same raw prefix the fake's
+	// List sweeps with an empty entity-type prefix.
+	fake.store[entityPrefix("items")+"a"] = []byte("1")
+	fake.store[entityPrefix("items")+"b"] = []byte("2")
+	kv := NewHardConfinedKV(fake)
+
+	resp, err := kv.ListEntities(ctx, &ListEntitiesRequest{EntityType: "items"})
+	if err != nil {
+		t.Fatalf("ListEntities(items): %v", err)
+	}
+	if len(resp.Keys) != 2 || resp.TotalCount != 2 {
+		t.Fatalf("ListEntities(items) = %+v, want 2 unaffected entries", resp)
 	}
 }
 

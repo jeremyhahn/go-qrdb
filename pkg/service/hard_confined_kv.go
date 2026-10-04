@@ -42,10 +42,17 @@ import (
 // call, so a caller's otherwise-legitimate "list everything" is not
 // broken by the mere presence of a record it must not see.
 //
-// Entity methods (PutEntity, GetEntity, DeleteEntity, ListEntities) are
-// promoted unchanged through embedding: an entity key is composed from
-// EntityType and ID by the underlying store, not supplied as a literal
-// string, so a caller cannot address "__sys:cluster_ca/..." through them.
+// Entity methods (PutEntity, GetEntity, DeleteEntity, ListEntities) compose
+// their storage key from EntityType and ID exactly the way Put/Get/Delete
+// compose theirs from a caller-supplied string -- entityKey(entityType, id)
+// is "{entityType}/{id}", so EntityType: "__sys:cluster_ca", ID: "material"
+// addresses the real record precisely. They are NOT promoted through
+// embedding: this package's own GetEntity/PutEntity/DeleteEntity are
+// concrete methods that write and read through the backend directly, not
+// through this interface's Get/Put/Delete, so embedding would bypass every
+// refusal and filter above. PutEntity/GetEntity/DeleteEntity refuse
+// outright, matching their point-key counterparts; ListEntities filters,
+// matching List.
 type hardConfinedKV struct {
 	KVServicer
 }
@@ -209,4 +216,62 @@ func (h *hardConfinedKV) ExistsWithConsistency(ctx context.Context, key string, 
 		return false, &HardConfinedKeyError{Key: key}
 	}
 	return h.KVServicer.ExistsWithConsistency(ctx, key, opts)
+}
+
+func (h *hardConfinedKV) PutEntity(ctx context.Context, req *PutEntityRequest) (*PutEntityResponse, error) {
+	if req != nil {
+		if key := entityKey(req.EntityType, req.ID); isHardConfinedKey(key) {
+			return nil, &HardConfinedKeyError{Key: key}
+		}
+	}
+	return h.KVServicer.PutEntity(ctx, req)
+}
+
+func (h *hardConfinedKV) GetEntity(ctx context.Context, req *GetEntityRequest) (*GetEntityResponse, error) {
+	if req != nil {
+		if key := entityKey(req.EntityType, req.ID); isHardConfinedKey(key) {
+			return nil, &HardConfinedKeyError{Key: key}
+		}
+	}
+	return h.KVServicer.GetEntity(ctx, req)
+}
+
+func (h *hardConfinedKV) DeleteEntity(ctx context.Context, req *DeleteEntityRequest) (*DeleteEntityResponse, error) {
+	if req != nil {
+		if key := entityKey(req.EntityType, req.ID); isHardConfinedKey(key) {
+			return nil, &HardConfinedKeyError{Key: key}
+		}
+	}
+	return h.KVServicer.DeleteEntity(ctx, req)
+}
+
+// ListEntities refuses outright when req.EntityType (plus any req.Prefix
+// sub-filter) is itself entirely inside the confined namespace -- every
+// result would be confined, matching List's own exact-prefix refusal --
+// and otherwise filters confined entries out of the page, mirroring List.
+// TotalCount is adjusted by the number removed from THIS page only: like
+// List/Scan's callers, a caller needing an exact cross-page total re-derives
+// it from filtered results, so no subtraction beyond what was actually
+// filtered here is owed or attempted.
+func (h *hardConfinedKV) ListEntities(ctx context.Context, req *ListEntitiesRequest) (*ListEntitiesResponse, error) {
+	if req != nil {
+		if composed := entityPrefix(req.EntityType) + req.Prefix; isHardConfinedKey(composed) {
+			return nil, &HardConfinedKeyError{Key: composed}
+		}
+	}
+	resp, err := h.KVServicer.ListEntities(ctx, req)
+	if err != nil || resp == nil || req == nil {
+		return resp, err
+	}
+	typePrefix := entityPrefix(req.EntityType)
+	filtered := make([]string, 0, len(resp.Keys))
+	for _, id := range resp.Keys {
+		if isHardConfinedKey(typePrefix + id) {
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+	resp.TotalCount -= int64(len(resp.Keys) - len(filtered))
+	resp.Keys = filtered
+	return resp, nil
 }

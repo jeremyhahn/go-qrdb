@@ -230,6 +230,26 @@ type BatchService struct {
 	// measured a 6.9 GB peak RSS and OOM-killed pkg/service on CI three times
 	// in one day (go-qrdb#148).
 	expandedBudget int64
+
+	// importKeyGuard, when set, is consulted by importRecords for every
+	// row's storedKey before it is encoded and proposed, refusing the row
+	// (per Import's existing row-failure semantics: a transactional import
+	// aborts entirely, a non-transactional one records the row as failed
+	// and continues) when the guard returns an error. It exists because
+	// Import proposes its encoded ops directly and never calls Execute,
+	// so a caller-named key reaching into a reserved namespace -- the
+	// cluster CA's key material, specifically -- has no other
+	// interception point. nil means no guard: the zero value of
+	// BatchService imports every well-formed row, as it always has. Set
+	// via setImportKeyGuard, which NewHardConfinedBatch calls.
+	importKeyGuard func(key string) error
+}
+
+// setImportKeyGuard installs (or clears, with nil) the per-row key guard
+// importRecords consults before proposing a write. Package-private: the
+// only caller is NewHardConfinedBatch.
+func (s *BatchService) setImportKeyGuard(guard func(key string) error) {
+	s.importKeyGuard = guard
 }
 
 // NewBatchService creates a new BatchServicer that operates on the specified
@@ -1067,6 +1087,17 @@ func (s *BatchService) importRecords(ctx context.Context, records []map[string]s
 		// imported rows share the database's keyspace. The reported key
 		// (in keys/errors) stays the original user-supplied value.
 		storedKey := opts.KeyPrefix + key
+
+		if s.importKeyGuard != nil {
+			if guardErr := s.importKeyGuard(storedKey); guardErr != nil {
+				if opts.Transactional {
+					return nil, &ImportTransactionAbortedError{Row: rowNum, Key: key, Message: guardErr.Error()}
+				}
+				result.Failed++
+				result.Errors = append(result.Errors, ImportError{Row: rowNum, Key: key, Message: guardErr.Error()})
+				continue
+			}
+		}
 
 		if len(storedKey) > maxImportKeySize {
 			msg := "key exceeds maximum size of " + strconv.Itoa(maxImportKeySize) +

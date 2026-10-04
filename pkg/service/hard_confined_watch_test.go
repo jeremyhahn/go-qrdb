@@ -69,6 +69,20 @@ func (f *fakeWatch) WatchPrefix(_ context.Context, _ string, _ ...watch.WatchOpt
 	return f.prefixWatcher, nil
 }
 
+func (f *fakeWatch) WatchEntity(_ context.Context, _ *WatchEntityRequest) (<-chan WatchEntityEvent, error) {
+	f.calledWatch = true
+	ch := make(chan WatchEntityEvent)
+	close(ch)
+	return ch, nil
+}
+
+func (f *fakeWatch) WatchEntityType(_ context.Context, _ *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error) {
+	f.calledWatchPrefix = true
+	ch := make(chan WatchEntityEvent)
+	close(ch)
+	return ch, nil
+}
+
 func TestNewHardConfinedWatch_NilServicePassesThroughNil(t *testing.T) {
 	if got := NewHardConfinedWatch(nil); got != nil {
 		t.Fatalf("NewHardConfinedWatch(nil) = %v, want nil", got)
@@ -191,6 +205,72 @@ func TestHardConfinedWatch_WatchPrefixFiltersADeleteEventsPrevKv(t *testing.T) {
 
 	if err := watcher.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestHardConfinedWatch_WatchEntityRefusesTheConfinedEntity is go-qrdb#555's
+// B2b regression proof for WatchEntity: entityKey(EntityType, ID) composes
+// exactly to confinedKey, and WatchEntity must refuse it outright before a
+// watcher is ever created, the same as Watch does for a literal key.
+func TestHardConfinedWatch_WatchEntityRefusesTheConfinedEntity(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWatch{}
+	w := NewHardConfinedWatch(fake)
+
+	if _, err := w.WatchEntity(ctx, &WatchEntityRequest{EntityType: confinedEntityType, ID: confinedEntityID}); err == nil {
+		t.Fatal("WatchEntity(confined entity) succeeded, want a refusal")
+	} else {
+		var confErr *HardConfinedKeyError
+		if !errors.As(err, &confErr) {
+			t.Fatalf("error = %v (%T), want *HardConfinedKeyError", err, err)
+		}
+	}
+	if fake.calledWatch {
+		t.Fatal("WatchEntity delegated to the underlying servicer despite the refusal")
+	}
+}
+
+// TestHardConfinedWatch_WatchEntityTypeRefusesTheConfinedType proves
+// WatchEntityType refuses outright when EntityType is itself the confined
+// entity type, rather than returning a channel that could only ever
+// deliver nothing.
+func TestHardConfinedWatch_WatchEntityTypeRefusesTheConfinedType(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWatch{}
+	w := NewHardConfinedWatch(fake)
+
+	if _, err := w.WatchEntityType(ctx, &WatchEntityTypeRequest{EntityType: confinedEntityType}); err == nil {
+		t.Fatal("WatchEntityType(confined type) succeeded, want a refusal")
+	} else {
+		var confErr *HardConfinedKeyError
+		if !errors.As(err, &confErr) {
+			t.Fatalf("error = %v (%T), want *HardConfinedKeyError", err, err)
+		}
+	}
+	if fake.calledWatchPrefix {
+		t.Fatal("WatchEntityType delegated to the underlying servicer despite the refusal")
+	}
+}
+
+// TestHardConfinedWatch_EntityMethodsPassThroughForOrdinaryTypes proves an
+// unconfined entity type is unaffected.
+func TestHardConfinedWatch_EntityMethodsPassThroughForOrdinaryTypes(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWatch{}
+	w := NewHardConfinedWatch(fake)
+
+	if _, err := w.WatchEntity(ctx, &WatchEntityRequest{EntityType: "items", ID: "1"}); err != nil {
+		t.Fatalf("WatchEntity(ordinary entity): %v", err)
+	}
+	if !fake.calledWatch {
+		t.Fatal("WatchEntity did not reach the underlying servicer for an ordinary entity")
+	}
+
+	if _, err := w.WatchEntityType(ctx, &WatchEntityTypeRequest{EntityType: "items"}); err != nil {
+		t.Fatalf("WatchEntityType(ordinary type): %v", err)
+	}
+	if !fake.calledWatchPrefix {
+		t.Fatal("WatchEntityType did not reach the underlying servicer for an ordinary type")
 	}
 }
 

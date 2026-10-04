@@ -27,10 +27,19 @@ import (
 // namespace happens to lie within it -- the same "filter the enumeration,
 // refuse the point read" split hardConfinedKV and hardConfinedMVCC make.
 //
-// WatchEntity and WatchEntityType are promoted unchanged through
-// embedding: an entity key is composed from EntityType and ID by the
-// underlying store, not supplied as a literal string, so a caller cannot
-// address "__sys:cluster_ca/..." through them.
+// WatchEntity and WatchEntityType are NOT promoted through embedding:
+// WatchService's own implementations call the hub's Watch/WatchPrefix
+// directly and relay through a channel of WatchEntityEvent, not through
+// this interface's Watch/WatchPrefix, so embedding would bypass the
+// refusal and filter above entirely. WatchEntity's key is composed exactly
+// like WatchEntity -- refused outright, matching Watch. WatchEntityType's
+// prefix is "{entityType}/": since an entity type is never a strict
+// substring of another (the composed prefix always ends at a "/"
+// boundary immediately after the whole type name), the confined entity
+// type's prefix either matches hardConfinedPrefix exactly or does not
+// overlap it at all -- there is no partial-overlap case to filter, so
+// WatchEntityType refuses outright too rather than returning a channel
+// that could only ever deliver nothing.
 type hardConfinedWatch struct {
 	WatchServicer
 }
@@ -138,3 +147,21 @@ func (w *hardConfinedFilteredWatcher) Close() error {
 }
 
 func (w *hardConfinedFilteredWatcher) Err() error { return w.inner.Err() }
+
+func (h *hardConfinedWatch) WatchEntity(ctx context.Context, req *WatchEntityRequest) (<-chan WatchEntityEvent, error) {
+	if req != nil {
+		if key := entityKey(req.EntityType, req.ID); isHardConfinedKey(key) {
+			return nil, &HardConfinedKeyError{Key: key}
+		}
+	}
+	return h.WatchServicer.WatchEntity(ctx, req)
+}
+
+func (h *hardConfinedWatch) WatchEntityType(ctx context.Context, req *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error) {
+	if req != nil {
+		if prefix := entityPrefix(req.EntityType); isHardConfinedKey(prefix) {
+			return nil, &HardConfinedKeyError{Key: prefix}
+		}
+	}
+	return h.WatchServicer.WatchEntityType(ctx, req)
+}

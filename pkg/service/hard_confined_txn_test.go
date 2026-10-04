@@ -17,7 +17,11 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -40,6 +44,11 @@ func (f *fakeTxn) ExecuteWithMode(_ context.Context, _ []Compare, _, _ []Op, _ w
 	return &TransactionResponse{Succeeded: true}, nil
 }
 
+func (f *fakeTxn) ExecuteEntity(_ context.Context, _ *TransactionEntityRequest) (*TransactionEntityResponse, error) {
+	f.called = true
+	return &TransactionEntityResponse{Succeeded: true}, nil
+}
+
 // fakeBatch is fakeTxn's BatchServicer counterpart.
 type fakeBatch struct {
 	BatchServicer
@@ -54,6 +63,16 @@ func (f *fakeBatch) Execute(_ context.Context, _ []Op) ([]OpResponse, error) {
 func (f *fakeBatch) ExecuteWithMode(_ context.Context, _ []Op, _ writemode.Mode) ([]OpResponse, error) {
 	f.called = true
 	return nil, nil
+}
+
+func (f *fakeBatch) ExecuteEntity(_ context.Context, _ *BatchEntityRequest) (*BatchEntityResponse, error) {
+	f.called = true
+	return &BatchEntityResponse{}, nil
+}
+
+func (f *fakeBatch) Import(_ context.Context, _ io.Reader, _ ImportOptions) (*ImportResult, error) {
+	f.called = true
+	return &ImportResult{}, nil
 }
 
 func assertHardConfinedError(t *testing.T, err error) {
@@ -180,6 +199,173 @@ func TestHardConfinedBatch_RefusesAnOpAgainstTheConfinedKey(t *testing.T) {
 	}
 	if fake.called {
 		t.Fatal("ExecuteWithMode reached the underlying servicer despite the refusal")
+	}
+}
+
+// TestHardConfinedTransaction_ExecuteEntityRefusesTheConfinedEntity is
+// go-qrdb#555's B2b regression proof for ExecuteEntity: it proposes
+// directly against the host and never calls Execute, so it needs its own
+// confinement check rather than relying on Execute's.
+func TestHardConfinedTransaction_ExecuteEntityRefusesTheConfinedEntity(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeTxn{}
+	txn := NewHardConfinedTransaction(fake)
+
+	req := &TransactionEntityRequest{
+		Compares: []EntityCompare{{EntityType: confinedEntityType, ID: confinedEntityID, Result: CompareEqual}},
+	}
+	if _, err := txn.ExecuteEntity(ctx, req); err == nil {
+		t.Fatal("ExecuteEntity with a compare against the confined entity succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if fake.called {
+		t.Fatal("ExecuteEntity reached the underlying servicer despite the refusal")
+	}
+
+	req = &TransactionEntityRequest{
+		Success: []TransactionEntityOp{{Type: "put", EntityType: confinedEntityType, ID: confinedEntityID, Data: []byte("x")}},
+	}
+	if _, err := txn.ExecuteEntity(ctx, req); err == nil {
+		t.Fatal("ExecuteEntity with a success op against the confined entity succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if fake.called {
+		t.Fatal("ExecuteEntity reached the underlying servicer despite the refusal")
+	}
+}
+
+func TestHardConfinedTransaction_ExecuteEntityOrdinaryPassesThrough(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeTxn{}
+	txn := NewHardConfinedTransaction(fake)
+
+	req := &TransactionEntityRequest{
+		Success: []TransactionEntityOp{{Type: "put", EntityType: "items", ID: "1", Data: []byte("x")}},
+	}
+	if _, err := txn.ExecuteEntity(ctx, req); err != nil {
+		t.Fatalf("ExecuteEntity with an ordinary op: %v", err)
+	}
+	if !fake.called {
+		t.Fatal("ExecuteEntity did not reach the underlying servicer for an ordinary request")
+	}
+}
+
+// TestHardConfinedBatch_ExecuteEntityRefusesTheConfinedEntity is the
+// BatchServicer counterpart.
+func TestHardConfinedBatch_ExecuteEntityRefusesTheConfinedEntity(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeBatch{}
+	batch := NewHardConfinedBatch(fake)
+
+	req := &BatchEntityRequest{
+		Ops: []BatchEntityOp{{Type: "put", EntityType: confinedEntityType, ID: confinedEntityID, Data: []byte("x")}},
+	}
+	if _, err := batch.ExecuteEntity(ctx, req); err == nil {
+		t.Fatal("ExecuteEntity with an op against the confined entity succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if fake.called {
+		t.Fatal("ExecuteEntity reached the underlying servicer despite the refusal")
+	}
+}
+
+// TestHardConfinedBatch_ImportRefusesARowNamingTheConfinedKey is go-qrdb#555's
+// B2b regression proof for Import: it parses a caller-supplied file and
+// proposes the resulting ops directly, never calling Execute, so a row
+// naming the confined key had no interception point before
+// NewHardConfinedBatch started installing a row-key guard on the wrapped
+// *BatchService. This uses the REAL BatchService, not a fake: the guard is
+// wired by type-asserting the wrapped value, which a fake does not satisfy.
+func TestHardConfinedBatch_ImportRefusesARowNamingTheConfinedKey(t *testing.T) {
+	var proposed bool
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	raw := NewBatchService(host, 1)
+	batch := NewHardConfinedBatch(raw)
+
+	csvData := "key,value\n" + confinedKey + ",overwrite\n"
+	result, err := batch.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+		Format:     "csv",
+		KeyField:   "key",
+		ValueMode:  "field",
+		ValueField: "value",
+		SkipHeader: true,
+	})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if result.Total != 1 || result.Failed != 1 || result.Succeeded != 0 {
+		t.Fatalf("Import result = %+v, want the confined row refused as failed, not succeeded", result)
+	}
+	if proposed {
+		t.Fatal("Import proposed a write for the confined key despite the row-key guard")
+	}
+}
+
+// TestHardConfinedBatch_ImportTransactionalAbortsOnTheConfinedKey proves a
+// transactional import aborts the whole import (ImportTransactionAbortedError)
+// rather than recording a per-row failure, matching every other per-row
+// validation Import already enforces (key/value size limits).
+func TestHardConfinedBatch_ImportTransactionalAbortsOnTheConfinedKey(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	raw := NewBatchService(host, 1)
+	batch := NewHardConfinedBatch(raw)
+
+	csvData := "key,value\n" + confinedKey + ",overwrite\n"
+	_, err := batch.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+		Format:        "csv",
+		KeyField:      "key",
+		ValueMode:     "field",
+		ValueField:    "value",
+		SkipHeader:    true,
+		Transactional: true,
+	})
+	var aborted *ImportTransactionAbortedError
+	if !errors.As(err, &aborted) {
+		t.Fatalf("transactional Import of a confined row = %v, want *ImportTransactionAbortedError", err)
+	}
+}
+
+// TestHardConfinedBatch_ImportOrdinaryRowsPassThrough proves an ordinary
+// import is unaffected by the guard.
+func TestHardConfinedBatch_ImportOrdinaryRowsPassThrough(t *testing.T) {
+	var proposed bool
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	raw := NewBatchService(host, 1)
+	batch := NewHardConfinedBatch(raw)
+
+	csvData := "key,value\nordinary-1,v1\n"
+	result, err := batch.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+		Format:     "csv",
+		KeyField:   "key",
+		ValueMode:  "field",
+		ValueField: "value",
+		SkipHeader: true,
+	})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if result.Succeeded != 1 || result.Failed != 0 {
+		t.Fatalf("Import result = %+v, want the ordinary row to succeed", result)
+	}
+	if !proposed {
+		t.Fatal("Import did not propose the ordinary row's write")
 	}
 }
 
