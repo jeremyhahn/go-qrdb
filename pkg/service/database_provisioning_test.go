@@ -156,3 +156,163 @@ func TestProvisioningAuthorizedDatabaseService_TenantLookupFailsClosed(t *testin
 		t.Fatalf("system create: %v", err)
 	}
 }
+
+// provisionHolders is an inner service that also implements
+// DatabaseHolderServicer, recording the database name every call received.
+type provisionHolders struct {
+	DatabaseServicer
+	calls []string
+}
+
+func (p *provisionHolders) DatabaseBarrierOfficerRegister(_ context.Context, name string, _ *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error) {
+	p.calls = append(p.calls, "register:"+name)
+	return &BarrierOfficerRegisterResult{Role: "so"}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierOfficerList(_ context.Context, name string) ([]*BarrierOfficerStatus, error) {
+	p.calls = append(p.calls, "list:"+name)
+	return nil, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierShamirInitialize(_ context.Context, name string, _ seal.FactorPolicy) (*ShamirInitInfo, error) {
+	p.calls = append(p.calls, "init-shamir:"+name)
+	return &ShamirInitInfo{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierShareClaimBegin(_ context.Context, name, username, _ string) (*BarrierShareClaimChallenge, error) {
+	p.calls = append(p.calls, "claim-begin:"+name+":"+username)
+	return &BarrierShareClaimChallenge{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierShareClaimComplete(_ context.Context, name, username, _ string, _ []byte, _ string) (*BarrierShareClaimResult, error) {
+	p.calls = append(p.calls, "claim-complete:"+name+":"+username)
+	return &BarrierShareClaimResult{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierQuorumBegin(_ context.Context, name string, _ *QuorumBeginRequest) (*QuorumChallengeInfo, error) {
+	p.calls = append(p.calls, "quorum-begin:"+name)
+	return &QuorumChallengeInfo{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierQuorumSubmit(_ context.Context, name string, _ *QuorumSubmitRequest) (*QuorumOutcomeInfo, error) {
+	p.calls = append(p.calls, "quorum-submit:"+name)
+	return &QuorumOutcomeInfo{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierRekeyStart(_ context.Context, name string, _ int, _ seal.FactorPolicy) (*QuorumRoundInfo, error) {
+	p.calls = append(p.calls, "rekey:"+name)
+	return &QuorumRoundInfo{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierOfficerRevoke(_ context.Context, name, username string, _ int) (*QuorumRoundInfo, error) {
+	p.calls = append(p.calls, "revoke:"+name+":"+username)
+	return &QuorumRoundInfo{}, nil
+}
+
+func (p *provisionHolders) DatabaseBarrierOfficerUnenrol(_ context.Context, name, username string) error {
+	p.calls = append(p.calls, "unenrol:"+name+":"+username)
+	return nil
+}
+
+// TestProvisioningAuthorizedDatabaseService_HolderMethods_Unsupported proves
+// every DatabaseHolderServicer method the wrapper declares refuses with
+// *CapabilityUnsupportedError, not a type-assertion panic or a silent
+// 501, when inner does not implement database share-holder custody -- the
+// gap go-qrdb found in the production composition: NewProvisioningAuthorizedDatabaseService
+// embeds the DatabaseServicer INTERFACE, which only promotes DatabaseServicer's
+// own methods, not any additive interface (DatabaseHolderServicer included)
+// the underlying *DatabaseService also happens to implement.
+func TestProvisioningAuthorizedDatabaseService_HolderMethods_Unsupported(t *testing.T) {
+	inner := &provisionCreates{}
+	svc := NewProvisioningAuthorizedDatabaseService(inner, &provisionDeny{}, provisionTenants{})
+	hs, ok := svc.(DatabaseHolderServicer)
+	if !ok {
+		t.Fatalf("NewProvisioningAuthorizedDatabaseService does not implement DatabaseHolderServicer")
+	}
+	ctx := context.Background()
+
+	cases := map[string]func() error{
+		"register": func() error {
+			_, err := hs.DatabaseBarrierOfficerRegister(ctx, "db", &BarrierOfficerRegisterRequest{})
+			return err
+		},
+		"list":        func() error { _, err := hs.DatabaseBarrierOfficerList(ctx, "db"); return err },
+		"init-shamir": func() error { _, err := hs.DatabaseBarrierShamirInitialize(ctx, "db", ""); return err },
+		"claim-begin": func() error { _, err := hs.DatabaseBarrierShareClaimBegin(ctx, "db", "alice", ""); return err },
+		"claim-complete": func() error {
+			_, err := hs.DatabaseBarrierShareClaimComplete(ctx, "db", "alice", "nonce", nil, "")
+			return err
+		},
+		"quorum-begin":  func() error { _, err := hs.DatabaseBarrierQuorumBegin(ctx, "db", &QuorumBeginRequest{}); return err },
+		"quorum-submit": func() error { _, err := hs.DatabaseBarrierQuorumSubmit(ctx, "db", &QuorumSubmitRequest{}); return err },
+		"rekey":         func() error { _, err := hs.DatabaseBarrierRekeyStart(ctx, "db", 2, ""); return err },
+		"revoke":        func() error { _, err := hs.DatabaseBarrierOfficerRevoke(ctx, "db", "alice", 2); return err },
+		"unenrol":       func() error { return hs.DatabaseBarrierOfficerUnenrol(ctx, "db", "alice") },
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			var unsupported *CapabilityUnsupportedError
+			if err := call(); !errors.As(err, &unsupported) {
+				t.Fatalf("%s over a plain service = %v, want *CapabilityUnsupportedError", name, err)
+			}
+		})
+	}
+}
+
+// TestProvisioningAuthorizedDatabaseService_HolderMethods_Delegate proves
+// every DatabaseHolderServicer method is a pure passthrough to inner when
+// inner supports database share-holder custody: no provisioning-permission
+// check runs (authz.asked stays empty), and inner actually receives the call.
+func TestProvisioningAuthorizedDatabaseService_HolderMethods_Delegate(t *testing.T) {
+	inner := &provisionHolders{}
+	authz := &provisionDeny{}
+	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{})
+	hs, ok := svc.(DatabaseHolderServicer)
+	if !ok {
+		t.Fatalf("NewProvisioningAuthorizedDatabaseService does not implement DatabaseHolderServicer")
+	}
+	ctx := context.Background()
+
+	if _, err := hs.DatabaseBarrierOfficerRegister(ctx, "vault", &BarrierOfficerRegisterRequest{}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierOfficerList(ctx, "vault"); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierShamirInitialize(ctx, "vault", ""); err != nil {
+		t.Fatalf("init-shamir: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierShareClaimBegin(ctx, "vault", "alice", ""); err != nil {
+		t.Fatalf("claim-begin: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierShareClaimComplete(ctx, "vault", "alice", "nonce", nil, ""); err != nil {
+		t.Fatalf("claim-complete: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierQuorumBegin(ctx, "vault", &QuorumBeginRequest{}); err != nil {
+		t.Fatalf("quorum-begin: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierQuorumSubmit(ctx, "vault", &QuorumSubmitRequest{}); err != nil {
+		t.Fatalf("quorum-submit: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierRekeyStart(ctx, "vault", 2, ""); err != nil {
+		t.Fatalf("rekey: %v", err)
+	}
+	if _, err := hs.DatabaseBarrierOfficerRevoke(ctx, "vault", "alice", 2); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := hs.DatabaseBarrierOfficerUnenrol(ctx, "vault", "alice"); err != nil {
+		t.Fatalf("unenrol: %v", err)
+	}
+
+	want := []string{
+		"register:vault", "list:vault", "init-shamir:vault", "claim-begin:vault:alice",
+		"claim-complete:vault:alice", "quorum-begin:vault", "quorum-submit:vault",
+		"rekey:vault", "revoke:vault:alice", "unenrol:vault:alice",
+	}
+	if !reflect.DeepEqual(inner.calls, want) {
+		t.Fatalf("inner.calls = %v, want %v", inner.calls, want)
+	}
+	if len(authz.asked) != 0 {
+		t.Fatalf("holder methods asked a provisioning permission: %v", authz.asked)
+	}
+}

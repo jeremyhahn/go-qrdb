@@ -96,6 +96,7 @@ type provisioningAuthorizedDatabaseService struct {
 var (
 	_ DatabaseServicer          = (*provisioningAuthorizedDatabaseService)(nil)
 	_ DatabaseCredentialCreator = (*provisioningAuthorizedDatabaseService)(nil)
+	_ DatabaseHolderServicer    = (*provisioningAuthorizedDatabaseService)(nil)
 )
 
 // NewProvisioningAuthorizedDatabaseService returns inner with every create
@@ -159,4 +160,109 @@ func (s *provisioningAuthorizedDatabaseService) CreateWithCredentials(ctx contex
 		return nil, &CapabilityUnsupportedError{Message: "database: the database service does not support credentialed creation"}
 	}
 	return cc.CreateWithCredentials(ctx, cfg, creds)
+}
+
+// databaseHolders returns the inner DatabaseServicer as a DatabaseHolderServicer
+// when it supports database share-holder custody. Provisioning authorization
+// (databases:create and its backend-specific permissions) has nothing to do
+// with managing a database's already-provisioned barrier holders, so every
+// method below is a pure passthrough -- unlike CreateWithCredentials, none of
+// them calls s.authorize.
+func (s *provisioningAuthorizedDatabaseService) databaseHolders() (DatabaseHolderServicer, error) {
+	hs, ok := s.DatabaseServicer.(DatabaseHolderServicer)
+	if !ok {
+		return nil, &CapabilityUnsupportedError{Message: "database: the database service does not support share-holder custody"}
+	}
+	return hs, nil
+}
+
+// DatabaseBarrierOfficerRegister delegates to inner when it supports
+// database share-holder custody.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierOfficerRegister(ctx context.Context, name string, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierOfficerRegister(ctx, name, req)
+}
+
+// DatabaseBarrierOfficerList delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierOfficerList(ctx context.Context, name string) ([]*BarrierOfficerStatus, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierOfficerList(ctx, name)
+}
+
+// DatabaseBarrierShamirInitialize delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierShamirInitialize(ctx context.Context, name string, policy seal.FactorPolicy) (*ShamirInitInfo, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierShamirInitialize(ctx, name, policy)
+}
+
+// DatabaseBarrierShareClaimBegin delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierShareClaimBegin(ctx context.Context, name, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierShareClaimBegin(ctx, name, username, callerCertThumbprint)
+}
+
+// DatabaseBarrierShareClaimComplete delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierShareClaimComplete(ctx context.Context, name, username, nonceHex string, signature []byte, callerCertThumbprint string) (*BarrierShareClaimResult, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierShareClaimComplete(ctx, name, username, nonceHex, signature, callerCertThumbprint)
+}
+
+// DatabaseBarrierQuorumBegin delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierQuorumBegin(ctx context.Context, name string, req *QuorumBeginRequest) (*QuorumChallengeInfo, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierQuorumBegin(ctx, name, req)
+}
+
+// DatabaseBarrierQuorumSubmit delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name string, req *QuorumSubmitRequest) (*QuorumOutcomeInfo, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierQuorumSubmit(ctx, name, req)
+}
+
+// DatabaseBarrierRekeyStart delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierRekeyStart(ctx context.Context, name string, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierRekeyStart(ctx, name, threshold, policy)
+}
+
+// DatabaseBarrierOfficerRevoke delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierOfficerRevoke(ctx context.Context, name, username string, threshold int) (*QuorumRoundInfo, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	return hs.DatabaseBarrierOfficerRevoke(ctx, name, username, threshold)
+}
+
+// DatabaseBarrierOfficerUnenrol delegates to inner.
+func (s *provisioningAuthorizedDatabaseService) DatabaseBarrierOfficerUnenrol(ctx context.Context, name, username string) error {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return err
+	}
+	return hs.DatabaseBarrierOfficerUnenrol(ctx, name, username)
 }
