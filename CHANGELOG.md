@@ -11,6 +11,17 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.40.1-alpha] - 2026-10-04
+
+A hotfix for v0.40.0-alpha, which could not boot multi-node clusters, plus durable leases and placement data-loss fixes. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Cluster CA boot fixes.**
+  - A node restarts cleanly after its local CA key cache is deleted.
+  - Nodes using operator-supplied TLS boot with no cluster CA key; CA-dependent verbs are refused with a typed error.
+  - Startup checks retry while the Raft leader settles instead of crashing the boot.
+- **Durable leases on every KV state machine.** Leases persist in the replicated store and survive restarts and snapshots; the lease table is hidden from reads. BREAKING: `--sm regular` is refused, and `WithKVLeaseManager` is renamed `WithKVLessor`.
+- **Placement data-loss fixes.** A node that a placement does not name never serves or opens that database, and returns a typed `NotAReplica` error; tenant directories are never opened or deleted by another node.
+
 ### Fixed
 
 - **Multi-node Raft clusters could not boot (v0.40.0-alpha).** Three
