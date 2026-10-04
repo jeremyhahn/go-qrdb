@@ -32,6 +32,7 @@
     csrPem = $bindable(""),
     certPem = $bindable(""),
     certPoolPem = $bindable(""),
+    nextLabel = "Initialize",
     onNext,
     onBack,
   }: {
@@ -39,6 +40,15 @@
     csrPem?: string;
     certPem?: string;
     certPoolPem?: string;
+    /**
+     * Label for the forward button. Callers whose wizard still has a
+     * review step after this one (ConnectionManager's embedded-server
+     * creation wizard) pass "Next" -- onNext only advances the step there,
+     * it does not itself call ceremony.initialize. Defaults to
+     * "Initialize" for callers (ServerInitWizard) where onNext IS the
+     * ceremony.initialize call.
+     */
+    nextLabel?: string;
     onNext: () => void;
     onBack: () => void;
   } = $props();
@@ -141,7 +151,7 @@
   <div class="flex justify-between mt-2">
     <button class="btn btn-ghost" onclick={onBack} data-testid="admin-back-btn">Back</button>
     <button class="btn btn-primary" onclick={onNext} disabled={!isValid} data-testid="admin-next-btn">
-      Initialize
+      {nextLabel}
     </button>
   </div>
 </div>

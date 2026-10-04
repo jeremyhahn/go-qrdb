@@ -591,6 +591,91 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return { ...getState().sealStatus };
           },
         },
+        CeremonyBinding: {
+          // CeremonyBinding.Initialize(req): `qrdb init`'s desktop
+          // counterpart, and the ONLY way to bring up a ceremony-backed
+          // system barrier -- BarrierInitialize/BarrierInitializeShamir
+          // both refuse it. Every officer and the admin credential travel
+          // together in one call; there is no per-holder registration
+          // call before it. The response mirrors the Go binding's
+          // CeremonyInitializeResult, not the raw SDK response: the
+          // admin-generate path never returns an admin key here, only
+          // adminKeyPath -- the Go binding saves the key to a local file
+          // and never hands the page the raw key.
+          Initialize: async (req: {
+            threshold?: number;
+            officers?: { username: string; role?: string; csr_pem: string }[];
+            secret?: string;
+            admin_csr_pem?: string;
+            admin_cert_pem?: string;
+            admin_generate?: boolean;
+          }) => {
+            maybeReject("CeremonyBinding.Initialize");
+            const s = getState();
+            const officers = req.officers ?? [];
+            const isMofN = (req.threshold ?? 0) >= 2;
+            if (isMofN && officers.length === 0) {
+              throw new Error("ceremony: at least one officer is required for M-of-N");
+            }
+            const adminPathsSelected = [req.admin_csr_pem, req.admin_cert_pem, req.admin_generate ? "generate" : undefined]
+              .filter((v) => v !== undefined && v !== "").length;
+            if (adminPathsSelected !== 1) {
+              throw new Error("ceremony: exactly one admin credential path (CSR, certificate or generate) is required");
+            }
+
+            s.sealStatus.initialized = true;
+            s.sealStatus.sealed = false;
+            s.configInitialized = true;
+            if (isMofN) {
+              s.sealStatus.strategy = "shamir";
+              s.sealStatus.sharesRequired = req.threshold ?? 0;
+              s.sealStatus.sharesTotal = officers.length;
+              s.officers = officers.map((o, i) => ({
+                username: o.username,
+                role: o.role === "custodian" ? "custodian" : "so",
+                cert_thumbprint: `mock${o.username}`,
+                share_index: i + 1,
+                designated: "mtls",
+                factors: ["mtls"],
+                encryption_kem: "",
+                enrolled_at: new Date().toISOString(),
+                claimed_at: "0001-01-01T00:00:00Z",
+                share_pending: true,
+              }));
+            } else {
+              s.sealStatus.strategy = req.secret ? "passphrase" : "none";
+            }
+
+            const holders = officers.map((o) => ({
+              username: o.username,
+              role: o.role === "custodian" ? "custodian" : "so",
+              certPem: `-----BEGIN CERTIFICATE-----\nmock-holder-cert-for-${o.username}\n-----END CERTIFICATE-----`,
+            }));
+            const adminGenerate = req.admin_generate === true;
+            return {
+              spkiPin: "mockpin",
+              caCertPem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
+              tlsCertPem: "-----BEGIN CERTIFICATE-----\ntls\n-----END CERTIFICATE-----",
+              state: holders.length > 0 ? "enrolling" : "operational",
+              shareCount: holders.length,
+              holders,
+              adminCertPem: "-----BEGIN CERTIFICATE-----\nadmin\n-----END CERTIFICATE-----",
+              ...(adminGenerate ? { adminKeyPath: "/mock/config/dir/qrdb/admin-key-mock.pem" } : {}),
+              adminCredentialSource: adminGenerate ? "generated" : req.admin_csr_pem ? "csr" : "byoc",
+            };
+          },
+          Status: async () => {
+            maybeReject("CeremonyBinding.Status");
+            return {
+              state: getState().configInitialized ? "operational" : "awaiting_init",
+              spkiPin: "mockpin",
+            };
+          },
+          SignCSR: async (req: { username: string; so_pin: string; csr_pem: string; role: string }) => {
+            maybeReject("CeremonyBinding.SignCSR");
+            return { certPem: `-----BEGIN CERTIFICATE-----\nmock-signed-${req.username}\n-----END CERTIFICATE-----` };
+          },
+        },
         OfficerBinding: (() => {
           // Mirrors the Go OfficerBinding: RegisterHolder, ListHolders,
           // ClaimEnvelope, SubmitShare, StartRekey and RevokeHolder, each over

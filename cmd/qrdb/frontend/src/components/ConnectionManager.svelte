@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client } from "@qrdb/sdk";
+  import type { Client, CeremonyHolderCertificate, CeremonyInitializeRequest, CeremonyOfficerRequest } from "@qrdb/sdk";
   import {
     Database,
     Plus,
@@ -29,7 +29,7 @@
     Lock,
     ChevronRight,
     Copy,
-    Check,
+    Download,
   } from "lucide-svelte";
   import {
     connManagerStore,
@@ -45,7 +45,9 @@
     ExternalConnectionConfig,
   } from "$stores/connection-manager.svelte.ts";
   import StepIndicator from "./wizard/StepIndicator.svelte";
-  import HolderEnrolmentForms from "./wizard/HolderEnrolmentForms.svelte";
+  import CeremonyOfficerForms from "./wizard/CeremonyOfficerForms.svelte";
+  import StepAdminCredential from "./wizard/setup/StepAdminCredential.svelte";
+  import type { AdminCredentialMode } from "./wizard/setup/StepAdminCredential.svelte";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -75,6 +77,8 @@
     | "mode"
     | "discovery"
     | "barrier"
+    | "officers"
+    | "admin"
     | "summary"
     | "applying";
 
@@ -83,16 +87,20 @@
     "mode",
     "discovery",
     "barrier",
+    "officers",
+    "admin",
     "summary",
     "applying",
   ] as const;
 
-  /** Step labels shown in the step indicator (discovery is conditional). */
+  /** Step labels shown in the step indicator (discovery and officers are conditional). */
   const stepLabels: readonly string[] = [
     "Name",
     "Mode",
     "Discovery",
     "Barrier",
+    "Officers",
+    "Admin",
     "Summary",
     "Applying",
   ] as const;
@@ -122,6 +130,22 @@
   let embeddedShamirThreshold: number = $state(3);
   let embeddedShamirShares: number = $state(5);
 
+  // Officers step (shamir only): every holder is collected locally here,
+  // not registered individually -- a ceremony-backed system barrier
+  // refuses BarrierInitializeShamir outright (`qrdb init`/
+  // ceremony.initialize is the ONLY way to establish its custody), so
+  // there is no server to register a holder against before that one call.
+  let embeddedOfficers: CeremonyOfficerRequest[] = $state([]);
+  let allOfficersFilled = $derived(embeddedOfficers.length === embeddedShamirShares && embeddedShamirShares > 0);
+
+  // Admin credential step: the same ceremony.initialize call that brings
+  // up the barrier also issues the bootstrap admin's certificate, so this
+  // wizard resolves it exactly like ServerInitWizard does.
+  let embeddedAdminMode: AdminCredentialMode = $state("csr");
+  let embeddedAdminCsrPem: string = $state("");
+  let embeddedAdminCertPem: string = $state("");
+  let embeddedAdminCertPoolPem: string = $state("");
+
   // Applying phase state
   interface ApplyPhase {
     readonly label: string;
@@ -136,24 +160,23 @@
       (applyError ? "Setup failed" : "Preparing..."),
   );
 
-  // Holder enrolment, between starting the server and initializing a Shamir
-  // barrier: initialization splits the unseal key to exactly the enrolled
-  // holders, so it waits here until every one is enrolled.
-  let awaitingHolders: boolean = $state(false);
-  let holdersRegistered: number = $state(0);
-
   /**
-   * Where a Shamir apply paused for holder enrolment: the phase it paused in,
-   * the profile it created and the connection it opened. Not reactive; only
-   * the resume reads it.
+   * The profile and connection state applying finished with, held until
+   * handleApplyAck's "Continue to Server" click. The template checks it
+   * directly to show the result panel, so it must be reactive.
    */
-  let pausedApply: { phaseIdx: number; profileId: string; connState: ConnectionState } | null = null;
+  let pendingConnectState: { profileId: string; connState: ConnectionState } | null = $state(null);
 
-  // Shamir result state shown after applying (share-free: each holder claims its envelope).
+  // ceremony.initialize's result, shown after applying. Share-free: each
+  // holder claims its own sealed envelope; no share and no admin key ever
+  // appears here (the admin-generate path's key is saved to a local file
+  // by the Go binding, never through this page -- see
+  // CeremonyBinding.Initialize/saveAdminKeyLocally).
   let shamirShareCount: number = $state(0);
-  let shamirThresholdResult: number = $state(0);
-  let shamirRootToken: string = $state("");
-  let copiedRootToken: boolean = $state(false);
+  let issuedAdminCertPem: string = $state("");
+  let adminKeyPath: string = $state("");
+  let adminCredentialSource: string = $state("");
+  let issuedHolders: readonly CeremonyHolderCertificate[] = $state([]);
 
   // Barrier validation
   let barrierValid = $derived.by(() => {
@@ -367,14 +390,19 @@
     embeddedPassphraseConfirm = "";
     embeddedShamirThreshold = 3;
     embeddedShamirShares = 5;
+    embeddedOfficers = [];
+    embeddedAdminMode = "csr";
+    embeddedAdminCsrPem = "";
+    embeddedAdminCertPem = "";
+    embeddedAdminCertPoolPem = "";
     applyPhases = [];
     applyProgress = 0;
     applyError = "";
-    awaitingHolders = false;
-    pausedApply = null;
     shamirShareCount = 0;
-    shamirThresholdResult = 0;
-    shamirRootToken = "";
+    issuedAdminCertPem = "";
+    adminKeyPath = "";
+    adminCredentialSource = "";
+    issuedHolders = [];
   }
 
   function wizardBack(): void {
@@ -385,6 +413,11 @@
     // When going back from "barrier", skip "discovery" if standalone.
     if (embeddedStep === "barrier" && embeddedServerMode === "standalone") {
       embeddedStep = "mode";
+      return;
+    }
+    // When going back from "admin", skip "officers" unless shamir.
+    if (embeddedStep === "admin" && embeddedBarrierMode !== "shamir") {
+      embeddedStep = "barrier";
       return;
     }
 
@@ -402,6 +435,12 @@
       embeddedStep = "barrier";
       return;
     }
+    // Skip "officers" unless shamir: every other mode has no holders to
+    // collect before ceremony.initialize.
+    if (embeddedStep === "barrier" && embeddedBarrierMode !== "shamir") {
+      embeddedStep = "admin";
+      return;
+    }
 
     const next = steps[idx + 1];
     if (next !== undefined) embeddedStep = next;
@@ -417,19 +456,38 @@
   // ---------------------------------------------------------------------------
 
   function buildApplyPhases(): ApplyPhase[] {
-    const phases: ApplyPhase[] = [
+    return [
       { label: "Saving server configuration...", status: "pending" },
       { label: "Starting embedded server...", status: "pending" },
+      { label: "Initializing encryption barrier...", status: "pending" },
+      { label: "Verifying server health...", status: "pending" },
+      { label: "Complete", status: "pending" },
     ];
-    if (embeddedBarrierMode === "shamir") {
-      phases.push({ label: "Enrolling share holders...", status: "pending" });
-    }
-    if (embeddedBarrierMode !== "none") {
-      phases.push({ label: "Initializing encryption barrier...", status: "pending" });
-    }
-    phases.push({ label: "Verifying server health...", status: "pending" });
-    phases.push({ label: "Complete", status: "pending" });
-    return phases;
+  }
+
+  /**
+   * Builds the ceremony.initialize request for the chosen barrier mode and
+   * admin-credential selection. `qrdb init`/ceremony.initialize is the ONLY
+   * way to bring up a ceremony-backed system barrier -- BarrierInitialize
+   * and BarrierInitializeShamir both refuse it outright -- so every mode
+   * (including "none") goes through this one call, which also issues the
+   * bootstrap admin's certificate.
+   */
+  function buildCeremonyRequest(): CeremonyInitializeRequest {
+    const barrierFields: Partial<CeremonyInitializeRequest> =
+      embeddedBarrierMode === "passphrase" ? { secret: embeddedPassphrase } :
+      embeddedBarrierMode === "shamir" ? { threshold: embeddedShamirThreshold, officers: embeddedOfficers } :
+      {}; // "none": no secret, no officers.
+
+    const adminFields: Partial<CeremonyInitializeRequest> =
+      embeddedAdminMode === "csr" ? { adminCsrPem: embeddedAdminCsrPem.trim() } :
+      embeddedAdminMode === "byoc" ? {
+        adminCertPem: embeddedAdminCertPem.trim(),
+        ...(embeddedAdminCertPoolPem.trim() !== "" ? { adminCertPoolPem: embeddedAdminCertPoolPem.trim() } : {}),
+      } :
+      { adminGenerate: true };
+
+    return { ...barrierFields, ...adminFields };
   }
 
   function advanceApplyPhase(idx: number): void {
@@ -519,138 +577,56 @@
       completeApplyPhase(phaseIdx);
       phaseIdx++;
 
-      // Phase 3 (conditional): Initialize encryption barrier.
-      //
-      // In embedded mode a "none"-strategy barrier is auto-initialized when
-      // StartEmbedded runs (see initEmbeddedBarrier in
-      // cmd/qrdb/embedded_barrier.go); passphrase and shamir barriers are
-      // constructed but left uninitialized so credentials flow only from
-      // the operator (INV-1). We check the barrier status first and skip
-      // init when it is already done, keeping the wizard idempotent and
-      // avoiding "already initialized" errors that would otherwise abort
-      // the flow with a generic toast.
-      const preStatus = await client.seal.status();
-      const alreadyInitialized = preStatus.initialized;
+      // Phase 3: Initialize the encryption barrier and issue the bootstrap
+      // admin's certificate, together, through ceremony.initialize.
+      // `qrdb init`/ceremony.initialize is the ONLY way to bring up a
+      // ceremony-backed system barrier -- BarrierInitialize and
+      // BarrierInitializeShamir both refuse it outright -- so this call
+      // replaces the former seal.initialize/seal.initializeShamir +
+      // officers.registerOfficer flow entirely, for every barrier mode
+      // including "none". It is still safe to call when the barrier was
+      // already auto-initialized by StartEmbedded (see initEmbeddedBarrier
+      // in cmd/qrdb/embedded_barrier.go): Initialize's own
+      // already-unsealed/matching-credential tolerance applies (a "none"
+      // strategy's empty secret always matches), and it still issues the
+      // admin credential and transitions the ceremony to operational.
+      advanceApplyPhase(phaseIdx);
+      const result = await client.ceremony.initialize(buildCeremonyRequest());
+      shamirShareCount = result.shareCount;
+      issuedAdminCertPem = result.adminCertPem ?? "";
+      // adminKeyPem is intentionally never read here: on the desktop
+      // (Wails) client it is never populated at all -- the generated key
+      // is saved to a local file by Go and reported only through
+      // adminKeyPath, never through this page.
+      adminKeyPath = result.adminKeyPath ?? "";
+      adminCredentialSource = result.adminCredentialSource ?? "";
+      issuedHolders = result.holders ?? [];
+      completeApplyPhase(phaseIdx);
+      phaseIdx++;
 
-      if (embeddedBarrierMode === "shamir") {
-        advanceApplyPhase(phaseIdx);
-        if (!alreadyInitialized) {
-          // Pause: the holders are enrolled against the running server, and
-          // continueAfterHolders resumes the apply once every one is.
-          pausedApply = { phaseIdx, profileId, connState };
-          holdersRegistered = 0;
-          awaitingHolders = true;
-          return;
-        }
-        completeApplyPhase(phaseIdx);
-        phaseIdx++;
-      }
+      // Verify server health.
+      advanceApplyPhase(phaseIdx);
+      await client.admin.status();
+      completeApplyPhase(phaseIdx);
+      phaseIdx++;
 
-      phaseIdx = await finishApply(phaseIdx, profileId, connState, alreadyInitialized, (i) => { phaseIdx = i; });
+      // Complete.
+      advanceApplyPhase(phaseIdx);
+      completeApplyPhase(phaseIdx);
+      applyProgress = 100;
+
+      // Yield to Svelte reactivity before showing the result panel.
+      await new Promise<void>((r) => setTimeout(r, 120));
+
+      pendingConnectState = { profileId, connState };
     } catch (err: unknown) {
       await handleApplyFailure(err, phaseIdx, profileId);
     }
   }
 
-  /**
-   * Resumes a Shamir apply once every holder is enrolled: initializes the
-   * barrier, verifies health and completes.
-   */
-  async function continueAfterHolders(): Promise<void> {
-    const paused = pausedApply;
-    if (paused === null || holdersRegistered !== embeddedShamirShares) return;
-    pausedApply = null;
-    awaitingHolders = false;
-    completeApplyPhase(paused.phaseIdx);
-    let phaseIdx = paused.phaseIdx + 1;
-    try {
-      await finishApply(phaseIdx, paused.profileId, paused.connState, false, (i) => { phaseIdx = i; });
-    } catch (err: unknown) {
-      await handleApplyFailure(err, phaseIdx, paused.profileId);
-    }
-  }
-
-  /**
-   * Runs the apply from the barrier-initialization phase to completion.
-   * onPhase reports the phase in progress so a failure marks the right one.
-   * Returns the index past the last phase run.
-   */
-  async function finishApply(
-    startIdx: number,
-    profileId: string,
-    connState: ConnectionState,
-    alreadyInitialized: boolean,
-    onPhase: (idx: number) => void,
-  ): Promise<number> {
-    let phaseIdx = startIdx;
-    const at = (idx: number): void => { phaseIdx = idx; onPhase(idx); };
-
-    if (embeddedBarrierMode !== "none") {
-      advanceApplyPhase(phaseIdx);
-      if (alreadyInitialized) {
-        // Barrier was auto-initialized by the embedded server; honor the
-        // phase for UX continuity but do not call initialize again.
-      } else if (embeddedBarrierMode === "shamir") {
-        const result = await client.seal.initializeShamir({
-          threshold: embeddedShamirThreshold,
-          totalShares: embeddedShamirShares,
-        });
-        shamirShareCount = result.shareCount;
-        shamirThresholdResult = result.threshold;
-        shamirRootToken = result.rootToken;
-      } else {
-        await client.seal.initialize(embeddedPassphrase);
-      }
-      completeApplyPhase(phaseIdx);
-      at(phaseIdx + 1);
-    } else if (!alreadyInitialized) {
-      // For "none" mode we still need to mark the barrier as initialized
-      // when the embedded server did not already do so.
-      await client.seal.initialize("");
-    }
-
-    // Verify server health.
-    advanceApplyPhase(phaseIdx);
-    await client.admin.status();
-    completeApplyPhase(phaseIdx);
-    at(phaseIdx + 1);
-
-    // Complete.
-    advanceApplyPhase(phaseIdx);
-    completeApplyPhase(phaseIdx);
-    applyProgress = 100;
-
-    // Yield to Svelte reactivity before transitioning.
-    await new Promise<void>((r) => setTimeout(r, 120));
-
-    // A Shamir barrier shows its result panel and waits for the operator to
-    // continue; every other mode routes straight to the server.
-    if (embeddedBarrierMode !== "shamir") {
-      activePanel = "none";
-      // Barrier is now initialized; update the store's cached state so
-      // subsequent sidebar clicks see the connection as fully-connected.
-      // Without this, the cached state would still be "needs-init" from
-      // the initial connectProfile() call (which happened before
-      // seal.initialize), and clicking the server row would try to
-      // reconnect — which the backend used to refuse as already active.
-      const finalState: ConnectionState = {
-        ...connState,
-        status: "connected",
-      };
-      connManagerStore.states = new Map(connManagerStore.states).set(
-        profileId,
-        finalState,
-      );
-      onConnect(finalState);
-    }
-    return phaseIdx;
-  }
-
   /** Marks the failed phase, reports the error and stops the orphaned server. */
   async function handleApplyFailure(err: unknown, phaseIdx: number, profileId: string): Promise<void> {
     console.error("[ConnectionManager] embedded wizard apply error", err);
-    awaitingHolders = false;
-    pausedApply = null;
     if (phaseIdx >= 0 && phaseIdx < applyPhases.length) {
       failApplyPhase(phaseIdx);
     }
@@ -669,21 +645,25 @@
     }
   }
 
-  function handleShamirAck(): void {
-    // Barrier initialized (share-free). Each holder claims its envelope with
-    // its own keys from the qrdb CLI or the desktop app.
-    const profile = connManagerStore.profiles[connManagerStore.profiles.length - 1];
-    if (profile === undefined) return;
+  /**
+   * Acknowledges the result panel (barrier initialized, admin certificate
+   * and -- for Shamir -- every holder's certificate issued, share-free)
+   * and connects to the newly-created server.
+   */
+  function handleApplyAck(): void {
+    const pending = pendingConnectState;
+    if (pending === null) return;
+    pendingConnectState = null;
     activePanel = "none";
-    const existing = connManagerStore.states.get(profile.id);
-    const finalState: ConnectionState = {
-      ...(existing ?? { profileId: profile.id, isEmbedded: true, status: "connected" }),
-      profileId: profile.id,
-      status: "connected",
-      isEmbedded: true,
-    };
+    // Barrier is now initialized; update the store's cached state so
+    // subsequent sidebar clicks see the connection as fully-connected.
+    // Without this, the cached state would still be "needs-init" from the
+    // initial connectProfile() call (which happened before
+    // ceremony.initialize), and clicking the server row would try to
+    // reconnect — which the backend used to refuse as already active.
+    const finalState: ConnectionState = { ...pending.connState, status: "connected" };
     connManagerStore.states = new Map(connManagerStore.states).set(
-      profile.id,
+      pending.profileId,
       finalState,
     );
     onConnect(finalState);
@@ -693,20 +673,27 @@
     applyPhases = [];
     applyProgress = 0;
     applyError = "";
-    awaitingHolders = false;
-    pausedApply = null;
+    pendingConnectState = null;
     shamirShareCount = 0;
-    shamirThresholdResult = 0;
-    shamirRootToken = "";
+    issuedAdminCertPem = "";
+    adminKeyPath = "";
+    adminCredentialSource = "";
+    issuedHolders = [];
     runApply();
   }
 
-  async function copyToClipboard(text: string): Promise<void> {
-    await navigator.clipboard.writeText(text);
-    copiedRootToken = true;
-    setTimeout(() => {
-      copiedRootToken = false;
-    }, 2000);
+  function copyText(text: string): void {
+    void navigator.clipboard.writeText(text);
+  }
+
+  function downloadText(text: string, filename: string): void {
+    const blob = new Blob([text], { type: "application/x-pem-file" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // ---------------------------------------------------------------------------
@@ -1398,6 +1385,48 @@
               </button>
             </div>
 
+          <!-- ---- Step: officers (shamir only) ---- -->
+          {:else if embeddedStep === "officers"}
+            <div class="space-y-4">
+              <p class="text-base-content/70 text-sm">
+                Each holder — a Security Officer or a key custodian — provides a
+                CSR generated offline. The server's CA issues the holder
+                certificate once the server is created (summary step next),
+                which you hand back to the holder out of band. No share exists
+                yet: initialization seals one to each holder, who claims it
+                with its own keys from the qrdb CLI or the desktop app.
+              </p>
+              <CeremonyOfficerForms count={embeddedShamirShares} bind:officers={embeddedOfficers} />
+            </div>
+
+            <div class="card-actions justify-between mt-2">
+              <button class="btn btn-ghost" onclick={wizardBack} data-testid="embedded-officers-back-btn">Back</button>
+              <button
+                class="btn btn-primary"
+                onclick={wizardNext}
+                disabled={!allOfficersFilled}
+                data-testid="embedded-officers-next-btn"
+              >
+                Next
+                {#if !allOfficersFilled}
+                  <span class="text-xs opacity-70">({embeddedOfficers.length}/{embeddedShamirShares})</span>
+                {/if}
+                <ChevronRight class="h-4 w-4" />
+              </button>
+            </div>
+
+          <!-- ---- Step: admin credential ---- -->
+          {:else if embeddedStep === "admin"}
+            <StepAdminCredential
+              bind:mode={embeddedAdminMode}
+              bind:csrPem={embeddedAdminCsrPem}
+              bind:certPem={embeddedAdminCertPem}
+              bind:certPoolPem={embeddedAdminCertPoolPem}
+              nextLabel="Next"
+              onNext={wizardNext}
+              onBack={wizardBack}
+            />
+
           <!-- ---- Step: summary ---- -->
           {:else if embeddedStep === "summary"}
             <div class="space-y-4">
@@ -1465,15 +1494,38 @@
                         : `Shamir (${embeddedShamirThreshold}-of-${embeddedShamirShares})`}
                   </span>
                 </div>
+
+                <!-- Admin credential -->
+                <div class="flex items-center justify-between px-4 py-3">
+                  <span class="text-base-content/60 text-sm">Admin Credential</span>
+                  <span class="font-semibold text-sm">
+                    {embeddedAdminMode === "csr"
+                      ? "CSR"
+                      : embeddedAdminMode === "byoc"
+                        ? "Bring your own certificate"
+                        : "Generate (dev/test/evaluation ONLY)"}
+                  </span>
+                </div>
               </div>
 
               {#if embeddedBarrierMode === "shamir"}
+                <div role="alert" class="alert alert-info text-sm">
+                  <AlertCircle class="h-5 w-5 shrink-0" />
+                  <span>
+                    Each of the {embeddedShamirShares} holders you enrolled on the
+                    previous step claims its own sealed envelope afterward, with its
+                    own keys, from the qrdb CLI or the desktop app. No share is ever
+                    shown here.
+                  </span>
+                </div>
+              {/if}
+              {#if embeddedAdminMode === "generate"}
                 <div role="alert" class="alert alert-warning text-sm">
                   <AlertCircle class="h-5 w-5 shrink-0" />
                   <span>
-                    <strong>Important:</strong> After creation, you will be shown
-                    {embeddedShamirShares} Shamir key shares. You must save all of
-                    them before proceeding. They cannot be recovered later.
+                    The generated admin private key will be saved to a local file on
+                    this machine, not shown on any page, and cannot be retrieved
+                    again afterward.
                   </span>
                 </div>
               {/if}
@@ -1489,80 +1541,100 @@
           <!-- ---- Step: applying ---- -->
           {:else if embeddedStep === "applying"}
             <div class="space-y-6">
-              {#if shamirShareCount > 0 && applyProgress >= 100 && !applyError}
-                <!-- Shamir barrier initialized: result panel (share-free). -->
-                <div class="space-y-4">
-                  <div role="alert" class="alert alert-info text-sm">
-                    <AlertCircle class="h-5 w-5 shrink-0" />
+              {#if pendingConnectState !== null && !applyError}
+                <!-- ceremony.initialize's result panel: the admin certificate
+                     and -- for Shamir -- every holder's certificate, issued
+                     together in the one call. Share-free; no admin key ever
+                     appears here (see CeremonyBinding.Initialize). -->
+                <div class="space-y-4" data-testid="embedded-ceremony-result">
+                  <div role="alert" class="alert alert-success text-sm">
+                    <CheckCircle2 class="h-5 w-5 shrink-0" />
                     <span>
-                      The barrier has been initialized with a
-                      <strong>{shamirThresholdResult}-of-{shamirShareCount}</strong>
-                      Shamir scheme. Each holder claims its sealed envelope, once, with
-                      its own keys from the qrdb CLI
-                      (<span class="font-mono">qrdb barrier officer claim</span>) or the
-                      desktop app. No share is ever displayed here.
+                      Server initialized
+                      {#if shamirShareCount > 0}
+                        with a <strong>{embeddedShamirThreshold}-of-{shamirShareCount}</strong>
+                        Shamir scheme. Each holder claims its sealed envelope, once, with
+                        its own keys from the qrdb CLI
+                        (<span class="font-mono">qrdb barrier officer claim</span>) or the
+                        desktop app. No share is ever displayed here.
+                      {:else}
+                        .
+                      {/if}
                     </span>
                   </div>
 
-                  {#if shamirRootToken}
-                    <div class="form-control">
-                      <div class="label">
-                        <span class="label-text font-semibold">Root Token</span>
-                      </div>
-                      <div class="bg-base-200 flex items-center gap-2 rounded px-3 py-2">
-                        <span class="flex-1 font-mono text-sm break-all">{shamirRootToken}</span>
-                        <button
-                          type="button"
-                          class="btn btn-ghost btn-xs btn-square shrink-0"
-                          onclick={() => void copyToClipboard(shamirRootToken)}
-                          title="Copy root token"
-                        >
-                          {#if copiedRootToken}
-                            <Check class="h-3.5 w-3.5 text-success" />
-                          {:else}
-                            <Copy class="h-3.5 w-3.5" />
-                          {/if}
+                  <div class="form-control">
+                    <div class="flex items-center justify-between mb-1">
+                      <span class="label-text font-semibold">Admin Certificate (source: {adminCredentialSource})</span>
+                      <div class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs gap-1" onclick={() => copyText(issuedAdminCertPem)} aria-label="Copy admin certificate" data-testid="copy-admin-cert-btn">
+                          <Copy class="h-3 w-3" />
+                        </button>
+                        <button class="btn btn-ghost btn-xs gap-1" onclick={() => downloadText(issuedAdminCertPem, "admin-cert.pem")} aria-label="Download admin certificate" data-testid="download-admin-cert-btn">
+                          <Download class="h-3 w-3" />
                         </button>
                       </div>
-                      <p class="text-xs text-base-content/50 mt-1">
-                        Store this token securely. It can be regenerated from a share quorum if lost.
-                      </p>
+                    </div>
+                    <textarea
+                      class="textarea textarea-bordered textarea-xs font-mono text-xs leading-tight bg-base-300"
+                      rows={4}
+                      readonly
+                      value={issuedAdminCertPem}
+                      data-testid="admin-cert-pem-issued"
+                    ></textarea>
+                  </div>
+
+                  {#if adminKeyPath}
+                    <div role="alert" class="alert alert-warning text-sm" data-testid="admin-key-saved-notice">
+                      <AlertCircle class="h-5 w-5 shrink-0" />
+                      <span>
+                        The generated admin private key was saved to
+                        <span class="font-mono" data-testid="admin-key-path">{adminKeyPath}</span>
+                        on this machine. It is returned exactly once and is never shown on
+                        this page; this is dev/test/evaluation ONLY.
+                      </span>
+                    </div>
+                  {/if}
+
+                  {#if issuedHolders.length > 0}
+                    <div class="form-control">
+                      <span class="label-text font-semibold mb-2">Holder Certificates</span>
+                      <div class="flex flex-col gap-2">
+                        {#each issuedHolders as holder (holder.username)}
+                          <div class="card border border-base-300 bg-base-200">
+                            <div class="card-body gap-2 p-3">
+                              <div class="flex items-center justify-between">
+                                <span class="font-mono text-sm">{holder.username} ({holder.role})</span>
+                                <div class="flex gap-1">
+                                  <button class="btn btn-ghost btn-xs gap-1" onclick={() => copyText(holder.certPem)} aria-label={`Copy ${holder.username}'s certificate`} data-testid={`copy-holder-cert-${holder.username}`}>
+                                    <Copy class="h-3 w-3" />
+                                  </button>
+                                  <button class="btn btn-ghost btn-xs gap-1" onclick={() => downloadText(holder.certPem, `holder-${holder.username}-cert.pem`)} aria-label={`Download ${holder.username}'s certificate`} data-testid={`download-holder-cert-${holder.username}`}>
+                                    <Download class="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </div>
+                              <textarea
+                                class="textarea textarea-bordered textarea-xs font-mono text-xs leading-tight bg-base-300"
+                                rows={3}
+                                readonly
+                                value={holder.certPem}
+                                data-testid={`holder-cert-${holder.username}`}
+                              ></textarea>
+                            </div>
+                          </div>
+                        {/each}
+                      </div>
                     </div>
                   {/if}
 
                   <div class="card-actions justify-end">
                     <button
                       class="btn btn-primary"
-                      onclick={handleShamirAck}
+                      onclick={handleApplyAck}
+                      data-testid="embedded-apply-ack-btn"
                     >
                       Continue to Server
-                    </button>
-                  </div>
-                </div>
-              {:else if awaitingHolders && !applyError}
-                <!-- Holder enrolment: the server is running and waits for its
-                     holders before the Shamir barrier is initialized. -->
-                <div class="space-y-4" data-testid="embedded-holder-enrolment">
-                  <div>
-                    <h3 class="font-semibold">Enrol Share Holders</h3>
-                    <p class="text-base-content/60 mt-1 text-sm">
-                      The unseal key is split to exactly {embeddedShamirShares} enrolled
-                      holders. Enrol each from the CSR it generated offline, and hand it
-                      the issued certificate. No share exists until initialization.
-                    </p>
-                  </div>
-                  <HolderEnrolmentForms {client} count={embeddedShamirShares} bind:registeredCount={holdersRegistered} />
-                  <div class="card-actions justify-end">
-                    <button
-                      class="btn btn-primary"
-                      onclick={() => void continueAfterHolders()}
-                      disabled={holdersRegistered !== embeddedShamirShares}
-                      data-testid="embedded-initialize-btn"
-                    >
-                      Initialize
-                      {#if holdersRegistered !== embeddedShamirShares}
-                        <span class="text-xs opacity-70">({holdersRegistered}/{embeddedShamirShares})</span>
-                      {/if}
                     </button>
                   </div>
                 </div>

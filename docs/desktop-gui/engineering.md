@@ -161,6 +161,22 @@ management, feature errors), watch streaming and npm packaging are documented in
   wiping after a synchronous write: the key is generated and saved locally
   in Go, so there is nothing to wipe-after-write across the Wails IPC
   boundary in the first place.
+- **`ConnectionManager`'s embedded-server creation wizard drives the same
+  `ceremony.initialize` call, for every barrier mode including `none`.**
+  `BarrierInitialize` (passphrase/none) refuses outright exactly like
+  `BarrierInitializeShamir` does, so the former
+  `seal.initialize`/`seal.initializeShamir` calls -- made AFTER the new
+  embedded server was already started and, for Shamir, after pausing the
+  apply to enrol holders against it -- no longer work for any mode. The
+  wizard gained two new steps between "Barrier" and "Summary": "Officers"
+  (Shamir only, `CeremonyOfficerForms`, shown and validated before the
+  server is even created) and "Admin" (`StepAdminCredential`, every mode).
+  "Applying" now makes exactly one `ceremony.initialize` call after
+  starting the server, tolerant of a "none"-strategy barrier
+  `StartEmbedded` already auto-initialized (Initialize's own
+  already-unsealed/matching-credential path), and shows the same
+  admin-certificate/holder-certificate/admin-key-path result panel
+  `ServerInitWizard` does before connecting.
 
 ## App shell states
 
@@ -244,6 +260,14 @@ closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
   generated admin key is never printed on the page. `CeremonyBinding` itself,
   including `saveAdminKeyLocally`'s local-file behavior, is covered by
   `cmd/qrdb/bindings_ceremony_test.go` on the Go side.
+  `ConnectionManager`'s embedded-server creation wizard's ceremony.initialize
+  flow is covered by `e2e/admin-seal-officers.spec.ts`'s "ConnectionManager"
+  suites (mocked tier, served by the Wails mock's `CeremonyBinding`): a
+  passphrase-barrier create and a Shamir-barrier create (holders collected
+  on their own step, before the server is created), the officers step's
+  Next gating, a ceremony refusal shown without connecting a server, that
+  the admin-generate path's key never appears on the page, and that
+  "Continue to Server" transitions to the main app for both modes.
 
 ## Observability
 
