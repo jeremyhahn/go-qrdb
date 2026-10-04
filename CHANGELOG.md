@@ -11,6 +11,21 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.36.0-alpha] - 2026-10-03
+
+Holder audit and Shamir custody follow-ups. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Every share-holder action is audited** into the owning tenant's trail, including claims and unseal quorums inside the sealed window. The compliance trail is opened before the seal subsystem and fails closed. Outcomes are fixed reason tokens, never raw error text.
+- **Holder events follow `auth.audit_failure_policy`.** Register, claim, rekey-start and unenrol record `permitted` before they take effect, then success or failure. Under fail-closed, an unrecordable action changes nothing.
+- **Barrier events join the same trail,** with one emitter per event. The desktop app and the SDK embedded server can open the trail too (off by default). The trail is confined to its directory through `os.OpenRoot`.
+- **Shamir initialization is race-free.** Registration, unenrolment and a second initialization are refused while initialization or recovery-key generation is in flight, at the database, tenant and system scopes.
+- **Database custody follow-ups:**
+  - registration past N is refused before initialization;
+  - a new pre-init unenrol verb (`databases:officer_unenrol`) is on every transport;
+  - an out-of-range M-of-N is refused at create;
+  - the wizard enforces 2 ≤ M ≤ N ≤ 255;
+  - the panel uses the server's `initializedAt`.
+
 ### Added
 
 - **Share-holder events are on the compliance audit trail, in every scope.**
