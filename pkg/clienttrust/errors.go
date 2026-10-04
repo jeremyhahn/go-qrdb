@@ -116,3 +116,12 @@ func (e *PeerCertificateNotTrustedError) Error() string {
 func (e *PeerCertificateNotTrustedError) Unwrap() error {
 	return e.Err
 }
+
+// StaticClusterCANilCertificateError reports that NewStaticClusterCA was
+// called with a nil certificate.
+type StaticClusterCANilCertificateError struct{}
+
+// Error returns a human-readable description.
+func (e *StaticClusterCANilCertificateError) Error() string {
+	return "clienttrust: NewStaticClusterCA requires a non-nil certificate"
+}

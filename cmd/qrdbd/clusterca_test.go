@@ -388,3 +388,112 @@ func TestAwaitClusterCACertificate_ContextCanceledReturnsErr(t *testing.T) {
 		t.Fatalf("awaitClusterCACertificate took %s with an already-canceled context, want an immediate return", elapsed)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// resolveTrustPoolClusterCA -- go-qrdb#591's B4 fix: what bundle.SetClusterCA
+// is wired to must not depend on ceremonyCA's own nil-ness (nil on every
+// restart of a self-issued cluster, once ca-key.pem is confirmed persisted
+// and deleted).
+// ---------------------------------------------------------------------------
+
+// TestResolveTrustPoolClusterCA_SelfIssued_UsesClusterCAProv proves the
+// self-issued case resolves a ClusterCA wrapping clusterCAProv directly,
+// regardless of explicitTLS or caCertPEM -- the exact fix for B4: a
+// restarted self-issued node has svcNode.ClusterCAProv populated by
+// lifecycle.BuildServices unconditionally, which is what this must wire
+// SetClusterCA from instead of the bootstrap-window ceremonyCA local
+// variable that goes nil on every restart.
+func TestResolveTrustPoolClusterCA_SelfIssued_UsesClusterCAProv(t *testing.T) {
+	prov := &stubClusterCAProvider{}
+	ca, err := resolveTrustPoolClusterCA(prov, false, nil)
+	if err != nil {
+		t.Fatalf("resolveTrustPoolClusterCA: %v", err)
+	}
+	if ca == nil {
+		t.Fatal("expected a non-nil ClusterCA for a non-nil clusterCAProv")
+	}
+	cert, err := ca.CACertificate()
+	if err != nil {
+		t.Fatalf("CACertificate: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("expected CACertificate to resolve through the wrapped provider")
+	}
+}
+
+// TestResolveTrustPoolClusterCA_SelfIssued_ProviderErrorPropagates proves a
+// broken cluster CA provider is reported as an error (so the caller logs
+// it and proceeds with no cluster-CA concept wired) rather than silently
+// wiring a ClusterCA that would only fail later, less legibly, on its
+// first real use.
+func TestResolveTrustPoolClusterCA_SelfIssued_ProviderErrorPropagates(t *testing.T) {
+	boom := errors.New("store unreachable")
+	_, err := resolveTrustPoolClusterCA(&stubClusterCAProvider{certErr: boom}, false, nil)
+	// ceremony.NewProviderCA itself only errors on a NIL provider; a
+	// provider whose Certificate call fails is still wrapped successfully
+	// here (the failure surfaces on first use, inside Pool's own
+	// resolveClusterCA -- consistent with ceremony.ProviderCA's "resolves
+	// fresh on every call" contract). This test exists to pin that
+	// behavior explicitly: it must NOT regress to resolveTrustPoolClusterCA
+	// itself probing Certificate() and refusing early.
+	if err != nil {
+		t.Fatalf("resolveTrustPoolClusterCA: %v, want no error (the provider's own failure surfaces on first use, not here)", err)
+	}
+}
+
+// TestResolveTrustPoolClusterCA_BYOTLS_UsesOperatorCACertPEM proves the
+// BYO-TLS case (clusterCAProv nil, explicitTLS true -- lifecycle.Infra.
+// NoClusterCAKey) resolves a static ClusterCA wrapping the operator's own
+// peer CA certificate, per the owner's ruling: "the operator's peer CA...
+// is the cluster CA for IsClusterCA and on-behalf verification... [s]ame
+// anchor for peer identity as on self-issued clusters."
+func TestResolveTrustPoolClusterCA_BYOTLS_UsesOperatorCACertPEM(t *testing.T) {
+	caCertPEM := selfSignedTestLeaf(t, "")
+	ca, err := resolveTrustPoolClusterCA(nil, true, caCertPEM)
+	if err != nil {
+		t.Fatalf("resolveTrustPoolClusterCA: %v", err)
+	}
+	if ca == nil {
+		t.Fatal("expected a non-nil ClusterCA for a BYO-TLS node")
+	}
+	block, _ := pem.Decode(caCertPEM)
+	want, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate(caCertPEM): %v", err)
+	}
+	got, err := ca.CACertificate()
+	if err != nil {
+		t.Fatalf("CACertificate: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatal("CACertificate did not return the operator's own CA certificate")
+	}
+}
+
+// TestResolveTrustPoolClusterCA_BYOTLS_InvalidPEMErrors proves a
+// malformed caCertPEM is reported as an error rather than silently
+// resolving to no cluster-CA concept (which IsStaticallyTrusted would be
+// unable to distinguish from a deployment that genuinely has none).
+func TestResolveTrustPoolClusterCA_BYOTLS_InvalidPEMErrors(t *testing.T) {
+	if _, err := resolveTrustPoolClusterCA(nil, true, []byte("not pem at all")); err == nil {
+		t.Fatal("expected an error for a caCertPEM that does not decode as PEM")
+	}
+	notACert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a real certificate DER")})
+	if _, err := resolveTrustPoolClusterCA(nil, true, notACert); err == nil {
+		t.Fatal("expected an error for a caCertPEM block that does not parse as a certificate")
+	}
+}
+
+// TestResolveTrustPoolClusterCA_NoClusterCAConcept proves the "neither"
+// case -- a non-self-issued, non-BYO-TLS deployment, e.g. one with no TLS
+// at all -- resolves to (nil, nil): the documented, supported
+// "SetClusterCA never called" state, not an error.
+func TestResolveTrustPoolClusterCA_NoClusterCAConcept(t *testing.T) {
+	ca, err := resolveTrustPoolClusterCA(nil, false, nil)
+	if err != nil {
+		t.Fatalf("resolveTrustPoolClusterCA: %v, want no error", err)
+	}
+	if ca != nil {
+		t.Fatalf("resolveTrustPoolClusterCA = %v, want nil", ca)
+	}
+}

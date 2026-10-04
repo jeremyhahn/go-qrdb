@@ -2471,39 +2471,36 @@ func runStart(f *startFlags) (err error) {
 			}
 			if ceremonyCA != nil {
 				serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
-				// bundle.SetClusterCA must be fed the PERSISTED cluster CA
-				// (ceremony.NewProviderCA over svcNode's ClusterCAProv, the
-				// replicated-store-backed cakey.Provider), never the
-				// bootstrap-window `ceremonyCA` local variable above: that
-				// one is resolved once, from the TLS bundle's own
-				// CAKeyPEM/CACertPEM, BEFORE BuildServices runs, and
-				// BuildServices's buildSealServices unconditionally
-				// ReplaceCA's the ceremony core service's CA with the
-				// persisted one once ClusterCAProv exists -- so the
-				// bootstrap-window value is stale for the entire life of
-				// this node from that point on. Resolving the ceremony's
-				// CURRENT CA here, after BuildServices, gets the live one;
-				// its own CACertificate() still resolves ClusterCAProv
-				// fresh on every call (ceremony.ProviderCA's own doc
-				// comment), so a later re-seal/re-unseal or HSM failover is
-				// still reflected without re-wiring.
-				clusterCA := ceremonyCA
-				if coreSvc, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
-					if liveCA := coreSvc.CA(); liveCA != nil {
-						clusterCA = liveCA
-					}
-				}
-				// The dynamic client-auth trust pool (wireClientTrustPool,
-				// installed before any listener started) resolves the
-				// cluster CA fresh on every handshake, both to add it to the
-				// widened pool and to grant the cluster-CA exemption on the
-				// issuer-tenant binding (bundle.TrustPool, wired above as the
-				// auth.IssuerVerifier bootstrapAuthEnforcement installed).
-				// Key B is trusted via the per-tenant binding regardless of
-				// whether this call ever runs; what it adds is the cluster
-				// CA's own membership in the pool and its exemption from the
-				// per-tenant check (go-qrdb#560 review, B2-2).
-				bundle.SetClusterCA(clusterCA)
+			}
+			// bundle.SetClusterCA wires the dynamic client-auth trust pool's
+			// cluster-CA exemption (wireClientTrustPool, installed before any
+			// listener started): resolved fresh on every handshake, both to
+			// add the cluster CA to the widened pool and to grant it on the
+			// issuer-tenant binding (bundle.TrustPool, wired above as the
+			// auth.IssuerVerifier bootstrapAuthEnforcement installed) and to
+			// authenticateOnBehalf's cluster-peer check. Key B is trusted via
+			// the per-tenant binding regardless of whether this ever resolves
+			// to anything; what it adds is the cluster CA's own membership
+			// and exemption (go-qrdb#560 review, B2-2).
+			//
+			// resolveTrustPoolClusterCA is DELIBERATELY independent of
+			// ceremonyCA's own nil-ness above (go-qrdb#591's review, B4):
+			// ceremonyCA is resolved once, from the TLS bundle's own
+			// CAKeyPEM/CACertPEM, BEFORE BuildServices runs, and is nil on
+			// every boot after the first successful one -- cmd/qrdbd deletes
+			// ca-key.pem from disk once Key A is confirmed durable in the
+			// replicated store (see confirmClusterCAPersisted). Gating
+			// SetClusterCA on ceremonyCA made every restart of a self-issued
+			// cluster refuse every forwarded on-behalf write, because
+			// IsClusterCA had nothing to compare against --
+			// svcNode.ClusterCAProv, the replicated-store-backed
+			// cakey.Provider BuildServices wires regardless of ceremonyCA, is
+			// the correct, always-live source once a node has ever completed
+			// first boot.
+			if trustPoolClusterCA, caErr := resolveTrustPoolClusterCA(svcNode.ClusterCAProv, bundle.ExplicitTLS, bundle.CACertPEM); caErr != nil {
+				slog.Error("the dynamic trust pool's cluster-CA exemption and on-behalf forwarding will not work", slog.Any("error", caErr))
+			} else if trustPoolClusterCA != nil {
+				bundle.SetClusterCA(trustPoolClusterCA)
 			}
 			if svcNode.CertProv != nil {
 				serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))

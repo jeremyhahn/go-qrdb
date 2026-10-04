@@ -75,6 +75,39 @@ type ClusterCA interface {
 	CACertificate() (*x509.Certificate, error)
 }
 
+// StaticClusterCA wraps a fixed certificate as a ClusterCA, for a
+// deployment with no cakey.Provider to resolve Key A from at all: a
+// BYO-TLS node (an operator-supplied --tls-ca-file/--tls-cert-file/
+// --tls-key-file trust anchor qrdb was never handed the private key for)
+// has no cluster CA KEY, but the operator's own peer CA is still the
+// cluster's identity anchor for node-to-node Raft trust, and the owner's
+// ruling is that it is ALSO the anchor IsClusterCA and on-behalf
+// verification check against on such a node -- the same role a
+// self-issued cluster's cakey.Provider-backed ClusterCA plays, just
+// without a key this process ever holds.
+type StaticClusterCA struct {
+	cert *x509.Certificate
+}
+
+// NewStaticClusterCA returns a ClusterCA that always resolves to cert.
+// Returns an error when cert is nil: unlike a cakey.Provider-backed
+// ClusterCA, which can legitimately resolve to "not yet established" and
+// is handled by SetClusterCA's own nil-ClusterCA case, a StaticClusterCA
+// exists only to wrap a certificate a caller already has in hand, so a
+// nil one is the caller's own construction error, not a deployment state
+// this type should paper over by resolving to "no cluster CA" silently.
+func NewStaticClusterCA(cert *x509.Certificate) (*StaticClusterCA, error) {
+	if cert == nil {
+		return nil, &StaticClusterCANilCertificateError{}
+	}
+	return &StaticClusterCA{cert: cert}, nil
+}
+
+// CACertificate returns the wrapped certificate.
+func (s *StaticClusterCA) CACertificate() (*x509.Certificate, error) {
+	return s.cert, nil
+}
+
 // Pool holds the dynamic Key B trust state, and the issuer-tenant binding,
 // behind a tls.Config.GetConfigForClient hook installed by Wire. The zero
 // value is not usable; construct with New.
