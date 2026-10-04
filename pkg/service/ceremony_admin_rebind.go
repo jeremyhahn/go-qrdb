@@ -127,16 +127,21 @@ func (e *AdminRebindBindError) Unwrap() error { return e.Cause }
 // that authenticates nothing.
 type CeremonyServiceWithAdminRebind struct {
 	CeremonyServicer
-	core   *ceremony.CeremonyService
-	users  firstboot.AdminLookup
-	binder firstboot.CertBinder
+	core     *ceremony.CeremonyService
+	users    firstboot.AdminLookup
+	binder   firstboot.CertBinder
+	notifier firstboot.AdminBoundNotifier
 }
 
 // NewCeremonyServiceWithAdminRebind wraps inner, whose underlying
 // *ceremony.CeremonyService is core, adding the admin-credential retry path
-// gated against users and bound through binder.
-func NewCeremonyServiceWithAdminRebind(inner CeremonyServicer, core *ceremony.CeremonyService, users firstboot.AdminLookup, binder firstboot.CertBinder) *CeremonyServiceWithAdminRebind {
-	return &CeremonyServiceWithAdminRebind{CeremonyServicer: inner, core: core, users: users, binder: binder}
+// gated against users and bound through binder. notifier -- optional, nil
+// is a no-op -- is told (AdminBound) once a reissued certificate binds, so
+// the awaiting-admin-credential gate (pkg/firstboot's
+// AwaitingAdminCredentialProbe) can leave that state without re-reading the
+// user store (go-qrdb#560 review B1).
+func NewCeremonyServiceWithAdminRebind(inner CeremonyServicer, core *ceremony.CeremonyService, users firstboot.AdminLookup, binder firstboot.CertBinder, notifier firstboot.AdminBoundNotifier) *CeremonyServiceWithAdminRebind {
+	return &CeremonyServiceWithAdminRebind{CeremonyServicer: inner, core: core, users: users, binder: binder, notifier: notifier}
 }
 
 // CeremonyInitialize delegates to the wrapped CeremonyInitialize while the
@@ -176,6 +181,7 @@ func (s *CeremonyServiceWithAdminRebind) CeremonyInitialize(ctx context.Context,
 	var coreOpts *ceremony.InitializeOptions
 	if opts != nil {
 		coreOpts = &ceremony.InitializeOptions{
+			SOPin:            opts.SOPin,
 			AdminCSRPEM:      []byte(opts.AdminCSRPEM),
 			AdminCertPEM:     []byte(opts.AdminCertPEM),
 			AdminCertPoolPEM: []byte(opts.AdminCertPoolPEM),
@@ -221,6 +227,9 @@ func (s *CeremonyServiceWithAdminRebind) bindReissuedCredential(ctx context.Cont
 	}
 	if err := s.binder.BindAdminCert(ctx, tenantid.System, admin.ID, thumbprint); err != nil {
 		return &AdminRebindBindError{Cause: err}
+	}
+	if s.notifier != nil {
+		s.notifier.AdminBound()
 	}
 	return nil
 }

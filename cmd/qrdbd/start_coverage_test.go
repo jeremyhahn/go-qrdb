@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -1191,7 +1192,7 @@ func TestBootstrapAuth_Success(t *testing.T) {
 	require.NotNil(t, mgmt.userSvc)
 	require.NotNil(t, mgmt.roleSvc)
 
-	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled")
+	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe())
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
 	require.NotNil(t, authResult.auditLogger)
@@ -1258,7 +1259,7 @@ func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, true, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 
-	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled")
+	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe())
 	require.NoError(t, err)
 	require.NotNil(t, result)
 }

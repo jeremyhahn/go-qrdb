@@ -108,7 +108,7 @@ func TestCeremonyServiceWithLeaderGate_ComposesOverAdminRebind(t *testing.T) {
 	require.True(t, ok)
 
 	unbound := &fakeAdminLookup{err: errors.New("no binding")}
-	rebound := NewCeremonyServiceWithAdminRebind(inner, core, unbound, nil)
+	rebound := NewCeremonyServiceWithAdminRebind(inner, core, unbound, nil, nil)
 	gated := NewCeremonyServiceWithLeaderGate(rebound, fakeLeaderChecker{isLeader: true, leaderAddr: "127.0.0.1:63001"})
 
 	// First call (leader, uninitialized): succeeds through both decorators.
@@ -208,10 +208,10 @@ func (s *stubLeaderHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
 // the two shapes the composer must leave UNCHANGED: a nil ceremonySvc, and
 // one whose core cannot be resolved via CeremonyServiceCore.
 func TestComposeCeremonyServiceWithAdminCredentialWiring_NilPassthrough(t *testing.T) {
-	assert.Nil(t, ComposeCeremonyServiceWithAdminCredentialWiring(nil, nil, nil, nil))
+	assert.Nil(t, ComposeCeremonyServiceWithAdminCredentialWiring(nil, nil, nil, nil, nil))
 
 	unresolvable := unresolvableCeremonyServicer{}
-	got := ComposeCeremonyServiceWithAdminCredentialWiring(unresolvable, nil, nil, nil)
+	got := ComposeCeremonyServiceWithAdminCredentialWiring(unresolvable, nil, nil, nil, nil)
 	assert.Equal(t, unresolvable, got, "a CeremonyServicer whose core cannot be resolved must pass through unchanged")
 }
 
@@ -230,7 +230,7 @@ func TestComposeCeremonyServiceWithAdminCredentialWiring_SameOrderAsManual(t *te
 	unbound := &fakeAdminLookup{err: errors.New("no binding")}
 
 	composed := ComposeCeremonyServiceWithAdminCredentialWiring(
-		inner, unbound, nil, fakeLeaderChecker{isLeader: true, leaderAddr: "127.0.0.1:63001"})
+		inner, unbound, nil, fakeLeaderChecker{isLeader: true, leaderAddr: "127.0.0.1:63001"}, nil)
 	first, err := composed.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
@@ -238,7 +238,7 @@ func TestComposeCeremonyServiceWithAdminCredentialWiring_SameOrderAsManual(t *te
 	require.NotEmpty(t, first.AdminCertPEM)
 
 	composedFollower := ComposeCeremonyServiceWithAdminCredentialWiring(
-		inner, unbound, nil, fakeLeaderChecker{isLeader: false, leaderAddr: "127.0.0.1:63001"})
+		inner, unbound, nil, fakeLeaderChecker{isLeader: false, leaderAddr: "127.0.0.1:63001"}, nil)
 	_, err = composedFollower.CeremonyInitialize(context.Background(), ca, nil)
 	var notLeader *AdminCredentialNotLeaderError
 	require.ErrorAs(t, err, &notLeader)

@@ -1879,6 +1879,19 @@ func runStart(f *startFlags) (err error) {
 			vectorSvc := svcNode.Vector
 			barrierSvc := svcNode.Barrier
 			ceremonySvc := svcNode.Ceremony
+			// awaitingAdminCredentialProbe's pointer identity is fixed here,
+			// before auth.mtls_binding_policy's own boot-time lookup (below,
+			// inside bootstrapAuthEnforcement) has run: ceremonySvc's
+			// composition needs it NOW, as CeremonyServiceWithAdminRebind's
+			// AdminBoundNotifier (go-qrdb#560 review B1), so a reissue that
+			// binds a certificate while this node is already serving can
+			// tell the SAME probe to leave "awaiting" -- never by re-reading
+			// the user store. Initialize (called inside
+			// bootstrapAuthEnforcement, once the lookup resolves) decides
+			// its actual state; until then, and whenever policy is not
+			// "required", it reports not-awaiting, a harmless no-op target
+			// for AdminBound.
+			awaitingAdminCredentialProbe := firstboot.NewAwaitingAdminCredentialProbe()
 			// Ceremony-initialize's admin-credential step (go-qrdb#548) must run
 			// on the Raft leader: the durable pending-admin-cert record it writes
 			// is itself a Raft write, which a follower could never actually
@@ -1908,7 +1921,7 @@ func runStart(f *startFlags) (err error) {
 					Host: svcHost, ShardID: shard.ShardKV, ReplicaID: f.replicaID, Members: members,
 				}
 				ceremonySvc = service.ComposeCeremonyServiceWithAdminCredentialWiring(
-					ceremonySvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User}, leader)
+					ceremonySvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User}, leader, awaitingAdminCredentialProbe)
 			}
 			tenantSvcInst := svcNode.Tenant
 
@@ -2022,7 +2035,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2404,10 +2417,13 @@ func runStart(f *startFlags) (err error) {
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
 				}
-				// go-qrdb#548 review item 3: non-nil only under
-				// auth.mtls_binding_policy "required". Installs the
-				// awaiting-admin-credential gate on every network
-				// transport; see bootstrapAuthEnforcement.
+				// go-qrdb#548 review item 3: the probe's pointer identity is
+				// always non-nil (go-qrdb#560 review B1 -- ceremony
+				// composition, above, needs it before this policy is even
+				// known), but it reports awaiting only under
+				// auth.mtls_binding_policy "required"; installing it
+				// unconditionally is a harmless no-op gate otherwise. See
+				// bootstrapAuthEnforcement.
 				if authResult.awaitingAdminCredentialProbe != nil {
 					serverOpts = append(serverOpts, server.WithAwaitingAdminCredentialProbe(authResult.awaitingAdminCredentialProbe))
 				}
@@ -3900,7 +3916,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -3999,17 +4015,24 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
 	}
-	var awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
 	if bindingPolicy == auth.MTLSBindingRequired {
-		if err := firstboot.VerifyAdminCertBindingWithin(ctx, mgmt.userSvc, adminBindingWait); err != nil {
+		lookupErr := firstboot.VerifyAdminCertBindingWithin(ctx, mgmt.userSvc, adminBindingWait)
+		if lookupErr != nil {
 			slog.Warn(`auth.mtls_binding_policy is "required" and the bootstrap admin holds no live certificate binding; `+
 				`booting into "awaiting admin credential" -- re-run "qrdb init" against the Raft leader with `+
 				`--admin-csr, --admin-cert or --admin-generate to bind one`,
-				slog.String("error", err.Error()))
+				slog.String("error", lookupErr.Error()))
 		}
-		awaitingAdminCredentialProbe = &firstboot.AwaitingAdminCredentialProbe{
-			Policy: bindingPolicy,
-			Users:  mgmt.userSvc,
+		// A failed lookup (as opposed to a verdict) is NOT "awaiting"
+		// (go-qrdb#560 review B1): Initialize returns it here as a typed
+		// error so it is logged, while the probe itself is left reporting
+		// not-awaiting -- an infrastructure fault distinct from the
+		// admin's own binding state must not additionally lock the node
+		// down to the two ceremony verbs this boot state serves.
+		if initErr := awaitingAdminCredentialProbe.Initialize(bindingPolicy, lookupErr); initErr != nil {
+			slog.Warn(`auth.mtls_binding_policy is "required" but the bootstrap admin's binding could not be verified; `+
+				`serving normally rather than locking the node down over this fault alone`,
+				slog.String("error", initErr.Error()))
 		}
 	}
 

@@ -103,6 +103,7 @@ func runAuthBootstrapWithPolicy(t *testing.T, mgmt *mgmtBootstrapResult, policy 
 		context.Background(), mgmt, t.TempDir(), &mockRaftNode{},
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
 		nil, nil, "", "", policy,
+		firstboot.NewAwaitingAdminCredentialProbe(),
 	)
 }
 
@@ -152,13 +153,18 @@ func TestBootstrapAuthEnforcement_RequiredWithUnboundAdminBootsAwaiting(t *testi
 
 // TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots is the control:
 // the same unbound admin boots under the explicit "enrolled" opt-out, with
-// no awaiting-admin-credential probe at all -- that boot state exists ONLY
-// for "required", so the "enrolled" posture is nothing else's.
+// the awaiting-admin-credential probe left reporting not-awaiting -- that
+// boot state exists ONLY for "required", so the "enrolled" posture never
+// sees it (the probe's pointer identity stays non-nil, go-qrdb#560 review
+// B1, since the ceremony service is composed against it before this
+// policy is even known, but Initialize never flips it for any other
+// policy).
 func TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots(t *testing.T) {
 	result, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "enrolled")
 	require.NoError(t, err)
 	assert.Equal(t, auth.MTLSBindingEnrolled, result.authMW.MTLSBindingPolicy())
-	assert.Nil(t, result.awaitingAdminCredentialProbe)
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.False(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential())
 	_ = result.auditLogger.Close()
 }
 
@@ -245,10 +251,14 @@ func TestBootstrapAuthEnforcement_RequiredJudgesTheLinearizableRecord(t *testing
 
 // TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore: a
 // linearizable read that cannot be served yet is retried within the bounded
-// wait and then judged; past the bound the boot proceeds into "awaiting
-// admin credential" rather than refusing outright (go-qrdb#548 review item
-// 3) -- an unreadable store is treated exactly like an unbound admin, fail
-// closed to the safer boot state rather than failing the boot.
+// wait and then judged; past the bound the boot proceeds rather than
+// refusing outright (go-qrdb#548 review item 3). A store that never
+// answers at all is a FAILED lookup, not a verdict -- go-qrdb#560 review
+// B1 rules that is NOT "awaiting": the probe is left reporting
+// not-awaiting (serving normally) rather than fail-closed to the
+// restricted boot state, since an infrastructure fault distinct from the
+// admin's own binding state must not additionally lock the node down to
+// the two ceremony verbs that state serves.
 func TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore(t *testing.T) {
 	saved := adminBindingWait
 	t.Cleanup(func() { adminBindingWait = saved })
@@ -281,11 +291,10 @@ func TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore(t *testing.T
 		},
 	}
 	result, err = runAuthBootstrapWithPolicy(t, mgmt, "required")
-	require.NoError(t, err, "a store that never answers must boot awaiting, not refuse")
+	require.NoError(t, err, "a store that never answers must boot normally, not refuse")
 	require.NotNil(t, result.awaitingAdminCredentialProbe)
-	result.awaitingAdminCredentialProbe.LookupTimeout = 100 * time.Millisecond
-	assert.True(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
-		"a store that never answers must report awaiting, fail closed to the safer boot state")
+	assert.False(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"a store that never answers is a failed lookup, not a binding verdict: it must not report awaiting")
 	_ = result.auditLogger.Close()
 }
 

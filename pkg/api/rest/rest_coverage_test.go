@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -398,6 +399,24 @@ func TestHandleCeremonyInitialize_ServiceError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.handleCeremonyInitialize(rec, req)
 	assertStatus(t, rec, http.StatusNotFound)
+}
+
+// TestHandleCeremonyInitialize_SOPINRefusalPropagates proves REST surfaces a
+// SO-PIN refusal from the service layer as 401 Unauthorized, never as 200
+// OK, so a caller retrying the admin-credential step over REST without the
+// correct SO PIN cannot reach ReissueAdminCredential's side effects
+// (go-qrdb#560 review B1, which named REST's awaiting-mode passthrough as
+// one of three a caller could otherwise use to bypass the gate).
+func TestHandleCeremonyInitialize_SOPINRefusalPropagates(t *testing.T) {
+	svc := newCoverageCeremonyService()
+	svc.initErr = pin.ErrPINInvalid
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(svc),
+		WithCeremonyCA(&coverageCeremonyCA{}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", strings.NewReader(`{"admin_generate":true}`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyInitialize(rec, req)
+	assertStatus(t, rec, http.StatusUnauthorized)
 }
 
 func TestHandleCeremonyStatus_NilService(t *testing.T) {

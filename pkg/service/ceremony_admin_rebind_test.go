@@ -69,7 +69,7 @@ func TestCeremonyServiceWithAdminRebind_DelegatesBeforeInitialize(t *testing.T) 
 	core, ok := CeremonyServiceCore(inner)
 	require.True(t, ok)
 
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, &fakeAdminLookup{err: &user.UserNotFoundError{}}, nil)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, &fakeAdminLookup{err: &user.UserNotFoundError{}}, nil, nil)
 	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
@@ -93,7 +93,7 @@ func TestCeremonyServiceWithAdminRebind_RefusesWhenAlreadyBound(t *testing.T) {
 			Thumbprint: "thumb-1", Kind: user.CertBindingSPKIThumbprint,
 		}},
 	}}
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, bound, nil)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, bound, nil, nil)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
@@ -121,14 +121,14 @@ func TestCeremonyServiceWithAdminRebind_ReissuesWhenUnbound(t *testing.T) {
 		ID: 1, Username: "admin", TenantID: tenantid.System,
 		Lifecycle: user.LifecycleActive,
 	}}
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, unbound)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, unbound, nil)
 
 	first, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	second, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
+	second, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
 	require.NoError(t, err)
 	assert.NotEmpty(t, second.AdminCertPEM)
 	assert.NotEqual(t, first.AdminCertPEM, second.AdminCertPEM,
@@ -155,7 +155,7 @@ func TestCeremonyServiceWithAdminRebind_PropagatesUnverifiableLookup(t *testing.
 	require.True(t, ok)
 
 	unverifiable := &fakeAdminLookup{err: errors.New("store unavailable")}
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unverifiable, nil)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unverifiable, nil, nil)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
@@ -187,14 +187,14 @@ func TestCeremonyServiceWithAdminRebind_NoBinderRefuses(t *testing.T) {
 		Lifecycle: user.LifecycleActive,
 	}}
 	// users is wired (the lookup that gates the retry), binder is not.
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, nil)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, nil, nil)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
+	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
 	require.Nil(t, result, "a reissue this wrapper cannot bind must never return a credential")
 	var noBinder *AdminRebindNoBinderError
 	require.ErrorAs(t, err, &noBinder)
@@ -212,7 +212,7 @@ func TestCeremonyServiceWithAdminRebind_BindFailureRefuses(t *testing.T) {
 		ID: 1, Username: "admin", TenantID: tenantid.System,
 		Lifecycle: user.LifecycleActive,
 	}}
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, unbound)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, unbound, nil)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
@@ -220,12 +220,82 @@ func TestCeremonyServiceWithAdminRebind_BindFailureRefuses(t *testing.T) {
 	require.NoError(t, err)
 
 	unbound.bindErr = errors.New("store unavailable")
-	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
+	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
 	require.Nil(t, result, "a failed bind must never return a credential")
 	var bindErr *AdminRebindBindError
 	require.ErrorAs(t, err, &bindErr)
 	if len(unbound.u.CertBindings) != 0 {
 		t.Fatalf("admin CertBindings = %+v, want none: the failed bind must not have partially applied", unbound.u.CertBindings)
+	}
+}
+
+// fakeAdminBoundNotifier is a minimal firstboot.AdminBoundNotifier test
+// double: it counts AdminBound calls so a test can assert the notifier is
+// told exactly once per successful bind, and never on a refusal.
+type fakeAdminBoundNotifier struct{ calls int }
+
+func (f *fakeAdminBoundNotifier) AdminBound() { f.calls++ }
+
+// TestCeremonyServiceWithAdminRebind_NotifiesOnSuccessfulBind covers
+// go-qrdb#560 review B1's replacement for the awaiting-admin-credential
+// gate's live per-request probe: a successful reissue-and-bind calls the
+// wired AdminBoundNotifier exactly once, so pkg/firstboot's
+// AwaitingAdminCredentialProbe can leave "awaiting" without re-reading the
+// user store.
+func TestCeremonyServiceWithAdminRebind_NotifiesOnSuccessfulBind(t *testing.T) {
+	inner, ca := newTestCeremonyService(t)
+	core, ok := CeremonyServiceCore(inner)
+	require.True(t, ok)
+
+	unbound := &fakeAdminLookup{u: &user.User{
+		ID: 1, Username: "admin", TenantID: tenantid.System,
+		Lifecycle: user.LifecycleActive,
+	}}
+	notifier := &fakeAdminBoundNotifier{}
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, unbound, notifier)
+
+	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.NoError(t, err)
+	if notifier.calls != 0 {
+		t.Fatalf("AdminBound calls after the FIRST CeremonyInitialize = %d, want 0: that call never reaches ReissueAdminCredential", notifier.calls)
+	}
+
+	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
+	require.NoError(t, err)
+	if notifier.calls != 1 {
+		t.Fatalf("AdminBound calls after the reissuing retry = %d, want exactly 1", notifier.calls)
+	}
+}
+
+// TestCeremonyServiceWithAdminRebind_NoNotifierOnRefusal proves a refused
+// reissue (no CertBinder wired, so the bind never happens) never calls
+// AdminBound: the notifier must reflect only a REAL bind, never a refusal
+// that merely resembled one.
+func TestCeremonyServiceWithAdminRebind_NoNotifierOnRefusal(t *testing.T) {
+	inner, ca := newTestCeremonyService(t)
+	core, ok := CeremonyServiceCore(inner)
+	require.True(t, ok)
+
+	unbound := &fakeAdminLookup{u: &user.User{
+		ID: 1, Username: "admin", TenantID: tenantid.System,
+		Lifecycle: user.LifecycleActive,
+	}}
+	notifier := &fakeAdminBoundNotifier{}
+	// users is wired (the lookup that gates the retry), binder is not.
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound, nil, notifier)
+
+	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.NoError(t, err)
+
+	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
+	var noBinder *AdminRebindNoBinderError
+	require.ErrorAs(t, err, &noBinder)
+	if notifier.calls != 0 {
+		t.Fatalf("AdminBound calls on a refused reissue = %d, want 0", notifier.calls)
 	}
 }
 
@@ -243,14 +313,14 @@ func TestCeremonyServiceWithAdminRebind_AdminNotFoundRefuses(t *testing.T) {
 	// (first boot has not created the admin yet) -- one of the two reasons
 	// a retry may proceed on, per CeremonyInitialize's own switch.
 	missing := &fakeAdminLookup{}
-	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, missing, missing)
+	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, missing, missing, nil)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
+	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "test-so-pin", AdminGenerate: true})
 	require.Nil(t, result, "a reissue with no admin to bind to must never return a credential")
 	var notFound *AdminRebindAdminNotFoundError
 	require.ErrorAs(t, err, &notFound)

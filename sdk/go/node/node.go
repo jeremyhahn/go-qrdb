@@ -2860,12 +2860,22 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// never by standalone); svcNode.Ceremony itself is left UNCHANGED so a
 	// later data-plane rebuild's sealedWindowCeremonyCore carry-over
 	// (service.CeremonyServiceCore) keeps finding the bare core to reuse.
+	// awaitingAdminCredentialProbe's pointer identity is fixed here, before
+	// auth.mtls_binding_policy's own boot-time lookup (below) has run:
+	// composition needs it NOW, as CeremonyServiceWithAdminRebind's
+	// AdminBoundNotifier (go-qrdb#560 review B1), so a reissue that binds
+	// a certificate while this node is already serving can tell the SAME
+	// probe to leave "awaiting" -- never by re-reading the user store.
+	// Initialize (below) decides its actual state; until then, and
+	// whenever the policy is not "required" or auth is disabled, it
+	// reports not-awaiting, a harmless no-op target for AdminBound.
+	awaitingAdminCredentialProbe := firstboot.NewAwaitingAdminCredentialProbe()
 	ceremonySvc := svcNode.Ceremony
 	if core, ok := service.CeremonyServiceCore(ceremonySvc); ok {
 		if hostSvc, hostOK := n.host.(service.Host); hostOK {
 			leader := service.HostLeaderChecker{Host: hostSvc, ShardID: shard.ShardKV, ReplicaID: cfg.Raft.ReplicaID}
 			ceremonySvc = service.ComposeCeremonyServiceWithAdminCredentialWiring(
-				ceremonySvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User}, leader)
+				ceremonySvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User}, leader, awaitingAdminCredentialProbe)
 		}
 		// Hand this node's issued-or-adopted admin certificate, if any, to
 		// the durable pending-admin-cert record FirstBootWithCeremony waits
@@ -3002,16 +3012,23 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
-	var awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
-		if verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout); verr != nil {
+		verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout)
+		if verr != nil {
 			slog.Warn(`node: auth.mtls_binding_policy is "required" and the bootstrap admin holds no live certificate binding; `+
 				`booting into "awaiting admin credential"`,
 				slog.String("error", verr.Error()))
 		}
-		awaitingAdminCredentialProbe = &firstboot.AwaitingAdminCredentialProbe{
-			Policy: bindingPolicy,
-			Users:  svcNode.User,
+		// A failed lookup (as opposed to a verdict) is NOT "awaiting"
+		// (go-qrdb#560 review B1): Initialize returns it here as a typed
+		// error so it is logged, while the probe itself is left reporting
+		// not-awaiting -- an infrastructure fault distinct from the
+		// admin's own binding state must not additionally lock the node
+		// down to the two ceremony verbs this boot state serves.
+		if initErr := awaitingAdminCredentialProbe.Initialize(bindingPolicy, verr); initErr != nil {
+			slog.Warn(`node: auth.mtls_binding_policy is "required" but the bootstrap admin's binding could not be verified; `+
+				`serving normally rather than locking the node down over this fault alone`,
+				slog.String("error", initErr.Error()))
 		}
 		embeddedOpts = append(embeddedOpts, embedded.WithAwaitingAdminCredentialProbe(awaitingAdminCredentialProbe))
 	}

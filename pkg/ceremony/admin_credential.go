@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -406,6 +407,20 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 
 	if s.state == StateAwaitingInit || s.deps.CA == nil {
 		return nil, ErrNotInitialized
+	}
+
+	// Reissuing the bootstrap admin's certificate is as powerful as minting
+	// it the first time (go-qrdb#560 review B1): it hands the caller a fresh
+	// credential this process will bind to the admin account. Gated behind
+	// the SO PIN this ceremony was provisioned with, verified before any
+	// side effect -- the CA bundle read, the credential issuance, all of
+	// it -- so a caller with no SO PIN cannot reach any of them.
+	var soPIN string
+	if opts != nil {
+		soPIN = opts.SOPin
+	}
+	if err := pin.RequireSOPIN(ctx, s.pins, soPIN); err != nil {
+		return nil, err
 	}
 
 	caBundle, err := s.deps.CA.CABundle()

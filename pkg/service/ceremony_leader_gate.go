@@ -143,12 +143,19 @@ func (c HostLeaderChecker) IsLeader() (isLeader bool, leaderAddr string, err err
 // CeremonyServiceWithAdminRebind), so a retried `qrdb init` behaves
 // identically regardless of which composer is running it.
 //
+// notifier -- optional, nil is a no-op -- is told once a reissue binds a
+// fresh admin certificate; a composer passes the SAME
+// *firstboot.AwaitingAdminCredentialProbe it later installs as the
+// transport gates' probe (go-qrdb#560 review B1), wired here BEFORE that
+// probe's own boot-time lookup has necessarily run -- NewAwaitingAdminCredentialProbe's
+// pointer is stable and usable as an AdminBoundNotifier from construction.
+//
 // Returns ceremonySvc UNCHANGED when it is nil, or when its underlying
 // *ceremony.CeremonyService core cannot be resolved via CeremonyServiceCore
 // -- a composition shape (e.g. the pre-host sealed-window ceremony service)
 // neither wrapper can attach to safely; see CeremonyServiceWithLeaderGate's
 // own doc comment for why the pre-host service is excepted.
-func ComposeCeremonyServiceWithAdminCredentialWiring(ceremonySvc CeremonyServicer, users firstboot.AdminLookup, binder firstboot.CertBinder, leader LeaderChecker) CeremonyServicer {
+func ComposeCeremonyServiceWithAdminCredentialWiring(ceremonySvc CeremonyServicer, users firstboot.AdminLookup, binder firstboot.CertBinder, leader LeaderChecker, notifier firstboot.AdminBoundNotifier) CeremonyServicer {
 	if ceremonySvc == nil {
 		return nil
 	}
@@ -156,6 +163,6 @@ func ComposeCeremonyServiceWithAdminCredentialWiring(ceremonySvc CeremonyService
 	if !ok {
 		return ceremonySvc
 	}
-	rebound := NewCeremonyServiceWithAdminRebind(ceremonySvc, core, users, binder)
+	rebound := NewCeremonyServiceWithAdminRebind(ceremonySvc, core, users, binder, notifier)
 	return NewCeremonyServiceWithLeaderGate(rebound, leader)
 }

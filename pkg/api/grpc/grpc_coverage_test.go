@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -1445,6 +1446,32 @@ func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	if resp.GetAdminCertPem() != "admin-cert" || string(resp.GetAdminKeyPem()) != "admin-key" || resp.GetAdminCredentialSource() != "generated" {
 		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",
 			resp.GetAdminCertPem(), resp.GetAdminKeyPem(), resp.GetAdminCredentialSource())
+	}
+}
+
+// TestGRPC_CeremonyInitialize_SOPINRefusalPropagates proves gRPC (and, by
+// sharing this same qrdbServiceServer, the Unix domain socket transport)
+// surfaces a SO-PIN refusal from the service layer as
+// codes.Unauthenticated, never as success, so a caller retrying the
+// admin-credential step over gRPC/Unix without the correct SO PIN cannot
+// reach ReissueAdminCredential's side effects (go-qrdb#560 review B1, which
+// named gRPC/Unix's awaiting-mode passthrough as one of three a caller
+// could otherwise use to bypass the gate).
+func TestGRPC_CeremonyInitialize_SOPINRefusalPropagates(t *testing.T) {
+	ceremonySvc := newMockCeremonyService()
+	ceremonySvc.initErr = pin.ErrPINInvalid
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc), WithCeremonyCA(&stubCeremonyCA{}))
+	defer cleanup()
+
+	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{
+		AdminGenerate: true,
+	})
+	if err == nil {
+		t.Fatal("expected the SO-PIN refusal to propagate as an error, got success")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 

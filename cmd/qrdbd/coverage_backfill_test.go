@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,6 +140,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
+		firstboot.NewAwaitingAdminCredentialProbe(),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -179,6 +181,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
+		firstboot.NewAwaitingAdminCredentialProbe(),
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -877,7 +878,7 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled")
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe())
 	}
 }
 

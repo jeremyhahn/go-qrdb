@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -110,88 +110,111 @@ func VerifyAdminCertBindingWithin(ctx context.Context, users AdminLookup, timeou
 // admin-replication wait.
 const AdminBindingLookupTimeout = 30 * time.Second
 
-// DefaultAwaitingAdminCredentialRecheckInterval bounds how often
-// AwaitingAdminCredentialProbe re-reads the user store, when its own
-// RecheckInterval is left at zero.
-const DefaultAwaitingAdminCredentialRecheckInterval = 2 * time.Second
-
-// awaitingAdminCredentialLookupTimeout bounds ONE re-check read so a store
-// that cannot answer (no leader yet, a lost quorum) cannot block the
-// request that triggered the re-check indefinitely -- every transport gate
-// calls AwaitingAdminCredential() on every request, so this is on the hot
-// path. A read that times out is treated as "awaiting": fail closed, not
-// fail open, exactly like every other read this package cannot complete.
-const awaitingAdminCredentialLookupTimeout = 3 * time.Second
+// AdminBoundNotifier is told once the bootstrap admin's certificate
+// successfully binds while a node is already serving (go-qrdb#560 review
+// B1): the only way a running node leaves "awaiting admin credential"
+// without a restart. *AwaitingAdminCredentialProbe implements it;
+// CeremonyServiceWithAdminRebind (pkg/service) calls it after a reissued
+// certificate binds. Defined as an interface, matching this package's own
+// AdminLookup/CertBinder, so a test can substitute a deterministic fake.
+type AdminBoundNotifier interface {
+	AdminBound()
+}
 
 // AwaitingAdminCredentialProbe reports whether a node should be in the
 // "awaiting admin credential" boot state (go-qrdb#548 review item 3):
-// Policy is auth.MTLSBindingRequired and the bootstrap admin holds no live
-// certificate binding. Every transport gate (REST, gRPC, native QUIC, MCP,
-// the embedded transport, the Unix socket transport) samples this on every
-// request, so it caches its verdict for RecheckInterval rather than
-// reading the linearizable user store on every single one -- the store is
-// read at most once per interval, serialized across concurrent callers,
-// and the verdict flips to "not awaiting" within one interval of the
-// admin's certificate actually binding, with no restart required.
+// Policy is auth.MTLSBindingRequired and the bootstrap admin held no live
+// certificate binding the last time this was decided. Every transport gate
+// (REST, gRPC, native QUIC, MCP, the embedded transport, the Unix socket
+// transport) samples AwaitingAdminCredential on every request; it does no
+// I/O and takes no lock, reading only an atomic flag.
 //
-// The zero value is unusable: Users must be set. Policy defaults to the
-// zero auth.MTLSBindingPolicy, which is auth.MTLSBindingRequired (not an
-// "unset" sentinel, matching every other reader of that type in this
-// package) -- a probe built without explicitly setting Policy therefore
-// reads as the strict posture, not as "never awaiting".
+// The state is decided ONCE, at boot, by Initialize, from the SAME bounded
+// VerifyAdminCertBindingWithin lookup a "required"-posture composer already
+// performs before constructing the probe (go-qrdb#560 review B1, replacing
+// a live per-request re-check that held a mutex across a user-store lookup
+// of up to 3s on the hot path of every request). A running node leaves that
+// state only through AdminBound, called by the one path that can bind the
+// admin certificate while serving (CeremonyServiceWithAdminRebind's
+// reissue) -- never by re-reading the store -- so it never RE-ENTERS
+// awaiting merely because that certificate later expires. An admin whose
+// binding expires after this process already left "awaiting" is recovered
+// by restarting into awaiting mode, then a fresh SO-PIN-gated reissue.
+//
+// The zero value is immediately usable and reports not-awaiting: a probe an
+// embedder constructs with NewAwaitingAdminCredentialProbe but has not yet
+// called Initialize on (because it is wired as an AdminBoundNotifier into
+// ceremony composition before the boot-time lookup that decides its state
+// has run) behaves exactly like a nil probe -- a pure passthrough -- until
+// Initialize runs.
 type AwaitingAdminCredentialProbe struct {
-	// Policy is the node's configured auth.mtls_binding_policy. Any value
-	// other than auth.MTLSBindingRequired makes AwaitingAdminCredential
-	// always report false: this boot state exists ONLY for the posture
-	// that refuses to boot an admin-unbound node outright.
+	// Policy is the node's configured auth.mtls_binding_policy, set by
+	// Initialize. Exposed for a caller that wants to log or report it;
+	// AwaitingAdminCredential itself never reads it directly.
 	Policy auth.MTLSBindingPolicy
-	// Users resolves the bootstrap admin, read through the LINEARIZABLE
-	// store -- the same read VerifyAdminCertBinding itself performs.
-	Users AdminLookup
-	// RecheckInterval bounds how often AwaitingAdminCredential re-reads the
-	// store. Zero selects DefaultAwaitingAdminCredentialRecheckInterval. A
-	// test may set it near-zero to observe a bind without waiting out the
-	// production interval.
-	RecheckInterval time.Duration
-	// LookupTimeout bounds ONE re-check read. Zero selects the production
-	// default (awaitingAdminCredentialLookupTimeout); a test exercising a
-	// store that never answers sets it short rather than waiting out the
-	// production bound.
-	LookupTimeout time.Duration
 
-	mu        sync.Mutex
-	checked   bool
-	lastCheck time.Time
-	awaiting  bool
+	awaiting atomic.Bool
+}
+
+// NewAwaitingAdminCredentialProbe returns a probe that reports not-awaiting
+// until Initialize decides its boot state. Its pointer identity is stable
+// from construction, so a composer can wire the SAME probe as both
+// CeremonyServiceWithAdminRebind's AdminBoundNotifier -- needed while
+// composing the ceremony service, before the boot-time binding lookup has
+// even run -- and the transport gates' probe, needed after, with no
+// indirection between the two.
+func NewAwaitingAdminCredentialProbe() *AwaitingAdminCredentialProbe {
+	return &AwaitingAdminCredentialProbe{}
+}
+
+// Initialize decides this probe's awaiting state ONCE, at boot, from
+// bootLookupErr -- the result of the SAME bounded VerifyAdminCertBindingWithin
+// call a "required"-posture composer already performs. It is not safe to
+// call concurrently with itself or with AdminBound; a composer calls it
+// exactly once, synchronously, during boot, before any transport gate can
+// observe this probe.
+//
+// policy other than auth.MTLSBindingRequired always leaves the probe
+// reporting not-awaiting, regardless of bootLookupErr: this boot state
+// exists only for the posture that refuses to boot an admin-unbound node
+// outright.
+//
+// A failed lookup -- bootLookupErr is an *AdminLookupError, meaning the
+// check never reached a verdict -- is NOT "awaiting": it is returned here
+// as a typed error so the caller can log or report it, while the probe
+// itself is left reporting not-awaiting, so an infrastructure fault
+// distinct from the admin's own binding state does not additionally lock
+// the node down to the two ceremony verbs this state serves.
+func (p *AwaitingAdminCredentialProbe) Initialize(policy auth.MTLSBindingPolicy, bootLookupErr error) error {
+	p.Policy = policy
+	if policy != auth.MTLSBindingRequired {
+		return nil
+	}
+	var lookup *AdminLookupError
+	if errors.As(bootLookupErr, &lookup) {
+		return lookup
+	}
+	p.awaiting.Store(isAwaitingAdminCredential(bootLookupErr))
+	return nil
 }
 
 // AwaitingAdminCredential implements the AwaitingAdminCredentialProbe
 // interface every transport gate's ServerOption declares (one per
 // transport package, each a structurally identical, independently
 // declared interface -- see e.g. pkg/api/rest's awaitingAdminCredentialProbe).
+// It does no I/O: Initialize decided this node's state once, at boot, and
+// AdminBound is the only way it ever changes afterward.
 func (p *AwaitingAdminCredentialProbe) AwaitingAdminCredential() bool {
-	if p.Policy != auth.MTLSBindingRequired {
-		return false
-	}
-	interval := p.RecheckInterval
-	if interval <= 0 {
-		interval = DefaultAwaitingAdminCredentialRecheckInterval
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.checked && time.Since(p.lastCheck) < interval {
-		return p.awaiting
-	}
-	timeout := p.LookupTimeout
-	if timeout <= 0 {
-		timeout = awaitingAdminCredentialLookupTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	p.awaiting = isAwaitingAdminCredential(VerifyAdminCertBinding(ctx, p.Users, time.Now().UTC()))
-	p.checked = true
-	p.lastCheck = time.Now()
-	return p.awaiting
+	return p.awaiting.Load()
+}
+
+// AdminBound implements AdminBoundNotifier: it tells the probe the
+// bootstrap admin's certificate just bound while this node was serving,
+// the only way a running node leaves "awaiting admin credential" without a
+// restart. Idempotent, and permanent for the life of this probe instance --
+// a later certificate expiry never re-enters that state.
+func (p *AwaitingAdminCredentialProbe) AdminBound() {
+	p.awaiting.Store(false)
 }
 
 // isAwaitingAdminCredential reports whether verifyErr -- VerifyAdminCertBinding's

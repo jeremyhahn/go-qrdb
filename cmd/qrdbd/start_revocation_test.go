@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 )
 
 // TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot pins the
@@ -50,6 +51,7 @@ func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 		context.Background(), mgmt, t.TempDir(), node,
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
 		nil, nil, "not-a-duration", "", "",
+		firstboot.NewAwaitingAdminCredentialProbe(),
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
