@@ -91,8 +91,12 @@
   let recoveryRegCertPem: string = $state("");
   let recoveryRegCertCopied: boolean = $state(false);
 
-  // Re-initialization state
-  let showReinit: boolean = $state(false);
+  // Configure-encryption form state (fresh barrier only -- see
+  // canConfigureInPlace below). Named "reinit*" from when this same state
+  // also drove a "Re-initialize Barrier" card for an already-initialized
+  // system barrier; that card is removed (go-qrdb#560 review: the server
+  // refuses re-initializing a ceremony-backed system barrier outright),
+  // but this state is still the one "Configure Encryption" uses.
   let reinitMode = $state<SealMode>("passphrase");
   let reinitPassphrase: string = $state("");
   let reinitPassphraseConfirm: string = $state("");
@@ -107,7 +111,6 @@
    */
   let reinitReady = $derived(reinitMode !== "shamir" || reinitHoldersRegistered === reinitShamirShares);
   let reinitLoading: boolean = $state(false);
-  let reinitConfirm: boolean = $state(false);
 
   /**
    * Whether the active barrier uses Shamir secret sharing. A Shamir barrier
@@ -269,7 +272,12 @@
     }
   }
 
-  /** Re-initializes the barrier with a new configuration. */
+  /**
+   * Configures encryption on a fresh, never-initialized system barrier
+   * (the "Configure Encryption" card, canConfigureInPlace). Named
+   * "reinitialize" from when it also drove the now-removed "Re-initialize
+   * Barrier" card for an already-initialized one (go-qrdb#560 review).
+   */
   async function handleReinitialize(): Promise<void> {
     try {
       reinitLoading = true;
@@ -294,9 +302,7 @@
       }
 
       showToast("success", "Barrier re-initialized successfully");
-      showReinit = false;
       showConfigure = false;
-      reinitConfirm = false;
       reinitPassphrase = "";
       reinitPassphraseConfirm = "";
       await fetchSealStatus();
@@ -738,10 +744,10 @@
   {/if}
 
   <!--
-    Shared barrier-configuration fields (mode selection + passphrase / Shamir
-    parameters). Used by both the "Configure Encryption" panel (fresh barrier)
-    and the "Re-initialize Barrier" card (existing barrier), driven through
-    handleReinitialize → seal.initialize / seal.initializeShamir.
+    Barrier-configuration fields (mode selection + passphrase / Shamir
+    parameters) for the "Configure Encryption" panel (fresh, never-initialized
+    system barrier only), driven through handleReinitialize →
+    seal.initialize / seal.initializeShamir.
   -->
   {#snippet barrierConfigFields()}
     <!-- Mode selection -->
@@ -1074,65 +1080,23 @@
     </div>
   {/if}
 
-  <!-- Re-initialize section (only when an encryption barrier is configured and unsealed) -->
-  {#if encryptionConfigured && sealStore.initialized && !sealStore.sealed}
-    <div class="card bg-base-200 shadow">
-      <div class="card-body">
-        <div class="flex items-center justify-between">
-          <h2 class="card-title text-lg">Re-initialize Barrier</h2>
-          <button
-            class="btn btn-ghost btn-sm"
-            onclick={() => { showReinit = !showReinit; reinitConfirm = false; }}
-          >
-            <RefreshCw class="h-4 w-4" />
-            {showReinit ? "Cancel" : "Configure"}
-          </button>
-        </div>
-        <p class="text-base-content/70 text-sm">
-          Re-initialize the encryption barrier with a new configuration. This
-          will generate new key material and require re-distributing shares.
-        </p>
-
-        {#if showReinit}
-          <div class="mt-4 space-y-4">
-            {@render barrierConfigFields()}
-
-            {#if reinitConfirm}
-              <div class="alert alert-warning">
-                <AlertTriangle class="h-5 w-5 shrink-0" />
-                <span>This will replace the existing barrier configuration. Proceed?</span>
-              </div>
-              <div class="flex gap-2">
-                <button
-                  class="btn btn-error btn-sm"
-                  onclick={() => void handleReinitialize()}
-                  disabled={reinitLoading || !reinitReady}
-                >
-                  {#if reinitLoading}
-                    <span class="loading loading-spinner loading-xs"></span>
-                  {/if}
-                  Confirm Re-initialize
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  onclick={() => { reinitConfirm = false; }}
-                >
-                  Cancel
-                </button>
-              </div>
-            {:else}
-              <button
-                class="btn btn-warning btn-sm"
-                onclick={() => { reinitConfirm = true; }}
-              >
-                Re-initialize
-              </button>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    </div>
-  {/if}
+  <!--
+    The "Re-initialize Barrier" card used to live here, for an
+    already-initialized system barrier, driven through the same
+    handleReinitialize → seal.initialize / seal.initializeShamir calls as
+    "Configure Encryption" above. It is removed (go-qrdb#560 review): `qrdb
+    init` (ceremony.initialize) is the ONLY system bootstrap now, and
+    BarrierInitialize/BarrierInitializeShamir refuse a ceremony-backed
+    system barrier outright, so every click here always failed against a
+    live server. ceremony.initialize cannot replace it either -- it
+    refuses a second call on an already-initialized ceremony
+    (ErrAlreadyInitialized) by design; "reconfigure the barrier strategy
+    in place" is not an operation it performs. The one still-live path to
+    change an already-initialized system barrier's strategy is the
+    Enable-Encryption migration section above (none -> keyed); there is no
+    in-place reconfiguration of an already-keyed barrier, by server
+    design, so this view offers none.
+  -->
 
   <!-- Share holders panel (Shamir barriers only) -->
   {#if sealStore.strategy === "shamir" || sealStore.sharesTotal > 0}
