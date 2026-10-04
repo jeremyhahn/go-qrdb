@@ -39,10 +39,17 @@ import (
 )
 
 // GuardedMemoryStore adds kvstore.MultiGuardedBatchKVStore to a real
-// in-memory store. Batches serialise on an internal mutex against each
-// other and against the plain KVStore methods it inherits, so a test
-// driving both at once (a batch write racing an ordinary Put) still sees a
-// consistent store.
+// in-memory store. Batches serialise against EACH OTHER on an internal
+// mutex, so two batches never interleave their guard checks, writes, or
+// rollbacks. That mutex is NOT held by the plain KVStore methods this type
+// inherits from *kvstore.MemoryKVStore (Put, Get, Delete, ...): each of
+// those is independently atomic under MemoryKVStore's own lock, but a
+// batch's guard check, its writes, and a possible rollback are several
+// such calls in sequence, and an ordinary Put racing between two of them
+// is not excluded. A test that needs a batch's net effect to be atomic
+// with respect to a concurrent ordinary Put on the same key must
+// serialise that itself; this type only guarantees batch-vs-batch
+// ordering.
 //
 // A batch is all-or-nothing even when a WRITE fails partway through, not
 // only when a guard refuses up front: PutAllIfAllUnchanged snapshots every
