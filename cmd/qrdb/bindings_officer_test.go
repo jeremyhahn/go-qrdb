@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -66,7 +67,11 @@ func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := stack.svc.BarrierInitializeShamir(context.Background(), 2, 3, ""); err != nil {
+	// A plain, non-ceremony BarrierService over the same barrier:
+	// stack.svc's ceremony now refuses BarrierInitializeShamir
+	// (go-qrdb#560 review item 8), the same way it already refused
+	// BarrierInitialize.
+	if _, err := service.NewBarrierService(stack.barrier).BarrierInitializeShamir(context.Background(), 2, 3, ""); err != nil {
 		t.Fatal(err)
 	}
 	list, err := b.ListHolders(HolderScope{Domain: transport.DomainUnseal})

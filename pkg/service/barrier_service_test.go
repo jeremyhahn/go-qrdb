@@ -148,6 +148,53 @@ func TestBarrierService_BarrierInitialize_DelegatesWithoutCeremony(t *testing.T)
 	}
 }
 
+// TestBarrierService_BarrierInitializeShamir_RefusedWithCeremony is
+// BarrierInitialize's refusal (go-qrdb#548), extended to the Shamir path
+// (go-qrdb#560 review item 8): BarrierInitializeShamir had no ceremony
+// check at all, so an operator could call `barrier init-shamir` directly
+// against qrdbd's own system barrier -- always ceremony-backed -- bringing
+// it up OUTSIDE the sealed window `qrdb init` runs in, with no admin
+// credential ever issued. It must refuse the same way BarrierInitialize
+// does, naming the same replacement.
+func TestBarrierService_BarrierInitializeShamir_RefusedWithCeremony(t *testing.T) {
+	barrier := shamirTestBarrier(t, seal.NewMemoryBackend(), 2, 3)
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	if err != nil {
+		t.Fatalf("ceremony.NewCeremonyService: %v", err)
+	}
+	svc := NewBarrierServiceWithCeremony(barrier, core)
+	ctx := context.Background()
+
+	_, initErr := svc.BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
+	var refused *SystemBarrierInitRefusedError
+	if !errors.As(initErr, &refused) {
+		t.Fatalf("BarrierInitializeShamir = %v, want *SystemBarrierInitRefusedError", initErr)
+	}
+	if !barrier.IsSealed() {
+		t.Error("a refused BarrierInitializeShamir must not have touched the barrier")
+	}
+}
+
+// TestBarrierService_BarrierInitializeShamir_DelegatesWithoutCeremony is
+// BarrierInitialize's other half (go-qrdb#548) extended to the Shamir
+// path: a BarrierService with no ceremony to merge into is NEVER refused
+// by the ceremony check this fix adds -- it reaches the underlying
+// barrier unchanged, exactly as before this fix, and fails (if it does)
+// only for a reason unrelated to it, such as Shamir custody's own
+// distributor wiring, which is this path's existing, separate
+// responsibility and out of scope here.
+func TestBarrierService_BarrierInitializeShamir_DelegatesWithoutCeremony(t *testing.T) {
+	barrier := shamirTestBarrier(t, seal.NewMemoryBackend(), 2, 3)
+	svc := NewBarrierService(barrier)
+	ctx := context.Background()
+
+	_, err := svc.BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
+	var refused *SystemBarrierInitRefusedError
+	if errors.As(err, &refused) {
+		t.Fatalf("BarrierInitializeShamir without a ceremony = %v, must never be the ceremony refusal", err)
+	}
+}
+
 func TestBarrierService_BarrierUnseal(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
 	if err := barrier.Initialize(context.Background(), seal.MustCredentials([]byte("my-secret"))); err != nil {

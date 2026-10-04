@@ -47,7 +47,10 @@ func TestProvisionInitializePINs_InitializedRefusedBeforePIN(t *testing.T) {
 	e := newHolderSvcEnv(t, 2, 2)
 	ctx := adminCtx()
 	e.register(seal.DomainUnseal, newSvcHolder(t, "alice"), newSvcHolder(t, "bob"))
-	_, err := e.svc.BarrierInitializeShamir(ctx, 2, 2, "")
+	// A plain, non-ceremony BarrierService over the same barrier: e.svc's
+	// ceremony now refuses BarrierInitializeShamir (go-qrdb#560 review
+	// item 8), the same way it already refused BarrierInitialize.
+	_, err := NewBarrierService(e.barrier).BarrierInitializeShamir(ctx, 2, 2, "")
 	require.NoError(t, err)
 	pins := &countingPINs{PINBackend: pintest.NewBackend(t)}
 	require.NoError(t, pins.SetSOPIN("", svcSOPIN))
@@ -93,7 +96,8 @@ func TestBarrierService_BarrierInitialized(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, initialized)
 	e.register(seal.DomainUnseal, newSvcHolder(t, "alice"), newSvcHolder(t, "bob"))
-	_, err = e.svc.BarrierInitializeShamir(ctx, 2, 2, "")
+	// See TestProvisionInitializePINs_InitializedRefusedBeforePIN above.
+	_, err = NewBarrierService(e.barrier).BarrierInitializeShamir(ctx, 2, 2, "")
 	require.NoError(t, err)
 	initialized, err = e.svc.BarrierInitialized(ctx)
 	require.NoError(t, err)

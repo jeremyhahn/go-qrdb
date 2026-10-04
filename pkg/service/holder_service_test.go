@@ -166,7 +166,16 @@ func TestBarrierService_HolderCustodyEndToEnd(t *testing.T) {
 	a, b, c := newSvcHolder(t, "alice"), newSvcHolder(t, "bob"), newSvcHolder(t, "carol")
 	e.register(seal.DomainUnseal, a, b, c)
 
-	info, err := e.svc.BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
+	// BarrierInitializeShamir is called through a PLAIN (non-ceremony)
+	// BarrierService sharing e.barrier, not e.svc: e.svc carries a
+	// ceremony (needed for RegisterOfficer/etc. above), and
+	// BarrierInitializeShamir now refuses on any ceremony-backed service
+	// the same way BarrierInitialize already did (go-qrdb#560 review item
+	// 8) -- qrdbd's own system barrier is always ceremony-backed and
+	// brings Shamir custody up through `qrdb init`, never this call
+	// directly. This test is exercising the holder-custody MACHINERY
+	// (quorum, rekey, revocation, recovery), not that bootstrap gate.
+	info, err := NewBarrierService(e.barrier).BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
 	require.NoError(t, err)
 	assert.Equal(t, 3, info.ShareCount)
 	require.NoError(t, e.pins.SetSOPIN("", svcSOPIN))
@@ -224,7 +233,11 @@ func TestBarrierService_RecoveryKeys(t *testing.T) {
 	e := newHolderSvcEnv(t, 2, 2)
 	a, b := newSvcHolder(t, "alice"), newSvcHolder(t, "bob")
 	e.register(seal.DomainUnseal, a, b)
-	_, err := e.svc.BarrierInitializeShamir(ctx, 2, 2, "")
+	// See TestBarrierService_HolderCustodyEndToEnd: a plain,
+	// non-ceremony BarrierService over the same barrier, since e.svc's
+	// ceremony now refuses BarrierInitializeShamir (go-qrdb#560 review
+	// item 8).
+	_, err := NewBarrierService(e.barrier).BarrierInitializeShamir(ctx, 2, 2, "")
 	require.NoError(t, err)
 
 	has, err := e.svc.BarrierHasRecoveryKeys(ctx)

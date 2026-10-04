@@ -410,10 +410,18 @@ func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, e
 
 // BarrierInitializeShamir initializes the barrier under Shamir custody. The
 // request's threshold and share count win over the daemon configuration.
-// With a ceremony service it initializes through the system holder authority
-// (ceremony.CeremonyService.InitializeShamir), which refuses a holder
-// registration or unenrolment until the initialization has finished.
+//
+// Refused on the same shape, and for the same reason, as BarrierInitialize
+// (go-qrdb#548): a BarrierService built with a ceremony is qrdbd's own
+// system barrier, which `qrdb init` -- the only system bootstrap -- brings
+// up itself, in the sealed window, issuing the bootstrap admin's
+// credential in the same call. A standalone `barrier init-shamir` against
+// it would run outside that window with no ceremony and no
+// admin-credential issuance (go-qrdb#560 review item 8).
 func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*ShamirInitInfo, error) {
+	if s.ceremony != nil {
+		return nil, &SystemBarrierInitRefusedError{}
+	}
 	if threshold != 0 || totalShares != 0 {
 		s.barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: threshold, TotalShares: totalShares})
 	}

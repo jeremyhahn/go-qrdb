@@ -45,7 +45,10 @@ func newQuorumSealNode(t *testing.T, sealer *clustersealtest.Sealer) *quorumSeal
 	e := newHolderSvcEnv(t, 2, 3)
 	hs := []*svcHolder{newSvcHolder(t, "alice"), newSvcHolder(t, "bob"), newSvcHolder(t, "carol")}
 	e.register(seal.DomainUnseal, hs...)
-	_, err := e.svc.BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
+	// A plain, non-ceremony BarrierService over the same barrier: e.svc's
+	// ceremony now refuses BarrierInitializeShamir (go-qrdb#560 review
+	// item 8), the same way it already refused BarrierInitialize.
+	_, err := NewBarrierService(e.barrier).BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
 	require.NoError(t, err)
 	for _, h := range hs {
 		e.claim(seal.DomainUnseal, h)

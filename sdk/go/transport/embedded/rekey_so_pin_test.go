@@ -82,7 +82,12 @@ func newRekeyTransport(t *testing.T, pins pin.PINBackend) *Transport {
 			t.Fatal(err)
 		}
 	}
-	if _, err := svc.BarrierInitializeShamir(ctx, 2, 2, ""); err != nil {
+	// A plain, non-ceremony BarrierService over the same barrier: svc's
+	// ceremony now refuses BarrierInitializeShamir (go-qrdb#560 review
+	// item 8), the same way it already refused BarrierInitialize. svc
+	// itself (ceremony-backed) is still what BarrierOfficerRegister above
+	// needed and what the transport is wired with below.
+	if _, err := service.NewBarrierService(barrier).BarrierInitializeShamir(ctx, 2, 2, ""); err != nil {
 		t.Fatal(err)
 	}
 	tr, err := New(newMockKVService(), &mockAdminService{}, WithPINBackend(pins), WithBarrierService(svc))

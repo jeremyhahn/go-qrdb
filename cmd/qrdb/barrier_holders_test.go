@@ -59,6 +59,12 @@ const cliFIDO = "fido2"
 // through the embedded transport.
 type cliHolderStack struct {
 	svc service.BarrierServicer
+	// barrier backs svc (ceremony-backed) and is kept so a caller that
+	// needs to initialize Shamir custody can do so through a plain,
+	// non-ceremony service instead: svc's ceremony now refuses
+	// BarrierInitializeShamir (go-qrdb#560 review item 8), the same way
+	// it already refused BarrierInitialize.
+	barrier *seal.StorageBarrier
 }
 
 func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
@@ -91,7 +97,7 @@ func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
 		t.Fatal(err)
 	}
 	core.SetPINBackend(pins)
-	return &cliHolderStack{svc: service.NewBarrierServiceWithCeremony(barrier, core)}
+	return &cliHolderStack{svc: service.NewBarrierServiceWithCeremony(barrier, core), barrier: barrier}
 }
 
 // cliSOPIN is the barrier SO PIN the CLI holder stack provisions; rekey and
@@ -301,7 +307,22 @@ func TestHolderCLI_Lifecycle(t *testing.T) {
 	if out := mustCLI(t, context.Background(), root, "barrier", "officer", "register", "--username", "table-only", "--csr-file", newCLIHolder(t, "x", "so", false, false).csrFile); !strings.Contains(out, "CertPEM:") {
 		t.Fatalf("register table output = %q", out)
 	}
-	mustCLI(t, context.Background(), root, "barrier", "init-shamir", "--threshold", "2", "--total", "4")
+	// A plain, non-ceremony BarrierService over the same barrier, wired
+	// into its OWN command tree: stack.svc's ceremony now refuses
+	// BarrierInitializeShamir (go-qrdb#560 review item 8), the same way
+	// it already refused BarrierInitialize -- an operator's `barrier
+	// init-shamir` against a real ceremony-backed system barrier must be
+	// refused and pointed at `qrdb init` instead. This test is driving
+	// the holder-custody LIFECYCLE (enrolment, claim, quorum, rekey,
+	// revocation), not that bootstrap gate, so it initializes custody
+	// through the plain path precisely as the fixed BarrierService
+	// requires; `root` (stack.svc, ceremony-backed) is unaffected and
+	// still used for every verb below.
+	plainRoot := func() *cobra.Command {
+		return newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(),
+			embedded.WithBarrierService(service.NewBarrierService(stack.barrier)), embedded.WithPINBackend(pintest.NewBackend(t)))
+	}
+	mustCLI(t, context.Background(), plainRoot, "barrier", "init-shamir", "--threshold", "2", "--total", "4")
 
 	claimAll := func() {
 		t.Helper()
@@ -521,7 +542,7 @@ func realEnvelopeFor(t *testing.T, h *cliHolder) []byte {
 			}
 		}
 	}
-	if _, err := stack.svc.BarrierInitializeShamir(ctx, 2, 2, ""); err != nil {
+	if _, err := service.NewBarrierService(stack.barrier).BarrierInitializeShamir(ctx, 2, 2, ""); err != nil {
 		t.Fatal(err)
 	}
 	return serviceClaim(t, stack.svc, h, cert)
