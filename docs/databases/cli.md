@@ -21,7 +21,7 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 | `--cluster-mode` | string | `local` | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | 1 | replication factor — **raft backend only** |
 | `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**non-raft `--data-dir` database, system tenant only**) |
-| `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir`; shamir splits the key to enrolled share holders via `barrier-officer`/`barrier-init-shamir` (see below) instead of taking a secret |
+| `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir`; `shamir` splits the root key to the database's enrolled share holders (see [Share-holder verbs](#share-holder-verbs-shamir-database-barrier)) instead of taking a passphrase |
 | `--barrier-passphrase` | string | — | passphrase, when strategy is `passphrase` |
 | `--barrier-shamir-threshold` | int | — | quorum threshold, when strategy is `shamir` |
 | `--barrier-shamir-total` | int | — | total share count, when strategy is `shamir` |

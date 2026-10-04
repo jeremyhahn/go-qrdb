@@ -1090,10 +1090,11 @@ func testBarrierOfficerRevokeOverProtocol(t *testing.T, proto multiProtocol) {
 	ep := node.endpointFor(proto)
 
 	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	scope := systemScope(transport.DomainUnseal)
 
-	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
-	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
-	carol := registerOfficer(t, cli, workDir, flags, "carol", false)
+	alice := registerOfficer(t, cli, workDir, flags, scope, "alice")
+	bob := registerOfficer(t, cli, workDir, flags, scope, "bob")
+	carol := registerOfficer(t, cli, workDir, flags, scope, "carol")
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "init-shamir",
@@ -1104,30 +1105,30 @@ func testBarrierOfficerRevokeOverProtocol(t *testing.T, proto multiProtocol) {
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
-	claimEnvelope(t, cli, workDir, ep, alice, false)
-	claimEnvelope(t, cli, workDir, ep, bob, false)
-	claimEnvelope(t, cli, workDir, ep, carol, false)
+	claimEnvelope(t, cli, workDir, ep, scope, alice)
+	claimEnvelope(t, cli, workDir, ep, scope, bob)
+	claimEnvelope(t, cli, workDir, ep, scope, carol)
 	preRevokeCarol := *carol
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "officer", "revoke", "--username", "carol", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
 		t.Fatalf("barrier officer revoke carol: %v\nstderr: %s", err, stderr)
 	}
-	if out := quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
+	if out := quorumAll(t, cli, ep, scope, "rekey", alice, bob); !out.Complete {
 		t.Fatalf("rekey round = %+v, want complete", out)
 	}
 
-	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", &preRevokeCarol); err == nil {
+	if _, _, err := quorumSubmit(t, cli, ep, scope, "unseal", &preRevokeCarol); err == nil {
 		t.Fatal("a revoked holder's pre-revoke envelope was accepted")
 	}
 
-	claimEnvelope(t, cli, workDir, ep, alice, false)
-	claimEnvelope(t, cli, workDir, ep, bob, false)
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	claimEnvelope(t, cli, workDir, ep, scope, alice)
+	claimEnvelope(t, cli, workDir, ep, scope, bob)
+	quorumAll(t, cli, ep, scope, "seal", alice, bob)
 	if status := barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatal("expected barrier to be sealed after the post-revoke seal quorum")
 	}
-	if out := quorumAll(t, cli, ep, "unseal", "unseal", alice, bob); !out.Complete {
+	if out := quorumAll(t, cli, ep, scope, "unseal", alice, bob); !out.Complete {
 		t.Fatalf("post-revoke unseal quorum = %+v, want complete", out)
 	}
 
@@ -1174,9 +1175,10 @@ func testBarrierQuorumBeginOverProtocol(t *testing.T, proto multiProtocol) {
 	ep := node.endpointFor(proto)
 
 	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	scope := systemScope(transport.DomainUnseal)
 
-	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
-	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
+	alice := registerOfficer(t, cli, workDir, flags, scope, "alice")
+	bob := registerOfficer(t, cli, workDir, flags, scope, "bob")
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "init-shamir",
 		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
@@ -1186,11 +1188,11 @@ func testBarrierQuorumBeginOverProtocol(t *testing.T, proto multiProtocol) {
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
-	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, scope, alice)
 
-	claimEnvelope(t, cli, workDir, ep, bob, false)
+	claimEnvelope(t, cli, workDir, ep, scope, bob)
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, scope, "seal", alice, bob)
 
 	challenge, _, err := quorumBegin(t, cli, ep, "unseal", "unseal", alice)
 	if err != nil {
@@ -1210,7 +1212,7 @@ func testBarrierQuorumBeginOverProtocol(t *testing.T, proto multiProtocol) {
 		t.Error("expected barrier to still be sealed before the quorum")
 	}
 
-	quorumAll(t, cli, ep, "unseal", "unseal", alice, bob)
+	quorumAll(t, cli, ep, scope, "unseal", alice, bob)
 	postStatus := barrierStatus(t, cli, flags)
 	if postStatus.Sealed {
 		t.Error("expected barrier to be unsealed after the quorum")
@@ -1451,9 +1453,12 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 		t.Fatalf("[%s] expected fresh shamir barrier to be sealed pre-init, got: %+v", proto.name, status)
 	}
 
-	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
-	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
-	registerOfficer(t, cli, workDir, flags, "carol", false)
+	unsealScope := systemScope(transport.DomainUnseal)
+	recoveryScope := systemScope(transport.DomainRecovery)
+
+	alice := registerOfficer(t, cli, workDir, flags, unsealScope, "alice")
+	bob := registerOfficer(t, cli, workDir, flags, unsealScope, "bob")
+	registerOfficer(t, cli, workDir, flags, unsealScope, "carol")
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "init-shamir",
@@ -1477,34 +1482,34 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 		t.Fatalf("[%s] barrier officer list --domain unseal = %v, want alice/bob/carol", proto.name, names)
 	}
 
-	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, unsealScope, alice)
 	claimEnvelopeTwoStep(t, cli, workDir, ep, bob, false)
 	firstAlice, firstBob := *alice, *bob
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, unsealScope, "seal", alice, bob)
 	status = barrierStatus(t, cli, flags)
 	if !status.Sealed {
 		t.Fatalf("[%s] expected barrier to be sealed after the seal quorum", proto.name)
 	}
 
-	out := quorumAll(t, cli, ep, "unseal", "unseal", alice)
+	out := quorumAll(t, cli, ep, unsealScope, "unseal", alice)
 	if out.Complete || out.Submitted != 1 || out.Required != threshold {
 		t.Fatalf("[%s] one of two submissions = %+v, want 1/2 incomplete", proto.name, out)
 	}
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatalf("[%s] a below-threshold round must not unseal the barrier", proto.name)
 	}
-	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", alice); err == nil {
+	if _, _, err := quorumSubmit(t, cli, ep, unsealScope, "unseal", alice); err == nil {
 		t.Fatalf("[%s] a second submission from the same holder was accepted", proto.name)
 	}
-	if out = quorumAll(t, cli, ep, "unseal", "unseal", bob); !out.Complete {
+	if out = quorumAll(t, cli, ep, unsealScope, "unseal", bob); !out.Complete {
 		t.Fatalf("[%s] second holder submission = %+v, want complete", proto.name, out)
 	}
 	if status = barrierStatus(t, cli, flags); status.Sealed {
 		t.Fatalf("[%s] expected barrier to be unsealed after the unseal quorum", proto.name)
 	}
 
-	out = quorumAll(t, cli, ep, "unseal", "root-token", alice, bob)
+	out = quorumAll(t, cli, ep, unsealScope, "root-token", alice, bob)
 	if !out.Complete || out.RootToken == "" {
 		t.Fatalf("[%s] root-token round = %+v, want a root token", proto.name, out)
 	}
@@ -1513,32 +1518,32 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
 		t.Fatalf("[%s] barrier rekey: %v\nstderr: %s", proto.name, err, stderr)
 	}
-	if out = quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
+	if out = quorumAll(t, cli, ep, unsealScope, "rekey", alice, bob); !out.Complete {
 		t.Fatalf("[%s] rekey round = %+v, want complete", proto.name, out)
 	}
-	claimEnvelope(t, cli, workDir, ep, alice, false)
-	claimEnvelope(t, cli, workDir, ep, bob, false)
+	claimEnvelope(t, cli, workDir, ep, unsealScope, alice)
+	claimEnvelope(t, cli, workDir, ep, unsealScope, bob)
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, unsealScope, "seal", alice, bob)
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatalf("[%s] expected barrier to be sealed after the post-rekey seal quorum", proto.name)
 	}
 
-	quorumAll(t, cli, ep, "unseal", "unseal", &firstAlice)
-	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", &firstBob); err == nil {
+	quorumAll(t, cli, ep, unsealScope, "unseal", &firstAlice)
+	if _, _, err := quorumSubmit(t, cli, ep, unsealScope, "unseal", &firstBob); err == nil {
 		t.Fatalf("[%s] a quorum of pre-rekey envelopes completed", proto.name)
 	}
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatalf("[%s] revoked envelopes must not unseal the barrier", proto.name)
 	}
 
-	quorumAll(t, cli, ep, "unseal", "unseal", alice, bob)
+	quorumAll(t, cli, ep, unsealScope, "unseal", alice, bob)
 	if status = barrierStatus(t, cli, flags); status.Sealed {
 		t.Fatalf("[%s] expected barrier to be unsealed with the post-rekey envelopes", proto.name)
 	}
 
-	dave := registerOfficer(t, cli, workDir, flags, "dave", true)
-	erin := registerOfficer(t, cli, workDir, flags, "erin", true)
+	dave := registerOfficer(t, cli, workDir, flags, recoveryScope, "dave")
+	erin := registerOfficer(t, cli, workDir, flags, recoveryScope, "erin")
 
 	// `barrier officer list` serves only the unseal domain
 	// (systemHolders.list refuses --domain recovery outright,
@@ -1557,15 +1562,15 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 		t.Fatalf("[%s] expected recovery keys to be present after generate", proto.name)
 	}
 
-	claimEnvelope(t, cli, workDir, ep, dave, true)
+	claimEnvelope(t, cli, workDir, ep, recoveryScope, dave)
 	claimEnvelopeTwoStep(t, cli, workDir, ep, erin, true)
 
-	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	quorumAll(t, cli, ep, unsealScope, "seal", alice, bob)
 	if status = barrierStatus(t, cli, flags); !status.Sealed {
 		t.Fatalf("[%s] expected barrier to be sealed before exercising recover", proto.name)
 	}
 
-	if out = quorumAll(t, cli, ep, "recovery", "recover", dave, erin); !out.Complete {
+	if out = quorumAll(t, cli, ep, recoveryScope, "recover", dave, erin); !out.Complete {
 		t.Fatalf("[%s] recover round = %+v, want complete", proto.name, out)
 	}
 	if status = barrierStatus(t, cli, flags); status.Sealed {
