@@ -35,25 +35,38 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
 
-type grpcFwdTransport struct{}
+// grpcFwdTransport is a gRPC client of a node's TCP listener or, with unix
+// set, of its Unix socket, which serves the same services and forwards over
+// gRPC.
+type grpcFwdTransport struct {
+	unix bool
+}
 
-func (grpcFwdTransport) name() string { return "grpc" }
+func (g grpcFwdTransport) name() string {
+	if g.unix {
+		return "unix"
+	}
+	return "grpc"
+}
 
 func (grpcFwdTransport) hasStream() bool { return true }
 
 func (grpcFwdTransport) reportsServedBy() bool { return true }
 
 // client is a gRPC client of node i authenticated as caller.
-func (grpcFwdTransport) client(t *testing.T, c *fwdCluster, i int, caller fwdCaller) pb.QRDBServiceClient {
+func (g grpcFwdTransport) client(t *testing.T, c *fwdCluster, i int, caller fwdCaller) pb.QRDBServiceClient {
 	t.Helper()
 	certPath, keyPath := c.certFor(caller)
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cc, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", c.nodes[i].grpc), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
-		RootCAs: c.ca.Pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13,
-	})))
+	cfg := &tls.Config{RootCAs: c.ca.Pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}
+	target := fmt.Sprintf("127.0.0.1:%d", c.nodes[i].grpc)
+	if g.unix {
+		target, cfg.ServerName = "unix://"+c.nodes[i].unix, "127.0.0.1"
+	}
+	cc, err := grpc.NewClient(target, grpc.WithTransportCredentials(credentials.NewTLS(cfg)))
 	if err != nil {
 		t.Fatal(err)
 	}

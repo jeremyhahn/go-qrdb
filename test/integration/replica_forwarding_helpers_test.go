@@ -23,7 +23,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"testing"
@@ -50,6 +52,7 @@ type fwdNode struct {
 	grpc     int
 	quic     int
 	mcp      int
+	unix     string
 	stopped  bool
 }
 
@@ -100,7 +103,14 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 	dataDirs := make([]string, n)
 	for i := range n {
 		dataDirs[i] = t.TempDir()
-		node := &fwdNode{raftAddr: fmt.Sprintf("127.0.0.1:%d", raftPorts[i]), admin: adminPorts[i], grpc: grpcPorts[i], quic: quicPorts[i], mcp: mcpPorts[i]}
+		// A socket path must fit sockaddr_un, so it is not under t.TempDir.
+		sockDir, err := os.MkdirTemp("", "qrdb-fwd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+		node := &fwdNode{raftAddr: fmt.Sprintf("127.0.0.1:%d", raftPorts[i]), admin: adminPorts[i], grpc: grpcPorts[i], quic: quicPorts[i], mcp: mcpPorts[i],
+			unix: filepath.Join(sockDir, "qrdbd.sock")}
 		node.cmd = exec.Command(bin,
 			"start",
 			"--config", writeIsolationRaftConfig(t, t.TempDir(), peerAdminURLs),
@@ -119,6 +129,8 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 			"--quic-port", fmt.Sprintf("%d", quicPorts[i]),
 			"--enable-mcp",
 			"--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
+			"--enable-unix",
+			"--unix-socket-path", node.unix,
 			"--cluster-trust-domain", fwdTrustDomain,
 			"--tls-ca-file", ca.CertPath,
 			"--tls-cert-file", nodeCerts[i],

@@ -85,7 +85,7 @@ type fwdTransport interface {
 }
 
 // fwdTransports is every network transport the suite runs over.
-var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}, quicFwdTransport{}, mcpFwdTransport{}}
+var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}, quicFwdTransport{}, mcpFwdTransport{}, grpcFwdTransport{unix: true}}
 
 // TestReplicaForwarding: three nodes and a single-replica database, so two
 // nodes hold no replica of it; the same command set over every transport.

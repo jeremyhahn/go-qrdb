@@ -154,7 +154,7 @@ type Server struct {
 	// refuses as a non-replica (WithReplicaForwarding); forwarder is built
 	// from it at Start and closed at Stop.
 	replicaForwarding *replicaforward.Config
-	forwarder         *replicaForwarder
+	forwarder         *ReplicaForwarder
 }
 
 // ServerOption configures optional Server dependencies.
@@ -592,8 +592,8 @@ func (s *Server) Start() error {
 	_, nodeID := forward.NodeIdentity(s.tls)
 	unaryInterceptors = append(unaryInterceptors, servedByUnary(nodeID))
 	if s.replicaForwarding != nil {
-		s.forwarder = newReplicaForwarder(*s.replicaForwarding, s.tls)
-		unaryInterceptors = append(unaryInterceptors, s.forwarder.unary)
+		s.forwarder = NewReplicaForwarder(*s.replicaForwarding, s.tls)
+		unaryInterceptors = append(unaryInterceptors, s.forwarder.UnaryInterceptor())
 	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
@@ -725,7 +725,7 @@ func (s *Server) Stop() {
 	}
 	s.server.GracefulStop()
 	if s.forwarder != nil {
-		s.forwarder.close()
+		s.forwarder.Close()
 	}
 	slog.Info("gRPC server stopped")
 }

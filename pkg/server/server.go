@@ -2144,6 +2144,9 @@ func (s *Server) startUnix() error {
 	if s.opts.authMW != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	if fwd, ok := s.replicaForwarding(); ok {
+		unixOpts = append(unixOpts, unixapi.WithReplicaForwarding(fwd))
+	}
 	if s.opts.sealedWindowProbe != nil {
 		if s.opts.sealedWindowListener {
 			unixOpts = append(unixOpts, unixapi.WithSealedWindowListener(s.listenerProbe()))

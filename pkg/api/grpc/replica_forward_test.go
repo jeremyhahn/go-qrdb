@@ -183,7 +183,7 @@ type fwdCluster struct {
 	ca        *replicaforwardtest.CA
 	targets   []*fakeTarget
 	cache     *replicaforward.LeaderCache
-	forwarder *replicaForwarder
+	forwarder *ReplicaForwarder
 	ingress   *refusingService
 	client    pb.QRDBServiceClient
 }
@@ -201,12 +201,12 @@ func newFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Duratio
 			APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: ft.addr}})
 	}
 	ingressTLS := c.ca.TLS(t, "node-a")
-	c.forwarder = newReplicaForwarder(replicaforward.Config{
+	c.forwarder = NewReplicaForwarder(replicaforward.Config{
 		Locator: replicaforward.NewLocator(members, c.cache, "raft-a", nil),
 		RootCAs: c.ca.Pool,
 		Timeout: timeout,
 	}, ingressTLS)
-	t.Cleanup(c.forwarder.close)
+	t.Cleanup(c.forwarder.Close)
 	c.ingress = &refusingService{refusal: refusal}
 	authn := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 		if v := metadata.ValueFromIncomingContext(ctx, "x-test-anonymous"); len(v) == 0 {
@@ -214,7 +214,7 @@ func newFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Duratio
 		}
 		return h(ctx, req)
 	}
-	addr := serveGRPC(t, ingressTLS, c.ingress, authn, servedByUnary("node-a"), c.forwarder.unary)
+	addr := serveGRPC(t, ingressTLS, c.ingress, authn, servedByUnary("node-a"), c.forwarder.UnaryInterceptor())
 	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(c.ca.TLS(t, ""))))
 	if err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestReplicaForwardGRPC_AClosedForwarderRefuses(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	c := newFwdCluster(t, ca, 5*time.Second, b)
-	c.forwarder.close()
+	c.forwarder.Close()
 
 	_, err := c.client.Put(callerCtx(), &pb.PutRequest{Key: "k", Value: []byte("v")})
 	if reason, _, ok := refusalFromStatus(status.Convert(err)); !ok || reason != replicaforward.ReasonNotAReplica || b.calls.Load() != 0 {

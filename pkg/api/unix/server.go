@@ -49,6 +49,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -97,13 +98,19 @@ type Server struct {
 	auditLogger       audit.AuditLogger
 
 	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
-	soGate            *authmw.SOGate
-	sqlSvc            service.SQLServicer
-	registry          service.Registry
-	modules           []apimodule.ServiceModule
-	tls               *tls.Config
-	tlsErr            error
-	authMW            *authmw.AuthMiddleware
+	soGate   *authmw.SOGate
+	sqlSvc   service.SQLServicer
+	registry service.Registry
+	modules  []apimodule.ServiceModule
+	tls      *tls.Config
+	tlsErr   error
+	authMW   *authmw.AuthMiddleware
+
+	// replicaForwarding, when set, makes the socket forward what it refuses
+	// as a non-replica (WithReplicaForwarding), over gRPC to the replica's
+	// gRPC endpoint; forwarder is built from it at Start and closed at Stop.
+	replicaForwarding *replicaforward.Config
+	forwarder         *grpcpkg.ReplicaForwarder
 	sealedWindowProbe sealedWindowProbe
 	// sealedWindowListener is the boot-time sealed-window listener's probe,
 	// and selects that listener's interceptors. Nil for a regular listener.
@@ -126,6 +133,17 @@ type ServerOption func(*Server)
 func WithMaxConcurrentStreams(n uint32) ServerOption {
 	return func(s *Server) {
 		s.maxConcurrentStreams = n
+	}
+}
+
+// WithReplicaForwarding makes the socket forward a unary request it refuses
+// because the node holds no replica of the database to a node that does, on
+// the caller's behalf, over gRPC (docs/replica-forwarding). Without it the
+// socket answers the refusal. Streams are never forwarded.
+func WithReplicaForwarding(cfg replicaforward.Config) ServerOption {
+	return func(s *Server) {
+		c := cfg
+		s.replicaForwarding = &c
 	}
 }
 
@@ -569,6 +587,12 @@ func (s *Server) Start() error {
 	if sealedUnary != nil {
 		unaryInterceptors = append(unaryInterceptors, sealedUnary)
 	}
+	// Replica forwarding sits innermost, as on TCP gRPC: the caller is
+	// authenticated and admitted here before a refusal is forwarded.
+	if s.replicaForwarding != nil {
+		s.forwarder = grpcpkg.NewReplicaForwarder(*s.replicaForwarding, s.tls)
+		unaryInterceptors = append(unaryInterceptors, s.forwarder.UnaryInterceptor())
+	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
 		streamLoggingInterceptor,
@@ -777,6 +801,9 @@ func (s *Server) Stop() {
 		return
 	}
 	s.server.GracefulStop()
+	if s.forwarder != nil {
+		s.forwarder.Close()
+	}
 
 	// Wait for the serve goroutine to exit before removing the socket
 	// to prevent a race where a subsequent Start recreates the socket

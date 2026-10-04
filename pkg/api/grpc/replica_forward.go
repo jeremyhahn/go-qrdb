@@ -54,10 +54,12 @@ func WithReplicaForwarding(cfg replicaforward.Config) ServerOption {
 	}
 }
 
-// replicaForwarder forwards a gRPC request this node refused with
+// ReplicaForwarder forwards a gRPC request this node refused with
 // NotAReplica to a replica, carrying a signed assertion of the caller, and
-// relays the replica's answer.
-type replicaForwarder struct {
+// relays the replica's answer. The TCP listener installs it through
+// WithReplicaForwarding; the Unix socket listener, which serves the same
+// services, installs it directly and forwards over gRPC.
+type ReplicaForwarder struct {
 	cfg       replicaforward.Config
 	key       crypto.Signer
 	nodeID    string
@@ -70,12 +72,12 @@ type replicaForwarder struct {
 	closed bool
 }
 
-// newReplicaForwarder returns the forwarder for a listener serving nodeTLS:
+// NewReplicaForwarder returns the forwarder for a listener serving nodeTLS:
 // the listener's own certificate is the client certificate a forward
 // presents, and the key that signs the caller assertion.
-func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replicaForwarder {
+func NewReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *ReplicaForwarder {
 	key, nodeID := forward.NodeIdentity(nodeTLS)
-	return &replicaForwarder{
+	return &ReplicaForwarder{
 		cfg:    cfg,
 		key:    key,
 		nodeID: nodeID,
@@ -89,8 +91,8 @@ func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replic
 	}
 }
 
-// close closes every target connection.
-func (f *replicaForwarder) close() {
+// Close closes every target connection.
+func (f *ReplicaForwarder) Close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed = true
@@ -100,10 +102,13 @@ func (f *replicaForwarder) close() {
 	}
 }
 
-// unary is the forwarding interceptor. It sits innermost, after
-// authentication and authorization, so the caller has been admitted here
-// before anything is forwarded.
-func (f *replicaForwarder) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+// UnaryInterceptor returns the forwarding interceptor. It must sit
+// innermost, after authentication and authorization, so the caller has been
+// admitted here before anything is forwarded.
+func (f *ReplicaForwarder) UnaryInterceptor() grpc.UnaryServerInterceptor { return f.unary }
+
+// unary forwards what handler refuses as a non-replica.
+func (f *ReplicaForwarder) unary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	resp, err := handler(ctx, req)
 	if err == nil || forwardedIn(ctx) {
 		return resp, err
@@ -122,7 +127,7 @@ func (f *replicaForwarder) unary(ctx context.Context, req any, info *grpc.UnaryS
 // forward forwards req and relays the answer. Every failure to forward ends
 // in the refusal, never in a local answer; a failure after the request
 // reached a target ends in that failure.
-func (f *replicaForwarder) forward(ctx context.Context, fullMethod string, req any, refusal *placement.NotAReplicaError, refusalErr error) (any, error) {
+func (f *ReplicaForwarder) forward(ctx context.Context, fullMethod string, req any, refusal *placement.NotAReplicaError, refusalErr error) (any, error) {
 	msg, ok := req.(proto.Message)
 	if !ok {
 		return nil, refusalErr
@@ -197,7 +202,7 @@ func (f *replicaForwarder) forward(ctx context.Context, fullMethod string, req a
 // conn returns a connection to endpoint that is ready to carry a request, or
 // false when none could be opened within ctx: the request then never left
 // this node, and the locator may try another replica.
-func (f *replicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.ClientConn, bool) {
+func (f *ReplicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.ClientConn, bool) {
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
