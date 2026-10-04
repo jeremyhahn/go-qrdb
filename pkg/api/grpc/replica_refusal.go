@@ -15,35 +15,21 @@
 package grpc
 
 import (
-	"errors"
-
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/status"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // refusalDetail returns the structured form of a replica refusal err carries
 // -- a node that holds no replica of the database, or a follower refusing a
 // write -- as a google.rpc.ErrorInfo detail. Any other error carries none.
 func refusalDetail(err error) *errdetails.ErrorInfo {
-	if nar, ok := errors.AsType[*placement.NotAReplicaError](err); ok {
-		return &errdetails.ErrorInfo{
-			Domain:   replicaforward.ErrorDomain,
-			Reason:   replicaforward.ReasonNotAReplica,
-			Metadata: replicaforward.NotAReplicaMetadata(nar),
-		}
+	reason, md, ok := replicaforward.Refusal(err)
+	if !ok {
+		return nil
 	}
-	if nle, ok := errors.AsType[*service.NotLeaderError](err); ok {
-		return &errdetails.ErrorInfo{
-			Domain:   replicaforward.ErrorDomain,
-			Reason:   replicaforward.ReasonNotLeader,
-			Metadata: replicaforward.NotLeaderMetadata(nle.LeaderAddress),
-		}
-	}
-	return nil
+	return &errdetails.ErrorInfo{Domain: replicaforward.ErrorDomain, Reason: reason, Metadata: md}
 }
 
 // refusalFromStatus returns the reason and metadata of the replica refusal st

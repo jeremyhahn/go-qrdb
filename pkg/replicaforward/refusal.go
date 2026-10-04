@@ -15,9 +15,11 @@
 package replicaforward
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // The structured refusal every transport carries beside its message, so a
@@ -61,6 +63,20 @@ const (
 	keyReplicas        = "replicas"
 	keyLeaderRaftAddr  = "leader_raft_addr"
 )
+
+// Refusal returns the structured form of the replica refusal err carries --
+// a node that holds no replica of the database (ReasonNotAReplica), or a
+// follower refusing a write (ReasonNotLeader) -- for a transport to put on
+// the wire beside the message. Any other error is not one.
+func Refusal(err error) (reason string, md map[string]string, ok bool) {
+	if nar, isNAR := errors.AsType[*placement.NotAReplicaError](err); isNAR {
+		return ReasonNotAReplica, NotAReplicaMetadata(nar), true
+	}
+	if nle, isNLE := errors.AsType[*service.NotLeaderError](err); isNLE {
+		return ReasonNotLeader, NotLeaderMetadata(nle.LeaderAddress), true
+	}
+	return "", nil, false
+}
 
 // NotAReplicaMetadata encodes e as refusal metadata.
 func NotAReplicaMetadata(e *placement.NotAReplicaError) map[string]string {

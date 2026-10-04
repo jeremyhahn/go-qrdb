@@ -1588,6 +1588,9 @@ func (s *Server) startREST() error {
 	if s.opts.caCertPool != nil {
 		restOpts = append(restOpts, rest.WithCACertPool(s.opts.caCertPool))
 	}
+	if fwd, ok := s.replicaForwarding(); ok {
+		restOpts = append(restOpts, rest.WithReplicaForwarding(fwd))
+	}
 	if s.opts.gatherer != nil {
 		restOpts = append(restOpts, rest.WithGatherer(s.opts.gatherer))
 	}

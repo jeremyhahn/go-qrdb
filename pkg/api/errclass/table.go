@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -980,6 +981,10 @@ var contextRules = []rule{
 // Unclassified states the decision: these are faults this table has
 // identified, not errors it has never seen.
 var genericRules = []rule{
+	// A forward to a replica failed after the request may have reached it;
+	// what the replica would have answered is unknown, so the node it came
+	// through is unavailable to the caller for it.
+	as(&replicaforward.SendError{}, Unavailable),
 	as(&service.ProposeError{}, Internal),
 	as(&service.ReadError{}, Internal),
 	as(&service.MembershipError{}, Internal),

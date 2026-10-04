@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 func TestNotAReplicaMetadata_RoundTrips(t *testing.T) {
@@ -70,6 +71,23 @@ func TestNotLeaderMetadata_RoundTrips(t *testing.T) {
 	}
 	if got := LeaderRaftAddr(NotLeaderMetadata("")); got != "" {
 		t.Fatalf("an unknown leader decoded as %q", got)
+	}
+}
+
+// TestRefusal_ClassifiesTheTwoReplicaRefusals: a non-replica's refusal and a
+// follower's, bare or wrapped, and nothing else.
+func TestRefusal_ClassifiesTheTwoReplicaRefusals(t *testing.T) {
+	nar := &placement.NotAReplicaError{TenantID: "acme", Database: "orders", ShardID: 3, Replicas: []placement.Replica{}}
+	reason, md, ok := Refusal(&service.ReadError{Err: nar})
+	if got, err := ParseNotAReplica(md); !ok || reason != ReasonNotAReplica || err != nil || !reflect.DeepEqual(got, nar) {
+		t.Fatalf("Refusal(wrapped NotAReplica) = %q, %v, %v", reason, md, ok)
+	}
+	reason, md, ok = Refusal(&service.NotLeaderError{ShardID: 3, LeaderAddress: "192.0.2.2:7000"})
+	if !ok || reason != ReasonNotLeader || LeaderRaftAddr(md) != "192.0.2.2:7000" {
+		t.Fatalf("Refusal(NotLeader) = %q, %v, %v", reason, md, ok)
+	}
+	if _, _, ok := Refusal(errors.New("boom")); ok {
+		t.Fatal("an unrelated error classified as a replica refusal")
 	}
 }
 

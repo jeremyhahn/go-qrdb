@@ -16,15 +16,8 @@ package grpc
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	crand "crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"math/big"
 	"net"
-	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -45,74 +38,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
-
-// fwdCA is the test cluster CA: it issues every node's listener certificate,
-// which is also the client certificate the node forwards with.
-type fwdCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-	pool *x509.CertPool
-}
-
-func newFwdCA(t *testing.T) *fwdCA {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "fwd-ca"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(cert)
-	return &fwdCA{cert: cert, key: key, pool: pool}
-}
-
-var fwdSerial atomic.Int64
-
-// tlsFor returns a listener TLS config for a node (nodeID non-empty: a
-// SPIFFE node SAN) or a user (nodeID empty), requiring client certificates
-// from the same CA.
-func (ca *fwdCA) tlsFor(t *testing.T, nodeID string) *tls.Config {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(100 + fwdSerial.Add(1)), Subject: pkix.Name{CommonName: "peer"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
-	}
-	if nodeID != "" {
-		tmpl.URIs = []*url.URL{{Scheme: "spiffe", Host: "qrdb.cluster", Path: "/node/" + nodeID}}
-	}
-	der, err := x509.CreateCertificate(crand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-		RootCAs:      ca.pool,
-		ClientCAs:    ca.pool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS13,
-	}
-}
 
 // seenCall is what a fake target saw of one forwarded request.
 type seenCall struct {
@@ -217,11 +145,11 @@ func serveGRPC(t *testing.T, tlsCfg *tls.Config, svc pb.QRDBServiceServer, chain
 	return ln.Addr().String()
 }
 
-func startTarget(t *testing.T, ca *fwdCA, nodeID, raftAddr string) *fakeTarget {
+func startTarget(t *testing.T, ca *replicaforwardtest.CA, nodeID, raftAddr string) *fakeTarget {
 	t.Helper()
 	ft := &fakeTarget{raftAddr: raftAddr}
 	served := servedByUnary(nodeID)
-	ft.addr = serveGRPC(t, ca.tlsFor(t, nodeID), ft, ft.record,
+	ft.addr = serveGRPC(t, ca.TLS(t, nodeID), ft, ft.record,
 		func(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 			if ft.unmarked {
 				return h(ctx, req)
@@ -249,14 +177,10 @@ func (r *refusingService) Get(context.Context, *pb.GetRequest) (*pb.GetResponse,
 	return nil, mapServiceError(r.refusal)
 }
 
-type fakeMembers struct{ members []cluster.Member }
-
-func (m *fakeMembers) ListMembers(context.Context) ([]cluster.Member, error) { return m.members, nil }
-
 // fwdCluster is an ingress node holding no replica and the replicas the
 // placement names.
 type fwdCluster struct {
-	ca        *fwdCA
+	ca        *replicaforwardtest.CA
 	targets   []*fakeTarget
 	cache     *replicaforward.LeaderCache
 	forwarder *replicaForwarder
@@ -266,20 +190,20 @@ type fwdCluster struct {
 
 // newFwdCluster starts the ingress node, issued by ca, in front of the
 // targets, which the placement names in order.
-func newFwdCluster(t *testing.T, ca *fwdCA, timeout time.Duration, targets ...*fakeTarget) *fwdCluster {
+func newFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Duration, targets ...*fakeTarget) *fwdCluster {
 	t.Helper()
 	c := &fwdCluster{ca: ca, targets: targets, cache: replicaforward.NewLeaderCache()}
 	refusal := &placement.NotAReplicaError{TenantID: "acme", Database: "orders", ShardID: 42, NodeID: "node-a", LeaderReplicaID: 1}
-	members := &fakeMembers{}
+	var members replicaforwardtest.Members
 	for i, ft := range targets {
 		refusal.Replicas = append(refusal.Replicas, placement.Replica{ReplicaID: uint64(i + 1), NodeID: "node-" + strconv.Itoa(i+1), RaftAddr: ft.raftAddr})
-		members.members = append(members.members, cluster.Member{NodeID: uint64(i + 1), Address: ft.raftAddr,
+		members = append(members, cluster.Member{NodeID: uint64(i + 1), Address: ft.raftAddr,
 			APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: ft.addr}})
 	}
-	ingressTLS := c.ca.tlsFor(t, "node-a")
+	ingressTLS := c.ca.TLS(t, "node-a")
 	c.forwarder = newReplicaForwarder(replicaforward.Config{
 		Locator: replicaforward.NewLocator(members, c.cache, "raft-a", nil),
-		RootCAs: c.ca.pool,
+		RootCAs: c.ca.Pool,
 		Timeout: timeout,
 	}, ingressTLS)
 	t.Cleanup(c.forwarder.close)
@@ -291,7 +215,7 @@ func newFwdCluster(t *testing.T, ca *fwdCA, timeout time.Duration, targets ...*f
 		return h(ctx, req)
 	}
 	addr := serveGRPC(t, ingressTLS, c.ingress, authn, servedByUnary("node-a"), c.forwarder.unary)
-	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(c.ca.tlsFor(t, ""))))
+	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(c.ca.TLS(t, ""))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +230,7 @@ func callerCtx(pairs ...string) context.Context {
 }
 
 func TestReplicaForwardGRPC_ForwardsAsTheCallerAndRelaysTheAnswer(t *testing.T) {
-	ca := newFwdCA(t)
+	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	c := newFwdCluster(t, ca, 5*time.Second, b)
 
@@ -337,7 +261,7 @@ func TestReplicaForwardGRPC_ForwardsAsTheCallerAndRelaysTheAnswer(t *testing.T) 
 }
 
 func TestReplicaForwardGRPC_AForwardedRequestIsNeverForwardedAgain(t *testing.T) {
-	ca := newFwdCA(t)
+	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	c := newFwdCluster(t, ca, 5*time.Second, b)
 
@@ -351,7 +275,7 @@ func TestReplicaForwardGRPC_AForwardedRequestIsNeverForwardedAgain(t *testing.T)
 }
 
 func TestReplicaForwardGRPC_NotLeaderRetriesTheNamedLeader(t *testing.T) {
-	ca := newFwdCA(t)
+	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	cc := startTarget(t, ca, "node-2", "raft-c")
 	b.answer = func(context.Context) error {
@@ -375,8 +299,8 @@ func TestReplicaForwardGRPC_NotLeaderRetriesTheNamedLeader(t *testing.T) {
 }
 
 func TestReplicaForwardGRPC_UnreachableRetriesTheNextReplica(t *testing.T) {
-	ca := newFwdCA(t)
-	dead := &fakeTarget{raftAddr: "raft-b", addr: closedPort(t)}
+	ca := replicaforwardtest.NewCA(t)
+	dead := &fakeTarget{raftAddr: "raft-b", addr: replicaforwardtest.ClosedAddr(t)}
 	cc := startTarget(t, ca, "node-2", "raft-c")
 	c := newFwdCluster(t, ca, 5*time.Second, dead, cc)
 
@@ -402,7 +326,7 @@ func TestReplicaForwardGRPC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ca := newFwdCA(t)
+			ca := replicaforwardtest.NewCA(t)
 			b := startTarget(t, ca, "node-1", "raft-b")
 			cc := startTarget(t, ca, "node-2", "raft-c")
 			setup(b)
@@ -428,7 +352,7 @@ func TestReplicaForwardGRPC_AFailureAfterSendingIsNotRetried(t *testing.T) {
 }
 
 func TestReplicaForwardGRPC_TheTargetsErrorIsTheAnswer(t *testing.T) {
-	ca := newFwdCA(t)
+	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	b.answer = func(context.Context) error { return mapServiceError(&service.KeyNotFoundError{Key: "k"}) }
 	c := newFwdCluster(t, ca, 5*time.Second, b)
@@ -453,7 +377,7 @@ func TestReplicaForwardGRPC_RefusesWhatItCannotForward(t *testing.T) {
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ca := newFwdCA(t)
+			ca := replicaforwardtest.NewCA(t)
 			b := startTarget(t, ca, "node-1", "raft-b")
 			cc := startTarget(t, ca, "node-2", "raft-c")
 			b.answer, cc.answer = tc.answer, tc.answer
@@ -472,7 +396,7 @@ func TestReplicaForwardGRPC_RefusesWhatItCannotForward(t *testing.T) {
 }
 
 func TestReplicaForwardGRPC_AClosedForwarderRefuses(t *testing.T) {
-	ca := newFwdCA(t)
+	ca := replicaforwardtest.NewCA(t)
 	b := startTarget(t, ca, "node-1", "raft-b")
 	c := newFwdCluster(t, ca, 5*time.Second, b)
 	c.forwarder.close()
@@ -505,16 +429,4 @@ func TestForwardedMetadata_DropsCredentialsAndTransportKeys(t *testing.T) {
 	if len(got) != 2 || got.Get(MetadataDatabase)[0] != "orders" || len(got.Get("x-custom")) != 2 {
 		t.Fatalf("forwarded metadata = %v; want the scope and the custom key only", got)
 	}
-}
-
-// closedPort returns an address nothing listens on.
-func closedPort(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
 }

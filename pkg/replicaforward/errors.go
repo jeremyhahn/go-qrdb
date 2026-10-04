@@ -44,6 +44,24 @@ func (e *MemberLookupError) Error() string {
 // Unwrap returns the underlying error.
 func (e *MemberLookupError) Unwrap() error { return e.Err }
 
+// SendError reports that a forward failed after the request may have
+// reached Target -- a connection reset mid-answer, a timeout -- so it is not
+// sent again: it may have applied. The caller gets it exactly as it would a
+// direct request's transport failure.
+type SendError struct {
+	Protocol cluster.APIProtocol
+	Target   string
+	Err      error
+}
+
+// Error implements the error interface.
+func (e *SendError) Error() string {
+	return "replicaforward: forward over " + string(e.Protocol) + " to " + e.Target + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SendError) Unwrap() error { return e.Err }
+
 // RefusalDecodeError reports structured refusal metadata that does not
 // decode: Key is missing or malformed.
 type RefusalDecodeError struct {

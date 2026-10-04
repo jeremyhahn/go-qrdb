@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -139,6 +140,13 @@ type okResponse struct {
 // errorResponse is a simple JSON error response.
 type errorResponse struct {
 	Error string `json:"error"`
+
+	// Code and Metadata carry a replica refusal's structured form
+	// (replicaforward.Refusal) -- NOT_A_REPLICA with the replica set,
+	// NOT_LEADER with the leader -- so a forwarding node classifies the
+	// answer, and a client redials, without parsing Error.
+	Code     string            `json:"code,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // membershipAddRequest is the JSON payload for POST /membership/add.
@@ -1074,7 +1082,11 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 	setRetryAfter(w, err)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	if encErr := json.NewEncoder(w).Encode(errorResponse{Error: err.Error()}); encErr != nil {
+	body := errorResponse{Error: err.Error()}
+	if reason, md, ok := replicaforward.Refusal(err); ok {
+		body.Code, body.Metadata = reason, md
+	}
+	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
 		slog.Error("rest: JSON encode error", "error", encErr)
 	}
 }

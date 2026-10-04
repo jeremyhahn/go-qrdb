@@ -55,6 +55,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -199,11 +200,17 @@ type Server struct {
 
 	// modules are capability modules whose HTTP routes are registered on the chi
 	// router. Set via WithServiceModules by the server orchestrator.
-	modules     []apimodule.ServiceModule
-	tlsConfig   *tls.Config
-	tlsErr      error
-	caCertPool  *x509.CertPool
-	http3Server *http3.Server
+	modules    []apimodule.ServiceModule
+	tlsConfig  *tls.Config
+	tlsErr     error
+	caCertPool *x509.CertPool
+
+	// replicaForwarding, when set, makes the listener forward what it
+	// refuses as a non-replica (WithReplicaForwarding); replicaForwarder is
+	// built from it, over the listener's TLS identity, after the options.
+	replicaForwarding *replicaforward.Config
+	replicaForwarder  *restReplicaForwarder
+	http3Server       *http3.Server
 	// http3Conn is the UDP socket the HTTP/3 server serves. It is opened
 	// by Start so the bind is checked synchronously, and closed by Stop.
 	http3Conn net.PacketConn
@@ -901,6 +908,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.forwardSigner, s.forwardNodeID = forward.NodeIdentity(s.tlsConfig)
 	}
 
+	// Replica forwarding needs the listener's TLS identity: the target
+	// authenticates the forward by this node's certificate.
+	if s.replicaForwarding != nil && s.tlsConfig != nil {
+		s.replicaForwarder = newRESTReplicaForwarder(*s.replicaForwarding, s.tlsConfig)
+	}
+
 	// The chi router is the single routing surface. Capability modules
 	// (ServiceModule.RegisterHTTP) register first so their routes take
 	// precedence; qrdb's own built-in routes are registered natively via the
@@ -983,6 +996,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// explicitly enabled (auth.so_dual_factor) and an SO PIN verifier is
 	// wired — default posture is unchanged.
 	var handler http.Handler = r
+	// Replica forwarding wraps the router itself: everything outside it --
+	// authentication, authorization, the SO gate -- has admitted the caller
+	// before a refusal is forwarded on its behalf.
+	if s.replicaForwarder != nil {
+		handler = s.replicaForwarder.middleware(handler)
+	}
 	if s.soDualFactor && s.soPINVerifier != nil {
 		handler = authmw.SOMiddleware(s.routePerms, s.roleSvc, s.soPINVerifier, s.auditLogger, s.auditFailure, slog.Default(), handler)
 	}
@@ -1259,6 +1278,9 @@ func isWildcardHost(host string) bool {
 func (s *Server) Stop() {
 	if s.server == nil {
 		return
+	}
+	if s.replicaForwarder != nil {
+		s.replicaForwarder.close()
 	}
 	// Stop HTTP/3 first.
 	if s.http3Server != nil {
