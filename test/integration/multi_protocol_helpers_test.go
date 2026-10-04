@@ -164,6 +164,15 @@ func startMultiProtocolNode(t *testing.T) *multiProtoNode {
 // that could silently drift from it.
 func startMultiProtocolNodeWithSM(t *testing.T, smType string) *multiProtoNode {
 	t.Helper()
+	return startMultiProtocolNodeWithArgs(t, smType)
+}
+
+// startMultiProtocolNodeWithArgs is startMultiProtocolNodeWithSM generalized
+// to accept extra daemon flags (for example "--cluster-join-enabled"), so a
+// test for a command needing one more daemon flag than the baseline harness
+// provides does not need its own, mostly-duplicate node bootstrap.
+func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...string) *multiProtoNode {
+	t.Helper()
 
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -215,6 +224,7 @@ func startMultiProtocolNodeWithSM(t *testing.T, smType string) *multiProtoNode {
 	if smType != "" {
 		args = append(args, "--sm", smType)
 	}
+	args = append(args, extraArgs...)
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType))
