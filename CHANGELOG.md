@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.40.0-alpha] - 2026-10-04
+
+The CA key provider seam and replicated cluster CA. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **`pkg/cakey`: the CA key provider seam.** Both CA keys (the cluster CA and the login CA) are reached only through `cakey.Provider` (`Signer(ctx)`, `Certificate(ctx)`), shaped like go-xkms `CASigningIdentity`. qrdb ships the software provider, and go-xkms injects HSM or KMS providers.
+  - The software provider stores the certificate and key as separate records, written atomically.
+  - Its signer is opaque: it re-checks the barrier on every Sign, and `Seal` revokes it.
+- **The cluster CA is replicated.** Any member can sign a joiner's CSR. The CA key material is unreachable through every client data path, including the embedded transport, entity verbs and bulk import.
+- **Single-use, identity-bound join tokens** (`cluster:join_token`, ScopeCross), on all six transports and both SDKs.
+  - The CSR and proof of possession are validated before the token is consumed.
+  - Join identities are reserved with a TTL, and existing members are refused.
+  - Weak CSR keys are refused.
+- **`ceremony sign-csr` is refused in the post-operational sealed window.**
+
 ### Added
 
 - `pkg/cakey`: the CA key provider seam (`Provider`, `SoftwareProvider`,
