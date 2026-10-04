@@ -77,6 +77,9 @@ var applySeamMethods = map[string]bool{
 // cannot fail" are not reasons, because the second one has been wrong twice in
 // this repository (go-qrdb#129, go-qrdb#520).
 var exemptSeams = map[string]string{
+	"pkg/statemachine.KVStateMachine.Update": "delegates to KVStateMachine.applyEntries, which classifies " +
+		"(go-qrdb#584 B1: DiskAdapter.Update calls applyEntries directly too, under its own per-entry batch " +
+		"lock, instead of calling this Update once per entry)",
 	"pkg/engine.MVCCEngine.Update":            "delegates to MVCCEngine.UpdateEntries, which classifies",
 	"pkg/store.MVCCStateMachine.Update":       "delegates to MVCCEngine.UpdateEntries, which classifies",
 	"pkg/statemachine.HighPerfAdapter.Update": "delegates to the embedded FastStateMachine, which classifies",
