@@ -22,10 +22,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
-// TestBuildServices_PlacementTableHasAChangeFeed: the placement table a
-// node builds watches its changes, so the tenant shard reconciler and the
-// replica-forwarding leader cache react to a placement change as the node
-// applies it rather than finding it on a poll.
+// TestBuildServices_PlacementTableHasAChangeFeed: a node builds the
+// placement table's change feed, so the replica-forwarding leader cache
+// reacts to a placement change as the node applies it.
 func TestBuildServices_PlacementTableHasAChangeFeed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -39,11 +38,11 @@ func TestBuildServices_PlacementTableHasAChangeFeed(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(ctx) }()
-	if node.PlacementStore == nil {
-		t.Fatal("no placement table")
+	if node.PlacementStore == nil || node.PlacementChanges == nil {
+		t.Fatal("no placement table, or no change feed for it")
 	}
-	if _, err := node.PlacementStore.Watch(ctx); err != nil {
-		t.Fatalf("PlacementStore.Watch = %v; want the node's change feed", err)
+	if _, err := node.PlacementChanges.Watch(ctx); err != nil {
+		t.Fatalf("PlacementChanges.Watch = %v; want the node's change feed", err)
 	}
 	if hub.WatchCount() != 1 {
 		t.Fatalf("hub watchers = %d; want the placement watch on the node's hub", hub.WatchCount())

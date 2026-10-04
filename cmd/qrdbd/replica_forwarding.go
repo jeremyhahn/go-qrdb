@@ -19,23 +19,33 @@ import (
 	"log/slog"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
+
+// placementChanges is the node's placement change feed, or a nil watcher
+// when it has none.
+func placementChanges(n *lifecycle.Node) replicaforward.PlacementWatcher {
+	if n == nil || n.PlacementChanges == nil {
+		return nil
+	}
+	return n.PlacementChanges
+}
 
 // replicaForwardingOption composes replica forwarding for a raft-mode node:
 // a Locator over the member records every raft node publishes, its leader
 // cache kept honest by the placement and member watches until ctx ends. It
 // returns nil -- the listeners then answer the typed refusal -- when
 // forwarding is turned off, on a standalone node (no replicas elsewhere), or
-// without a placement table (no database is placed on other nodes).
+// without the placement table's change feed (no database is placed on other
+// nodes).
 func replicaForwardingOption(
 	ctx context.Context,
 	f *startFlags,
 	standalone bool,
-	placements *placement.Store,
+	placements replicaforward.PlacementWatcher,
 	kvSvc service.KVServicer,
 	adminSvc service.AdminServicer,
 	mvccSvc service.MVCCKVServicer,

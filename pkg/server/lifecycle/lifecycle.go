@@ -448,6 +448,13 @@ type Node struct {
 	// resolving a dedicated-raft database's shard.
 	PlacementStore *placement.Store
 
+	// PlacementChanges is the placement table's change feed: every placement
+	// written or deleted, as this node applies it. Replica forwarding drops a
+	// cached leader from it. It is a feed only, over the same replicated
+	// keys; every write goes through PlacementStore. PlacementStore itself
+	// keeps no feed, so the tenant shard reconciler converges on its poll.
+	PlacementChanges PlacementChanges
+
 	// ClusterMigStore is the replicated coordination plane for cluster-wide
 	// enable-encryption migrations (Phase D). It lives in the same system KV as
 	// the placement table; the daemon threads it into the migration coordinator +
@@ -639,7 +646,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	n.ClusterMigStore = clustermig.NewStore(authStore)
 
 	var placementOpts []service.DatabaseServiceOption
-	if store, perr := placement.NewStore(newPlacementKV(n.KV, n.Index, n.Watch)); perr == nil {
+	if feed, ferr := placement.NewStore(newPlacementKV(n.KV, n.Index, n.Watch)); ferr == nil {
+		n.PlacementChanges = feed
+	}
+	if store, perr := placement.NewStore(authStore); perr == nil {
 		n.PlacementStore = store
 		var schedOpts []placement.SchedulerOption
 		// A host whose groups gate features never has a group placed on a

@@ -2439,7 +2439,7 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts, server.WithStandaloneMode())
 			} else {
 				serverOpts = append(serverOpts, server.WithHost(host))
-				fwdOpt, fwdErr := replicaForwardingOption(bootCtx, f, standalone, svcNode.PlacementStore, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				fwdOpt, fwdErr := replicaForwardingOption(bootCtx, f, standalone, placementChanges(svcNode), kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 				if fwdErr != nil {
 					_ = shutdownNode(nodeCloser)
 					return fwdErr

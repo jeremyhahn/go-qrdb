@@ -59,12 +59,23 @@ are not reconstructed here — their history is in the git log.
   them on MCP and QUIC; the gRPC unary interceptor verifies them for gRPC
   and the Unix socket.
 
-### Changed
+- `lifecycle.Node.PlacementChanges`, the placement table's change feed: every
+  placement written or deleted, as the node applies it. Replica forwarding
+  invalidates its leader cache from it. `Node.PlacementStore` keeps no feed,
+  so the tenant shard reconciler's convergence is unchanged.
 
-- **The placement table has a change feed.** `placement.Store.Watch` now
-  serves events on every node. Previously it answered
-  `ErrWatchUnsupported`, so the tenant shard reconciler fell back to a
-  five-second poll. It now reacts to each change as the node applies it.
+### Fixed
+
+- **A raft tenant's observer replica could be promoted before it existed.**
+  The tenant shard reconciler took a replica whose shard had never started
+  (its tenant key not yet delivered) for one that had finished joining,
+  marked it `ObserverReady`, and the leader then added it to the voting set
+  with no data. It is now marked ready only once its shard runs.
+- **A dedicated-raft rebalance MOVE that fails logs why.** The failure was
+  counted and its cause dropped.
+- **qrdbd publishes its member record in the background.** Boot no longer
+  waits on the replicated write, and a SIGTERM during boot no longer fails
+  `qrdbd start` with "failed to register self".
 
 ### Fixed
 

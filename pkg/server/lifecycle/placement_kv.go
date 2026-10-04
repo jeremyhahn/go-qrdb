@@ -22,12 +22,16 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
+// PlacementChanges is the placement table's change feed (Node.PlacementChanges).
+type PlacementChanges interface {
+	Watch(ctx context.Context) (<-chan placement.Event, error)
+}
+
 // placementKV is the replicated system KV the placement table lives in,
-// with its change feed: placement.Store.Watch surfaces it, so every node
-// sees a placement change as the node applies it -- the tenant shard
-// reconciler reacts to it, and replica forwarding drops the leader it cached
-// for the database. It keeps the adapter's CompareAndSwap, so placement's
-// read-modify-writes stay guarded (placement.AtomicKV).
+// with its change feed: a placement.Store over it surfaces the feed through
+// Watch, so a node sees a placement change as it applies it, and replica
+// forwarding drops the leader it cached for the database. It keeps the
+// adapter's CompareAndSwap (placement.AtomicKV).
 type placementKV struct {
 	*kvStoreAdapter
 	watch service.WatchServicer

@@ -35,7 +35,7 @@ func TestReplicaForwardingOption(t *testing.T) {
 	n, err := NewClusteredNode(ctx, cfg, raftMembers(), nil, WithNoSyncWrites())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
-	placements := n.svcNode.Load().PlacementStore
+	placements := placementChangesOf(n.svcNode.Load())
 	client := n.featureClient.Load()
 	require.NotNil(t, placements)
 	require.NotNil(t, client)
@@ -58,6 +58,7 @@ func TestReplicaForwardingOption(t *testing.T) {
 		if !tc.withTable {
 			table = nil
 		}
+		require.Nil(t, placementChangesOf(nil))
 		opt, err := n.replicaForwardingOption(tc.cfg, tc.standalone, table, client)
 		require.NoError(t, err, name)
 		require.Nil(t, opt, name)

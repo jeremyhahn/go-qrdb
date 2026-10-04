@@ -23,6 +23,7 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
@@ -33,6 +34,18 @@ func newForwardingPlacements(t *testing.T) *placement.Store {
 		t.Fatal(err)
 	}
 	return store
+}
+
+// TestPlacementChanges: the node's feed, or no watcher at all -- never a
+// typed nil a caller would take for one.
+func TestPlacementChanges(t *testing.T) {
+	if placementChanges(nil) != nil || placementChanges(&lifecycle.Node{}) != nil {
+		t.Fatal("a node with no feed yielded a watcher")
+	}
+	feed := newForwardingPlacements(t)
+	if placementChanges(&lifecycle.Node{PlacementChanges: feed}) == nil {
+		t.Fatal("the node's feed was lost")
+	}
 }
 
 // TestApplyConfigToFlags_ReplicaForwarding: the config section sets the
@@ -86,7 +99,7 @@ func TestReplicaForwardingOption_NotComposedWhereNothingForwards(t *testing.T) {
 	for name, tc := range map[string]struct {
 		f          *startFlags
 		standalone bool
-		placements *placement.Store
+		placements replicaforward.PlacementWatcher
 	}{
 		"turned off":   {f: &startFlags{}, placements: newForwardingPlacements(t)},
 		"standalone":   {f: on, standalone: true, placements: newForwardingPlacements(t)},

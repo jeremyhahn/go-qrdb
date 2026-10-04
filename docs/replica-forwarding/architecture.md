@@ -79,7 +79,8 @@ where to try first:
   drop, move, rebalance, replica add and remove -- and drops the database's
   entry when its placement changes. No node keeps forwarding to a replica a
   rebalance removed. The table's change feed is the node's watch service over
-  the replicated keys, so each node sees a change as it applies it.
+  the replicated keys, so each node sees a change as it applies it. The feed
+  serves forwarding only; the tenant shard reconciler keeps its poll.
 - **On a member change.** A member record that changes (a new endpoint) or
   disappears (lease expiry) invalidates every entry pointing at that member.
 

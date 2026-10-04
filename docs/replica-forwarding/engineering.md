@@ -140,9 +140,12 @@ placement table, handed to `server.WithReplicaForwarding`.
 
 Both watches re-subscribe 500 ms after a feed ends. While a feed is down the
 cache is cleared rather than trusted. The placement table's feed is
-`lifecycle`'s `placementKV`: the system KV adapter, `CompareAndSwap` kept,
-with `Watch` over the node's watch service. It also gives the tenant shard
-reconciler its watch path, which used to fall back to a five-second poll.
+`lifecycle.Node.PlacementChanges`, a placement store over the system KV
+whose `Watch` reads the node's watch service. It is a feed only: every write
+goes through `Node.PlacementStore`, which keeps no feed, so the tenant shard
+reconciler converges on its poll exactly as before. (Giving the reconciler
+the feed made it react inside a rebalance MOVE's own steps, and the MOVE
+failed. Its watch path stays unused until that interplay is designed.)
 
 ## Invariants
 
