@@ -521,23 +521,21 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	// prepends one (see service.hardConfinedPrefix's own doc comment), so
 	// a literal "__sys:cluster_ca/..." request physically reaches that
 	// record if the opened data directory was ever part of a cluster.
-	// kvSvc/mvccSvc/txSvc/watchSvc/batchSvc are wrapped with this
-	// package's hard-confinement decorators IMMEDIATELY, before anything
-	// else in this composition (the lock service, the auth/IAM KV
-	// adapter, lease expiry) is built over them, so nothing reached
-	// through this server -- including the desktop webview's bindings,
-	// which talk to exactly these services -- can read, range over, or
-	// watch the cluster CA's key material. pkg/cakey is not wired into
-	// this composition at all, so it is not, and cannot be, affected by
-	// this wrapping.
+	// They are constructed RAW here, deliberately: New below -- the one
+	// seam every composer of an embedded transport goes through, not just
+	// this constructor -- is where kvSvc/mvccSvc/txSvc/watchSvc/batchSvc
+	// get wrapped with this package's hard-confinement decorators, so that
+	// a composer other than NewServer (sdk/go/node, the desktop's
+	// bindings_server.go, cmd/qrdbd/start.go) gets the same protection
+	// rather than having to remember to wrap again itself.
 	host := srv.localBackend
-	kvSvc := service.NewHardConfinedKV(service.NewKVService(host, serverDefaultShardID))
+	kvSvc := service.NewKVService(host, serverDefaultShardID)
 	adminSvc := service.NewAdminService(host)
-	mvccSvc := service.NewHardConfinedMVCC(service.NewMVCCKVService(host, serverDefaultShardID))
-	txSvc := service.NewHardConfinedTransaction(service.NewTransactionService(host, serverDefaultShardID))
-	batchSvc := service.NewHardConfinedBatch(service.NewBatchService(host, serverDefaultShardID))
+	mvccSvc := service.NewMVCCKVService(host, serverDefaultShardID)
+	txSvc := service.NewTransactionService(host, serverDefaultShardID)
+	batchSvc := service.NewBatchService(host, serverDefaultShardID)
 	leaseSvc := service.NewLeaseService(host, serverDefaultShardID)
-	watchSvc := service.NewHardConfinedWatch(service.NewWatchService(srv.hub))
+	watchSvc := service.NewWatchService(srv.hub)
 	indexSvc := service.NewIndexService(host, serverDefaultShardID)
 	tsSvc := service.NewTimeSeriesService(host, serverDefaultShardID)
 	lockSvc, err := service.NewLockService(txSvc, leaseSvc, watchSvc, mvccSvc, logger)

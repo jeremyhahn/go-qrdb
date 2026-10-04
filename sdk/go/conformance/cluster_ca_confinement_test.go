@@ -33,9 +33,10 @@ import (
 const clusterCAMaterialKey = "__sys:cluster_ca/material"
 
 // TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport is
-// go-qrdb#555's B2 regression proof for the five registry-routed
-// transports (REST, gRPC, QUIC, Unix, MCP): every (tenant, db) pair
-// pkg/server's restServiceRegistry resolves is composite-namespaced
+// go-qrdb#555's B2 regression proof across every transport this harness
+// can boot, including embedded. The five registry-routed transports
+// (REST, gRPC, QUIC, Unix, MCP) are safe structurally: every (tenant, db)
+// pair pkg/server's restServiceRegistry resolves is composite-namespaced
 // (tenant.ComposeNamespace), including the system tenant's own default
 // database, so a literal "__sys:cluster_ca/material" request never
 // physically reaches the raw record regardless of the caller's identity
@@ -43,19 +44,16 @@ const clusterCAMaterialKey = "__sys:cluster_ca/material"
 // KV/MVCC/Watch permissions, so a pass is not merely "the caller lacked
 // the right," it is "the key itself is unreachable."
 //
-// This is structural, pre-existing behavior (composite namespacing), not
-// new code -- sdk/go/transport/embedded's OWN cluster_ca_confinement_test.go
-// is where the actual B2 fix is proven (the UN-namespaced embedded
-// transport's services wrapped with the hard-confinement decorators),
-// because that surface has no namespace prefix to rely on. This test
-// exists so "unreachable on every transport" is checked on the other
-// five, not merely assumed from the namespacing argument.
-//
-// The material is seeded directly through the node's own raw, unprefixed
-// service.KVServicer (booted.Services().KV) during the seed callback,
-// before the client connects -- never through the client under test,
-// which would composite-prefix the write to a harmless key under its own
-// namespace instead of the real one.
+// The embedded cell is NOT structurally safe the same way: this harness's
+// "embedded" cell boots through node.NewStandaloneNode, which calls
+// sdk/go/transport/embedded.New directly (node.go's own composition),
+// the same un-namespaced construction sdk/go/transport/embedded's own
+// server.go uses -- one of the real composers go-qrdb#555's delta review
+// found unwrapped when only NewServer wrapped. It was excluded from this
+// loop (go-qrdb#570) while that was true, which would have made this
+// test pass by skipping the one cell actually exercising the bug. Now
+// that embedded.New itself wraps kvSvc and every configured MVCC/
+// transaction/batch/watch service, this cell is included like the rest.
 func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 	rawKVPerms := []permission.Permission{
 		permission.KVGet, permission.KVPut, permission.KVDelete,
@@ -64,15 +62,6 @@ func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 	}
 
 	for _, tk := range transportKinds {
-		if tk == embeddedTransport {
-			// Covered by sdk/go/transport/embedded's own dedicated test,
-			// which seeds through that package's own un-namespaced raw
-			// servicer -- this harness's "embedded" cell is the full
-			// pkg/server/lifecycle composition reached in-process, which
-			// IS behind the registry like every remote transport, not the
-			// sdk/go/transport/embedded surface B2 is actually about.
-			continue
-		}
 		t.Run(string(tk), func(t *testing.T) {
 			var booted *node.Node
 			secretMaterial := []byte("-----BEGIN EC PRIVATE KEY----- the cluster's actual signing key -----END EC PRIVATE KEY-----")

@@ -280,6 +280,26 @@ func WithCollectionService(svc service.CollectionServicer) Option {
 // New creates a new embedded transport that delegates to the given
 // service implementations. The kvSvc and adminSvc parameters must be
 // non-nil. Optional services are injected via functional options.
+//
+// kvSvc and, when configured via WithMVCCService/WithTransactionService/
+// WithBatchService/WithWatchService, the MVCC, transaction, batch and
+// watch services are wrapped with this package's hard-confinement
+// decorators (service.NewHardConfinedKV and friends) HERE, after options
+// have been applied, rather than by each caller that builds one of these
+// services. New is the one seam every composer of an embedded transport
+// goes through -- NewServer below, sdk/go/node, the desktop's
+// cmd/qrdb/bindings_server.go, and cmd/qrdbd/start.go -- and these
+// services are UN-namespaced (see service.hardConfinedPrefix's own doc
+// comment): no composite (tenant, db) prefix sits in front of them the
+// way pkg/server's registry prepends one, so a literal
+// "__sys:cluster_ca/..." request physically reaches that record if the
+// opened data directory was ever part of a cluster. Wrapping only inside
+// NewServer left every other composer -- including the desktop webview's
+// bindings, which talk to a Transport built by bindings_server.go, not
+// NewServer -- unprotected (go-qrdb#570). The wrap constructors are
+// nil-safe: a service a particular composer never configured stays nil.
+// pkg/cakey's own n.KV/n.Transaction access does not go through this
+// function at all, so it is unaffected.
 func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Option) (*Transport, error) {
 	if kvSvc == nil {
 		return nil, &NilServiceError{Service: "KVServicer"}
@@ -288,7 +308,7 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 		return nil, &NilServiceError{Service: "AdminServicer"}
 	}
 	t := &Transport{
-		kvSvc:         kvSvc,
+		kvSvc:         service.NewHardConfinedKV(kvSvc),
 		adminSvc:      adminSvc,
 		loginSessions: newLoginSessionStore(),
 		nowFunc:       func() time.Time { return time.Now().UTC() },
@@ -296,6 +316,10 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 	for _, opt := range opts {
 		opt(t)
 	}
+	t.mvccSvc = service.NewHardConfinedMVCC(t.mvccSvc)
+	t.txSvc = service.NewHardConfinedTransaction(t.txSvc)
+	t.batchSvc = service.NewHardConfinedBatch(t.batchSvc)
+	t.watchSvc = service.NewHardConfinedWatch(t.watchSvc)
 	return t, nil
 }
 
