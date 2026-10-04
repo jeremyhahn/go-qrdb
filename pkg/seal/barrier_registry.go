@@ -806,18 +806,22 @@ type tenantRootRecord struct {
 }
 
 // persistTenantRoot writes the tenant's pool, slot and AutoUnseal flag to the
-// system barrier store. The system barrier must be unsealed; a sealed barrier
-// is silently skipped (the session can still operate, but the entry will be
-// missing on the next restart).
+// system barrier store. The record is what every restart resolves the tenant
+// from, so a registration that cannot write it fails: every failure,
+// including a sealed or absent system barrier (ErrSealed), is
+// *TenantRootPersistError.
 func (r *BarrierRegistry) persistTenantRoot(ctx context.Context, tenantID string, loc slotAssignment, autoUnseal bool) error {
 	if r.system == nil || r.system.IsSealed() {
-		return nil
+		return &TenantRootPersistError{TenantID: tenantID, Err: ErrSealed}
 	}
 	blob, err := json.Marshal(tenantRootRecord{Pool: loc.Pool, Slot: loc.Slot, AutoUnseal: autoUnseal})
 	if err != nil {
-		return err
+		return &TenantRootPersistError{TenantID: tenantID, Err: err}
 	}
-	return r.system.Put(ctx, tenantRootStorePrefix+tenantID, blob)
+	if err := r.system.Put(ctx, tenantRootStorePrefix+tenantID, blob); err != nil {
+		return &TenantRootPersistError{TenantID: tenantID, Err: err}
+	}
+	return nil
 }
 
 // loadTenantRoot reads the persisted DataRoot record for tenantID from the
@@ -997,12 +1001,10 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	}
 
 	// Refuse while the system barrier is sealed, rather than proceeding to
-	// pick a pool slot and open a Pebble store for it. refuseClaimedRoot
-	// below cannot even perform its DataRoot-overlap check in that state --
-	// it can't read the tenant-root records it compares against, so it
-	// treats "sealed" the same as "nothing is claimed" and returns nil --
-	// so without this check a sealed system barrier silently skipped that
-	// guard instead of refusing the call that needs it.
+	// pick a pool slot and open a Pebble store for it: the tenant-root record
+	// this registration resolves from, and must write, lives behind the
+	// system barrier, and a sealed barrier would read as "no record" and
+	// allocate a second location for a tenant that already has one.
 	// TenantService.CreateTenant already fails closed here (its tombstone
 	// check reads through the system barrier itself), so this only matters
 	// for a caller on this registry directly, bypassing TenantService --
@@ -1093,12 +1095,19 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	// Persist the pool and slot to the system barrier so that follower nodes
 	// (and any node after a restart) resolve the tenant to their own directory
 	// via RestoreVolumeTenants without re-running pool.Pick.
+	//
+	// A tenant whose record did not land would serve now and be lost at the
+	// next restart, so the registration is undone and fails. Only the
+	// in-memory registration and the open store are released: whether the
+	// write reached the store is unknown, and the durable records are the
+	// tenant service's to roll back.
 	if perr := r.persistTenantRoot(ctx, tenantID, loc, autoUnseal); perr != nil {
-		if r.logger != nil {
-			r.logger.Warn("registry: failed to persist tenant root; restart re-attach may require key delivery",
+		if rerr := r.ReleaseTenant(ctx, tenantID); rerr != nil && r.logger != nil {
+			r.logger.Error("registry: release after a failed tenant-root write failed",
 				slog.String("tenant", tenantID),
-				slog.Any("error", perr))
+				slog.Any("error", rerr))
 		}
+		return "", nil, perr
 	}
 	if r.logger != nil {
 		r.logger.Info("volume-mode tenant assigned to volume pool path",
@@ -1392,8 +1401,8 @@ func (r *BarrierRegistry) ReleaseTenant(ctx context.Context, tenantID string) er
 }
 
 // DropTenantRecords deletes the two durable records the boot path restores a
-// tenant barrier from: the tenant-root record naming its DataRoot and the
-// volume-pool slot assignment. A missing record is success; a live failure is
+// tenant barrier from: the tenant-root record naming its pool and slot, and
+// the volume-pool slot assignment. A missing record is success; a live failure is
 // not, because leaving either behind resurrects the barrier at the next
 // restart.
 //

@@ -2806,7 +2806,8 @@ func buildQuotaReconciler(acct *quota.Accountant, tenantSvc tenant.TenantService
 			out := make([]quota.StorageTenant, 0, len(infos))
 			for i := range infos {
 				ti := &infos[i]
-				if ti.ID == tenantid.System {
+				// A refused tenant's data is never opened, so never walked.
+				if ti.ID == tenantid.System || ti.Refusal != nil {
 					continue
 				}
 				out = append(out, quota.StorageTenant{

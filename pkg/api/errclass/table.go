@@ -124,6 +124,9 @@ var dominantRules = []rule{
 	// A dedicated-raft database asked of a node its placement does not name:
 	// retryable against one of the replicas the refusal lists.
 	as(&placement.NotAReplicaError{}, Unavailable),
+	// A placement record names a path for a replica: refused, never opened;
+	// the database must be dropped and re-created.
+	as(&placement.ReplicaDataRootError{}, FailedPrecondition),
 
 	// Cluster sealing. Dominant, because the tenant and database services
 	// wrap them in their own barrier errors: a seal or clear record whose
@@ -689,11 +692,6 @@ var identityRules = []rule{
 // tenantRules are the tenant-lifecycle conditions.
 var tenantRules = []rule{
 	as(&tenant.TenantScopeError{}, PermissionDenied),
-	// The requested DataRoot collides with a reserved path or another
-	// tenant's -- a retired one's included, whose message names the reconcile
-	// verb that frees it. A precondition the caller clears by choosing another
-	// path or reconciling.
-	as(&tenant.DataRootOverlapError{}, FailedPrecondition),
 	// An explicit data root is retired: a tenant is placed through a named
 	// volume pool. The request itself is what the caller must change.
 	as(&tenant.DataRootRetiredError{}, InvalidArgument),
@@ -702,10 +700,6 @@ var tenantRules = []rule{
 	as(&tenant.PersistedDataRootError{}, FailedPrecondition),
 	// A page size or page token the caller supplied that cannot be honoured.
 	as(&tenant.InvalidPageRequestError{}, InvalidArgument),
-	is(tenant.ErrEmptyDataRoot, InvalidArgument),
-	as(&tenant.InvalidDataRootError{}, InvalidArgument),
-	as(&tenant.DataRootIsolationTypeError{}, InvalidArgument),
-	as(&tenant.DataRootNotEmptyError{}, AlreadyExists),
 	is(tenant.ErrEmptyTenantID, InvalidArgument),
 	is(tenant.ErrEmptyTenantName, InvalidArgument),
 	is(tenant.ErrEmptyPassphrase, InvalidArgument),

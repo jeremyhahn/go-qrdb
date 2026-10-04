@@ -39,26 +39,6 @@ func partialReconcile() (*tenant.ReconcileReport, error) {
 	return report, &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
 }
 
-// TestMapServiceError_DataRootOverlapIsAFailedPrecondition: a DataRoot that
-// collides with a reserved path or another tenant's -- a retired one's too,
-// whose message carries the remedy -- is the caller's precondition, not a
-// server fault. It was Internal before. The Unix socket serves this same
-// service, and MCP classifies through ServiceErrorCode, so both follow.
-func TestMapServiceError_DataRootOverlapIsAFailedPrecondition(t *testing.T) {
-	for _, err := range []error{
-		&tenant.DataRootOverlapError{DataRoot: "/srv/a", Conflict: "/srv", Kind: "volume pool"},
-		&tenant.DataRootOverlapError{DataRoot: "/srv/d", Conflict: "/srv/d", Kind: "retired tenant vgone", Remedy: "run `qrdb tenant reconcile-deleted`"},
-	} {
-		st := status.Convert(mapServiceError(err))
-		if st.Code() != codes.FailedPrecondition || st.Message() != err.Error() {
-			t.Fatalf("mapServiceError(%v) = %v %q; want FailedPrecondition carrying the message", err, st.Code(), st.Message())
-		}
-		if ServiceErrorCode(err) != codes.FailedPrecondition {
-			t.Fatalf("ServiceErrorCode(%v) = %v; want FailedPrecondition", err, ServiceErrorCode(err))
-		}
-	}
-}
-
 // TestGRPC_TenantReconcileDeleted_PartialFailureCarriesBoth: a pass that
 // failed for one id answers OK with the report, whose failed list names the
 // id, instead of an error status that would drop what was reclaimed.

@@ -85,8 +85,8 @@
   // Explicit dedicated-disk filesystem root, valid ONLY for IsolationVolume
   // and IsolationRaft tenants. Mirrors the CLI's `tenant create --data-root`
   // flag; empty (the default) allocates from the configured volume pool.
-  // Rejected by the server (DataRootIsolationTypeError -> 400) for
-  // prefix/barrier isolation, so the field is only shown/sent for volume/raft.
+  // The server refuses every explicit data root (DataRootRetiredError ->
+  // 400); the field is only shown/sent for volume/raft.
   let newTenantDataRoot: string = $state("");
   let createLoading: boolean = $state(false);
 
@@ -364,9 +364,8 @@
         ...(isDedicatedIsolation && newTenantBarrierAutoUnseal
           ? { barrierAutoUnseal: true }
           : {}),
-        // Only valid for IsolationVolume/IsolationRaft; never sent for
-        // prefix/barrier so the server's DataRootIsolationTypeError (400)
-        // cannot be triggered by this form.
+        // Only ever sent for IsolationVolume/IsolationRaft; the server
+        // refuses it (DataRootRetiredError, 400).
         ...(isDataRootEligible && newTenantDataRoot.trim() !== ""
           ? { dataRoot: newTenantDataRoot.trim() }
           : {}),

@@ -107,6 +107,13 @@ type TenantInfo struct {
 	BarrierAutoUnseal bool      `json:"barrier_auto_unseal,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+
+	// Refusal is set, by ListTenants only, on a tenant this node will not
+	// serve: its stored record names a path (*PersistedDataRootError), or its
+	// volume pool and slot do not resolve on this node. Such a tenant is
+	// listed so it can be seen and deleted, but nothing opens its data, and
+	// DataRoot is empty. Never persisted.
+	Refusal error `json:"-"`
 }
 
 // CreateTenantOption configures optional CreateTenant behavior. Options are
@@ -396,11 +403,10 @@ type TenantService struct {
 	holderDeps       *ceremony.HolderDeps
 	defaultQuotas    *quota.Quotas
 	defaultEnts      *quota.Entitlements
-	// reservedDataRoots are additional filesystem roots an operator-supplied
-	// dedicated DataRoot (CreateTenant WithDataRoot) must not overlap, beyond
-	// the volume-pool base paths (resolved from the registry) and existing
-	// tenants' DataRoots (resolved from the metadata store). It is the seam for
-	// injecting the daemon's system data dir; see WithReservedDataRoots.
+	// reservedDataRoots are filesystem roots the deleted-tenant reconciliation
+	// never removes and never removes a directory containing, beyond the
+	// volume-pool base paths themselves. It is the seam for injecting the
+	// daemon's system data dir; see WithReservedDataRoots.
 	reservedDataRoots []string
 
 	// teardownSeams carries DeleteTenant's three optional dependencies; see
@@ -449,14 +455,12 @@ func WithTenantHolderDeps(deps ceremony.HolderDeps) TenantServiceOption {
 	return func(s *TenantService) { s.holderDeps = &deps }
 }
 
-// WithReservedDataRoots registers additional filesystem roots that an
-// operator-supplied dedicated DataRoot (CreateTenant's WithDataRoot option)
-// must not overlap. Volume-pool base paths and existing tenants' DataRoots are
-// always checked automatically; this option threads in reserved locations the
-// tenant service cannot otherwise discover — principally the daemon's system
-// data dir, so a dedicated disk cannot be nested inside the system's own
-// storage tree. Empty paths are ignored; the rest are cleaned. Overlap is
-// equal-or-ancestor in either direction (see DataRootOverlapError).
+// WithReservedDataRoots registers filesystem roots the deleted-tenant
+// reconciliation (ReconcileDeletedTenants) must never remove, nor remove a
+// directory that contains one. The volume-pool base paths are always
+// protected; this option threads in locations the tenant service cannot
+// otherwise discover — principally the daemon's system data dir. Empty paths
+// are ignored; the rest are cleaned.
 func WithReservedDataRoots(paths ...string) TenantServiceOption {
 	return func(s *TenantService) {
 		for _, p := range paths {
@@ -621,7 +625,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// Unseal, and the per-tenant Host builds lazily only after unseal.
 		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
 		if regErr != nil {
-			return nil, s.volumeRegisterError(ctx, id, "register-volume", regErr)
+			return nil, volumeRegisterError(id, "register-volume", regErr)
 		}
 		dataRoot = root
 		if cfg.barrierAutoUnseal {
@@ -650,7 +654,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// IsolationVolume.
 		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
 		if regErr != nil {
-			return nil, s.volumeRegisterError(ctx, id, "register-raft", regErr)
+			return nil, volumeRegisterError(id, "register-raft", regErr)
 		}
 		dataRoot = root
 		if cfg.barrierAutoUnseal {
@@ -703,35 +707,14 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 }
 
 // volumeRegisterError maps a volume/raft barrier registration failure onto
-// the tenant package's errors. A DataRoot another tenant's record on this node
-// still names is the caller's conflict, reported like any other DataRoot
-// overlap. When that claimant is a RETIRED tenant -- deleted, its residue not
-// yet reclaimed on this node -- the error says so and names the verb that
-// reclaims it, because the operator's remedy is then to reconcile, not to
-// pick another path.
-func (s *TenantService) volumeRegisterError(ctx context.Context, id, op string, regErr error) error {
+// the tenant package's errors: a concurrent registration of the same id is
+// ErrTenantAlreadyExists, anything else a *BarrierError naming the step.
+func volumeRegisterError(id, op string, regErr error) error {
 	if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
 		return ErrTenantAlreadyExists
 	}
-	var claimed *seal.DataRootClaimedError
-	if !errors.As(regErr, &claimed) {
-		return &BarrierError{TenantID: id, Op: op, Err: regErr}
-	}
-	overlap := &DataRootOverlapError{DataRoot: claimed.DataRoot, Conflict: claimed.DataRoot, Kind: "tenant " + claimed.ClaimedBy}
-	_, retired, err := s.deletedAt(ctx, claimed.ClaimedBy)
-	if err != nil {
-		return err
-	}
-	if retired {
-		overlap.Kind = "retired tenant " + claimed.ClaimedBy
-		overlap.Remedy = retiredResidueRemedy
-	}
-	return overlap
+	return &BarrierError{TenantID: id, Op: op, Err: regErr}
 }
-
-// retiredResidueRemedy is the remedy a DataRootOverlapError names when the
-// conflicting path is a retired tenant's unreclaimed residue.
-const retiredResidueRemedy = "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it"
 
 // rollbackRegistration undoes the barrier this create provisioned when its
 // metadata commit did not land. A prefix tenant provisioned nothing.
@@ -941,18 +924,26 @@ func (s *TenantService) ListTenants(ctx context.Context) ([]TenantInfo, error) {
 		}
 
 		info, err := decodeTenantInfo(strings.TrimPrefix(key, metadataPrefix), data)
-		if err != nil {
-			var persisted *PersistedDataRootError
-			if errors.As(err, &persisted) {
-				return nil, err
-			}
+		var persisted *PersistedDataRootError
+		switch {
+		case errors.As(err, &persisted):
+			// One tenant this node will not serve must not take the others
+			// down with it: it is listed, refused, and its data never opened.
+			info.Refusal = err
+		case err != nil:
 			s.logger.Warn("skipping corrupt tenant metadata",
 				slog.String("key", key),
 				slog.String("error", err.Error()))
 			continue
+		default:
+			if rerr := s.resolveLocalDataRoot(ctx, &info); rerr != nil {
+				info.Refusal = rerr
+			}
 		}
-		if err := s.resolveLocalDataRoot(ctx, &info); err != nil {
-			return nil, err
+		if info.Refusal != nil {
+			s.logger.Error("tenant refused on this node; its data is not opened",
+				slog.String("tenant_id", info.ID),
+				slog.Any("error", info.Refusal))
 		}
 		tenants = append(tenants, info)
 	}
@@ -1039,6 +1030,10 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 	// Read the tenant BEFORE anything is destroyed: the tombstone records
 	// what the tenant was, and the reclamation needs to know where it lived.
 	info, err := s.GetTenant(ctx, tenantID)
+	var persisted *PersistedDataRootError
+	if errors.As(err, &persisted) {
+		return s.deleteRefusedTenant(ctx, tenantID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			// A tenant whose metadata is already gone but whose id is
@@ -1133,6 +1128,45 @@ func (s *TenantService) finishTeardown(ctx context.Context, tenantID string) err
 	}
 
 	s.logger.Info("tenant deleted", slog.String("tenant_id", tenantID))
+	return nil
+}
+
+// deleteRefusedTenant deletes a tenant whose stored record names a path
+// (*PersistedDataRootError). The record is the only way out for such a tenant
+// -- it is refused everywhere else -- so its retirement and every record that
+// would restore it are removed exactly as for any tenant, but nothing touches
+// a path: the path in the record names some node's disk, and which one is not
+// knowable. Its directory, if any, is left for the operator to remove; the
+// tenant is re-created on a named volume pool.
+func (s *TenantService) deleteRefusedTenant(ctx context.Context, tenantID string) error {
+	data, err := s.store.Get(ctx, metadataPrefix+tenantID)
+	if err != nil {
+		return &StoreError{Op: "get", Err: err}
+	}
+	info, derr := decodeTenantInfo(tenantID, data)
+	var persisted *PersistedDataRootError
+	if !errors.As(derr, &persisted) {
+		return derr
+	}
+	if err := s.refuseIfDatabasesRemain(ctx, tenantID); err != nil {
+		return err
+	}
+	if err := s.fence(ctx, tenantID, &info); err != nil {
+		return err
+	}
+	if err := s.registry.ReleaseTenant(ctx, tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		return &TeardownError{TenantID: tenantID, Err: &BarrierError{TenantID: tenantID, Op: "release", Err: err}}
+	}
+	if err := s.registry.DropTenantRecords(ctx, tenantID); err != nil {
+		return &TeardownError{TenantID: tenantID, Err: &BarrierError{TenantID: tenantID, Op: "drop-records", Err: err}}
+	}
+	s.tenantCeremonies.Delete(tenantID)
+	if err := s.reclaim(ctx, tenantID); err != nil {
+		return &TeardownError{TenantID: tenantID, Err: err}
+	}
+	s.logger.Warn("tenant with a refused record deleted; the directory its record named was not touched",
+		slog.String("tenant_id", tenantID),
+		slog.String("recorded_data_root", persisted.DataRoot))
 	return nil
 }
 
@@ -2142,14 +2176,18 @@ func encodeTenantInfo(info *TenantInfo) ([]byte, error) {
 }
 
 // decodeTenantInfo unmarshals a stored tenant record. A record that carries a
-// DataRoot names one node's path and is refused with *PersistedDataRootError.
+// DataRoot names one node's path and is refused with *PersistedDataRootError;
+// the rest of the record is still returned, with DataRoot cleared, so the
+// tenant can be listed and deleted without the path ever being used.
 func decodeTenantInfo(tenantID string, data []byte) (TenantInfo, error) {
 	var info TenantInfo
 	if err := json.Unmarshal(data, &info); err != nil {
 		return TenantInfo{}, &StoreError{Op: "unmarshal", Err: err}
 	}
 	if info.DataRoot != "" {
-		return TenantInfo{}, &PersistedDataRootError{TenantID: tenantID, DataRoot: info.DataRoot}
+		recorded := info.DataRoot
+		info.DataRoot = ""
+		return info, &PersistedDataRootError{TenantID: tenantID, DataRoot: recorded}
 	}
 	return info, nil
 }

@@ -12,25 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mcp
+package unix
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	tenant "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
 // Failed list copies the aggregate error returned with it (pinned in
-// pkg/tenant). CreateTenant answers with createErr when it is set.
+// pkg/tenant).
 type partialReconcileSvc struct {
 	tenant.TenantServicer
-	createErr error
 }
 
 func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
@@ -47,22 +46,6 @@ func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.R
 		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
 	}}
 	return report, failures
-}
-
-func (p partialReconcileSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
-	if p.createErr != nil {
-		return nil, p.createErr
-	}
-	return p.TenantServicer.CreateTenant(ctx, id, name, iso, opts...)
-}
-
-// retiredOverlap is the refusal CreateTenant returns for a DataRoot a retired
-// tenant's unreclaimed record still names.
-func retiredOverlap() *tenant.DataRootOverlapError {
-	return &tenant.DataRootOverlapError{
-		DataRoot: "/srv/disk", Conflict: "/srv/disk", Kind: "retired tenant vgone",
-		Remedy: "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it",
-	}
 }
 
 // assertPartial checks a client saw both halves of a partly failed pass.
@@ -82,21 +65,10 @@ func assertPartial(t *testing.T, resp *transport.ReconcileDeletedTenantsResponse
 	return re
 }
 
-// TestMCPTenant_CreateTenant_DataRootOverlapKeepsItsRemedy: the tool error
-// reaches the client with the remedy (its code is pinned server-side).
-func TestMCPTenant_CreateTenant_DataRootOverlapKeepsItsRemedy(t *testing.T) {
-	tr, cleanup := connectTenantInProcess(t, partialReconcileSvc{TenantServicer: newMockTenantSvc(), createErr: retiredOverlap()})
-	defer cleanup()
-	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "vnew", Name: "New"})
-	if err == nil || !strings.Contains(err.Error(), "qrdb tenant reconcile-deleted") {
-		t.Fatalf("CreateTenant = %v; want the refusal carrying the remedy", err)
-	}
-}
-
-// TestMCPTenant_ReconcileDeletedTenants_PartialFailureCarriesBoth: the tool
-// result carries the report and the failures, and the client returns both.
-func TestMCPTenant_ReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
-	tr, cleanup := connectTenantInProcess(t, partialReconcileSvc{TenantServicer: newMockTenantSvc()})
+// TestUnixRT_ReconcileDeletedTenants_PartialFailureCarriesBoth: the response
+// carries the report and the failures, and the client returns both.
+func TestUnixRT_ReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
+	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(partialReconcileSvc{TenantServicer: &mockTenantSvc{}}))
 	defer cleanup()
 	resp, err := tr.ReconcileDeletedTenants(context.Background())
 	assertPartial(t, resp, err)

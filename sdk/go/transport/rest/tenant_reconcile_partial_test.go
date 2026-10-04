@@ -18,8 +18,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
-	"strings"
 	"testing"
 
 	restserver "github.com/jeremyhahn/go-qrdb/pkg/api/rest"
@@ -31,10 +29,9 @@ import (
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
 // Failed list copies the aggregate error returned with it (pinned in
-// pkg/tenant). CreateTenant answers with createErr when it is set.
+// pkg/tenant).
 type partialReconcileSvc struct {
 	tenant.TenantServicer
-	createErr error
 }
 
 func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
@@ -51,22 +48,6 @@ func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.R
 		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
 	}}
 	return report, failures
-}
-
-func (p partialReconcileSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
-	if p.createErr != nil {
-		return nil, p.createErr
-	}
-	return p.TenantServicer.CreateTenant(ctx, id, name, iso, opts...)
-}
-
-// retiredOverlap is the refusal CreateTenant returns for a DataRoot a retired
-// tenant's unreclaimed record still names.
-func retiredOverlap() *tenant.DataRootOverlapError {
-	return &tenant.DataRootOverlapError{
-		DataRoot: "/srv/disk", Conflict: "/srv/disk", Kind: "retired tenant vgone",
-		Remedy: "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it",
-	}
 }
 
 // assertPartial checks a client saw both halves of a partly failed pass.
@@ -110,17 +91,6 @@ func realKVTenants(t *testing.T) tenant.TenantServicer {
 		t.Fatal(err)
 	}
 	return svc
-}
-
-// TestRESTRoundTrip_CreateTenant_DataRootOverlapIs409: the real server
-// answers the refusal 409, and the client sees that status with the remedy.
-func TestRESTRoundTrip_CreateTenant_DataRootOverlapIs409(t *testing.T) {
-	tr := newTenantRoundTrip(t, partialReconcileSvc{TenantServicer: realKVTenants(t), createErr: retiredOverlap()})
-	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "vnew", Name: "New"})
-	var re *transport.RequestError
-	if !errors.As(err, &re) || re.StatusCode != http.StatusConflict || !strings.Contains(err.Error(), "qrdb tenant reconcile-deleted") {
-		t.Fatalf("CreateTenant = %v; want 409 carrying the remedy", err)
-	}
 }
 
 // TestRESTRoundTrip_ReconcileDeletedTenants_PartialFailureCarriesBoth: the

@@ -495,6 +495,23 @@ func (e *TenantStoreCloseError) Error() string {
 // Unwrap returns the underlying error.
 func (e *TenantStoreCloseError) Unwrap() error { return e.Err }
 
+// TenantRootPersistError is returned when a volume or raft tenant's
+// registration cannot write its tenant-root record. The record is what every
+// restart resolves the tenant from, so the registration is undone and fails
+// rather than serving a tenant the next restart would not find.
+type TenantRootPersistError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the record-write failure.
+func (e *TenantRootPersistError) Error() string {
+	return "qrdb/seal: persist tenant-root record for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantRootPersistError) Unwrap() error { return e.Err }
+
 // TenantRecordDeleteError is returned by DestroyTenant when one of the
 // durable records that would RESTORE a tenant barrier at boot -- its DataRoot
 // record or its volume-pool slot assignment -- could not be removed. Leaving
@@ -540,40 +557,6 @@ func (e *TenantDataRootRemoveError) Error() string {
 // Unwrap returns the underlying error.
 func (e *TenantDataRootRemoveError) Unwrap() error { return e.Err }
 
-// ClaimedRootCheckError is returned when a volume/raft registration cannot
-// read the tenant-root records it must check its DataRoot against. The
-// registration refuses rather than proceeding as if nothing claimed the
-// directory: an unreadable record may be exactly the claim that matters.
-type ClaimedRootCheckError struct {
-	TenantID string
-	Err      error
-}
-
-// Error returns a human-readable description of the failed check.
-func (e *ClaimedRootCheckError) Error() string {
-	return "qrdb/seal: cannot check whether another tenant claims the data root for tenant " + e.TenantID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *ClaimedRootCheckError) Unwrap() error { return e.Err }
-
-// DataRootClaimedError is returned when a tenant is registered at a DataRoot
-// that another tenant's tenant-root record on this node still names -- for
-// instance a deleted tenant whose residue this node has not reclaimed yet.
-// Taking the directory would hand the new tenant a path the deleted-tenant
-// reconcile is entitled to remove.
-type DataRootClaimedError struct {
-	TenantID  string
-	DataRoot  string
-	ClaimedBy string
-}
-
-// Error returns a human-readable description of the conflict.
-func (e *DataRootClaimedError) Error() string {
-	return "qrdb/seal: data root " + e.DataRoot + " for tenant " + e.TenantID +
-		" is still claimed by tenant " + e.ClaimedBy + "'s record on this node"
-}
-
 // UnprotectedDecryptError is returned when an AEAD opened the wrapped root key
 // into memory it allocated itself rather than into the protected buffer it was
 // handed. The plaintext is wiped and refused: accepting it would put the
@@ -602,22 +585,33 @@ type AbsoluteDataRootRecordError struct {
 func (e *AbsoluteDataRootRecordError) Error() string {
 	return "qrdb/seal: tenant " + e.TenantID + "'s record names the absolute data root " + e.DataRoot +
 		"; a tenant's location is a volume pool name and slot resolved on each node, so the record is refused" +
-		" -- re-create the tenant on a named volume pool"
+		" and its data is not opened -- delete the tenant (the delete removes its records and touches no" +
+		" directory) and re-create it on a named volume pool"
 }
 
 // DataRootOutsideLocalRootsError refuses to remove a directory that is not
-// strictly inside a root this node owns: one of its own volume-pool paths, or
-// its own data directory. Removal acts only on this node's disk, so a path
-// outside those roots -- however it was obtained -- is never deleted.
+// strictly inside one of this node's own volume-pool paths, compared both as
+// given and with every symbolic link resolved. Removal acts only on this
+// node's pool, so a path outside it -- however it was obtained, and wherever a
+// link inside the pool points -- is never deleted.
 type DataRootOutsideLocalRootsError struct {
 	DataRoot string
+	// Err, when set, is why the path could not be resolved.
+	Err error
 }
 
 // Error returns a human-readable description.
 func (e *DataRootOutsideLocalRootsError) Error() string {
-	return "qrdb/seal: refusing to remove " + e.DataRoot +
-		": it is not inside one of this node's own volume-pool paths or its data directory"
+	msg := "qrdb/seal: refusing to remove " + e.DataRoot +
+		": it is not inside one of this node's own volume-pool paths"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
 }
+
+// Unwrap returns why the path could not be resolved, if that is the reason.
+func (e *DataRootOutsideLocalRootsError) Unwrap() error { return e.Err }
 
 // TenantRootUnresolvedError is returned when a tenant's recorded volume pool
 // and slot cannot be resolved to a directory on this node: the pool is not

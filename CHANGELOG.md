@@ -110,7 +110,7 @@ are not reconstructed here — their history is in the git log.
   to its own pool path (`BarrierRegistry.LocalTenantDataRoot`); tenant records
   and placement replicas carry no path. A record that names one is refused
   rather than trusted: `*seal.AbsoluteDataRootRecordError`,
-  `*tenant.PersistedDataRootError` and `*server.PlacementDataRootError`. There
+  `*tenant.PersistedDataRootError` and `*placement.ReplicaDataRootError`. There
   is no migration; re-create such a tenant. Every removal of a tenant or shard
   directory (`BarrierRegistry.RemoveDataRoot`,
   `RaftBackendFactory.CloseAndPurge`) refuses any path not strictly inside one
@@ -123,6 +123,48 @@ are not reconstructed here — their history is in the git log.
   configured as a volume pool. `seal.BarrierRegistry.RegisterVolumeTenant`,
   `ReattachVolumeTenant` and `ImportTenant` no longer take a data root, and
   `placement.PlaceRequest.DataRootForNode` is removed.
+- **One tenant whose record names a path no longer stops a node from
+  booting.** `ListTenants` returns it beside every other tenant, marked
+  refused (`TenantInfo.Refusal` carries its typed error); boot skips it with an
+  ERROR log and never opens its data. `DeleteTenant` removes such a tenant --
+  its record, tombstoning the id, and the barrier records that would restore it
+  -- without touching any directory, and the refusal's message says so:
+  delete the tenant and re-create it on a named volume pool. The deleted-tenant
+  reconciliation treats it as live and protects both the path it names and its
+  pool directory.
+- **A tenant whose location record cannot be written is not created.** A
+  `volume` or `raft` registration that cannot persist its tenant-root record --
+  including behind a sealed system barrier -- is undone and fails with
+  `*seal.TenantRootPersistError`, rather than serving a tenant the next restart
+  would not find.
+- **Directory removal resolves symbolic links before deciding.**
+  `BarrierRegistry.RemoveDataRoot` and `RaftBackendFactory.CloseAndPurge`
+  compare the path both as given and with every link resolved on both sides,
+  so a tenant directory -- or any directory above it -- that links outside the
+  pool is refused with `*seal.DataRootOutsideLocalRootsError`, and a path that
+  cannot be resolved is refused with its cause.
+
+### Removed
+
+- The explicit-data-root error vocabulary, unreachable since `--data-root` is
+  refused: `tenant.ErrEmptyDataRoot`, `tenant.InvalidDataRootError`,
+  `tenant.DataRootNotEmptyError`, `tenant.DataRootOverlapError`,
+  `tenant.DataRootIsolationTypeError`, `seal.DataRootClaimedError` and
+  `seal.ClaimedRootCheckError`. A tenant's directory is `{pool path}/{tenant
+  id}` and a retired id is never reused, so no create can claim another
+  tenant's directory.
+
+### Fixed
+
+- **A node a database's placement does not name never serves it.** It used to
+  resolve the database through its own catalog and start a single-node shard
+  of its own; a write acknowledged there never reached the real replicas and
+  was lost when the reconciler purged the impostor. It now refuses with
+  `*placement.NotAReplicaError`, which carries the replica set and is
+  `UNAVAILABLE` (503) on every transport. A placement replica that names a
+  path is `*placement.ReplicaDataRootError` (`FAILED_PRECONDITION`), and every
+  refusal the placement resolver cannot return is logged -- at ERROR, or DEBUG
+  for a node that is simply not a replica.
 
 ## [0.40.0-alpha] - 2026-10-04
 

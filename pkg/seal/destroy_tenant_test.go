@@ -42,10 +42,17 @@ import (
 // exactly the thing under test.
 func newPooledTestRegistry(t *testing.T, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
 	t.Helper()
+	return newPooledTestRegistryAt(t, t.TempDir(), extra...)
+}
+
+// newPooledTestRegistryAt is newPooledTestRegistry with its one pool path
+// configured exactly as poolPath is spelled.
+func newPooledTestRegistryAt(t *testing.T, poolPath string, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	c := local.New()
-	if err := c.Configure(map[string]string{"path": t.TempDir()}); err != nil {
+	if err := c.Configure(map[string]string{"path": poolPath}); err != nil {
 		t.Fatalf("configure local backend: %v", err)
 	}
 	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})

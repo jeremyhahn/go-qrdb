@@ -44,36 +44,6 @@ func TestRefusalMessagesCarryTheOffendingValue(t *testing.T) {
 			},
 			contains: []string{"tenant:", "acme", "globex", "create user"},
 		},
-		{
-			name: "invalid data root names the path and the reason",
-			err: &InvalidDataRootError{
-				DataRoot: "relative/path",
-				Reason:   "must be absolute",
-			},
-			contains: []string{"invalid data root", "relative/path", "must be absolute"},
-		},
-		{
-			name:     "non-empty data root names the path",
-			err:      &DataRootNotEmptyError{DataRoot: "/srv/volume1/tenant-a"},
-			contains: []string{"/srv/volume1/tenant-a", "not empty"},
-		},
-		{
-			name: "overlap names both paths and the kind",
-			err: &DataRootOverlapError{
-				DataRoot: "/mnt/pool/tenant-a",
-				Conflict: "/mnt/pool",
-				Kind:     "volume pool",
-			},
-			contains: []string{"/mnt/pool/tenant-a", "overlaps", "volume pool", "/mnt/pool"},
-		},
-		{
-			name: "isolation-type mismatch names the tenant and the type",
-			err: &DataRootIsolationTypeError{
-				TenantID:      "acme",
-				IsolationType: IsolationPrefix,
-			},
-			contains: []string{"acme", string(IsolationPrefix), "volume or raft"},
-		},
 	}
 
 	for _, tc := range tests {

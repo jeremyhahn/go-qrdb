@@ -23,20 +23,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// TestMapHTTPError_DataRootOverlapIs409: a DataRoot that collides with a
-// reserved path or another tenant's -- a retired one's too, whose message
-// carries the remedy -- is a conflict the caller resolves. It was 500 before.
-func TestMapHTTPError_DataRootOverlapIs409(t *testing.T) {
-	for _, err := range []error{
-		&tenant.DataRootOverlapError{DataRoot: "/srv/a", Conflict: "/srv", Kind: "volume pool"},
-		&tenant.DataRootOverlapError{DataRoot: "/srv/d", Conflict: "/srv/d", Kind: "retired tenant vgone", Remedy: "run `qrdb tenant reconcile-deleted`"},
-	} {
-		if got := mapHTTPError(err); got != http.StatusConflict {
-			t.Fatalf("mapHTTPError(%v) = %d; want 409", err, got)
-		}
-	}
-}
-
 // TestHandleReconcileDeletedTenants_PartialFailureCarriesBoth: a pass that
 // failed for one id answers 200 with the report, whose failed list names it.
 func TestHandleReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {

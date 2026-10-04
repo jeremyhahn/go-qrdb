@@ -20,7 +20,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -252,43 +251,11 @@ func TestTenantService_TenantRuntimeCloserAccessor(t *testing.T) {
 }
 
 func TestVolumeRegisterError_MapsEachCause(t *testing.T) {
-	ctx := context.Background()
-	svc, _ := newTestService(t)
-	if err := svc.volumeRegisterError(ctx, "a", "register-volume", seal.ErrTenantAlreadyExists); !errors.Is(err, ErrTenantAlreadyExists) {
+	if err := volumeRegisterError("a", "register-volume", seal.ErrTenantAlreadyExists); !errors.Is(err, ErrTenantAlreadyExists) {
 		t.Fatalf("already exists = %v", err)
 	}
 	var be *BarrierError
-	if err := svc.volumeRegisterError(ctx, "a", "register-raft", errors.New("x")); !errors.As(err, &be) || be.Op != "register-raft" {
+	if err := volumeRegisterError("a", "register-raft", errors.New("x")); !errors.As(err, &be) || be.Op != "register-raft" {
 		t.Fatalf("other = %v", err)
-	}
-}
-
-// TestVolumeRegisterError_LiveClaimantHasNoRemedy: a claimant with no
-// tombstone is an ordinary overlap -- the operator must pick another path, and
-// the reconcile verb would not help, so none is named.
-func TestVolumeRegisterError_LiveClaimantHasNoRemedy(t *testing.T) {
-	svc, _ := newTestService(t)
-	err := svc.volumeRegisterError(context.Background(), "b", "register-volume",
-		&seal.DataRootClaimedError{DataRoot: "/srv/disk", ClaimedBy: "alive"})
-	var oe *DataRootOverlapError
-	if !errors.As(err, &oe) || oe.Kind != "tenant alive" || oe.Remedy != "" {
-		t.Fatalf("err = %v; want an overlap naming tenant alive with no remedy", err)
-	}
-	if strings.Contains(err.Error(), "reconcile-deleted") {
-		t.Fatalf("a live claimant's error names the reconcile verb: %v", err)
-	}
-}
-
-// TestVolumeRegisterError_TombstoneReadFailureIsReported: when whether the
-// claimant is retired cannot be read, the store failure is reported rather
-// than a guess at the remedy.
-func TestVolumeRegisterError_TombstoneReadFailureIsReported(t *testing.T) {
-	svc, _ := newTestService(t)
-	svc.store = &failingBackend{inner: svc.store, failGet: true}
-	err := svc.volumeRegisterError(context.Background(), "b", "register-volume",
-		&seal.DataRootClaimedError{DataRoot: "/srv/disk", ClaimedBy: "who"})
-	var se *StoreError
-	if !errors.As(err, &se) || !errors.Is(err, errStoreFault) {
-		t.Fatalf("err = %v; want the *StoreError wrapping the read failure", err)
 	}
 }

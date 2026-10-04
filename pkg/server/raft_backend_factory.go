@@ -104,24 +104,6 @@ func (e *RaftBackendError) Error() string {
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *RaftBackendError) Unwrap() error { return e.Err }
 
-// PlacementDataRootError refuses a placement record whose replica names a
-// filesystem path. The placement table is replicated and a path names the
-// disk of the node that wrote it, so every node resolves its own replica's
-// directory from the tenant's volume pool instead; a record carrying a path is
-// refused rather than opened. The database must be re-created.
-type PlacementDataRootError struct {
-	TenantID string
-	Database string
-	DataRoot string
-}
-
-// Error implements the error interface.
-func (e *PlacementDataRootError) Error() string {
-	return "server: placement for " + e.TenantID + "/" + e.Database + " names the path " + e.DataRoot +
-		"; a replica's directory is resolved on each node from the tenant's volume pool, so the record is refused" +
-		" -- re-create the database"
-}
-
 // ShardNotManagedError is returned by RaftBackendFactory's
 // service.ShardRestarter methods (StopForRestore, RestartAfterRestore) when
 // shardID is not a dedicated per-database Raft shard this factory manages —
@@ -334,6 +316,7 @@ func WithPlacementInfoSource(store *placement.Store, localNodeID string, resolve
 			fallback:          f.dbInfo,
 			timeout:           placementResolveTimeout,
 			localRootResolver: res,
+			logger:            f.logger,
 		}
 	}
 }
@@ -1323,6 +1306,9 @@ type placementRaftInfoSource struct {
 	fallback          raftDatabaseInfoSource
 	timeout           time.Duration
 	localRootResolver LocalRootResolver
+	// logger records the refusals databaseInfo cannot return. Nil is
+	// slog.Default().
+	logger *slog.Logger
 }
 
 // databaseInfo returns the local replica's shard ID and DataRoot for the
@@ -1334,10 +1320,27 @@ type placementRaftInfoSource struct {
 // Placement records no path for any replica, so each node resolves its own:
 // databaseInfo calls the localRootResolver to compute this node's
 // {pool_root}/{tenantID} and returns {pool_root}/{tenantID}/databases/{db}.
-// A record that carries a path is refused (*PlacementDataRootError).
+// A record that carries a path is refused (*placement.ReplicaDataRootError).
+//
+// Its signature cannot carry an error, so every refusal it drops is logged:
+// at DEBUG when this node is simply not a replica -- the common case on every
+// node the placement does not name -- and at ERROR otherwise.
 func (s *placementRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence bool) (uint64, string, bool) {
 	shardID, dataDir, _, ok, err := s.databaseAndPlacementInfo(tenantID, db)
 	if err != nil {
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		level := slog.LevelError
+		var nar *placement.NotAReplicaError
+		if errors.As(err, &nar) {
+			level = slog.LevelDebug
+		}
+		logger.Log(context.Background(), level, "placement: database not resolved on this node",
+			slog.String("tenant", tenantID),
+			slog.String("database", db),
+			slog.Any("error", err))
 		return 0, "", false
 	}
 	if ok {
@@ -1378,7 +1381,9 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 	// A placement record names no path: one would name the disk of the node
 	// that wrote it. Refuse a record that carries one rather than open it.
 	if r.DataRoot != "" {
-		return 0, "", nil, false, &PlacementDataRootError{TenantID: tenantID, Database: db, DataRoot: r.DataRoot}
+		return 0, "", nil, false, &placement.ReplicaDataRootError{
+			TenantID: tenantID, Database: db, NodeID: r.NodeID, DataRoot: r.DataRoot,
+		}
 	}
 	// Resolve this node's own directory for the tenant.
 	if s.localRootResolver == nil {

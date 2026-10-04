@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -149,7 +150,7 @@ func TestPlacementInfoSource_LocalReplicaWins(t *testing.T) {
 }
 
 // TestPlacementInfoSource_RefusesAReplicaPath verifies a placement record whose
-// local replica names a path is refused with *PlacementDataRootError, never
+// local replica names a path is refused with *placement.ReplicaDataRootError, never
 // opened: the path names the disk of the node that wrote it.
 func TestPlacementInfoSource_RefusesAReplicaPath(t *testing.T) {
 	store := newPlacementStore(t)
@@ -162,19 +163,25 @@ func TestPlacementInfoSource_RefusesAReplicaPath(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
+	logs := &lockedBuffer{}
 	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: newFakeRaftInfoSource(),
-		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver,
+		logger: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 
 	_, _, _, ok, err := src.databaseAndPlacementInfo("rt", "orders")
-	var pe *PlacementDataRootError
-	if ok || !errors.As(err, &pe) || pe.DataRoot != "/another-node/rt/databases/orders" {
-		t.Fatalf("databaseAndPlacementInfo = ok %v, %v; want *PlacementDataRootError", ok, err)
+	var pe *placement.ReplicaDataRootError
+	if ok || !errors.As(err, &pe) || pe.DataRoot != "/another-node/rt/databases/orders" || pe.NodeID != "local:1" {
+		t.Fatalf("databaseAndPlacementInfo = ok %v, %v; want *placement.ReplicaDataRootError", ok, err)
 	}
-	if pe.Error() == "" {
-		t.Fatal("empty message")
+	if !strings.Contains(pe.Error(), "re-create") {
+		t.Fatalf("message %q does not name the remedy", pe.Error())
 	}
 	if _, _, ok := src.databaseInfo("rt", "orders", false); ok {
 		t.Fatal("databaseInfo resolved a placement record that names a path")
+	}
+	// databaseInfo cannot return the refusal, so it must not swallow it.
+	if out := logs.String(); !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "/another-node/rt/databases/orders") {
+		t.Fatalf("databaseInfo dropped the refusal without an ERROR log:\n%s", out)
 	}
 }
 
@@ -215,10 +222,17 @@ func TestPlacementInfoSource_NoLocalReplicaIsRefused(t *testing.T) {
 	fallback := newFakeRaftInfoSource()
 	fallback.add("rt", "orders", 1234, "/meta/root") // the local catalog knows it too
 
+	logs := &lockedBuffer{}
 	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
-		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver,
+		logger: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 	if shardID, _, ok := src.databaseInfo("rt", "orders", false); ok {
 		t.Fatalf("databaseInfo resolved shard %d on a node that is not a replica", shardID)
+	}
+	// Not being a replica is routine on every node the placement does not
+	// name: recorded, but never at ERROR.
+	if out := logs.String(); !strings.Contains(out, "level=DEBUG") || strings.Contains(out, "level=ERROR") {
+		t.Fatalf("not-a-replica must log at DEBUG only:\n%s", out)
 	}
 	_, _, _, ok, err := src.databaseAndPlacementInfo("rt", "orders")
 	var nar *placement.NotAReplicaError

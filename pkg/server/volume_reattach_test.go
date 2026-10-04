@@ -47,6 +47,15 @@ func reattachTestLogger() *slog.Logger {
 // both modes can be created.
 func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry) {
 	t.Helper()
+	svc, reg, _ := newReattachFixtureStore(t)
+	return svc, reg
+}
+
+// newReattachFixtureStore is newReattachFixture that also returns the tenant
+// metadata store, for a test that must plant a record CreateTenant would not
+// write.
+func newReattachFixtureStore(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry, *seal.MemoryBackend) {
+	t.Helper()
 
 	dir := t.TempDir()
 	c := local.New()
@@ -91,7 +100,8 @@ func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegis
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, reattachTestLogger(),
+	store := seal.NewMemoryBackend()
+	svc, err := tenant.NewTenantService(store, reg, reattachTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 			AllowVolumeStorage:        true,
@@ -100,7 +110,7 @@ func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegis
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
-	return svc, reg
+	return svc, reg, store
 }
 
 // TestReattachVolumeTenants_AutoBuildsHost_SelfStaysSealed verifies the boot

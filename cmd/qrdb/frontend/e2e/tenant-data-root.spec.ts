@@ -17,8 +17,8 @@
  * Tenant creation — Data Root (dedicated disk) field tests.
  *
  * Mirrors the CLI's `tenant create --data-root` flag: the field is shown
- * ONLY for the dedicated-disk isolation tiers (volume/raft) and is rejected
- * by the server (DataRootIsolationTypeError -> 400) for prefix/barrier. The
+ * ONLY for the dedicated-disk isolation tiers (volume/raft). The server
+ * refuses every explicit data root (DataRootRetiredError -> 400). The
  * TenantManager create form gates the field's visibility and clears it
  * automatically when the isolation type changes away from volume/raft, and
  * sends it (as `data_root`) only when eligible and non-empty.
@@ -197,9 +197,8 @@ test.describe("Admin - Tenant create - Data Root field", () => {
   }) => {
     await openCreateTenantForm(page);
 
-    // Simulates the server's DataRootIsolationTypeError (400) for whatever
-    // reason the request reaches the server in an invalid state; the form
-    // must surface it rather than swallow it.
+    // Simulates the server's DataRootRetiredError (400); the form must
+    // surface it rather than swallow it.
     await injectError(
       page,
       "TenantBinding.Create",

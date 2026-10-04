@@ -128,6 +128,26 @@ func (e *StoreError) Error() string {
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *StoreError) Unwrap() error { return e.Err }
 
+// ReplicaDataRootError refuses a placement record whose replica names a
+// filesystem path. The placement table is replicated and a path names the
+// disk of the node that wrote it, so every node resolves its own replica's
+// directory from the tenant's volume pool instead; a record carrying a path is
+// refused rather than opened. The database must be re-created.
+type ReplicaDataRootError struct {
+	TenantID string
+	Database string
+	// NodeID is the replica whose entry names the path.
+	NodeID   string
+	DataRoot string
+}
+
+// Error implements the error interface.
+func (e *ReplicaDataRootError) Error() string {
+	return "placement: replica " + e.NodeID + " of " + e.TenantID + "/" + e.Database + " names the path " + e.DataRoot +
+		"; a replica's directory is resolved on each node from the tenant's volume pool, so the record is refused" +
+		" -- drop and re-create the database"
+}
+
 // NotAReplicaError refuses serving a dedicated-raft database on a node its
 // placement does not name. The node must not resolve the database through its
 // own catalog or start a shard of its own: a write it acknowledged there would

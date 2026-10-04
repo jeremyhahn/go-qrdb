@@ -290,9 +290,8 @@ leaks to a caller with no access to the tier.
 | List deleted: bad `page_size` or `page_token` | 400 | `INVALID_ARGUMENT` — `*InvalidPageRequestError` |
 | Reconcile deleted: a live tenant record is unreadable, or the tombstones cannot be listed | 500 | `INTERNAL` — `*ResidueReconcileError` naming the step; the pass stopped, and re-running resumes |
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
-| Create with a `DataRoot` that overlaps a volume pool, a reserved data root or another tenant's `DataRoot` | 409 | `FAILED_PRECONDITION` — `*DataRootOverlapError`. When the other tenant is a retired one whose residue this node has not reclaimed, the message names it as a retired tenant and carries the remedy: run `qrdb tenant reconcile-deleted` on that node. Previously unmapped on every transport and reported as 500 / `INTERNAL` |
 | Create with `data_root` | 400 | `INVALID_ARGUMENT` — `*DataRootRetiredError`; nothing is created at the path |
-| Read a tenant whose stored record names a path | 409 | `FAILED_PRECONDITION` — `*PersistedDataRootError`; the record is refused, never trusted. Re-create the tenant |
+| Read a tenant whose stored record names a path | 409 | `FAILED_PRECONDITION` — `*PersistedDataRootError`; the record is refused, never trusted, and its data is never opened. Listing still returns the tenant, marked refused, beside every other tenant. Delete it — the delete removes its records and touches no directory — and re-create it |
 | A tenant-root record that names a path, or a recorded pool slot this node does not configure | 409 | `FAILED_PRECONDITION` — `*seal.AbsoluteDataRootRecordError` / `*seal.TenantRootUnresolvedError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | A tenant's Admin naming another tenant, or setting its own plan | 403 | `PERMISSION_DENIED` |

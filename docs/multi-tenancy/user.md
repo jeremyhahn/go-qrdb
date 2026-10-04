@@ -46,6 +46,13 @@ records which pool and slot the tenant got, and each node maps that to its own
 disk. `--data-root` is retired and refused -- a path names one node's disk, and
 a dedicated disk is configured as a volume pool on every node instead.
 
+A tenant created by an older release may still have a path in its record. Such
+a tenant is **refused**: `tenant list` still shows it beside every other
+tenant, but no node opens its data, and every other tenant is served as usual.
+Delete it with `qrdb tenant delete` -- the delete removes its records and
+touches no directory -- and create it again. Remove the old directory yourself
+once you no longer need it.
+
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.
 

@@ -448,7 +448,13 @@ The removal is `BarrierRegistry.RemoveDataRoot`: it removes everything
 **inside** the `DataRoot`, then the root itself. It removes nothing that is not
 strictly inside one of this node's own volume-pool paths: anything else is
 refused with `*seal.DataRootOutsideLocalRootsError` before the filesystem is
-touched. `RaftBackendFactory.CloseAndPurge`, which purges a demoted replica's
+touched. The path must be absolute and already clean, and it is compared
+twice, both of which must pass: as given, component by component (so
+`/pool10/t` is not inside `/pool1`), and with every symbolic link resolved on
+both sides, so a link in the pool -- the tenant directory or any directory
+above it -- that points outside cannot carry the removal there. A path that
+does not exist yet resolves through its deepest existing ancestor; one whose
+resolution fails otherwise is refused with the cause. `RaftBackendFactory.CloseAndPurge`, which purges a demoted replica's
 shard directory, applies the same guard (`RequireInsideLocalPool`). A dedicated `DataRoot` is
 often a mount point, and rmdir on a mount point fails with `EBUSY` (or
 `EXDEV`) however empty it is; a root that has been emptied and refuses its own
@@ -477,11 +483,32 @@ candidate path and joins the tenant id; `TenantService.GetTenant` and
 `ListTenants` fill `DataRoot` from it, and `placementRaftInfoSource` builds a
 shard's directory from it. A record that carries a path -- a tenant-root
 record (`*seal.AbsoluteDataRootRecordError`), a tenant record
-(`*PersistedDataRootError`) or a placement replica (`*PlacementDataRootError`)
+(`*PersistedDataRootError`) or a placement replica (`*placement.ReplicaDataRootError`)
 -- is refused rather than trusted: a path names the disk of the node that wrote
 it, and trusted on another node it opened, and on reclamation deleted, a
 directory that node did not own. There is no migration for such records; the
 tenant is re-created on a named pool.
+
+**A refused tenant never takes the others down.** `ListTenants` returns it
+beside every other tenant with `TenantInfo.Refusal` set to its typed error and
+no `DataRoot`; it does not fail the listing. Boot (`reattachVolumeTenants`,
+`reattachRaftTenants`) and `BarrierRegistry.RestoreVolumeTenants` skip it with
+an ERROR log and open nothing at the recorded path; the storage-quota
+reconciler does not walk it. `DeleteTenant` on a tenant whose record names a
+path removes it without touching any directory: it applies the same
+no-databases rule, tombstones the id and deletes the record, releases the
+barrier (`ReleaseTenant`) and drops the tenant-root record and slot assignment
+(`DropTenantRecords`), and reclaims the keyspace. `DestroyTenant` -- which
+removes a directory -- is not called. The deleted-tenant reconciliation treats
+a live refused tenant as live: the path it names and its pool directory are
+both protected roots.
+
+**A registration that cannot record where the tenant lives fails.** The
+tenant-root record is what every restart resolves the tenant from, so a
+`volume` or `raft` registration that cannot write it -- including behind a
+sealed system barrier -- releases the barrier and the store it opened and
+returns `*seal.TenantRootPersistError`; `CreateTenant` rolls back as for any
+registration failure.
 
 ### Failure modes
 
@@ -598,17 +625,11 @@ read once too. Then, for each retired id, in order:
    `DestroyTenant` runs the same three steps in the same order —
    `ReleaseTenant`, remove the `DataRoot`, `DropTenantRecords`.
 
-**The create side closes the window from the other end.** Registering a
-`volume` or `raft` tenant at a `DataRoot` another tenant's tenant-root record
-on this node still names — for instance a deleted tenant this node has not
-reclaimed yet — is refused (`seal.DataRootClaimedError`, surfaced by
-`CreateTenant` as `*DataRootOverlapError`, which every network transport maps
-to 409 / `FAILED_PRECONDITION` and the embedded transport returns as is), so a
-new tenant is never handed a directory the reconcile is entitled to remove. When the claimant is
-tombstoned the error names it as a **retired tenant** and carries a `Remedy`
-naming `qrdb tenant reconcile-deleted`. A registry that cannot list the
-records to check returns `*seal.ClaimedRootCheckError` rather than a bare
-storage error.
+**The create side cannot reopen the window.** A `volume` or `raft` tenant's
+directory is `{pool path}/{tenant id}`, resolved on each node, and no caller
+chooses it. A retired id is never reused — its tombstone refuses the create —
+so a new tenant's directory can never be one the reconcile is entitled to
+remove, and no create-time check against other tenants' records is needed.
 
 Every step is idempotent. Failures split in two. A **guard** failure —
 listing the tombstones, reading the live set (including the re-read) — aborts

@@ -18,11 +18,9 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -32,10 +30,9 @@ import (
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
 // Failed list copies the aggregate error returned with it (pinned in
-// pkg/tenant). CreateTenant answers with createErr when it is set.
+// pkg/tenant).
 type partialReconcileSvc struct {
 	tenant.TenantServicer
-	createErr error
 }
 
 func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
@@ -52,22 +49,6 @@ func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.R
 		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
 	}}
 	return report, failures
-}
-
-func (p partialReconcileSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
-	if p.createErr != nil {
-		return nil, p.createErr
-	}
-	return p.TenantServicer.CreateTenant(ctx, id, name, iso, opts...)
-}
-
-// retiredOverlap is the refusal CreateTenant returns for a DataRoot a retired
-// tenant's unreclaimed record still names.
-func retiredOverlap() *tenant.DataRootOverlapError {
-	return &tenant.DataRootOverlapError{
-		DataRoot: "/srv/disk", Conflict: "/srv/disk", Kind: "retired tenant vgone",
-		Remedy: "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it",
-	}
 }
 
 // assertPartial checks a client saw both halves of a partly failed pass.
@@ -87,8 +68,8 @@ func assertPartial(t *testing.T, resp *transport.ReconcileDeletedTenantsResponse
 	return re
 }
 
-// startOverlapPartialServer serves the REAL gRPC tenant service over svc.
-func startOverlapPartialServer(t *testing.T, svc tenant.TenantServicer) *Transport {
+// startReconcilePartialServer serves the REAL gRPC tenant service over svc.
+func startReconcilePartialServer(t *testing.T, svc tenant.TenantServicer) *Transport {
 	t.Helper()
 	srv := googlegrpc.NewServer()
 	grpcpkg.RegisterService(srv, nil, nil, grpcpkg.WithRegisterTenantService(svc))
@@ -103,21 +84,10 @@ func startOverlapPartialServer(t *testing.T, svc tenant.TenantServicer) *Transpo
 	return tr
 }
 
-// TestGRPCTenant_CreateTenant_DataRootOverlapIsAFailedPrecondition: over the
-// wire the refusal is FailedPrecondition and keeps its remedy.
-func TestGRPCTenant_CreateTenant_DataRootOverlapIsAFailedPrecondition(t *testing.T) {
-	tr := startOverlapPartialServer(t, partialReconcileSvc{TenantServicer: &fakeTenantServicer{}, createErr: retiredOverlap()})
-	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "vnew", Name: "New"})
-	var re *transport.RequestError
-	if !errors.As(err, &re) || re.StatusCode != int(codes.FailedPrecondition) || !strings.Contains(err.Error(), "qrdb tenant reconcile-deleted") {
-		t.Fatalf("CreateTenant = %v; want FailedPrecondition carrying the remedy", err)
-	}
-}
-
 // TestGRPCTenant_ReconcileDeletedTenants_PartialFailureCarriesBoth: the
 // response carries the report and the failures, and the client returns both.
 func TestGRPCTenant_ReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
-	tr := startOverlapPartialServer(t, partialReconcileSvc{TenantServicer: &fakeTenantServicer{}})
+	tr := startReconcilePartialServer(t, partialReconcileSvc{TenantServicer: &fakeTenantServicer{}})
 	resp, err := tr.ReconcileDeletedTenants(context.Background())
 	if re := assertPartial(t, resp, err); re.Err != nil {
 		t.Fatalf("a network transport has no node-side error to wrap; got %v", re.Err)

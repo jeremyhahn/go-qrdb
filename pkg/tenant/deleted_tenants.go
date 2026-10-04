@@ -593,14 +593,41 @@ func (s *TenantService) liveTenantRootsStrict(ctx context.Context) ([]string, er
 			return nil, &StoreError{Op: "get", Err: err}
 		}
 		id := strings.TrimPrefix(key, metadataPrefix)
-		if _, err := decodeTenantInfo(id, data); err != nil {
+		// A record refused for naming a path is still a live tenant. The path
+		// it names is never opened, but it is protected here like any live
+		// tenant's directory, alongside its pool-derived directories.
+		var persisted *PersistedDataRootError
+		if _, err := decodeTenantInfo(id, data); errors.As(err, &persisted) {
+			roots = append(roots, persisted.DataRoot)
+		} else if err != nil {
 			return nil, err
 		}
 		local, err := s.registry.TenantDataRootCandidates(ctx, id)
+		var abs *seal.AbsoluteDataRootRecordError
+		if errors.As(err, &abs) {
+			local, err = s.refusedTenantRoots(ctx, id, abs.DataRoot)
+		}
 		if err != nil {
 			return nil, err
 		}
 		roots = append(roots, local...)
+	}
+	return roots, nil
+}
+
+// refusedTenantRoots returns the directories a live tenant whose tenant-root
+// record names a path (*seal.AbsoluteDataRootRecordError) claims on this node:
+// the recorded path and {poolBase}/{tenantID} under every local pool base.
+// They are only ever protected, never removed.
+func (s *TenantService) refusedTenantRoots(ctx context.Context, tenantID, recorded string) ([]string, error) {
+	bases, err := s.registry.PoolBasePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roots := make([]string, 0, len(bases)+1)
+	roots = append(roots, recorded)
+	for _, base := range bases {
+		roots = append(roots, filepath.Join(base, tenantID))
 	}
 	return roots, nil
 }

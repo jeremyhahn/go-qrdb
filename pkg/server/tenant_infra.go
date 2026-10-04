@@ -325,10 +325,10 @@ func (ti *TenantInfra) ServerOptions() []ServerOption {
 // tenant-root record.
 //
 // TenantInfo is replicated cluster metadata, so this node sees every volume
-// tenant — including those it holds no local key material for. The DataRoot
-// in TenantInfo is the CREATING node's path and is NOT valid elsewhere, so
-// it is deliberately never used here to (re-)register a barrier. A tenant
-// whose barrier is absent from the local registry is skipped; its Host
+// tenant — including those it holds no local key material for. A tenant
+// ListTenants reports as refused (TenantInfo.Refusal) is skipped with an
+// ERROR and its data is never opened; one such tenant never fails boot. A
+// tenant whose barrier is absent from the local registry is skipped; its Host
 // attaches lazily on first access. A self-managed tenant whose barrier is
 // registered-but-sealed is left sealed for the tenant admin to unseal. For
 // an auto-unseal tenant whose barrier is ready, the per-tenant Host is
@@ -349,10 +349,14 @@ func reattachVolumeTenants(
 		if t.EffectiveIsolationType() != tenant.IsolationVolume {
 			continue
 		}
+		if t.Refusal != nil {
+			logger.Error("volume tenant refused on this node; not re-attached",
+				slog.String("tenant", t.ID), slog.Any("error", t.Refusal))
+			continue
+		}
 		// The barrier is restored from this node's own tenant-root record by
 		// RestoreVolumeTenants. When it is absent, this node holds no key
-		// material for the tenant; defer to lazy attach rather than registering
-		// with the (foreign) replicated DataRoot.
+		// material for the tenant; defer to lazy attach.
 		tb, gerr := barrierReg.GetTenant(t.ID)
 		if gerr != nil {
 			logger.Info("volume tenant not provisioned on this node; deferring Host attach",
@@ -396,11 +400,11 @@ func reattachVolumeTenants(
 //
 // TenantInfo is replicated cluster metadata, so this node sees every raft
 // tenant — including those it holds no local key material for (e.g. it never
-// received key delivery). The DataRoot carried in TenantInfo is the CREATING
-// node's path and is NOT valid on other nodes, so it is deliberately never
-// used here to (re-)register a barrier. Instead, a tenant whose barrier is
-// absent from the local registry is skipped and deferred to the
-// TenantShardReconciler, which attaches it once key delivery completes.
+// received key delivery). A tenant ListTenants reports as refused
+// (TenantInfo.Refusal) is skipped with an ERROR and its data is never opened.
+// A tenant whose barrier is absent from the local registry is skipped and
+// deferred to the TenantShardReconciler, which attaches it once key delivery
+// completes.
 //
 // A self-managed tenant whose barrier is registered-but-sealed is left sealed
 // — the tenant admin re-unseals and the shards attach lazily on first access.
@@ -433,10 +437,14 @@ func reattachRaftTenants(
 		if t.EffectiveIsolationType() != tenant.IsolationRaft {
 			continue
 		}
+		if t.Refusal != nil {
+			logger.Error("raft tenant refused on this node; shards not attached",
+				slog.String("tenant", t.ID), slog.Any("error", t.Refusal))
+			continue
+		}
 		// The barrier is restored from this node's own tenant-root record by
 		// RestoreVolumeTenants. When it is absent, this node holds no key
-		// material for the tenant yet; defer to the reconciler rather than
-		// registering with the (foreign) replicated DataRoot.
+		// material for the tenant yet; defer to the reconciler.
 		tb, gerr := barrierReg.GetTenant(t.ID)
 		if gerr != nil {
 			logger.Info("raft tenant not yet provisioned on this node; deferring shard attach to reconciler",

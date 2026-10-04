@@ -12,28 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package unix
+package embedded
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"google.golang.org/grpc/codes"
-
-	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
-	tenant "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
 // Failed list copies the aggregate error returned with it (pinned in
-// pkg/tenant). CreateTenant answers with createErr when it is set.
+// pkg/tenant).
 type partialReconcileSvc struct {
 	tenant.TenantServicer
-	createErr error
 }
 
 func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
@@ -50,22 +45,6 @@ func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.R
 		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
 	}}
 	return report, failures
-}
-
-func (p partialReconcileSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
-	if p.createErr != nil {
-		return nil, p.createErr
-	}
-	return p.TenantServicer.CreateTenant(ctx, id, name, iso, opts...)
-}
-
-// retiredOverlap is the refusal CreateTenant returns for a DataRoot a retired
-// tenant's unreclaimed record still names.
-func retiredOverlap() *tenant.DataRootOverlapError {
-	return &tenant.DataRootOverlapError{
-		DataRoot: "/srv/disk", Conflict: "/srv/disk", Kind: "retired tenant vgone",
-		Remedy: "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it",
-	}
 }
 
 // assertPartial checks a client saw both halves of a partly failed pass.
@@ -85,23 +64,35 @@ func assertPartial(t *testing.T, resp *transport.ReconcileDeletedTenantsResponse
 	return re
 }
 
-// TestUnixRT_CreateTenant_DataRootOverlapIsAFailedPrecondition: over the
-// socket the refusal is FailedPrecondition and keeps its remedy.
-func TestUnixRT_CreateTenant_DataRootOverlapIsAFailedPrecondition(t *testing.T) {
-	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(partialReconcileSvc{TenantServicer: &mockTenantSvc{}, createErr: retiredOverlap()}))
-	defer cleanup()
-	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "vnew", Name: "New"})
-	var re *transport.RequestError
-	if !errors.As(err, &re) || re.StatusCode != int(codes.FailedPrecondition) || !strings.Contains(err.Error(), "qrdb tenant reconcile-deleted") {
-		t.Fatalf("CreateTenant = %v; want FailedPrecondition carrying the remedy", err)
+// TestEmbedded_ReconcileDeletedTenants_PartialFailureCarriesBoth: the
+// response and the error both come back, and in-process the error still
+// reaches the service's own *tenant.ResidueReconcileFailuresError.
+func TestEmbedded_ReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
+	tr := newExtTransport(t, WithTenantService(partialReconcileSvc{TenantServicer: retiredEmbeddedTenants(t)}))
+	resp, err := tr.ReconcileDeletedTenants(context.Background())
+	assertPartial(t, resp, err)
+	var agg *tenant.ResidueReconcileFailuresError
+	if !errors.As(err, &agg) || len(agg.Errors) != 1 {
+		t.Fatalf("err = %v; want the service's *tenant.ResidueReconcileFailuresError reachable", err)
 	}
 }
 
-// TestUnixRT_ReconcileDeletedTenants_PartialFailureCarriesBoth: the response
-// carries the report and the failures, and the client returns both.
-func TestUnixRT_ReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
-	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(partialReconcileSvc{TenantServicer: &mockTenantSvc{}}))
-	defer cleanup()
+// TestEmbedded_ReconcileDeletedTenants_GuardFailureIsOnlyAnError: a pass that
+// could not read its guards returns no response.
+func TestEmbedded_ReconcileDeletedTenants_GuardFailureIsOnlyAnError(t *testing.T) {
+	guard := &tenant.ResidueReconcileError{Op: "list-tenants", Err: errors.New("corrupt")}
+	tr := newExtTransport(t, WithTenantService(guardFailSvc{TenantServicer: retiredEmbeddedTenants(t), err: guard}))
 	resp, err := tr.ReconcileDeletedTenants(context.Background())
-	assertPartial(t, resp, err)
+	if resp != nil || !errors.Is(err, guard) {
+		t.Fatalf("resp, err = %+v, %v; want only the guard error", resp, err)
+	}
+}
+
+type guardFailSvc struct {
+	tenant.TenantServicer
+	err error
+}
+
+func (g guardFailSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
+	return nil, g.err
 }

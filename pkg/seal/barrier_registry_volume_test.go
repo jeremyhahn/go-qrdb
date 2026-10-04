@@ -329,11 +329,12 @@ func assertMountMissing(t *testing.T, reg *BarrierRegistry, tenantID, dataRoot s
 // TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed verifies that
 // RegisterVolumeTenant (and, by the same shared registerVolumeTenant,
 // ReattachVolumeTenant) refuses with ErrSealed while the system barrier is
-// sealed, rather than silently proceeding: refuseClaimedRoot cannot read the
-// tenant-root records it compares DataRoots against while sealed, so a direct
-// call on this registry (bypassing TenantService.CreateTenant, whose own
-// tombstone check already fails closed through the sealed barrier) must not be
-// able to skip the DataRoot-overlap guard and open a Pebble store anyway.
+// sealed, rather than silently proceeding: the tenant-root record it resolves
+// from and must write lives behind the system barrier, so a sealed barrier
+// would read as "no record" and a direct call on this registry (bypassing
+// TenantService.CreateTenant, whose own tombstone check already fails closed
+// through the sealed barrier) would allocate a second location and open a
+// Pebble store there.
 func TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed(t *testing.T) {
 	// newPooledRegistry's system barrier starts sealed (never initialized);
 	// this test is the one place in the file that must NOT unseal it.

@@ -122,21 +122,68 @@ func (r *BarrierRegistry) RemoveDataRoot(ctx context.Context, root string) error
 }
 
 // RequireInsideLocalPool returns *DataRootOutsideLocalRootsError unless path
-// is strictly inside one of this node's own volume-pool paths. The path is
-// compared as given and cleaned, so neither a ".." component nor an equal
-// path (a pool root itself) passes.
+// is strictly inside one of this node's own volume-pool paths.
+//
+// The path must be absolute and already clean -- a ".." component, a
+// trailing separator or a doubled one is refused rather than normalised --
+// and is compared twice, both of which must pass:
+//
+//   - as given, against each cleaned pool path, component by component, so
+//     /pool10/t is not inside /pool1 and a pool path itself is not inside
+//     itself;
+//   - with every symbolic link resolved on both sides, so a link inside the
+//     pool -- a tenant directory, or any directory above it -- that points
+//     outside cannot carry a removal there. A path that does not exist yet is
+//     resolved through its deepest existing ancestor.
+//
+// A pool path that cannot be resolved contains nothing; a path whose
+// resolution fails for any reason other than not existing is refused.
 func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, path string) error {
 	bases, err := r.PoolBasePaths(ctx)
 	if err != nil {
 		return err
 	}
-	if path != filepath.Clean(path) {
+	if !filepath.IsAbs(path) || path != filepath.Clean(path) {
 		return &DataRootOutsideLocalRootsError{DataRoot: path}
 	}
+	resolved, err := resolveExisting(path)
+	if err != nil {
+		return &DataRootOutsideLocalRootsError{DataRoot: path, Err: err}
+	}
 	for _, base := range bases {
-		if validation.IsPathAncestor(filepath.Clean(base), path) {
+		cleanBase := filepath.Clean(base)
+		if !validation.IsPathAncestor(cleanBase, path) {
+			continue
+		}
+		resolvedBase, berr := filepath.EvalSymlinks(cleanBase)
+		if berr != nil {
+			continue
+		}
+		if validation.IsPathAncestor(resolvedBase, resolved) {
 			return nil
 		}
 	}
 	return &DataRootOutsideLocalRootsError{DataRoot: path}
+}
+
+// resolveExisting returns path with every symbolic link resolved. A path that
+// does not exist is resolved through its deepest existing ancestor, with the
+// missing components appended as given.
+func resolveExisting(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path, nil
+	}
+	resolvedParent, err := resolveExisting(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(path)), nil
 }

@@ -208,7 +208,8 @@ func TestGetTenant_RefusesAStoredDataRoot(t *testing.T) {
 	if persisted.Error() == "" {
 		t.Fatal("empty message")
 	}
-	if _, err := svc.ListTenants(ctx); !errors.As(err, &persisted) {
-		t.Fatalf("ListTenants = %v, want *PersistedDataRootError", err)
+	tenants, err := svc.ListTenants(ctx)
+	if err != nil || len(tenants) != 1 || !errors.As(tenants[0].Refusal, &persisted) || tenants[0].DataRoot != "" {
+		t.Fatalf("ListTenants = %+v, %v; want legacy listed as refused with no DataRoot", tenants, err)
 	}
 }
