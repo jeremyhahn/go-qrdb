@@ -113,6 +113,44 @@ func TestEmbedded_ClusterCAKeyMaterialUnreachable(t *testing.T) {
 		}
 	}
 
+	// --- Count and Revision correctness: the review found
+	// MVCCKVServicer.Range's return order (kvs, count, revision, err)
+	// bound backwards in the decorator -- a mistake that compiles, since
+	// both are int64, and passed every pre-existing test because the test
+	// double encoded the identical swap. A real write here, after which
+	// Revision must equal the store's own CurrentRevision (not, for
+	// instance, the count) and Count must equal len(Kvs) exactly (the
+	// confined key is the only thing either value ever excludes in this
+	// cell), is what a live cell catches that a fake cannot. ---
+	// Overwritten (not merely written once) several times: this advances
+	// the revision counter on each write without adding a second distinct
+	// key, so the eventual Revision and Count are forced APART (distinct
+	// values), which is what makes a swap between them detectable here --
+	// the first run of this exact assertion, with only one write, passed
+	// even with the swap reverted because count and revision happened to
+	// coincide at that exact point.
+	for i := 0; i < 4; i++ {
+		if err := client.KV().Put(ctx, "ordinary/for-range-check", []byte("v")); err != nil {
+			t.Fatalf("Put(ordinary/for-range-check) #%d: %v", i, err)
+		}
+	}
+	currentRev, err := client.MVCC().CurrentRevision(ctx)
+	if err != nil {
+		t.Fatalf("MVCC().CurrentRevision: %v", err)
+	}
+	wideResp, err := client.MVCC().Range(ctx, []byte(""), []byte("\xff"), transport.RangeOptions{})
+	if err != nil {
+		t.Fatalf("MVCC().Range(\"\", \"\\xff\"): %v", err)
+	}
+	if wideResp.Revision != currentRev {
+		t.Fatalf("MVCC().Range revision = %d, want %d (CurrentRevision) -- a count/revision swap would report the count (%d) here instead",
+			wideResp.Revision, currentRev, wideResp.Count)
+	}
+	if wideResp.Count != int64(len(wideResp.Kvs)) {
+		t.Fatalf("MVCC().Range count = %d, want %d (len(Kvs): the confined key is the only thing either value should ever exclude here)",
+			wideResp.Count, len(wideResp.Kvs))
+	}
+
 	// --- Watch from revision 1 over a wide-open prefix: must not refuse
 	// the whole watch, and must never deliver an event naming the
 	// confined key. ---

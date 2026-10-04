@@ -34,9 +34,19 @@ import (
 type fakeMVCC struct {
 	*fakeKV
 	calledRange bool
+
+	// revision is what Range/RangeWithConsistency report as the MVCC
+	// revision the read was performed at. Deliberately NOT equal to any
+	// plausible count (the store never holds anywhere near this many
+	// keys in these tests): a decorator that swaps count and revision --
+	// exactly the bug a live cell caught after this fake had hidden it by
+	// also encoding the swap -- is now distinguishable from a correct one
+	// by this value alone, not merely by both happening to be small
+	// integers.
+	revision int64
 }
 
-func newFakeMVCC() *fakeMVCC { return &fakeMVCC{fakeKV: newFakeKV()} }
+func newFakeMVCC() *fakeMVCC { return &fakeMVCC{fakeKV: newFakeKV(), revision: 42} }
 
 // Compile-time interface check.
 var _ MVCCKVServicer = (*fakeMVCC)(nil)
@@ -72,6 +82,10 @@ func (f *fakeMVCC) GetAtRevisionWithConsistency(_ context.Context, key string, _
 // confinedCountInRange's own sub-range CountOnly query against this fake
 // to be meaningful, not just the decorator's post-hoc filter of an
 // unconditionally-full answer.
+//
+// Returns (kvs, count, revision, err), matching MVCCKVServicer.Range's
+// own order exactly -- getting this backwards here is what let the
+// decorator's identical swap pass every test in this file.
 func (f *fakeMVCC) Range(_ context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
 	f.calledRange = true
 	ro := ApplyRangeOptions(opts)
@@ -91,9 +105,9 @@ func (f *fakeMVCC) Range(_ context.Context, start, end []byte, opts ...RangeOpti
 
 	total := int64(len(matched))
 	if ro.CountOnly {
-		return nil, 1, total, nil
+		return nil, total, f.revision, nil
 	}
-	return matched, 1, total, nil
+	return matched, total, f.revision, nil
 }
 
 func (f *fakeMVCC) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
@@ -168,17 +182,20 @@ func TestHardConfinedMVCC_RangeFiltersTheConfinedKeyFromAWideOpenSweep(t *testin
 	fake.store["ordinary/a"] = []byte("1")
 	mvcc := NewHardConfinedMVCC(fake)
 
-	kvs, revision, total, err := mvcc.Range(ctx, []byte(""), []byte("\xff"), WithRevision(1))
+	kvs, count, revision, err := mvcc.Range(ctx, []byte(""), []byte("\xff"), WithRevision(1))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	if !fake.calledRange {
 		t.Fatal("Range did not reach the underlying servicer")
 	}
-	if revision != 1 {
-		t.Fatalf("Range revision = %d, want 1 (the underlying servicer's own answer, unfiltered)", revision)
+	if revision != fake.revision {
+		t.Fatalf("Range revision = %d, want %d (the underlying servicer's own answer, unfiltered) -- a count/revision swap would report %d here instead",
+			revision, fake.revision, count)
 	}
-	_ = total
+	if count != 1 {
+		t.Fatalf("Range count = %d, want 1 (the confined key excluded)", count)
+	}
 	for _, kv := range kvs {
 		if string(kv.Key) == confinedKey {
 			t.Fatal("Range returned the confined key")
@@ -225,31 +242,77 @@ func TestHardConfinedMVCC_RangeCountOnlyDoesNotLeakTheConfinedKeysPresence(t *te
 	fake.store["ordinary/b"] = []byte("2")
 	mvcc := NewHardConfinedMVCC(fake)
 
-	// A wide-open CountOnly range: the raw total (asked of the fake
+	// A wide-open CountOnly range: the raw count (asked of the fake
 	// directly, bypassing the decorator) is 3; the decorator's answer must
 	// be 2, the count with the confined key excluded.
-	_, _, rawTotal, err := fake.Range(ctx, []byte(""), []byte("\xff"), WithCountOnly())
-	if err != nil || rawTotal != 3 {
-		t.Fatalf("sanity check: fake.Range raw total = %d, %v; want 3, nil", rawTotal, err)
+	_, rawCount, _, err := fake.Range(ctx, []byte(""), []byte("\xff"), WithCountOnly())
+	if err != nil || rawCount != 3 {
+		t.Fatalf("sanity check: fake.Range raw count = %d, %v; want 3, nil", rawCount, err)
 	}
 
-	_, _, total, err := mvcc.Range(ctx, []byte(""), []byte("\xff"), WithCountOnly())
+	_, count, revision, err := mvcc.Range(ctx, []byte(""), []byte("\xff"), WithCountOnly())
 	if err != nil {
 		t.Fatalf("Range(CountOnly): %v", err)
 	}
-	if total != 2 {
-		t.Fatalf("Range(CountOnly) total = %d, want 2 (the confined key excluded, not merely absent from a result slice that was never returned)", total)
+	if count != 2 {
+		t.Fatalf("Range(CountOnly) count = %d, want 2 (the confined key excluded, not merely absent from a result slice that was never returned)", count)
+	}
+	if revision != fake.revision {
+		t.Fatalf("Range(CountOnly) revision = %d, want %d -- a count/revision swap would report %d here instead",
+			revision, fake.revision, count)
 	}
 
 	// A range that does not reach the confined namespace at all must not
 	// pay for -- or alter the answer with -- the extra sub-query.
-	_, _, narrowTotal, err := mvcc.Range(ctx, []byte("ordinary/"), []byte("ordinary0"), WithCountOnly())
+	_, narrowCount, _, err := mvcc.Range(ctx, []byte("ordinary/"), []byte("ordinary0"), WithCountOnly())
 	if err != nil {
 		t.Fatalf("Range(ordinary/, CountOnly): %v", err)
 	}
-	if narrowTotal != 2 {
-		t.Fatalf("Range(ordinary/, CountOnly) total = %d, want 2 (unaffected by a namespace it never overlaps)", narrowTotal)
+	if narrowCount != 2 {
+		t.Fatalf("Range(ordinary/, CountOnly) count = %d, want 2 (unaffected by a namespace it never overlaps)", narrowCount)
 	}
+}
+
+// TestHardConfinedMVCC_RangeAtAHistoricalRevisionSubtractsOnlyThen proves
+// confinedCountInRange carries the caller's own WithRevision through to
+// its sub-query: a historical range must subtract the confined records
+// that existed AT that revision, not however many exist in the store now.
+// The fake's revision field cannot vary per-call (it has no real MVCC
+// history), so this proves the REQUEST reaches the sub-query correctly --
+// WithRevision propagating -- which is what the embedded-cell conformance
+// assertion in sdk/go/transport/embedded proves end-to-end against a real
+// revision history.
+func TestHardConfinedMVCC_RangeAtAHistoricalRevisionSubtractsOnlyThen(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeMVCC()
+	fake.store[confinedKey] = []byte("the cluster CA's private key")
+	fake.store["ordinary/a"] = []byte("1")
+
+	var observedRevision int64 = -1
+	wrapped := &revisionObservingMVCC{fakeMVCC: fake, observed: &observedRevision}
+	mvcc := NewHardConfinedMVCC(wrapped)
+
+	if _, _, _, err := mvcc.Range(ctx, []byte(""), []byte("\xff"), WithRevision(7), WithCountOnly()); err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if observedRevision != 7 {
+		t.Fatalf("the confined-namespace sub-query saw revision %d, want 7 (the caller's own WithRevision, carried through)", observedRevision)
+	}
+}
+
+// revisionObservingMVCC wraps fakeMVCC, recording the revision ANY Range
+// call (including confinedCountInRange's own sub-query) was asked for.
+type revisionObservingMVCC struct {
+	*fakeMVCC
+	observed *int64
+}
+
+func (r *revisionObservingMVCC) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
+	ro := ApplyRangeOptions(opts)
+	if ro.CountOnly {
+		*r.observed = ro.Revision
+	}
+	return r.fakeMVCC.Range(ctx, start, end, opts...)
 }
 
 func TestHardConfinedMVCC_UnkeyedMethodsPassThrough(t *testing.T) {

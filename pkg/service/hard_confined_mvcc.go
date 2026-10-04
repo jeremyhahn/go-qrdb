@@ -143,48 +143,58 @@ func (h *hardConfinedMVCC) GetAtRevisionWithConsistency(ctx context.Context, key
 // a single-key read like Get, with nothing to filter, so it is refused
 // outright instead.
 //
-// TotalCount is corrected, not merely left at the underlying answer: a
+// MVCCKVServicer.Range returns (kvs, count, revision, err) -- count
+// BEFORE revision, per its own doc comment and MVCCKVService.Range's
+// literal `return rr.KeyValues, rr.Count, rr.Revision, nil`. Binding them
+// in the other order compiles (both are int64) and passed the review
+// delta's own tests, because the fake test double encoded the identical
+// swap; a live cell caught it by reporting the wrong revision.
+//
+// Count is corrected, not merely left at the underlying answer: a
 // CountOnly caller (WithCountOnly, which returns no key-values at all)
 // would otherwise learn whether the confined key falls within [start, end)
 // purely from how the count changes across ranges, without ever seeing a
 // key-value to filter. confinedCountInRange issues a second, bounded
 // CountOnly query restricted to the overlap with the confined namespace --
 // skipped entirely when [start, end) doesn't reach that namespace at all,
-// which is every ordinary application range -- and that count, not the
-// filtered-slice length, is what gets subtracted, so it is correct whether
-// or not this call itself was CountOnly.
+// which is every ordinary application range -- carrying the caller's own
+// WithRevision through to it (a historical range must subtract only the
+// confined records that existed AT that revision, not however many exist
+// now), and that sub-query's count, not the filtered-slice length, is
+// what gets subtracted, so it is correct whether or not this call itself
+// was CountOnly.
 func (h *hardConfinedMVCC) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
 	if len(end) == 0 && isHardConfinedKey(string(start)) {
 		return nil, 0, 0, &HardConfinedKeyError{Key: string(start)}
 	}
-	kvs, revision, total, err := h.mvcc.Range(ctx, start, end, opts...)
+	kvs, count, revision, err := h.mvcc.Range(ctx, start, end, opts...)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	confined, err := h.confinedCountInRange(ctx, start, end, func(ctx context.Context, s, e []byte, ro ...RangeOption) ([]*KeyValue, int64, int64, error) {
+	confined, err := h.confinedCountInRange(ctx, start, end, opts, func(ctx context.Context, s, e []byte, ro ...RangeOption) ([]*KeyValue, int64, int64, error) {
 		return h.mvcc.Range(ctx, s, e, ro...)
 	})
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	return filterHardConfinedKeyValues(kvs), revision, total - confined, nil
+	return filterHardConfinedKeyValues(kvs), count - confined, revision, nil
 }
 
 func (h *hardConfinedMVCC) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, int64, error) {
 	if len(end) == 0 && isHardConfinedKey(string(start)) {
 		return nil, 0, 0, &HardConfinedKeyError{Key: string(start)}
 	}
-	kvs, revision, total, err := h.mvcc.RangeWithConsistency(ctx, start, end, opts, rangeOpts...)
+	kvs, count, revision, err := h.mvcc.RangeWithConsistency(ctx, start, end, opts, rangeOpts...)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	confined, err := h.confinedCountInRange(ctx, start, end, func(ctx context.Context, s, e []byte, ro ...RangeOption) ([]*KeyValue, int64, int64, error) {
+	confined, err := h.confinedCountInRange(ctx, start, end, rangeOpts, func(ctx context.Context, s, e []byte, ro ...RangeOption) ([]*KeyValue, int64, int64, error) {
 		return h.mvcc.RangeWithConsistency(ctx, s, e, opts, ro...)
 	})
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	return filterHardConfinedKeyValues(kvs), revision, total - confined, nil
+	return filterHardConfinedKeyValues(kvs), count - confined, revision, nil
 }
 
 // confinedCountInRange returns how many hard-confined keys fall within
@@ -192,12 +202,20 @@ func (h *hardConfinedMVCC) RangeWithConsistency(ctx context.Context, start, end 
 // overlap of [start, end) with the confined namespace -- issued only when
 // there is an overlap at all, so an ordinary application range that never
 // touches "__sys:cluster_ca/" costs nothing beyond the overlap check.
-func (h *hardConfinedMVCC) confinedCountInRange(ctx context.Context, start, end []byte, rangeFn func(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error)) (int64, error) {
+// callerOpts' own WithRevision (if any) is carried through to the
+// sub-query unchanged, so a historical range (GetAtRevision-shaped)
+// subtracts only the confined records that existed at THAT revision, not
+// however many exist at the current one.
+func (h *hardConfinedMVCC) confinedCountInRange(ctx context.Context, start, end []byte, callerOpts []RangeOption, rangeFn func(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error)) (int64, error) {
 	if !hardConfinedRangeOverlaps(string(start), string(end)) {
 		return 0, nil
 	}
 	clampedStart, clampedEnd := clampRangeToHardConfined(start, end)
-	_, _, confined, err := rangeFn(ctx, clampedStart, clampedEnd, WithCountOnly())
+	subOpts := []RangeOption{WithCountOnly()}
+	if resolved := ApplyRangeOptions(callerOpts); resolved.Revision != 0 {
+		subOpts = append(subOpts, WithRevision(resolved.Revision))
+	}
+	_, confined, _, err := rangeFn(ctx, clampedStart, clampedEnd, subOpts...)
 	if err != nil {
 		return 0, err
 	}
