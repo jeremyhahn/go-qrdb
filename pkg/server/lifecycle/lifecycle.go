@@ -639,7 +639,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	n.ClusterMigStore = clustermig.NewStore(authStore)
 
 	var placementOpts []service.DatabaseServiceOption
-	if store, perr := placement.NewStore(authStore); perr == nil {
+	if store, perr := placement.NewStore(newPlacementKV(n.KV, n.Index, n.Watch)); perr == nil {
 		n.PlacementStore = store
 		var schedOpts []placement.SchedulerOption
 		// A host whose groups gate features never has a group placed on a
