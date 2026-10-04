@@ -125,11 +125,56 @@ func (d *hsmDouble) provider() cakey.Adapter {
 	}
 }
 
+// hsmFactory implements cakey.ProviderFactory over a set of per-tenant
+// hsmDoubles, keyed by tenant ID -- so ProviderForTenant NEVER resolves the
+// same Provider for two different tenants, the owner's per-tenant-keys
+// ruling (go-qrdb#591's review). There is deliberately no constructor that
+// wraps a single hsmDouble behind every tenant ID: a test that wants a
+// single-tenant injected provider says so explicitly via
+// singleTenantHSMFactory, naming the one tenant it backs.
+type hsmFactory struct {
+	byTenant map[string]*hsmDouble
+}
+
+// errUnknownHSMTenant is returned by ProviderForTenant for a tenant ID the
+// factory was never configured with -- standing in for an HSM/KMS backend
+// that genuinely has no key for a tenant it has never provisioned one for.
+var errUnknownHSMTenant = errors.New("hsmFactory: no provider configured for this tenant")
+
+// ProviderForTenant implements cakey.ProviderFactory.
+func (f *hsmFactory) ProviderForTenant(tenantID string) (cakey.Provider, error) {
+	d, ok := f.byTenant[tenantID]
+	if !ok {
+		return nil, errUnknownHSMTenant
+	}
+	return d.provider(), nil
+}
+
+// TenantIDs implements cakey.ProviderFactory.
+func (f *hsmFactory) TenantIDs(context.Context) ([]string, error) {
+	ids := make([]string, 0, len(f.byTenant))
+	for id := range f.byTenant {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// Compile-time interface check.
+var _ cakey.ProviderFactory = (*hsmFactory)(nil)
+
+// singleTenantHSMFactory wraps hsm behind cakey.ProviderFactory for exactly
+// one tenant ID -- the shape every single-tenant test in this file uses,
+// now that a bare cakey.Provider can no longer be injected directly (see
+// cakey.ProviderFactory's own doc comment for why that shortcut is gone).
+func singleTenantHSMFactory(tenantID string, hsm *hsmDouble) *hsmFactory {
+	return &hsmFactory{byTenant: map[string]*hsmDouble{tenantID: hsm}}
+}
+
 func TestDefaultCertProvider_WithKeyProvider_SignsThroughInjectedProvider(t *testing.T) {
 	hsm := newHSMDouble(t)
 	kv := newMockKVStore()
 	barrier := newMockBarrier()
-	p := NewDefaultProvider(kv, barrier, WithKeyProvider(hsm.provider()))
+	p := NewDefaultProvider(kv, barrier, WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 	ctx := context.Background()
 
 	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
@@ -162,7 +207,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignsThroughInjectedProvider(t *tes
 
 func TestDefaultCertProvider_WithKeyProvider_InitializeAndUnseal(t *testing.T) {
 	hsm := newHSMDouble(t)
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProvider(hsm.provider()))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("system", hsm)))
 	ctx := context.Background()
 
 	if err := p.Initialize(ctx); err != nil {
@@ -183,7 +228,7 @@ func TestDefaultCertProvider_WithKeyProvider_InitializeAndUnseal(t *testing.T) {
 func TestDefaultCertProvider_WithKeyProvider_SignerError(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.signErr = errors.New("device unavailable")
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProvider(hsm.provider()))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	_, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "bob", TenantID: "acme"})
 	if err == nil {
@@ -198,7 +243,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignerError(t *testing.T) {
 func TestDefaultCertProvider_WithKeyProvider_CertificateError(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.certErr = errors.New("device unavailable")
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProvider(hsm.provider()))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	_, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "bob", TenantID: "acme"})
 	if err == nil {
@@ -283,7 +328,7 @@ func TestDefaultCertProvider_CACertPEMs_BarrierSealed(t *testing.T) {
 
 func TestDefaultCertProvider_CACertPEMs_InjectedProvider(t *testing.T) {
 	hsm := newHSMDouble(t)
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProvider(hsm.provider()))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
 	pems, err := p.CACertPEMs(context.Background())
 	if err != nil {
@@ -297,14 +342,26 @@ func TestDefaultCertProvider_CACertPEMs_InjectedProvider(t *testing.T) {
 	}
 }
 
+// TestDefaultCertProvider_CACertPEMs_InjectedProviderError proves a single
+// factory-backed tenant's load failure is skipped, not propagated as
+// CACertPEMs' own error -- the same B3 skip-and-count behavior the built-in
+// per-tenant path gets (go-qrdb#591's review): one tenant's broken Key B CA
+// must not withdraw Key B trust for every OTHER tenant the dynamic trust
+// pool would otherwise widen with.
 func TestDefaultCertProvider_CACertPEMs_InjectedProviderError(t *testing.T) {
 	hsm := newHSMDouble(t)
 	hsm.certErr = errors.New("device unavailable")
-	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProvider(hsm.provider()))
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
-	_, err := p.CACertPEMs(context.Background())
-	if err == nil {
-		t.Fatal("expected error when the injected provider's Certificate fails")
+	pems, err := p.CACertPEMs(context.Background())
+	if err != nil {
+		t.Fatalf("CACertPEMs: %v, want the broken tenant skipped rather than propagated", err)
+	}
+	if len(pems) != 0 {
+		t.Errorf("expected no entries (the one configured tenant's load failed), got %d", len(pems))
+	}
+	if got := p.SkippedTenantCACount(); got != 1 {
+		t.Errorf("SkippedTenantCACount() = %d, want 1", got)
 	}
 }
 
@@ -458,6 +515,72 @@ func TestDefaultCertProvider_IsTenantIssuer_ForeignCADoesNotMatch(t *testing.T) 
 	}
 	if ok {
 		t.Error("expected globex's CA certificate NOT to match IsTenantIssuer(ctx, \"acme\", ...)")
+	}
+}
+
+// TestDefaultCertProvider_IsTenantIssuer_InjectedFactory_ForeignTenantDoesNotMatch
+// is the owner's required regression test (go-qrdb#591's review): an
+// embedder's injected cakey.ProviderFactory backing TWO tenants with two
+// DIFFERENT keys must bind each tenant's logins to its OWN issuer only --
+// tenant-x's CA certificate must never satisfy IsTenantIssuer for
+// tenant-y, or vice versa. Before resolveKeyProvider routed through
+// ProviderFactory.ProviderForTenant(tenantID), a single injected
+// cakey.Provider was shared across every tenant, which made this check
+// vacuously true for any tenant a presented leaf's Subject OU merely
+// claimed.
+func TestDefaultCertProvider_IsTenantIssuer_InjectedFactory_ForeignTenantDoesNotMatch(t *testing.T) {
+	hsmX := newHSMDouble(t)
+	hsmY := newHSMDouble(t)
+	factory := &hsmFactory{byTenant: map[string]*hsmDouble{
+		"tenant-x": hsmX,
+		"tenant-y": hsmY,
+	}}
+	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(factory))
+	ctx := context.Background()
+
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "tenant-x"}); err != nil {
+		t.Fatalf("GenerateClientCert(tenant-x): %v", err)
+	}
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "bob", TenantID: "tenant-y"}); err != nil {
+		t.Fatalf("GenerateClientCert(tenant-y): %v", err)
+	}
+
+	tenantXIssuer := hsmX.cert
+	tenantYIssuer := hsmY.cert
+
+	ok, err := p.IsTenantIssuer(ctx, "tenant-x", tenantXIssuer)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer(tenant-x, its own CA): %v", err)
+	}
+	if !ok {
+		t.Error("expected tenant-x's own CA certificate to match IsTenantIssuer(ctx, \"tenant-x\", ...)")
+	}
+
+	ok, err = p.IsTenantIssuer(ctx, "tenant-y", tenantYIssuer)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer(tenant-y, its own CA): %v", err)
+	}
+	if !ok {
+		t.Error("expected tenant-y's own CA certificate to match IsTenantIssuer(ctx, \"tenant-y\", ...)")
+	}
+
+	// The security property: tenant-x's CA must NOT satisfy tenant-y's
+	// binding, and vice versa -- a tenant-x-issued certificate cannot log
+	// in as tenant-y.
+	ok, err = p.IsTenantIssuer(ctx, "tenant-y", tenantXIssuer)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer(tenant-y, tenant-x's CA): %v", err)
+	}
+	if ok {
+		t.Fatal("tenant-x's CA certificate satisfied IsTenantIssuer for tenant-y: a tenant-x certificate could log in as tenant-y")
+	}
+
+	ok, err = p.IsTenantIssuer(ctx, "tenant-x", tenantYIssuer)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer(tenant-x, tenant-y's CA): %v", err)
+	}
+	if ok {
+		t.Fatal("tenant-y's CA certificate satisfied IsTenantIssuer for tenant-x: a tenant-y certificate could log in as tenant-x")
 	}
 }
 

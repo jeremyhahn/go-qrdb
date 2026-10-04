@@ -98,25 +98,27 @@ type EmbeddedServerBinding struct {
 	lessor          *lease.Lessor
 	stopLeaseExpiry func()
 
-	// certKeyProvider, when set via SetCertKeyProvider before StartEmbedded,
-	// replaces Key B's built-in per-tenant cakey.SoftwareProvider entirely
-	// (the CA key provider seam). nil means the built-in software provider
-	// signs every tenant's client certificates, barrier-encrypted and
-	// persisted under __sys:cert_ca/. A Go embedder composing this binding
-	// directly (not through the Wails/cgo boundary, which cannot carry a Go
-	// interface value) injects an HSM/TPM/KMS-backed provider here.
-	certKeyProvider cakey.Provider
+	// certKeyProviderFactory, when set via SetCertKeyProviderFactory before
+	// StartEmbedded, replaces Key B's built-in per-tenant
+	// cakey.SoftwareProvider entirely (the CA key provider seam). nil means
+	// the built-in software provider signs every tenant's client
+	// certificates, barrier-encrypted and persisted under __sys:cert_ca/. A
+	// Go embedder composing this binding directly (not through the
+	// Wails/cgo boundary, which cannot carry a Go interface value) injects
+	// an HSM/TPM/KMS-backed factory here, resolved fresh per tenant.
+	certKeyProviderFactory cakey.ProviderFactory
 }
 
-// SetCertKeyProvider injects the cakey.Provider that signs Key B (the login
-// CA, pkg/cert) for every embedded node this binding starts, in place of
-// qrdb's built-in per-tenant cakey.SoftwareProvider. It must be called
-// before StartEmbedded: the CertProvider is constructed inside
-// lifecycle.BuildServices, which StartEmbedded calls directly.
-func (b *EmbeddedServerBinding) SetCertKeyProvider(p cakey.Provider) {
+// SetCertKeyProviderFactory injects the cakey.ProviderFactory that resolves
+// Key B (the login CA, pkg/cert) material, one tenant at a time, for every
+// embedded node this binding starts, in place of qrdb's built-in per-tenant
+// cakey.SoftwareProvider. It must be called before StartEmbedded: the
+// CertProvider is constructed inside lifecycle.BuildServices, which
+// StartEmbedded calls directly.
+func (b *EmbeddedServerBinding) SetCertKeyProviderFactory(f cakey.ProviderFactory) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.certKeyProvider = p
+	b.certKeyProviderFactory = f
 }
 
 // NewEmbeddedServerBinding creates a new EmbeddedServerBinding backed
@@ -251,17 +253,17 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	// warning, which is reserved for an actual operator decision to run
 	// without a barrier at all (go-qrdb#550 review).
 	svcNode, svcErr := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:              svcHost,
-		WatchHub:          hub,
-		DataDir:           dataDir,
-		SealBarrier:       embeddedBarrier,
-		SealEnabled:       true,
-		BarrierRegistry:   embeddedRegistry,
-		CredentialCoreSvc: embeddedCred,
-		CeremonyDataDir:   embeddedCeremonyDir,
-		AuditLogger:       trail,
-		CertKeyProvider:   b.certKeyProvider,
-		Logger:            slog.Default(),
+		Host:                   svcHost,
+		WatchHub:               hub,
+		DataDir:                dataDir,
+		SealBarrier:            embeddedBarrier,
+		SealEnabled:            true,
+		BarrierRegistry:        embeddedRegistry,
+		CredentialCoreSvc:      embeddedCred,
+		CeremonyDataDir:        embeddedCeremonyDir,
+		AuditLogger:            trail,
+		CertKeyProviderFactory: b.certKeyProviderFactory,
+		Logger:                 slog.Default(),
 	})
 	if svcErr != nil {
 		hub.Close()

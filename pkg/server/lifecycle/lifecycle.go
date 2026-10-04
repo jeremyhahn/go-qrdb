@@ -170,16 +170,17 @@ type Infra struct {
 	// before, with no SAN.
 	SPIFFETrustDomain string
 
-	// CertKeyProvider, when non-nil, replaces Key B's built-in per-tenant
-	// cakey.SoftwareProvider entirely (the CA key provider seam,
-	// cert.WithKeyProvider): every client-certificate signature is routed to
-	// it, and no software key is ever generated or stored under
-	// __sys:cert_ca/ for any tenant. An embedder (go-xkms) injects an
-	// HSM/TPM/KMS-backed provider here via server.WithCertKeyProvider,
-	// resolved before BuildServices runs (see CryptoOptions) for the same
-	// reason StrategyRegistry is: the provider must be in place before the
-	// CertProvider is constructed below, not after.
-	CertKeyProvider cakey.Provider
+	// CertKeyProviderFactory, when non-nil, replaces Key B's built-in
+	// per-tenant cakey.SoftwareProvider entirely (the CA key provider seam,
+	// cert.WithKeyProviderFactory): every client-certificate signature is
+	// routed through it, resolved fresh per tenant, and no software key is
+	// ever generated or stored under __sys:cert_ca/ for any tenant. An
+	// embedder (go-xkms) injects an HSM/TPM/KMS-backed factory here via
+	// server.WithCertKeyProviderFactory, resolved before BuildServices runs
+	// (see CryptoOptions) for the same reason StrategyRegistry is: the
+	// factory must be in place before the CertProvider is constructed
+	// below, not after.
+	CertKeyProviderFactory cakey.ProviderFactory
 
 	// MTLSBindingPolicy is the operator's auth.mtls_binding_policy, as
 	// configured. Under "required" the user service refuses every change that
@@ -1009,7 +1010,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 	if infra.BarrierRegistry != nil {
 		// CertProvider uses the KV service as its underlying store and the
 		// barrier for transparent encryption of certificate material,
-		// unless infra.CertKeyProvider replaces Key B's key material
+		// unless infra.CertKeyProviderFactory replaces Key B's key material
 		// entirely.
 		//
 		// GUARDED: n.Transaction is already built above, unconditionally (see
@@ -1022,8 +1023,8 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			return &CertStoreError{Err: err}
 		}
 		certOpts := []cert.ProviderOption{cert.WithTrustDomain(infra.SPIFFETrustDomain)}
-		if infra.CertKeyProvider != nil {
-			certOpts = append(certOpts, cert.WithKeyProvider(infra.CertKeyProvider))
+		if infra.CertKeyProviderFactory != nil {
+			certOpts = append(certOpts, cert.WithKeyProviderFactory(infra.CertKeyProviderFactory))
 		}
 		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier, certOpts...)
 

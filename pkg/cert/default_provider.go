@@ -74,9 +74,9 @@ type ProviderOption func(*providerOptions)
 
 // providerOptions holds the resolved provider configuration.
 type providerOptions struct {
-	defaultTTL  time.Duration
-	trustDomain string
-	keyProvider cakey.Provider
+	defaultTTL         time.Duration
+	trustDomain        string
+	keyProviderFactory cakey.ProviderFactory
 }
 
 // WithDefaultTTL sets the default certificate validity period used when
@@ -87,21 +87,34 @@ func WithDefaultTTL(d time.Duration) ProviderOption {
 	}
 }
 
-// WithKeyProvider injects the cakey.Provider this DefaultCertProvider signs
-// through, replacing the built-in per-tenant cakey.SoftwareProvider entirely
-// (the CA key provider seam, go-qrdb#555). When set, no software key is ever
-// generated or stored under prefixCertCA for any tenant: every Signer and
-// Certificate call is routed to p, so an embedder (go-xkms) backing Key B
-// with an HSM, TPM, or KMS plugs in with no glue code beyond cakey.Adapter.
+// WithKeyProviderFactory injects the cakey.ProviderFactory this
+// DefaultCertProvider resolves Key B material through, one tenant at a
+// time, replacing the built-in per-tenant cakey.SoftwareProvider entirely
+// (the CA key provider seam, go-qrdb#555). When set, no software key is
+// ever generated or stored under prefixCertCA for any tenant: every Signer
+// and Certificate call is routed to f.ProviderForTenant(tenantID), so an
+// embedder (go-xkms) backing Key B with an HSM, TPM, or KMS plugs in with
+// no glue code beyond cakey.Adapter, constructed fresh (or looked up) per
+// tenant.
 //
-// A nil p is refused by NewDefaultProvider's caller indirectly: passing a nil
-// Provider here is equivalent to not calling this option at all (the
+// f MUST resolve a DIFFERENT Provider -- its own key -- for each distinct
+// tenantID, exactly as the built-in default does (its own storage prefix
+// and Subject per tenant): per-tenant keys are REQUIRED, not merely
+// supported (owner ruling, go-qrdb#591's review). A factory that returns
+// the SAME Provider for every tenant makes IsTenantIssuer's binding
+// vacuous -- see cakey.ProviderFactory's own doc comment for exactly why --
+// which is also why this package deliberately offers no adapter from a
+// single bare cakey.Provider into a ProviderFactory: that shortcut is the
+// defect this option replaces, not a convenience it preserves.
+//
+// A nil f is refused by NewDefaultProvider's caller indirectly: passing a
+// nil factory here is equivalent to not calling this option at all (the
 // built-in per-tenant default remains active), because a configuration
-// mistake should fail by keeping the safe default, not by panicking inside a
-// functional option.
-func WithKeyProvider(p cakey.Provider) ProviderOption {
+// mistake should fail by keeping the safe default, not by panicking inside
+// a functional option.
+func WithKeyProviderFactory(f cakey.ProviderFactory) ProviderOption {
 	return func(o *providerOptions) {
-		o.keyProvider = p
+		o.keyProviderFactory = f
 	}
 }
 
@@ -131,22 +144,25 @@ func WithTrustDomain(trustDomain string) ProviderOption {
 // persisted through kvStore exactly like the cluster CA (Key A) -- the
 // replicated system store, with no additional per-node barrier wrap of its
 // own; the barrier gates only whether this provider will touch key material
-// at all (IsSealed), per the owner's CA-at-rest ruling -- or an injected
-// one, see WithKeyProvider) and calling its Signer.
+// at all (IsSealed), per the owner's CA-at-rest ruling -- or one resolved
+// per tenant from an injected cakey.ProviderFactory, see
+// WithKeyProviderFactory) and calling its Signer.
 type DefaultCertProvider struct {
 	kvStore kvstore.MultiGuardedBatchKVStore
 	barrier seal.EncryptionBarrier
 
-	// keyProvider, when non-nil, is an embedder-injected cakey.Provider that
-	// replaces the built-in per-tenant default entirely (WithKeyProvider).
-	keyProvider cakey.Provider
+	// keyProviderFactory, when non-nil, is an embedder-injected
+	// cakey.ProviderFactory that replaces the built-in per-tenant default
+	// entirely (WithKeyProviderFactory), resolved fresh for each tenant --
+	// never a single Provider shared across all of them.
+	keyProviderFactory cakey.ProviderFactory
 
 	mu sync.RWMutex
 
 	// perTenant holds the built-in cakey.SoftwareProvider for each tenant
 	// that has resolved Key B material, keyed by tenant ID, constructed
-	// lazily on first use. Empty and never consulted when keyProvider is
-	// injected.
+	// lazily on first use. Empty and never consulted when
+	// keyProviderFactory is injected.
 	perTenant map[string]*cakey.SoftwareProvider
 
 	defaultTTL time.Duration
@@ -188,11 +204,11 @@ func NewDefaultProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.E
 		fn(o)
 	}
 	return &DefaultCertProvider{
-		kvStore:     kvStore,
-		barrier:     barrier,
-		keyProvider: o.keyProvider,
-		defaultTTL:  o.defaultTTL,
-		trustDomain: o.trustDomain,
+		kvStore:            kvStore,
+		barrier:            barrier,
+		keyProviderFactory: o.keyProviderFactory,
+		defaultTTL:         o.defaultTTL,
+		trustDomain:        o.trustDomain,
 	}
 }
 
@@ -203,10 +219,11 @@ func NewDefaultProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.E
 // Initialize (create-or-load, atomic via PutIfAbsent -- see
 // cakey.SoftwareProvider.Initialize, which is what makes two callers racing
 // a brand-new tenant's first-ever boot converge on exactly one CA rather
-// than each writing its own candidate); an injected Provider
-// (WithKeyProvider) has no such distinction on the Provider interface, so it
-// is proven ready by calling Signer directly -- an embedder's CA is
-// established by construction, not by this call.
+// than each writing its own candidate); a Provider resolved from an
+// injected ProviderFactory (WithKeyProviderFactory) has no such distinction
+// on the Provider interface, so it is proven ready by calling Signer
+// directly -- an embedder's CA is established by construction, not by this
+// call.
 func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 	if p.barrier.IsSealed() {
 		return &BarrierSealedError{}
@@ -258,13 +275,13 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 }
 
 // resolveKeyProvider returns the cakey.Provider that signs Key B material
-// for tenantID: the injected keyProvider when WithKeyProvider was used
-// (shared across every tenant, never persisting or generating a software
-// key), otherwise the built-in cakey.SoftwareProvider for tenantID,
-// constructed lazily and cached in perTenant on first use.
+// for tenantID: f.ProviderForTenant(tenantID) when WithKeyProviderFactory
+// was used -- resolved FRESH for this specific tenant, never a value shared
+// across tenants -- otherwise the built-in cakey.SoftwareProvider for
+// tenantID, constructed lazily and cached in perTenant on first use.
 func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provider, error) {
-	if p.keyProvider != nil {
-		return p.keyProvider, nil
+	if p.keyProviderFactory != nil {
+		return p.keyProviderFactory.ProviderForTenant(tenantID)
 	}
 
 	p.mu.Lock()
@@ -310,9 +327,9 @@ func mapProviderError(err error) error {
 
 // Seal destroys, for every tenant whose Key B uses the built-in software
 // provider, its in-memory private key (cakey.SoftwareProvider.Seal). An
-// injected provider (WithKeyProvider) is never sealed here: this process
-// holds none of its key material to destroy, and the barrier's own sealed
-// state is what every subsequent Signer/Certificate call is checked
+// injected provider (WithKeyProviderFactory) is never sealed here: this
+// process holds none of its key material to destroy, and the barrier's own
+// sealed state is what every subsequent Signer/Certificate call is checked
 // against.
 func (p *DefaultCertProvider) Seal() error {
 	p.mu.Lock()
@@ -763,11 +780,13 @@ const materialRecordSuffix = "/material"
 const certRecordSuffix = "/certificate"
 
 // CACertPEMs returns the PEM-encoded Key B CA certificate for every tenant
-// that has established one -- or, when WithKeyProvider replaced the built-in
-// per-tenant default, the single injected provider's certificate. This is
-// the seam the client-facing listeners' dynamic trust pool uses to trust
-// every tenant's login CA (see docs/certificate-authority/architecture.md,
-// "Key B trust on the client-facing listeners").
+// that has established one -- or, when WithKeyProviderFactory replaced the
+// built-in per-tenant default, every tenant the factory names via its own
+// TenantIDs, each resolved and loaded through ProviderForTenant exactly like
+// the built-in path resolves its own. This is the seam the client-facing
+// listeners' dynamic trust pool uses to trust every tenant's login CA (see
+// docs/certificate-authority/architecture.md, "Key B trust on the
+// client-facing listeners").
 //
 // The scan only discovers tenant IDs from the record layout; this method
 // checks the barrier explicitly up front and refuses with
@@ -787,16 +806,15 @@ func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) 
 	if p.barrier.IsSealed() {
 		return nil, &BarrierSealedError{}
 	}
-	if p.keyProvider != nil {
-		cert, err := p.keyProvider.Certificate(ctx)
+
+	var tenantIDs []string
+	if p.keyProviderFactory != nil {
+		ids, err := p.keyProviderFactory.TenantIDs(ctx)
 		if err != nil {
 			return nil, mapProviderError(err)
 		}
-		return [][]byte{pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})}, nil
-	}
-
-	var tenantIDs []string
-	if err := p.kvStore.Scan(ctx, prefixCertCA, func(key string, _ []byte) error {
+		tenantIDs = ids
+	} else if err := p.kvStore.Scan(ctx, prefixCertCA, func(key string, _ []byte) error {
 		if !strings.HasSuffix(key, certRecordSuffix) {
 			return nil
 		}
@@ -904,8 +922,9 @@ func (p *DefaultCertProvider) IsTenantIssuer(ctx context.Context, tenantID strin
 // -- never Certificate (which would auto-initialize a brand-new CA just to
 // answer a probe against a tenant with no established CA) and never Unseal
 // (which loads the key record into memory alongside the certificate one,
-// on every call). An injected Provider (WithKeyProvider) has no such
-// distinction -- its CA is established by construction, not by this call,
+// on every call). A Provider resolved from an injected ProviderFactory
+// (WithKeyProviderFactory) has no such distinction -- its CA is established
+// by construction, not by this call,
 // and this package never holds or parses its key material either way -- so
 // Certificate is called directly, as every other accessor on that path
 // already does.

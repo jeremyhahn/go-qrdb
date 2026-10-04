@@ -258,12 +258,13 @@ type serverOptions struct {
 	// hardware-backed factors from go-xkms.
 	factorRegistry *authfactors.FactorRegistry
 
-	// certKeyProvider replaces Key B's built-in per-tenant
+	// certKeyProviderFactory replaces Key B's built-in per-tenant
 	// cakey.SoftwareProvider entirely. nil means qrdb's built-in software
 	// provider signs every tenant's client certificates, barrier-encrypted
 	// and persisted under __sys:cert_ca/; higher layers inject an
-	// HSM/TPM/KMS-backed cakey.Provider here (see WithCertKeyProvider).
-	certKeyProvider cakey.Provider
+	// HSM/TPM/KMS-backed cakey.ProviderFactory here (see
+	// WithCertKeyProviderFactory), resolved fresh per tenant.
+	certKeyProviderFactory cakey.ProviderFactory
 
 	// sealedWindowProbe controls the sealed-window middleware /
 	// interceptors on REST and gRPC. While the probe reports sealed,
@@ -930,23 +931,30 @@ func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
 	return func(o *serverOptions) { o.factorRegistry = reg }
 }
 
-// WithCertKeyProvider injects the cakey.Provider that signs Key B (the login
-// CA, pkg/cert) in place of qrdb's built-in per-tenant
-// cakey.SoftwareProvider. When set, no software key is ever generated or
-// stored under __sys:cert_ca/ for any tenant: every client-certificate
-// signature is routed to p. This is the Key B half of the CA key provider
-// seam (see docs/certificate-authority/architecture.md); the cluster CA
-// (Key A) has its own, separate injection point.
+// WithCertKeyProviderFactory injects the cakey.ProviderFactory that resolves
+// Key B (the login CA, pkg/cert) material, one tenant at a time, in place
+// of qrdb's built-in per-tenant cakey.SoftwareProvider. When set, no
+// software key is ever generated or stored under __sys:cert_ca/ for any
+// tenant: every client-certificate signature is routed through
+// f.ProviderForTenant(tenantID). This is the Key B half of the CA key
+// provider seam (see docs/certificate-authority/architecture.md); the
+// cluster CA (Key A) has its own, separate injection point.
+//
+// f MUST resolve its own key per tenant -- per-tenant keys are REQUIRED, not
+// merely supported (owner ruling, go-qrdb#591's review) -- exactly as
+// cakey.ProviderFactory's own doc comment requires; a factory that returns
+// the same Provider for every tenant defeats the issuer-tenant binding
+// pkg/clienttrust.Pool.VerifyIssuer enforces.
 //
 // The CertProvider that consumes this is constructed during
 // lifecycle.BuildServices — strictly BEFORE server.New runs — so, like
 // WithStrategyRegistry, the SDK node builders and qrdbd resolve this option
-// via ResolveCryptoOptions and forward it into lifecycle.Infra.CertKeyProvider
-// up front. Passing it only to server.New would be too late: the
-// DefaultCertProvider would already have been constructed with the built-in
-// software provider.
-func WithCertKeyProvider(p cakey.Provider) ServerOption {
-	return func(o *serverOptions) { o.certKeyProvider = p }
+// via ResolveCryptoOptions and forward it into
+// lifecycle.Infra.CertKeyProviderFactory up front. Passing it only to
+// server.New would be too late: the DefaultCertProvider would already have
+// been constructed with the built-in software provider.
+func WithCertKeyProviderFactory(f cakey.ProviderFactory) ServerOption {
+	return func(o *serverOptions) { o.certKeyProviderFactory = f }
 }
 
 // CryptoOptions holds the hardware/seal injection values carried by a set of
@@ -958,12 +966,12 @@ func WithCertKeyProvider(p cakey.Provider) ServerOption {
 // up front; passing them only to server.New would be too late and the
 // injection would silently no-op.
 type CryptoOptions struct {
-	StrategyRegistry seal.StrategyRegistry
-	SealStrategy     seal.SealingStrategy
-	PINBackend       pin.PINBackend
-	FactorRegistry   *authfactors.FactorRegistry
-	CertKeyProvider  cakey.Provider
-	AuditLogger      audit.AuditLogger
+	StrategyRegistry       seal.StrategyRegistry
+	SealStrategy           seal.SealingStrategy
+	PINBackend             pin.PINBackend
+	FactorRegistry         *authfactors.FactorRegistry
+	CertKeyProviderFactory cakey.ProviderFactory
+	AuditLogger            audit.AuditLogger
 	// AuthFactorService is the caller-supplied AuthFactorServicer, if any.
 	// When non-nil the caller passed server.WithAuthFactorService explicitly.
 	// When nil and FactorRegistry is non-nil, the server and SDK node builders
@@ -989,14 +997,14 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		}
 	}
 	return CryptoOptions{
-		StrategyRegistry:  o.strategyRegistry,
-		SealStrategy:      o.sealStrategy,
-		PINBackend:        o.pinBackend,
-		FactorRegistry:    o.factorRegistry,
-		CertKeyProvider:   o.certKeyProvider,
-		AuditLogger:       o.auditLogger,
-		AuthFactorService: o.authFactorSvc,
-		CeremonyCA:        o.ceremonyCA,
+		StrategyRegistry:       o.strategyRegistry,
+		SealStrategy:           o.sealStrategy,
+		PINBackend:             o.pinBackend,
+		FactorRegistry:         o.factorRegistry,
+		CertKeyProviderFactory: o.certKeyProviderFactory,
+		AuditLogger:            o.auditLogger,
+		AuthFactorService:      o.authFactorSvc,
+		CeremonyCA:             o.ceremonyCA,
 	}
 }
 

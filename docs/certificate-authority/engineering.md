@@ -220,7 +220,8 @@ type AuthMiddlewareConfig struct {
   `crypto.Signer`**, never raw key bytes: it signs in place, inside the
   provider, so no caller holds CA key material to alias in the first place.
   The built-in per-tenant `cakey.SoftwareProvider` wipes its own decrypted
-  key on seal; an injected provider (`WithKeyProvider`) manages its own key
+  key on seal; a provider resolved from an injected
+  `cakey.ProviderFactory` (`WithKeyProviderFactory`) manages its own key
   custody entirely.
 - **Client private key DER is wiped immediately after PEM encoding.**
 - **Revocation is enforced from replicated state, not a CRL.** Nothing generates
