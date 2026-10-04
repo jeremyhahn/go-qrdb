@@ -275,7 +275,13 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 	}
 	var resp struct {
 		AdminCertPEM string `json:"admin_cert_pem"`
-		AdminKeyPEM  string `json:"admin_key_pem"`
+		// []byte, not string: transport.CeremonyInitializeResponse.AdminKeyPEM
+		// is []byte (go-qrdb#560 review item 7), which encoding/json renders
+		// as base64 on the wire; decoding into []byte here, not string,
+		// gets that base64 decoded back to the raw PEM text automatically.
+		// AdminCertPEM stays string -- only the key, never the certificate,
+		// carries this convention.
+		AdminKeyPEM []byte `json:"admin_key_pem"`
 	}
 	decodeJSON(t, out, &resp)
 	if resp.AdminCertPEM == "" {
@@ -285,10 +291,10 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 		t.Fatalf("bootAdminIdentity: write %s: %v", certPath, err)
 	}
 	if csrPath == "" && !slices.Contains(extraArgs, "--admin-cert") {
-		if resp.AdminKeyPEM == "" {
+		if len(resp.AdminKeyPEM) == 0 {
 			t.Fatalf("bootAdminIdentity: generate path returned no admin_key_pem: %s", out)
 		}
-		if err := os.WriteFile(keyPath, []byte(resp.AdminKeyPEM), 0o600); err != nil {
+		if err := os.WriteFile(keyPath, resp.AdminKeyPEM, 0o600); err != nil {
 			t.Fatalf("bootAdminIdentity: write %s: %v", keyPath, err)
 		}
 	}
