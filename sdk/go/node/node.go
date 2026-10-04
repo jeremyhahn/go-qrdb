@@ -3383,6 +3383,15 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 		embedded.WithEmbeddingService(svcNode.Embedding),
 		embedded.WithRAGService(svcNode.RAG),
 		embedded.WithDatabaseService(svcNode.Database),
+		// Wired unconditionally, matching every service above: svcNode.Backup
+		// is itself constructed unconditionally (BuildServices). Without
+		// this the embedded transport's own BackupClient methods all
+		// returned NilServiceError, even though every network transport
+		// already reaches the identical svcNode.Backup via
+		// server.WithBackupService -- docs/backup-restore/api.md's
+		// capability matrix has always claimed embedded support this
+		// never actually had.
+		embedded.WithBackupService(svcNode.Backup),
 		// Wired unconditionally, matching the network transports
 		// (server.WithEncryptionMigrator is set whenever the node's own
 		// scoped router exists, independent of barrier/seal state): the
