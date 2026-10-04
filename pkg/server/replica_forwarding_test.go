@@ -17,6 +17,7 @@ package server
 import (
 	"crypto/x509"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -37,6 +38,29 @@ func TestReplicaForwarding_ListenersTrustTheForwardingPool(t *testing.T) {
 	if !ok || cfg.Locator != locator || cfg.RootCAs != pool || cfg.Timeout != 3*time.Second {
 		t.Fatalf("replicaForwarding = %+v, %v; want the locator, the pool and 3s", cfg, ok)
 	}
+}
+
+// TestReplicaForwarding_EveryListenerStartsAndStopsForwarding: a server told
+// to forward, with a pool to verify replicas against, hands forwarding to all
+// five network listeners, which start and stop with it.
+func TestReplicaForwarding_EveryListenerStartsAndStopsForwarding(t *testing.T) {
+	cfg := testConfigFull(t, protocolFlags{rest: true, grpc: true, quic: true, unix: true, mcp: true},
+		filepath.Join(t.TempDir(), "fwd.sock"))
+	locator := replicaforward.NewLocator(nil, replicaforward.NewLeaderCache(), cfg.Raft.RaftAddress, nil)
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(selfSignedTLSConfig(t)),
+		WithCACertPool(x509.NewCertPool()), WithReplicaForwarding(locator, time.Second))
+	if _, ok := srv.replicaForwarding(); !ok {
+		t.Fatal("a server with a locator and a pool does not forward")
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for name, addr := range map[string]string{"rest": srv.RESTAddr(), "grpc": srv.GRPCAddr(), "quic": srv.QUICAddr(), "unix": srv.UnixAddr(), "mcp": srv.MCPAddr()} {
+		if addr == "" {
+			t.Errorf("%s listener not serving", name)
+		}
+	}
+	srv.Stop()
 }
 
 // TestReplicaForwarding_NoneWithoutTheOptionOrAPool: a server not told to
