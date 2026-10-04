@@ -117,9 +117,13 @@ var (
 	// ErrCeremonyCSRSigningFailed is returned when CSR signing fails.
 	ErrCeremonyCSRSigningFailed = ceremony.ErrCSRSigningFailed
 
-	// ErrCeremonyNotInitializedOrEnrolling is returned when sign-csr requires
-	// enrolling or operational state.
+	// ErrCeremonyNotInitializedOrEnrolling is returned when sign-csr is
+	// called outside the enrolling state: it is pre-operational only.
 	ErrCeremonyNotInitializedOrEnrolling = ceremony.ErrNotInitializedOrEnrolling
+
+	// ErrCeremonyNotInitialized is returned by an operation that needs an
+	// initialized ceremony before "qrdb init" has run.
+	ErrCeremonyNotInitialized = ceremony.ErrNotInitialized
 
 	// ErrCeremonyChallengeExpired is returned when a challenge has expired.
 	ErrCeremonyChallengeExpired = ceremony.ErrChallengeExpired

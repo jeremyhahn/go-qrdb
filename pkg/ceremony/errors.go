@@ -138,9 +138,17 @@ var (
 	// ErrCSRSigningFailed is returned when CSR signing fails.
 	ErrCSRSigningFailed = errors.New("ceremony: CSR signing failed")
 
-	// ErrNotInitializedOrEnrolling is returned when sign-csr requires
-	// the enrolling or operational state.
-	ErrNotInitializedOrEnrolling = errors.New("ceremony: sign-csr requires enrolling or operational state")
+	// ErrNotInitializedOrEnrolling is returned when sign-csr is called
+	// outside the enrolling state. sign-csr is pre-operational only: it
+	// issues holder certificates while an M-of-N ceremony is enrolling, and
+	// is refused both before initialization and once the ceremony is
+	// operational.
+	ErrNotInitializedOrEnrolling = errors.New("ceremony: sign-csr requires the enrolling state; holder certificates are issued only before the ceremony is operational")
+
+	// ErrNotInitialized is returned by an operation that needs an
+	// initialized ceremony when none has been initialized yet ("qrdb init"
+	// has not run).
+	ErrNotInitialized = errors.New("ceremony: not initialized; run qrdb init first")
 
 	// ErrChallengeExpired is returned when a challenge nonce has expired.
 	ErrChallengeExpired = errors.New("ceremony: challenge has expired")

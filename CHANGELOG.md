@@ -2104,6 +2104,13 @@ Cluster-wide sealing. This release contains BREAKING changes; see the entries be
   binding, whose Go signature is now `SealBinding.Seal(soPin string)`; the
   Seal Manager's confirmation asks for the SO PIN. Neither could seal a node
   with an SO PIN provisioned before.
+- **The sign-csr state refusal names the state it runs in.**
+  `ceremony.ErrNotInitializedOrEnrolling` read "requires enrolling or
+  operational state", but sign-csr is pre-operational only; it now reads
+  "sign-csr requires the enrolling state". `ReissueAdminCredential`, which
+  shared that sentinel for a different refusal, returns the new
+  `ceremony.ErrNotInitialized` (`qrdb.ErrCeremonyNotInitialized` in the Go
+  SDK) before `qrdb init` has run.
 
 ## [0.34.2-alpha] - 2026-10-03
 

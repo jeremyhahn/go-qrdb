@@ -398,14 +398,14 @@ func (s *CeremonyService) LastIssuedAdminCertPEM() ([]byte, AdminCredentialSourc
 // store to check that itself -- and for writing the result to the replicated
 // store exactly as Initialize's result is written.
 //
-// Returns ErrNotInitializedOrEnrolling when the ceremony has not been
-// initialized yet (run Initialize / "qrdb init" first).
+// Returns ErrNotInitialized when the ceremony has not been initialized yet
+// (run Initialize / "qrdb init" first).
 func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *InitializeOptions) (*InitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.state == StateAwaitingInit || s.deps.CA == nil {
-		return nil, ErrNotInitializedOrEnrolling
+		return nil, ErrNotInitialized
 	}
 
 	caBundle, err := s.deps.CA.CABundle()

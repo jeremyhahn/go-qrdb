@@ -269,7 +269,8 @@ func TestReissueAdminCredential_NotInitialized(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 
 	_, err := svc.ReissueAdminCredential(context.Background(), nil)
-	assert.ErrorIs(t, err, ErrNotInitializedOrEnrolling)
+	assert.ErrorIs(t, err, ErrNotInitialized)
+	assert.NotErrorIs(t, err, ErrNotInitializedOrEnrolling, "a reissue refusal is not a sign-csr refusal")
 }
 
 // TestReissueAdminCredential_Succeeds covers the recovery path (go-qrdb#548):

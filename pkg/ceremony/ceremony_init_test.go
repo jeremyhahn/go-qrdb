@@ -212,6 +212,10 @@ func TestSignCSRInit_Refusals(t *testing.T) {
 	h := newHolder(t, "x", "")
 	_, err := e.svc.SignCSRInit(ctx, "u", "so-pin-1234", h.csrPEM, "so")
 	assert.ErrorIs(t, err, ErrNotInitializedOrEnrolling)
+	// sign-csr is pre-operational only: the refusal names the one state it
+	// runs in and never offers operational as an alternative.
+	assert.Contains(t, err.Error(), "enrolling state")
+	assert.NotContains(t, err.Error(), "operational state")
 
 	_, err = e.svc.Initialize(ctx, e.ca, initOpts(2, newHolder(t, "alice", seal.RoleSecurityOfficer), newHolder(t, "bob", seal.RoleSecurityOfficer)))
 	require.NoError(t, err)
