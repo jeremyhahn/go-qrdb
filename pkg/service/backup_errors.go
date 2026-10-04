@@ -47,12 +47,28 @@ func (e *BackupEmptyIDError) Error() string {
 }
 
 // BackupEncryptionKeyRequiredError is returned when encryption is
-// requested but no key is provided.
+// EXPLICITLY requested (BackupOptions.Encryption names a non-none
+// algorithm) but no key is provided.
 type BackupEncryptionKeyRequiredError struct{}
 
 // Error returns a human-readable description.
 func (e *BackupEncryptionKeyRequiredError) Error() string {
 	return "service: encryption key is required when encryption is enabled"
+}
+
+// BackupEncryptionRequiredError is returned when a backup request supplies
+// neither an explicit encryption choice (BackupOptions.Encryption is empty)
+// nor an encryption key. The default is EncryptionAES256, so defaulting
+// into it without key material would either mint a key this package does
+// not have, or silently fall back to plaintext -- both wrong. The caller
+// must choose: supply an encryption key (or a KMS key reference, where the
+// deployment provides one) to keep the default, or set
+// BackupOptions.Encryption to EncryptionNone outright to get plaintext.
+type BackupEncryptionRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *BackupEncryptionRequiredError) Error() string {
+	return "service: backups are encrypted by default (aes256); supply an encryption key (or KMS key reference), or explicitly request encryption \"none\""
 }
 
 // BackupDecryptionKeyRequiredError is returned when restoring an

@@ -584,6 +584,7 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1_PostBackupWriteSurvivesIdemp
 	backup, err := backupSvc.CreateBackup(ctx, service.BackupOptions{
 		Destination: "test-online-restore-idempotent",
 		ShardIDs:    []uint64{shardID},
+		Encryption:  service.EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)

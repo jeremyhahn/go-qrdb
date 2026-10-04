@@ -280,7 +280,7 @@ func TestBackupService_VerifyBackup_CorruptedEntry(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/corrupt"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/corrupt", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestBackupService_VerifyBackup_FailedBackupIsInvalid(t *testing.T) {
 	svc := NewBackupService(provider)
 	ctx := context.Background()
 
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/failed"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/failed", Encryption: EncryptionNone})
 	if err == nil {
 		t.Fatal("CreateBackup succeeded against a failing provider")
 	}

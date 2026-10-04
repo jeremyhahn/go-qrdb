@@ -105,6 +105,7 @@ func TestBackupService_CreateBackup_Success(t *testing.T) {
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
 		Destination: "/backups/daily",
+		Encryption:  EncryptionNone,
 		Metadata:    map[string]string{"env": "test"},
 	})
 	if err != nil {
@@ -237,6 +238,7 @@ func TestBackupService_CreateBackup_WithCompression(t *testing.T) {
 	info, err := svc.CreateBackup(ctx, BackupOptions{
 		Destination: "/backups/compressed",
 		Compression: CompressionZstd,
+		Encryption:  EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup with compression returned error: %v", err)
@@ -254,6 +256,7 @@ func TestBackupService_CreateBackup_SpecificShards(t *testing.T) {
 	info, err := svc.CreateBackup(ctx, BackupOptions{
 		Destination: "/backups/partial",
 		ShardIDs:    []uint64{1, 3},
+		Encryption:  EncryptionNone,
 	})
 	if err != nil {
 		t.Fatalf("CreateBackup with specific shards returned error: %v", err)
@@ -271,6 +274,7 @@ func TestBackupService_CreateBackup_SnapshotError(t *testing.T) {
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
 		Destination: "/backups/fail",
+		Encryption:  EncryptionNone,
 	})
 	if err == nil {
 		t.Fatal("expected error when snapshot fails")
@@ -292,6 +296,7 @@ func TestBackupService_CreateBackup_AvailableShardsError(t *testing.T) {
 	ctx := context.Background()
 	info, err := svc.CreateBackup(ctx, BackupOptions{
 		Destination: "/backups/fail",
+		Encryption:  EncryptionNone,
 	})
 	if err == nil {
 		t.Fatal("expected error when AvailableShards fails")
@@ -314,6 +319,7 @@ func TestBackupService_CreateBackup_CanceledContext(t *testing.T) {
 
 	info, err := svc.CreateBackup(ctx, BackupOptions{
 		Destination: "/backups/canceled",
+		Encryption:  EncryptionNone,
 	})
 	if err == nil {
 		t.Fatal("expected error for canceled context")
@@ -351,11 +357,11 @@ func TestBackupService_ListBackups_Ordered(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/first"})
+	_, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/first", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("first CreateBackup returned error: %v", err)
 	}
-	_, err = svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/second"})
+	_, err = svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/second", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("second CreateBackup returned error: %v", err)
 	}
@@ -383,7 +389,7 @@ func TestBackupService_GetBackup_Success(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/test"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/test", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -436,7 +442,7 @@ func TestBackupService_DeleteBackup_Success(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/delete-me"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/delete-me", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -492,7 +498,7 @@ func TestBackupService_RestoreBackup_Success(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/restore-test"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/restore-test", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -522,7 +528,7 @@ func TestBackupService_RestoreBackup_TargetShards(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial-restore"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial-restore", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -576,7 +582,7 @@ func TestBackupService_RestoreBackup_WithValidation(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/validate"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/validate", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -598,7 +604,7 @@ func TestBackupService_RestoreBackup_RestoreError(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/restore-fail"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/restore-fail", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -626,7 +632,7 @@ func TestBackupService_RestoreBackup_PrefersOnlineShardRestorer(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -656,7 +662,7 @@ func TestBackupService_RestoreBackup_OnlineShardRestorerError(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online-fail"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online-fail", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -683,7 +689,7 @@ func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
@@ -741,7 +747,7 @@ func TestBackupService_VerifyBackup_Success(t *testing.T) {
 	svc := NewBackupService(provider)
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/verify"})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/verify", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}

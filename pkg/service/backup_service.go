@@ -18,12 +18,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -43,7 +47,20 @@ const (
 type EncryptionType string
 
 const (
-	EncryptionNone   EncryptionType = "none"
+	// EncryptionNone writes the backup in plaintext. It is never applied
+	// implicitly: a caller gets it only by naming it explicitly in
+	// BackupOptions.Encryption, which CreateBackup logs at WARN and, when
+	// an audit logger is configured, records in the compliance audit
+	// trail -- a backup covering the system shard carries the cluster CA
+	// and every tenant's login CA key material, so writing one in the
+	// clear is a decision this package makes visible, never one it makes
+	// quietly on a caller's behalf.
+	EncryptionNone EncryptionType = "none"
+
+	// EncryptionAES256 encrypts the backup with AES-256-GCM under
+	// BackupOptions.EncryptionKey. It is CreateBackup's default when
+	// BackupOptions.Encryption is left empty -- see
+	// BackupEncryptionRequiredError.
 	EncryptionAES256 EncryptionType = "aes256"
 )
 
@@ -59,8 +76,14 @@ const (
 
 // BackupOptions contains parameters for creating a backup.
 type BackupOptions struct {
-	Destination   string
-	Compression   CompressionType
+	Destination string
+	Compression CompressionType
+
+	// Encryption selects the encryption algorithm. Left empty, CreateBackup
+	// defaults it to EncryptionAES256 and then requires EncryptionKey: the
+	// default is encrypted, not plaintext, and a caller that wants
+	// plaintext must say EncryptionNone outright rather than get it by
+	// omission. See BackupEncryptionRequiredError.
 	Encryption    EncryptionType
 	EncryptionKey []byte
 	Metadata      map[string]string
@@ -204,6 +227,17 @@ type BackupService struct {
 	mu       sync.RWMutex
 	backups  map[string]*backupEntry
 	idGen    func() string
+
+	// audit is an optional compliance-grade audit logger. When set, a
+	// backup created with encryption explicitly disabled (EncryptionNone)
+	// emits an audit event recording that choice, in addition to the WARN
+	// log every such backup gets regardless. A nil logger disables
+	// emission. It is read via auditLogger()/SetAuditLogger under mu so a
+	// composer can attach it after construction, the same accommodation
+	// pkg/credentials.CredentialService makes for the same reason (the
+	// seal subsystem builds services before the compliance logger
+	// exists).
+	audit audit.AuditLogger
 }
 
 // Compile-time interface assertion.
@@ -225,6 +259,68 @@ func WithBackupSink(sink BackupSink) BackupServiceOption {
 	return func(s *BackupService) {
 		s.sink = sink
 	}
+}
+
+// WithAuditLogger attaches a compliance-grade audit logger so a backup
+// created with encryption explicitly disabled leaves an audit trail record,
+// in addition to its WARN log line. A nil logger disables emission, so the
+// option is safe to apply unconditionally.
+func WithAuditLogger(logger audit.AuditLogger) BackupServiceOption {
+	return func(s *BackupService) {
+		s.audit = logger
+	}
+}
+
+// SetAuditLogger attaches (or replaces) the compliance audit logger after
+// construction. It exists for wiring paths where the service is built
+// before the daemon's compliance logger is available. A nil logger
+// disables emission. Safe to call once during boot before the service
+// handles requests.
+func (s *BackupService) SetAuditLogger(logger audit.AuditLogger) {
+	s.mu.Lock()
+	s.audit = logger
+	s.mu.Unlock()
+}
+
+// auditLogger returns the configured audit logger under mu.
+func (s *BackupService) auditLogger() audit.AuditLogger {
+	s.mu.RLock()
+	l := s.audit
+	s.mu.RUnlock()
+	return l
+}
+
+// warnPlaintextBackup logs, at WARN, that a backup is being written with
+// encryption explicitly disabled, and -- when an audit logger is
+// configured -- records the same fact in the compliance audit trail. It is
+// called only for an EXPLICIT EncryptionNone; the default (empty
+// BackupOptions.Encryption) never reaches here because it is refused before
+// any backup starts (BackupEncryptionRequiredError) unless a key was also
+// supplied, in which case it is encrypted, not plaintext.
+func (s *BackupService) warnPlaintextBackup(ctx context.Context, destination string) {
+	slog.WarnContext(ctx, "service: backup created with encryption explicitly disabled; the backup is plaintext, and one covering the system shard carries the cluster CA and every tenant's login CA key material in the clear",
+		"destination", destination)
+
+	logger := s.auditLogger()
+	if logger == nil {
+		return
+	}
+	var actor, tenantID string
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		actor = id.Subject
+		tenantID = id.TenantID
+	}
+	audit.EmitBestEffort(ctx, logger, "backup", audit.AuditEvent{
+		Actor:    actor,
+		TenantID: tenantID,
+		Resource: "backup:" + destination,
+		Action:   "backup.create",
+		Outcome:  audit.OutcomeSuccess,
+		Attributes: map[string]any{
+			"encryption": string(EncryptionNone),
+			"plaintext":  true,
+		},
+	})
 }
 
 // NewBackupService creates a new BackupService backed by the given
@@ -268,16 +364,31 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 		return nil, &BackupInvalidCompressionError{Compression: string(compression)}
 	}
 
+	// A caller that names neither an encryption choice nor a key gets
+	// refused, not a silently-minted key and not silent plaintext: the
+	// default below is EncryptionAES256, so the very next check (missing
+	// key) fires for it exactly as it would for an explicit "aes256" with
+	// no key -- except the error names BOTH ways out (supply a key, or
+	// say "none" outright), because this caller never asked for
+	// encryption at all and needs telling that it is the default now.
+	defaulted := opts.Encryption == ""
 	encryption := opts.Encryption
-	if encryption == "" {
-		encryption = EncryptionNone
+	if defaulted {
+		encryption = EncryptionAES256
 	}
 	if _, ok := validEncryptions[encryption]; !ok {
 		return nil, &BackupInvalidEncryptionError{Encryption: string(encryption)}
 	}
 
 	if encryption != EncryptionNone && len(opts.EncryptionKey) == 0 {
+		if defaulted {
+			return nil, &BackupEncryptionRequiredError{}
+		}
 		return nil, &BackupEncryptionKeyRequiredError{}
+	}
+
+	if encryption == EncryptionNone {
+		s.warnPlaintextBackup(ctx, opts.Destination)
 	}
 
 	start := time.Now()

@@ -84,7 +84,7 @@ func TestBackupSink_DurableRoundTrip(t *testing.T) {
 		service.WithIDGenerator(func() string { return "backup-123" }),
 	)
 
-	info, err := svc.CreateBackup(ctx, service.BackupOptions{Destination: "objstore://repo"})
+	info, err := svc.CreateBackup(ctx, service.BackupOptions{Destination: "objstore://repo", Encryption: service.EncryptionNone})
 	require.NoError(t, err)
 	require.Equal(t, "backup-123", info.ID)
 	assert.Equal(t, service.BackupStatusComplete, info.Status)

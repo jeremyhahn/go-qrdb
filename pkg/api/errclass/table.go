@@ -620,6 +620,7 @@ var backupRules = []rule{
 	as(&service.BackupEmptyDestinationError{}, InvalidArgument),
 	as(&service.BackupEmptyIDError{}, InvalidArgument),
 	as(&service.BackupEncryptionKeyRequiredError{}, InvalidArgument),
+	as(&service.BackupEncryptionRequiredError{}, InvalidArgument),
 	as(&service.BackupDecryptionKeyRequiredError{}, InvalidArgument),
 	as(&service.BackupInvalidCompressionError{}, InvalidArgument),
 	as(&service.BackupInvalidEncryptionError{}, InvalidArgument),
