@@ -265,9 +265,11 @@ func TestClusterSeal_NodeBarrier_RF3(t *testing.T) {
 		})
 	}
 
-	// Seal through a follower: any node may receive the seal.
+	// Seal through a follower: any node may receive the seal. Once qrdb
+	// init provisions an SO PIN (initAndUnsealBarrier, above), the SO
+	// gate refuses a seal without it.
 	via := (leaderIdx + 1) % 3
-	if st, body := h.post(via, "/v1/barrier/seal", map[string]any{}); st != http.StatusNoContent && st != http.StatusOK {
+	if st, body := h.post(via, "/v1/barrier/seal", map[string]any{"so_pin": harnessSOPIN}); st != http.StatusNoContent && st != http.StatusOK {
 		t.Fatalf("seal via node %d: status %d, body %s", via+1, st, body)
 	}
 	t.Logf("node barrier sealed through node %d", via+1)
