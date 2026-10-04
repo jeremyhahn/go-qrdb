@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -155,6 +156,11 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
+	// replicaLocator and replicaTimeout configure replica forwarding on
+	// every network listener (WithReplicaForwarding); nil forwards nothing.
+	replicaLocator *replicaforward.Locator
+	replicaTimeout time.Duration
+
 	// standaloneMode marks the raft-free composition; it refuses the etcd
 	// compatibility listener (see WithStandaloneMode).
 	standaloneMode bool
@@ -1860,6 +1866,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.authMW != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
+	}
+	if fwd, ok := s.replicaForwarding(); ok {
+		grpcOpts = append(grpcOpts, grpcapi.WithReplicaForwarding(fwd))
 	}
 	if s.opts.sealedWindowProbe != nil {
 		if s.opts.sealedWindowListener {

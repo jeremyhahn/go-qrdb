@@ -132,6 +132,11 @@ type startFlags struct {
 	clusterMinPeers      int
 	dynamicMembership    bool
 	advertiseHost        string
+	// replicaForwarding and replicaForwardingTimeout are
+	// replica_forwarding.enabled and replica_forwarding.timeout
+	// (docs/replica-forwarding).
+	replicaForwarding        bool
+	replicaForwardingTimeout string
 	// host is the bind host every API listener uses (REST/HTTP3, gRPC,
 	// QUIC, MCP, MySQL, PgSQL). It reaches them through buildServerConfig
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
@@ -481,6 +486,8 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().BoolVar(&f.discoveryInsecure, "discovery-insecure-http", false, "Allow http:// token discovery endpoint (dev/testing only)")
 	cmd.Flags().IntVar(&f.clusterMinPeers, "cluster-min-peers", 0, "Minimum cluster size for bootstrap quorum + dynamic-membership removal guard (0 = default 3)")
 	cmd.Flags().BoolVar(&f.dynamicMembership, "dynamic-membership", false, "Enable opt-in lease/watch dynamic Raft membership (off by default)")
+	cmd.Flags().BoolVar(&f.replicaForwarding, "replica-forwarding", true, "Forward a request for a database this node holds no replica of to a node that does, as the caller (raft mode)")
+	cmd.Flags().StringVar(&f.replicaForwardingTimeout, "replica-forwarding-timeout", "", "Bound on one replica forward, connection included (Go duration; default 10s)")
 	cmd.Flags().StringVar(&f.advertiseHost, "advertise-host", "", "Host or IP peers/clients use to reach this node's APIs (default: host portion of --raft-address)")
 	cmd.Flags().IntVar(&f.adminPort, "admin-port", 63002, "Admin HTTP server port")
 	cmd.Flags().IntVar(&f.grpcPort, "grpc-port", 63003, "gRPC server port")
@@ -634,6 +641,12 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("dynamic-membership") && cfg.Discovery.DynamicMembership {
 		f.dynamicMembership = cfg.Discovery.DynamicMembership
+	}
+	if !cmd.Flags().Changed("replica-forwarding") {
+		f.replicaForwarding = cfg.ReplicaForwarding.On()
+	}
+	if !cmd.Flags().Changed("replica-forwarding-timeout") && cfg.ReplicaForwarding.Timeout != "" {
+		f.replicaForwardingTimeout = cfg.ReplicaForwarding.Timeout
 	}
 	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
 		f.advertiseHost = cfg.Server.AdvertiseHost
@@ -2425,6 +2438,14 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts, server.WithStandaloneMode())
 			} else {
 				serverOpts = append(serverOpts, server.WithHost(host))
+				fwdOpt, fwdErr := replicaForwardingOption(bootCtx, f, standalone, svcNode.PlacementStore, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				if fwdErr != nil {
+					_ = shutdownNode(nodeCloser)
+					return fwdErr
+				}
+				if fwdOpt != nil {
+					serverOpts = append(serverOpts, fwdOpt)
+				}
 				// The collection sweeper finishes interrupted creates and
 				// drops in the shared system store from the system shard's
 				// leader only, so a cluster sweeps each database once per pass

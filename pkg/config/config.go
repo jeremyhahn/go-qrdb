@@ -55,16 +55,21 @@ type Config struct {
 	// Empty means "raft" for full backward compatibility.
 	Mode string `yaml:"mode"`
 
-	Server      ServerConfig      `yaml:"server"`
-	Protocols   ProtocolsConfig   `yaml:"protocols"`
-	Raft        RaftConfig        `yaml:"raft"`
-	Storage     StorageConfig     `yaml:"storage"`
-	TLS         TLSConfig         `yaml:"tls"`
-	MTLS        MTLSConfig        `yaml:"mtls"`
-	Unix        UnixConfig        `yaml:"unix"`
-	MCP         MCPConfig         `yaml:"mcp"`
-	Logging     LoggingConfig     `yaml:"logging"`
-	Discovery   DiscoveryConfig   `yaml:"discovery"`
+	Server    ServerConfig    `yaml:"server"`
+	Protocols ProtocolsConfig `yaml:"protocols"`
+	Raft      RaftConfig      `yaml:"raft"`
+	Storage   StorageConfig   `yaml:"storage"`
+	TLS       TLSConfig       `yaml:"tls"`
+	MTLS      MTLSConfig      `yaml:"mtls"`
+	Unix      UnixConfig      `yaml:"unix"`
+	MCP       MCPConfig       `yaml:"mcp"`
+	Logging   LoggingConfig   `yaml:"logging"`
+	Discovery DiscoveryConfig `yaml:"discovery"`
+
+	// ReplicaForwarding configures forwarding a request for a database this
+	// node holds no replica of to a node that does.
+	ReplicaForwarding ReplicaForwardingConfig `yaml:"replica_forwarding"`
+
 	MVCC        MVCCConfig        `yaml:"mvcc"`
 	Watch       WatchConfig       `yaml:"watch"`
 	Lease       LeaseConfig       `yaml:"lease"`
@@ -1935,6 +1940,9 @@ func (c *Config) Validate() error {
 		return &ValidationError{Field: "sql.max_connections", Reason: "must not be negative"}
 	}
 	if _, err := c.SQL.QueryTimeoutDuration(); err != nil {
+		return err
+	}
+	if _, err := c.ReplicaForwarding.TimeoutDuration(); err != nil {
 		return err
 	}
 
