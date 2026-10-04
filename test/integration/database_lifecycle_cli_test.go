@@ -204,6 +204,36 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 		t.Fatalf("[%s] database scale %s with no --replicas succeeded, want error (output: %s)", proto.name, dbName, out)
 	}
 
+	// --- update-compaction --------------------------------------------
+	out, err = runCLIProto(t, node, proto, "--output", "json", "database", "update-compaction", dbName,
+		"--mode", "revision", "--retain-revisions", "7")
+	if err != nil {
+		t.Fatalf("[%s] database update-compaction %s --mode revision: %v\noutput: %s", proto.name, dbName, err, out)
+	}
+	var afterCompaction transport.DatabaseInfo
+	if jerr := json.Unmarshal([]byte(out), &afterCompaction); jerr != nil {
+		t.Fatalf("[%s] decode database update-compaction JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if afterCompaction.Compaction == nil || afterCompaction.Compaction.Mode != "revision" || afterCompaction.Compaction.RetainRevisions != 7 {
+		t.Fatalf("[%s] database update-compaction %s: compaction = %+v, want mode=revision retainRevisions=7", proto.name, dbName, afterCompaction.Compaction)
+	}
+	// The policy round-trips through `database info` too, not just the
+	// update response.
+	info = cliDatabaseInfo(t, node, proto, dbName)
+	if info.Compaction == nil || info.Compaction.Mode != "revision" || info.Compaction.RetainRevisions != 7 {
+		t.Fatalf("[%s] database info %s after update-compaction: compaction = %+v, want mode=revision retainRevisions=7", proto.name, dbName, info.Compaction)
+	}
+	// --mode is required.
+	out, err = runCLIProto(t, node, proto, "database", "update-compaction", dbName)
+	if err == nil {
+		t.Fatalf("[%s] database update-compaction %s with no --mode succeeded, want error (output: %s)", proto.name, dbName, out)
+	}
+	// Turn it back off so the drop below exercises the default state.
+	out, err = runCLIProto(t, node, proto, "--output", "json", "database", "update-compaction", dbName, "--mode", "off")
+	if err != nil {
+		t.Fatalf("[%s] database update-compaction %s --mode off: %v\noutput: %s", proto.name, dbName, err, out)
+	}
+
 	// --- drop --------------------------------------------------------
 	out, err = runCLIProto(t, node, proto, "database", "drop", dbName)
 	if err != nil {

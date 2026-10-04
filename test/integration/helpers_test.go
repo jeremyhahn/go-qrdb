@@ -173,10 +173,20 @@ func buildBinary(t *testing.T) string {
 // GUI tags) and returns its path. It mirrors buildBinary but targets
 // ./cmd/qrdb instead of the daemon, so integration tests can exercise the
 // real client CLI (e.g. `qrdb admin drain`) against a spawned qrdbd node.
+//
+// It deliberately takes no WithBuildTags override: qrdbdharness.DefaultBuildTags
+// is exactly what buildBinary's own daemon build uses, so the client and the
+// daemon it talks to always agree on which protocol-gated commands and flags
+// exist (sql, mysql, postgresql). An earlier override here
+// ("qrdb_ts qrdb_vector" only) silently built a CLI binary missing
+// qrdb_sql/qrdb_mysql/qrdb_pgsql, so every CLI assertion against `sql query`,
+// `database update-protocol --mysql/--postgresql` or any other sql-tagged
+// command failed with cobra's "unknown command"/"unknown flag" -- not a
+// server-side error, so it never showed up as a protocol gap, only as a
+// client binary quietly built without the surface under test.
 func buildCLIBinary(t *testing.T) string {
 	t.Helper()
-	binary, err := qrdbdharness.BuildBinary(qrdbdharness.ClientPackage,
-		qrdbdharness.WithBuildTags("qrdb_ts qrdb_vector"))
+	binary, err := qrdbdharness.BuildBinary(qrdbdharness.ClientPackage)
 	if err != nil {
 		t.Fatalf("buildCLIBinary: %v", err)
 	}
