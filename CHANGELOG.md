@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.37.0-alpha] - 2026-10-03
+
+Protocol build tags. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Each protocol family is a Makefile flag, on by default**: `WITH_QRDB_MYSQL`, `WITH_QRDB_PGSQL`, `WITH_QRDB_SQL` and `WITH_QRDB_ETCD`. Turning one off removes all of that family's code, flags, config wiring and dependencies from the binary. With all four off, qrdbd is 44% smaller and contains no vitess, go-mysql-server or etcd code.
+- **A protocol's flags exist only in builds that include it.** Elsewhere they are unknown flags, and a config that enables the protocol is refused with a typed "not compiled in" error.
+- **Enforced by buildgates.** There are per-family dependency checks and an every-file-is-tagged check. `make test-tags` runs the cmd tests under every reduced build in CI.
+- **Fixed:**
+  - REST and MCP database create, the MCP and embedded SDK clients, and YAML `databases[]` now carry the etcd, MySQL and PostgreSQL settings instead of silently dropping them;
+  - `pkg/api/errclass` no longer links vitess into every build;
+  - `--enable-mysql` on a build without MySQL is now refused, no longer ignored.
+
 ### Fixed
 
 - **`make coverage`'s package discovery now carries the same build tags its
