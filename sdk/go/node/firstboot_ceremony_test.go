@@ -169,9 +169,18 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, result.AdminCreated)
 
-	// The pending record is cleared once the binding commits.
-	_, getErr := store.Get(ctx, firstboot.PendingAdminCertKey)
-	require.Error(t, getErr, "the pending record must be cleared once first boot binds it")
+	// The pending record is marked consumed once the binding commits, as a
+	// one-way state transition -- never deleted (go-qrdb#560 review item
+	// 8) -- so it stays readable, but a later node can never recreate it:
+	// WritePendingAdminCert's create-if-absent race only ever has one
+	// winner, permanently.
+	consumed, getErr := store.Get(ctx, firstboot.PendingAdminCertKey)
+	require.NoError(t, getErr, "the consumed record must remain readable, never deleted")
+	require.NotEmpty(t, consumed)
+
+	writeErr := firstboot.WritePendingAdminCert(ctx, store, []byte("late-arriving-cert-pem"))
+	var alreadyPending *firstboot.AdminCredentialAlreadyPendingError
+	require.ErrorAs(t, writeErr, &alreadyPending, "a consumed record must still refuse a later WritePendingAdminCert, exactly as a merely-pending one does")
 
 	// The bound admin logs in by certificate under "required", over real
 	// mTLS against the node's own REST listener.

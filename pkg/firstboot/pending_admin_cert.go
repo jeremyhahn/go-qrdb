@@ -15,6 +15,7 @@
 package firstboot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -35,6 +36,14 @@ import (
 // store first boot's own role and user records live in.
 const PendingAdminCertKey = "pending-admin-cert"
 
+// pendingAdminCertConsumedMarker is the value ClearPendingAdminCert writes
+// over the pending-admin-cert record once first boot has committed the
+// binding it named, in place of the delete this used to be. It can never be
+// mistaken for a real certPEM -- a PEM block always begins "-----BEGIN" --
+// so AwaitPendingAdminCert (or any other reader) can tell "consumed" apart
+// from "still pending" without a second field or record.
+var pendingAdminCertConsumedMarker = []byte("consumed")
+
 // PendingAdminCertStore is the minimal persistent KV surface
 // WritePendingAdminCert / AwaitPendingAdminCert / ClearPendingAdminCert need.
 // A composer's own guarded/namespaced KV store satisfies this directly: every
@@ -50,6 +59,15 @@ type PendingAdminCertStore interface {
 	// a nil error, when a record was already there.
 	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
 	Get(ctx context.Context, key string) ([]byte, error)
+	// Put unconditionally overwrites key. ClearPendingAdminCert uses this,
+	// never Delete, to transition the pending-admin-cert record to its
+	// consumed state in place: the record is a one-way state machine
+	// (pending, then consumed) and is never removed, so that
+	// WritePendingAdminCert's PutIfAbsent can never recreate it once the
+	// first binding has committed (go-qrdb#560 review item 8).
+	Put(ctx context.Context, key string, value []byte) error
+	// Delete is retained on the interface for implementors that need it
+	// for other keys; ClearPendingAdminCert does not call it.
 	Delete(ctx context.Context, key string) error
 }
 
@@ -138,7 +156,8 @@ func AwaitPendingAdminCert(ctx context.Context, store PendingAdminCertStore, use
 			return nil, nil
 		}
 		if store != nil {
-			if certPEM, err := store.Get(dctx, PendingAdminCertKey); err == nil && len(certPEM) > 0 {
+			if certPEM, err := store.Get(dctx, PendingAdminCertKey); err == nil && len(certPEM) > 0 &&
+				!bytes.Equal(certPEM, pendingAdminCertConsumedMarker) {
 				return certPEM, nil
 			}
 		}
@@ -156,14 +175,32 @@ func AwaitPendingAdminCert(ctx context.Context, store PendingAdminCertStore, use
 	}
 }
 
-// ClearPendingAdminCert deletes the pending-admin-cert record once first
-// boot has committed the binding. Idempotent: deleting an already-absent
-// record, or calling with a nil store, is not an error.
+// ClearPendingAdminCert marks the pending-admin-cert record consumed once
+// first boot has committed the binding it named. It is a ONE-WAY state
+// transition, pending -> consumed, implemented as an overwrite
+// (pendingAdminCertConsumedMarker), never a delete: the record's key is
+// NEVER removed once WritePendingAdminCert first creates it.
+//
+// This matters because WritePendingAdminCert's create-if-absent race
+// (go-qrdb#548) is won exactly once, by whichever node's PutIfAbsent lands
+// first -- but every node that ran the sealed-window ceremony holds its OWN
+// CA-issued credential and may call WritePendingAdminCert again at any
+// later time, including after this call has run for the winning node's
+// record. A real delete left the key absent again, so a late-arriving
+// node's PutIfAbsent would succeed a second time, creating a NEW pending
+// record for a credential that will never be bound -- which some third
+// node's AwaitPendingAdminCert could then read and hand to an operator as
+// if it were authoritative (go-qrdb#560 review item 8). Overwriting instead
+// of deleting keeps the key permanently present, so PutIfAbsent can never
+// succeed again for it.
+//
+// Idempotent: consuming an already-consumed record, or calling with a nil
+// store, is not an error.
 func ClearPendingAdminCert(ctx context.Context, store PendingAdminCertStore) error {
 	if store == nil {
 		return nil
 	}
-	if err := store.Delete(ctx, PendingAdminCertKey); err != nil {
+	if err := store.Put(ctx, PendingAdminCertKey, pendingAdminCertConsumedMarker); err != nil {
 		return &PendingAdminCertStoreError{Op: "clear", Cause: err}
 	}
 	return nil

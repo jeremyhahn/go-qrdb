@@ -23,6 +23,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -251,6 +252,20 @@ func (selfClassedError) ErrorClass() Class { return Gone }
 func TestClassify_HonoursClassed(t *testing.T) {
 	if got := Classify(wrapped{selfClassedError{}}); got != Gone {
 		t.Errorf("got %s, want gone", got)
+	}
+}
+
+// TestClassify_PendingAdminCertStoreError covers go-qrdb#560 review item 8:
+// firstboot.PendingAdminCertStoreError wraps a genuine backing-store
+// failure (read, write or consume-in-place of the pending-admin-cert
+// record) -- a server-side fault, exactly like user.StoreError,
+// role.StoreError, cert.StoreError and tenant.StoreError, all Internal --
+// and had no table row at all, so every transport fell through to
+// Unclassified for it.
+func TestClassify_PendingAdminCertStoreError(t *testing.T) {
+	err := &firstboot.PendingAdminCertStoreError{Op: "write", Cause: errors.New("sample")}
+	if got := Classify(err); got != Internal {
+		t.Errorf("Classify(%T) = %s, want %s", err, got, Internal)
 	}
 }
 

@@ -53,6 +53,11 @@ func (s systemPendingAdminCertStore) Get(ctx context.Context, key string) ([]byt
 	return s.kv.Get(ctx, s.namespacedKey(key))
 }
 
+// Put implements firstboot.PendingAdminCertStore.
+func (s systemPendingAdminCertStore) Put(ctx context.Context, key string, value []byte) error {
+	return s.kv.Put(ctx, s.namespacedKey(key), value)
+}
+
 // Delete implements firstboot.PendingAdminCertStore.
 func (s systemPendingAdminCertStore) Delete(ctx context.Context, key string) error {
 	return s.kv.Delete(ctx, s.namespacedKey(key))

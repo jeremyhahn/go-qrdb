@@ -62,6 +62,13 @@ func (s *memPendingAdminCertStore) Get(_ context.Context, key string) ([]byte, e
 	return v, nil
 }
 
+func (s *memPendingAdminCertStore) Put(_ context.Context, key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = value
+	return nil
+}
+
 func (s *memPendingAdminCertStore) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,8 +221,8 @@ func TestAwaitPendingAdminCert_TimesOutWithTypedError(t *testing.T) {
 	}
 }
 
-// TestClearPendingAdminCert_Idempotent covers delete-then-delete-again and the
-// nil-store no-op.
+// TestClearPendingAdminCert_Idempotent covers consume-then-consume-again
+// and the nil-store no-op.
 func TestClearPendingAdminCert_Idempotent(t *testing.T) {
 	if err := ClearPendingAdminCert(context.Background(), nil); err != nil {
 		t.Fatalf("nil store: %v", err)
@@ -230,8 +237,52 @@ func TestClearPendingAdminCert_Idempotent(t *testing.T) {
 	}
 }
 
-// failingPendingAdminCertStore always refuses Put/Get/Delete with cause, so
-// WritePendingAdminCert / ClearPendingAdminCert's wrapping can be proven.
+// TestClearPendingAdminCert_NeverDeletesTheRecord is the regression test for
+// go-qrdb#560 review item 8: the pending-admin-cert record is a one-way
+// state machine, pending then consumed, and is NEVER deleted. The old
+// behavior (a real Delete) reopened WritePendingAdminCert's create-if-absent
+// race after the FIRST binding had already committed: a late-arriving node
+// -- one that ran the sealed-window ceremony and got its own CA-issued
+// credential, but reached this call only after ClearPendingAdminCert had
+// already run for the winning node -- would see the key absent again and
+// successfully create a SECOND pending record for a credential that will
+// never be bound, which AwaitPendingAdminCert on some THIRD node could then
+// read and hand to an operator as if it were authoritative.
+func TestClearPendingAdminCert_NeverDeletesTheRecord(t *testing.T) {
+	store := newMemPendingAdminCertStore()
+	if err := WritePendingAdminCert(context.Background(), store, []byte("winning-cert-pem")); err != nil {
+		t.Fatalf("WritePendingAdminCert: %v", err)
+	}
+	if err := ClearPendingAdminCert(context.Background(), store); err != nil {
+		t.Fatalf("ClearPendingAdminCert: %v", err)
+	}
+
+	// The record must still exist (consumed, not absent) --
+	// PutIfAbsent-based re-creation must never succeed again.
+	err := WritePendingAdminCert(context.Background(), store, []byte("late-arriving-cert-pem"))
+	var alreadyPending *AdminCredentialAlreadyPendingError
+	if !errors.As(err, &alreadyPending) {
+		t.Fatalf("late WritePendingAdminCert after consume = %v, want *AdminCredentialAlreadyPendingError", err)
+	}
+
+	// A third node's AwaitPendingAdminCert must not read the consumed
+	// marker back as if it were a real, actionable certificate: the
+	// record's mere presence must not override the admin-already-bound
+	// check this call makes first for an identity lookup that still
+	// reports no binding (simulating replication lag).
+	got, err := AwaitPendingAdminCert(context.Background(), store, noAdminLookup{}, 10*time.Millisecond)
+	if err == nil {
+		t.Fatalf("AwaitPendingAdminCert returned the consumed marker as a certificate: %q", got)
+	}
+	var noCred *NoPendingAdminCredentialError
+	if !errors.As(err, &noCred) {
+		t.Fatalf("err = %T(%v), want *NoPendingAdminCredentialError", err, err)
+	}
+}
+
+// failingPendingAdminCertStore always refuses PutIfAbsent/Get/Put/Delete
+// with cause, so WritePendingAdminCert / ClearPendingAdminCert's wrapping
+// can be proven.
 type failingPendingAdminCertStore struct{ cause error }
 
 func (s failingPendingAdminCertStore) PutIfAbsent(context.Context, string, []byte) (bool, error) {
@@ -240,7 +291,8 @@ func (s failingPendingAdminCertStore) PutIfAbsent(context.Context, string, []byt
 func (s failingPendingAdminCertStore) Get(context.Context, string) ([]byte, error) {
 	return nil, s.cause
 }
-func (s failingPendingAdminCertStore) Delete(context.Context, string) error { return s.cause }
+func (s failingPendingAdminCertStore) Put(context.Context, string, []byte) error { return s.cause }
+func (s failingPendingAdminCertStore) Delete(context.Context, string) error      { return s.cause }
 
 // TestWritePendingAdminCert_StoreErrorWraps covers the Put-failure path and
 // PendingAdminCertStoreError's Error/Unwrap.
@@ -262,9 +314,10 @@ func TestWritePendingAdminCert_StoreErrorWraps(t *testing.T) {
 	}
 }
 
-// TestClearPendingAdminCert_StoreErrorWraps covers the Delete-failure path.
+// TestClearPendingAdminCert_StoreErrorWraps covers the Put-failure path
+// (the consume-in-place write, not a delete).
 func TestClearPendingAdminCert_StoreErrorWraps(t *testing.T) {
-	cause := errors.New("delete refused")
+	cause := errors.New("consume refused")
 	err := ClearPendingAdminCert(context.Background(), failingPendingAdminCertStore{cause: cause})
 	var storeErr *PendingAdminCertStoreError
 	if !errors.As(err, &storeErr) {

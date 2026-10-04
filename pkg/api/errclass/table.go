@@ -1003,6 +1003,11 @@ var ceremonyRules = []rule{
 	// within the bound: retriable by re-running `qrdb init`, not a
 	// server-side fault.
 	as(&firstboot.NoPendingAdminCredentialError{}, FailedPrecondition),
+	// The pending-admin-cert record's own backing store failed a read,
+	// write or consume-in-place call: a server-side fault, exactly like
+	// user.StoreError/role.StoreError/cert.StoreError/tenant.StoreError
+	// below.
+	as(&firstboot.PendingAdminCertStoreError{Cause: errors.New("sample")}, Internal),
 	// This composition never wired a CertBinder into the admin-credential
 	// retry path: an operator/configuration gap, not something retrying
 	// fixes.
