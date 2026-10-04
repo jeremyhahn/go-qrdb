@@ -264,6 +264,17 @@ are not reconstructed here — their history is in the git log.
   naming all three flags, silently, with no build-time signal that the one
   flag given had no effect. Naming all three explicitly still works
   identically; only the one-flag case changes.
+- **A `databases:` YAML entry's own `mysql`/`postgresql` flags are now
+  honoured.** `configuredDatabases` previously dropped them at every boot
+  (see Fixed, above); a node restarted on an unchanged config file that
+  already set `mysql: true` or `postgresql: true` on one of its
+  `databases:` entries now provisions that database visible over the
+  corresponding wire protocol, where it was previously provisioned with
+  neither regardless of the file. An operator relying on the old silent
+  no-op (for example, a config that sets `mysql: true` on a database not
+  actually meant to be reachable over MySQL) will see that database start
+  answering MySQL clients on the next restart; audit `databases:` entries
+  for stale `mysql`/`postgresql` flags before upgrading.
 
 ## [0.36.0-alpha] - 2026-10-03
 
