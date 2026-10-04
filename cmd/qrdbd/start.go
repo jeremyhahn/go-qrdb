@@ -1121,6 +1121,21 @@ func recordSecureMemoryWipe(err *error) {
 // silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
 func runStart(f *startFlags) (err error) {
+	// Discovery/peer flag validation runs FIRST, before anything with a
+	// side effect -- the secure memory budget, TLS/bootstrap servers, and
+	// (since a flag-only `qrdbd start` now defaults to seal enabled,
+	// 2123f06c) the sealed-window listener, which blocks waiting for an
+	// operator to unseal. Before this, an invalid --discovery value or a
+	// malformed --peers entry reached that wait before ever being checked
+	// -- initializeNode's own parsePeers call, and the discovery-method
+	// dispatch, ran only after the sealed window opened, so bad flags HUNG
+	// instead of exiting with a typed error. cluster.ValidateOptions
+	// performs the identical checks BuildDiscovery's own builders apply,
+	// without constructing anything or starting a side effect of its own.
+	if err := cluster.ValidateOptions(f.clusterOptions()); err != nil {
+		return err
+	}
+
 	// Refuse a protocol the config enables but this binary was not built
 	// with, before any resource is allocated -- the secure-memory budget,
 	// the TLS bootstrap material, a bound listener. resolveStartFlags

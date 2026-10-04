@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -1464,12 +1465,13 @@ func TestNewPeersCmd_InvalidCAFile(t *testing.T) {
 func TestRunStart_TLSLoadError(t *testing.T) {
 	dir := t.TempDir()
 	f := &startFlags{
-		tlsCAFile:   filepath.Join(dir, "nonexistent-ca.pem"),
-		tlsCertFile: filepath.Join(dir, "nonexistent-cert.pem"),
-		tlsKeyFile:  filepath.Join(dir, "nonexistent-key.pem"),
-		dataDir:     dir,
-		smType:      "memory",
-		host:        testBindHost,
+		discoveryMethod: "static",
+		tlsCAFile:       filepath.Join(dir, "nonexistent-ca.pem"),
+		tlsCertFile:     filepath.Join(dir, "nonexistent-cert.pem"),
+		tlsKeyFile:      filepath.Join(dir, "nonexistent-key.pem"),
+		dataDir:         dir,
+		smType:          "memory",
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -1540,9 +1542,10 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 	badDataDir := filepath.Join(blocker, "subdir")
 
 	f := &startFlags{
-		dataDir: badDataDir,
-		smType:  "memory",
-		host:    testBindHost,
+		discoveryMethod: "static",
+		dataDir:         badDataDir,
+		smType:          "memory",
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -1572,15 +1575,59 @@ func TestRunStart_CACertWriteFileError(t *testing.T) {
 	require.NoError(t, os.MkdirAll(caKeyPath, 0o700))
 
 	f := &startFlags{
-		dataDir: dataDir,
-		smType:  "memory",
-		host:    testBindHost,
+		discoveryMethod: "static",
+		dataDir:         dataDir,
+		smType:          "memory",
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
 	require.Error(t, err)
 	var writeErr *BootstrapWriteError
 	require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
+}
+
+// ---------------------------------------------------------------------------
+// runStart: discovery/peer flag validation runs FIRST (go-qrdb#548 review,
+// the sealed-window-ordering follow-up)
+//
+// Since a flag-only `qrdbd start` defaults to seal enabled (2123f06c), the
+// daemon opens the sealed-window listener and blocks waiting for unseal
+// before anything downstream of it ever runs. Before cluster.ValidateOptions
+// was hoisted to the top of runStart, invalid discovery/peer flags reached
+// that wait UNVALIDATED -- initializeNode's own parsePeers call, and the
+// discovery-method dispatch, both ran only after the sealed window opened --
+// so bad flags HUNG instead of exiting with a typed error. These pin that
+// runStart now returns the discovery error immediately, never reaching
+// secure-memory setup, TLS resolution, or the sealed-window listener.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_UnknownDiscoveryMethodFailsBeforeAnySideEffect(t *testing.T) {
+	err := runStart(&startFlags{discoveryMethod: "bogus", peers: []string{"1=127.0.0.1:9001"}, dataDir: t.TempDir()})
+	var ude *cluster.UnknownDiscoveryError
+	require.True(t, errors.As(err, &ude), "err = %v (%T)", err, err)
+	assert.Equal(t, "bogus", ude.Name)
+}
+
+func TestRunStart_MalformedPeerFailsBeforeAnySideEffect(t *testing.T) {
+	err := runStart(&startFlags{discoveryMethod: "static", peers: []string{"badformat"}, dataDir: t.TempDir()})
+	var ppe *cluster.PeerParseError
+	require.True(t, errors.As(err, &ppe), "err = %v (%T)", err, err)
+	assert.Equal(t, "badformat", ppe.Input)
+}
+
+func TestRunStart_MissingMulticastSecretFailsBeforeAnySideEffect(t *testing.T) {
+	err := runStart(&startFlags{discoveryMethod: "multicast", dataDir: t.TempDir()})
+	var mfe *cluster.MissingFlagError
+	require.True(t, errors.As(err, &mfe), "err = %v (%T)", err, err)
+	assert.Equal(t, "multicast-secret", mfe.Flag)
+}
+
+func TestRunStart_MissingDNSDomainFailsBeforeAnySideEffect(t *testing.T) {
+	err := runStart(&startFlags{discoveryMethod: "dns", dataDir: t.TempDir()})
+	var mfe *cluster.MissingFlagError
+	require.True(t, errors.As(err, &mfe), "err = %v (%T)", err, err)
+	assert.Equal(t, "dns-domain", mfe.Flag)
 }
 
 // ---------------------------------------------------------------------------

@@ -59,7 +59,7 @@ func TestRunStart_SecureMemoryBudgetRejected(t *testing.T) {
 		return nil, sentinel
 	}, nil, nil, nil)
 
-	err := runStart(&startFlags{secureMemoryBudgetMiB: 4096, host: testBindHost})
+	err := runStart(&startFlags{discoveryMethod: "static", secureMemoryBudgetMiB: 4096, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("runStart error = %v (%T), want *SecureMemoryBudgetError", err, err)
@@ -83,7 +83,7 @@ func TestRunStart_SecureMemoryBudgetNegativeRejected(t *testing.T) {
 		return nil, nil
 	}, nil, nil, nil)
 
-	err := runStart(&startFlags{secureMemoryBudgetMiB: -1, host: testBindHost})
+	err := runStart(&startFlags{discoveryMethod: "static", secureMemoryBudgetMiB: -1, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("runStart error = %v (%T), want *SecureMemoryBudgetError", err, err)
@@ -107,7 +107,7 @@ func TestRunStart_SecureMemoryBudgetOverflowRejected(t *testing.T) {
 	}, nil, nil, nil)
 
 	huge := int64(math.MaxInt64>>20) + 1
-	err := runStart(&startFlags{secureMemoryBudgetMiB: huge, host: testBindHost})
+	err := runStart(&startFlags{discoveryMethod: "static", secureMemoryBudgetMiB: huge, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("runStart error = %v (%T), want *SecureMemoryBudgetError", err, err)
@@ -131,7 +131,7 @@ func TestRunStart_SecureMemoryBudgetDefaultsWhenUnconfigured(t *testing.T) {
 		return nil, errStopEarly // stop runStart here; only the budget matters
 	}, nil, nil, nil)
 
-	_ = runStart(&startFlags{host: testBindHost})
+	_ = runStart(&startFlags{discoveryMethod: "static", host: testBindHost})
 	if gotBudget <= 0 {
 		t.Fatalf("newSecureAllocator was not called with a positive budget (got %d)", gotBudget)
 	}
@@ -163,7 +163,7 @@ func TestRunStart_SecureMemoryAllocatorAlreadyInstalledIsNotFatal(t *testing.T) 
 		func(context.Context) (int, error) { return 0, nil },
 	)
 
-	err := runStart(&startFlags{secureMemoryBudgetMiB: budgetMiB, host: testBindHost})
+	err := runStart(&startFlags{discoveryMethod: "static", secureMemoryBudgetMiB: budgetMiB, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if errors.As(err, &budgetErr) {
 		t.Fatalf("ErrAllocatorInstalled with a MATCHING limit was treated as fatal: %v", err)
@@ -188,7 +188,7 @@ func TestRunStart_SecureMemoryAllocatorAlreadyInstalledMismatchIsFatal(t *testin
 		nil,
 	)
 
-	err := runStart(&startFlags{secureMemoryBudgetMiB: budgetMiB, host: testBindHost})
+	err := runStart(&startFlags{discoveryMethod: "static", secureMemoryBudgetMiB: budgetMiB, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("runStart error = %v (%T), want *SecureMemoryBudgetError", err, err)
@@ -216,7 +216,7 @@ func TestRunStart_SecureMemorySetAllocatorOtherErrorIsFatal(t *testing.T) {
 		nil,
 	)
 
-	err := runStart(&startFlags{secureMemoryBudgetMiB: 64, host: testBindHost})
+	err := runStart(&startFlags{discoveryMethod: "static", secureMemoryBudgetMiB: 64, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("runStart error = %v (%T), want *SecureMemoryBudgetError", err, err)

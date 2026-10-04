@@ -105,6 +105,47 @@ func BuildDiscovery(opts Options) (discovery.Method, error) {
 	return builder(opts)
 }
 
+// ValidateOptions checks opts the same way BuildDiscovery's own builder
+// would -- an unknown method, a malformed static peer, a missing
+// multicast-secret or dns-domain -- WITHOUT constructing anything or
+// starting a side effect (buildMulticastDiscovery's own builder calls
+// md.Start()). It exists for a caller that must fail fast on bad discovery
+// flags before some OTHER side effect of its own boot sequence runs -- a
+// listener, a sealed window -- which BuildDiscovery's own call site may
+// not reach until well after that side effect has already started.
+//
+// BuildDiscovery does not call this itself: each builder's own
+// precondition check already IS this validation, inlined, so calling both
+// would run it twice on the construction path. A caller validates once,
+// early, with this, and constructs once, naturally, with BuildDiscovery.
+func ValidateOptions(opts Options) error {
+	switch opts.Method {
+	case "static":
+		_, err := ParsePeers(opts.Peers)
+		return err
+	case "multicast":
+		if opts.MulticastSecret == "" {
+			return &MissingFlagError{Flag: "multicast-secret"}
+		}
+		return nil
+	case "dns":
+		if opts.DNSDomain == "" {
+			return &MissingFlagError{Flag: "dns-domain"}
+		}
+		return nil
+	case "token":
+		if opts.TokenEndpoint == "" {
+			return &MissingFlagError{Flag: "discovery-endpoint"}
+		}
+		if opts.Token == "" {
+			return &MissingFlagError{Flag: "discovery-token"}
+		}
+		return nil
+	default:
+		return &UnknownDiscoveryError{Name: opts.Method}
+	}
+}
+
 // buildStaticDiscovery creates a StaticDiscovery from the parsed peers.
 func buildStaticDiscovery(opts Options) (discovery.Method, error) {
 	members, err := ParsePeers(opts.Peers)

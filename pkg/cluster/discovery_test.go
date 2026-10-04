@@ -214,3 +214,97 @@ func TestIsSingleNode(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateOptions covers the same checks BuildDiscovery's own builders
+// apply, WITHOUT constructing anything or starting a side effect
+// (multicast's own builder calls md.Start()) -- the fast-fail validation a
+// caller runs before some OTHER side effect of its own boot sequence, such
+// as qrdbd's sealed-window listener, has already opened.
+func TestValidateOptions(t *testing.T) {
+	cases := map[string]struct {
+		opts    Options
+		wantErr any // nil means no error
+	}{
+		"unknown method": {
+			Options{Method: "consul"}, &UnknownDiscoveryError{},
+		},
+		"static, no peers (single-node)": {
+			Options{Method: "static"}, nil,
+		},
+		"static, well-formed peers": {
+			Options{Method: "static", Peers: []string{"1=127.0.0.1:7001", "2=127.0.0.1:7002"}}, nil,
+		},
+		"static, malformed peer": {
+			Options{Method: "static", Peers: []string{"badformat"}}, &PeerParseError{},
+		},
+		"multicast, missing secret": {
+			Options{Method: "multicast"}, &MissingFlagError{},
+		},
+		"multicast, secret present": {
+			Options{Method: "multicast", MulticastSecret: "shared-secret-16by"}, nil,
+		},
+		"dns, missing domain": {
+			Options{Method: "dns"}, &MissingFlagError{},
+		},
+		"dns, domain present": {
+			Options{Method: "dns", DNSDomain: "cluster.local"}, nil,
+		},
+		"token, missing endpoint": {
+			Options{Method: "token"}, &MissingFlagError{},
+		},
+		"token, missing token": {
+			Options{Method: "token", TokenEndpoint: "https://example.com"}, &MissingFlagError{},
+		},
+		"token, endpoint and token present": {
+			Options{Method: "token", TokenEndpoint: "https://example.com", Token: "secret"}, nil,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateOptions(tc.opts)
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("ValidateOptions() error = %v, want nil", err)
+				}
+				return
+			}
+			switch tc.wantErr.(type) {
+			case *UnknownDiscoveryError:
+				var e *UnknownDiscoveryError
+				if !errors.As(err, &e) {
+					t.Fatalf("ValidateOptions() error = %T (%v), want *UnknownDiscoveryError", err, err)
+				}
+			case *PeerParseError:
+				var e *PeerParseError
+				if !errors.As(err, &e) {
+					t.Fatalf("ValidateOptions() error = %T (%v), want *PeerParseError", err, err)
+				}
+			case *MissingFlagError:
+				var e *MissingFlagError
+				if !errors.As(err, &e) {
+					t.Fatalf("ValidateOptions() error = %T (%v), want *MissingFlagError", err, err)
+				}
+			default:
+				t.Fatalf("unhandled wantErr type %T in test case %q", tc.wantErr, name)
+			}
+		})
+	}
+}
+
+// TestValidateOptions_NeverStartsAnything proves the side-effect-free claim
+// directly: calling it with valid multicast options must not leave a
+// running multicast listener behind the way BuildDiscovery's own builder
+// does (TestBuildDiscovery_MulticastSuccess must defer Stop() for exactly
+// this reason; this test has nothing to stop).
+func TestValidateOptions_NeverStartsAnything(t *testing.T) {
+	err := ValidateOptions(Options{
+		Method:          "multicast",
+		NodeID:          1,
+		RaftAddress:     "127.0.0.1:7001",
+		MulticastSecret: "shared-secret-16by",
+		DeploymentID:    42,
+	})
+	if err != nil {
+		t.Fatalf("ValidateOptions(multicast) error = %v, want nil", err)
+	}
+}
