@@ -213,7 +213,11 @@ func testBackupCommandTreeOverProtocol(t *testing.T, node *multiProtoNode, proto
 		t.Fatalf("[%s] backup create: %v\noutput: %s", proto.name, err, out)
 	}
 	var created backupInfoDisplay
-	if jerr := json.Unmarshal([]byte(out), &created); jerr != nil {
+	// jsonObjectSuffix (backup_restore_test.go): the explicit --encryption
+	// none above makes the CLI print a plaintext warning to stderr before
+	// the JSON response hits stdout, and runCLIProto's CombinedOutput
+	// merges the two -- strip the warning prefix before decoding.
+	if jerr := json.Unmarshal([]byte(jsonObjectSuffix(out)), &created); jerr != nil {
 		t.Fatalf("[%s] decode `backup create` JSON: %v\noutput: %s", proto.name, jerr, out)
 	}
 	if created.ID == "" {
