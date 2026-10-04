@@ -11,22 +11,6 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-## [0.39.0-alpha] - 2026-10-04
-
-Recovery train: stranded fixes brought onto main. Highlights:
-
-- **State hashes never see a half-applied batch or a half-restored snapshot (#584)**, on the concurrent, disk and standard state machines. Taking a hash briefly blocks applies; it is a diagnostic path.
-- **No false 403 for tenant logins.** User and role lookups no longer consult the system-confined stale-read fallback for non-system tenants.
-- **A per-push multi-node tenancy suite runs in CI.**
-- **Compaction follow-ups:**
-  - etcd answers Unavailable before compaction is activated;
-  - an empty prefix is refused outside a dedicated keyspace;
-  - reclaim is scoped to the database's incarnation;
-  - a typed `CompactionPolicyReadError` is surfaced.
-- **Enable-encryption migrations run on the request's context** on every transport.
-- **`check-public-releasable` refuses tracked executables.**
-- **Test fixes:** lockout and rate-limit tests are deterministic, and `pkg/config` coverage is restored.
-
 ### Added
 
 - `pkg/cakey`: the CA key provider seam (`Provider`, `SoftwareProvider`,
@@ -71,6 +55,85 @@ Recovery train: stranded fixes brought onto main. Highlights:
   consumed: consuming it first and discovering the seal only at issuance
   would both burn a legitimately minted single-use token for nothing and
   leak "this token was valid" to a prober.
+
+### Changed
+
+- **The cluster CA key (Key A) is stored like every other replicated system
+  record — no additional encryption layered on by `pkg/cakey` itself.** An
+  earlier revision wrapped it with the writing node's own
+  `seal.EncryptionBarrier` before persisting it; because the record is
+  REPLICATED and every node's barrier is its own, not shared cluster-wide,
+  every node other than the one that wrote it failed to decrypt its own
+  copy. Key A is now protected by whatever protects every other system-shard
+  record on that node: its own at-rest storage encryption when one is
+  configured, cluster mTLS while Raft replicates the write, and nothing at
+  all under seal strategy `none`. It is persisted through
+  `kvstore.MultiGuardedBatchKVStore` (`__sys:cluster_ca/`) as two separate
+  records -- the private key and the public certificate -- written
+  together in one atomic batch (`PutAllIfAllUnchanged`, guarded on both
+  being absent), closing the same torn-write window a single combined
+  record once did, while letting `Certificate(ctx)` read only the
+  certificate record on a cold cache: the key record is never fetched, let
+  alone parsed, unless something calls `Signer`. The `crypto.Signer`
+  `Signer` returns is opaque (cannot be type-asserted back to
+  `*ecdsa.PrivateKey`, and `Public()` returns a copy, not a pointer into
+  the live key) and re-checks both the barrier's sealed state and the
+  provider's own `Seal` generation on every `Sign` call, so a `Signer`
+  obtained before either refuses afterward even though the caller is still
+  holding it. `AdoptIfAbsent` refuses with a typed mismatch error, rather
+  than silently discarding the loser, when the stored certificate differs
+  from the one supplied to it. No node ever writes a CA private key to
+  `{dataDir}/ca-key.pem` as its durable copy again — see
+  `docs/certificate-authority/architecture.md`.
+- Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
+  (Key B) dynamically, loaded from the replicated store after unseal, in
+  addition to the cluster CA; the peer/Raft/enrollment transport continues
+  to trust the cluster CA only.
+- `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
+  minting a new CSR-signed certificate requires the barrier to be unsealed
+  once the init ceremony is operational. The ceremony CA now goes through
+  the `cakey.Provider` seam on both sides of unseal (`NewProviderCA` over a
+  `StaticProvider` before persist, and over the replicated `ClusterCAProv`
+  after), rather than a raw `LocalCA` built directly from `CAKeyPEM`.
+- Member-side CSR issuance ships: `clusterenroll.Join` no longer refuses
+  unconditionally with `*EnrollmentUnavailableError`. See
+  `docs/clustering/architecture.md`.
+- The first node's resumed enrollment listener requires only `ca.pem` to
+  restart, not `ca-key.pem` — which `cmd/qrdbd` deletes from disk once Key A
+  is confirmed durable in the replicated store, on every boot after the
+  first successful one. Requiring it made a first node's own second
+  restart fail closed forever; see `docs/clustering/engineering.md`.
+
+### Removed
+
+- The static, shared `--cluster-join-token-file` / `--cluster-join-token-env`
+  flags and YAML config (`cluster_join.token_file` / `cluster_join.token_env`)
+  on the signing-member side. A signing member now validates a presented
+  token against the single-use, identity-bound tokens an admin mints into
+  the replicated store, not a value it was configured with. The joiner-side
+  `--bootstrap-join-token-file` / `--bootstrap-join-token-env` flags are
+  unchanged in shape; they now carry a minted single-use token instead of a
+  static shared secret.
+
+
+## [0.39.0-alpha] - 2026-10-04
+
+Recovery train: stranded fixes brought onto main. Highlights:
+
+- **State hashes never see a half-applied batch or a half-restored snapshot (#584)**, on the concurrent, disk and standard state machines. Taking a hash briefly blocks applies; it is a diagnostic path.
+- **No false 403 for tenant logins.** User and role lookups no longer consult the system-confined stale-read fallback for non-system tenants.
+- **A per-push multi-node tenancy suite runs in CI.**
+- **Compaction follow-ups:**
+  - etcd answers Unavailable before compaction is activated;
+  - an empty prefix is refused outside a dedicated keyspace;
+  - reclaim is scoped to the database's incarnation;
+  - a typed `CompactionPolicyReadError` is surfaced.
+- **Enable-encryption migrations run on the request's context** on every transport.
+- **`check-public-releasable` refuses tracked executables.**
+- **Test fixes:** lockout and rate-limit tests are deterministic, and `pkg/config` coverage is restored.
+
+### Added
+
 - **The multi-node tenant suites gate every push.** CI's new
   `integration-cluster-tenancy` job runs `make integration-test-cluster-tenancy`,
   the cluster stage narrowed to the tenant suites by `CLUSTER_TENANCY_RUN`, and the
@@ -197,65 +260,6 @@ Recovery train: stranded fixes brought onto main. Highlights:
   after recovery cleared the state but before every entry was restored.
   Both now hold the batch lock exclusively for the whole recovery, the same
   way `GetHash` itself does.
-
-### Changed
-
-- **The cluster CA key (Key A) is stored like every other replicated system
-  record — no additional encryption layered on by `pkg/cakey` itself.** An
-  earlier revision wrapped it with the writing node's own
-  `seal.EncryptionBarrier` before persisting it; because the record is
-  REPLICATED and every node's barrier is its own, not shared cluster-wide,
-  every node other than the one that wrote it failed to decrypt its own
-  copy. Key A is now protected by whatever protects every other system-shard
-  record on that node: its own at-rest storage encryption when one is
-  configured, cluster mTLS while Raft replicates the write, and nothing at
-  all under seal strategy `none`. It is persisted through
-  `kvstore.MultiGuardedBatchKVStore` (`__sys:cluster_ca/`) as two separate
-  records -- the private key and the public certificate -- written
-  together in one atomic batch (`PutAllIfAllUnchanged`, guarded on both
-  being absent), closing the same torn-write window a single combined
-  record once did, while letting `Certificate(ctx)` read only the
-  certificate record on a cold cache: the key record is never fetched, let
-  alone parsed, unless something calls `Signer`. The `crypto.Signer`
-  `Signer` returns is opaque (cannot be type-asserted back to
-  `*ecdsa.PrivateKey`, and `Public()` returns a copy, not a pointer into
-  the live key) and re-checks both the barrier's sealed state and the
-  provider's own `Seal` generation on every `Sign` call, so a `Signer`
-  obtained before either refuses afterward even though the caller is still
-  holding it. `AdoptIfAbsent` refuses with a typed mismatch error, rather
-  than silently discarding the loser, when the stored certificate differs
-  from the one supplied to it. No node ever writes a CA private key to
-  `{dataDir}/ca-key.pem` as its durable copy again — see
-  `docs/certificate-authority/architecture.md`.
-- Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
-  (Key B) dynamically, loaded from the replicated store after unseal, in
-  addition to the cluster CA; the peer/Raft/enrollment transport continues
-  to trust the cluster CA only.
-- `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
-  minting a new CSR-signed certificate requires the barrier to be unsealed
-  once the init ceremony is operational. The ceremony CA now goes through
-  the `cakey.Provider` seam on both sides of unseal (`NewProviderCA` over a
-  `StaticProvider` before persist, and over the replicated `ClusterCAProv`
-  after), rather than a raw `LocalCA` built directly from `CAKeyPEM`.
-- Member-side CSR issuance ships: `clusterenroll.Join` no longer refuses
-  unconditionally with `*EnrollmentUnavailableError`. See
-  `docs/clustering/architecture.md`.
-- The first node's resumed enrollment listener requires only `ca.pem` to
-  restart, not `ca-key.pem` — which `cmd/qrdbd` deletes from disk once Key A
-  is confirmed durable in the replicated store, on every boot after the
-  first successful one. Requiring it made a first node's own second
-  restart fail closed forever; see `docs/clustering/engineering.md`.
-
-### Removed
-
-- The static, shared `--cluster-join-token-file` / `--cluster-join-token-env`
-  flags and YAML config (`cluster_join.token_file` / `cluster_join.token_env`)
-  on the signing-member side. A signing member now validates a presented
-  token against the single-use, identity-bound tokens an admin mints into
-  the replicated store, not a value it was configured with. The joiner-side
-  `--bootstrap-join-token-file` / `--bootstrap-join-token-env` flags are
-  unchanged in shape; they now carry a minted single-use token instead of a
-  static shared secret.
 
 ## [0.38.0-alpha] - 2026-10-03
 
