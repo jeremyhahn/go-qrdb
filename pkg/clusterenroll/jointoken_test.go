@@ -245,11 +245,12 @@ func TestConsumeJoinToken_WrongTrustDomainRefused(t *testing.T) {
 }
 
 // TestConsumeJoinToken_IdentityAdmissionExistsErrorSurfacesTyped proves
-// ConsumeJoinToken's read-only "already admitted" check surfaces a genuine
-// store failure as *JoinTokenStoreError, distinct from a refusal.
+// ConsumeJoinToken's read-only "already admitted or reserved" check
+// (identityBlocks, Get-based since B1's TTL-aware reservations) surfaces a
+// genuine store failure as *JoinTokenStoreError, distinct from a refusal.
 func TestConsumeJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T) {
 	// Minted against the clean backing store: MintJoinToken now runs its
-	// OWN Exists check against the identity ledger too (see
+	// OWN identityBlocks check against the identity ledger too (see
 	// TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped), so the
 	// fault must be injected only for the Consume call below, not the mint
 	// above.
@@ -258,23 +259,24 @@ func TestConsumeJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T
 	if err != nil {
 		t.Fatalf("MintJoinToken: %v", err)
 	}
-	faulty := &faultyJoinStore{AtomicKVStore: backing, failExistsOnPrefix: joinIdentityPrefix}
+	faulty := &faultyJoinStore{AtomicKVStore: backing, failGetOnPrefix: joinIdentityPrefix}
 	_, err = ConsumeJoinToken(context.Background(), faulty, "test.cluster", token)
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
-		t.Fatalf("ConsumeJoinToken with a failing identity Exists check = %v, want *JoinTokenStoreError", err)
+		t.Fatalf("ConsumeJoinToken with a failing identity Get check = %v, want *JoinTokenStoreError", err)
 	}
 }
 
 // TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped proves
-// MintJoinToken's own already-admitted check (run before any token is
-// generated) surfaces a genuine store failure as *JoinTokenStoreError.
+// MintJoinToken's own already-admitted-or-reserved check (run before any
+// token is generated) surfaces a genuine store failure as
+// *JoinTokenStoreError.
 func TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T) {
-	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failExistsOnPrefix: joinIdentityPrefix}
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failGetOnPrefix: joinIdentityPrefix}
 	_, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
-		t.Fatalf("MintJoinToken with a failing identity Exists check = %v, want *JoinTokenStoreError", err)
+		t.Fatalf("MintJoinToken with a failing identity Get check = %v, want *JoinTokenStoreError", err)
 	}
 }
 
@@ -378,21 +380,24 @@ func TestConsumeJoinToken_SignFailureAfterConsumeLeavesIdentityRetryable(t *test
 
 func TestReserveJoinIdentity_FirstCallReserves(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	reserved, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
 	if err != nil {
 		t.Fatalf("ReserveJoinIdentity: %v", err)
 	}
 	if !reserved {
 		t.Fatal("ReserveJoinIdentity = false on a fresh identity, want true")
 	}
+	if len(pending) == 0 {
+		t.Fatal("ReserveJoinIdentity returned no pending value alongside reserved=true")
+	}
 }
 
 func TestReserveJoinIdentity_SecondCallRefused(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	if _, err := ReserveJoinIdentity(context.Background(), store, "node-1"); err != nil {
+	if _, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0); err != nil {
 		t.Fatalf("ReserveJoinIdentity (first): %v", err)
 	}
-	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	reserved, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
 	if err != nil {
 		t.Fatalf("ReserveJoinIdentity (second): %v", err)
 	}
@@ -403,24 +408,77 @@ func TestReserveJoinIdentity_SecondCallRefused(t *testing.T) {
 
 func TestReserveJoinIdentity_StoreErrorSurfacesTyped(t *testing.T) {
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
-	_, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	_, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("ReserveJoinIdentity (store error) = %v, want *JoinTokenStoreError", err)
 	}
 }
 
+// TestReserveJoinIdentity_ReclaimsExpiredReservation proves B1: a PENDING
+// record whose deadline has already passed -- however it got left behind
+// (a crash between Reserve and Promote/Release, a failed Promote, a
+// Release that could not run) -- does not wedge the node id forever.
+// ReserveJoinIdentity reclaims it by CompareAndSwap from the exact stale
+// value, not a blind overwrite.
+func TestReserveJoinIdentity_ReclaimsExpiredReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	identityKey := joinIdentityPrefix + "node-1"
+	stale := pendingValue(time.Now().Add(-time.Minute))
+	if err := store.Put(context.Background(), identityKey, stale); err != nil {
+		t.Fatalf("Put (stale pending): %v", err)
+	}
+
+	reserved, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (reclaim): %v", err)
+	}
+	if !reserved {
+		t.Fatal("ReserveJoinIdentity did not reclaim an expired reservation")
+	}
+	if string(pending) == string(stale) {
+		t.Fatal("ReserveJoinIdentity's reclaimed value is identical to the stale one it was supposed to replace")
+	}
+	deadline, ok := parsePendingDeadline(pending)
+	if !ok || !deadline.After(time.Now()) {
+		t.Fatalf("reclaimed pending value = %q, want a live (future) deadline", pending)
+	}
+}
+
+// TestReserveJoinIdentity_DoesNotReclaimALiveReservation proves the
+// reclaim is scoped to EXPIRED reservations only: one still within its
+// TTL is not touched.
+func TestReserveJoinIdentity_DoesNotReclaimALiveReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	_, first, err := ReserveJoinIdentity(context.Background(), store, "node-1", time.Hour)
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (first): %v", err)
+	}
+	reserved, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (second): %v", err)
+	}
+	if reserved {
+		t.Fatal("ReserveJoinIdentity reclaimed a reservation still within its TTL")
+	}
+	got, err := store.Get(context.Background(), joinIdentityPrefix+"node-1")
+	if err != nil || string(got) != string(first) {
+		t.Fatalf("the live reservation's value changed: got %q, want the original %q", got, first)
+	}
+}
+
 func TestPromoteJoinIdentityAdmitted_SwapsAReservation(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	if _, err := ReserveJoinIdentity(context.Background(), store, "node-1"); err != nil {
+	_, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
 		t.Fatalf("ReserveJoinIdentity: %v", err)
 	}
-	if err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1"); err != nil {
+	if err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pending); err != nil {
 		t.Fatalf("PromoteJoinIdentityAdmitted: %v", err)
 	}
 	// A second reservation attempt must now be refused: the identity is
 	// admitted, not merely pending.
-	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	reserved, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
 	if err != nil {
 		t.Fatalf("ReserveJoinIdentity (after promotion): %v", err)
 	}
@@ -433,8 +491,9 @@ func TestPromoteJoinIdentityAdmitted_LostReservationRefused(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	// No ReserveJoinIdentity call: the PENDING record this promotion
 	// expects was never written (or was already released/promoted by
-	// someone else).
-	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1")
+	// someone else). The exact bytes passed do not matter -- the key
+	// itself is absent, so any CompareAndSwap against it fails.
+	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)))
 	var lostErr *JoinIdentityReservationLostError
 	if !errors.As(err, &lostErr) {
 		t.Fatalf("PromoteJoinIdentityAdmitted (no reservation) = %v, want *JoinIdentityReservationLostError", err)
@@ -446,19 +505,40 @@ func TestPromoteJoinIdentityAdmitted_LostReservationRefused(t *testing.T) {
 
 func TestPromoteJoinIdentityAdmitted_StoreErrorSurfacesTyped(t *testing.T) {
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndSwapOnPrefix: joinIdentityPrefix}
-	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1")
+	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)))
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("PromoteJoinIdentityAdmitted (store error) = %v, want *JoinTokenStoreError", err)
 	}
 }
 
-func TestReleaseJoinIdentityReservation_ReleasesAReservation(t *testing.T) {
+// TestPromoteJoinIdentityAdmitted_SurvivesACanceledCallerContext proves B1
+// item 3: Promote finalizes a signing success that already happened, so a
+// caller ctx canceled at exactly this moment (the client gave up, or the
+// request's own deadline passed while IssueLeafForKey was signing) must
+// not also abort the write that keeps the ledger consistent.
+func TestPromoteJoinIdentityAdmitted_SurvivesACanceledCallerContext(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	if _, err := ReserveJoinIdentity(context.Background(), store, "node-1"); err != nil {
+	_, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
 		t.Fatalf("ReserveJoinIdentity: %v", err)
 	}
-	released, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1")
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := PromoteJoinIdentityAdmitted(canceled, store, "node-1", pending); err != nil {
+		t.Fatalf("PromoteJoinIdentityAdmitted with a canceled caller ctx: %v", err)
+	}
+}
+
+func TestReleaseJoinIdentityReservation_ReleasesAReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	_, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity: %v", err)
+	}
+	released, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1", pending)
 	if err != nil {
 		t.Fatalf("ReleaseJoinIdentityReservation: %v", err)
 	}
@@ -466,7 +546,7 @@ func TestReleaseJoinIdentityReservation_ReleasesAReservation(t *testing.T) {
 		t.Fatal("ReleaseJoinIdentityReservation = false, want true: a PENDING reservation was there to release")
 	}
 	// A fresh reservation attempt must now succeed again.
-	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	reserved, _, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
 	if err != nil {
 		t.Fatalf("ReserveJoinIdentity (after release): %v", err)
 	}
@@ -478,7 +558,7 @@ func TestReleaseJoinIdentityReservation_ReleasesAReservation(t *testing.T) {
 func TestReleaseJoinIdentityReservation_AlreadyGoneLogsAndReportsFalse(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	// No reservation was ever made for this identity.
-	released, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1")
+	released, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)))
 	if err != nil {
 		t.Fatalf("ReleaseJoinIdentityReservation: %v", err)
 	}
@@ -489,10 +569,119 @@ func TestReleaseJoinIdentityReservation_AlreadyGoneLogsAndReportsFalse(t *testin
 
 func TestReleaseJoinIdentityReservation_StoreErrorSurfacesTyped(t *testing.T) {
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndDeleteOnPrefix: joinIdentityPrefix}
-	_, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1")
+	_, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)))
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("ReleaseJoinIdentityReservation (store error) = %v, want *JoinTokenStoreError", err)
+	}
+}
+
+// TestReleaseJoinIdentityReservation_SurvivesACanceledCallerContext proves
+// B1 item 3 for Release: it finalizes a signing FAILURE that already
+// happened, so a caller ctx canceled at exactly this moment must not also
+// abort the cleanup that keeps the node id from wedging.
+func TestReleaseJoinIdentityReservation_SurvivesACanceledCallerContext(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	_, pending, err := ReserveJoinIdentity(context.Background(), store, "node-1", 0)
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity: %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	released, err := ReleaseJoinIdentityReservation(canceled, store, "node-1", pending)
+	if err != nil {
+		t.Fatalf("ReleaseJoinIdentityReservation with a canceled caller ctx: %v", err)
+	}
+	if !released {
+		t.Fatal("ReleaseJoinIdentityReservation with a canceled caller ctx = false, want true")
+	}
+}
+
+// TestMintJoinToken_TreatsExpiredPendingReservationAsAbsent and
+// TestConsumeJoinToken_TreatsExpiredPendingReservationAsAbsent prove B1's
+// reclaim rule from the other two entry points that read the same ledger:
+// an expired PENDING record must not refuse a fresh mint or consume any
+// more than ReserveJoinIdentity itself refuses to be blocked by one.
+func TestMintJoinToken_TreatsExpiredPendingReservationAsAbsent(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	identity := "spiffe://test.cluster/node/node-1"
+	if err := store.Put(context.Background(), joinIdentityPrefix+identity, pendingValue(time.Now().Add(-time.Minute))); err != nil {
+		t.Fatalf("Put (stale pending): %v", err)
+	}
+	if _, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour); err != nil {
+		t.Fatalf("MintJoinToken with an expired pending reservation: %v", err)
+	}
+}
+
+func TestConsumeJoinToken_TreatsExpiredPendingReservationAsAbsent(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	token, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken: %v", err)
+	}
+	identity := "spiffe://test.cluster/node/node-1"
+	if err := store.Put(context.Background(), joinIdentityPrefix+identity, pendingValue(time.Now().Add(-time.Minute))); err != nil {
+		t.Fatalf("Put (stale pending): %v", err)
+	}
+	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", token); err != nil {
+		t.Fatalf("ConsumeJoinToken with an expired pending reservation: %v", err)
+	}
+}
+
+// TestMintJoinToken_RefusedByALivePendingReservation and
+// TestConsumeJoinToken_RefusedByALivePendingReservation prove the
+// complement: a reservation still within its TTL blocks a fresh mint or
+// consume exactly as an admitted record does.
+func TestMintJoinToken_RefusedByALivePendingReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	identity := "spiffe://test.cluster/node/node-1"
+	if err := store.Put(context.Background(), joinIdentityPrefix+identity, pendingValue(time.Now().Add(time.Hour))); err != nil {
+		t.Fatalf("Put (live pending): %v", err)
+	}
+	_, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	var existing *ExistingMemberError
+	if !errors.As(err, &existing) {
+		t.Fatalf("MintJoinToken with a live pending reservation = %v, want *ExistingMemberError", err)
+	}
+}
+
+func TestConsumeJoinToken_RefusedByALivePendingReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	token, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken: %v", err)
+	}
+	identity := "spiffe://test.cluster/node/node-1"
+	if err := store.Put(context.Background(), joinIdentityPrefix+identity, pendingValue(time.Now().Add(time.Hour))); err != nil {
+		t.Fatalf("Put (live pending): %v", err)
+	}
+	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", token); err == nil {
+		t.Fatal("ConsumeJoinToken with a live pending reservation succeeded, want refusal")
+	}
+}
+
+// TestParsePendingDeadline covers pendingValue's encoding directly: a
+// value this package wrote round-trips, an admitted RFC 3339 timestamp is
+// NOT pending-shaped, and a malformed or foreign value is NOT
+// pending-shaped either (fail closed: treated as blocking, never as
+// absent).
+func TestParsePendingDeadline(t *testing.T) {
+	deadline := time.Now().Add(time.Minute).Truncate(time.Second)
+	got, ok := parsePendingDeadline(pendingValue(deadline))
+	if !ok || !got.Equal(deadline) {
+		t.Fatalf("parsePendingDeadline(pendingValue(%v)) = %v, %v; want %v, true", deadline, got, ok, deadline)
+	}
+
+	if _, ok := parsePendingDeadline([]byte(time.Now().UTC().Format(time.RFC3339))); ok {
+		t.Fatal("parsePendingDeadline treated an admitted RFC 3339 timestamp as pending-shaped")
+	}
+	if _, ok := parsePendingDeadline([]byte("pending:not-a-number")); ok {
+		t.Fatal("parsePendingDeadline treated a malformed pending value as pending-shaped")
+	}
+	if _, ok := parsePendingDeadline([]byte("garbage")); ok {
+		t.Fatal("parsePendingDeadline treated an unrelated value as pending-shaped")
 	}
 }
 

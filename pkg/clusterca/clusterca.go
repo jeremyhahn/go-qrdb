@@ -46,13 +46,19 @@ import (
 // joiner-supplied CSR.
 const minRSAKeyBits = 2048
 
-// checkPublicKeyStrength refuses a caller-supplied public key (from a
+// CheckPublicKeyStrength refuses a caller-supplied public key (from a
 // joiner's CSR) that is not strong enough for a cluster-member leaf:
 // ECDSA weaker than P-256, Ed25519 is always accepted (it has one fixed,
 // strong size), and RSA under minRSAKeyBits. Any other key type is
 // refused outright -- this package does not attempt to classify a type
 // crypto/x509 itself does not recognize as safe to sign.
-func checkPublicKeyStrength(pub crypto.PublicKey) error {
+//
+// Exported so pkg/clusterenroll's HandleJoinRequest can run it BEFORE
+// ConsumeJoinToken, not only inside IssueLeafForKey afterward: a weak key
+// should not cost the joiner its single-use token. IssueLeafForKey still
+// runs it too (cheaply redundant), so a caller that reaches it some other
+// way is still covered.
+func CheckPublicKeyStrength(pub crypto.PublicKey) error {
 	switch k := pub.(type) {
 	case *ecdsa.PublicKey:
 		if k.Curve.Params().BitSize < elliptic.P256().Params().BitSize {
@@ -151,7 +157,7 @@ func IssueNodeLeaf(ctx context.Context, provider cakey.Provider, nodeURI ...stri
 // identity. A non-empty URI that fails to parse returns a
 // *clustertls.GenerateError.
 func IssueLeafForKey(ctx context.Context, provider cakey.Provider, pub crypto.PublicKey, nodeURI ...string) (certPEM []byte, err error) {
-	if err := checkPublicKeyStrength(pub); err != nil {
+	if err := CheckPublicKeyStrength(pub); err != nil {
 		return nil, err
 	}
 

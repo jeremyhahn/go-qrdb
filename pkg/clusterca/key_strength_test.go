@@ -32,16 +32,16 @@ func TestCheckPublicKeyStrength_ECDSA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey (P-256): %v", err)
 	}
-	if err := checkPublicKeyStrength(&strong.PublicKey); err != nil {
-		t.Fatalf("checkPublicKeyStrength(P-256) = %v, want nil", err)
+	if err := CheckPublicKeyStrength(&strong.PublicKey); err != nil {
+		t.Fatalf("CheckPublicKeyStrength(P-256) = %v, want nil", err)
 	}
 
 	stronger, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey (P-384): %v", err)
 	}
-	if err := checkPublicKeyStrength(&stronger.PublicKey); err != nil {
-		t.Fatalf("checkPublicKeyStrength(P-384) = %v, want nil", err)
+	if err := CheckPublicKeyStrength(&stronger.PublicKey); err != nil {
+		t.Fatalf("CheckPublicKeyStrength(P-384) = %v, want nil", err)
 	}
 
 	weak, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
@@ -49,8 +49,8 @@ func TestCheckPublicKeyStrength_ECDSA(t *testing.T) {
 		t.Fatalf("GenerateKey (P-224): %v", err)
 	}
 	var weakErr *WeakKeyError
-	if err := checkPublicKeyStrength(&weak.PublicKey); !errors.As(err, &weakErr) {
-		t.Fatalf("checkPublicKeyStrength(P-224) = %v, want *WeakKeyError", err)
+	if err := CheckPublicKeyStrength(&weak.PublicKey); !errors.As(err, &weakErr) {
+		t.Fatalf("CheckPublicKeyStrength(P-224) = %v, want *WeakKeyError", err)
 	} else if weakErr.KeyType != "ECDSA/P-224" {
 		t.Fatalf("WeakKeyError.KeyType = %q, want %q", weakErr.KeyType, "ECDSA/P-224")
 	}
@@ -63,8 +63,8 @@ func TestCheckPublicKeyStrength_Ed25519(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	if err := checkPublicKeyStrength(pub); err != nil {
-		t.Fatalf("checkPublicKeyStrength(Ed25519) = %v, want nil", err)
+	if err := CheckPublicKeyStrength(pub); err != nil {
+		t.Fatalf("CheckPublicKeyStrength(Ed25519) = %v, want nil", err)
 	}
 }
 
@@ -75,8 +75,8 @@ func TestCheckPublicKeyStrength_RSA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey (2048): %v", err)
 	}
-	if err := checkPublicKeyStrength(&strong.PublicKey); err != nil {
-		t.Fatalf("checkPublicKeyStrength(RSA-2048) = %v, want nil", err)
+	if err := CheckPublicKeyStrength(&strong.PublicKey); err != nil {
+		t.Fatalf("CheckPublicKeyStrength(RSA-2048) = %v, want nil", err)
 	}
 
 	weak, err := rsa.GenerateKey(rand.Reader, 1024)
@@ -84,8 +84,8 @@ func TestCheckPublicKeyStrength_RSA(t *testing.T) {
 		t.Fatalf("GenerateKey (1024): %v", err)
 	}
 	var weakErr *WeakKeyError
-	if err := checkPublicKeyStrength(&weak.PublicKey); !errors.As(err, &weakErr) {
-		t.Fatalf("checkPublicKeyStrength(RSA-1024) = %v, want *WeakKeyError", err)
+	if err := CheckPublicKeyStrength(&weak.PublicKey); !errors.As(err, &weakErr) {
+		t.Fatalf("CheckPublicKeyStrength(RSA-1024) = %v, want *WeakKeyError", err)
 	} else if weakErr.KeyType != "RSA/1024" {
 		t.Fatalf("WeakKeyError.KeyType = %q, want %q", weakErr.KeyType, "RSA/1024")
 	}
@@ -96,8 +96,8 @@ func TestCheckPublicKeyStrength_RSA(t *testing.T) {
 // outright, rather than silently accepted.
 func TestCheckPublicKeyStrength_UnsupportedType(t *testing.T) {
 	var weakErr *WeakKeyError
-	if err := checkPublicKeyStrength("not a key"); !errors.As(err, &weakErr) {
-		t.Fatalf("checkPublicKeyStrength(unsupported) = %v, want *WeakKeyError", err)
+	if err := CheckPublicKeyStrength("not a key"); !errors.As(err, &weakErr) {
+		t.Fatalf("CheckPublicKeyStrength(unsupported) = %v, want *WeakKeyError", err)
 	} else if weakErr.KeyType != "string" {
 		t.Fatalf("WeakKeyError.KeyType = %q, want %q", weakErr.KeyType, "string")
 	}

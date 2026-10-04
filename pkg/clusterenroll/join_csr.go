@@ -237,6 +237,17 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 	if err := csr.CheckSignature(); err != nil {
 		return &JoinResponse{Error: "certificate signing request: proof of possession failed"}
 	}
+	// Checked here, BEFORE the token is consumed, for the same reason the
+	// Signer availability check above runs first: a weak CSR key is a
+	// property of the REQUEST, not of the token, and discovering it only
+	// inside IssueLeafForKey (after ConsumeJoinToken already burned a
+	// single-use token) would cost the joiner its token for a request
+	// that was never going to be signed. IssueLeafForKey runs the
+	// identical check again before it signs, so a caller that reaches it
+	// some other way is still covered.
+	if err := clusterca.CheckPublicKeyStrength(csr.PublicKey); err != nil {
+		return &JoinResponse{Error: "certificate signing request: key is not strong enough for a cluster-member leaf"}
+	}
 
 	boundNodeURI, err := ConsumeJoinToken(ctx, store, trustDomain, req.Token)
 	if err != nil {
@@ -251,29 +262,30 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
-	reserved, err := ReserveJoinIdentity(ctx, store, boundNodeURI)
+	reserved, pending, err := ReserveJoinIdentity(ctx, store, boundNodeURI, 0)
 	if err != nil {
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 	if !reserved {
 		// Lost the race to a concurrent request for the SAME identity
 		// (a second, independently valid token), or the identity is
-		// already admitted. The token this request presented is already
-		// consumed either way -- see ConsumeJoinToken's own doc comment
-		// on why that is the correct trade, not a bug to fix here.
+		// already admitted or still within a live reservation. The token
+		// this request presented is already consumed either way -- see
+		// ConsumeJoinToken's own doc comment on why that is the correct
+		// trade, not a bug to fix here.
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
 	certPEM, err := clusterca.IssueLeafForKey(ctx, provider, csr.PublicKey, boundNodeURI)
 	if err != nil {
-		if _, relErr := ReleaseJoinIdentityReservation(ctx, store, boundNodeURI); relErr != nil {
+		if _, relErr := ReleaseJoinIdentityReservation(ctx, store, boundNodeURI, pending); relErr != nil {
 			slog.ErrorContext(ctx, "member-side CSR join: signing failed and the reservation could not be released",
 				"node_uri", boundNodeURI, "sign_error", err, "release_error", relErr)
 		}
 		return &JoinResponse{Error: "signing failed"}
 	}
 
-	if err := PromoteJoinIdentityAdmitted(ctx, store, boundNodeURI); err != nil {
+	if err := PromoteJoinIdentityAdmitted(ctx, store, boundNodeURI, pending); err != nil {
 		// The leaf was signed, but this package cannot confirm the ledger
 		// correctly reflects it -- refuse the issue rather than hand out a
 		// certificate MintJoinToken's own already-admitted check might not

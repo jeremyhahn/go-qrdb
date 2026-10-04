@@ -39,6 +39,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -55,25 +57,105 @@ import (
 // liability once the record is replicated.
 const joinTokenPrefix = "__sys:cluster_join_tokens/"
 
-// joinIdentityPrefix records, per admitted node identity, that a join
-// token has already been consumed for it. Entries are never removed: a
-// SECOND join attempt presenting a (new, validly minted) token for an
-// identity that has already joined is refused rather than silently
-// re-admitted -- "refuse identities of existing members" -- because this
-// package cannot tell "the first leaf never reached the joiner" apart from
-// "an attacker is attempting to mint a second identity on top of an
-// admitted one" from here; an operator re-admitting a genuinely lost node
-// mints a token for a NEW node id, which is a deliberate, auditable action.
+// joinIdentityPrefix records, per node identity, either that it has been
+// ADMITTED (a durable RFC 3339 timestamp, written by
+// PromoteJoinIdentityAdmitted or MarkJoinIdentityAdmitted) or that an
+// issuance for it is PENDING (an expiring "pending:<unix-deadline>" record,
+// written by ReserveJoinIdentity -- see pendingValue).
+//
+// Admitted entries are never removed: a SECOND join attempt presenting a
+// (new, validly minted) token for an identity that has already joined is
+// refused rather than silently re-admitted -- "refuse identities of
+// existing members" -- because this package cannot tell "the first leaf
+// never reached the joiner" apart from "an attacker is attempting to mint
+// a second identity on top of an admitted one" from here; an operator
+// re-admitting a genuinely lost node mints a token for a NEW node id,
+// which is a deliberate, auditable action.
+//
+// PENDING entries are NOT permanent. A crash between ReserveJoinIdentity
+// and PromoteJoinIdentityAdmitted/ReleaseJoinIdentityReservation, a failed
+// Promote, or a Release that could not run (an expired request ctx, an
+// unknown-outcome store error) all leave one behind -- and unlike an
+// admitted record, there is no later admin action that un-wedges it: the
+// node id would be refused forever by MintJoinToken/ConsumeJoinToken with
+// no path to recovery. MintJoinToken, ConsumeJoinToken and
+// ReserveJoinIdentity therefore all treat a PENDING record past its
+// encoded deadline as absent, and ReserveJoinIdentity reclaims it with a
+// CompareAndSwap from the exact stale value observed -- never a blind
+// overwrite, so a concurrent reclaimer or a Promote that lands between the
+// read and the swap is not clobbered.
 const joinIdentityPrefix = "__sys:cluster_join_identities/"
 
-// joinIdentityPending is the value ReserveJoinIdentity writes: a sentinel
-// claiming nodeURI for an issuance in progress, before that issuance is
-// known to succeed. PromoteJoinIdentityAdmitted swaps it for a real
-// timestamp once IssueLeafForKey has actually signed a leaf;
-// ReleaseJoinIdentityReservation removes it if issuance fails instead.
-// Distinct from any valid RFC 3339 timestamp (what an admitted record
-// holds), so a reader can tell the two states apart if it ever needs to.
-var joinIdentityPending = []byte("pending")
+// joinPendingValuePrefix marks a joinIdentityPrefix record as an
+// in-progress reservation rather than an admitted timestamp. Distinct from
+// any valid RFC 3339 timestamp (what an admitted record holds: that format
+// never starts with a lowercase letter), so a reader can always tell the
+// two states apart.
+const joinPendingValuePrefix = "pending:"
+
+// DefaultJoinIdentityReservationTTL is used when ReserveJoinIdentity is
+// called with ttl <= 0. A few minutes is generous for the sign-and-promote
+// sequence it bounds (ordinarily milliseconds) while still reclaiming a
+// wedged reservation long before an operator would notice and investigate.
+const DefaultJoinIdentityReservationTTL = 5 * time.Minute
+
+// promoteReleaseTimeout bounds PromoteJoinIdentityAdmitted's and
+// ReleaseJoinIdentityReservation's OWN context, independent of the ctx
+// HandleJoinRequest calls them with. Both run to finalize an outcome
+// (a successful sign, or a failed one) that has ALREADY happened by the
+// time either is called, so a request ctx that is canceled or past its
+// deadline at that exact moment -- the client gave up, or the request's
+// own deadline passed while IssueLeafForKey was signing -- must not also
+// abort the cleanup that keeps the node id from wedging; see
+// context.WithoutCancel in both functions.
+const promoteReleaseTimeout = 10 * time.Second
+
+// pendingValue encodes a reservation's deadline as the record value
+// ReserveJoinIdentity writes.
+func pendingValue(deadline time.Time) []byte {
+	return []byte(joinPendingValuePrefix + strconv.FormatInt(deadline.Unix(), 10))
+}
+
+// parsePendingDeadline reports the deadline encoded in a PENDING-shaped
+// value and whether value is actually PENDING-shaped at all. ok is false
+// for an admitted RFC 3339 timestamp, for a value this package did not
+// write, or for a record from a build that predates this encoding --
+// which decode as "not pending" and therefore as a blocking (admitted-
+// shaped) record rather than as absent, the fail-closed direction for an
+// unrecognised value.
+func parsePendingDeadline(value []byte) (deadline time.Time, ok bool) {
+	s := string(value)
+	rest, isPending := strings.CutPrefix(s, joinPendingValuePrefix)
+	if !isPending {
+		return time.Time{}, false
+	}
+	secs, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(secs, 0).UTC(), true
+}
+
+// identityBlocks reports whether identityKey's current record should
+// block a new mint or consume for it: true for an admitted record or a
+// reservation still within its TTL, false for an absent key or an EXPIRED
+// reservation. An expired reservation is treated exactly like an absent
+// key -- see joinIdentityPrefix's own doc comment on why a PENDING record
+// must not block forever.
+func identityBlocks(ctx context.Context, store kvstore.AtomicKVStore, identityKey string) (bool, error) {
+	data, err := store.Get(ctx, identityKey)
+	if err != nil {
+		return false, &JoinTokenStoreError{Op: "get", Detail: identityKey, Err: err}
+	}
+	if data == nil {
+		return false, nil
+	}
+	deadline, ok := parsePendingDeadline(data)
+	if !ok {
+		return true, nil
+	}
+	return !time.Now().After(deadline), nil
+}
 
 // Join-token TTL bounds. A token with no expiry would be the static
 // secret's own defect restated; one bounded to seconds would make an
@@ -127,11 +209,11 @@ func MintJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain
 	}
 
 	identityKey := joinIdentityPrefix + identity.String()
-	admitted, err := store.Exists(ctx, identityKey)
+	blocked, err := identityBlocks(ctx, store, identityKey)
 	if err != nil {
-		return "", time.Time{}, &JoinTokenStoreError{Op: "exists", Detail: identityKey, Err: err}
+		return "", time.Time{}, err
 	}
-	if admitted {
+	if blocked {
 		return "", time.Time{}, &ExistingMemberError{NodeURI: identity.String()}
 	}
 
@@ -251,11 +333,11 @@ func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDom
 	}
 
 	identityKey := joinIdentityPrefix + identity.String()
-	alreadyAdmitted, err := store.Exists(ctx, identityKey)
+	blocked, err := identityBlocks(ctx, store, identityKey)
 	if err != nil {
-		return "", &JoinTokenStoreError{Op: "exists", Detail: identityKey, Err: err}
+		return "", err
 	}
-	if alreadyAdmitted {
+	if blocked {
 		return "", errJoinTokenRejected
 	}
 
@@ -304,30 +386,78 @@ func MarkJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, 
 // racing each other -- is refused HERE, at the reservation, rather than
 // both reaching IssueLeafForKey and each believing it will win.
 //
-// reserved=false (no error) means nodeURI is already reserved or already
-// admitted; the caller must refuse the join without ever calling
-// IssueLeafForKey.
-func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) (reserved bool, err error) {
-	identityKey := joinIdentityPrefix + nodeURI
-	reserved, err = store.PutIfAbsent(ctx, identityKey, joinIdentityPending)
-	if err != nil {
-		return false, &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
+// ttl <= 0 uses DefaultJoinIdentityReservationTTL. The returned pending
+// value MUST be passed to the matching PromoteJoinIdentityAdmitted or
+// ReleaseJoinIdentityReservation call: it is the exact record this
+// reservation wrote, which is what those calls compare against, not a
+// fixed sentinel, because the deadline it encodes is unique to this
+// attempt.
+//
+// reserved=false (no error) means nodeURI is already reserved (within its
+// TTL) or already admitted; the caller must refuse the join without ever
+// calling IssueLeafForKey. A reservation whose TTL has LAPSED is reclaimed
+// here instead of left to block forever: this call reads the stale value
+// and retries as a CompareAndSwap from exactly that value, never a blind
+// overwrite, so a concurrent reclaimer (or a Promote that lands between
+// the read and the swap) is not clobbered.
+func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, ttl time.Duration) (reserved bool, pending []byte, err error) {
+	if ttl <= 0 {
+		ttl = DefaultJoinIdentityReservationTTL
 	}
-	return reserved, nil
+	identityKey := joinIdentityPrefix + nodeURI
+	fresh := pendingValue(time.Now().Add(ttl))
+
+	stored, err := store.PutIfAbsent(ctx, identityKey, fresh)
+	if err != nil {
+		return false, nil, &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
+	}
+	if stored {
+		return true, fresh, nil
+	}
+
+	existing, err := store.Get(ctx, identityKey)
+	if err != nil {
+		return false, nil, &JoinTokenStoreError{Op: "get", Detail: identityKey, Err: err}
+	}
+	deadline, isPending := parsePendingDeadline(existing)
+	if !isPending || !time.Now().After(deadline) {
+		// Admitted, or a still-live reservation: not ours to take.
+		return false, nil, nil
+	}
+	swapped, err := store.CompareAndSwap(ctx, identityKey, existing, fresh)
+	if err != nil {
+		return false, nil, &JoinTokenStoreError{Op: "compareandswap", Detail: identityKey, Err: err}
+	}
+	if !swapped {
+		// Lost the reclaim race to a concurrent reserver (or a Promote
+		// that landed in between); the identity is spoken for either way.
+		return false, nil, nil
+	}
+	return true, fresh, nil
 }
 
 // PromoteJoinIdentityAdmitted swaps nodeURI's PENDING reservation
-// (ReserveJoinIdentity) for a durable admitted record, called ONLY after
-// IssueLeafForKey has actually signed a leaf for it. The caller MUST
-// refuse the whole issue -- never return the leaf it already signed --
-// when this returns an error: a non-nil error means the swap's outcome is
-// unknown, and swapped=false means the reservation was not there in the
-// PENDING state this call expected, an inconsistency this package cannot
-// explain away well enough to hand out a certificate anyway.
-func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) error {
+// (ReserveJoinIdentity, which returned pending) for a durable admitted
+// record, called ONLY after IssueLeafForKey has actually signed a leaf for
+// it. The caller MUST refuse the whole issue -- never return the leaf it
+// already signed -- when this returns an error: a non-nil error means the
+// swap's outcome is unknown, and swapped=false means the reservation was
+// not there in the exact PENDING state this call expected (it expired and
+// was reclaimed, or was reclaimed concurrently), an inconsistency this
+// package cannot explain away well enough to hand out a certificate
+// anyway.
+//
+// Runs under its own timeout on a DETACHED context
+// (context.WithoutCancel(ctx)): this call finalizes a signing success
+// that has ALREADY happened, so the caller's ctx being canceled or past
+// its deadline at this exact moment must not also abort the write that
+// keeps the ledger consistent with the certificate already issued.
+func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, pending []byte) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), promoteReleaseTimeout)
+	defer cancel()
 	identityKey := joinIdentityPrefix + nodeURI
 	admitted := []byte(time.Now().UTC().Format(time.RFC3339))
-	swapped, err := store.CompareAndSwap(ctx, identityKey, joinIdentityPending, admitted)
+	swapped, err := store.CompareAndSwap(ctx, identityKey, pending, admitted)
 	if err != nil {
 		return &JoinTokenStoreError{Op: "compareandswap", Detail: identityKey, Err: err}
 	}
@@ -338,18 +468,31 @@ func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStor
 }
 
 // ReleaseJoinIdentityReservation removes nodeURI's PENDING reservation
-// (ReserveJoinIdentity), called when issuance fails AFTER the reservation
-// succeeded: the identity was never actually admitted, so the reservation
-// must not survive forever and block every later join attempt for it.
+// (ReserveJoinIdentity, which returned pending), called when issuance
+// fails AFTER the reservation succeeded: the identity was never actually
+// admitted, so the reservation must not survive forever and block every
+// later join attempt for it.
+//
+// Runs under its own timeout on a DETACHED context
+// (context.WithoutCancel(ctx)), for the identical reason
+// PromoteJoinIdentityAdmitted does: this call finalizes a signing FAILURE
+// that has already happened, and the caller's ctx being canceled or past
+// its deadline must not also abort the cleanup. Even if it does run and
+// still fails -- or the request process crashes before it runs at all --
+// the reservation is not wedged forever: it carries the same deadline
+// ReserveJoinIdentity encoded, and a later ReserveJoinIdentity for the
+// same identity reclaims it once that deadline passes.
 //
 // released=false (no error) means the reservation was not there, or no
-// longer held the PENDING value this call expected -- reported at WARN,
-// the lost-race case the earlier, discarding implementation of this
+// longer held the exact PENDING value this call expected -- reported at
+// WARN, the lost-race case the earlier, discarding implementation of this
 // cleanup did not surface at all, rather than silently treated as
 // "nothing to do."
-func ReleaseJoinIdentityReservation(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) (released bool, err error) {
+func ReleaseJoinIdentityReservation(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, pending []byte) (released bool, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), promoteReleaseTimeout)
+	defer cancel()
 	identityKey := joinIdentityPrefix + nodeURI
-	released, err = store.CompareAndDelete(ctx, identityKey, joinIdentityPending)
+	released, err = store.CompareAndDelete(ctx, identityKey, pending)
 	if err != nil {
 		return false, &JoinTokenStoreError{Op: "compareanddelete", Detail: identityKey, Err: err}
 	}
