@@ -2035,7 +2035,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3916,8 +3916,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe) (*authBootstrapResult, error) {
-	_ = ctx
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
 	_ = node
 
 	// The custodian service store, reused from mgmt.legacyFactorStore rather
@@ -4033,6 +4032,28 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 			slog.Warn(`auth.mtls_binding_policy is "required" but the bootstrap admin's binding could not be verified; `+
 				`serving normally rather than locking the node down over this fault alone`,
 				slog.String("error", initErr.Error()))
+		}
+		// The boot-time lookup above decided ENTRY into "awaiting admin
+		// credential"; EXIT is driven by the replicated store on every node,
+		// not only the one that performs the reissue (go-qrdb#560 review A).
+		// CeremonyServiceWithAdminRebind's AdminBound call only reaches this
+		// probe when THIS node ran the reissue -- ordinarily the Raft leader,
+		// since that retry is leader-gated. A follower learns the admin
+		// bound only once the write replicates, so it watches the admin's
+		// own user record for the first live binding and tells the SAME
+		// probe, with no restart and no per-request re-read. Started only
+		// when this boot actually decided "awaiting": a node that never
+		// entered that state has nothing for this watch to change, and the
+		// probe's AdminBound is permanent for the life of the probe, so a
+		// later binding expiry never needs to re-arm it.
+		if watchSvc != nil && awaitingAdminCredentialProbe.AwaitingAdminCredential() {
+			go func() {
+				if werr := firstboot.WatchForAdminBound(ctx, mgmt.userSvc, watchSvc, awaitingAdminCredentialProbe); werr != nil && ctx.Err() == nil {
+					slog.Warn("watch for the bootstrap admin's certificate binding ended unexpectedly; "+
+						"this node stays in \"awaiting admin credential\" until a restart or a local reissue",
+						slog.String("error", werr.Error()))
+				}
+			}()
 		}
 	}
 

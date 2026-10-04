@@ -2387,6 +2387,21 @@ func primaryKey(id uint64) string {
 	return keyPrefixPrimary + idStringKey(id)
 }
 
+// PrimaryRecordKey returns the exact storage key a user's primary record is
+// read from and written to (go-qrdb#560 review A). It is primaryKey, exported
+// for a caller outside this package that needs to watch a specific user's
+// record directly -- firstboot.WatchForAdminBound watches
+// PrimaryRecordKey(adminID) on the replicated store to learn, on every node
+// and without a restart, the moment the bootstrap admin's certificate binds
+// on another node (typically the Raft leader). The byte-level encoding
+// (idStringKey's fixed-width big-endian form, not a decimal string) is an
+// implementation detail a caller could not reproduce correctly on its own,
+// which is why this wraps primaryKey rather than asking the caller to build
+// the key itself.
+func PrimaryRecordKey(id uint64) string {
+	return primaryKey(id)
+}
+
 // tenantIndexKey builds the tenant index key for a user within a tenant.
 func tenantIndexKey(tenantID string, userID uint64) string {
 	return keyPrefixTenant + tenantID + "/" + idStringKey(userID)

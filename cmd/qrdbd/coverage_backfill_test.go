@@ -140,7 +140,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
-		firstboot.NewAwaitingAdminCredentialProbe(),
+		firstboot.NewAwaitingAdminCredentialProbe(), nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -181,7 +181,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
-		firstboot.NewAwaitingAdminCredentialProbe(),
+		firstboot.NewAwaitingAdminCredentialProbe(), nil,
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

@@ -3031,6 +3031,36 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 				slog.String("error", initErr.Error()))
 		}
 		embeddedOpts = append(embeddedOpts, embedded.WithAwaitingAdminCredentialProbe(awaitingAdminCredentialProbe))
+
+		// Entry into "awaiting admin credential" was decided above, once, at
+		// boot; EXIT is driven by the replicated store on every node, not
+		// only the one that performs the reissue (go-qrdb#560 review A).
+		// CeremonyServiceWithAdminRebind's AdminBound call only reaches this
+		// probe when THIS node ran the reissue -- ordinarily the Raft
+		// leader, since that retry is leader-gated. A follower learns the
+		// admin bound only once the write replicates, so it watches the
+		// admin's own user record for the first live binding and tells the
+		// SAME probe, with no restart and no per-request re-read.
+		//
+		// Runs on n.background(), NOT ctx: ctx is this boot call's own
+		// request context, cancelled the moment Unseal/New returns, which
+		// would stop the watch moments after the node came up. Started only
+		// when this boot actually decided "awaiting" -- a node that never
+		// entered that state has nothing for this watch to change, and the
+		// probe's AdminBound is permanent for the life of the probe, so a
+		// later binding expiry never needs to re-arm it.
+		if svcNode.Watch != nil && awaitingAdminCredentialProbe.AwaitingAdminCredential() {
+			bgCtx := n.background()
+			n.bgWG.Add(1)
+			go func() {
+				defer n.bgWG.Done()
+				if werr := firstboot.WatchForAdminBound(bgCtx, svcNode.User, svcNode.Watch, awaitingAdminCredentialProbe); werr != nil && bgCtx.Err() == nil {
+					slog.Warn("node: watch for the bootstrap admin's certificate binding ended unexpectedly; "+
+						"this node stays in \"awaiting admin credential\" until a restart or a local reissue",
+						slog.String("error", werr.Error()))
+				}
+			}()
+		}
 	}
 	// A self-issued cluster's cakey.Provider (svcNode.ClusterCAProv) must be
 	// ESTABLISHED before the trust pool below ever resolves it: the trust
