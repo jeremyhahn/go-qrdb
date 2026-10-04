@@ -135,13 +135,16 @@ fails closed.
 **"no admin certificate binding and no pending admin credential record".**
 First boot waited for the admin's certificate to arrive (it may have been
 issued by `qrdb init` on a different node of the cluster) and nothing showed
-up in time. The admin-credential step is retriable: re-run `qrdb init` with
-`--admin-csr`, `--admin-cert`, or `--admin-generate`, against the node that
-is current Raft leader (`qrdb status`). The retry both issues a fresh
-credential AND binds it to the admin account, in the same call — it never
-hands back a credential that looks successful but is not actually bound.
-Nothing about this is destructive — it does not touch the barrier, the CA,
-or the SO/User PINs.
+up in time. This no longer aborts the boot: the node logs this message as a
+warning and starts anyway, coming up in the same "awaiting admin credential"
+state described below, rather than shutting down and leaving the operator
+with no running node to retry against. The admin-credential step is
+retriable: re-run `qrdb init` with `--admin-csr`, `--admin-cert`, or
+`--admin-generate`, against the node that is current Raft leader (`qrdb
+status`). The retry both issues a fresh credential AND binds it to the admin
+account, in the same call — it never hands back a credential that looks
+successful but is not actually bound. Nothing about this is destructive — it
+does not touch the barrier, the CA, or the SO/User PINs.
 
 If the retry cannot complete the bind it refuses rather than returning an
 unbound credential: "admin-credential reissue has no CertBinder wired" means

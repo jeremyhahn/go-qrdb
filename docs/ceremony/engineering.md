@@ -99,6 +99,26 @@ qrdb ships only `NoopThresholdInitializer`.
 (`threshold < 2`) skips `enrolling`. The move to `operational` happens when
 the last initial holder claims.
 
+**State survives a restart** (go-qrdb#560 review): `NewCeremonyService`
+derives it at construction from the barrier's own durable, plaintext-readable
+records, rather than always starting at `awaiting_init` regardless of
+whether this barrier was already taken through the ceremony in an earlier
+process — a fresh service over an already-initialized barrier reports
+exactly the state it reports from an older one. `barrier.CeremonyOperational`
+(the SAME record `EnrollmentOpen` already relies on to survive a restart)
+restores `operational` directly, covering single-admin and M-of-N
+uniformly. Under Shamir custody ONLY, `barrier.Initialized` — true once
+`InitializeShamir` has run, which it does as the LAST barrier-related
+effect of an `Initialize` call that has ALREADY fully committed (every
+officer validated as a batch and enrolled) — restores `enrolling`.
+Single-admin is excluded from that second check on purpose:
+`initializeSystemBarrierLocked` brings the barrier up FIRST, before the
+admin credential is even issued, so `Initialized` alone cannot tell a
+completed single-admin ceremony from one that crashed mid-call, and the
+crash case's own retry-after-crash convergence needs the state to stay
+`awaiting_init`. No new node-local state file — everything read is already
+durable, replicated state.
+
 ## Invariants
 
 - **Only the barrier's unseal key is split.** The ceremony enrols holders and
@@ -109,6 +129,41 @@ the last initial holder claims.
 - **`Store` consumes the caller's slice, wiping it**, and replacing a held
   envelope destroys the old one. Pinned by `pkg/ceremony/share_store_test.go`.
 - **`Claim` destroys the enclave** and retains only the fact of the claim.
+- **A batch M-of-N `qrdb init` validates every officer PURELY, through the
+  SAME checks `enrol` applies to a single live registration, before any of
+  them is enrolled** (go-qrdb#560 review B3). `validateOfficerEnrolment` is
+  the one shared validator (role validity, principal name, self-enrolment,
+  CSR presence/parseability/key kind, the encryption KEM/key, and the
+  resolved factor set) both `enrol` and the batch pre-flight
+  (`validateOfficerCredentials`) call — a prior, partial copy of these
+  checks in the batch path (CSR/key/KEM/factors only) let a bad username, a
+  bad role, or self-enrolment on a LATER officer slip through, leaving
+  every officer before it in the batch already signed and persisted by the
+  time `enrol`'s fuller check caught it.
+- **`Initialize`'s M-of-N officer loop is transactional for whatever can
+  still fail AFTER that pre-flight** — a CA signing fault, a persist I/O
+  error, a duplicate-key race against a concurrent enrolment the batch
+  pre-flight could not see. A failure rolls back every officer THIS call
+  already enrolled, in reverse order, and best-effort un-provisions the
+  SO/User PINs through the new `pin.ProvisionRollback` optional capability
+  (reached by type assertion, like `FIDO2HashVerifier`; implemented by
+  `pin.SoftwareBackend`, which un-sets its in-memory PIN state) when the
+  backend supports it. Both are best-effort: a hardware PIN backend may
+  have no way to undo a native provisioning step, in which case a retry
+  supplying the SAME SO/User PINs still succeeds (`pin.Provision`'s own
+  idempotent re-verify); only a retry that changes either PIN is affected.
+- **`ReissueAdminCredential` verifies the SO PIN through
+  `pin.RequireProvisionedSOPIN`, not `pin.RequireSOPIN`** (go-qrdb#560
+  re-review B1): an already-initialized ceremony always provisioned its SO
+  PIN during `Initialize` (`validateInitOptions` refuses an empty one), so
+  admitting an UNPROVISIONED backend here — `RequireSOPIN`'s own documented
+  convenience for a brand-new node — could only mean something is wrong.
+  `CeremonyService.VerifyReissueSOPIN` exposes the identical check so
+  `service.CeremonyServiceWithAdminRebind.CeremonyInitialize` can verify it
+  FIRST, before checking whether the admin is already bound or reading the
+  admin back at all: checking either of those first would let an
+  unauthenticated caller learn the admin's binding state merely by
+  attempting a reissue with no PIN, or the wrong one.
 - **Holder certificate identity is CA-assigned**; holders are enrolled from a
   CSR only.
 - **PINs never reach any store as raw bytes.** `pin.Provision` hashes through

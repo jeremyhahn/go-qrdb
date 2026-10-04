@@ -207,9 +207,16 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
      typed refusal instead of a result (`*service.AdminRebindNoBinderError`,
      `*service.AdminRebindAdminNotFoundError`, `*service.AdminRebindBindError`).
 5. **No record and no binding within the bound** is
-   `*firstboot.NoPendingAdminCredentialError`, naming the retry command. This
-   is the ONLY way a default (`required`) boot can still refuse: no ceremony
-   has ever run against any node of this cluster.
+   `*firstboot.NoPendingAdminCredentialError`, naming the retry command — but
+   it no longer refuses the boot (go-qrdb#560 review B2, reversing the
+   earlier design here): `runFirstBoot` (`cmd/qrdbd`) and `sdk/go/node`'s
+   `FirstBootWithCeremony` both log it as a warning and continue with no
+   certificate to bind, exactly as if no pending record had ever been
+   expected. First boot still creates (or reconciles) the admin account;
+   it is simply left unbound, and the node comes up into "awaiting admin
+   credential" (§ below) once the boot-time binding check runs, rather than
+   refusing to start at all — the one case a default (`required`) boot used
+   to still refuse outright, before this fix.
 
 **A separate crash window exists one layer up, inside `firstboot.Initialize`
 itself: creating the admin user and binding its certificate are two
@@ -221,12 +228,17 @@ as "nothing left to do here": it re-checks the resolved admin's current
 binding state with the identical `verifyAdminBindings` predicate
 `checkBindingPosture` and `verifyRequiredOutcome` already apply, and runs
 step 4 (issue + bind) again whenever that check fails, not only when this
-run created the account. `checkBindingPosture`'s pre-flight is adjusted to
-match: an existing, unbound admin is let through — not refused outright —
-precisely when a credential path and a `CertBinder` are wired to repair it
-with, while a refusal reason issuing a certificate cannot fix (the account's
-own lifecycle or permitted-method policy) still refuses outright, as does
-having nothing wired to repair with.
+run created the account. `checkBindingPosture`'s pre-flight lets an
+existing, unbound admin through UNCONDITIONALLY now (go-qrdb#560 review
+B2) — with a credential path wired, step 4 repairs it; with none wired at
+all, the admin stays unbound for the "awaiting admin credential" posture
+to gate, which is the ordinary case this bound exists for, not a boot
+refusal. The one case that still refuses pre-flight is the genuine wiring
+bug: a credential path IS configured but no `CertBinder` is, so step 4
+would issue a certificate and silently never bind it. A reason issuing a
+certificate cannot fix at all (the account's own lifecycle or
+permitted-method policy) still refuses outright regardless of what is
+wired.
 
 ## Built-in roles
 
