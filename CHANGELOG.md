@@ -11,6 +11,59 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-node Raft clusters could not boot (v0.40.0-alpha).** Three
+  independent defects in the replicated cluster CA (Key A) bootstrap path:
+  - A restart that kept `ca.pem` but had deleted `ca-key.pem` (the ordinary
+    case once persistence is confirmed) refused with "adopted key is not
+    valid EC PRIVATE KEY PEM": `cakey.SoftwareProvider.AdoptIfAbsent` only
+    took its load-from-store path when BOTH the key and the certificate were
+    empty. An absent key now always loads the persisted material; a cached
+    certificate offered alongside it must still match, or the call is a
+    `*cakey.MaterialMismatchError`, keeping the split-brain check.
+  - A BYO-TLS node (`--tls-ca-file`/`--tls-cert-file`/`--tls-key-file`, an
+    operator-supplied CA with no key) refused to boot with "cakey: provider
+    has not been initialized": `cmd/qrdbd` offered the operator's CA
+    certificate to the built-in cluster CA provider as bootstrap material,
+    and `lifecycle.BuildServices` always constructed that provider even with
+    nothing to adopt. `TLSBundle.ExplicitTLS` now marks this path, qrdbd
+    withholds the operator's certificate from the provider, and
+    `lifecycle.Infra.NoClusterCAKey` leaves `Node.ClusterCAProv` nil instead
+    of self-generating a cluster CA key nobody asked for. The node boots and
+    serves; every CA-dependent verb (`ceremony-sign-csr`, officer
+    registration, member-side CSR join) already refuses with its own typed
+    error when no provider exists.
+  - A Raft follower's cluster-CA persistence check failed outright on
+    "not leader for shard 1, leader unknown" immediately after
+    `waitForLeaderElection` returned: leadership was still settling.
+    `confirmClusterCAPersisted` now retries a transient
+    `*service.NotLeaderError` with bounded exponential backoff (30s budget),
+    bounded by the shutdown context, and returns any other error class
+    immediately. `server.SystemShardSettling` was separately found to
+    recognize only the service-layer `*service.NotLeaderError` and not its
+    transport-layer counterpart (`*sdk/go/transport.NotLeaderError`, which
+    `sdk/go/transport/embedded` reconstructs with no `Unwrap` chain back to
+    the service type) — a caller behind the embedded transport, such as the
+    feature gate's self-advertisement, never retried the same settling
+    window. Both typed not-leader errors are now recognized.
+- **Two more startup races surfaced while reproducing the above against a
+  real multi-node cluster, both in the same "not-leader while the system
+  shard settles" family, at call sites with no retry at all:**
+  - `provisionDatabases`'s database drop-fence write raced the same
+    settling window `awaitLeader`'s local leader check cannot see (it only
+    confirms a leader is known, not that this node's own write path has
+    caught up), failing boot with "database: failed to update the drop
+    fence ...: not leader for shard 1, leader unknown" on a follower.
+    Every write now retries through `server.WhileSystemShardSettling`.
+  - `startFeatureGate`'s self-advertisement unconditionally needs a leased
+    membership write, which the `memory` and `disk` state machine types do
+    not implement; the resulting `*transport.CapabilityUnsupportedError`
+    ("statemachine: lease not configured") was fatal, so the node — the
+    leader included — exited, stranding every follower. The node now
+    boots and serves without the optional advertisement instead, exactly
+    as if no feature gate had been built.
+
 ## [0.40.0-alpha] - 2026-10-04
 
 The CA key provider seam and replicated cluster CA. This release contains BREAKING changes; see the entries below. Highlights:
