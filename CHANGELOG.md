@@ -319,6 +319,522 @@ are not reconstructed here — their history is in the git log.
   [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)
   and [docs/backup-restore/user.md](docs/backup-restore/user.md).
 
+- **`qrdb barrier seal --so-pin` sends the SO PIN.** The CLI parsed the flag
+  and dropped it, so once `qrdb init` had provisioned an SO PIN every CLI seal
+  was refused with `pin: invalid PIN` on every transport. The command now binds
+  the PIN with `transport.WithSOPIN`, which every network transport already
+  reads into the request's `so_pin` field. The Go SDK's
+  `BarrierSeal(ctx)` is unchanged: a caller binds the PIN to `ctx`.
+- **BREAKING: the TypeScript SDK and the desktop app seal with the SO PIN.**
+  `SealClient.seal(soPin?)` sends `so_pin` (REST) or passes it to the desktop
+  binding, whose Go signature is now `SealBinding.Seal(soPin string)`; the
+  Seal Manager's confirmation asks for the SO PIN. Neither could seal a node
+  with an SO PIN provisioned before.
+- **The sign-csr state refusal names the state it runs in.**
+  `ceremony.ErrNotInitializedOrEnrolling` read "requires enrolling or
+  operational state", but sign-csr is pre-operational only; it now reads
+  "sign-csr requires the enrolling state". `ReissueAdminCredential`, which
+  shared that sentinel for a different refusal, returns the new
+  `ceremony.ErrNotInitialized` (`qrdb.ErrCeremonyNotInitialized` in the Go
+  SDK) before `qrdb init` has run.
+
+### Security
+
+- **The desktop `ServerInitWizard` now drives `ceremony.initialize`,
+  retiring the former `seal.initialize`/`seal.initializeShamir` +
+  `officers.registerOfficer` two-call flow.** `qrdb init` is the ONLY
+  system bootstrap, so a holder could no longer be registered on a
+  ceremony-backed system barrier before that one call. Share holders are
+  now collected locally (no per-holder network call) and submitted
+  together with the barrier secret/officers and the bootstrap admin
+  credential in the single request; the admin's certificate and every
+  holder's certificate come back in that same response. On the desktop
+  (Wails) client, a generated bootstrap admin private key is saved to a
+  local file by the Go binding and never crosses the IPC boundary to the
+  page at all -- `CeremonyInitializeResponse.adminKeyPath` names where it
+  was saved, instead of `adminKeyPem`. See
+  [docs/desktop-gui/engineering.md](docs/desktop-gui/engineering.md).
+
+- **`ConnectionManager`'s embedded-server creation wizard drives the same
+  `ceremony.initialize` call, for every barrier mode including `none`.**
+  `BarrierInitialize` refuses a ceremony-backed system barrier outright,
+  exactly like `BarrierInitializeShamir` does, so the wizard's former
+  `seal.initialize`/`seal.initializeShamir` calls -- made after the new
+  embedded server was already started, and for Shamir after pausing the
+  apply to enrol holders against it -- no longer worked for any mode.
+  Reuses `CeremonyOfficerForms` and `StepAdminCredential` (new "Officers"
+  and "Admin" wizard steps, holders collected before the server is even
+  created) rather than a second implementation.
+
+- **BREAKING: `CeremonyInitializeRequest.secret` and
+  `CeremonyInitializeResponse.admin_key_pem` are `bytes`, not `string`.**
+  A Go string is immutable and can never be wiped from memory after use
+  the way a `[]byte` can, so the system barrier passphrase and a
+  generated bootstrap admin's private key -- the two most sensitive
+  values this call ever carries -- are now wipeable end to end. On the
+  wire (REST, gRPC, QUIC, Unix, the embedded SDK) both fields are
+  base64-encoded, matching `BarrierInitializeRequest.secret`'s existing
+  convention; a caller sending or reading either as a plain string must
+  switch to base64. The MCP tool's `secret` argument is the one
+  exception and is unaffected: it is plain text, like `passphrase` on
+  the barrier and tenant-barrier tools, decoded through the same
+  wipeable-bytes path those arguments already use. `WipeAdminKeyPEM`
+  now runs on every transport, not only REST, and every conversion
+  between the wire type and the service/proto layers makes exactly the
+  one, unavoidable copy crossing that boundary -- never a second,
+  equally unwiped one further down.
+
+- **`CeremonyOfficerRequest`/`CeremonyOfficerConfig` carry the full holder
+  shape, on every transport.** `qrdb init` is the ONLY system bootstrap, so
+  it is also the only place Shamir custody over the system barrier is ever
+  established -- a holder who needed a separate share-envelope key, an
+  additional authentication factor, or a designated factor had no way to
+  get one through it. Each officer in a `CeremonyInitialize` request now
+  carries `encryption_kem`/`encryption_key`, `factors` and `designated`,
+  the same fields `OfficerRegisterRequest` (`POST /v1/barrier/officers`)
+  takes, across REST, gRPC, QUIC, Unix, the embedded SDK, MCP, the Go SDK
+  and the TypeScript SDK. `Initialize` registers every officer through the
+  identical holder-engine call `BarrierOfficerRegister` makes, so there is
+  exactly one registration path for the rich holder data, not a shortcut
+  that only the post-init route supports. `qrdb init` gains
+  `--officers-file`, a JSON document naming every holder with the full
+  shape; it is mutually exclusive with `--officers`/`--custodians`, whose
+  `username=path/to/csr.pem` form cannot express the new fields. See
+  [docs/ceremony/cli.md](docs/ceremony/cli.md) and
+  [docs/ceremony/api.md](docs/ceremony/api.md).
+
+- **BREAKING: `ceremony sign-csr` issues HOLDER certificates only.**
+  `admin`, `operator`, `user` and `auditor` are removed from the role
+  profile sign-csr accepts; only `so` and `custodian` remain. Before this
+  change, an SO holding only the SO PIN — reachable before unseal, with no
+  other authentication — could mint a certificate for `CN=admin, OU=system`
+  (or any other username/role) and, under the then-default
+  `auth.mtls_binding_policy: enrolled`, that certificate authenticated as
+  the named account on CN/OU alone. A login certificate for a user-facing
+  role is now issued by the tenant Admin through the certs CSR-sign or BYOC
+  path, which requires an authenticated, authorized caller. `sign-csr`
+  refuses every other role with `ceremony.ErrInvalidRole`, naming the
+  replacement path.
+- **BREAKING: `auth.mtls_binding_policy` defaults to `required`.** The zero
+  value and an omitted or empty configuration value now resolve to
+  `auth.MTLSBindingRequired`; `enrolled` — the prior default, which admits
+  an unenrolled account on its certificate's CN and tenant alone — is now an
+  explicit, visible opt-out that does **not** meet FedRAMP (NIST 800-53
+  AC-5/AC-6/IA-2/IA-5/IA-5(2)), HIPAA (164.312(a)(1)/(d)/164.308(a)(4)) or
+  PCI DSS 4.0 (3.6/3.7, 7.2, 8.2, 8.3). Every composition in this module
+  (`qrdbd`, `sdk/go/node`, embedded) now enrols the bootstrap admin's
+  certificate as part of first boot, so a default boot does not lock itself
+  out.
+- **A holder certificate always authenticates, regardless of
+  `auth.mtls_binding_policy`.** `auth.mtls_binding_policy` names an
+  ACCOUNT's certificate enrolment; a share holder (`auth.IsHolderIdentity`
+  -- a Security Officer or custodian certificate the ceremony CA signed) is
+  by design never an account, so the policy's rationale does not reach it.
+  `finalizeIdentity`'s holder branch no longer calls
+  `checkUnresolvedCertLogin` -- the one place this carve-out lives,
+  mirroring how `onbehalf.go`'s own `holderprofile.Is` check works -- so a
+  holder identity is always admitted, with no roles, under `required` as
+  much as `enrolled`. Its binding is the ceremony/officer roster, checked by
+  thumbprint at the handler layer for every `permission.IdentityGated` verb
+  (share claim begin/complete, quorum begin/submit); every other permission
+  still denies a holder identity exactly as before, since RBAC refuses an
+  empty role set regardless of how it got there -- including officer
+  registration itself (`seal:officer_register`/`tenant_barrier:officer_register`/
+  `databases:officer_register`), a real, registered RBAC permission requiring
+  an Admin or SO role grant on every transport, never `IdentityGated`: a
+  holder can only ever complete its own enrolment or claim, never register
+  another holder. Checking the binding policy before that roster check would have refused a
+  holder legitimately claiming its own share before `decide()` is ever
+  reached, which is the bug this fixes.
+- **BREAKING: The bootstrap admin's certificate is issued through `qrdb init`
+  (`pkg/ceremony.CeremonyService.Initialize`), never generated as a
+  per-node file.** `cmd/qrdbd`'s `generateAdminClientCert`, which wrote
+  `{data_dir}/admin-cert.pem` and `admin-key.pem` on each node independently
+  (auto-TLS mode), is removed: a per-node admin private key file violated
+  both the no-node-local-state rule (the key must never be written anywhere,
+  and admin state must survive backup/restore in the cluster's own
+  replicated store) and the generate path's own rule (dev/test/evaluation
+  only, key returned exactly once over the wire and never persisted). `qrdb
+  init --admin-csr <path>` or `--admin-cert <path> [--admin-cert-pool
+  <path>]` select the production-grade paths; `--admin-generate` selects
+  the dev/test/evaluation-only path explicitly, loudly flagged as not
+  meeting FedRAMP, HIPAA or PCI DSS 4.0 -- omitting all three is refused,
+  with no credential-less default.
+- **BREAKING: `qrdb init` is the only system bootstrap.** It brings the
+  system barrier up itself (a new `--passphrase` flag, required exactly
+  when `--barrier-strategy=passphrase`) in the same sealed-window call that
+  runs the ceremony and issues the bootstrap admin's credential.
+  `BarrierService.BarrierInitialize` (`qrdb barrier init`) now refuses when
+  it was built with a ceremony -- qrdbd's own system barrier shape, always
+  ceremony-backed -- with a typed `*SystemBarrierInitRefusedError` naming
+  the replacement: that REST route has only ever been the system barrier,
+  with no tenant or database scope, so there is no case in which a
+  ceremony-backed node still needs it to succeed. A barrier built WITHOUT a
+  ceremony (the embedded SDK's library-level composition, which has no
+  ceremony concept at all) delegates to the underlying barrier unchanged, so
+  this refusal never reaches a composition that never had `qrdb init` to
+  begin with. `BarrierInitializeShamir` (`barrier init-shamir`, the system
+  barrier's own Shamir-split root key) and `tenant barrier-init` (a tenant's
+  own barrier) are unrelated and untouched. `auth.enabled` now also requires
+  `seal.enabled`: an auth-enabled, seal-disabled node is refused at config
+  validation, since the bootstrap admin's certificate binding depends on
+  `qrdb init` being able to bring the system barrier up at all. The seal's
+  default strategy changes from `passphrase` to `none` accordingly, so a
+  deployment that wants no encryption no longer has to disable the seal to
+  get it. A flag-only `qrdbd start` (no `--config`) defaults the same way and
+  is validated through the same `config.Validate`, so a bare `qrdbd start`
+  boots rather than refusing its own defaults.
+
+### Added
+
+- **`TestMultiNode_ExactlyOneCredentialWinsAndIsBound` (go-qrdb#548
+  review: B4).** N simulated nodes, each with its own genuinely distinct
+  admin certificate chaining to the same ceremony CA, race to record
+  one via `WritePendingAdminCert`'s create-if-absent guard -- exactly
+  one wins. ALL N nodes then read back whatever record won and call
+  `firstboot.Initialize` with it concurrently, as N nodes that each
+  independently resolved the SAME replicated pending-cert record would.
+  Exactly one admin account exists afterward, bound to exactly the
+  winning credential's SPKI thumbprint; none of the other N-1
+  credentials are ever bound to anything, and no second admin account
+  is created, including under `-race`.
+- **`service.CeremonyServiceWithAdminRebind` binds the credential it
+  reissues, in the same call, or refuses (go-qrdb#548 review: B5,
+  "admin reissue atomicity").** Reissuing a certificate against an
+  already-booted, already-serving node used to return it to the caller
+  with nothing binding it to the admin account -- the daemon's own
+  pending-admin-cert hand-off and first boot only ever run once, at
+  startup, so a RUNTIME retry (an operator re-running `qrdb init`
+  against a node that has already finished booting) produced a
+  credential that looked successful but authenticated nothing. The
+  wrapper now takes a `firstboot.CertBinder` and binds the reissued
+  certificate's SPKI thumbprint directly, before returning: no
+  `CertBinder` wired, the admin not existing yet, or the bind call
+  itself failing are each a typed refusal
+  (`*service.AdminRebindNoBinderError`,
+  `*service.AdminRebindAdminNotFoundError`, `*service.AdminRebindBindError`)
+  instead of a result -- this wrapper never hands back an unbound
+  credential. `NewCeremonyServiceWithAdminRebind` takes the binder as a
+  new, required constructor argument.
+- **`pkg/firstboot.Initialize` repairs an admin that exists but was never
+  bound (go-qrdb#548 review: B6, "admin create+bind").** Creating the
+  admin user (`createAdminUser`) and binding its certificate
+  (`deps.Binder.BindAdminCert`) are two separate writes; a crash between
+  them used to be permanent under the `created`-only gate -- a retry saw
+  `created == false` and skipped binding forever, even with a credential
+  available to repair it. Step 4 now also runs whenever the resolved
+  admin currently holds no live certificate binding
+  (`verifyAdminBindings`), the SAME predicate `checkBindingPosture` and
+  `verifyRequiredOutcome` already applied, so a retry converges the
+  account to fully bound rather than leaving it locked out under
+  `required`. `checkBindingPosture`'s pre-flight now allows an existing,
+  unbound admin through when a credential path and a `CertBinder` are
+  wired (so Initialize can repair it), while still refusing outright, as
+  before, when the refusal reason is one issuing a certificate cannot
+  fix (an account the lifecycle or permitted-method policy blocks) or
+  when nothing is wired to repair with at all.
+- **`qrdb init` validates every admin-credential input before any side
+  effect (go-qrdb#548 review: B3, "init is atomic").** Selection conflicts,
+  none-selected, the BYOC chain check, and the requires-a-CA refusal for
+  CSR-sign/generate now run before `Initialize` provisions the SO/user
+  PINs, brings the system barrier up, or issues the TLS certificate --
+  previously all three ran only afterward, so a malformed request left the
+  barrier initialized and the PINs provisioned before the error surfaced,
+  relying on their own idempotence to converge on a corrected retry rather
+  than never needing it. `ceremony.CeremonyService.resolveCABundlePEM` and
+  the new `validateAdminCredentialInputs` are pure (no CA write, no
+  network call beyond the read-only `CABundle()` every Initialize already
+  needed); the actual CSR-sign/generate/adopt work stays where it was,
+  since a caller that passes validation is now guaranteed it will not fail
+  on input shape.
+- `pkg/ceremony`: `InitializeOptions`/`InitResult` carry the bootstrap
+  admin's credential selection (`AdminCSRPEM`/`AdminCertPEM`/
+  `AdminCertPoolPEM`) and result (`AdminCertPEM`/`AdminKeyPEM`/
+  `AdminCredentialSource`). `ReissueAdminCredential` re-runs the
+  admin-credential step on an already-initialized ceremony, for the retry
+  path below. `LastIssuedAdminCertPEM` exposes the in-memory result to the
+  composer that must durably record it.
+- `pkg/firstboot`: `UserCertBinder`, the canonical `CertBinder` over qrdb's
+  own user store; `PendingAdminCertStore`/`WritePendingAdminCert`/
+  `AwaitPendingAdminCert`/`ClearPendingAdminCert`, the durable hand-off
+  between ceremony initialize and first boot's binding, surviving a crash
+  between the two. The write is create-if-absent (`PutIfAbsent`, no new
+  Raft opcode): on a multi-node cluster every node that ran the sealed-window
+  ceremony races to record its own issued credential, exactly one wins, and
+  every later writer gets the typed `*AdminCredentialAlreadyPendingError`
+  instead of silently overwriting the record first boot will bind.
+- `pkg/service`: `CeremonyServiceWithAdminRebind` routes a second
+  `CeremonyInitialize` call on an already-initialized ceremony to the
+  admin-credential retry path, refusing with `*AdminAlreadyBoundError` once
+  the admin already holds a live binding. `CeremonyServiceWithLeaderGate`
+  refuses the same call up front on a Raft follower, naming the current
+  leader, instead of attempting and failing partway through.
+- `qrdb init`: `--admin-csr`, `--admin-cert`, `--admin-cert-pool`,
+  `--admin-generate` flags select the bootstrap admin's credential path.
+  **Exactly one of `--admin-csr`, `--admin-cert` or `--admin-generate` is
+  required; there is no credential-less default** (review follow-up to the
+  above): omitting all three is refused locally, before any call, the same
+  way supplying more than one is. `--admin-generate` prints a loud,
+  explicit non-production warning (to stderr, so it does not corrupt
+  `--output json`/`yaml`). `--passphrase` (and `--barrier-strategy none`)
+  bring the system barrier up in the same call.
+- `ceremony.InitializeOptions`/`service.CeremonyInitializeOptions` carry
+  the same `AdminGenerate bool` explicitly, mutually exclusive with
+  `AdminCSRPEM`/`AdminCertPEM`; `Initialize` refuses with a new typed
+  `*ceremony.NoAdminCredentialSelectedError` when none of the three is set,
+  replacing the prior implicit "neither set" default.
+- REST, gRPC, Unix, QUIC, MCP and embedded: `POST /v1/ceremony/initialize`
+  (and its non-REST equivalents) accept `admin_csr_pem`/`admin_cert_pem`/
+  `admin_cert_pool_pem`/`admin_generate`/`secret` and return
+  `admin_cert_pem`/`admin_key_pem`/`admin_credential_source` identically on
+  every transport. gRPC, Unix and QUIC share one protobuf message
+  (`CeremonyInitializeRequest`/`Response` in `qrdb.proto`, regenerated) and
+  one conversion package (`pkg/api/holderpb` server-side,
+  `sdk/go/transport/internal/holderconv` client-side) -- the same fields
+  REST/MCP/embedded already carried via `pkg/api/holderwire`.
+- **`qrdb init` now works on a BYO-TLS node.** Server TLS identity and the
+  CA that issues login/holder certificates are separate concerns:
+  `ceremony.Initialize`, called with no `CeremonyCA` (a node whose TLS
+  bundle carries no CA private key), no longer self-issues a TLS
+  certificate -- it pins the configured server certificate's own public
+  key instead, and returns that certificate unchanged. The
+  bring-your-own-certificate admin-credential path needs no CA at all on
+  such a node (it defaults to the node's own configured client-CA trust
+  anchor rather than a CA's bundle); CSR-sign and generate are refused with
+  a typed `*AdminCredentialRequiresCAError` naming BYOC as the supported
+  path, since both need a CA that can sign. REST no longer carries its own
+  nil-CA guard ahead of `Initialize`: the ceremony service handles a nil
+  `CeremonyCA` directly (above), the same way on every transport.
+- **sign-csr is PreOperationalOnly.** `CeremonyService.SignCSRInit` now
+  refuses once the ceremony reaches `StateOperational`, not only before
+  `StateAwaitingInit`, and `sealedwindow.VerbCeremonySignCSR` carries the
+  matching `PreOperationalOnly` flag: a node restarted sealed after the
+  ceremony already completed can no longer mint a holder certificate
+  through either gate, closing the same post-operational hole the officer
+  and recovery-officer registration verbs were already closed for.
+- Errclass rows for `ceremony.ConflictingAdminCredentialInputsError` (400 /
+  `InvalidArgument`), `NoAdminCredentialSelectedError` (400 / `InvalidArgument`),
+  `AdminCredentialRejectedError`, `AdminCredentialIssuanceError`,
+  `SystemBarrierInitError`, `service.AdminAlreadyBoundError`,
+  `firstboot.NoPendingAdminCredentialError`, `AdminCredentialAlreadyPendingError`,
+  and `ceremony.ErrInvalidRole`.
+- **go-qrdb#548 NOT READY follow-up, item 1: a refused init no longer leaves
+  state behind, and a retry no longer strands the barrier key.**
+  `validateAdminCredentialInputs`'s CSR-sign branch now parses the CSR and
+  verifies its self-signature (`parseAndVerifyCSR`, shared with
+  `signHolderCSR`) before any side effect, instead of discovering a
+  malformed CSR only once PINs were provisioned and the barrier brought up.
+  The BYOC branch now enforces the full admin-certificate checklist --
+  CN=admin, system tenant as the first Subject OU, no holder-profile OU,
+  and a KeyUsage/ExtKeyUsage shape that supports client TLS auth -- via new
+  `validateAdminCertProfile`. `seal.StorageBarrier.VerifyCredentials`
+  re-derives a candidate root key from the persisted sealed blob and
+  compares it to the live key in constant time, with no state change;
+  `initializeSystemBarrierLocked`'s "already unsealed" branch now calls it
+  instead of treating "already unsealed" as unconditionally safe, and
+  refuses a mismatch with new `*ceremony.SystemBarrierCredentialMismatchError`
+  rather than reporting the ceremony operational under a secret that does
+  not actually open the barrier.
+- **go-qrdb#548 NOT READY follow-up, item 2: the B6 repair now runs in
+  `qrdbd` itself.** `runFirstBoot`'s fast path previously skipped
+  reconciliation for any existing admin already marked `System: true`,
+  without checking whether it held a live certificate binding -- the one
+  place in the real daemon deciding whether `pkg/firstboot`'s own
+  `needsBinding` repair ever got a chance to run. It now also checks
+  `user.AdminLoginBlocker` (the exact predicate `needsBinding` is built
+  from) and falls through to repair whenever the existing admin cannot
+  actually log in by certificate, not only when its `System` flag is unset.
+- **go-qrdb#548 NOT READY follow-up, item 3: a node whose admin is unbound
+  no longer refuses to boot under `required` -- it boots "awaiting admin
+  credential".** The documented retry ("re-run `qrdb init` against the
+  leader") was unreachable under the default `required` posture because
+  the daemon aborted before any listener started. It now starts every
+  listener -- REST, gRPC, native QUIC, MCP, the embedded transport, the Unix
+  socket transport -- with a new gate installed on each
+  (`server.WithAwaitingAdminCredentialProbe`, and the transport-specific
+  equivalents): while `firstboot.AwaitingAdminCredentialProbe` reports
+  awaiting, only ceremony status and ceremony-initialize (the
+  admin-credential retry `CeremonyServiceWithAdminRebind` already provides)
+  are served, admitted with no authentication at all since there is no
+  bound identity to authenticate as; every other request is refused with
+  new `*middleware.AwaitingAdminCredentialError` (503, retryable). The
+  probe re-reads the linearizable user store at a bounded interval and
+  flips to "serving normally" on its own, with no restart, the moment a
+  certificate binds. `pkg/api/sealedwindow` gained the matching
+  `AwaitingAdminCredentialVerbs` derivation, reusing the canonical verb
+  table rather than a second allowlist.
+- **go-qrdb#548 NOT READY follow-up, item 6: one shared ceremony
+  admin-credential wiring.** `cmd/qrdbd` composed
+  `CeremonyServiceWithAdminRebind` and `CeremonyServiceWithLeaderGate`
+  around ceremony-initialize by hand; `sdk/go/node` served the raw,
+  unwrapped ceremony service, and the embedded transport's own ceremony
+  RPCs were never wired to anything at all. New
+  `service.ComposeCeremonyServiceWithAdminCredentialWiring` (built on new
+  exported `service.HostLeaderChecker`, moved out of `cmd/qrdbd`) is now
+  the one place that composes both decorators, used by every composer; new
+  `firstboot.WriteIssuedAdminCertIfAny` is the matching shared helper for
+  recording an issued admin certificate into the pending-admin-cert
+  hand-off, which `sdk/go/node` never did on its own before this.
+- **go-qrdb#560 security review B1: reissuing the bootstrap admin's
+  certificate now requires the SO PIN.**
+  `ceremony.CeremonyService.ReissueAdminCredential` verified nothing
+  before minting and binding a fresh admin credential, and every
+  transport's awaiting-mode passthrough (REST, gRPC/Unix, MCP) reached it
+  through `CeremonyServiceWithAdminRebind`'s retry path. It now calls
+  `pin.RequireSOPIN` first, propagating a typed `pin` package refusal
+  before any side effect (the CA bundle read, the issuance, all of it);
+  `service.CeremonyInitializeOptions.SOPin` is forwarded into the core
+  options the same way `Initialize` itself already does. New
+  forwarding/refusal regression tests on every transport
+  (`TestHandleCeremonyInitialize_SOPINRefusalPropagates`,
+  `TestGRPC_CeremonyInitialize_SOPINRefusalPropagates`,
+  `TestMCP_CeremonyInitialize_ForwardsAllFields` +
+  `_SOPINRefusalPropagates`).
+- **go-qrdb#560 security review B1: the awaiting-admin-credential gate no
+  longer re-reads the user store on the request path.**
+  `firstboot.AwaitingAdminCredentialProbe.AwaitingAdminCredential` held a
+  mutex across a linearizable lookup of up to 3s on every request once its
+  cache went stale. The probe's state is now decided ONCE at boot
+  (`Initialize`, from the same bounded `VerifyAdminCertBindingWithin` call
+  a `required`-posture composer already performs) and left only by the new
+  `AdminBound` event -- called by `CeremonyServiceWithAdminRebind` after a
+  reissue actually binds a certificate while the node is serving -- never
+  by polling, so a running node no longer re-enters "awaiting" merely
+  because that certificate later expires (recovered instead by restarting
+  into awaiting mode, then a fresh SO-PIN-gated reissue). A failed
+  boot-time lookup is NOT "awaiting": `Initialize` returns it as a typed
+  `*firstboot.AdminLookupError` for the composer to log, while the probe
+  itself is left serving normally rather than additionally locking the
+  node down over an infrastructure fault distinct from the admin's own
+  binding state. `NewCeremonyServiceWithAdminRebind` and
+  `service.ComposeCeremonyServiceWithAdminCredentialWiring` take a new
+  `firstboot.AdminBoundNotifier` parameter; `cmd/qrdbd` and `sdk/go/node`
+  both construct the probe's stable pointer before ceremony composition
+  and call `Initialize` on it once their own boot-time lookup resolves.
+- **go-qrdb#560 security review B2: the pending-admin-cert hand-off no
+  longer poisons itself.** `firstboot.ClearPendingAdminCert` wrote the
+  "consumed" marker unconditionally, on every successful first boot,
+  including the many boots where nothing was ever pending at all (an
+  auth-disabled node never runs a ceremony, so the key never existed; on
+  ANY node, every boot after the first). That poisoned the key
+  permanently -- `WritePendingAdminCert`'s create-if-absent could never
+  succeed again, so a LATER ceremony on the same cluster could never hand
+  a credential to first boot to bind. It now writes the marker only on a
+  real pending-to-consumed transition. Separately,
+  `firstboot.ResolveAdminCertForFirstBoot`'s non-blocking read (any policy
+  other than `required`) returned the literal "consumed" marker bytes
+  back as if they were a certificate; it now filters the marker exactly
+  as `AwaitPendingAdminCert`'s bounded-wait branch already did. Together
+  these were the root cause a04e9d38d patched around for the
+  auth-disabled case alone (a stale "consumed" record read back as
+  unparseable PEM on the second boot) -- that carve-out is reverted here,
+  no longer needed for any policy.
+- **go-qrdb#560 security review B3: a refused M-of-N `qrdb init` no
+  longer leaves partial state behind.** `CeremonyService.Initialize`
+  enrolled officers one at a time, synchronously signing and persisting
+  each before moving to the next; a malformed CSR (or a key shared with
+  an earlier officer in the SAME batch) on the LAST officer meant every
+  prior one had already been signed and persisted by the time the
+  refusal happened -- on top of the SO/User PINs already being
+  provisioned, the TLS certificate already issued, and the bootstrap
+  admin credential already minted. New `validateOfficerCredentials`
+  pre-validates every officer's CSR, key kind, encryption KEM/key and
+  factor set, and refuses a key any two officers in the batch share, as a
+  batch, purely, with no side effect -- called alongside
+  `validateInitOptions`/`validateAdminCredentialInputs`, before
+  `pin.Provision`, the TLS issue or `issueAdminCredential` run at all.
+- **go-qrdb#560 review: two more cmd/qrdb findings closed.**
+  `CeremonyBinding.Initialize` now wipes the caller's own `req.Secret`,
+  not only its internal clone. The local admin-key output path is now
+  verified creatable and writable BEFORE the server is asked to mint the
+  generated admin credential (`ensureAdminKeySavable`): discovering a
+  save failure only afterward would leave the bootstrap admin eventually
+  bound to a key nobody holds.
+- **go-qrdb#560 review: holder certificates can no longer reach
+  authenticated-only routes with no permission check (GET /metrics).**
+  A holder certificate (an officer's or custodian's, signed by the
+  ceremony CA) carries no roles by design and is admitted only for its
+  own narrow IdentityGated verb set (share claim, quorum); REST's
+  "authenticated but no specific permission" routes checked only
+  authentication, not whether the identity was a holder's. New
+  `HolderIdentityNotPermittedError` (403) refuses it. gRPC and MCP have
+  no equivalent gap: every method there already requires a registered
+  permission, which RBAC's empty-role denial already protects.
+- **go-qrdb#560 review: the desktop "Re-initialize Barrier" card is
+  removed.** It drove `seal.initialize`/`seal.initializeShamir` against
+  an ALREADY-initialized system barrier, which the server now refuses
+  outright (`qrdb init`/`ceremony.initialize` is the only system
+  bootstrap); every click failed. `ceremony.initialize` cannot replace
+  it either -- it refuses a second call on an already-initialized
+  ceremony by design. The still-live path to change an already-keyed
+  system barrier's strategy remains the Enable-Encryption migration
+  section (none -> keyed); there is no in-place reconfiguration of an
+  already-keyed barrier. The "Configure Encryption" card (a FRESH,
+  never-initialized barrier) is unaffected and keeps the same
+  `seal.initialize`/`seal.initializeShamir` calls, which the server does
+  not refuse there.
+- **go-qrdb#560 re-review, B1: `ReissueAdminCredential` now requires a
+  PROVISIONED SO PIN, checked before anything that could tell an
+  unauthenticated caller the admin's binding state.** It called
+  `pin.RequireSOPIN`, which admits an UNPROVISIONED backend as "nothing to
+  check yet" -- the right default for a brand-new node, never the right
+  answer for a reissue, since an already-initialized ceremony always
+  provisioned its SO PIN during `Initialize`. It now calls the new
+  `pin.RequireProvisionedSOPIN` instead, which refuses with
+  `pin.ErrPINNotSet` rather than passing. Separately,
+  `service.CeremonyServiceWithAdminRebind.CeremonyInitialize` checked
+  whether the admin was already bound (`*service.AdminAlreadyBoundError`)
+  and the admin-lookup read BEFORE verifying the SO PIN at all -- an
+  unauthenticated caller with no PIN, or the wrong one, could learn the
+  admin's binding state merely by attempting a reissue. The new
+  `ceremony.CeremonyService.VerifyReissueSOPIN` is now called FIRST, before
+  either read.
+- **go-qrdb#560 re-review, B2: a node whose admin is unbound, with no
+  pending credential, now boots into "awaiting admin credential" instead
+  of shutting down.** Under `auth.mtls_binding_policy: required`, an
+  unbound or expired admin with nothing pending made
+  `firstboot.ResolveAdminCertForFirstBoot`'s bounded wait time out with
+  `*firstboot.NoPendingAdminCredentialError`, which `runFirstBoot`
+  (`cmd/qrdbd`) and `sdk/go/node`'s `FirstBootWithCeremony` both returned
+  as a fatal boot error -- the exact lockout the "awaiting admin
+  credential" boot state (go-qrdb#548 review item 3) exists to avoid, just
+  reached one call earlier than that fix covered. Both composers now log
+  and continue with no certificate to bind instead. Separately,
+  `firstboot.checkBindingPosture`/`verifyRequiredOutcome` no longer refuse
+  Initialize pre-flight or outcome merely because no admin-credential path
+  is configured at all (the everyday case for this exact scenario) --
+  only the genuine wiring bug (a path IS configured but no `CertBinder` is)
+  still refuses before any write. New `firstboot.HasAdminCertPath` exports
+  the same "was there anything to bind" test to composers judging the
+  outcome against their own store.
+- **go-qrdb#560 re-review, B3: `validateOfficerCredentials`'s batch
+  pre-flight now applies the IDENTICAL checks `enrol` does, through one
+  shared `validateOfficerEnrolment`.** The batch pre-flight carried its
+  OWN partial copy -- CSR/key kind/KEM/factors only, missing role
+  validity, `validPrincipalName` and `ErrSelfEnrolment` -- so a batch
+  where only a LATER officer had a bad username, a bad role, or named
+  itself as its own enroller slipped past the pre-flight, letting every
+  officer before it in the same call be signed and persisted before the
+  defect was discovered, and blocking a corrected retry on "name already
+  taken" forever. `Initialize`'s M-of-N officer loop is now also
+  transactional for whatever can still fail AFTER that pre-flight (a CA
+  signing fault, a persist error): a failure rolls back every officer this
+  call already enrolled, in reverse order, and best-effort un-provisions
+  the SO/User PINs via the new `pin.ProvisionRollback` optional capability
+  (implemented by `pin.SoftwareBackend`) when the backend supports it.
+- **go-qrdb#560 re-review: ceremony state now survives a restart.**
+  `ceremony.NewCeremonyService` always started at `StateAwaitingInit`,
+  regardless of whether the barrier it was built over had already been
+  taken through the ceremony in an earlier process -- a composer's
+  awaiting-mode passthrough then ran a FULL `Initialize` against an
+  already-initialized ceremony after a restart, which could mint an
+  unbound admin certificate and re-provision the SO/User PINs for
+  whoever called first. State is now derived at construction from the
+  barrier's own durable, plaintext-readable records
+  (`barrier.CeremonyOperational`/`barrier.Initialized`, the SAME records
+  `EnrollmentOpen`'s own restart-survival check already relied on) --
+  no new node-local state file.
+
 ## [0.42.0-alpha] - 2026-10-05
 
 The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This release contains BREAKING changes; see the entries below. Highlights:
@@ -2090,27 +2606,6 @@ Cluster-wide sealing. This release contains BREAKING changes; see the entries be
   `useCursorFetch=false` with MySQL Connector/J, and do not set
   `CURSOR_TYPE_READ_ONLY` with libmysqlclient. See
   `docs/sql/upstream-gaps.md`.
-
-### Fixed
-
-- **`qrdb barrier seal --so-pin` sends the SO PIN.** The CLI parsed the flag
-  and dropped it, so once `qrdb init` had provisioned an SO PIN every CLI seal
-  was refused with `pin: invalid PIN` on every transport. The command now binds
-  the PIN with `transport.WithSOPIN`, which every network transport already
-  reads into the request's `so_pin` field. The Go SDK's
-  `BarrierSeal(ctx)` is unchanged: a caller binds the PIN to `ctx`.
-- **BREAKING: the TypeScript SDK and the desktop app seal with the SO PIN.**
-  `SealClient.seal(soPin?)` sends `so_pin` (REST) or passes it to the desktop
-  binding, whose Go signature is now `SealBinding.Seal(soPin string)`; the
-  Seal Manager's confirmation asks for the SO PIN. Neither could seal a node
-  with an SO PIN provisioned before.
-- **The sign-csr state refusal names the state it runs in.**
-  `ceremony.ErrNotInitializedOrEnrolling` read "requires enrolling or
-  operational state", but sign-csr is pre-operational only; it now reads
-  "sign-csr requires the enrolling state". `ReissueAdminCredential`, which
-  shared that sentinel for a different refusal, returns the new
-  `ceremony.ErrNotInitialized` (`qrdb.ErrCeremonyNotInitialized` in the Go
-  SDK) before `qrdb init` has run.
 
 ## [0.34.2-alpha] - 2026-10-03
 

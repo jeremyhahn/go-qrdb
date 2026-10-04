@@ -943,7 +943,7 @@ func TestRunFirstBoot_RoleExistsUnexplainedIDRefused(t *testing.T) {
 	node := &mockRaftNode{} // default: leader ready
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", true, auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "register role")
 }
