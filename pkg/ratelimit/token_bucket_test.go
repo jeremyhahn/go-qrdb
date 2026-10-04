@@ -41,9 +41,19 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.now.Add(int64(d))
 }
 
+// newTestLimiter drives the reaper from a tick channel nobody sends on,
+// instead of a wall-clock ticker (as WithSweepInterval would): none of this
+// function's callers wants a sweep to run at all, and a real ticker racing
+// Allow on a loaded host can fire inside the exact window sweep's own doc
+// comment names as unlocked against Allow -- deleting a bucket a test just
+// populated and resetting it to a fresh, full-burst one, which is a
+// production-accepted "more permissive, never less" trade but makes a test
+// asserting an exact sequence of allow/deny decisions flake under load.
+// TestTokenBucketLimiter_ReapEvictsIdleBuckets, which tests the reaper
+// itself, drives its own channel and does not use this helper.
 func newTestLimiter(t *testing.T, clock *fakeClock) *TokenBucketLimiter {
 	t.Helper()
-	l := NewTokenBucketLimiter(withClock(clock.Now), WithSweepInterval(time.Millisecond))
+	l := NewTokenBucketLimiter(withClock(clock.Now), withSweepTicks(make(chan time.Time)))
 	t.Cleanup(func() { _ = l.Close() })
 	return l
 }
