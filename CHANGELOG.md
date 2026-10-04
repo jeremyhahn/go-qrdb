@@ -11,6 +11,19 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.41.0-alpha] - 2026-10-04
+
+Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). This release contains BREAKING API changes; see the entries below. Highlights:
+
+- **Context-threaded seal API.** Every call that can reach a key provider now takes the caller's `context.Context`. This includes credentials and software-strategy constructors, barrier rotation and purge, and opening secrets. A hardware-backed provider can no longer stall a call indefinitely. Embedders update their call sites.
+- **Frozen enclaves.** go-enclave now returns read-only memory from `Open`; qrdb copies into its own writable buffers wherever it needs to write.
+- **Errors.**
+  - `Destroy` failures are reported, never dropped.
+  - `ErrSealerWiped`, `ErrEnclaveDestroyed` and `ErrOpenFailed` are classified on every transport.
+  - A cancelled context maps to cancellation, not an internal error.
+  - go-quicraft's membership sentinels (`ErrDuplicateMemberAddress`, `ErrDuplicateMemberIdentity`, `ErrSharedPeerCertificate`) are matched by type.
+- **No format change.** v0.40.x data directories open unchanged.
+
 ### Changed
 
 - **BREAKING: go-quicraft v0.17.0 and go-enclave v0.7.0-alpha.** Every qrdb

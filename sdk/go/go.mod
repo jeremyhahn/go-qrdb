@@ -9,7 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jeremyhahn/go-enclave v0.7.0-alpha
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha
-	github.com/jeremyhahn/go-qrdb v0.40.1-alpha
+	github.com/jeremyhahn/go-qrdb v0.41.0-alpha
 	github.com/jeremyhahn/go-quicraft v0.17.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.63.0
