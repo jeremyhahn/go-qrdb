@@ -198,6 +198,26 @@ func (e *AuthFactorWiringError) Error() string {
 // Unwrap returns the underlying error.
 func (e *AuthFactorWiringError) Unwrap() error { return e.Err }
 
+// PendingAdminCertWriteError is returned when wireClientAndServer could not
+// record this node's issued-or-adopted bootstrap admin certificate into the
+// durable pending-admin-cert hand-off (go-qrdb#548 review item 6):
+// firstboot.WriteIssuedAdminCertIfAny failed for a reason other than
+// another node already having won the create-if-absent race (which is
+// tolerated, not an error). Without this record FirstBootWithCeremony on
+// whichever node runs first boot has nothing to resolve the admin's
+// certificate from.
+type PendingAdminCertWriteError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *PendingAdminCertWriteError) Error() string {
+	return "node: failed to record the pending admin certificate: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *PendingAdminCertWriteError) Unwrap() error { return e.Err }
+
 // TenantInfraError indicates that the per-tenant isolation stack (built by
 // server.BuildTenantInfra) could not be assembled or that a boot re-attach of
 // an existing IsolationVolume tenant failed. This is only returned when

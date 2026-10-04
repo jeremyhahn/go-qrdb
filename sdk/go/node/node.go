@@ -2849,6 +2849,36 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	barrierRegistry := n.barrierRegistry.Load()
 	n.auditLogger = crypto.AuditLogger
 
+	// Wrap the ceremony service with the SAME admin-credential rebind path
+	// and Raft leader gate cmd/qrdbd wires around ceremony-initialize
+	// (go-qrdb#548 review item 6), via the one shared composer
+	// (service.ComposeCeremonyServiceWithAdminCredentialWiring) rather than
+	// a second, divergent copy of the two-decorator composition: a retried
+	// `qrdb init` through this composer is then judged identically to one
+	// through the standalone daemon. The leader gate only applies when
+	// clustered (n.host is set only by the two Raft-mode boot paths,
+	// never by standalone); svcNode.Ceremony itself is left UNCHANGED so a
+	// later data-plane rebuild's sealedWindowCeremonyCore carry-over
+	// (service.CeremonyServiceCore) keeps finding the bare core to reuse.
+	ceremonySvc := svcNode.Ceremony
+	if core, ok := service.CeremonyServiceCore(ceremonySvc); ok {
+		if hostSvc, hostOK := n.host.(service.Host); hostOK {
+			leader := service.HostLeaderChecker{Host: hostSvc, ShardID: shard.ShardKV, ReplicaID: cfg.Raft.ReplicaID}
+			ceremonySvc = service.ComposeCeremonyServiceWithAdminCredentialWiring(
+				ceremonySvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User}, leader)
+		}
+		// Hand this node's issued-or-adopted admin certificate, if any, to
+		// the durable pending-admin-cert record FirstBootWithCeremony waits
+		// on -- the SDK composer's own counterpart to cmd/qrdbd's identical
+		// write at the same sealed-window-to-full-boot seam. Runs whether
+		// clustered or not: even a standalone node's ceremony may have
+		// issued one, and the record is harmless (never read) when nothing
+		// downstream calls FirstBootWithCeremony.
+		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, PendingAdminCertStore(svcNode.KV)); err != nil {
+			return &PendingAdminCertWriteError{Err: err}
+		}
+	}
+
 	// Wire the AuthFactorService. If the caller supplied one explicitly via
 	// server.WithAuthFactorService it is already in crypto.AuthFactorService.
 	// If they supplied only a FactorRegistry, construct the service now so the
@@ -2886,7 +2916,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// identically. The Auth.SeparationOfDuties flag is the same source
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
 	strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties
-	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, strictSoD, standalone)
+	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
 	}
@@ -3159,7 +3189,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, n.dbManager, callerOpts, standalone)
+	allOpts := buildServerOpts(svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
 	fwdOpt, fwdErr := n.replicaForwardingOption(cfg, standalone, placementChangesOf(svcNode), featureClient)
 	if fwdErr != nil {
 		_ = client.Close()
@@ -3298,7 +3328,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 // It returns a LoginWiringError when the UserAuthFactor service cannot be
 // constructed; the caller aborts the boot so a misconfigured login surface
 // never silently degrades to "login not supported".
-func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standalone bool) ([]embedded.Option, error) {
+func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, strictSoD bool, standalone bool) ([]embedded.Option, error) {
 	opts := []embedded.Option{
 		embedded.WithBatchService(svcNode.Batch),
 		embedded.WithIndexService(svcNode.Index),
@@ -3320,6 +3350,15 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 		// running server's per-(tenant, database) registry, the same one the
 		// network transports use; see nodeServiceRegistry.
 		embedded.WithServiceRegistry(&nodeServiceRegistry{node: n}),
+	}
+	if ceremonySvc != nil {
+		// go-qrdb#548 review item 6: the embedded transport's own ceremony
+		// RPCs (transport_ceremony.go) were never wired to anything -- this
+		// is the one place that attaches ceremonySvc (already wrapped with
+		// the admin-credential rebind path and leader gate by the caller)
+		// so an in-process client can run `qrdb init`'s retry exactly as
+		// the network transports do.
+		opts = append(opts, embedded.WithCeremonyService(ceremonySvc))
 	}
 	// The transaction/CAS family is served in EVERY mode (owner ruling
 	// 2026-08-23, go-qrdb#62). A standalone node is engine-direct and
@@ -3554,7 +3593,7 @@ func principalRoles(u *user.User) []string {
 // Without them no named database resolved on the node's server, so a
 // database-scoped client was refused outright and RAG, which is bound to the
 // registry, refused every call.
-func buildServerOpts(svcNode *lifecycle.Node, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
 	var shardID uint64
 	if !standalone {
 		shardID = shard.ShardKV
@@ -3625,8 +3664,13 @@ func buildServerOpts(svcNode *lifecycle.Node, dbManager *database.Manager, calle
 	if svcNode.Barrier != nil {
 		opts = append(opts, server.WithBarrierService(svcNode.Barrier))
 	}
-	if svcNode.Ceremony != nil {
-		opts = append(opts, server.WithCeremonyService(svcNode.Ceremony))
+	if ceremonySvc != nil {
+		// ceremonySvc, not svcNode.Ceremony directly: the caller
+		// (wireClientAndServer) wraps it with the admin-credential rebind
+		// path and Raft leader gate before this function ever sees it
+		// (go-qrdb#548 review item 6) -- serving svcNode.Ceremony here
+		// unwrapped would let every network transport bypass both.
+		opts = append(opts, server.WithCeremonyService(ceremonySvc))
 	}
 	if svcNode.Tenant != nil {
 		opts = append(opts, server.WithTenantService(svcNode.Tenant))

@@ -1863,29 +1863,27 @@ func runStart(f *startFlags) (err error) {
 			// CeremonyServiceWithAdminRebind, which is what turns a second
 			// CeremonyInitialize call (after the first already succeeded) into the
 			// admin-credential retry path rather than ceremony.ErrAlreadyInitialized.
-			if ceremonySvc != nil {
-				if coreSvc, ok := service.CeremonyServiceCore(ceremonySvc); ok {
-					members, perr := parsePeers(f.peers)
-					if perr != nil {
-						// f.peers is only ever "id=address" pairs under static
-						// discovery (resolveStartFlags/buildHost's own earlier
-						// validation already refused an unparseable one THERE);
-						// any other discovery method (multicast, DNS, token) never
-						// populates it in that shape, so a parse failure here is
-						// expected and this leader check degrades to an empty
-						// membership map rather than aborting an otherwise-valid
-						// boot over a field this path does not own.
-						if f.discoveryMethod == "static" {
-							return perr
-						}
-						slog.Debug("ceremony leader-gate: --peers not in id=address form under non-static discovery; membership map empty", slog.String("error", perr.Error()))
+			if _, ok := service.CeremonyServiceCore(ceremonySvc); ok {
+				members, perr := parsePeers(f.peers)
+				if perr != nil {
+					// f.peers is only ever "id=address" pairs under static
+					// discovery (resolveStartFlags/buildHost's own earlier
+					// validation already refused an unparseable one THERE);
+					// any other discovery method (multicast, DNS, token) never
+					// populates it in that shape, so a parse failure here is
+					// expected and this leader check degrades to an empty
+					// membership map rather than aborting an otherwise-valid
+					// boot over a field this path does not own.
+					if f.discoveryMethod == "static" {
+						return perr
 					}
-					leader := hostLeaderChecker{
-						host: svcHost, shardID: shard.ShardKV, replicaID: f.replicaID, members: members,
-					}
-					rebound := service.NewCeremonyServiceWithAdminRebind(ceremonySvc, coreSvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User})
-					ceremonySvc = service.NewCeremonyServiceWithLeaderGate(rebound, leader)
+					slog.Debug("ceremony leader-gate: --peers not in id=address form under non-static discovery; membership map empty", slog.String("error", perr.Error()))
 				}
+				leader := service.HostLeaderChecker{
+					Host: svcHost, ShardID: shard.ShardKV, ReplicaID: f.replicaID, Members: members,
+				}
+				ceremonySvc = service.ComposeCeremonyServiceWithAdminCredentialWiring(
+					ceremonySvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User}, leader)
 			}
 			tenantSvcInst := svcNode.Tenant
 
@@ -3725,16 +3723,8 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// already won the race and will be the one first boot binds below, so
 	// this node continues booting normally. Any OTHER error (a genuine store
 	// fault) still fails the boot.
-	if ceremonyCoreSvc != nil {
-		if certPEM, _ := ceremonyCoreSvc.LastIssuedAdminCertPEM(); len(certPEM) > 0 {
-			if err := firstboot.WritePendingAdminCert(ctx, pendingAdminStore, certPEM); err != nil {
-				var alreadyPending *firstboot.AdminCredentialAlreadyPendingError
-				if !errors.As(err, &alreadyPending) {
-					return nil, &AuthBootstrapError{Step: "pending admin credential", Err: err}
-				}
-				slog.Info("first-boot: another node already recorded the pending admin credential; this node's credential is discarded")
-			}
-		}
+	if err := firstboot.WriteIssuedAdminCertIfAny(ctx, ceremonyCoreSvc, pendingAdminStore); err != nil {
+		return nil, &AuthBootstrapError{Step: "pending admin credential", Err: err}
 	}
 
 	// First-boot: create the system tenant, register built-in roles, and
@@ -4295,34 +4285,6 @@ func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchK
 		return &AuthBootstrapError{Step: "atomic role/user creation requires an --sm state machine with transaction support", Err: kvstore.ErrAtomicWriteUnsupported}
 	}
 	return nil
-}
-
-// hostLeaderChecker is the production service.LeaderChecker: whether THIS
-// replica is the current Raft leader for shardID, and the current leader's
-// Raft address from the static peer map when it is not. members is the
-// SAME map parsePeers builds from --peers for shard membership, reused here
-// rather than querying topology: a static cluster's peer addresses are
-// already known without asking the host.
-type hostLeaderChecker struct {
-	host      service.Host
-	shardID   uint64
-	replicaID uint64
-	members   map[uint64]string
-}
-
-// IsLeader implements service.LeaderChecker.
-func (c hostLeaderChecker) IsLeader() (isLeader bool, leaderAddr string, err error) {
-	leaderID, hasLeader, err := c.host.GetLeaderID(c.shardID)
-	if err != nil {
-		return false, "", err
-	}
-	if !hasLeader {
-		return false, "", nil
-	}
-	if leaderID == c.replicaID {
-		return true, "", nil
-	}
-	return false, c.members[leaderID], nil
 }
 
 // waitForLeaderElection polls GetLeaderID until a leader is known, reporting

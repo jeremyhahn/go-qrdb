@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 )
 
 // LeaderChecker reports whether THIS node is currently the Raft leader for
@@ -93,4 +94,68 @@ func (s *CeremonyServiceWithLeaderGate) CeremonyInitialize(ctx context.Context, 
 		return nil, &AdminCredentialNotLeaderError{LeaderAddress: leaderAddr}
 	}
 	return s.CeremonyServicer.CeremonyInitialize(ctx, ca, opts)
+}
+
+// HostLeaderChecker is the production LeaderChecker: whether THIS replica
+// is the current Raft leader for ShardID, and the current leader's Raft
+// address from a static peer map when it is not (go-qrdb#548 review item
+// 6). Every composer that gates ceremony-initialize's admin-credential
+// step on leadership -- cmd/qrdbd, sdk/go/node, and any future embedder --
+// shares this ONE implementation, so a retried `qrdb init` is judged
+// identically regardless of which composer is running it.
+type HostLeaderChecker struct {
+	// Host answers GetLeaderID for ShardID.
+	Host Host
+	// ShardID is the shard ceremony-initialize's durable pending-admin-cert
+	// record lives on.
+	ShardID uint64
+	// ReplicaID is this process's own replica ID on Host.
+	ReplicaID uint64
+	// Members maps a Raft replica ID to its advertised address, for naming
+	// the current leader when this replica is not it. A nil map reports ""
+	// for the leader address (unknown to this node), which
+	// AdminCredentialNotLeaderError renders as "wait for an election to
+	// complete".
+	Members map[uint64]string
+}
+
+// IsLeader implements LeaderChecker.
+func (c HostLeaderChecker) IsLeader() (isLeader bool, leaderAddr string, err error) {
+	leaderID, hasLeader, err := c.Host.GetLeaderID(c.ShardID)
+	if err != nil {
+		return false, "", err
+	}
+	if !hasLeader {
+		return false, "", nil
+	}
+	if leaderID == c.ReplicaID {
+		return true, "", nil
+	}
+	return false, c.Members[leaderID], nil
+}
+
+// ComposeCeremonyServiceWithAdminCredentialWiring wraps ceremonySvc with the
+// admin-credential rebind path and the Raft leader gate that must sit in
+// front of it (go-qrdb#548 review item 6): every composer that first-boots
+// through ceremony-initialize's pending-admin-cert hand-off -- cmd/qrdbd,
+// sdk/go/node, and any future embedder -- wires the SAME two decorators in
+// the SAME order (CeremonyServiceWithLeaderGate outermost, around
+// CeremonyServiceWithAdminRebind), so a retried `qrdb init` behaves
+// identically regardless of which composer is running it.
+//
+// Returns ceremonySvc UNCHANGED when it is nil, or when its underlying
+// *ceremony.CeremonyService core cannot be resolved via CeremonyServiceCore
+// -- a composition shape (e.g. the pre-host sealed-window ceremony service)
+// neither wrapper can attach to safely; see CeremonyServiceWithLeaderGate's
+// own doc comment for why the pre-host service is excepted.
+func ComposeCeremonyServiceWithAdminCredentialWiring(ceremonySvc CeremonyServicer, users firstboot.AdminLookup, binder firstboot.CertBinder, leader LeaderChecker) CeremonyServicer {
+	if ceremonySvc == nil {
+		return nil
+	}
+	core, ok := CeremonyServiceCore(ceremonySvc)
+	if !ok {
+		return ceremonySvc
+	}
+	rebound := NewCeremonyServiceWithAdminRebind(ceremonySvc, core, users, binder)
+	return NewCeremonyServiceWithLeaderGate(rebound, leader)
 }

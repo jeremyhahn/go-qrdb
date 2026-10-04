@@ -17,10 +17,17 @@ package firstboot
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -82,6 +89,84 @@ func TestWritePendingAdminCert_NilStoreIsNoOp(t *testing.T) {
 	if _, err := store.Get(context.Background(), PendingAdminCertKey); err == nil {
 		t.Fatal("an empty certPEM must not write a record")
 	}
+}
+
+// TestWriteIssuedAdminCertIfAny_NilCoreIsNoOp covers the no-op guard: a nil
+// ceremony core (go-qrdb#548 review item 6) is a no-op, not an error.
+func TestWriteIssuedAdminCertIfAny_NilCoreIsNoOp(t *testing.T) {
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), nil, store))
+	_, err := store.Get(context.Background(), PendingAdminCertKey)
+	require.Error(t, err, "a nil core must not write a record")
+}
+
+// TestWriteIssuedAdminCertIfAny_NothingIssuedIsNoOp covers a real ceremony
+// core that has not issued anything yet: still a no-op.
+func TestWriteIssuedAdminCertIfAny_NothingIssuedIsNoOp(t *testing.T) {
+	core := testCeremonyCore(t)
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store))
+	_, err := store.Get(context.Background(), PendingAdminCertKey)
+	require.Error(t, err, "a core with nothing issued must not write a record")
+}
+
+// TestWriteIssuedAdminCertIfAny_WritesWhatWasIssued covers the common path:
+// a ceremony core that actually issued a bootstrap admin certificate (via
+// Initialize) has it recorded into the pending-admin-cert store.
+func TestWriteIssuedAdminCertIfAny_WritesWhatWasIssued(t *testing.T) {
+	core := testCeremonyCore(t)
+	ca, _ := ceremonytest.NewCA(t, "test-ca")
+	core.SetPINBackend(pintest.NewBackend(t))
+	_, err := core.Initialize(context.Background(), ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.NoError(t, err)
+
+	wantCertPEM, _ := core.LastIssuedAdminCertPEM()
+	require.NotEmpty(t, wantCertPEM)
+
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store))
+	got, err := store.Get(context.Background(), PendingAdminCertKey)
+	require.NoError(t, err)
+	require.Equal(t, wantCertPEM, got)
+}
+
+// TestWriteIssuedAdminCertIfAny_TheRaceLoserIsNotAnError covers the
+// create-if-absent race: a record already written by another node is
+// tolerated, not surfaced as an error -- this node's own credential simply
+// was not the one that won.
+func TestWriteIssuedAdminCertIfAny_TheRaceLoserIsNotAnError(t *testing.T) {
+	core := testCeremonyCore(t)
+	ca, _ := ceremonytest.NewCA(t, "test-ca")
+	core.SetPINBackend(pintest.NewBackend(t))
+	_, err := core.Initialize(context.Background(), ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.NoError(t, err)
+
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WritePendingAdminCert(context.Background(), store, []byte("another-node-won")))
+
+	require.NoError(t, WriteIssuedAdminCertIfAny(context.Background(), core, store))
+	got, err := store.Get(context.Background(), PendingAdminCertKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte("another-node-won"), got, "the winning node's record must be left untouched")
+}
+
+// testCeremonyCore builds a minimal, real *ceremony.CeremonyService over an
+// in-memory barrier -- the concrete type WriteIssuedAdminCertIfAny reads
+// LastIssuedAdminCertPEM from, so a test double cannot stand in for it.
+func testCeremonyCore(t *testing.T) *ceremony.CeremonyService {
+	t.Helper()
+	strategy, err := seal.NewSoftwareStrategy([]byte("test-master-password"))
+	require.NoError(t, err)
+	barrier, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "test/root-key"}, strategy)
+	require.NoError(t, err)
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+	return core
 }
 
 // TestWriteThenAwaitPendingAdminCert_RoundTrips covers the common path: a

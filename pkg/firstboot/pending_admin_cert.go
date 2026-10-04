@@ -16,7 +16,10 @@ package firstboot
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 )
 
 // PendingAdminCertKey is the REPLICATED system store key under which the
@@ -77,6 +80,37 @@ func WritePendingAdminCert(ctx context.Context, store PendingAdminCertStore, cer
 	}
 	if !stored {
 		return &AdminCredentialAlreadyPendingError{}
+	}
+	return nil
+}
+
+// WriteIssuedAdminCertIfAny records core's last issued-or-adopted admin
+// certificate into store as the pending-admin-cert hand-off, if core
+// actually issued or adopted one on THIS node (go-qrdb#548 review item 6).
+// A nil core, or one that has issued nothing, is a no-op.
+//
+// Shared by every composer that runs ceremony-initialize on this node and
+// must hand its result to first boot across the sealed-window-to-full-boot
+// transition -- cmd/qrdbd and sdk/go/node both call it at that seam, in
+// place of each re-implementing the LastIssuedAdminCertPEM-then-write
+// sequence by hand. Another node's write winning the create-if-absent race
+// (*AdminCredentialAlreadyPendingError) is tolerated here, not returned:
+// this node's credential simply is not the one first boot will bind, which
+// is a normal outcome of the race WritePendingAdminCert documents, not a
+// failure this call's caller needs to handle specially.
+func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyService, store PendingAdminCertStore) error {
+	if core == nil {
+		return nil
+	}
+	certPEM, _ := core.LastIssuedAdminCertPEM()
+	if len(certPEM) == 0 {
+		return nil
+	}
+	if err := WritePendingAdminCert(ctx, store, certPEM); err != nil {
+		var alreadyPending *AdminCredentialAlreadyPendingError
+		if !errors.As(err, &alreadyPending) {
+			return err
+		}
 	}
 	return nil
 }

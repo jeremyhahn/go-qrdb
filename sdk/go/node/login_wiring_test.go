@@ -96,7 +96,7 @@ func TestBuildEmbeddedOpts_NoUser_SkipsLoginWiring(t *testing.T) {
 	noUser := *svcNode
 	noUser.User = nil
 
-	opts, err := n.buildEmbeddedOpts(&noUser, false, false)
+	opts, err := n.buildEmbeddedOpts(&noUser, nil, false, false)
 	require.NoError(t, err)
 	require.NotEmpty(t, opts)
 
@@ -191,7 +191,7 @@ func TestBuildEmbeddedOpts_WiresFunctionalLoginCeremony(t *testing.T) {
 	require.NotZero(t, u.ID)
 
 	// Build the transport from the node's embedded opts (the path under test).
-	opts, err := n.buildEmbeddedOpts(svcNode, false, false)
+	opts, err := n.buildEmbeddedOpts(svcNode, nil, false, false)
 	require.NoError(t, err)
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, opts...)
 	require.NoError(t, err)
@@ -244,7 +244,7 @@ func TestBuildEmbeddedOpts_LoginUnknownFactor_NotFound(t *testing.T) {
 	n := newMemoryNodeWithUser(t, WithSessionIssuer(issuer))
 	svcNode := n.Services()
 
-	opts, err := n.buildEmbeddedOpts(svcNode, false, false)
+	opts, err := n.buildEmbeddedOpts(svcNode, nil, false, false)
 	require.NoError(t, err)
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, opts...)
 	require.NoError(t, err)
