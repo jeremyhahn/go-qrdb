@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -193,6 +194,9 @@ func validateAdminCredentialInputs(ca CeremonyCA, opts *InitializeOptions, caBun
 		if ca == nil {
 			return &AdminCredentialRequiresCAError{Path: "csr-sign"}
 		}
+		if _, err := parseAndVerifyCSR(csrPEM); err != nil {
+			return err
+		}
 		return nil
 
 	default: // generate -- the only remaining case once selected == 1
@@ -258,14 +262,25 @@ func generateAdminCSR() (csrPEM, keyPEM []byte, err error) {
 
 // adoptAdminCert validates a certificate the admin already holds (Path C,
 // BYOC) and returns it unchanged for binding: it must parse, fall inside its
-// validity window, and chain to pool. Nothing is signed and no key is
-// generated -- the private key never exists outside the operator's own
-// token.
+// validity window, chain to pool, and -- go-qrdb#548 review, item 8's BYOC
+// checklist -- carry exactly the profile the bootstrap admin's own
+// certificate always carries: CN=admin, system tenant as the first Subject
+// OU, NO holder-profile OU (a Security Officer or custodian share-holder
+// certificate can never stand for the admin), and a KeyUsage/ExtKeyUsage
+// shape that actually supports client TLS authentication. Unlike an
+// enrolled officer's BYOC certificate (pkg/firstboot's own
+// adoptPresentedAdminCert, which defers EKU to login-time authorization),
+// this one check IS the authorization: adopting it grants system-tenant
+// Admin outright, with no later gate, so the checklist is enforced here,
+// before binding, not deferred. Nothing is signed and no key is generated
+// -- the private key never exists outside the operator's own token.
 //
-// This duplicates pkg/firstboot's adoptPresentedAdminCert in spirit (both
-// apply the same three checks) rather than calling it: pkg/firstboot cannot
-// be imported here without a cycle, because pkg/tenant already imports
-// pkg/ceremony for CeremonyCA and pkg/firstboot imports pkg/tenant.
+// This duplicates pkg/firstboot's adoptPresentedAdminCert's parse/validity/
+// chain checks in spirit rather than calling it: pkg/firstboot cannot be
+// imported here without a cycle, because pkg/tenant already imports
+// pkg/ceremony for CeremonyCA and pkg/firstboot imports pkg/tenant. The
+// admin-profile checklist below has no counterpart there at all -- it is
+// specific to this path.
 func adoptAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
@@ -288,9 +303,58 @@ func adoptAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error) {
 		return nil, &AdminCredentialRejectedError{Cause: err}
 	}
 
+	if err := validateAdminCertProfile(cert); err != nil {
+		return nil, err
+	}
+
 	adopted := make([]byte, len(certPEM))
 	copy(adopted, certPEM)
 	return adopted, nil
+}
+
+// validateAdminCertProfile enforces the BYOC admin checklist (go-qrdb#548
+// review, item 8): CN=admin, system tenant as the first Subject OU, no
+// holder-profile OU anywhere in the Subject, and a KeyUsage/ExtKeyUsage
+// shape that supports client TLS authentication (digital signature, and
+// either ExtKeyUsageClientAuth or ExtKeyUsageAny). A certificate failing any
+// of these is refused with *AdminCredentialRejectedError before it is ever
+// adopted.
+func validateAdminCertProfile(cert *x509.Certificate) error {
+	if cert.Subject.CommonName != adminUsername {
+		return &AdminCredentialRejectedError{
+			Cause: errors.New("certificate CommonName must be " + adminUsername + ", got " + cert.Subject.CommonName),
+		}
+	}
+	if len(cert.Subject.OrganizationalUnit) == 0 || cert.Subject.OrganizationalUnit[0] != tenantid.System {
+		return &AdminCredentialRejectedError{
+			Cause: errors.New("certificate must carry the system tenant as its first Subject Organizational Unit"),
+		}
+	}
+	for _, ou := range cert.Subject.OrganizationalUnit {
+		if holderprofile.Is(ou) {
+			return &AdminCredentialRejectedError{
+				Cause: errors.New("certificate carries holder-profile OU " + ou + "; a holder certificate cannot stand for the bootstrap admin"),
+			}
+		}
+	}
+	if cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return &AdminCredentialRejectedError{
+			Cause: errors.New("certificate KeyUsage does not include digital signature"),
+		}
+	}
+	clientAuth := false
+	for _, eku := range cert.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
+			clientAuth = true
+			break
+		}
+	}
+	if !clientAuth {
+		return &AdminCredentialRejectedError{
+			Cause: errors.New("certificate ExtKeyUsage does not include client authentication"),
+		}
+	}
+	return nil
 }
 
 // LastIssuedAdminCertPEM returns the bootstrap admin certificate the most

@@ -569,6 +569,27 @@ func (e *SystemBarrierInitError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *SystemBarrierInitError) Unwrap() error { return e.Cause }
 
+// SystemBarrierCredentialMismatchError is returned by Initialize when the
+// system barrier is ALREADY unsealed and the secret the caller just
+// supplied does NOT unseal the same key the barrier currently holds
+// (go-qrdb#548 review, item 1). A barrier being unsealed already says
+// nothing about whether this secret is the right one, and reporting the
+// ceremony operational under a secret that does not actually open the
+// barrier would let a caller believe it holds a working credential when it
+// does not. Distinct from SystemBarrierInitError, which covers a SEALED
+// barrier failing to come up.
+type SystemBarrierCredentialMismatchError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *SystemBarrierCredentialMismatchError) Error() string {
+	return "ceremony: system barrier is already unsealed under a different credential: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *SystemBarrierCredentialMismatchError) Unwrap() error { return e.Cause }
+
 // NoServerCertificateError is returned by Initialize when it is called with
 // a nil CeremonyCA (a BYO-TLS node: the operator's own leaf certificate is
 // the server identity, so there is no CA to self-issue one from) and

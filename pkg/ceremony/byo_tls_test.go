@@ -55,10 +55,11 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		CommonName:   "admin",
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 30,
+		CommonName:         "admin",
+		OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage:           x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays:       30,
 	})
 	require.NoError(t, err)
 
@@ -98,7 +99,9 @@ func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
 	})
 	require.NoError(t, err)
 
@@ -125,7 +128,9 @@ func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
 	})
 	require.NoError(t, err)
 
@@ -210,7 +215,9 @@ func TestInitialize_BYOTLS_BYOCDefaultsToClientCACertPEM(t *testing.T) {
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
-		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
 	})
 	require.NoError(t, err)
 

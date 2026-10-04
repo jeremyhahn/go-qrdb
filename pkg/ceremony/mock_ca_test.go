@@ -155,7 +155,7 @@ func (m *mockCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*Is
 
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: req.CommonName},
+		Subject:      pkix.Name{CommonName: req.CommonName, OrganizationalUnit: req.OrganizationalUnit},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Duration(req.ValidityDays) * 24 * time.Hour),
 		KeyUsage:     req.KeyUsage,

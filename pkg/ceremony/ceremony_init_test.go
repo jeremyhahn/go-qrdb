@@ -152,7 +152,9 @@ func TestInitialize_ValidationRefusals(t *testing.T) {
 	// case is about (go-qrdb#548 review: B3 validates admin-credential
 	// inputs first).
 	adminLeaf, ierr := ca.IssueCertificate(ctx, &IssueCertRequest{
-		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
 	})
 	require.NoError(t, ierr)
 	caBundle, berr := ca.CABundle()

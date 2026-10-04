@@ -556,8 +556,25 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 // to begin with -- is tolerated: Initialize's ErrAlreadyInitialized falls
 // through to Unseal with the same secret, so a retry with the same
 // credential converges rather than failing closed on work it already did.
+//
+// When the barrier is ALREADY unsealed, "nothing to do" is not the same as
+// "safe to no-op" (go-qrdb#548 review, item 1): the caller just handed this
+// a secret, and the only way to know it is the SAME secret that opened the
+// barrier is to check it against the live key, through
+// StorageBarrier.VerifyCredentials. A retry whose secret does not match is
+// refused with *SystemBarrierCredentialMismatchError rather than reported
+// operational -- this service must never let a caller believe a secret
+// unseals a barrier it does not.
 func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, secret []byte) error {
 	if !s.barrier.IsSealed() {
+		creds, err := seal.CredentialsFor(secret)
+		if err != nil {
+			return &SystemBarrierInitError{Cause: err}
+		}
+		defer creds.Secret.Destroy()
+		if err := s.barrier.VerifyCredentials(ctx, creds); err != nil {
+			return &SystemBarrierCredentialMismatchError{Cause: err}
+		}
 		return nil
 	}
 	creds, err := seal.CredentialsFor(secret)

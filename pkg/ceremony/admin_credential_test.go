@@ -79,10 +79,11 @@ func TestInitialize_AdminCredential_CSR(t *testing.T) {
 func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 	ca := newMockCA(t)
 	presented, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
-		CommonName:   "admin",
-		ValidityDays: 30,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		CommonName:         "admin",
+		OrganizationalUnit: []string{"system", "administrator"},
+		ValidityDays:       30,
+		KeyUsage:           x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	require.NoError(t, err)
 
@@ -110,10 +111,11 @@ func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 func TestInitialize_AdminCredential_BYOC_DefaultsToClusterCA(t *testing.T) {
 	ca := newMockCA(t)
 	presented, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
-		CommonName:   "admin",
-		ValidityDays: 30,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		CommonName:         "admin",
+		OrganizationalUnit: []string{"system", "administrator"},
+		ValidityDays:       30,
+		KeyUsage:           x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	require.NoError(t, err)
 
@@ -152,6 +154,87 @@ func TestInitialize_AdminCredential_BYOC_Untrusted(t *testing.T) {
 	})
 	var rejected *AdminCredentialRejectedError
 	require.ErrorAs(t, err, &rejected)
+}
+
+// TestInitialize_AdminCredential_BYOC_ProfileChecklist covers go-qrdb#548
+// review item 8's BYOC checklist: a presented certificate that chains to a
+// trusted pool but fails any ONE of CN=admin, system-tenant-first-OU,
+// no-holder-OU, or client-auth KeyUsage/ExtKeyUsage is refused BEFORE it is
+// ever adopted -- chaining to a trusted root is necessary but not
+// sufficient to stand for the bootstrap admin.
+func TestInitialize_AdminCredential_BYOC_ProfileChecklist(t *testing.T) {
+	cases := map[string]*IssueCertRequest{
+		"wrong common name": {
+			CommonName:         "not-admin",
+			OrganizationalUnit: []string{"system", "administrator"},
+			ValidityDays:       30,
+			KeyUsage:           x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		},
+		"no organizational unit at all": {
+			CommonName:   "admin",
+			ValidityDays: 30,
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		},
+		"not the system tenant": {
+			CommonName:         "admin",
+			OrganizationalUnit: []string{"some-other-tenant", "administrator"},
+			ValidityDays:       30,
+			KeyUsage:           x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		},
+		"holder OU (security officer)": {
+			CommonName:         "admin",
+			OrganizationalUnit: []string{"system", "security-officer"},
+			ValidityDays:       30,
+			KeyUsage:           x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		},
+		"holder OU (custodian)": {
+			CommonName:         "admin",
+			OrganizationalUnit: []string{"system", "custodian"},
+			ValidityDays:       30,
+			KeyUsage:           x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		},
+		"no digital signature key usage": {
+			CommonName:         "admin",
+			OrganizationalUnit: []string{"system", "administrator"},
+			ValidityDays:       30,
+			KeyUsage:           x509.KeyUsageKeyEncipherment,
+			ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		},
+		"no client auth ext key usage": {
+			CommonName:         "admin",
+			OrganizationalUnit: []string{"system", "administrator"},
+			ValidityDays:       30,
+			KeyUsage:           x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			ca := newMockCA(t)
+			presented, err := ca.IssueCertificate(context.Background(), req)
+			require.NoError(t, err)
+
+			pool := x509.NewCertPool()
+			pool.AddCert(ca.cert)
+			poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
+
+			svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+
+			_, err = svc.Initialize(context.Background(), ca, &InitializeOptions{
+				SOPin:            "test-so-pin",
+				UserPin:          "test-user-pin",
+				AdminCertPEM:     presented.CertPEM,
+				AdminCertPoolPEM: poolPEM,
+			})
+			var rejected *AdminCredentialRejectedError
+			require.ErrorAs(t, err, &rejected, "%s must be refused", name)
+		})
+	}
 }
 
 // TestInitialize_AdminCredential_ConflictingInputs covers both AdminCSRPEM

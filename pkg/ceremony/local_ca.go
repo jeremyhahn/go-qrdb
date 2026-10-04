@@ -181,7 +181,7 @@ func issueCertificateWith(caCert *x509.Certificate, caKey crypto.Signer, req *Is
 	dnsNames, ipAddresses := splitSANs(req.SANs)
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: req.CommonName},
+		Subject:               pkix.Name{CommonName: req.CommonName, OrganizationalUnit: req.OrganizationalUnit},
 		DNSNames:              dnsNames,
 		IPAddresses:           ipAddresses,
 		NotBefore:             time.Now().Add(-1 * time.Minute),

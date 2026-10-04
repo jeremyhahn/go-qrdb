@@ -109,7 +109,12 @@ func TestInitialize_SystemBarrier_WrongSecretOnRetryFails(t *testing.T) {
 }
 
 // TestInitialize_SystemBarrier_AlreadyUnsealedIsANoOp covers a barrier that
-// is already unsealed by the time Initialize runs: nothing to do, no error.
+// is already unsealed by the time Initialize runs, under a strategy that
+// binds its passphrase at construction (testBarrier's shape) and so cannot
+// express "wrong secret" through Credentials at all: Initialize's own empty
+// opts.Secret is verified against the live key via VerifyCredentials and
+// matches trivially, converging with no error, exactly as before this
+// behaviour was made an explicit check rather than an unconditional no-op.
 func TestInitialize_SystemBarrier_AlreadyUnsealedIsANoOp(t *testing.T) {
 	barrier := unsealedTestBarrier(t)
 
@@ -122,6 +127,52 @@ func TestInitialize_SystemBarrier_AlreadyUnsealedIsANoOp(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, barrier.IsSealed())
+}
+
+// TestInitialize_SystemBarrier_AlreadyUnsealedWrongSecretRefused is the
+// go-qrdb#548 review's item 1 fix proven directly against
+// initializeSystemBarrierLocked's "already unsealed" branch: reproduces the
+// reviewer's probe -- a barrier legitimately unsealed under one secret (P1,
+// standing in for whatever brought it up), then a retry (P2) presenting a
+// DIFFERENT secret. Before this fix, "already unsealed" short-circuited to
+// success with no check at all, silently reporting the ceremony operational
+// under P2's secret even though the barrier is actually protected by P1's --
+// stranding the real key the moment an operator trusts P2's as the one that
+// works. The retry must now be refused, and the barrier must be left exactly
+// as P1 set it: only P1's secret verifies against it afterward.
+func TestInitialize_SystemBarrier_AlreadyUnsealedWrongSecretRefused(t *testing.T) {
+	// A DEFERRED strategy actually checks Credentials.Secret against the
+	// stored encrypted key on every verification, unlike testBarrier's
+	// construction-bound one -- the shape where "wrong secret" is a real,
+	// checkable condition.
+	barrier, err := seal.NewStorageBarrier(testLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "test/root-key"}, seal.NewDeferredSoftwareStrategy())
+	require.NoError(t, err)
+	p1Secret := []byte("p1-the-real-secret")
+	// MustCredentials/NewCredentials CONSUME (wipe) the slice they are given
+	// -- CredentialsFor's own doc contrasts this -- so Initialize is handed a
+	// COPY here. p1Secret itself must survive intact: it is reused below to
+	// prove it is still the one working credential.
+	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(append([]byte(nil), p1Secret...))))
+	require.False(t, barrier.IsSealed(), "P1 leaves the barrier unsealed under its own secret")
+
+	svc := newTestCeremonyService(t, defaultConfig(), barrier)
+
+	p2Secret := []byte("p2-a-completely-different-secret")
+	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		Secret:        p2Secret,
+		AdminGenerate: true,
+	})
+	var mismatchErr *SystemBarrierCredentialMismatchError
+	require.ErrorAs(t, err, &mismatchErr, "a retry under a different secret must be refused, not silently converged")
+	assert.False(t, barrier.IsSealed(), "the refused retry must not reseal the barrier")
+
+	// Only P1's secret -- never P2's -- actually verifies against the live
+	// barrier: the key was never stranded on a credential nobody can use.
+	assert.NoError(t, barrier.VerifyCredentials(context.Background(), seal.MustCredentials(p1Secret)))
+	assert.Error(t, barrier.VerifyCredentials(context.Background(), seal.MustCredentials(p2Secret)))
 }
 
 // TestInitialize_SystemBarrier_MofNLeavesItSealed covers the M-of-N
@@ -186,6 +237,20 @@ func TestInitialize_RefusedAdminCredential_NoSideEffects(t *testing.T) {
 			},
 			&AdminCredentialRejectedError{},
 			"bootstrap admin credential rejected",
+			true,
+		},
+		// go-qrdb#548 review, item 1, probe P1: a malformed admin CSR must be
+		// refused by validateAdminCredentialInputs's own parse+signature
+		// check, BEFORE Initialize provisions PINs or brings the barrier up
+		// -- not merely tolerated later when issueAdminCredential finally
+		// tries to sign it.
+		"malformed csr": {
+			&InitializeOptions{
+				SOPin: "test-so-pin", UserPin: "test-user-pin",
+				AdminCSRPEM: []byte("not-a-csr"),
+			},
+			&CSRParseError{},
+			"CSR parse failed",
 			true,
 		},
 	}

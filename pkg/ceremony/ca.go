@@ -118,6 +118,14 @@ type IssueCertRequest struct {
 	// CommonName is the subject common name for the certificate.
 	CommonName string
 
+	// OrganizationalUnit is the subject's Organizational Unit sequence.
+	// Optional; a generic TLS leaf (the server certificate path) leaves it
+	// empty. The BYOC admin-credential path requires a presented
+	// certificate to carry [tenantid.System, "administrator"] here
+	// (validateAdminCertProfile, go-qrdb#548 review item 8); this field
+	// exists so a fixture can construct one.
+	OrganizationalUnit []string
+
 	// SANs is the list of Subject Alternative Names.
 	SANs []string
 

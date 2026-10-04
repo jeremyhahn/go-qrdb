@@ -11,6 +11,7 @@ package seal
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -24,6 +25,7 @@ import (
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // stateSealed and stateUnsealed are the two possible states for the barrier.
@@ -552,6 +554,70 @@ func (b *StorageBarrier) GetMasterKey(ctx context.Context) ([]byte, error) {
 		return nil, ErrSealed
 	}
 	return b.barrier.RootKey(ctx)
+}
+
+// VerifyCredentials reports whether creds unseals the SAME root key this
+// barrier currently holds unsealed in memory, without changing the
+// barrier's state in any way. An already-unsealed barrier says nothing by
+// itself about whether a credential just supplied is the right one -- a
+// caller that treats "already unsealed" as a reason to skip checking creds
+// can report operational under a secret that does not actually open the
+// barrier (go-qrdb#548 review, item 1). This is the entry point that check
+// belongs behind.
+//
+// It loads the persisted sealed root key blob -- the exact record Unseal
+// reads -- unseals a CANDIDATE root key from it under creds, and compares
+// the candidate against the live root key in constant time. The candidate
+// is always wiped before return; it never replaces the live key or alters
+// barrier state.
+//
+// Returns ErrSealed if the barrier is not currently unsealed (there is
+// nothing live to compare against), ErrNotInitialized or ErrCorruptRootKey
+// if the persisted blob is missing or unreadable, ErrStrategyNotFound if
+// the persisted strategy is not registered, ErrCredentialMismatch if creds
+// does not unseal the matching key (including when the strategy itself
+// refuses creds outright), or any error encountered loading the persisted
+// blob.
+func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credentials) error {
+	if b.IsSealed() {
+		return ErrSealed
+	}
+
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	if err != nil {
+		if errors.Is(err, ErrSecretNotFound) {
+			return ErrNotInitialized
+		}
+		return err
+	}
+
+	var sealed SealedRootKey
+	if err := json.Unmarshal(blob, &sealed); err != nil {
+		return ErrCorruptRootKey
+	}
+
+	strategy, ok := b.strategyByID(sealed.Strategy)
+	if !ok {
+		return ErrStrategyNotFound
+	}
+
+	candidate, err := strategy.UnsealRootKey(ctx, &sealed, creds)
+	if err != nil {
+		return ErrCredentialMismatch
+	}
+	defer secure.Wipe(candidate)
+
+	live, err := b.barrier.RootKey()
+	if err != nil {
+		return err
+	}
+	defer secure.Wipe(live)
+
+	if len(candidate) == 0 || len(candidate) != len(live) ||
+		subtle.ConstantTimeCompare(candidate, live) != 1 {
+		return ErrCredentialMismatch
+	}
+	return nil
 }
 
 // Encryptor returns nil for the refactored barrier. Encryption is now

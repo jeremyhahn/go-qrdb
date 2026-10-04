@@ -43,6 +43,14 @@ var (
 	// unseal the root key (wrong password, wrong token, etc).
 	ErrInvalidCredentials = errors.New("qrdb/seal: invalid credentials")
 
+	// ErrCredentialMismatch is returned by VerifyCredentials when the
+	// supplied credentials do not unseal the same root key the barrier
+	// already holds unsealed in memory. Distinct from ErrInvalidCredentials
+	// (which Unseal returns when the barrier is still sealed): this is the
+	// check for a caller re-presenting a credential against a barrier that
+	// is ALREADY unsealed, so there is a live key to compare against.
+	ErrCredentialMismatch = errors.New("qrdb/seal: supplied credentials do not match the barrier's current key")
+
 	// ErrDecryptionFailed is returned when an unseal decryption operation
 	// fails, typically because the supplied passphrase is wrong (the AEAD tag
 	// fails to verify). It is wrapped by go-quicraft's *UnsealError, so

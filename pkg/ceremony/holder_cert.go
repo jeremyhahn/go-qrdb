@@ -35,16 +35,9 @@ import (
 // authenticated as the system tenant's admin. A CA error is a
 // *CertEncodeError.
 func signHolderCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, *x509.CertificateRequest, error) {
-	block, _ := pem.Decode(csrPEM)
-	if block == nil {
-		return nil, nil, &CSRParseError{Err: ErrInvalidCSR}
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	csr, err := parseAndVerifyCSR(csrPEM)
 	if err != nil {
-		return nil, nil, &CSRParseError{Err: err}
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, nil, &CSRParseError{Err: err}
+		return nil, nil, err
 	}
 
 	cert, err := ca.SignCSR(ctx, csrPEM, opts)
@@ -55,6 +48,27 @@ func signHolderCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte, opts *Sign
 		return nil, nil, err
 	}
 	return cert, csr, nil
+}
+
+// parseAndVerifyCSR decodes csrPEM's CERTIFICATE REQUEST block, parses it,
+// and checks its self-signature -- the proof the requester actually holds
+// the private key it names. It is the one place signHolderCSR and
+// validateAdminCredentialInputs both reach for this check, so a CSR can
+// never be accepted by one and rejected by the other for the same malformed
+// input.
+func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		return nil, &CSRParseError{Err: ErrInvalidCSR}
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, &CSRParseError{Err: err}
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, &CSRParseError{Err: err}
+	}
+	return csr, nil
 }
 
 // checkIssuedSubject refuses a certificate a CeremonyCA returned unless its
