@@ -860,6 +860,72 @@ func TestSoftwareProvider_AdoptIfAbsent_NoMaterialButStorePopulated(t *testing.T
 	}
 }
 
+// TestSoftwareProvider_AdoptIfAbsent_CertCachedKeyDeleted is the ordinary
+// Raft-mode restart after the first successful boot: cmd/qrdbd deleted its
+// local ca-key.pem on confirmed persistence but kept ca.pem, so the boot
+// offers the cached certificate with NO key. The provider must load the
+// persisted material, and still refuse a cached certificate that is not the
+// persisted one (the split-brain check AdoptIfAbsent exists for).
+func TestSoftwareProvider_AdoptIfAbsent_CertCachedKeyDeleted(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	seed := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := seed.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	wantCert, err := seed.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	cachedCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: wantCert.Raw})
+
+	t.Run("matching cached certificate loads", func(t *testing.T) {
+		p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+		if err := p.AdoptIfAbsent(context.Background(), nil, cachedCertPEM); err != nil {
+			t.Fatalf("AdoptIfAbsent(nil key, cached cert): %v", err)
+		}
+		gotCert, err := p.Certificate(context.Background())
+		if err != nil {
+			t.Fatalf("Certificate: %v", err)
+		}
+		if !gotCert.Equal(wantCert) {
+			t.Fatalf("loaded certificate serial %s != persisted %s", gotCert.SerialNumber, wantCert.SerialNumber)
+		}
+		if _, err := p.Signer(context.Background()); err != nil {
+			t.Fatalf("Signer after a cert-only adopt: %v", err)
+		}
+	})
+
+	t.Run("different cached certificate is a mismatch", func(t *testing.T) {
+		otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		otherCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: selfSignedTestCert(t, otherKey).Raw})
+		p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+		var mismatch *MaterialMismatchError
+		if err := p.AdoptIfAbsent(context.Background(), nil, otherCertPEM); !errors.As(err, &mismatch) {
+			t.Fatalf("AdoptIfAbsent(nil key, foreign cert) = %v, want *MaterialMismatchError", err)
+		}
+	})
+
+	t.Run("invalid cached certificate PEM", func(t *testing.T) {
+		p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+		var genErr *GenerateError
+		if err := p.AdoptIfAbsent(context.Background(), nil, []byte("not pem")); !errors.As(err, &genErr) {
+			t.Fatalf("AdoptIfAbsent(nil key, invalid cert PEM) = %v, want *GenerateError", err)
+		}
+	})
+
+	t.Run("empty store refuses", func(t *testing.T) {
+		p := NewSoftwareProvider(newGuardedMemoryStore(), barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+		var notInit *NotInitializedError
+		if err := p.AdoptIfAbsent(context.Background(), nil, cachedCertPEM); !errors.As(err, &notInit) {
+			t.Fatalf("AdoptIfAbsent(nil key, cached cert) on an empty store = %v, want *NotInitializedError", err)
+		}
+	})
+}
+
 func TestSoftwareProvider_AdoptIfAbsent_SealedRefuses(t *testing.T) {
 	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()

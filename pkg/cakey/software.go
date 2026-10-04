@@ -334,21 +334,23 @@ func decodeCert(data []byte) (*x509.Certificate, error) {
 // anything; cmd/qrdbd's cache-eviction step runs only after
 // Certificate/Signer succeeds, which a *MaterialMismatchError here prevents.
 //
-// keyPEM/certPEM may both be empty, for a boot that holds no in-memory key
-// of its own -- an ordinary restart once the key has already been adopted,
-// when the caller's own on-disk cache of the key was deleted on confirmed
-// persistence. In that case AdoptIfAbsent requires the store to already
-// hold material and returns *NotInitializedError if it does not, rather
-// than generating one, because it has no key to safely fall back on and
-// generating a different one would silently diverge from whatever
-// certificate this node (or a peer) already cached from the lost key.
+// keyPEM may be empty, for a boot that holds no in-memory key of its own --
+// an ordinary restart once the key has already been adopted, when the
+// caller's own on-disk cache of the key was deleted on confirmed persistence
+// while its cached certificate (certPEM) may remain. In that case
+// AdoptIfAbsent requires the store to already hold material and returns
+// *NotInitializedError if it does not, rather than generating one, because
+// it has no key to safely fall back on and generating a different one would
+// silently diverge from whatever certificate this node (or a peer) already
+// cached from the lost key. A cached certificate offered without its key
+// must still be the persisted one, or the call is a *MaterialMismatchError.
 func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []byte) error {
 	if p.barrier.IsSealed() {
 		return &BarrierSealedError{}
 	}
 
-	if len(keyPEM) == 0 && len(certPEM) == 0 {
-		return p.load(ctx)
+	if len(keyPEM) == 0 {
+		return p.loadMatching(ctx, certPEM)
 	}
 
 	keyBlock, _ := pem.Decode(keyPEM)
@@ -403,6 +405,37 @@ func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []
 	p.mu.Lock()
 	p.cert = winnerCert
 	p.mu.Unlock()
+	return nil
+}
+
+// loadMatching is AdoptIfAbsent's key-less path: it loads the persisted
+// material and, when the caller still holds a cached certificate, refuses
+// with *MaterialMismatchError unless that certificate is the persisted one.
+func (p *SoftwareProvider) loadMatching(ctx context.Context, certPEM []byte) error {
+	var cachedDER []byte
+	if len(certPEM) > 0 {
+		certBlock, _ := pem.Decode(certPEM)
+		if certBlock == nil {
+			return &GenerateError{Err: errInvalidCertPEM}
+		}
+		cachedDER = certBlock.Bytes
+	}
+	if err := p.load(ctx); err != nil {
+		return err
+	}
+	if cachedDER == nil {
+		return nil
+	}
+	p.mu.RLock()
+	match := bytes.Equal(p.cert.Raw, cachedDER)
+	p.mu.RUnlock()
+	if !match {
+		p.mu.Lock()
+		p.key = nil
+		p.cert = nil
+		p.mu.Unlock()
+		return &MaterialMismatchError{}
+	}
 	return nil
 }
 
