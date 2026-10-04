@@ -92,6 +92,8 @@ func TestCLI_Start_TableDriven(t *testing.T) {
 				startNode(t, binary, args, prefix)
 			}
 
+			bootstrapNodes(t, ca, adminPorts...)
+
 			// Wait for all nodes to become healthy.
 			for i, dir := range dataDirs {
 				waitForHealthy(t, dir, 30*time.Second)
@@ -136,6 +138,7 @@ func TestCLI_Start_GracefulShutdown(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
 
@@ -197,6 +200,7 @@ func TestCLI_Start_ClusterFormation(t *testing.T) {
 		startNode(t, binary, args, prefix)
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
 
@@ -244,10 +248,12 @@ func TestCLI_Start_InvalidSM(t *testing.T) {
 // its admin API would never answer.
 func TestCLI_Start_EverySMTypeCompletesFirstBoot(t *testing.T) {
 	binary := buildBinary(t)
-	ca := generateTestCA(t)
 
 	for _, smType := range []string{"memory", "concurrent"} {
 		t.Run(smType, func(t *testing.T) {
+			// One CA per subtest: the CA caches its bootstrap admin identity
+			// in the first caller's TempDir, which ends with that subtest.
+			ca := generateTestCA(t)
 			ports := allocatePorts(t, 1)
 			adminPorts := allocateTCPPorts(t, 1)
 			grpcPorts := allocateTCPPorts(t, 1)
@@ -269,6 +275,7 @@ func TestCLI_Start_EverySMTypeCompletesFirstBoot(t *testing.T) {
 			args = append(args, ca.tlsFlags(t)...)
 
 			startNode(t, binary, args, fmt.Sprintf("[sm=%s] ", smType))
+			bootstrapNodes(t, ca, adminPorts[0])
 			waitForAdmin(t, ca.Pool, adminPorts[0], 60*time.Second)
 
 			key := "firstboot-" + smType
@@ -377,6 +384,7 @@ func TestCLI_Start_AllFlags(t *testing.T) {
 	args = append(args, ca.tlsFlags(t)...)
 
 	cmd := startNode(t, binary, args, "[allflags] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 
 	// Verify the node started correctly with all flags.
@@ -430,6 +438,7 @@ func TestCLI_Status(t *testing.T) {
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, binary, args, "[node1] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
 
@@ -478,6 +487,7 @@ func TestCLI_Peers(t *testing.T) {
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, binary, args, "[node1] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
 
@@ -534,6 +544,7 @@ func TestCLI_Status_ThreeNode(t *testing.T) {
 		startNode(t, binary, args, prefix)
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
@@ -594,6 +605,7 @@ func TestCLI_Peers_ThreeNode(t *testing.T) {
 		startNode(t, binary, args, prefix)
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)

@@ -202,20 +202,14 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 		t.Fatalf("create role: could not decode role ID from response: %s", roleBody)
 	}
 
-	userBody, userStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
+	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, scaleFoundationTenantID)
+	createBoundUser(t, sysClient, leaderPort,
 		map[string]interface{}{
 			"username":  "admin",
 			"email":     "admin@" + scaleFoundationTenantID + ".example.com",
 			"tenant_id": scaleFoundationTenantID,
 			"role_ids":  []string{roleResp.ID},
-		},
-	)
-	if userStatus != http.StatusCreated && userStatus != http.StatusOK {
-		t.Fatalf("create user: status %d, body: %s", userStatus, userBody)
-	}
-
-	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, scaleFoundationTenantID)
+		}, tenantCertPath)
 	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCertPath, tenantKeyPath, 15*time.Second)
 
 	// ---------------------------------------------------------------------
@@ -871,17 +865,12 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role ID: %s", roleBody)
 	}
-	_, uStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
+	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, restartSurvivalTenantID)
+	createBoundUser(t, sysClient, leaderPort,
 		map[string]interface{}{
 			"username": "admin", "email": "admin@" + restartSurvivalTenantID + ".example.com", "tenant_id": restartSurvivalTenantID,
 			"role_ids": []string{roleResp.ID},
-		})
-	if uStatus != http.StatusCreated && uStatus != http.StatusOK {
-		t.Fatalf("create user: status %d", uStatus)
-	}
-
-	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, restartSurvivalTenantID)
+		}, tenantCertPath)
 	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCertPath, tenantKeyPath, 15*time.Second)
 
 	// ---------------------------------------------------------------------

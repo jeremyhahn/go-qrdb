@@ -423,8 +423,12 @@ func TestCLI_Init_PassphraseHappyPath(t *testing.T) {
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	out := node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
-	if !strings.Contains(out, `"state":"operational"`) {
-		t.Errorf("qrdb init output should report state operational, got: %s", out)
+	var initResp struct {
+		State string `json:"state"`
+	}
+	decodeJSON(t, out, &initResp)
+	if initResp.State != "operational" {
+		t.Errorf("qrdb init state = %q, want operational; output: %s", initResp.State, out)
 	}
 
 	waitForHealthy(t, node.dataDir, 60*time.Second)
@@ -643,8 +647,11 @@ func TestCLI_Init_LocalFlagValidation(t *testing.T) {
 			wantErr: "--shares",
 		},
 		{
-			name:    "shares without shamir strategy",
-			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--shares", "3"},
+			name: "shares without shamir strategy",
+			// An explicit non-Shamir strategy and a valid admin credential
+			// flag, so the case fails on --shares rather than on the default
+			// passphrase strategy's --passphrase or the credential flag.
+			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "none", "--admin-generate", "--shares", "3"},
 			wantErr: "--shares/--threshold",
 		},
 		{
@@ -971,15 +978,19 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 // TestCLI_Ceremony_StatusAndSubcommands drives the `ceremony` subcommands
 // against a real node and asserts on the server's actual response:
 //
-//   - `ceremony status`: awaiting_init before `qrdb init`, operational after.
-//   - `ceremony sign-csr`: succeeds with the correct --so-pin (the one
-//     supplied to `qrdb init`) and is refused by the PIN backend for a wrong
-//     one.
+//   - `ceremony status`: awaiting_init before `qrdb init`, enrolling after an
+//     M-of-N init, operational once every holder has claimed.
+//   - `ceremony sign-csr`: issues holder certificates only while the ceremony
+//     is enrolling. It succeeds with the correct --so-pin (the one supplied to
+//     `qrdb init`), is refused by the PIN backend for a wrong one, and is
+//     refused outright once the ceremony is operational.
 func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[ceremony] ")
+	node := bootSelfGenCANode(t, bin,
+		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 2\n",
+		"[ceremony] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "ceremony", "status", "--output", "json")
@@ -992,12 +1003,28 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 		t.Errorf("ceremony status pre-init: state = %q, want %q", status.State, "awaiting_init")
 	}
 
-	// "qrdb init" is the only system bootstrap (go-qrdb#548): it brings the
-	// system barrier up itself (strategy "none" here, via
-	// --barrier-strategy) in the same call that runs the ceremony, so no
-	// separate barrier-init call precedes it.
+	// An M-of-N `qrdb init` enrols the two officers and leaves the ceremony
+	// enrolling until both have claimed their envelopes.
+	type officer struct{ username, keyPath, certPath string }
+	officers := []*officer{{username: "alice"}, {username: "bob"}}
+	var officerFlags []string
+	for _, o := range officers {
+		csrPEM, key := generateCeremonyCSR(t, o.username)
+		o.keyPath = writeECPrivateKeyPEM(t, o.username+"-key.pem", key)
+		officerFlags = append(officerFlags, "--officers", o.username+"="+writeTempFile(t, o.username+".csr", csrPEM))
+	}
 	const soPin = "SOPIN12345"
-	node.bootAdmin(t, cli, soPin, "USERPIN12345", "--barrier-strategy", "none")
+	out = node.bootAdmin(t, cli, soPin, "USERPIN12345", append([]string{
+		"--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2",
+	}, officerFlags...)...)
+	var initResp transport.CeremonyInitializeResponse
+	decodeJSON(t, out, &initResp)
+	if len(initResp.Holders) != len(officers) {
+		t.Fatalf("qrdb init returned %d holders, want %d: %s", len(initResp.Holders), len(officers), out)
+	}
+	for i, o := range officers {
+		o.certPath = writeTempFile(t, o.username+"-cert.pem", []byte(initResp.Holders[i].CertPEM))
+	}
 
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
@@ -1007,8 +1034,8 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 		t.Fatalf("ceremony status (post-init): %v\noutput: %s", err, out)
 	}
 	decodeJSON(t, out, &status)
-	if status.State != "operational" {
-		t.Errorf("ceremony status post-init: state = %q, want %q", status.State, "operational")
+	if status.State != "enrolling" {
+		t.Errorf("ceremony status post-init: state = %q, want %q", status.State, "enrolling")
 	}
 	if status.SPKIPin == "" {
 		t.Errorf("ceremony status post-init: spki_pin should be non-empty")
@@ -1016,10 +1043,13 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 
 	csrPEM, _ := generateCeremonyCSR(t, "svc1")
 	csrPath := writeTempFile(t, "svc1.csr", csrPEM)
+	signCSR := func(username, pin string) (string, error) {
+		return runQRDB(t, cli, node.restArgsAdmin(),
+			"ceremony", "sign-csr", "--username", username, "--so-pin", pin,
+			"--csr-file", csrPath, "--role", "custodian")
+	}
 
-	out, err = runQRDB(t, cli, node.restArgsAdmin(),
-		"ceremony", "sign-csr", "--username", "svc1", "--so-pin", soPin,
-		"--csr-file", csrPath, "--role", "custodian")
+	out, err = signCSR("svc1", soPin)
 	if err != nil {
 		t.Fatalf("ceremony sign-csr with the correct SO PIN should succeed: %v\noutput: %s", err, out)
 	}
@@ -1027,14 +1057,38 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 		t.Errorf("ceremony sign-csr: expected a signed certificate in the output, got: %s", out)
 	}
 
-	out, err = runQRDB(t, cli, node.restArgsAdmin(),
-		"ceremony", "sign-csr", "--username", "svc2", "--so-pin", "wrong-pin",
-		"--csr-file", csrPath, "--role", "custodian")
+	out, err = signCSR("svc2", "wrong-pin")
 	if err == nil {
 		t.Fatalf("ceremony sign-csr with the wrong SO PIN should fail; output: %s", out)
 	}
 	if !strings.Contains(out, "invalid PIN") {
 		t.Errorf("expected pin.ErrPINInvalid from the PIN backend, got: %s", out)
+	}
+
+	// Every officer claims; the ceremony becomes operational and sign-csr,
+	// a pre-operational verb, is refused even with the correct SO PIN.
+	for _, o := range officers {
+		envelope := filepath.Join(t.TempDir(), o.username+".env")
+		if out, err := runQRDB(t, cli, node.restArgsIdentity(o.certPath, o.keyPath),
+			"barrier", "officer", "claim", "--username", o.username, "--key", o.keyPath, "--out", envelope); err != nil {
+			t.Fatalf("claim for %s: %v\noutput: %s", o.username, err, out)
+		}
+	}
+	out, err = runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "status", "--output", "json")
+	if err != nil {
+		t.Fatalf("ceremony status (after claims): %v\noutput: %s", err, out)
+	}
+	decodeJSON(t, out, &status)
+	if status.State != "operational" {
+		t.Fatalf("ceremony status after every claim: state = %q, want %q", status.State, "operational")
+	}
+
+	out, err = signCSR("svc3", soPin)
+	if err == nil {
+		t.Fatalf("ceremony sign-csr once operational should be refused; output: %s", out)
+	}
+	if !strings.Contains(out, "sign-csr requires") {
+		t.Errorf("expected the ceremony-state refusal, got: %s", out)
 	}
 }
 

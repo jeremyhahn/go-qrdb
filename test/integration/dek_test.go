@@ -208,14 +208,18 @@ func TestDEK_VersionsSurviveARestart(t *testing.T) {
 		"--tls-cert-file", certPath,
 		"--tls-key-file", keyPath,
 	}
-	start := func(prefix string) *exec.Cmd {
+	// boot is bootstrapNodes on the first start and unsealNodes on the
+	// restart: the barrier the first boot initialized survives the restart
+	// sealed.
+	start := func(prefix string, boot func(*testing.T, *testCA, ...int)) *exec.Cmd {
 		cmd := startNode(t, bin, args, prefix)
+		boot(t, ca, adminPorts[0])
 		waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 		waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 		return cmd
 	}
 
-	first := start("[dek-R1] ")
+	first := start("[dek-R1] ", bootstrapNodes)
 	aad := []byte("restart")
 	var v1, v2 transport.TenantDEKEncryptResponse
 	mustDEK(t, ca, adminPorts[0], http.MethodPost, "/v1/dek/encrypt",
@@ -235,7 +239,7 @@ func TestDEK_VersionsSurviveARestart(t *testing.T) {
 		t.Fatal("node did not stop")
 	}
 
-	start("[dek-R2] ")
+	start("[dek-R2] ", unsealNodes)
 	if got := decryptsOn(t, ca, adminPorts[0], v1.Ciphertext, aad); !bytes.Equal(got, []byte("one")) {
 		t.Errorf("v1 after restart decrypts to %q", got)
 	}

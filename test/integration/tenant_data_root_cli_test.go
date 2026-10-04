@@ -155,14 +155,10 @@ func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, sysClie
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
-	if _, uStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
-		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
-	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
-		t.Fatalf("create user for tenant %s: status %d", tenantID, uStatus)
-	}
-
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, tenantID)
+	createBoundUser(t, sysClient, adminPort,
+		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
+		tenantCertPath)
 	return restConnArgs(ca, tenantCertPath, tenantKeyPath, adminPort)
 }
 

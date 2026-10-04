@@ -117,8 +117,8 @@ func newRestartableCluster(t *testing.T, smType string) *restartableCluster {
 	return c
 }
 
-// start launches all three nodes and returns the leader's admin port once one
-// is elected.
+// start launches all three nodes, takes them through the sealed window, and
+// returns the leader's admin port once one is elected.
 func (c *restartableCluster) start(t *testing.T, round int) int {
 	t.Helper()
 	peers := buildPeersFlag(c.raftPorts)
@@ -140,6 +140,13 @@ func (c *restartableCluster) start(t *testing.T, round int) int {
 		}
 		args = append(args, c.nodeTLS[i]...)
 		c.cmds[i] = startNode(t, c.bin, args, fmt.Sprintf("[node%d-R%d] ", i+1, round))
+	}
+	// Round 1 is the cluster's first boot; every later round finds the
+	// barrier the first boot initialized, sealed again by the restart.
+	if round == 1 {
+		bootstrapNodes(t, c.ca, c.adminPorts...)
+	} else {
+		unsealNodes(t, c.ca, c.adminPorts...)
 	}
 	for i := range 3 {
 		waitForAdmin(t, c.ca.Pool, c.adminPorts[i], 90*time.Second)

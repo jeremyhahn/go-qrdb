@@ -90,12 +90,23 @@ func createTenant(t *testing.T, node *multiProtoNode, proto multiProtocol, id, n
 // provisionTenantIdentity grants a tenant's mTLS identity (CN=admin,
 // OU=tenantID; see (*testCA).generateClientCertForTenant) a role with the
 // given permissions and returns a client certificate/key pair for that
-// identity, ready to drive tenant-scoped CLI commands over any transport.
-// It uses the harness's system-admin identity (mtlsHTTPClient mints
+// identity, bound to it and ready to drive tenant-scoped CLI commands over
+// any transport. See provisionTenantIdentityFor.
+func provisionTenantIdentity(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string) (certPath, keyPath string) {
+	t.Helper()
+	certPath, keyPath = node.ca.generateClientCertForTenant(t, tenantID)
+	provisionTenantIdentityFor(t, node, tenantID, roleName, permissions, certPath)
+	return certPath, keyPath
+}
+
+// provisionTenantIdentityFor creates the tenant's admin user with a role
+// carrying permissions and binds the certificate at certPath to it, for a
+// caller that already presents that certificate. It uses the harness's
+// system-admin identity (mtlsHTTPClient presents the bound bootstrap admin,
 // CN=admin,OU=system) to create the role and user via the REST admin API --
 // this is setup plumbing (mirrors tenant_data_root_cli_test.go's
 // provisionTenantCLIIdentity), not the feature under test.
-func provisionTenantIdentity(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string) (certPath, keyPath string) {
+func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string, certPath string) {
 	t.Helper()
 	sysClient := mtlsHTTPClient(t, node.ca, 15*time.Second)
 
@@ -117,14 +128,9 @@ func provisionTenantIdentity(t *testing.T, node *multiProtoNode, tenantID, roleN
 		t.Fatalf("provisionTenantIdentity: decode role id: %v body=%s", err, roleBody)
 	}
 
-	if _, uStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", node.restPort),
+	createBoundUser(t, sysClient, node.restPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
-	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
-		t.Fatalf("provisionTenantIdentity: create user for tenant %s: status %d", tenantID, uStatus)
-	}
-
-	return node.ca.generateClientCertForTenant(t, tenantID)
+		certPath)
 }
 
 // tenantCLIArgsForProto returns the root-level qrdb CLI flags that select

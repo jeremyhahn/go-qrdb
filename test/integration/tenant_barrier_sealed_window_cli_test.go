@@ -108,10 +108,10 @@ func testSealedWindowLifecycleOverProtocol(t *testing.T, node *multiProtoNode, p
 	// feature under test). admin:health is required for the gRPC/QUIC/Unix
 	// SDK Connect-time Health RPC once the barrier is unsealed and RBAC
 	// resolves roles again.
-	provisionTenantIdentity(t, node, tenantID, "barrier-admin-"+proto.name, []string{
+	provisionTenantIdentityFor(t, node, tenantID, "barrier-admin-"+proto.name, []string{
 		"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:unseal", "tenant_barrier:seal",
 		"admin:health",
-	})
+	}, certPath)
 
 	out, err = tenantCLI("tenant", "barrier-status", "--id", tenantID)
 	if err != nil {

@@ -183,6 +183,7 @@ func startDrainNode(t *testing.T) *drainNode {
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[drain] ")
+	bootstrapNodes(t, ca, restPort)
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{restPort}, 60*time.Second)

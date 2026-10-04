@@ -382,12 +382,9 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
-	if _, uStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
+	createBoundUser(t, sysClient, adminPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
-	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
-		t.Fatalf("create user: status %d", uStatus)
-	}
+		tenantCert)
 
 	// The tenant's dedicated barrier starts unencrypted (read via the tenant's
 	// own client — it owns its barrier).

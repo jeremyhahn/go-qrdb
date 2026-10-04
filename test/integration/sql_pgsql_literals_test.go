@@ -42,7 +42,7 @@ const sqlStateCachedPlanChanged = "0A000"
 func TestSQL_PgSQL_StandardConformingStringsIsAdvertised(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 
 	params := conn.PgConn().ParameterStatus("standard_conforming_strings")
@@ -66,7 +66,7 @@ func TestSQL_PgSQL_StandardConformingStringsIsAdvertised(t *testing.T) {
 func TestSQL_PgSQL_BackslashesInLiteralsAreLiteral(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -124,7 +124,7 @@ func TestSQL_PgSQL_BackslashesInLiteralsAreLiteral(t *testing.T) {
 func TestSQL_PgSQL_TrailingBackslashCannotEscapeItsQuote(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -176,7 +176,7 @@ func TestSQL_PgSQL_TrailingBackslashCannotEscapeItsQuote(t *testing.T) {
 func TestSQL_PgSQL_CachedPlanResultTypeChange(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -249,7 +249,7 @@ func TestSQL_PgSQL_CachedPlanResultTypeChange(t *testing.T) {
 func TestSQL_PgSQL_BooleanAndTinyintAreDistinct(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -319,7 +319,7 @@ func TestSQL_PgSQL_BooleanAndTinyintAreDistinct(t *testing.T) {
 func TestSQL_PgSQL_CatalogIntrospection(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 

@@ -40,7 +40,9 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 const (
@@ -2354,6 +2356,96 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 	}
 	t.Fatalf("ceremony initialize on port %d never succeeded within 15s: %v", port, lastErr)
 	return "", ""
+}
+
+// bootstrapNodes takes freshly started "none"-strategy nodes through their
+// first boot. A node started without --auth-enabled=false comes up in the
+// sealed window, and "qrdb init" is the only system bootstrap (go-qrdb#548),
+// so each node in adminPorts waits for its sealed-window listener and then
+// runs the ceremony through initAndUnsealBarrier. The nodes run in parallel
+// because each node's system barrier is local and a cluster's first boot
+// needs every member's Raft host up; all of them receive this CA's one shared
+// bootstrap admin certificate, which the first node to finish first boot binds.
+func bootstrapNodes(t *testing.T, ca *testCA, adminPorts ...int) {
+	t.Helper()
+	forEachPort(adminPorts, func(port int) {
+		waitForBarrierStatusReachable(t, ca, port, 90*time.Second)
+		initAndUnsealBarrier(t, ca, port, "")
+	})
+}
+
+// unsealNodes unseals restarted "none"-strategy nodes whose barrier state
+// survived the restart, in parallel for the same reason bootstrapNodes is.
+// A restarted node is sealed again and its full server does not start until
+// its barrier is unsealed.
+func unsealNodes(t *testing.T, ca *testCA, adminPorts ...int) {
+	t.Helper()
+	forEachPort(adminPorts, func(port int) {
+		waitForBarrierStatusReachable(t, ca, port, 90*time.Second)
+		unsealOnlyBarrier(t, ca, port)
+	})
+}
+
+// createBoundUser creates a user through POST /users with client and then
+// enrols the certificate at certPath as that user's mTLS binding through
+// POST /users/{id}/cert-bindings. auth.mtls_binding_policy defaults to
+// "required", so a CA-issued certificate naming a user authenticates as that
+// user only once an administrator has bound it; this is the enrolment an
+// operator performs for every non-bootstrap identity. It returns the new
+// user's ID.
+func createBoundUser(t *testing.T, client *http.Client, port int, fields map[string]any, certPath string) uint64 {
+	t.Helper()
+	body, status := iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/users", port), fields)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("createBoundUser: create user: status %d, body: %s", status, body)
+	}
+	var created transport.User
+	if err := json.Unmarshal(body, &created); err != nil || created.ID == 0 {
+		t.Fatalf("createBoundUser: decode user: %v body=%s", err, body)
+	}
+	bindUserCert(t, client, port, created.ID, certPath)
+	return created.ID
+}
+
+// bindUserCert enrols the certificate at certPath as an mTLS binding of user
+// userID through POST /users/{id}/cert-bindings, bounded by the certificate's
+// own expiry. See createBoundUser.
+func bindUserCert(t *testing.T, client *http.Client, port int, userID uint64, certPath string) {
+	t.Helper()
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("bindUserCert: read %s: %v", certPath, err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		t.Fatalf("bindUserCert: %s holds no PEM block", certPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("bindUserCert: parse %s: %v", certPath, err)
+	}
+	url := fmt.Sprintf("https://127.0.0.1:%d/users/%d/cert-bindings", port, userID)
+	body, status := iraftAPIPost(t, client, url, map[string]any{
+		"thumbprint":     user.ComputeSPKIThumbprint(cert),
+		"not_after_unix": cert.NotAfter.Unix(),
+	})
+	if status != http.StatusOK {
+		t.Fatalf("bindUserCert: bind %s to user %d: status %d, body: %s", certPath, userID, status, body)
+	}
+}
+
+// forEachPort runs fn once per port, concurrently, and returns when every
+// call has returned.
+func forEachPort(ports []int, fn func(port int)) {
+	var wg sync.WaitGroup
+	for _, port := range ports {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn(port)
+		}()
+	}
+	wg.Wait()
 }
 
 // iraftAPIPost sends a JSON POST to the given URL using the provided client and

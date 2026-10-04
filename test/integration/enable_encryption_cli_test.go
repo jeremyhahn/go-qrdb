@@ -796,12 +796,9 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
-	if _, uStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
+	createBoundUser(t, sysClient, adminPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
-	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
-		t.Fatalf("create user: status %d", uStatus)
-	}
+		tenantCert)
 
 	if strategy, _, ok := tenantBarrierStatusJSON(t, tenantClient, adminPort, tenantID); !ok || strategy != "none" {
 		t.Fatalf("pre-migration tenant barrier strategy = %q (ok=%v), want none", strategy, ok)

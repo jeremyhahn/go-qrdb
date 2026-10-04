@@ -80,6 +80,7 @@ func startScopeNode(t *testing.T) scopeNode {
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[scope] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)

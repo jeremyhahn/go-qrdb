@@ -83,6 +83,7 @@ func startSingleNodeSQL(t *testing.T, stateMachine string) (adminPort, mysqlPort
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[sql-node] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
@@ -203,6 +204,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 		})
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for _, n := range c.nodes {
 		waitForHealthy(t, n.dataDir, 60*time.Second)
 		waitForAdmin(t, ca.Pool, n.adminPort, 90*time.Second)
@@ -210,7 +212,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
-	c.clientCert, c.clientKey = generateClientCert(t, ca, adminUser, adminTenant)
+	c.clientCert, c.clientKey = ca.boundAdminCert(t, t.TempDir())
 	return c
 }
 
@@ -409,7 +411,7 @@ func waitForPgSQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, 
 func TestSQL_MySQL_InsertAndSelect(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// INSERT a key-value pair.
@@ -436,7 +438,7 @@ func TestSQL_MySQL_InsertAndSelect(t *testing.T) {
 func TestSQL_MySQL_UpdateAndDelete(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// INSERT initial value.
@@ -491,7 +493,7 @@ func TestSQL_MySQL_UpdateAndDelete(t *testing.T) {
 func TestSQL_MySQL_SelectAll(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// INSERT multiple keys.
@@ -544,7 +546,7 @@ func TestSQL_MySQL_SelectAll(t *testing.T) {
 func TestSQL_PgSQL_InsertAndSelect(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -572,7 +574,7 @@ func TestSQL_PgSQL_InsertAndSelect(t *testing.T) {
 func TestSQL_PgSQL_UpdateAndDelete(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -620,7 +622,7 @@ func TestSQL_PgSQL_UpdateAndDelete(t *testing.T) {
 func TestSQL_PgSQL_SelectAll(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -683,9 +685,13 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 	// permissions. This mirrors TestIsolationRaft_EndToEnd's provisioning
 	// phase for the prefix-isolation tier.
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
-	for _, tc := range []struct{ tenantID, username string }{
-		{"tenant-a", "user-a"},
-		{"tenant-b", "user-b"},
+	// Two client certs with different tenant IDs (OU field), each bound to
+	// its user as it is created.
+	certA, keyA := generateClientCert(t, ca, "user-a", "tenant-a")
+	certB, keyB := generateClientCert(t, ca, "user-b", "tenant-b")
+	for _, tc := range []struct{ tenantID, username, certPath string }{
+		{"tenant-a", "user-a", certA},
+		{"tenant-b", "user-b", certB},
 	} {
 		body, status := iraftAPIPost(t, sysClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort),
@@ -720,24 +726,14 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 			t.Fatalf("create role for %s: could not decode role ID from: %s", tc.tenantID, roleBody)
 		}
 
-		userBody, userStatus := iraftAPIPost(t, sysClient,
-			fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
+		createBoundUser(t, sysClient, adminPort,
 			map[string]interface{}{
 				"username":  tc.username,
 				"email":     tc.username + "@" + tc.tenantID + ".example.com",
 				"tenant_id": tc.tenantID,
 				"role_ids":  []string{roleResp.ID},
-			},
-		)
-		if userStatus != http.StatusCreated && userStatus != http.StatusOK {
-			t.Fatalf("create user %s: status %d, body: %s", tc.username, userStatus, userBody)
-		}
-
+			}, tc.certPath)
 	}
-
-	// Create two client certs with different tenant IDs (OU field).
-	certA, keyA := generateClientCert(t, ca, "user-a", "tenant-a")
-	certB, keyB := generateClientCert(t, ca, "user-b", "tenant-b")
 
 	dbA := waitForMySQL(t, ca, certA, keyA, mysqlPort, "user-a")
 	dbB := waitForMySQL(t, ca, certB, keyB, mysqlPort, "user-b")

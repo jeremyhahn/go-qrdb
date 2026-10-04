@@ -190,6 +190,7 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *te
 		startNode(t, bin, args, prefix)
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
@@ -683,6 +684,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 		cmds[i] = cmd
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
@@ -770,7 +772,9 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 		})
 	}
 
-	// Phase 5: Wait for all nodes to become healthy.
+	// Phase 5: Unseal the restarted nodes and wait for all of them to become
+	// healthy.
+	unsealNodes(t, ca, adminPorts...)
 	for i := range 3 {
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
@@ -889,6 +893,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 		cmds[i] = cmd
 	}
 
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
@@ -949,6 +954,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 		})
 	}
 
+	unsealNodes(t, ca, adminPorts...)
 	for i := range 3 {
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}

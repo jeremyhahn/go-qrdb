@@ -151,15 +151,12 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 	if err := json.Unmarshal(roleBody, &role); err != nil || role.ID == "" {
 		t.Fatalf("decode role id: %s", roleBody)
 	}
-	if _, st := iraftAPIPost(t, sys, fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
+	certPath, keyPath := ca.generateClientCertForTenant(t, shardIDsTenantID)
+	createBoundUser(t, sys, leaderPort,
 		map[string]interface{}{
 			"username": "admin", "email": "admin@" + shardIDsTenantID + ".example.com",
 			"tenant_id": shardIDsTenantID, "role_ids": []string{role.ID},
-		}); st != http.StatusCreated && st != http.StatusOK {
-		t.Fatalf("create user: status %d", st)
-	}
-
-	certPath, keyPath := ca.generateClientCertForTenant(t, shardIDsTenantID)
+		}, certPath)
 	c := &shardIDsCluster{
 		adminPorts: adminPorts,
 		tenant:     mtlsHTTPClientFromFiles(t, ca, certPath, keyPath, 30*time.Second),

@@ -86,6 +86,7 @@ func startSingleNodeWithEtcd(t *testing.T) (adminPort, etcdPort int, ca *testCA)
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[etcd-node] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
@@ -587,6 +588,7 @@ func TestEtcd_TwoDatabases_Isolated(t *testing.T) {
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[etcd-iso] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)

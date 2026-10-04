@@ -198,20 +198,16 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role ID: %s", roleBody)
 	}
-	_, uStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
+	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, dwTenantID)
+	createBoundUser(t, sysClient, leaderPort,
 		map[string]interface{}{
 			"username": "admin", "email": "admin@" + dwTenantID + ".example.com", "tenant_id": dwTenantID,
 			"role_ids": []string{roleResp.ID},
-		})
-	if uStatus != http.StatusCreated && uStatus != http.StatusOK {
-		t.Fatalf("create user: status %d", uStatus)
-	}
+		}, tenantCertPath)
 
 	// ---------------------------------------------------------------------------
 	// Phase 3: create wal1 (dedicatedWal=true) and shared1 (dedicatedWal=false).
 	// ---------------------------------------------------------------------------
-	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, dwTenantID)
 	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCertPath, tenantKeyPath, 15*time.Second)
 
 	createDB := func(name string, dedicated bool) {

@@ -38,7 +38,7 @@ import (
 func TestSQL_MySQL_ModifyColumnLeavesTheTableIntact(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQLMVCC(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	mustExec := func(query string) {

@@ -120,10 +120,11 @@ func adminPostJSON(t *testing.T, client *http.Client, port int, path string, pay
 // same read permission every transport maps the ad-hoc SQL query surface
 // to, see pkg/auth/middleware/mapping.go), and a user bound to that role
 // whose username matches the CN of the mTLS client certificate the caller
-// will authenticate with. All calls are made as the SYSTEM tenant admin
-// identity, whose cross-tenant power (the system-tenant rule) is required
-// to provision another tenant's IAM records.
-func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminPort int, tenantID, username string) {
+// will authenticate with, and binds that certificate (certPath) to the user.
+// All calls are made as the SYSTEM tenant admin identity, whose cross-tenant
+// power (the system-tenant rule) is required to provision another tenant's
+// IAM records.
+func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminPort int, tenantID, username, certPath string) {
 	t.Helper()
 
 	adminPostJSON(t, adminClient, adminPort, "/v1/tenants", map[string]string{
@@ -146,12 +147,12 @@ func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminP
 		t.Fatalf("provisionTenantWithSQLReader: role create returned empty id (body: %s)", roleBody)
 	}
 
-	adminPostJSON(t, adminClient, adminPort, "/users", map[string]any{
+	createBoundUser(t, adminClient, adminPort, map[string]any{
 		"username":  username,
 		"email":     username + "@" + tenantID + ".example.com",
 		"tenant_id": tenantID,
 		"role_ids":  []string{role.ID},
-	}, http.StatusCreated)
+	}, certPath)
 }
 
 // startSingleNodeWithSQLDefaultDB is a variant of startSingleNodeWithSQL
@@ -195,6 +196,7 @@ func startSingleNodeWithSQLDefaultDB(t *testing.T) (adminPort, mysqlPort int, ca
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[sql-tenant-scope-node] ")
+	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
@@ -275,8 +277,8 @@ func TestSQL_REST_TenantScoping_MatchesWireProtocolNamespace(t *testing.T) {
 	// no statement-level authorization gate). Provision each tenant with a
 	// role granting exactly that read permission so the REST calls below
 	// are authorized.
-	provisionTenantWithSQLReader(t, adminClient, adminPort, "tenant-a", "user-a")
-	provisionTenantWithSQLReader(t, adminClient, adminPort, "tenant-b", "user-b")
+	provisionTenantWithSQLReader(t, adminClient, adminPort, "tenant-a", "user-a", certA)
+	provisionTenantWithSQLReader(t, adminClient, adminPort, "tenant-b", "user-b", certB)
 
 	// Seed each tenant's row through the MySQL wire protocol server, which
 	// scopes writes via the composite (tenant, database) namespace using

@@ -374,20 +374,14 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 		t.Fatalf("create role: could not decode role ID from response: %s", roleBody)
 	}
 
-	userBody, userStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
+	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, rebalMoveTenantID)
+	createBoundUser(t, sysClient, leaderPort,
 		map[string]interface{}{
 			"username":  "admin",
 			"email":     "admin@" + rebalMoveTenantID + ".example.com",
 			"tenant_id": rebalMoveTenantID,
 			"role_ids":  []string{roleResp.ID},
-		},
-	)
-	if userStatus != http.StatusCreated && userStatus != http.StatusOK {
-		t.Fatalf("create user: status %d, body: %s", userStatus, userBody)
-	}
-
-	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, rebalMoveTenantID)
+		}, tenantCertPath)
 	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCertPath, tenantKeyPath, 15*time.Second)
 
 	// ---------------------------------------------------------------------

@@ -238,20 +238,15 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	}
 	t.Logf("role created: id=%s", roleResp.ID)
 
-	t.Log("creating user 'admin' in tenant t1")
-	userBody, userStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
+	t.Log("creating user 'admin' in tenant t1, bound to the tenant certificate")
+	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, iraftTenantID)
+	createBoundUser(t, sysClient, leaderPort,
 		map[string]interface{}{
 			"username":  "admin",
 			"email":     "admin@" + iraftTenantID + ".example.com",
 			"tenant_id": iraftTenantID,
 			"role_ids":  []string{roleResp.ID},
-		},
-	)
-	if userStatus != http.StatusCreated && userStatus != http.StatusOK {
-		t.Fatalf("create user: status %d, body: %s", userStatus, userBody)
-	}
-	t.Logf("user created: status %d", userStatus)
+		}, tenantCertPath)
 
 	// ---------------------------------------------------------------------------
 	// Phase 4: Create the IsolationRaft database "db1" as tenant t1.
@@ -261,7 +256,6 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	// IsolationRaft path (placement scheduling + key delivery). A system admin
 	// cert (OU=system) would skip the IsolationRaft path entirely.
 	// ---------------------------------------------------------------------------
-	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, iraftTenantID)
 	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCertPath, tenantKeyPath, 15*time.Second)
 
 	t.Logf("creating database %q as tenant %q (IsolationRaft, RF=3)", iraftDBName, iraftTenantID)
