@@ -225,9 +225,14 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 	}
 
 	body, err := json.Marshal(map[string]any{
-		"so_pin":         "unseal-ceremony-so-pin",
-		"user_pin":       "unseal-ceremony-user-pin",
-		"secret":         secret,
+		"so_pin":   "unseal-ceremony-so-pin",
+		"user_pin": "unseal-ceremony-user-pin",
+		// []byte, not the bare string: CeremonyInitializeRequest.Secret is
+		// []byte (go-qrdb#560 review item 7), and encoding/json renders a
+		// []byte as base64 on marshal -- the wire shape the REST decoder on
+		// the other end expects. A bare string marshals as plain JSON
+		// text instead, which is not valid base64 and the decoder rejects.
+		"secret":         []byte(secret),
 		"admin_generate": true,
 	})
 	if err != nil {
