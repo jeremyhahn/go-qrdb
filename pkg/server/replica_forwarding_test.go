@@ -16,6 +16,7 @@ package server
 
 import (
 	"crypto/x509"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -38,10 +39,16 @@ func TestReplicaForwarding_ListenersTrustTheForwardingPool(t *testing.T) {
 	}
 }
 
-// TestReplicaForwarding_NoneWithoutTheOption: a server not told to forward
-// configures no listener to.
-func TestReplicaForwarding_NoneWithoutTheOption(t *testing.T) {
+// TestReplicaForwarding_NoneWithoutTheOptionOrAPool: a server not told to
+// forward configures no listener to, and neither does one with nothing to
+// verify a target against.
+func TestReplicaForwarding_NoneWithoutTheOptionOrAPool(t *testing.T) {
 	if _, ok := (&Server{}).replicaForwarding(); ok {
 		t.Fatal("a server without WithReplicaForwarding forwards")
+	}
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	WithReplicaForwarding(replicaforward.NewLocator(nil, replicaforward.NewLeaderCache(), "a:1", nil), time.Second)(&s.opts)
+	if _, ok := s.replicaForwarding(); ok {
+		t.Fatal("a server with no CA pool forwards")
 	}
 }

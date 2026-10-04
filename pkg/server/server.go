@@ -130,6 +130,10 @@ type Server struct {
 	// transports. Nil on any other server.
 	sealedListener sealedwindow.ListenerProbe
 
+	// forwardingUntrusted logs, once, that replica forwarding was asked for
+	// without a CA pool to verify a replica with.
+	forwardingUntrusted sync.Once
+
 	config      *config.Config
 	kvSvc       service.KVServicer
 	adminSvc    service.AdminServicer

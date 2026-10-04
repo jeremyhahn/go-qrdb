@@ -3090,6 +3090,15 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
 	allOpts := buildServerOpts(svcNode, n.dbManager, callerOpts, standalone)
+	fwdOpt, fwdErr := n.replicaForwardingOption(cfg, standalone, svcNode.PlacementStore, featureClient)
+	if fwdErr != nil {
+		_ = client.Close()
+		n.closeFeatureClient()
+		return fwdErr
+	}
+	if fwdOpt != nil {
+		allOpts = append(allOpts, fwdOpt)
+	}
 	if crypto.PINBackend == nil && n.sealPINBackend != nil {
 		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
 	}
