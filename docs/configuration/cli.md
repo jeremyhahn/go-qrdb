@@ -75,6 +75,8 @@ Feature-specific flags are documented in their own folders: `--mode`
 `--enable-pgsql` / `--sql-database` ([../sql/cli.md](../sql/cli.md)),
 `--dynamic-membership` / `--cluster-min-peers`
 ([../clustering/cli.md](../clustering/cli.md)),
+`--replica-forwarding` / `--replica-forwarding-timeout`
+([../replica-forwarding/cli.md](../replica-forwarding/cli.md)),
 `--threshold` / `--total` ([../firstboot/cli.md](../firstboot/cli.md)).
 
 ## Environment variables

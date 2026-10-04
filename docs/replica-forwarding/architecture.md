@@ -1,10 +1,9 @@
 # Replica Forwarding — Architecture
 
-> **Status: IN PROGRESS — contract for implementation; every decision is
-> ruled.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
+> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
 >
-> Identifiers marked *(new)* do not exist yet. The owner's rulings are
-> recorded under [Rulings](#rulings).
+> The owner's rulings are recorded under [Rulings](#rulings).
 
 ## The problem
 
@@ -13,7 +12,7 @@ placement record names: its **replicas**. A request for that database can
 arrive at any node, through any of six transports. A node that holds no
 replica must not serve the database from its own catalog. That started a
 single-node shard whose acknowledged writes the real replicas never saw.
-Today such a node refuses with `*placement.NotAReplicaError`
+Without forwarding, such a node refuses with `*placement.NotAReplicaError`
 (`UNAVAILABLE`, 503), which carries the replica set, and the client must
 redial a replica itself.
 
@@ -22,10 +21,10 @@ connect to one address and never learn the cluster's shape.
 
 ## The shape
 
-**A node that holds no replica forwards the request, once, to the database's
-replica leader, on the original caller's behalf, and returns the leader's
-answer.** The caller sees one request and one answer. When no leader can be
-found, the caller gets the typed `NotAReplicaError`, exactly as today.
+**A node that holds no replica forwards the request to a replica of the
+database, on the original caller's behalf, and returns that replica's
+answer.** The caller sees one request and one answer. When no replica serves
+it, the caller gets the typed `NotAReplicaError`, exactly as before.
 
 ```
 client ──► node C (no replica of acme/orders)
@@ -43,12 +42,22 @@ client ──► node C (no replica of acme/orders)
 
 **Leader discovery** reads the placement record. Its `LeaderReplicaID` names
 the replica that bootstrapped as leader; Raft may have elected another since.
-The first forward goes there. A replica that is not the leader answers a write
-with `NotLeaderError`, which names the current leader's Raft address. The
-forwarding node then makes **one** more forward to that address. A replica
-serves reads with the consistency the request asks for, so a read does not need
-the leader. If the first target is unreachable, the one retry goes to the next
-replica in placement order.
+The first forward goes there, or to the replica the leader cache names. A
+follower that cannot serve a write answers `NotLeaderError`, which names the
+current leader's Raft address, and the forwarding node makes **one** more
+forward, to that address or, when it names none, to the next replica in
+placement order. A follower that proposes the write to its leader itself
+simply serves it. A replica serves reads with the consistency the request asks
+for, so a read does not need the leader.
+
+The bound is on the targets that **answer**: at most two. A replica that is
+**unreachable** -- the request never left this node for it -- does not spend
+the retry; the forward moves to the next replica, each replica at most once.
+That is what lets a forward right after the leader died reach the new leader:
+the dead leader is skipped, the follower tried next names the new leader, and
+the one retry reaches it. A failure after the request may have reached a
+target -- a reset mid-answer, a timeout -- is never retried, because the
+target may have applied it.
 
 **Endpoint resolution** maps a replica's Raft address to its member record
 (`cluster.Member`, keyed by node, carrying `APIEndpoints` per protocol). The
@@ -59,16 +68,18 @@ membership (ruling 6).
 
 **A per-shard leader cache** (ruling 7) remembers, for each database shard,
 the replica the last successful forward reached and its resolved member
-endpoints. A hit skips the placement read and the member lookup. The cache
-never decides correctness, only where to try first:
+endpoints. A hit skips the member lookup. (The refusal that starts a forward
+has already read the placement.) The cache never decides correctness, only
+where to try first:
 
 - **On a forward's outcome.** A `NotLeader` naming a new leader updates the
   entry to that leader. A transport error, a `NotAReplica` from the target, or
   a `NotLeader` that names no leader evicts it.
-- **On a placement change.** The placement table's update path -- create,
-  drop, move, rebalance, replica add and remove -- invalidates the shard's
-  entry, and every node watches the placement keys and drops its own entry
-  when one changes. No node keeps forwarding to a replica a rebalance removed.
+- **On a placement change.** Every node watches the placement table -- create,
+  drop, move, rebalance, replica add and remove -- and drops the database's
+  entry when its placement changes. No node keeps forwarding to a replica a
+  rebalance removed. The table's change feed is the node's watch service over
+  the replicated keys, so each node sees a change as it applies it.
 - **On a member change.** A member record that changes (a new endpoint) or
   disappears (lease expiry) invalidates every entry pointing at that member.
 
@@ -84,30 +95,45 @@ carrying the caller's identity (subject and tenant, never roles), bound to the
 exact request and time-boxed. The target verifies the signature against the
 forwarding node's mTLS certificate, checks that certificate is a cluster node
 certificate, re-resolves the caller's roles from its own data, and authorizes
-the request as the caller. Today this works for REST writes to the system
-shard. This feature extends it to every network transport, and binds a
-non-HTTP request by protocol, method name and payload digest instead of HTTP
-method, path and body digest.
+the request as the caller. REST's write forwarding to the system leader
+already worked this way. This feature extends it to every network transport,
+and binds a non-HTTP request by protocol, method name and payload digest
+instead of HTTP method, path and body digest. A request with no authenticated
+caller is never forwarded: a node identity alone authorizes nothing.
 
 **Hop limit 1.** A forwarded request is never forwarded again. A target that
 finds it is not a replica either (a placement that changed in flight) refuses
 with `NotAReplicaError`. The forwarding node may spend its one retry, and then
-returns the refusal.
+returns its own refusal.
 
 ## Transports
 
 | Ingress transport | Forwards over | How |
 |---|---|---|
-| REST | REST | reverse-proxies the HTTP request to the target's REST endpoint, with the assertion headers |
-| gRPC | gRPC | a server interceptor re-invokes the same method with the same request message on a connection to the target's gRPC endpoint, assertion in metadata |
-| Unix socket | gRPC | the Unix socket serves the gRPC wire, so its interceptor is the gRPC one; it dials the target's gRPC endpoint |
-| QUIC | QUIC | relays the request frame (method, payload) to the target's QUIC API endpoint, assertion in the frame's metadata |
-| MCP | MCP | relays the JSON-RPC tool call to the target's MCP endpoint (streamable HTTP), assertion headers on the HTTP request |
-| Embedded | QUIC | the in-process client encodes the call as the QUIC request it would have sent, and sends it to the target's QUIC endpoint; QUIC is always present because it is Raft's transport |
+| REST | REST | a middleware around the router holds back the handler's JSON 503; when it is the refusal, it sends the request -- method, URI, the caller's whole body, headers less credentials -- to the target's REST endpoint with the assertion headers, and relays the answer |
+| gRPC | gRPC | the innermost unary interceptor re-invokes the same method with the same request message on a pooled connection to the target's gRPC endpoint, assertion in metadata, and relays the answer, its header and its trailer |
+| Unix socket | gRPC | the Unix socket serves the gRPC services, so it installs the gRPC interceptor; it dials the target's gRPC endpoint |
+| QUIC | QUIC | sends the target's QUIC endpoint a `forward.OnBehalf` request: an envelope of the caller's method and payload and the assertion. The frame format has no header, so the forward is a method of its own. The answer frame is relayed as is |
+| MCP | MCP | opens an MCP session to the target's MCP endpoint and calls the same tool with the same arguments; every HTTP request of the session carries an assertion bound to it |
+| Embedded | QUIC | *(pending)* the in-process client sends the call as the QUIC request it would have sent to the target's QUIC endpoint; QUIC is always present because it is Raft's transport |
 
 Node-to-node forwarding speaks REST, gRPC and QUIC at minimum (owner ruling).
-MCP forwards MCP-to-MCP. A target that does not advertise MCP gets the typed
-refusal, never a translated call.
+MCP forwards MCP-to-MCP. A target that does not advertise the protocol is
+skipped, and with no target left the caller gets the refusal, never a
+translated call.
+
+A forwarding node tells a target's **answer** from a failure on the way. REST
+and MCP take any HTTP response as the answer. On gRPC every listener marks the
+answer to a forwarded request with `x-qrdb-served-by`, which the forwarding
+node strips. On QUIC any answer frame is the target's. A target's refusal --
+not a replica either, or a follower naming its leader -- is told apart from
+every other answer by its structured reason (see [api.md](api.md)), so the
+forwarding node acts on it without parsing a message.
+
+A QUIC forward runs over a UDP socket **connected** to the target. A target
+whose process died then fails the connection's next keep-alive (the kernel's
+port-unreachable), the connection closes, and the next forward finds the
+target unreachable rather than writing into a connection nobody answers.
 
 **Streams are not forwarded.** Watch, the change feed and every other
 server-streaming or bidirectional call refuses with `NotAReplicaError`, which
@@ -121,16 +147,18 @@ holds no data for it.
    bypasses a check: a request the ingress node would refuse is refused there.
 2. The handler resolves the database's services. `RaftBackendFactory.Services`
    returns `*placement.NotAReplicaError`, which now also carries the
-   placement's `LeaderReplicaID` *(new field)*.
-3. The transport's forwarding layer catches that error before it is mapped to
-   a status. Given the error, the `replicaforward.Locator` *(new)* returns at most two
-   targets: the leader hint, then the retry candidate.
-4. The forwarding layer signs the assertion and sends the request to the first
-   target, then returns the target's answer verbatim: status, body, metadata.
-5. On `NotLeader` naming a leader, or on a transport failure, it sends once to
-   the second target. On anything else, or when targets run out, the caller
-   gets the target's answer, or the original `NotAReplicaError` if no target
-   could be reached.
+   placement's `LeaderReplicaID`.
+3. The transport's forwarding layer recognizes the refusal -- by its type, or
+   by the structured reason its own error mapping attached -- and signs the
+   assertion. `replicaforward.Locator.Forward` drives the forward: the cached
+   leader or the leader hint first, through the member records to the
+   protocol's endpoint.
+4. The forwarding layer sends the request and classifies the answer: served,
+   `NotLeader` (with the leader), `NotAReplica`, or unreachable.
+5. A served answer is relayed verbatim -- status, body, metadata -- with the
+   replica that served it. `NotLeader` or `NotAReplica` spends the one retry;
+   unreachable moves to the next replica. When no target serves, the caller
+   gets the original `NotAReplicaError`.
 
 ## Trust boundaries
 
@@ -147,9 +175,9 @@ holds no data for it.
   payload digest and expires after `forward.DefaultTTL` (30 s). A captured
   assertion replays only the identical request within that window, as today.
 - **A forwarded request is marked.** The assertion's presence is the hop
-  marker. A target never forwards a request that arrived with one, neither by
-  this feature nor by REST's existing write forwarding to a Raft leader. It
-  answers `NotLeader` instead, and the forwarding node spends its retry.
+  marker: a target never replica-forwards a request that arrived with one.
+  REST's existing write forwarding to the system leader keeps its own bounded
+  hop counter, unchanged.
 - **Tenant scope is unchanged.** The forwarding node resolves the placement
   only for the tenant the caller is authorized for. A caller cannot use
   forwarding to learn another tenant's replica set.
@@ -159,11 +187,13 @@ holds no data for it.
 | Piece | Package |
 |---|---|
 | `NotAReplicaError.LeaderReplicaID` | `pkg/placement` |
-| Target resolution (placement → member → endpoint) and the per-transport forward driver | `pkg/replicaforward` *(new)* |
-| Assertion signing and verification, generalized binding | `pkg/auth/forward` |
-| On-behalf verification per transport | `pkg/auth/middleware` (REST, MCP), `pkg/api/grpc` interceptor (gRPC, Unix), `pkg/api/quic` (QUIC) |
-| Forwarding layers | `pkg/api/rest`, `pkg/api/grpc`, `pkg/api/quic`, `pkg/api/mcp`, `sdk/go/transport/embedded` |
-| Endpoint advertisement | `pkg/cluster` (see decision D1) |
+| Target resolution (placement → member → endpoint), the leader cache, its invalidation, the structured refusal, metrics | `pkg/replicaforward` |
+| Assertion signing and verification, request bindings, the node signing identity | `pkg/auth/forward` |
+| On-behalf verification per transport | `pkg/auth/middleware`: REST and MCP (`AuthenticateHTTP`), gRPC and Unix (the unary interceptor), QUIC (`AuthenticateQUICOnBehalf`) |
+| Forwarding layers | `pkg/api/rest`, `pkg/api/grpc` (also the Unix socket's), `pkg/api/quic`, `pkg/api/mcp`; `sdk/go/transport/embedded` *(pending)* |
+| The placement table's change feed | `pkg/server/lifecycle` |
+| Composition | `cmd/qrdbd`, `sdk/go/node`, through `server.WithReplicaForwarding` |
+| Endpoint advertisement | `pkg/cluster` (ruling 6) |
 
 ## Alternatives rejected
 
@@ -204,6 +234,11 @@ From the owner, recorded verbatim in substance:
 
 1. Leader discovery: the placement record's `LeaderReplicaID` → the member's
    `APIEndpoints`, one bounded retry, `NotAReplicaError` if no leader is known.
+   The retry is spent by a target that answered; a replica that could not be
+   reached is skipped (see [Leader discovery](#the-shape)). That reading is
+   what the integration requirement to reach the new leader right after the
+   old one is killed needs, and it never sends a request that may have
+   applied a second time.
 2. Identity: the original caller, through the signed on-behalf
    `CallerAssertion`, on every network transport. Hop limit 1. Reads and
    writes both forward.

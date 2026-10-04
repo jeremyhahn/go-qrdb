@@ -11,6 +11,61 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Replica forwarding** (docs/replica-forwarding). A node that holds no
+  replica of a `raft`-isolated database forwards a request for it to a
+  replica, on the caller's behalf, and returns the replica's answer, instead
+  of refusing with `NotAReplicaError`. It works over REST, gRPC, the Unix
+  socket, QUIC and MCP; the embedded transport is still pending.
+  - The original caller travels as the signed on-behalf assertion, bound to
+    the request on every transport. The target re-authorizes the caller with
+    roles it resolves itself. A request with no authenticated caller is not
+    forwarded.
+  - Hop limit 1. At most two targets answer: a follower refusing a write
+    names the leader, and the one retry goes there. An unreachable replica
+    is skipped. A forward that failed after it may have reached a target is
+    never retried.
+  - Streams are refused with the replica set (MCP's bounded `qrdb_watch` is
+    forwarded).
+  - A per-shard leader cache, read lock-free, remembers where a forward was
+    served. A placement or member-record change invalidates it on every
+    node.
+  - Configured by `replica_forwarding.enabled` (default on) and
+    `replica_forwarding.timeout` (default `10s`), or `--replica-forwarding`
+    and `--replica-forwarding-timeout`. A server asked to forward without a
+    CA pool (`server.WithCACertPool`) forwards nothing and says so once.
+  - Metrics `qrdb_replica_forward_total{protocol,outcome}` and
+    `qrdb_replica_forward_duration_seconds{protocol}`.
+- **The replica refusal is structured on every transport.** A
+  `NotAReplicaError` carries its replica set, and a follower's `NotLeader`
+  carries its leader:
+  - REST: `code`/`metadata` in the error body;
+  - gRPC and the Unix socket: a `google.rpc.ErrorInfo` detail in domain
+    `qrdb.v1`;
+  - QUIC: the same detail in the error frame (`wire.ErrorPayload.Info`);
+  - MCP: the error envelope's `reason`/`metadata`.
+  `NotAReplicaError` also carries the placement's `LeaderReplicaID`.
+- **Every raft-mode node publishes its lease-backed member record** (Raft
+  address, API endpoints, liveness) through `cluster.Advertiser`, with or
+  without `--dynamic-membership`. This applies to `qrdbd` and to clustered
+  `sdk/go/node` nodes.
+- QUIC method `forward.OnBehalf`, served only to a cluster node, carries a
+  forwarded request: an envelope of the caller's method and payload, plus
+  the assertion. The frame format is unchanged.
+- `forward.SignCaller`, `forward.NodeIdentity` and `forward.RPCBinding` sign
+  and verify on-behalf assertions for any transport.
+  `AuthMiddleware.AuthenticateHTTP` and `AuthenticateQUICOnBehalf` verify
+  them on MCP and QUIC; the gRPC unary interceptor verifies them for gRPC
+  and the Unix socket.
+
+### Changed
+
+- **The placement table has a change feed.** `placement.Store.Watch` now
+  serves events on every node. Previously it answered
+  `ErrWatchUnsupported`, so the tenant shard reconciler fell back to a
+  five-second poll. It now reacts to each change as the node applies it.
+
 ### Fixed
 
 - **First boot could crash a node with `register role <name> failed: role: id

@@ -1,11 +1,11 @@
 # Replica Forwarding — Engineering
 
-> **Status: PROPOSED — contract for implementation.** · Scope: go-qrdb ·
-> Last verified: 2026-10-05
+> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
+> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
 >
-> Identifiers marked *(new)* do not exist yet. Identifiers not so marked were
-> grepped on the date above. Rulings 6 (member records on every raft node) and
-> 7 (the leader cache) are in [architecture.md](architecture.md#rulings).
+> Rulings 6 (member records on every raft node) and 7 (the leader cache) are
+> in [architecture.md](architecture.md#rulings). Identifiers marked
+> *(pending)* belong to the embedded transport and do not exist yet.
 
 ## Exported surface
 
@@ -20,158 +20,180 @@ type NotAReplicaError struct {
 	Replicas []Replica
 	// LeaderReplicaID is the placement's bootstrap leader -- a hint, not a
 	// fact: Raft may have elected another replica since. Zero when unknown.
-	LeaderReplicaID uint64 // (new)
+	LeaderReplicaID uint64
 }
 ```
 
-### `pkg/replicaforward` *(new)*
+### `pkg/replicaforward`
 
 ```go
-// Target is one node a request may be forwarded to.
-type Target struct {
-	ReplicaID uint64
-	RaftAddr  string
-	Endpoint  string // the target's API endpoint for the chosen protocol
-}
+// Locator resolves targets from the refusal, the member records and the
+// leader cache, and runs the bounded retry.
+func NewLocator(members MemberSource, cache *LeaderCache, selfRaftAddr string, logger *slog.Logger) *Locator
+func (l *Locator) Forward(ctx context.Context, refusal *placement.NotAReplicaError, proto cluster.APIProtocol, send SendFunc) (Target, error)
+func (l *Locator) Cache() *LeaderCache
 
-// MemberSource lists the cluster's member records (cluster.Member); the
-// MembershipStore already implements it.
-type MemberSource interface {
-	ListMembers(ctx context.Context) ([]cluster.Member, error)
-}
+// SendFunc forwards to one target over one transport and classifies the
+// answer; an error is a failure after the request may have reached t.
+type SendFunc func(ctx context.Context, t Target) (Result, error)
+type Target struct{ ReplicaID uint64; RaftAddr, Endpoint string }
+type Result struct{ Outcome Outcome; LeaderRaftAddr string }
+type Outcome uint8 // Served, NotLeader, NotAReplica, Unreachable
 
-// Locator turns a refusal into at most two targets for one protocol.
-type Locator struct{ /* members MemberSource; self string */ }
-
-func NewLocator(members MemberSource, selfRaftAddr string) *Locator
-
-// Targets returns the leader hint first, then the next replica in placement
-// order, skipping this node and any member that does not advertise proto.
-// No target is *NoForwardTargetError.
-func (l *Locator) Targets(ctx context.Context, refusal *placement.NotAReplicaError, proto cluster.APIProtocol) ([]Target, error)
-
-// Retry decides the second attempt from the first answer: the leader a
-// NotLeader names (resolved to its endpoint), otherwise the second target.
-func (l *Locator) Retry(ctx context.Context, first Target, leaderRaftAddr string, rest []Target, proto cluster.APIProtocol) (Target, bool)
-
-// LeaderCache is the per-shard leader hint (ruling 7): shard ID -> the
-// replica the last forward reached and its member endpoints. Reads are
-// lock-free (copy-on-write map behind an atomic.Pointer); writes serialize.
-type LeaderCache struct{ /* ... */ }
-
+// LeaderCache: shard ID -> the replica the last forward reached and its member
+// endpoints. Reads are lock-free (a copy-on-write map behind an
+// atomic.Pointer); writes serialize.
 func NewLeaderCache() *LeaderCache
 func (c *LeaderCache) Get(shardID uint64) (CachedLeader, bool)
 func (c *LeaderCache) Put(shardID uint64, leader CachedLeader)
 func (c *LeaderCache) Evict(shardID uint64)
-func (c *LeaderCache) EvictMember(replicaID uint64) // every entry pointing at it
+func (c *LeaderCache) EvictDatabase(tenantID, database string) // a placement event names the database
+func (c *LeaderCache) EvictMember(raftAddr string)              // every entry pointing at the member
+func (c *LeaderCache) Clear()
 
-type CachedLeader struct {
-	ReplicaID uint64
-	RaftAddr  string
-	Endpoints map[cluster.APIProtocol]string
+// RunInvalidation keeps a cache honest from the placement and member feeds
+// until ctx ends; Start builds a Locator with it running.
+func RunInvalidation(ctx context.Context, cache *LeaderCache, placements PlacementWatcher, members MemberWatcher, logger *slog.Logger)
+func Start(ctx context.Context, members Members, placements PlacementWatcher, selfRaftAddr string, logger *slog.Logger) *Locator
+
+// Config is one listener's forwarding: the Locator, the pool a target's
+// certificate is verified against, and the bound on one forward.
+type Config struct {
+	Locator *Locator
+	RootCAs *x509.CertPool
+	Timeout time.Duration // zero is DefaultTimeout (10s)
 }
 
-// Binding is what an assertion is bound to, for any transport.
-type Binding struct {
-	Protocol string // "rest", "grpc", "quic", "mcp"
-	Method   string // HTTP method, gRPC full method, QUIC method, MCP tool
-	Path     string // HTTP path; empty for the others
-	Digest   string // forward.BodyDigest of the payload as sent
-}
+// The structured refusal, carried beside the message on every transport.
+const ErrorDomain = "qrdb.v1"
+const ReasonNotAReplica, ReasonNotLeader = "NOT_A_REPLICA", "NOT_LEADER"
+func Refusal(err error) (reason string, md map[string]string, ok bool)
+func NotAReplicaMetadata(e *placement.NotAReplicaError) map[string]string
+func ParseNotAReplica(md map[string]string) (*placement.NotAReplicaError, error)
+func NotLeaderMetadata(leaderRaftAddr string) map[string]string
+func LeaderRaftAddr(md map[string]string) string
+
+const MetadataForwardedTo = "x-qrdb-forwarded-to" // on a relayed answer
+const MetadataServedBy = "x-qrdb-served-by"       // gRPC: the target's own answer
 ```
 
 ### `pkg/auth/forward`
 
 The assertion's `Method`/`Path`/`BodySHA256` fields keep their names and
 serialization. A non-HTTP binding stores `"<protocol>:<method>"` in `Method`
-and an empty `Path`, so REST assertions are byte-identical to today's. Two
-helpers are added:
+and an empty `Path`, so a REST assertion is byte-identical to one made before
+bindings were generalized.
 
 ```go
-func SignBinding(subject, tenantID string, b replicaforward.Binding, forwarderNodeID string, key crypto.Signer, now time.Time) (assertionB64, sigB64 string, err error) // (new)
-func VerifyBinding(assertionB64, sigB64 string, peer *x509.Certificate, trustDomain string, now time.Time, b replicaforward.Binding) (*CallerAssertion, error) // (new)
+type Binding struct{ Method, Path, BodySHA256 string }
+func HTTPBinding(method, requestURI string, body []byte) Binding
+func RPCBinding(protocol, method string, payload []byte) Binding
+func VerifyBinding(assertionB64, sigB64 string, peer *x509.Certificate, trustDomain string, now time.Time, b Binding) (*CallerAssertion, error)
+
+// SignCaller signs that caller made the bound request, as the node nodeID
+// holding key; a holder caller's assertion carries its profile. No caller or
+// no node identity is *ForwardUnsignedError.
+func SignCaller(caller *auth.Identity, b Binding, key crypto.Signer, nodeID string, now time.Time) (assertionB64, sigB64 string, err error)
+
+// NodeIdentity is the signing key and SPIFFE node id of a listener's TLS
+// identity certificate.
+func NodeIdentity(cfg *tls.Config) (crypto.Signer, string)
+
+const MetadataAssertion, MetadataSignature = "x-qrdb-on-behalf-assertion", "x-qrdb-on-behalf-sig"
 ```
 
-The carrier per transport:
+### `pkg/auth/middleware`
 
-| Transport | Assertion | Signature |
-|---|---|---|
-| REST, MCP | header `X-Qrdb-On-Behalf-Assertion` | header `X-Qrdb-On-Behalf-Sig` |
-| gRPC, Unix | metadata `x-qrdb-on-behalf-assertion` | metadata `x-qrdb-on-behalf-sig` |
-| QUIC | frame metadata key `on-behalf-assertion` *(new)* | `on-behalf-sig` *(new)* |
+```go
+func (m *AuthMiddleware) AuthenticateHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, *auth.Identity, error) // MCP
+func (m *AuthMiddleware) AuthenticateQUICOnBehalf(ctx context.Context, method string, payload []byte, assertion, sig string) (context.Context, error)
+func GRPCOnBehalfAssertion(ctx context.Context) (assertion, sig string, ok bool)
+func IsOnBehalf(identity *auth.Identity) bool
+```
 
-### Composition options *(new)*
+gRPC (and the Unix socket) verify in the unary auth interceptor, binding the
+full method and the request message serialized deterministically.
+
+### Transports
 
 | Option | Package |
 |---|---|
-| `WithReplicaForwarding(l *replicaforward.Locator, signer crypto.Signer, nodeID string)` | `pkg/api/rest`, `pkg/api/grpc`, `pkg/api/quic`, `pkg/api/mcp` |
-| `embedded.WithReplicaForwarding(l *replicaforward.Locator, dial QUICDialer)` | `sdk/go/transport/embedded` |
+| `WithReplicaForwarding(replicaforward.Config)` | `pkg/api/rest`, `pkg/api/grpc`, `pkg/api/quic`, `pkg/api/mcp`, `pkg/api/unix` |
+| `NewReplicaForwarder(cfg, nodeTLS) *ReplicaForwarder` | `pkg/api/grpc` (the Unix socket installs it) |
+| `server.WithReplicaForwarding(l *replicaforward.Locator, timeout)` | `pkg/server`: every listener, verifying targets against `WithCACertPool` |
+| `wire.MethodOnBehalf`, `wire.OnBehalf`, `wire.ErrorPayload.Info` | `pkg/api/quic/wire` |
+| `wire.ErrorPayload.Reason`, `.Metadata` | `pkg/api/mcp/wire` |
+| `embedded.WithReplicaForwarding` *(pending)* | `sdk/go/transport/embedded` |
 
-`pkg/server` wires all of them from the node's member store, its node key and
-its SPIFFE node id, in raft mode. Standalone mode has no replicas to forward
-to, and wires none.
+`cmd/qrdbd` and `sdk/go/node` compose forwarding on every raft-mode node with
+a placement table: `replicaforward.Start` over the node's membership store and
+placement table, handed to `server.WithReplicaForwarding`.
 
 ### Cache invalidation hooks
 
 | Event | Hook | Effect |
 |---|---|---|
-| a forward answered `NotLeader{leader}` | the forwarding layer | `Put` the named leader |
-| a transport error, `NotAReplica`, or `NotLeader` with no leader | the forwarding layer | `Evict(shard)` |
-| a placement record written or deleted (create, drop, move, rebalance, add/remove replica) | a Watch on the placement prefix (`__sys:placement/`), on every node | `Evict(shard)` |
-| a member record changed or expired | a Watch on `cluster.MembershipPrefix`, on every node | `EvictMember(replica)` |
+| a forward served | `Locator.Forward` | `Put` the target, with its member endpoints |
+| a target answered `NotLeader`, `NotAReplica`, was unreachable, or failed after the send | `Locator.Forward` | `Evict(shard)`; the retry that serves is `Put` |
+| a placement written or deleted | `RunInvalidation`, watching `__sys:placement/` on every node | `EvictDatabase` |
+| a member record changed or expired | `RunInvalidation`, watching `cluster.MembershipPrefix` on every node | `EvictMember(raft address)` |
 
-Both watches re-subscribe after a feed ends, as the membership manager's
-does. When a watch is down, the cache is cleared rather than trusted.
+Both watches re-subscribe 500 ms after a feed ends. While a feed is down the
+cache is cleared rather than trusted. The placement table's feed is
+`lifecycle`'s `placementKV`: the system KV adapter, `CompareAndSwap` kept,
+with `Watch` over the node's watch service. It also gives the tenant shard
+reconciler its watch path, which used to fall back to a five-second poll.
 
 ## Invariants
 
-1. **At most two forwards per request, never a forward of a forward.** An
-   ingress request carrying an assertion is never forwarded (the hop marker),
-   and the forwarding layer makes at most one retry.
+1. **At most two targets answer, and nothing is forwarded twice.** An ingress
+   request carrying an assertion is never forwarded (the hop marker). A
+   target that answers `NotLeader` or `NotAReplica` spends the one retry; an
+   unreachable one (the request never left this node) is skipped, each
+   replica at most once.
 2. **Authorization twice, as the caller both times.** Ingress authorizes
    before resolving services; the target authorizes the asserted caller with
-   roles it resolves itself. A node identity alone authorizes nothing.
+   roles it resolves itself. A request with no authenticated caller is not
+   forwarded: a node identity alone authorizes nothing.
 3. **The answer is the target's.** Status, body and metadata are relayed
-   unchanged, except hop-by-hop transport headers, so a caller cannot tell a
-   forwarded answer from a direct one. The only thing added is the response
-   header or metadata `x-qrdb-forwarded-to: <replica id>`.
-4. **Fail to the refusal, never to the local catalog.** Every failure to
-   forward ends in `NotAReplicaError` or the target's own error. Nothing falls
+   unchanged, except hop-by-hop headers and the caller's credentials, which a
+   forward does not carry. The only thing added is the replica that served it
+   (`x-qrdb-forwarded-to`), where the transport has metadata.
+4. **Fail to the refusal, never to the local catalog.** Every failure to find
+   a target ends in the ingress node's own `NotAReplicaError`. Nothing falls
    back to serving locally.
-5. **Streams refuse.** A streaming method is identified by its descriptor
-   (gRPC `StreamDesc`, the QUIC streaming method set, the REST watch routes,
-   embedded `Watch*`), and it returns the refusal without a forward.
-6. **Idempotence is the caller's.** A write whose forward timed out after the
-   target received it may have applied. The caller gets the transport error,
-   exactly as for a direct write that timed out. The retry is made only on
-   `NotLeader` (the write was not applied) or a connection that never opened,
-   never on a timeout after sending.
+5. **Streams refuse.** gRPC and Unix streaming methods have no forwarding
+   interceptor; REST's `GET /watch` is excluded by route; QUIC's
+   `watch.Watch`/`watch.WatchPrefix` are dispatched before the forwarding
+   point. MCP has no streams.
+6. **Idempotence is the caller's.** A forward that failed after the request
+   may have reached the target -- a reset mid-answer, a timeout -- returns
+   `*replicaforward.SendError` (or, on gRPC, the transport's status) and is
+   never retried. Unreachable means provably unsent: gRPC's connection never
+   became ready, REST's and MCP's request headers were never written, QUIC's
+   stream never opened.
+7. **Forwarding needs a CA pool.** A target's listener certificate is
+   verified against `server.WithCACertPool`; a server without one forwards
+   nothing.
 
 ## Error semantics
 
 | Error | When | Class |
 |---|---|---|
-| `*placement.NotAReplicaError` | no target, every target refused, or a streaming method | `Unavailable` (503), unchanged |
-| `*replicaforward.NoForwardTargetError{TenantID, Database, Protocol}` *(new)* | no replica advertises the protocol | wrapped by the returned `NotAReplicaError`'s log line; the caller sees `NotAReplicaError` |
-| `*forward.AssertionError` (existing family) | the target rejects an assertion | `PermissionDenied` (403); logged at ERROR on both nodes, because it means a misconfigured cluster CA or a forged hop |
-| target's own error | anything the target answers | relayed verbatim |
-
-On the wire, `NotAReplicaError` carries the replica set as structured data, so
-a client that must redial does not parse the message:
-
-- REST: `"replicas": [{"replica_id", "node_id", "endpoints": {...}}]` in the
-  error body;
-- gRPC: an `ErrorInfo` detail with reason `NOT_A_REPLICA` and metadata keys
-  `replica.<n>.node_id`;
-- QUIC: the error frame's metadata;
-- MCP: the JSON-RPC error `data`.
+| `*placement.NotAReplicaError` | no target served: none reachable, every one refused, forwarding off, no caller, or a stream | `Unavailable` (503), unchanged |
+| `*replicaforward.NoTargetServedError` | the Locator found no target that served | internal to the forwarding layer, which answers the refusal |
+| `*replicaforward.MemberLookupError` | the member records could not be read | as above |
+| `*replicaforward.SendError` | the forward failed after it may have reached a target | `Unavailable` (`DeadlineExceeded` when the caller's deadline passed) |
+| `*forward.ForwardUnsignedError` | no authenticated caller, or no node signing identity | logged; the caller gets the refusal |
+| `*replicaforward.RefusalDecodeError` | refusal metadata that does not decode | the refusal is answered as is |
+| the target's own error | anything the target answers | relayed verbatim |
 
 ## Configuration
 
 | Key | Default | Meaning |
 |---|---|---|
-| `cluster.replica_forwarding` | `true` in raft mode | turns forwarding off on this node; the node then always refuses with `NotAReplicaError` |
-| `cluster.replica_forwarding_timeout` | `10s` | bound on one forward, connection included |
+| `replica_forwarding.enabled` | `true` | forward on a raft-mode node with a placement table; `false` refuses with the replica set |
+| `replica_forwarding.timeout` | `10s` | bound on one forward, connection included; a connection gets half of it, so an unanswered handshake leaves time for the retry |
 
 There is no setting for the hop limit or the retry count. Both are part of
 the contract.
@@ -179,51 +201,48 @@ the contract.
 ## Persistence
 
 The leader cache is in memory, per node, and holds addresses only. Nothing
-about it is persisted or replicated.
-
-
-None of its own. The feature reads the placement table and the member records
-(`__sys:cluster/members/{node}`), both replicated. Under decision D1 (a),
-every raft node publishes its member record under a lease, as dynamic
-membership already does.
+about it is persisted or replicated. The feature reads the placement table
+and the member records (`__sys:cluster/members/{node}`), both replicated;
+every raft node publishes its member record under a lease (ruling 6).
 
 ## Test strategy
 
 **Unit:**
 
 - `pkg/replicaforward`: target ordering, skipping self and non-advertising
-  members, the retry choice for each answer shape, and no-target refusal.
-- `pkg/auth/forward`: binding round trips per protocol. A REST assertion is
-  byte-identical to today's. Each binding field is tamper-checked.
-- Each transport's forwarding layer, against a fake target server:
-  - forward and relay;
-  - hop marker refused;
-  - retry on `NotLeader`;
-  - retry on connection refused;
-  - no retry on a post-send timeout;
-  - streams refused.
+  members, the retry choice for each answer, unreachable replicas not
+  spending the retry, at most two answers, the refusal codec, the metrics.
+- `pkg/auth/forward`: binding round trips per protocol, every binding field
+  tamper-checked, REST assertions byte-identical, `SignCaller`,
+  `NodeIdentity`.
+- `pkg/auth/middleware`: on-behalf verification for gRPC, QUIC and the HTTP
+  path MCP uses.
+- Each transport's forwarding layer, against fake or real target listeners:
+  forward and relay as the caller, the hop marker, retry on `NotLeader`,
+  unreachable to the next replica, no retry after a send, the target's error
+  relayed, every replica refusing, no caller, streams refused. QUIC also: a
+  dead target's cached connection closes within a keep-alive.
 
-**Cache (unit, `pkg/replicaforward`):** a hit skips the placement read; a
-`NotLeader` updates the entry; a transport error evicts it; a placement-key
-event evicts the shard; a member event evicts the entries pointing at it; a
-watch outage clears the cache.
+**Cache (unit, `pkg/replicaforward`):** a hit skips the member lookup; a
+`NotLeader` updates the entry; a transport error evicts it; a placement event
+evicts the database; a member event evicts the entries pointing at it; a feed
+outage clears the cache. The placement table's feed is tested in
+`pkg/server/lifecycle` over a real watch hub.
 
-**Integration (`test/integration/`), one per transport, three nodes, RF=1 so
-two nodes hold no replica:**
+**Integration (`test/integration/replica_forwarding_*_test.go`), one command
+set over every network transport -- REST, gRPC, QUIC, MCP and the Unix socket:**
 
-- a write and a read through the non-replica node succeed, and the data is on
-  the replica;
-- the caller's own authorization applies: a caller without the permission is
-  refused at ingress, and a caller from another tenant is refused;
-- the placement's bootstrap leader is moved (leadership transfer), and the
-  forward still lands through the one retry;
-- the replica node is stopped, and the non-replica node answers the typed
-  refusal with the replica set, never a local answer;
-- with RF=3, the leader of the database's group is killed, and the next request
-  forwarded through a non-replica reaches the new leader (cache updated or
-  evicted, not trusted);
-- a stream (watch) through the non-replica node is refused with the replica
-  set.
+- three nodes, a single-replica database, so two nodes hold no replica:
+  - writes and reads through each non-replica reach the replica, as the
+    caller, and the answer names it;
+  - a caller without the permission, or from another tenant, is refused;
+  - a watch stream is refused with the replica set (MCP's bounded
+    `qrdb_watch` is forwarded);
+  - with the replica down, the non-replica answers the refusal naming it,
+    never a local answer;
+- four nodes, a three-replica database: the leader is killed, and the next
+  request forwarded through the non-replica is served by a surviving replica
+  and the new leader holds it.
 
 The same suite on a BYO-TLS cluster lands with the Key B lane (decision D2).
 
@@ -233,7 +252,9 @@ The same suite on a BYO-TLS cluster lands with the Key B lane (decision D2).
 |---|---|
 | `replicaforward: forwarded` (`tenant`, `database`, `protocol`, `target`, `attempt`) | DEBUG |
 | `replicaforward: no target` (`tenant`, `database`, `protocol`) | WARN |
-| `replicaforward: target rejected assertion` | ERROR |
+| `replicaforward: not forwarded` (no caller or no node identity) | WARN |
+| `replicaforward: invalidation feed down; leader cache cleared` | WARN |
+| `replica forwarding off: no CA pool …` (once per server) | WARN |
 
 | Metric | Meaning |
 |---|---|
