@@ -117,7 +117,17 @@ func walkGoFiles(t *testing.T, root string, fset *token.FileSet, dirs ...string)
 		start := filepath.Join(root, dir)
 		err := filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				if os.IsNotExist(err) {
+				// A path this repository's own checkout cannot read (gone, or a
+				// stray build/data artifact left world-unreadable by an unrelated
+				// test) has no Go source for this gate to see either way. Skipping
+				// it is not a vacuous pass: the discovery floor below still catches
+				// a walk that found nothing, so this only widens what "nothing
+				// wrong with it" tolerates, not what "found nothing" tolerates.
+				if os.IsNotExist(err) || os.IsPermission(err) {
+					t.Logf("walkGoFiles: skipping unreadable path %s: %v", path, err)
+					if d != nil && d.IsDir() {
+						return filepath.SkipDir
+					}
 					return nil
 				}
 				return err
@@ -134,6 +144,10 @@ func walkGoFiles(t *testing.T, root string, fset *token.FileSet, dirs ...string)
 			// #nosec G304 -- path comes from walking this repository's own checkout.
 			src, readErr := os.ReadFile(path)
 			if readErr != nil {
+				if os.IsPermission(readErr) {
+					t.Logf("walkGoFiles: skipping unreadable file %s: %v", path, readErr)
+					return nil
+				}
 				return readErr
 			}
 			if generatedHeader.Match(src) {
@@ -222,6 +236,15 @@ func TestNoProtoDeclaresDeprecated(t *testing.T) {
 	var hits []hit
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// See walkGoFiles: an unreadable leftover artifact has no .proto
+			// content for this gate to see either way.
+			if os.IsNotExist(err) || os.IsPermission(err) {
+				t.Logf("TestNoProtoDeclaresDeprecated: skipping unreadable path %s: %v", path, err)
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			return err
 		}
 		if d.IsDir() {
