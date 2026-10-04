@@ -23,16 +23,29 @@ import (
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
-// isCompletionCmd reports whether cmd is cobra built-in "completion"
-// command or one of its per-shell children (bash, zsh, fish, powershell).
-// Those only print a static script and must work with no daemon reachable.
+// isCompletionCmd reports whether cmd is the root's direct "completion"
+// child (cobra's built-in generator) or one of ITS direct children (bash,
+// zsh, fish, powershell). Those only print a static script and must work
+// with no daemon reachable. It is anchored exactly two levels below the
+// root rather than walking the whole parent chain, so a command elsewhere in
+// the tree that merely happens to be named "completion" does not also skip
+// client construction.
 func isCompletionCmd(cmd *cobra.Command) bool {
-	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "completion" {
-			return true
-		}
+	if cmd == nil {
+		return false
 	}
-	return false
+	root := cmd.Root()
+	if cmd == root {
+		return false
+	}
+	parent := cmd.Parent()
+	if parent == nil {
+		return false
+	}
+	if parent == root && cmd.Name() == "completion" {
+		return true
+	}
+	return parent.Parent() == root && parent.Name() == "completion"
 }
 
 // validLogLevels is the set of supported log levels for O(1) lookup.
