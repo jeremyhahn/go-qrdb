@@ -32,6 +32,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // multiProtocol describes a single CLI-selectable transport target. scheme
@@ -292,4 +294,164 @@ func waitForCLIProtoReady(t *testing.T, node *multiProtoNode, proto multiProtoco
 	}
 	t.Fatalf("[%s] timed out after %v waiting for transport to serve requests: %v\noutput: %s",
 		proto.name, timeout, lastErr, lastOut)
+}
+
+// selfIssuedCANode is a single-node qrdbd booted with NO --tls-* flags, so it
+// self-generates and retains its own cluster CA (Key A) in its data
+// directory, with every transport enabled and a full `qrdb init` ceremony
+// already completed -- barrier unsealed, CA minted, admin cert and default
+// roles created. It embeds *multiProtoNode so every existing
+// runCLIProto-based test helper works unmodified against it.
+//
+// This is the one harness in the package that can sign member-side CSR
+// joins at all: --cluster-join-enabled only starts the join listener/route
+// when the daemon holds the cluster CA's own private key
+// (cmd/qrdbd/start.go calls AdminService.SetClusterJoinTokenStore only
+// inside its `svcNode.ClusterCAProv != nil` branch), which a BYO-TLS node
+// (bundle.ExplicitTLS, every other harness in this package) never does --
+// see TestAdminJoinToken_CLI_BYOTLSRefusal, which proves the typed refusal
+// that gives this node its reason to exist.
+type selfIssuedCANode struct {
+	*multiProtoNode
+
+	// leafCertPath is the node's own TLS leaf certificate (node-cert.pem),
+	// the SAME certificate presented by every transport listener on this
+	// node, including the admin HTTPS listener adminURL names. Its SPKI pin
+	// (spkipin.ComputeSPKIPin) is what a joining node's
+	// --bootstrap-spki-pin / --bootstrap-addr (trust-anchor fetch) and
+	// --bootstrap-join-url (CSR submission) both pin against.
+	leafCertPath string
+
+	// adminURL is this node's admin HTTPS base URL (the SPKI/Direct join
+	// route, /v1/enroll/join, lives on it) -- what a real joining node's
+	// --bootstrap-addr / --bootstrap-join-url dial, and what this package's
+	// own clusterenroll.JoinCSRHTTP calls dial directly without spawning a
+	// second process.
+	adminURL string
+}
+
+// startSelfIssuedCAMultiProtocolNode boots a single-node qrdbd with every
+// transport enabled (REST, gRPC, QUIC, MCP, Unix), NO --tls-* flags (so the
+// daemon self-generates and retains its own cluster CA -- see
+// selfIssuedCANode's doc comment), and --cluster-join-enabled. It drives the
+// real CLI binary through the canonical bootstrap sequence -- `barrier init
+// --barrier-strategy none` to clear the sealed window, then a full `qrdb
+// init` ceremony -- exactly as officer_ceremony_cli_test.go's
+// TestCLI_Init_PassphraseHappyPath does for a single-transport node, then
+// confirms every one of the 5 transports is live before returning.
+func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
+	t.Helper()
+
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+	dataDir := t.TempDir()
+	cfgPath := writeSealYAML(t, "seal:\n  enabled: true\n  strategy: none\n")
+
+	// Unix socket paths are limited to ~108 bytes by the kernel and
+	// t.TempDir() can exceed that -- see startMultiProtocolNodeWithSM's
+	// identical rationale.
+	sockDir, err := os.MkdirTemp("", "qrdb-sica-")
+	if err != nil {
+		t.Fatalf("startSelfIssuedCAMultiProtocolNode: socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3) // admin (REST), grpc, mcp
+	restPort, grpcPort, mcpPort := tcpPorts[0], tcpPorts[1], tcpPorts[2]
+	quicPort := quicPorts[0]
+
+	args := []string{
+		"start",
+		"--config", cfgPath,
+		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
+		"--data-dir", dataDir,
+		"--sm", "mvcc",
+		"--discovery", "static",
+		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
+		"--shard-id", "1",
+		"--replica-id", "1",
+		"--admin-port", fmt.Sprintf("%d", restPort),
+		"--grpc-port", fmt.Sprintf("%d", grpcPort),
+		"--auth-enabled",
+		"--cluster-join-enabled",
+		"--enable-rest",
+		"--enable-grpc",
+		"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPort),
+		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
+		"--enable-unix", "--unix-socket-path", unixSocket,
+		// Deliberately no --tls-ca-file/--tls-cert-file/--tls-key-file: see
+		// selfIssuedCANode's doc comment.
+	}
+	startNode(t, bin, args, "[self-issued-ca] ")
+
+	caPath := filepath.Join(dataDir, "ca.pem")
+	caKeyPath := filepath.Join(dataDir, "ca-key.pem")
+	leafCertPath := filepath.Join(dataDir, "node-cert.pem")
+	adminCertPath := filepath.Join(dataDir, "admin-cert.pem")
+	adminKeyPath := filepath.Join(dataDir, "admin-key.pem")
+	waitForFile(t, caPath, 30*time.Second)
+	waitForFile(t, caKeyPath, 30*time.Second)
+	waitForFile(t, leafCertPath, 30*time.Second)
+	waitForFile(t, adminCertPath, 30*time.Second)
+	waitForFile(t, adminKeyPath, 30*time.Second)
+
+	// Adopt the CA NOW, before any of the bootstrap calls below run:
+	// confirmClusterCAPersisted (cmd/qrdbd/start.go) deletes ca-key.pem from
+	// disk the moment it confirms Key A durably replicated into the system
+	// store -- which races ahead of, and normally finishes well before,
+	// qrdb init below (see TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart
+	// for the same deletion observed directly). Only the CA certificate is
+	// actually needed afterward (trust, not signing), but the key must be
+	// read while it still exists.
+	ca, err := qrdbdharness.LoadCA(caPath, caKeyPath)
+	if err != nil {
+		t.Fatalf("startSelfIssuedCAMultiProtocolNode: adopt self-issued CA: %v", err)
+	}
+
+	adminURL := fmt.Sprintf("https://127.0.0.1:%d", restPort)
+	noAuthArgs := []string{"--server", adminURL, "--transport", "rest", "--ca-file", caPath, "--timeout", "20s"}
+	adminArgs := append(append([]string{}, noAuthArgs...), "--cert-file", adminCertPath, "--key-file", adminKeyPath)
+
+	// The sealed-window listener is REST-only and unauthenticated by
+	// design -- see officer_ceremony_cli_test.go's restArgsNoAuth doc
+	// comment -- so the bootstrap ceremony below always drives it over
+	// REST, regardless of which transports the fully-booted host will
+	// later serve.
+	pollUntilCLISucceeds(t, cli, noAuthArgs, 30*time.Second)
+	if out, err := runQRDB(t, cli, noAuthArgs, "barrier", "init", "--barrier-strategy", "none"); err != nil {
+		t.Fatalf("startSelfIssuedCAMultiProtocolNode: barrier init: %v\noutput: %s", err, out)
+	}
+
+	waitForHealthy(t, dataDir, 60*time.Second)
+	pollUntilCLISucceeds(t, cli, adminArgs, 60*time.Second)
+
+	if out, err := runQRDB(t, cli, adminArgs,
+		"init", "--so-pin", "SOPIN-selfissued-1", "--user-pin", "USERPIN-selfissued-1"); err != nil {
+		t.Fatalf("startSelfIssuedCAMultiProtocolNode: qrdb init: %v\noutput: %s", err, out)
+	}
+
+	n := &multiProtoNode{
+		cli:        cli,
+		ca:         &testCA{CA: ca},
+		dataDir:    dataDir,
+		clientCert: adminCertPath,
+		clientKey:  adminKeyPath,
+		unixSocket: unixSocket,
+		restPort:   restPort,
+		grpcPort:   grpcPort,
+		mcpPort:    mcpPort,
+		quicPort:   quicPort,
+	}
+
+	// Confirm every transport is actually serving before handing the node
+	// to callers, exactly as startMultiProtocolNodeWithSM does.
+	for _, proto := range multiProtocols {
+		waitForCLIProtoReady(t, n, proto, 60*time.Second)
+	}
+
+	return &selfIssuedCANode{multiProtoNode: n, leafCertPath: leafCertPath, adminURL: adminURL}
 }
