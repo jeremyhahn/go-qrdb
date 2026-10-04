@@ -19,6 +19,8 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 )
 
 // ---------------------------------------------------------------------------
@@ -212,6 +214,29 @@ func TestBackupService_CreateBackup_EncryptionWithoutKey(t *testing.T) {
 	}
 }
 
+// TestBackupService_CreateBackup_DefaultEncryptionWithoutKey is the
+// OWNER-RULING conformance scenario "default with no key is refused":
+// BackupOptions.Encryption left entirely EMPTY (never asked for encryption
+// at all) and no key supplied must be refused with the typed error that
+// names BOTH ways out, distinct from BackupEncryptionKeyRequiredError
+// (which fires only when aes256 was named explicitly).
+func TestBackupService_CreateBackup_DefaultEncryptionWithoutKey(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+
+	ctx := context.Background()
+	_, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/test",
+	})
+	if err == nil {
+		t.Fatal("expected error for the default encryption with no key")
+	}
+	var required *BackupEncryptionRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("expected BackupEncryptionRequiredError, got %T: %v", err, err)
+	}
+}
+
 func TestBackupService_CreateBackup_WithEncryption(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	svc := NewBackupService(provider)
@@ -227,6 +252,49 @@ func TestBackupService_CreateBackup_WithEncryption(t *testing.T) {
 	}
 	if info.Encryption != EncryptionAES256 {
 		t.Fatalf("expected encryption aes256, got %s", info.Encryption)
+	}
+}
+
+// TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores is the
+// OWNER-RULING conformance scenario "default with a key produces an
+// encrypted backup that restores": BackupOptions.Encryption left entirely
+// EMPTY (the default applies) with a key supplied succeeds, records
+// EncryptionAES256 (not merely "not none"), and the backup restores with
+// the matching decryption key.
+func TestBackupService_CreateBackup_DefaultEncryptionWithKeyRestores(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	key := []byte("secret-key-32-bytes-long-12345!")
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/default-encrypted",
+		EncryptionKey: key,
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup with the default encryption and a key: %v", err)
+	}
+	if created.Encryption != EncryptionAES256 {
+		t.Fatalf("Encryption = %q, want %q: the default must resolve to aes256, not merely survive validation", created.Encryption, EncryptionAES256)
+	}
+
+	// Restoring without a decryption key is refused, exactly as it would
+	// be for an explicitly-named aes256 backup.
+	if _, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID}); err == nil {
+		t.Fatal("RestoreBackup without a decryption key succeeded, want a refusal")
+	} else {
+		var keyRequired *BackupDecryptionKeyRequiredError
+		if !errors.As(err, &keyRequired) {
+			t.Fatalf("expected BackupDecryptionKeyRequiredError, got %T: %v", err, err)
+		}
+	}
+
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, DecryptionKey: key})
+	if err != nil {
+		t.Fatalf("RestoreBackup with the matching key: %v", err)
+	}
+	if result.ShardsRestored == 0 {
+		t.Fatal("RestoreBackup restored 0 shards, want the backup's full shard set")
 	}
 }
 
@@ -984,3 +1052,88 @@ func (*noopBackupServicer) VerifyBackup(context.Context, string) (*VerifyResult,
 }
 
 var _ BackupServicer = (*noopBackupServicer)(nil)
+
+// ---------------------------------------------------------------------------
+// Explicit-plaintext warn/audit (OWNER-RULING conformance scenario 3)
+// ---------------------------------------------------------------------------
+
+// TestBackupService_CreateBackup_ExplicitNoneAudits is the OWNER-RULING
+// conformance scenario "explicit none produces plaintext and warns or
+// audits": an explicit EncryptionNone choice must leave an audit record
+// when an audit logger is configured, distinct from the WARN log line
+// every such backup also gets regardless (that line is exercised
+// incidentally by every other EncryptionNone test in this file; this one
+// isolates the audit trail specifically).
+func TestBackupService_CreateBackup_ExplicitNoneAudits(t *testing.T) {
+	ring := audit.NewRingBuffer(0)
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider, WithAuditLogger(ring))
+
+	ctx := context.Background()
+	info, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/plaintext-audited",
+		Encryption:  EncryptionNone,
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup with explicit EncryptionNone: %v", err)
+	}
+
+	events := ring.Snapshot()
+	if len(events) != 1 {
+		t.Fatalf("audit log has %d events, want exactly 1 for the one explicit-plaintext backup", len(events))
+	}
+	ev := events[0]
+	if ev.Action != "backup.create" {
+		t.Fatalf("audit event Action = %q, want %q", ev.Action, "backup.create")
+	}
+	if ev.Outcome != audit.OutcomeSuccess {
+		t.Fatalf("audit event Outcome = %q, want %q", ev.Outcome, audit.OutcomeSuccess)
+	}
+	if ev.Resource != "backup:"+info.Destination {
+		t.Fatalf("audit event Resource = %q, want %q", ev.Resource, "backup:"+info.Destination)
+	}
+	if plaintext, _ := ev.Attributes["plaintext"].(bool); !plaintext {
+		t.Fatalf("audit event Attributes[plaintext] = %v, want true", ev.Attributes["plaintext"])
+	}
+	if encAttr, _ := ev.Attributes["encryption"].(string); encAttr != string(EncryptionNone) {
+		t.Fatalf("audit event Attributes[encryption] = %v, want %q", ev.Attributes["encryption"], EncryptionNone)
+	}
+}
+
+// TestBackupService_CreateBackup_EncryptedDoesNotAudit proves the audit
+// record is specific to the explicit-plaintext choice: a backup using the
+// default (encrypted) path must not emit one.
+func TestBackupService_CreateBackup_EncryptedDoesNotAudit(t *testing.T) {
+	ring := audit.NewRingBuffer(0)
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider, WithAuditLogger(ring))
+
+	ctx := context.Background()
+	if _, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/encrypted-not-audited",
+		EncryptionKey: []byte("secret-key-32-bytes-long-12345!"),
+	}); err != nil {
+		t.Fatalf("CreateBackup with the default encryption and a key: %v", err)
+	}
+
+	if events := ring.Snapshot(); len(events) != 0 {
+		t.Fatalf("audit log has %d events for an encrypted backup, want 0", len(events))
+	}
+}
+
+// TestBackupService_CreateBackup_ExplicitNoneWithoutAuditLoggerStillSucceeds
+// proves a nil audit logger (the default when WithAuditLogger is never
+// applied) disables emission without affecting the backup itself -- the
+// audit trail is an addition, never a precondition, for a surface with no
+// compliance logger configured.
+func TestBackupService_CreateBackup_ExplicitNoneWithoutAuditLoggerStillSucceeds(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := NewBackupService(provider)
+
+	if _, err := svc.CreateBackup(context.Background(), BackupOptions{
+		Destination: "/backups/plaintext-no-logger",
+		Encryption:  EncryptionNone,
+	}); err != nil {
+		t.Fatalf("CreateBackup with explicit EncryptionNone and no audit logger configured: %v", err)
+	}
+}
