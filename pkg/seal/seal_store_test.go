@@ -21,11 +21,11 @@ import (
 func newTestSealStore(t *testing.T, prefix string) *SealStore {
 	t.Helper()
 	store := NewMemoryBackend()
-	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+	b, err := NewStorageBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	ctx := context.Background()
 	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
@@ -43,11 +43,11 @@ func newTestSealStore(t *testing.T, prefix string) *SealStore {
 func newTestSealStoreWithBarrier(t *testing.T) (*SealStore, *StorageBarrier) {
 	t.Helper()
 	store := NewMemoryBackend()
-	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+	b, err := NewStorageBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	ctx := context.Background()
 	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
@@ -477,11 +477,11 @@ func TestSealStore_BarrierSealed_Reseal(t *testing.T) {
 
 func TestSealStore_NamespaceIsolation(t *testing.T) {
 	store := NewMemoryBackend()
-	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+	b, err := NewStorageBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	ctx := context.Background()
 	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {

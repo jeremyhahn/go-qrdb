@@ -136,7 +136,7 @@ func TestKVEngine_IndexCreate_LegacyCommandIsCaseSensitive(t *testing.T) {
 	})
 
 	// The deprecated encoder is exactly the pre-#34 wire shape.
-	cmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 	if got := lookupIndex(t, eng, "by_name", "alice"); got != 0 {

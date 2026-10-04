@@ -27,34 +27,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// newCertsCmd creates the "certs" command group with all certificate
-// management subcommands: generate, export, revoke, and list.
-//
-// TODO(human): superseded by the "ca" command group (newCACmd) and the
-// "certs" -> "ca" redirect stub (newCertsRedirectCmd, wired in root.go).
-// The subcommand builders below are still reused by ca.go; this top-level
-// aggregator is currently orphaned. Decide whether to delete it or
-// re-expose it before removing the nolint.
-//
-//nolint:unused // superseded by ca command group; retained pending human decision (see TODO above)
-func newCertsCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "certs",
-		Short: "Certificate management",
-		Long:  "Generate, export, revoke, and list mTLS client certificates.",
-	}
-
-	cmd.AddCommand(
-		newCertsGenerateCmd(),
-		newCertsExportCmd(),
-		newCertsRevokeCmd(),
-		newCertsListCmd(),
-	)
-
-	return cmd
-}
-
-// newCertsGenerateCmd creates the "certs generate" subcommand.
+// newCertsGenerateCmd creates the "certs generate" subcommand. Reused by
+// ca.go: the "certs" command group itself was removed (renamed to "ca"
+// per docs/08-bootstrap-auth-architecture.md §6), but these builders
+// remain the canonical implementation the "ca" subcommands wrap.
 func newCertsGenerateCmd() *cobra.Command {
 	var (
 		username string

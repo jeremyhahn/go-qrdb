@@ -21,7 +21,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -47,24 +46,6 @@ func WithMaxOpenFiles(n int) Option {
 	return func(o *pebble.Options) {
 		o.MaxOpenFiles = n
 	}
-}
-
-// WithEncryptingFS wraps the Pebble vfs.FS with seal/encfs so that
-// every file the database writes — sstables, WAL, manifest,
-// snapshots — is transparently encrypted using the supplied barrier
-// as the key-encryption-key. The barrier MUST already be unsealed
-// when the state machine factory is invoked; if it is sealed, file
-// open and creation operations return errors wrapping
-// seal.ErrSealed.
-//
-// If barrier is nil this is a no-op so existing tests and
-// non-encrypted deployments continue to work unchanged.
-//
-// Deprecated: prefer WithEncryptor(atrest.New(barrier)) which routes
-// through the single atrest.Encryptor authority. WithEncryptingFS is
-// kept for backward compatibility.
-func WithEncryptingFS(barrier *seal.StorageBarrier) Option {
-	return WithEncryptor(atrest.New(barrier))
 }
 
 // WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
@@ -167,7 +148,7 @@ type PebbleConfigurator func(*PebbleStateMachine)
 // NewPebbleCreateFuncWith returns a sm.CreateFunc that creates
 // PebbleStateMachine instances with both pebble-level options and
 // post-construction configurators applied. The pebble Options are
-// useful for wiring store.WithEncryptingFS so that the data-plane
+// useful for wiring store.WithEncryptor so that the data-plane
 // Pebble instance is opened on top of the seal/encfs vfs.
 func NewPebbleCreateFuncWith(pebbleOpts []Option, configurators ...PebbleConfigurator) sm.CreateFunc {
 	return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {

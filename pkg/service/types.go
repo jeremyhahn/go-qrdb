@@ -49,8 +49,9 @@ const (
 // ---------------------------------------------------------------------------
 
 // KeyValue is a versioned key-value pair with MVCC revision metadata.
-// The canonical definition lives in pkg/kv; this is a type alias for
-// backward compatibility within the service package.
+// The canonical definition lives in pkg/kv; this is a type alias so
+// callers can use the service package's facade without also importing
+// pkg/kv directly.
 type KeyValue = kv.KeyValue
 
 // ---------------------------------------------------------------------------
@@ -89,8 +90,9 @@ type Lease = lease.Lease
 // ---------------------------------------------------------------------------
 // Compare-and-swap (transactions)
 //
-// Canonical definitions live in pkg/lock to avoid the lock ↔ service import
-// cycle. These are type aliases for backward compatibility.
+// Canonical definitions live in pkg/lock to avoid the lock <-> service import
+// cycle. These are type aliases so the service package's facade does not
+// require callers to also import pkg/lock directly.
 // ---------------------------------------------------------------------------
 
 // CompareTarget selects which field of a key-value is compared in a

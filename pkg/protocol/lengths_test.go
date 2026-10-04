@@ -96,8 +96,12 @@ func TestEncoders_RefuseAnUnencodableName(t *testing.T) {
 		field string
 		call  func() ([]byte, error)
 	}{
-		{"EncodeIndexCreate/name", "index name", func() ([]byte, error) { return EncodeIndexCreate(long, "f", false, false, false) }},
-		{"EncodeIndexCreate/field", "index field", func() ([]byte, error) { return EncodeIndexCreate("n", long, false, false, false) }},
+		{"EncodeIndexCreate/name", "index name", func() ([]byte, error) {
+			return EncodeIndexCreateOpts(long, "f", IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})
+		}},
+		{"EncodeIndexCreate/field", "index field", func() ([]byte, error) {
+			return EncodeIndexCreateOpts("n", long, IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})
+		}},
 		{"EncodeIndexDrop", "index name", func() ([]byte, error) { return EncodeIndexDrop(long) }},
 		{"EncodeTSWrite", "metric", func() ([]byte, error) { return EncodeTSWrite(long, 0, 0, nil) }},
 		{"EncodeTSWritePoint", "metric", func() ([]byte, error) { return EncodeTSWritePoint(long, 0, 0, nil) }},

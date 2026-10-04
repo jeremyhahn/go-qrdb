@@ -141,7 +141,7 @@ func TestStoreDescriptorsMatchBehaviour(t *testing.T) {
 				statemachine.CapabilityKV:          performs(t, machine, 1, must(kv.EncodePut([]byte("watched"), []byte("v")))),
 				statemachine.CapabilityBatch:       performs(t, machine, 2, must(protocol.EncodeBatch([][]byte{batchOp}))),
 				statemachine.CapabilityTransaction: performs(t, machine, 3, must(protocol.EncodeTransaction([][]byte{txnCmp}, [][]byte{txnOp}, nil))),
-				statemachine.CapabilityIndex:       performs(t, machine, 4, must(protocol.EncodeIndexCreate("probe_idx", "f", false, false, false))),
+				statemachine.CapabilityIndex:       performs(t, machine, 4, must(protocol.EncodeIndexCreateOpts("probe_idx", "f", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))),
 				statemachine.CapabilityLease:       performs(t, machine, 5, must(protocol.EncodeLeaseGrant(30))),
 				statemachine.CapabilityTimeSeries:  performs(t, machine, 6, must(protocol.EncodeTSWrite("probe", time.Now().UnixNano(), 1, nil))),
 			}

@@ -255,28 +255,6 @@ func TestAuthFactorTransportUnsupportedError_ErrorsAs(t *testing.T) {
 // errors_canonical.go typed errors (all at 0 %)
 // ===========================================================================
 
-func TestCanonicalRedirectError_Error(t *testing.T) {
-	e := &CanonicalRedirectError{Old: "qrdb certs", New: "qrdb ca"}
-	got := e.Error()
-	if !strings.Contains(got, "qrdb certs") {
-		t.Fatalf("expected Old in message: %q", got)
-	}
-	if !strings.Contains(got, "qrdb ca") {
-		t.Fatalf("expected New in message: %q", got)
-	}
-}
-
-func TestCanonicalRedirectError_ErrorsAs(t *testing.T) {
-	var target *CanonicalRedirectError
-	e := &CanonicalRedirectError{Old: "old", New: "new"}
-	if !errors.As(e, &target) {
-		t.Fatal("expected errors.As to match")
-	}
-	if target.Old != "old" {
-		t.Fatalf("expected Old=%q, got %q", "old", target.Old)
-	}
-}
-
 func TestPendingBootstrapBackendError_Error(t *testing.T) {
 	e := &PendingBootstrapBackendError{Mode: "dane"}
 	got := e.Error()
@@ -745,41 +723,6 @@ func TestResolveAndValidateInitFlags_ValidShamir(t *testing.T) {
 	}
 	if err := resolveAndValidateInitFlags(cmd, f, "QRDB_TEST_NOOP"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// ===========================================================================
-// ceremony.go — newCeremonyInitCmd redirect (0 % for actual RunE)
-// ===========================================================================
-
-func TestCeremonyInitCmd_ReturnsCanonicalRedirectError(t *testing.T) {
-	cmd := newCeremonyInitCmd()
-	err := cmd.RunE(cmd, nil)
-	if err == nil {
-		t.Fatal("expected CanonicalRedirectError")
-	}
-	var cre *CanonicalRedirectError
-	if !errors.As(err, &cre) {
-		t.Fatalf("expected CanonicalRedirectError, got %T: %v", err, err)
-	}
-}
-
-// ===========================================================================
-// certs_redirect.go — newCertsRedirectCmd RunE (0 %)
-// ===========================================================================
-
-func TestCertsRedirectCmd_ReturnsCanonicalRedirectError(t *testing.T) {
-	cmd := newCertsRedirectCmd()
-	err := cmd.RunE(cmd, nil)
-	if err == nil {
-		t.Fatal("expected CanonicalRedirectError from certs redirect")
-	}
-	var cre *CanonicalRedirectError
-	if !errors.As(err, &cre) {
-		t.Fatalf("expected CanonicalRedirectError, got %T: %v", err, err)
-	}
-	if !strings.Contains(cre.New, "ca") {
-		t.Fatalf("expected 'ca' in redirect target: %q", cre.New)
 	}
 }
 
@@ -1637,17 +1580,6 @@ func TestNewBarrierRecoveryStatusCmd_IsNotNil(t *testing.T) {
 	}
 	if cmd.Use == "" {
 		t.Fatal("expected non-empty Use")
-	}
-}
-
-// ===========================================================================
-// certs.go — newCertsCmd (0% — only constructor/tree builder)
-// ===========================================================================
-
-func TestNewCertsCmd_IsNotNil(t *testing.T) {
-	cmd := newCertsCmd()
-	if cmd == nil {
-		t.Fatal("expected non-nil command")
 	}
 }
 

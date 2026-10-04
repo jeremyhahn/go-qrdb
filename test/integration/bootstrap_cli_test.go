@@ -31,8 +31,7 @@
 // behavior qrdb does not implement.
 //
 // Because root.go's PersistentPreRunE builds and connects the SDK client
-// BEFORE any subcommand's own RunE executes, and bootstrap's subcommands are
-// not annotated with annotationSkipClient, `qrdb bootstrap <mode>` still
+// BEFORE any subcommand's own RunE executes, `qrdb bootstrap <mode>` still
 // requires a reachable daemon on the selected protocol even though the
 // handler itself never uses the connection. This file reuses
 // multi_protocol_helpers_test.go's startMultiProtocolNode fixture (already

@@ -121,7 +121,7 @@ func TestMVCCEngine_IndexDoesNotSpanTenants(t *testing.T) {
 	// The name a namespaced index service composes for tenant-a's "sales"
 	// database: tenant.ComposeNamespace("tenant-a", "sales") + "users.email".
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 
 	applyMVCCPut(t, eng, 2, "tenant-a/sales/__col:sales:users/1", `{"email":"a@example.com"}`)
 	applyMVCCPut(t, eng, 3, "tenant-b/sales/__col:sales:users/2", `{"email":"b@example.com"}`)
@@ -137,7 +137,7 @@ func TestMVCCEngine_IndexQueryDoesNotReturnAnotherTenantsKeys(t *testing.T) {
 	eng := newScopedEngine(t)
 
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 	applyMVCCPut(t, eng, 2, "tenant-b/sales/__col:sales:users/2", `{"email":"victim@example.com"}`)
 
 	got, err := eng.Lookup(context.Background(), service.IndexQueryRequest{
@@ -163,7 +163,7 @@ func TestMVCCEngine_IndexDoesNotSpanDatabases(t *testing.T) {
 	eng := newScopedEngine(t)
 
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 
 	applyMVCCPut(t, eng, 2, "tenant-a/sales/__col:sales:users/1", `{"email":"in@example.com"}`)
 	applyMVCCPut(t, eng, 3, "tenant-a/hr/__col:hr:people/2", `{"email":"out@example.com"}`)
@@ -227,7 +227,7 @@ func TestMVCCEngine_IndexBackfillIsKeyScoped(t *testing.T) {
 	applyMVCCPut(t, eng, 2, "tenant-b/sales/__col:sales:users/2", `{"email":"b@example.com"}`)
 
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 3, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 3, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 
 	assertIndexed(t, eng, idxName, "tenant-a/sales/__col:sales:users/1")
 }
@@ -241,7 +241,7 @@ func TestMVCCEngine_UniqueIndexDoesNotRejectAnotherTenantsWrite(t *testing.T) {
 	eng := newScopedEngine(t)
 
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", true, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false})))
 
 	applyMVCCPut(t, eng, 2, "tenant-a/sales/u/1", `{"email":"shared@example.com"}`)
 
@@ -267,7 +267,7 @@ func TestMVCCEngine_DeleteDoesNotRetractAcrossScopes(t *testing.T) {
 	eng := newScopedEngine(t)
 
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 	applyMVCCPut(t, eng, 2, "tenant-a/sales/u/1", `{"email":"same@example.com"}`)
 
 	// tenant-b writes and deletes the same indexed value. Neither operation
@@ -286,7 +286,7 @@ func TestMVCCEngine_TransactionPathIsKeyScoped(t *testing.T) {
 	eng := newScopedEngine(t)
 
 	const idxName = "tenant-a/sales/users.email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 
 	ops := [][]byte{
 		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("tenant-a/sales/u/1"), []byte(`{"email":"in@example.com"}`), nil, 0)),
@@ -312,7 +312,7 @@ func TestMVCCEngine_UnscopedIndexRemainsShardWide(t *testing.T) {
 	eng := newScopedEngine(t)
 
 	const idxName = "by_email"
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 
 	applyMVCCPut(t, eng, 2, "anything/1", `{"email":"a@example.com"}`)
 	applyMVCCPut(t, eng, 3, "elsewhere/2", `{"email":"b@example.com"}`)
@@ -378,7 +378,7 @@ func TestKVEngine_IndexDoesNotSpanTenants(t *testing.T) {
 	const idxName = "tenant-a/sales/users.email"
 	applyKVEntries(t, eng, []sm.Entry{{
 		Index: 1,
-		Cmd:   mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)),
+		Cmd:   mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})),
 	}})
 
 	applyKVEntries(t, eng, []sm.Entry{
@@ -425,7 +425,7 @@ func TestKVEngine_IndexBackfillIsKeyScoped(t *testing.T) {
 	const idxName = "tenant-a/sales/users.email"
 	applyKVEntries(t, eng, []sm.Entry{{
 		Index: 3,
-		Cmd:   mustEncode(protocol.EncodeIndexCreate(idxName, "email", false, false, false)),
+		Cmd:   mustEncode(protocol.EncodeIndexCreateOpts(idxName, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})),
 	}})
 
 	assertKVIndexed(t, eng, idxName, "tenant-a/sales/u/1")
@@ -565,8 +565,8 @@ func TestBackfillRange(t *testing.T) {
 
 func TestAnyIndexInScope(t *testing.T) {
 	eng := newScopedEngine(t)
-	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreate("t/a/by_email", "email", false, false, false)))
-	applyOne(t, eng, 2, mustEncode(protocol.EncodeIndexCreate("t/b/by_email", "email", false, false, false)))
+	applyOne(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts("t/a/by_email", "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
+	applyOne(t, eng, 2, mustEncode(protocol.EncodeIndexCreateOpts("t/b/by_email", "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 
 	if !anyIndexInScope(eng.indexes, eng.indexScopes, []byte("t/b/u/1")) {
 		t.Error("a key inside one index's scope must be reported in scope")

@@ -527,7 +527,7 @@ func TestConcurrentStateMachine_IndexCreate_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	csm, _ := newConcurrentWithIndex(im)
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("email_idx", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -541,7 +541,7 @@ func TestConcurrentStateMachine_IndexCreate_ManagerError(t *testing.T) {
 	im := &mockIndexManager{createErr: errors.New("create fail")}
 	csm, _ := newConcurrentWithIndex(im)
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("email_idx", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from index manager")

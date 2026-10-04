@@ -462,7 +462,7 @@ func TestMVCCEngine_HandleBatch_UniqueViolation(t *testing.T) {
 	}
 
 	// Create a unique index.
-	idxCreateCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
+	idxCreateCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, results)
 
@@ -573,7 +573,7 @@ func TestMVCCEngine_ExecuteDecodedOp_DeleteWithIndex(t *testing.T) {
 	}
 
 	// Create an index and insert a value.
-	idxCreateCmd := mustEncode(protocol.EncodeIndexCreate("by_tag", "tag", false, false, false))
+	idxCreateCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_tag", "tag", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	r0 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, r0)
 
@@ -651,7 +651,7 @@ func TestMVCCEngine_HandleMVCCDelete_WithIndex(t *testing.T) {
 	}
 
 	// Register unique index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_code", "code", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_code", "code", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	r0 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, r0)
 
@@ -831,7 +831,7 @@ func TestMVCCEngine_HandleIndexCreate_ThenDrop(t *testing.T) {
 	}
 
 	// Create a unique index on the MVCC engine.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("mvcc_idx", "code", true, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("mvcc_idx", "code", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	r1 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, r1); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -858,7 +858,7 @@ func TestMVCCEngine_HandleIndexCreate_Idempotent(t *testing.T) {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("idem_idx", "f", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("idem_idx", "f", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	for i := 0; i < 2; i++ {
 		r := make([]sm.Result, 1)
 		if err := eng.Update(context.Background(), []sm.Entry{{Index: uint64(i + 1), Cmd: createCmd}}, r); err != nil {
@@ -913,7 +913,7 @@ func TestMVCCEngine_HandleBaseKVPut_UniqueViolation(t *testing.T) {
 	}
 
 	// Create a unique index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_sku", "sku", true, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_sku", "sku", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	r0 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, r0)
 
@@ -1070,7 +1070,7 @@ func TestKVEngine_HandleIndexCreate_Numeric(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
 	// numeric=true branch in handleIndexCreate.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("by_score", "score", false, false, true))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_score", "score", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: true}))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results); err != nil {
 		t.Fatalf("numeric index create: %v", err)
@@ -1355,7 +1355,7 @@ func TestMVCCEngine_MVCCPut_UniqueIndexViolation(t *testing.T) {
 	}
 
 	// Register a unique index via handleIndexCreate.
-	idxCreateCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
+	idxCreateCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, results)
 
@@ -1388,7 +1388,7 @@ func TestKVEngine_HandleIndexCreate_AlreadyExistsBoost(t *testing.T) {
 	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
 
@@ -1409,7 +1409,7 @@ func TestKVEngine_HandleIndexDrop_Existing(t *testing.T) {
 	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("drop_idx", "field", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("drop_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
 
@@ -1430,7 +1430,7 @@ func TestKVEngine_LookupIndexList(t *testing.T) {
 	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("list_idx", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("list_idx", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
 

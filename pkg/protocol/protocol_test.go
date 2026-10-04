@@ -1006,7 +1006,11 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := mustEncode(EncodeIndexCreate(tt.indexName, tt.fieldName, tt.unique, tt.sparse, tt.numeric))
+			encoded := mustEncode(EncodeIndexCreateOpts(tt.indexName, tt.fieldName, IndexCreateOptions{
+				Unique:  tt.unique,
+				Sparse:  tt.sparse,
+				Numeric: tt.numeric,
+			}))
 			if encoded[0] != OpIndexCreate {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpIndexCreate)
 			}
@@ -1016,9 +1020,9 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 				t.Fatalf("DecodeCommand: %v", err)
 			}
 
-			name, fieldName, unique, sparse, numeric, err := DecodeIndexCreate(cmd.Payload)
+			name, fieldName, opts, err := DecodeIndexCreateOpts(cmd.Payload)
 			if err != nil {
-				t.Fatalf("DecodeIndexCreate: %v", err)
+				t.Fatalf("DecodeIndexCreateOpts: %v", err)
 			}
 			if name != tt.indexName {
 				t.Errorf("name = %q, want %q", name, tt.indexName)
@@ -1026,14 +1030,14 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			if fieldName != tt.fieldName {
 				t.Errorf("fieldName = %q, want %q", fieldName, tt.fieldName)
 			}
-			if unique != tt.unique {
-				t.Errorf("unique = %v, want %v", unique, tt.unique)
+			if opts.Unique != tt.unique {
+				t.Errorf("unique = %v, want %v", opts.Unique, tt.unique)
 			}
-			if sparse != tt.sparse {
-				t.Errorf("sparse = %v, want %v", sparse, tt.sparse)
+			if opts.Sparse != tt.sparse {
+				t.Errorf("sparse = %v, want %v", opts.Sparse, tt.sparse)
 			}
-			if numeric != tt.numeric {
-				t.Errorf("numeric = %v, want %v", numeric, tt.numeric)
+			if opts.Numeric != tt.numeric {
+				t.Errorf("numeric = %v, want %v", opts.Numeric, tt.numeric)
 			}
 		})
 	}
@@ -1078,7 +1082,7 @@ func TestDecodeIndexCreate_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, _, _, err := DecodeIndexCreate(tt.payload)
+			_, _, _, err := DecodeIndexCreateOpts(tt.payload)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -2177,8 +2181,10 @@ func TestEncodedOpCodes(t *testing.T) {
 			wantOp: OpLeaseKeepAlive,
 		},
 		{
-			name:   "EncodeIndexCreate",
-			encode: func() []byte { return mustEncode(EncodeIndexCreate("idx", "field", true, false, false)) },
+			name: "EncodeIndexCreate",
+			encode: func() []byte {
+				return mustEncode(EncodeIndexCreateOpts("idx", "field", IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
+			},
 			wantOp: OpIndexCreate,
 		},
 		{
@@ -2571,7 +2577,7 @@ func TestEncodeLeaseKeepAlive_BufferSize(t *testing.T) {
 }
 
 func TestEncodeIndexCreate_BufferSize(t *testing.T) {
-	encoded := mustEncode(EncodeIndexCreate("idx", "fld", false, false, false))
+	encoded := mustEncode(EncodeIndexCreateOpts("idx", "fld", IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	// Expected: 1 (op) + 2 (nameLen) + 3 (name) + 2 (fieldLen) + 3 (field)
 	// + 1 (flags) + 2 (keyPrefixLen) + 0 (keyPrefix) + 2 (ownerLen) + 0
 	// (owner) = 16. The trailing key-scope prefix arrived with go-qrdb#410
@@ -2667,7 +2673,7 @@ func TestIndexCreate_FlagEncoding(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := mustEncode(EncodeIndexCreate("n", "f", tt.unique, tt.sparse, tt.numeric))
+			encoded := mustEncode(EncodeIndexCreateOpts("n", "f", IndexCreateOptions{Unique: tt.unique, Sparse: tt.sparse, Numeric: tt.numeric}))
 			// Flags byte precedes the trailing [keyPrefixLen:2][keyPrefix]
 			// (go-qrdb#410) and [ownerLen:2][owner] (go-qrdb#426) blocks,
 			// both empty here.

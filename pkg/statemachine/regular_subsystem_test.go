@@ -618,7 +618,7 @@ func TestRegularStateMachine_IndexCreate_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	rsm := newRegularWithIndex(im)
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("email_idx", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -634,7 +634,7 @@ func TestRegularStateMachine_IndexCreate_ManagerError(t *testing.T) {
 	}
 	rsm := newRegularWithIndex(im)
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("email_idx", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from index manager")

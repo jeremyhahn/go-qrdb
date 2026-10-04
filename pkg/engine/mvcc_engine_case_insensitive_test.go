@@ -120,7 +120,7 @@ func TestMVCCEngine_IndexCreate_DefaultIsCaseSensitive(t *testing.T) {
 
 			// The deprecated encoder is the pre-#34 wire shape, so this also
 			// covers replay of an existing Raft log.
-			cmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+			cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 			applyMVCCEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 			if got := mvccLookupIndex(t, eng, "by_name", "Alice"); got != 1 {

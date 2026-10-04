@@ -55,7 +55,7 @@ func benchEngine(b *testing.B, indexCount int) *MVCCEngine {
 	results := make([]sm.Result, 1)
 	for i := 0; i < indexCount; i++ {
 		name := "tenant-" + strconv.Itoa(i) + "/sales/users.email"
-		cmd, err := protocol.EncodeIndexCreate(name, "email", false, false, false)
+		cmd, err := protocol.EncodeIndexCreateOpts(name, "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})
 		if err != nil {
 			b.Fatalf("EncodeIndexCreate: %v", err)
 		}

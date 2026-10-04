@@ -271,7 +271,7 @@ func TestKVDispatch_IndexCreate(t *testing.T) {
 	idx := &kvMockIndexManager{}
 	k := newTestKVSM(WithKVIndexManager(idx))
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("test-idx", "field1", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("test-idx", "field1", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

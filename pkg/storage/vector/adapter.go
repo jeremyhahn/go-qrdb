@@ -25,7 +25,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
@@ -54,20 +53,6 @@ type PebbleVectorStorage struct {
 
 // StorageOption configures a PebbleVectorStorage instance.
 type StorageOption func(*pebble.Options)
-
-// WithBarrier wraps the Pebble vfs.FS with seal/encfs so that every file
-// the vector store writes is transparently encrypted under the supplied
-// StorageBarrier. The barrier must already be unsealed when the storage is
-// opened. A nil barrier is a no-op — the store opens in plaintext mode,
-// which is the default and is appropriate for tests and non-encrypted
-// deployments.
-//
-// Deprecated: prefer WithEncryptor(atrest.New(barrier)) which routes
-// through the single atrest.Encryptor authority. WithBarrier is kept for
-// backward compatibility.
-func WithBarrier(barrier *seal.StorageBarrier) StorageOption {
-	return WithEncryptor(atrest.New(barrier))
-}
 
 // WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
 // with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose

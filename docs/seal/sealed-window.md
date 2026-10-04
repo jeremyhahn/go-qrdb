@@ -322,7 +322,7 @@ restructures the boot sequence as follows:
    the unseal flow can find its key material.
 2. The state-machine factory (`store.NewMVCCCreateFuncWith` /
    `store.NewPebbleCreateFuncWith`) is built with
-   `store.WithEncryptingFS(barrier)` as its first pebble option, so
+   `store.WithEncryptor(atrest.New(barrier))` as its first pebble option, so
    when `initializeNode` later opens the data-plane Pebble it does
    so on top of the encfs `vfs.FS`.
 3. While `barrier.IsSealed()` is true, `awaitUnseal` brings up the

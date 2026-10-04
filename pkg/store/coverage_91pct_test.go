@@ -334,12 +334,12 @@ func TestPebbleStateMachine_IndexCreate_AlreadyExists(t *testing.T) {
 	s := openExtendedStore(t)
 
 	// Create the index once.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("dup_idx", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("dup_idx", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Create again with the same name — should succeed (idempotent) or error
 	// but not panic. The important thing is we exercise that code path.
-	createCmd2 := mustEncode(protocol.EncodeIndexCreate("dup_idx", "name", false, false, false))
+	createCmd2 := mustEncode(protocol.EncodeIndexCreateOpts("dup_idx", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 2, Cmd: createCmd2}}
 	results := make([]sm.Result, 1)
 	_ = s.Update(context.Background(), entries, results)
@@ -351,7 +351,7 @@ func TestPebbleStateMachine_IndexCreate_AlreadyExists(t *testing.T) {
 func TestPebbleStateMachine_IndexDrop_ExistingIndex(t *testing.T) {
 	s := openExtendedStore(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("drop_idx", "age", false, false, true))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("drop_idx", "age", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: true}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	dropCmd := mustEncode(protocol.EncodeIndexDrop("drop_idx"))

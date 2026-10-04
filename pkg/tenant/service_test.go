@@ -133,7 +133,7 @@ func testSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierRegistry {
 	t.Helper()
 	store := seal.NewMemoryBackend()
-	system, err := seal.NewBarrier(testLogger(), store, seal.BarrierConfig{
+	system, err := seal.NewStorageBarrier(testLogger(), store, seal.BarrierConfig{
 		RootKeyPath: "system/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {

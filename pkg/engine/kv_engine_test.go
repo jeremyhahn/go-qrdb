@@ -449,7 +449,7 @@ func TestKVEngine_CloseWithIndexes(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create an index via extended protocol.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -543,7 +543,7 @@ func TestKVEngine_IndexCreate(t *testing.T) {
 	})
 
 	// Create index -- backfill should find existing data.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 3, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -570,7 +570,7 @@ func TestKVEngine_IndexCreateDuplicate(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -596,7 +596,7 @@ func TestKVEngine_IndexDrop(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create index.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -647,8 +647,8 @@ func TestKVEngine_IndexList(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create two indexes.
-	cmd1 := mustEncode(protocol.EncodeIndexCreate("idx_a", "field_a", false, false, false))
-	cmd2 := mustEncode(protocol.EncodeIndexCreate("idx_b", "field_b", false, false, false))
+	cmd1 := mustEncode(protocol.EncodeIndexCreateOpts("idx_a", "field_a", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
+	cmd2 := mustEncode(protocol.EncodeIndexCreateOpts("idx_b", "field_b", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd1}, {Index: 2, Cmd: cmd2}}
 	results := make([]sm.Result, 2)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -703,7 +703,7 @@ func TestKVEngine_IndexScan(t *testing.T) {
 	})
 
 	// Create index.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 4, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -893,7 +893,7 @@ func TestKVEngine_BatchWithIndexes(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create index first.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -961,7 +961,7 @@ func TestKVEngine_PutWithIndexAndWatch(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVWatchHub(hub))
 
 	// Create index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1012,7 +1012,7 @@ func TestKVEngine_DeleteWithIndexAndWatch(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVWatchHub(hub))
 
 	// Create index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1162,7 +1162,7 @@ func TestKVEngine_BatchDeleteWithIndex(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create index and put data.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1299,7 +1299,7 @@ func TestKVEngine_WithPebbleDB(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVPebbleDB(db))
 
 	// Create index -- should use PebbleIndex.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1329,7 +1329,7 @@ func TestKVEngine_WithPebbleDB_IndexQuery(t *testing.T) {
 		kvPutEntry(1, "u:1", `{"name":"alice"}`),
 	})
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1919,7 +1919,7 @@ func TestKVEngine_HandleIndexCreate_WithLogger(t *testing.T) {
 	})
 
 	// Create index via extended protocol -- engine uses the injected logger.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_color", "color", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_color", "color", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1950,7 +1950,7 @@ func TestKVEngine_HandleIndexCreate_AlreadyExists(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	// First create.
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
@@ -2055,7 +2055,7 @@ func TestKVEngine_Close_ClosesIndexes(t *testing.T) {
 	}
 
 	// Also create a protocol-level index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_age", "age", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_age", "age", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {

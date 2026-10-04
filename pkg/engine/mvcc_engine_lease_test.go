@@ -48,7 +48,7 @@ func TestMVCCEngine_LeaseRevoke_RetractsIndexes(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	applyLeaseCmd(t, eng, 1, mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false)))
+	applyLeaseCmd(t, eng, 1, mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false})))
 	id := int64(applyLeaseCmd(t, eng, 2, mustEncode(protocol.EncodeLeaseGrant(60))).Value)
 	applyLeaseCmd(t, eng, 3, mustEncode(protocol.EncodeMVCCPut([]byte("user:1"), []byte(`{"name":"alice"}`), id)))
 	applyLeaseCmd(t, eng, 4, mustEncode(protocol.EncodeLeaseRevoke(id)))

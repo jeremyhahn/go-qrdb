@@ -297,20 +297,15 @@ func TestCLICAInfoAndBundleHelpIsAccurate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. certs redirect
+// 4. certs removed
 // ---------------------------------------------------------------------------
 
-// TestCLIMultiProtocolCertsRedirect verifies that the legacy "qrdb certs"
-// command tree is a stub that always fails with the canonical redirect
-// error pointing operators at "qrdb ca", across all protocols (the redirect
-// command still builds an SDK client via PersistentPreRunE before its RunE
-// fires, so a reachable server is required).
-func TestCLIMultiProtocolCertsRedirect(t *testing.T) {
+// TestCLIMultiProtocolCertsRemoved verifies that the renamed "qrdb certs"
+// command tree (now "qrdb ca") is gone outright: cobra reports it as an
+// unknown command rather than a redirect stub, across all protocols.
+func TestCLIMultiProtocolCertsRemoved(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
-
-	wantErr := "subcommand 'qrdb certs' has been replaced by 'qrdb ca' " +
-		"(per docs/08-bootstrap-auth-architecture.md §6). Run: qrdb ca"
 
 	for _, proto := range AllProtocols() {
 		t.Run(string(proto), func(t *testing.T) {
@@ -321,10 +316,10 @@ func TestCLIMultiProtocolCertsRedirect(t *testing.T) {
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "certs", "list")
 			assertError(t, err, fmt.Sprintf("[%s] qrdb certs list should fail", proto))
 			output := stdout + stderr
-			assertContains(t, output, wantErr,
-				fmt.Sprintf("[%s] qrdb certs list should emit the canonical redirect message", proto))
+			assertContains(t, output, "unknown command",
+				fmt.Sprintf("[%s] qrdb certs list should report an unknown command, not a redirect", proto))
 
-			t.Logf("[%s] certs redirect passed", proto)
+			t.Logf("[%s] certs removal confirmed", proto)
 		})
 	}
 }

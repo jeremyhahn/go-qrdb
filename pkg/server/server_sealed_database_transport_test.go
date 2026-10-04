@@ -44,7 +44,7 @@ func newSealedDBBarrierManager(t *testing.T) *database.DatabaseBarrierManager {
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
-	system, err := seal.NewBarrier(logger, seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	system, err := seal.NewStorageBarrier(logger, seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}

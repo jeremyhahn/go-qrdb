@@ -26,7 +26,7 @@ var errStorageInject = errors.New("injected storage error")
 // on an unsealed barrier with valid plaintext.
 func TestStorageBarrier_Encrypt_Success(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -50,7 +50,7 @@ func TestStorageBarrier_Encrypt_Success(t *testing.T) {
 // ErrSealed when the barrier is sealed.
 func TestStorageBarrier_Encrypt_ErrSealed(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -67,7 +67,7 @@ func TestStorageBarrier_Encrypt_ErrSealed(t *testing.T) {
 // on an unsealed barrier with valid ciphertext.
 func TestStorageBarrier_Decrypt_Success(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -97,7 +97,7 @@ func TestStorageBarrier_Decrypt_Success(t *testing.T) {
 // ErrSealed when the barrier is sealed.
 func TestStorageBarrier_Decrypt_ErrSealed(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -117,7 +117,7 @@ func TestStorageBarrier_Decrypt_ErrSealed(t *testing.T) {
 // an initialized barrier.
 func TestStorageBarrier_NonceTracker(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -176,7 +176,7 @@ func TestNewStorageBarrier_WithOptionalConfig(t *testing.T) {
 func TestBarrierRegistry_RegisterTenant_WithStrategy(t *testing.T) {
 	backend := NewMemoryBackend()
 	sw := testSoftwareStrategy(t)
-	sysBarrier, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	sysBarrier, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "sys/root-key",
 	}, sw)
 	if err != nil {

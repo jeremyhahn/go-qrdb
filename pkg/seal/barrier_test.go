@@ -225,7 +225,7 @@ func (s *fakeShamirStrategy) Close() error { return nil }
 
 // newBarrierWithAudit creates a barrier backed by MemoryBackend and
 // SoftwareStrategy with an audit logger for barrier_test.go tests.
-func newBarrierWithAudit(t *testing.T) (*Barrier, *mockAuditLogger) {
+func newBarrierWithAudit(t *testing.T) (*StorageBarrier, *mockAuditLogger) {
 	t.Helper()
 	audit := &mockAuditLogger{}
 	cfg := BarrierConfig{
@@ -233,15 +233,15 @@ func newBarrierWithAudit(t *testing.T) (*Barrier, *mockAuditLogger) {
 		AuditLogger:     audit,
 		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	return b, audit
 }
 
 // initBarrier initializes the barrier and returns the credentials used.
-func initBarrier(t *testing.T, b *Barrier) Credentials {
+func initBarrier(t *testing.T, b *StorageBarrier) Credentials {
 	t.Helper()
 	ctx := context.Background()
 	creds := MustCredentials(context.Background(), []byte("test-password-123"))
@@ -251,11 +251,11 @@ func initBarrier(t *testing.T, b *Barrier) Credentials {
 	return creds
 }
 
-// --- NewBarrier -----------------------------------------------------------
+// --- NewStorageBarrier -----------------------------------------------------------
 
 func TestNewBarrier_Success(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -269,7 +269,7 @@ func TestNewBarrier_Success(t *testing.T) {
 
 func TestNewBarrier_NoStrategies(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
-	_, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg)
+	_, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg)
 	if err != ErrNoAvailableStrategy {
 		t.Fatalf("expected ErrNoAvailableStrategy, got %v", err)
 	}
@@ -284,7 +284,7 @@ func TestNewBarrier_NoImplicitPreferenceOrder(t *testing.T) {
 
 	// Single strategy, no PreferenceOrder: prefOrder stays empty, but the lone
 	// registered strategy is selected unambiguously.
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -296,7 +296,7 @@ func TestNewBarrier_NoImplicitPreferenceOrder(t *testing.T) {
 	}
 
 	// Multiple strategies, no PreferenceOrder: refuse to guess.
-	b2, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg,
+	b2, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg,
 		testSoftwareStrategy(t), NewNoneStrategy())
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -312,7 +312,7 @@ func TestNewBarrier_CustomPreferenceOrder(t *testing.T) {
 		RootKeyPath:     "root-key",
 		PreferenceOrder: customOrder,
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -622,9 +622,9 @@ func TestBarrier_Initialize_NoAvailableStrategy(t *testing.T) {
 		RootKeyPath: "root-key",
 		AuditLogger: audit,
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, &mockUnavailableStrategy{})
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, &mockUnavailableStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	err = b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw")))
@@ -654,9 +654,9 @@ func TestBarrier_Initialize_BasePutFails(t *testing.T) {
 		failErr: putErr,
 	}
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	err = b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw")))
@@ -677,9 +677,9 @@ func TestBarrier_Initialize_BarrierEncryptorFails(t *testing.T) {
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{"failing-seal"},
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, &mockFailingSealStrategy{})
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, &mockFailingSealStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	err = b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw")))
@@ -754,9 +754,9 @@ func TestBarrier_Unseal_InvalidCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
-	b1, err := NewBarrier(testLogger(), backend, cfg, correctStrat)
+	b1, err := NewStorageBarrier(testLogger(), backend, cfg, correctStrat)
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	ctx := context.Background()
@@ -769,9 +769,9 @@ func TestBarrier_Unseal_InvalidCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
-	b2, err := NewBarrier(testLogger(), backend, cfg, wrongStrat)
+	b2, err := NewStorageBarrier(testLogger(), backend, cfg, wrongStrat)
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	err = b2.Unseal(ctx, Credentials{})
@@ -817,9 +817,9 @@ func TestBarrier_Unseal_StrategyNotFound(t *testing.T) {
 		AuditLogger: audit,
 	}
 
-	b1, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	b1, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	creds := MustCredentials(context.Background(), []byte("password"))
 	if err := b1.Initialize(context.Background(), creds); err != nil {
@@ -828,9 +828,9 @@ func TestBarrier_Unseal_StrategyNotFound(t *testing.T) {
 
 	// Create new barrier with ONLY an unavailable/different strategy.
 	// The sealed blob references StrategyPassphrase but this barrier only has "unavailable".
-	b2, err := NewBarrier(testLogger(), backend, cfg, &mockUnavailableStrategy{})
+	b2, err := NewStorageBarrier(testLogger(), backend, cfg, &mockUnavailableStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	err = b2.Unseal(context.Background(), creds)
@@ -862,9 +862,9 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	creds := MustCredentials(context.Background(), []byte("pw"))
 	if err := b.Initialize(context.Background(), creds); err != nil {
@@ -959,9 +959,9 @@ func TestBarrier_Seal_WithHardwareEncryptor(t *testing.T) {
 		RootKeyPath:     "root-key",
 		PreferenceOrder: []StrategyID{"mock-hardware"},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, &mockHardwareStrategy{})
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, &mockHardwareStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -1255,9 +1255,9 @@ func TestBarrier_GetMasterKey_HardwareEncryptor(t *testing.T) {
 		PreferenceOrder: []StrategyID{"mock-hardware"},
 	}
 	hw := &mockHardwareStrategy{}
-	b, err := NewBarrier(testLogger(), backend, cfg, hw)
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, hw)
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
@@ -1309,9 +1309,9 @@ func TestBarrier_Status_HardwareBacked(t *testing.T) {
 		RootKeyPath:     "root-key",
 		PreferenceOrder: []StrategyID{"mock-hardware"},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, &mockHardwareStrategy{})
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, &mockHardwareStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -1412,9 +1412,9 @@ func TestBarrier_Encryptor_Sealed(t *testing.T) {
 
 func TestBarrier_BestStrategy_AllUnavailable(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, &mockUnavailableStrategy{})
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, &mockUnavailableStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	_, bsErr := b.bestStrategy()
@@ -1510,9 +1510,9 @@ func TestBarrier_ShamirStrategy_WrongType(t *testing.T) {
 		RootKeyPath:     "root-key",
 		PreferenceOrder: []StrategyID{StrategyShamir},
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, &fakeShamirStrategy{})
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, &fakeShamirStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	if s := b.ShamirStrategy(); s != nil {
 		t.Error("expected nil when strategy is not *ShamirStrategy")
@@ -1529,9 +1529,9 @@ func TestBarrier_ShamirStrategy_Registered(t *testing.T) {
 		Shamir:          &ShamirConfig{Threshold: 3, TotalShares: 5},
 		PreferenceOrder: []StrategyID{StrategyShamir},
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t), shamirStrat)
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	s := b.ShamirStrategy()
@@ -1849,9 +1849,9 @@ func TestBarrier_CustomInvocationCounter(t *testing.T) {
 		RootKeyPath:       "test/root-key",
 		InvocationCounter: counter,
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	if b.InvocationCounter() != counter {
@@ -1886,12 +1886,12 @@ func TestBarrier_SeedInvocationCounterOnUnseal(t *testing.T) {
 
 	// Phase 1: initialize and write entries.
 	counter1 := NewInvocationCounter(true, 10000, 95.0)
-	b1, err := NewBarrier(logger, backend, BarrierConfig{
+	b1, err := NewStorageBarrier(logger, backend, BarrierConfig{
 		RootKeyPath:       "test/root-key",
 		InvocationCounter: counter1,
 	}, strategy)
 	if err != nil {
-		t.Fatalf("NewBarrier (phase 1): %v", err)
+		t.Fatalf("NewStorageBarrier (phase 1): %v", err)
 	}
 
 	ctx := context.Background()
@@ -1913,12 +1913,12 @@ func TestBarrier_SeedInvocationCounterOnUnseal(t *testing.T) {
 
 	// Phase 2: fresh barrier + fresh counter against the same backend.
 	counter2 := NewInvocationCounter(true, 10000, 95.0)
-	b2, err := NewBarrier(logger, backend, BarrierConfig{
+	b2, err := NewStorageBarrier(logger, backend, BarrierConfig{
 		RootKeyPath:       "test/root-key",
 		InvocationCounter: counter2,
 	}, strategy)
 	if err != nil {
-		t.Fatalf("NewBarrier (phase 2): %v", err)
+		t.Fatalf("NewStorageBarrier (phase 2): %v", err)
 	}
 
 	if err := b2.Unseal(ctx, creds); err != nil {

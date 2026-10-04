@@ -148,7 +148,7 @@ func TestMVCCEngine_CompareAndDelete_RetractsIndexes(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	if err := eng.Update(context.Background(),
 		[]sm.Entry{{Index: 1, Cmd: idxCmd}}, make([]sm.Result, 1)); err != nil {
 		t.Fatalf("Update (index create): %v", err)

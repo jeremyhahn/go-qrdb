@@ -47,7 +47,7 @@ request, so a tenant caller names its own tenant.
 
 **Note the path prefix.** These are `/certs/...`, unversioned, even though the
 CLI group is `qrdb ca`. The CLI was renamed (`certs` → `ca`); the routes were
-not. `qrdb certs` remains as a redirect stub that only prints where to go.
+not. `qrdb certs` has been removed outright (no redirect stub).
 
 **`ca info` and `ca bundle` have no distinct endpoint.** Both are CLI aliases
 for `list`: CA-only metadata (DN, fingerprint, validity) and a standalone
@@ -179,5 +179,5 @@ which adds CRL and OCSP — see [architecture.md](architecture.md).
 ## Versioning
 
 Certificate routes are unversioned (`/certs/...`); the bootstrap route is under
-`/v1/`. The `qrdb certs` **CLI group** is deprecated in favour of `qrdb ca`;
+`/v1/`. The `qrdb certs` **CLI group** has been removed in favour of `qrdb ca`;
 the REST paths were not renamed with it.

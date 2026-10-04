@@ -82,16 +82,20 @@ func TestRunInit_ViaRootCmd_WithSANs(t *testing.T) {
 // ceremony.go — command RunE bodies (35-50%)
 // ===========================================================================
 
-func TestCeremonyInitCmd_ViaRootCmd(t *testing.T) {
+func TestCeremonyInitCmd_NoLongerRegistered(t *testing.T) {
 	root := newTestRootCmd(newMockKVService(), newMockAdminService())
-	// ceremony init is a redirect stub.
-	_, err := executeCommand(root, "ceremony", "init")
-	if err == nil {
-		t.Fatal("expected CanonicalRedirectError from ceremony init")
+	// "ceremony init" was collapsed into the root "init" command; no
+	// redirect stub remains, so Find resolves no further than "ceremony"
+	// itself, leaving "init" unconsumed.
+	cmd, remaining, err := root.Find([]string{"ceremony", "init"})
+	if err != nil {
+		t.Fatalf("Find(ceremony init): %v", err)
 	}
-	var cre *CanonicalRedirectError
-	if !errors.As(err, &cre) {
-		t.Fatalf("expected CanonicalRedirectError, got %T: %v", err, err)
+	if cmd.Name() != "ceremony" {
+		t.Fatalf("resolved command = %q, want \"ceremony\"", cmd.Name())
+	}
+	if len(remaining) != 1 || remaining[0] != "init" {
+		t.Fatalf("remaining args = %v, want [\"init\"] unconsumed", remaining)
 	}
 }
 

@@ -117,7 +117,7 @@ func (m *mockIndexManager) getDropCalls() []string {
 func TestIndexCreate_NilIndexManager(t *testing.T) {
 	fsm, _ := newTestFSM() // no IndexManager configured
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("user_email", "email", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("user_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -137,7 +137,7 @@ func TestIndexCreate_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("user_email", "email", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("user_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -171,7 +171,7 @@ func TestIndexCreate_WithSparse(t *testing.T) {
 	im := &mockIndexManager{}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("user_phone", "phone", false, true, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("user_phone", "phone", protocol.IndexCreateOptions{Unique: false, Sparse: true, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -196,7 +196,7 @@ func TestIndexCreate_ManagerError(t *testing.T) {
 	im := &mockIndexManager{createErr: managerErr}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("dup_idx", "field", false, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("dup_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -532,7 +532,7 @@ func TestIndexCreateDrop_RoundTrip(t *testing.T) {
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
 	// Create an index.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("product_sku", "sku", true, true, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("product_sku", "sku", protocol.IndexCreateOptions{Unique: true, Sparse: true, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 

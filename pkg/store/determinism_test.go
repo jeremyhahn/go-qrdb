@@ -382,7 +382,7 @@ func TestMVCCStateMachine_BaseKVPutIfAbsentHasExactlyOneStore(t *testing.T) {
 // at a time.
 func TestMVCCStateMachine_UniqueIndexAcrossApplyBatchEntries(t *testing.T) {
 	entries := []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeIndexCreate("uniq_email", "email", true, false, false))},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeIndexCreateOpts("uniq_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))},
 		mvccPutEntry(2, []byte("user/a"), []byte(`{"email":"dup@example.com"}`), 0),
 		mvccPutEntry(3, []byte("user/b"), []byte(`{"email":"dup@example.com"}`), 0),
 		mvccPutEntry(4, []byte("user/c"), []byte(`{"email":"other@example.com"}`), 0),
@@ -410,7 +410,7 @@ func TestMVCCStateMachine_IndexBackfillSeesSameBatchWrites(t *testing.T) {
 	entries := []sm.Entry{
 		mvccPutEntry(1, []byte("user/a"), []byte(`{"email":"a@example.com"}`), 0),
 		mvccPutEntry(2, []byte("user/b"), []byte(`{"email":"b@example.com"}`), 0),
-		{Index: 3, Cmd: mustEncode(protocol.EncodeIndexCreate("email_idx", "email", false, false, false))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeIndexCreateOpts("email_idx", "email", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))},
 		mvccPutEntry(4, []byte("user/c"), []byte(`{"email":"c@example.com"}`), 0),
 	}
 

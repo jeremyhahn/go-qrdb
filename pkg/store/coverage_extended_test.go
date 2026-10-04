@@ -326,7 +326,7 @@ func TestMVCCUpdateIndexesForPut_WithIndex(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Create a secondary index on "name" field.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("name_idx", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{indexCreateEntry(1, "name_idx", "name", false, false)})
 	_ = createCmd
 
@@ -349,7 +349,7 @@ func TestMVCCUpdateIndexesForPut_WithIndex(t *testing.T) {
 func TestMVCCUpdateIndexesForPut_OverwriteUpdatesIndex(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx2", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("name_idx2", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Initial put.
@@ -386,7 +386,7 @@ func TestMVCCUpdateIndexesForPut_OverwriteUpdatesIndex(t *testing.T) {
 func TestMVCCUpdateIndexesForPut_NonJSONValueSkipped(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx3", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("name_idx3", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put a non-JSON value -- should silently skip index update.
@@ -431,7 +431,7 @@ func TestMVCCUpdateIndexesForPut_NoIndexes(t *testing.T) {
 func TestMVCCRemoveIndexesForDelete_WithIndex(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx_del", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("name_idx_del", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put a key with indexed JSON value.
@@ -466,7 +466,7 @@ func TestMVCCRemoveIndexesForDelete_WithIndex(t *testing.T) {
 func TestMVCCRemoveIndexesForDelete_NonJSONPrevValue(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx_nonjson", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("name_idx_nonjson", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put a non-JSON value.
@@ -488,7 +488,7 @@ func TestMVCCRemoveIndexesForDelete_NonJSONPrevValue(t *testing.T) {
 func TestMVCCRemoveIndexesForDelete_NilPrevKv(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx_nil", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("name_idx_nil", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Delete a key that never existed -- prevKv will be nil, exercising
@@ -504,7 +504,7 @@ func TestMVCCRemoveIndexesForDelete_NilPrevKv(t *testing.T) {
 func TestMVCCHandleBaseKVPut_WithIndexUpdates(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("base_idx", "status", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("base_idx", "status", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put via base KV with JSON value.
@@ -535,7 +535,7 @@ func TestMVCCHandleBaseKVPut_WithIndexUpdates(t *testing.T) {
 func TestMVCCHandleBaseKVDelete_WithIndexRemoval(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("del_idx", "color", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("del_idx", "color", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put via MVCC put.

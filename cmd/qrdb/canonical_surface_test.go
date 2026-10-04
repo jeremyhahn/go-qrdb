@@ -81,29 +81,31 @@ func TestCanonicalSurface_InitFlagsExposed(t *testing.T) {
 	}
 }
 
-// TestCanonicalSurface_LegacyCertsRedirects verifies that "qrdb certs"
-// emits a CanonicalRedirectError pointing at the renamed "ca" group.
-func TestCanonicalSurface_LegacyCertsRedirects(t *testing.T) {
+// TestCanonicalSurface_NoCertsCommand verifies that "qrdb certs" (renamed
+// to "ca") is no longer registered at all: an unknown command, not a
+// redirect stub.
+func TestCanonicalSurface_NoCertsCommand(t *testing.T) {
 	root := newRootCmd()
-	cmd, _, err := root.Find([]string{"certs"})
-	if err != nil {
-		t.Fatalf("certs redirect command not registered: %v", err)
-	}
-	if cmd.RunE == nil {
-		t.Fatal("certs redirect command has no RunE")
+	if _, _, err := root.Find([]string{"certs"}); err == nil {
+		t.Fatal("qrdb certs must not be registered; use qrdb ca")
 	}
 }
 
-// TestCanonicalSurface_CeremonyInitRedirects verifies that
-// "qrdb ceremony init" redirects to the root init command.
-func TestCanonicalSurface_CeremonyInitRedirects(t *testing.T) {
+// TestCanonicalSurface_NoCeremonyInit verifies that "qrdb ceremony init"
+// (collapsed into the root "init" command) is no longer registered: Find
+// resolves no further than "ceremony" itself, leaving "init" unconsumed,
+// rather than matching a redirect stub subcommand.
+func TestCanonicalSurface_NoCeremonyInit(t *testing.T) {
 	root := newRootCmd()
-	cmd, _, err := root.Find([]string{"ceremony", "init"})
+	cmd, remaining, err := root.Find([]string{"ceremony", "init"})
 	if err != nil {
-		t.Fatalf("ceremony init redirect command not registered: %v", err)
+		t.Fatalf("Find(ceremony init): %v", err)
 	}
-	if cmd.RunE == nil {
-		t.Fatal("ceremony init redirect command has no RunE")
+	if cmd.Name() != "ceremony" {
+		t.Fatalf("resolved command = %q, want \"ceremony\" (init must not be a registered subcommand)", cmd.Name())
+	}
+	if len(remaining) != 1 || remaining[0] != "init" {
+		t.Fatalf("remaining args = %v, want [\"init\"] unconsumed", remaining)
 	}
 }
 

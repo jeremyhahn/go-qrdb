@@ -363,14 +363,14 @@ func TestCeremonyStatus_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ceremony init
+// ceremony init (removed: collapsed into the root "init" command per
+// docs/08-bootstrap-auth-architecture.md §6)
 // ---------------------------------------------------------------------------
 
-// TestCeremonyInit_RedirectsToRootInit verifies that the legacy
-// "ceremony init" subcommand emits a CanonicalRedirectError pointing
-// at the root "init" command per docs/08-bootstrap-auth-architecture.md
-// §6.
-func TestCeremonyInit_RedirectsToRootInit(t *testing.T) {
+// TestCeremonyInit_NoLongerRegistered verifies that "ceremony init" is an
+// unknown command now that it has been collapsed into the root "init"
+// command: no redirect stub remains to intercept it.
+func TestCeremonyInit_NoLongerRegistered(t *testing.T) {
 	svc := &mockCeremonyService{}
 	_, err := executeCeremonyCmd(t, svc, "init",
 		"--so-pin", "sopin123",
@@ -378,25 +378,7 @@ func TestCeremonyInit_RedirectsToRootInit(t *testing.T) {
 		"--threshold", "2",
 	)
 	if err == nil {
-		t.Fatal("expected CanonicalRedirectError from legacy ceremony init")
-	}
-	var redirect *CanonicalRedirectError
-	if !errors.As(err, &redirect) {
-		t.Fatalf("expected *CanonicalRedirectError, got %T: %v", err, err)
-	}
-}
-
-// TestCeremonyInit_RedirectsWithoutFlags verifies the redirect fires
-// even when no flags are supplied.
-func TestCeremonyInit_RedirectsWithoutFlags(t *testing.T) {
-	svc := &mockCeremonyService{}
-	_, err := executeCeremonyCmd(t, svc, "init")
-	if err == nil {
-		t.Fatal("expected CanonicalRedirectError from legacy ceremony init")
-	}
-	var redirect *CanonicalRedirectError
-	if !errors.As(err, &redirect) {
-		t.Fatalf("expected *CanonicalRedirectError, got %T: %v", err, err)
+		t.Fatal("expected an unknown-command error; ceremony init must not be registered")
 	}
 }
 

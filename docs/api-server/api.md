@@ -457,5 +457,5 @@ unversioned (`/kv`, `/watch`, `/lease`, `/lock`, `/index`, `/ts`, `/vector`,
 `/tx`, `/batch`, `/certs`, `/users`, `/roles`, `/health`, `/status`, `/peers`).
 The gRPC service is `qrdb.v1` throughout.
 
-Nothing is deprecated at the route level. The `qrdb certs` **CLI** group is
-deprecated in favour of `qrdb ca`, but its REST paths were not renamed.
+Nothing is deprecated at the route level. The `qrdb certs` **CLI** group has
+been removed in favour of `qrdb ca`, but its REST paths were not renamed.

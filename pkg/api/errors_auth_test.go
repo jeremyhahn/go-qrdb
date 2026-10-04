@@ -148,7 +148,6 @@ func TestAuthSimpleErrors(t *testing.T) {
 		wantCode dberrors.ErrorCode
 	}{
 		{"AdminUserNotFound", func() *dberrors.QRDBError { return NewAdminUserNotFoundError("bootstrap") }, "admin user not found", dberrors.ErrNotFound},
-		{"PasswordAuthDeprecated", func() *dberrors.QRDBError { return NewPasswordAuthDeprecatedError("login") }, "password-based authentication is disabled; use IAM (WebAuthn, OIDC, OAuth) instead", dberrors.ErrUnimplemented},
 		{"NilLogger", func() *dberrors.QRDBError { return NewNilLoggerError("auth.new") }, "logger cannot be nil", dberrors.ErrInvalidInput},
 		{"NilStorage", func() *dberrors.QRDBError { return NewNilStorageError("auth.new") }, "storage cannot be nil for persistent auth", dberrors.ErrInvalidInput},
 		{"StorageClosedAuth", func() *dberrors.QRDBError { return NewStorageClosedAuthError("auth.get") }, "storage closed", dberrors.ErrUnavailable},

@@ -951,22 +951,6 @@ func TestReservedKeyPrefixError(t *testing.T) {
 	})
 }
 
-func TestDeprecatedOperationError(t *testing.T) {
-	t.Run("Error", func(t *testing.T) {
-		e := &DeprecatedOperationError{Message: "use v2 API"}
-		if got := e.Error(); got != "use v2 API" {
-			t.Errorf("got %q", got)
-		}
-	})
-
-	t.Run("Constructor", func(t *testing.T) {
-		de := NewDeprecatedOperationError("api", "this endpoint is deprecated")
-		if de.Code != dberrors.ErrUnimplemented {
-			t.Errorf("code = %v", de.Code)
-		}
-	})
-}
-
 func TestUnknownManagerTypeError(t *testing.T) {
 	t.Run("Error", func(t *testing.T) {
 		e := &UnknownManagerTypeError{TypeName: "custom"}

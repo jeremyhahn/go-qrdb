@@ -88,7 +88,7 @@ func (s *sealSubsystem) Close() error {
 // initSealSubsystem builds the seal storage barrier, sealing strategy,
 // credential service, and barrier registry from the supplied flags.
 // It is called BEFORE host construction so that the data-plane Pebble
-// instance can later be opened with store.WithEncryptingFS pointing at
+// instance can later be opened with store.WithEncryptor pointing at
 // the returned barrier.
 //
 // complianceAudit is the node's compliance trail, opened before this

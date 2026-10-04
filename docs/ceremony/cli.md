@@ -6,8 +6,9 @@ Command group: `qrdb ceremony`. All verbs accept the root persistent flags
 documented in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 > **`qrdb ceremony init` has been REMOVED.** Use the root `qrdb init` command —
-> see [../firstboot/cli.md](../firstboot/cli.md). The verb remains registered
-> only to say so.
+> see [../firstboot/cli.md](../firstboot/cli.md). The verb is no longer
+> registered at all; running it reports cobra's normal "unknown command"
+> error.
 
 ## `qrdb init` with share holders
 

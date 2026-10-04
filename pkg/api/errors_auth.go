@@ -244,25 +244,6 @@ func NewAdminUserNotFoundError(op string) *dberrors.QRDBError {
 	}
 }
 
-// PasswordAuthDeprecatedError indicates password-based authentication is deprecated.
-// This is used by deprecated functions that return ErrUnimplemented, distinct from
-// PasswordAuthDisabledError in errors.go which returns ErrUnauthorized.
-type PasswordAuthDeprecatedError struct{}
-
-// Error implements the error interface.
-func (e *PasswordAuthDeprecatedError) Error() string {
-	return "password-based authentication is disabled; use IAM (WebAuthn, OIDC, OAuth) instead"
-}
-
-// NewPasswordAuthDeprecatedError creates a QRDBError for a deprecated password auth function.
-func NewPasswordAuthDeprecatedError(op string) *dberrors.QRDBError {
-	return &dberrors.QRDBError{
-		Code: dberrors.ErrUnimplemented,
-		Op:   op,
-		Err:  &PasswordAuthDeprecatedError{},
-	}
-}
-
 // =============================================================================
 // Password Validation Error Types
 // =============================================================================

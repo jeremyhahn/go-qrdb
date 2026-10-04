@@ -25,16 +25,16 @@ import (
 
 // newLeaderBarrier creates, initializes, and returns an unsealed barrier
 // suitable as the "leader" in import round-trip tests.
-func newLeaderBarrier(t *testing.T) *Barrier {
+func newLeaderBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier (leader): %v", err)
+		t.Fatalf("NewStorageBarrier (leader): %v", err)
 	}
 	if err := b.Initialize(context.Background(), Credentials{}); err != nil {
 		t.Fatalf("Initialize (leader): %v", err)
@@ -45,16 +45,16 @@ func newLeaderBarrier(t *testing.T) *Barrier {
 // newFollowerBarrier creates a sealed, uninitialized barrier suitable as the
 // "follower" in import round-trip tests. It uses the same strategy as
 // newLeaderBarrier so ImportRootKey's SealRootKey → Unseal cycle succeeds.
-func newFollowerBarrier(t *testing.T) *Barrier {
+func newFollowerBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier (follower): %v", err)
+		t.Fatalf("NewStorageBarrier (follower): %v", err)
 	}
 	return b
 }
@@ -178,9 +178,9 @@ func TestImportedKey_Validate_EmptyKnownEpochs(t *testing.T) {
 func TestExportRootKeyContext_Sealed(t *testing.T) {
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	// Barrier is sealed (never initialized).
 	_, exportErr := b.ExportRootKeyContext(context.Background())
@@ -419,9 +419,9 @@ func TestImportRootKey_NoAvailableStrategy(t *testing.T) {
 
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	follower, err := NewBarrier(testLogger(), backend, cfg, &mockUnavailableStrategy{})
+	follower, err := NewStorageBarrier(testLogger(), backend, cfg, &mockUnavailableStrategy{})
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	key := &ImportedKey{
@@ -450,9 +450,9 @@ func TestImportRootKey_MetadataPersistsAcrossWarmBoot(t *testing.T) {
 	}
 
 	// Import into first follower instance.
-	follower1, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	follower1, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier(follower1): %v", err)
+		t.Fatalf("NewStorageBarrier(follower1): %v", err)
 	}
 	if err := follower1.ImportRootKey(ctx, exported, Credentials{}); err != nil {
 		t.Fatalf("ImportRootKey: %v", err)
@@ -463,9 +463,9 @@ func TestImportRootKey_MetadataPersistsAcrossWarmBoot(t *testing.T) {
 	}
 
 	// Warm boot: new barrier over same backend, still sealed.
-	follower2, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	follower2, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier(follower2): %v", err)
+		t.Fatalf("NewStorageBarrier(follower2): %v", err)
 	}
 	warmStatus := follower2.Status()
 	if warmStatus.InitializedAt.IsZero() {
@@ -504,9 +504,9 @@ func TestImportSealedBlob_Success(t *testing.T) {
 	cfg := BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewNoneStrategy())
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, NewNoneStrategy())
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	if err := b.ImportSealedBlob(ctx, validSealedBlob(t)); err != nil {
@@ -534,9 +534,9 @@ func TestImportSealedBlob_InitializedAtNonZero(t *testing.T) {
 	cfg := BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewNoneStrategy())
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, NewNoneStrategy())
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	if err := b.ImportSealedBlob(ctx, validSealedBlob(t)); err != nil {
@@ -557,9 +557,9 @@ func TestImportSealedBlob_CanUnsealAfterImport(t *testing.T) {
 	cfg := BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewNoneStrategy())
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, NewNoneStrategy())
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	if err := b.ImportSealedBlob(ctx, validSealedBlob(t)); err != nil {
@@ -581,9 +581,9 @@ func TestImportSealedBlob_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewNoneStrategy())
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, NewNoneStrategy())
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	blob := validSealedBlob(t)
@@ -727,9 +727,9 @@ func TestExportSealedBlob_AfterImportSealedBlob(t *testing.T) {
 	ctx := context.Background()
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewNoneStrategy())
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, NewNoneStrategy())
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
 	original := validSealedBlob(t)

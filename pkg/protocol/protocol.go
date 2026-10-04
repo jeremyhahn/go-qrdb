@@ -670,20 +670,6 @@ func indexCreateOptionsFromFlags(flags byte) IndexCreateOptions {
 	}
 }
 
-// EncodeIndexCreate builds an Index Create command.
-//
-// Deprecated: it cannot express case-insensitivity. Use EncodeIndexCreateOpts,
-// which this delegates to. Kept because it is the shape a large number of
-// existing tests are written in, and mechanically rewriting them would be a
-// bigger change than the feature.
-func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) ([]byte, error) {
-	return EncodeIndexCreateOpts(name, fieldName, IndexCreateOptions{
-		Unique:  unique,
-		Sparse:  sparse,
-		Numeric: numeric,
-	})
-}
-
 // EncodeIndexCreateOpts builds an Index Create command from opts.
 // Format:
 // [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1][prefixLen:2 LE][prefix][ownerLen:2 LE][owner].
@@ -1357,20 +1343,7 @@ func DecodeLeaseKeepAlive(payload []byte) (int64, error) {
 	return int64(binary.LittleEndian.Uint64(payload[0:8])), nil
 }
 
-// DecodeIndexCreate extracts name, field and flags from an Index Create payload.
-//
-// Deprecated: it cannot report case-insensitivity. Use DecodeIndexCreateOpts,
-// which this delegates to.
-func DecodeIndexCreate(payload []byte) (name, fieldName string, unique, sparse, numeric bool, err error) {
-	n, f, opts, derr := DecodeIndexCreateOpts(payload)
-	if derr != nil {
-		return "", "", false, false, false, derr
-	}
-	return n, f, opts.Unique, opts.Sparse, opts.Numeric, nil
-}
-
-// DecodeIndexCreateOpts extracts the fields of an Index Create payload,
-// including the flags the deprecated DecodeIndexCreate cannot report.
+// DecodeIndexCreateOpts extracts the fields of an Index Create payload.
 //
 // A payload written before IndexFlagCaseInsensitive existed has the bit clear
 // and therefore decodes to CaseInsensitive: false — case-SENSITIVE, which is

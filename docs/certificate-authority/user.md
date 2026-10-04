@@ -145,9 +145,9 @@ are aliases for `list`. CA-only metadata and a CA+chain bundle export are not
 exposed through the SDK yet — the verbs exist to keep the canonical tree
 complete. The help text says this too.
 
-**`qrdb certs` told you to run `qrdb ca`.** The group was renamed; `certs` is a
-redirect stub. Note the REST paths were **not** renamed and are still
-`/certs/...`.
+**`qrdb certs` is an unknown command.** The group was renamed to `qrdb ca`
+and `certs` has been removed outright, not kept as a redirect. Note the REST
+paths were **not** renamed and are still `/certs/...`.
 
 **The certificate authenticates but you cannot do anything.** Authentication and
 authorization are separate. Check the user binding and the role assignment.

@@ -96,12 +96,6 @@ var (
 	_ kvstore.FencedCreator = (*StorageBarrier)(nil)
 )
 
-// Barrier is a backward-compatible alias for StorageBarrier.
-type Barrier = StorageBarrier
-
-// NewBarrier is a backward-compatible alias for NewStorageBarrier.
-var NewBarrier = NewStorageBarrier
-
 // StorageBarrier wraps a StorageBackend with transparent authenticated
 // encryption. All values are encrypted before being written to the
 // underlying backend and decrypted on read. Keys remain in plaintext.

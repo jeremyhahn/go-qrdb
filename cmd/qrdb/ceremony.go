@@ -33,31 +33,11 @@ func newCeremonyCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newCeremonyInitCmd(),
 		newCeremonyStatusCmd(),
 		newCeremonySignCSRCmd(),
 	)
 
 	return cmd
-}
-
-// newCeremonyInitCmd returns a redirect stub. Per
-// docs/08-bootstrap-auth-architecture.md §6 the ceremony init
-// subcommand is collapsed into the root "init" command. Operators
-// running the legacy path receive a CanonicalRedirectError.
-func newCeremonyInitCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "init",
-		Short:              "REMOVED: use the root 'init' command instead",
-		Args:               cobra.ArbitraryArgs,
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return &CanonicalRedirectError{
-				Old: "qrdb ceremony init",
-				New: "qrdb init --barrier-strategy <name> --so-pin ... --user-pin ... [...]",
-			}
-		},
-	}
 }
 
 // newCeremonyStatusCmd returns the ceremony status subcommand.

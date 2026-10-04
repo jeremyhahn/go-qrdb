@@ -29,7 +29,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // ErrNotCompiled is returned by every storage operation when time-series
@@ -394,21 +393,10 @@ func New(db *pebble.DB) (*Storage, error) {
 	return &Storage{}, nil
 }
 
-// StorageOption configures a new Storage instance created by NewWithDir or
-// NewWithBarrier. Options are applied to the pebble.Options before the
+// StorageOption configures a new Storage instance created by NewWithDir.
+// Options are applied to the pebble.Options before the
 // database is opened.
 type StorageOption func(*pebble.Options)
-
-// WithBarrier wraps the Pebble vfs.FS with seal/encfs so that every file
-// the time-series store writes is transparently encrypted under the supplied
-// StorageBarrier. In this stub build the option is a no-op.
-//
-// Deprecated: prefer WithEncryptor(atrest.New(barrier)) which routes
-// through the single atrest.Encryptor authority. WithBarrier is kept for
-// backward compatibility.
-func WithBarrier(barrier *seal.StorageBarrier) StorageOption {
-	return WithEncryptor(atrest.New(barrier))
-}
 
 // WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
 // with barrier-driven AES-256-GCM encryption. In this stub build the option

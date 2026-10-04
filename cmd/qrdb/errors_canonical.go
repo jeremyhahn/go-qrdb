@@ -17,22 +17,6 @@
 // auth) per docs/08-bootstrap-auth-architecture.md §6.
 package main
 
-// CanonicalRedirectError is emitted when an operator invokes one of the
-// renamed legacy command paths. The error names the deprecated path
-// and the canonical replacement so operators can migrate their
-// runbooks without guesswork.
-type CanonicalRedirectError struct {
-	Old string
-	New string
-}
-
-// Error returns a human-readable description.
-func (e *CanonicalRedirectError) Error() string {
-	return "subcommand '" + e.Old +
-		"' has been replaced by '" + e.New +
-		"' (per docs/08-bootstrap-auth-architecture.md §6). Run: " + e.New
-}
-
 // PendingBootstrapBackendError is emitted by "bootstrap" subcommand
 // handlers in qrdb. The TOFU implementation lives in xkms; qrdb
 // exposes the command shape only so the canonical surface is

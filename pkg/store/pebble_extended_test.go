@@ -727,7 +727,7 @@ func TestPebbleStateMachine_Lookup_Leases_NoLessor(t *testing.T) {
 func TestPebbleStateMachine_IndexCreate(t *testing.T) {
 	s := openExtendedStore(t)
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("test_idx", "name", true, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("test_idx", "name", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
 
 	if results[0].Value != 1 {
@@ -748,7 +748,7 @@ func TestPebbleStateMachine_IndexCreate(t *testing.T) {
 func TestPebbleStateMachine_IndexCreate_Duplicate(t *testing.T) {
 	s := openExtendedStore(t)
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("dup_idx", "field", false, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("dup_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	firstResults := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
 	if firstResults[0].Value != 1 {
 		t.Fatalf("first create: expected result 1, got %d", firstResults[0].Value)
@@ -784,7 +784,7 @@ func TestPebbleStateMachine_IndexDrop(t *testing.T) {
 	s := openExtendedStore(t)
 
 	// Create then drop.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("drop_idx", "field", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("drop_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	dropCmd := mustEncode(protocol.EncodeIndexDrop("drop_idx"))
@@ -825,7 +825,7 @@ func TestPebbleStateMachine_Lookup_IndexQuery(t *testing.T) {
 	s := openExtendedStore(t)
 
 	// Create an index.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("q_idx", "field", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("q_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Manually add entries to the index via the PebbleDB-backed index.

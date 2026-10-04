@@ -178,11 +178,11 @@ func (v *SecretValue) Open(ctx context.Context) (*secure.Buffer, error) {
 // where it cannot be reliably wiped, so prefer WithBytes or Open for sensitive
 // handling. Returns nil for an empty value; each call decrypts afresh.
 //
-// Deprecated: Bytes hands the plaintext to the garbage collector, which is the
-// plain path this package is moving away from. Use WithBytes, or Open when the
-// buffer must outlive a single callback — both keep the plaintext in mlocked
-// memory. Bytes remains for callers bound to an API that takes a raw []byte,
-// and is retained until the stack's coordinated breaking release.
+// Bytes hands the plaintext to the garbage collector, which is the plain
+// path this package is moving away from: prefer WithBytes, or Open when the
+// buffer must outlive a single callback -- both keep the plaintext in
+// mlocked memory. Bytes stays a first-class method for callers bound to an
+// API that takes a raw []byte; it is not going away, only discouraged.
 func (v *SecretValue) Bytes() []byte {
 	if v.secret == nil {
 		return nil
@@ -222,13 +222,12 @@ func (v *SecretValue) Bytes() []byte {
 // A direct String call is the only way to reach the plaintext this way.
 // Formatting a SecretValue — or a struct holding one — with %v, %s or
 // fmt.Sprint is redacted, because Format satisfies fmt.Formatter, which fmt
-// consults ahead of this Stringer. Changing what String itself returns is a
-// behaviour break reserved for the stack's coordinated breaking release.
+// consults ahead of this Stringer.
 //
-// Deprecated: String copies the plaintext into an immutable heap string that
-// can never be wiped. Use WithBytes, or Redacted when the value is only being
-// displayed. String remains for callers bound to an API that takes a raw
-// string, and is retained until the stack's coordinated breaking release.
+// String copies the plaintext into an immutable heap string that can never
+// be wiped: prefer WithBytes, or Redacted when the value is only being
+// displayed. String stays a first-class method for callers bound to an API
+// that takes a raw string; it is not going away, only discouraged.
 func (v *SecretValue) String() string {
 	// The error is discarded here, and only here: String's contract predates
 	// it and returns "" for an unreadable value. Anything that WRITES the
@@ -333,7 +332,8 @@ var (
 // to hand a secret to an API that takes a string, and silently redacting it
 // would break those callers at run time with no compile error to warn them.
 // That change belongs to the stack's coordinated breaking release; until then
-// the accidental paths are closed here and the deliberate one stays deprecated.
+// the accidental paths are closed here and the deliberate one stays, discouraged
+// but not deprecated.
 func (v SecretValue) Format(f fmt.State, verb rune) {
 	// A write error on a fmt.State is the caller's output problem, not this
 	// value's, and fmt itself discards it — there is nothing useful to do with

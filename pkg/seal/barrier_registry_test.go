@@ -15,14 +15,14 @@ import (
 )
 
 // newSystemBarrier creates a system-level barrier for registry tests.
-func newSystemBarrier(t *testing.T) *Barrier {
+func newSystemBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
 	store := NewMemoryBackend()
-	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+	b, err := NewStorageBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "system/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
-		t.Fatalf("NewBarrier (system): %v", err)
+		t.Fatalf("NewStorageBarrier (system): %v", err)
 	}
 	return b
 }

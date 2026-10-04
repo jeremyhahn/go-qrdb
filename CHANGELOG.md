@@ -103,6 +103,53 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   now a real, newly-possible cause of that error, and it must classify as a
   cancellation/deadline, not a node-side fault.
 
+### Changed — BREAKING
+
+- **Every backward-compatibility affordance in the tree has been removed
+  outright; nothing redirects to its replacement anymore.** Per the owner's
+  no-backward-compatibility ruling, an old command, alias or API shape is
+  deleted rather than kept as a stub. There is no migration: callers move to
+  the canonical name directly.
+  - **CLI redirect stubs deleted.** `qrdb certs` (renamed to `qrdb ca`) and
+    `qrdb ceremony init` (collapsed into the root `qrdb init`) are no longer
+    registered at all; running either now gets cobra's ordinary "unknown
+    command" error instead of a typed redirect message.
+    `CanonicalRedirectError` and the now-unused `newCertsCmd` aggregator
+    (orphaned since the `ca` command group replaced it) are gone, along with
+    the `annotationSkipClient` plumbing that existed only to let the
+    redirect stubs run without a reachable daemon.
+  - **SDK: dead Shamir split/combine aliases removed.** `sdk.ShamirSplit`,
+    `sdk.ShamirCombine` and `sdk.ShamirIntegrityError` are gone; they had no
+    remaining callers and their doc comments already pointed external users
+    at `go-quicraft/pkg/crypto/shamir`'s `SplitProtected`/`CombineProtected`
+    directly.
+  - **SDK: `seal.Barrier`/`seal.NewBarrier` and `sdk.Barrier`/`sdk.NewBarrier`
+    removed.** Use `seal.StorageBarrier`/`seal.NewStorageBarrier` (and the
+    SDK's `StorageBarrier`/`NewStorageBarrier` aliases) directly.
+  - **SDK: `sdk.ErrEmbeddingProviderInvalid` removed.** It was never produced;
+    match `*EmbeddingProviderNotFoundError` instead
+    (`pkg/embedding.ErrProviderInvalid` is also gone).
+  - **SDK: the `ErrCode*` error-code aliases removed from the Go SDK.** Use
+    the canonical `Err*` names (`dberrors.ErrNotFound`, etc.), already
+    re-exported under those names.
+  - **Time-series and vector storage: `WithBarrier`/`NewTimeSeriesStorageWithBarrier`/
+    `TimeSeriesWithBarrier`/`WithEncryptingFS` removed** from
+    `pkg/timeseries`, `pkg/storage/vector`, `pkg/store` and their SDK
+    re-exports. Use `WithEncryptor(atrest.New(barrier))` (and the SDK's
+    `TimeSeriesWithEncryptor`/`NewTimeSeriesStorageWithEncryptor`), which all
+    three packages already supported and which these shapes only wrapped.
+  - **`protocol.EncodeIndexCreate`/`DecodeIndexCreate` removed.** They could
+    not express the case-insensitive index flag; use
+    `EncodeIndexCreateOpts`/`DecodeIndexCreateOpts`, which every production
+    caller already used.
+  - Two self-test-only dead error types, `PasswordAuthDeprecatedError` and
+    `DeprecatedOperationError` (`pkg/api`), are removed: neither had a
+    production caller.
+  - A buildgate (`test/buildgates/no_deprecated_test.go`) now fails the build
+    if any non-generated, non-vendored Go source or `.proto` file declares
+    `Deprecated:`/`deprecated = true`, or if the CLI defines a cobra
+    `Deprecated` field or a redirect stub, so none of this creeps back.
+
 ## [0.40.1-alpha] - 2026-10-04
 
 A hotfix for v0.40.0-alpha, which could not boot multi-node clusters, plus durable leases and placement data-loss fixes. This release contains BREAKING changes; see the entries below. Highlights:

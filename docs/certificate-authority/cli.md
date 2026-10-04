@@ -5,8 +5,8 @@
 Command group: `qrdb ca` — post-init Certificate Authority operations. **This
 is the canonical CA surface; it replaces the legacy `certs` group.**
 
-`qrdb certs` still exists as a redirect stub and prints:
-*"subcommand 'qrdb certs' has been replaced by 'qrdb ca'. Run: qrdb ca"*.
+`qrdb certs` has been removed outright. An operator who runs it gets cobra's
+normal "unknown command" error, not a redirect.
 
 All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).

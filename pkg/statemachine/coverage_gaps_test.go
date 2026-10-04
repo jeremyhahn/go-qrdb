@@ -138,7 +138,7 @@ func TestKVDispatch_IndexCreate_StorageError(t *testing.T) {
 	idx := &gapErrIndexManager{createErr: createErr}
 	k := NewKVStateMachine(NewStandardBackend(), WithKVIndexManager(idx))
 
-	cmd := mustEncode(protocol.EncodeIndexCreate("idx1", "field", false, false, false))
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("idx1", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

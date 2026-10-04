@@ -1259,25 +1259,6 @@ func NewReservedKeyPrefixError(op, prefix string) *dberrors.QRDBError {
 	}
 }
 
-// DeprecatedOperationError indicates an operation that has been deprecated.
-type DeprecatedOperationError struct {
-	Message string
-}
-
-// Error implements the error interface.
-func (e *DeprecatedOperationError) Error() string {
-	return e.Message
-}
-
-// NewDeprecatedOperationError creates a QRDBError for a deprecated operation.
-func NewDeprecatedOperationError(op, message string) *dberrors.QRDBError {
-	return &dberrors.QRDBError{
-		Code: dberrors.ErrUnimplemented,
-		Op:   op,
-		Err:  &DeprecatedOperationError{Message: message},
-	}
-}
-
 // UnknownManagerTypeError indicates an unknown manager type was provided.
 type UnknownManagerTypeError struct {
 	TypeName string

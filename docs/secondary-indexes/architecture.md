@@ -216,9 +216,10 @@ ruling; so does threading order-preserving numeric encoding through
 `EntityIndex` and the Raft command format.
 
 **Refused: `index:"case_insensitive"` on the engine-backed and transport
-paths** (tracked as #34). `protocol.EncodeIndexCreate` carries no
-case-sensitivity flag, so `KVEngine.handleIndexCreate` builds every index
-case-sensitive. Accepting the definition would create a case-SENSITIVE index
+paths** (tracked as #34). The DAO-level index-creation path does not thread a
+case-sensitivity flag through to `KVEngine.handleIndexCreate`, which always
+builds a case-sensitive index there. Accepting the definition would create a
+case-SENSITIVE index
 while reporting success, and a lookup for `Alpha` over a stored `alpha` would
 return empty with a nil error — so those adapters refuse it and the DAO plans
 a correct full scan. Only an explicit `case_insensitive` tag is affected:

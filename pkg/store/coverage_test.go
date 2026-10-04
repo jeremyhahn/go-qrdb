@@ -822,7 +822,7 @@ func TestPebbleStateMachine_Lookup_TSAggregate(t *testing.T) {
 func TestPebbleStateMachine_Lookup_IndexScan(t *testing.T) {
 	s := openExtendedStore(t)
 
-	createCmd := mustEncode(protocol.EncodeIndexCreate("scan_idx", "field", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("scan_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	idx := s.indexes["scan_idx"]

@@ -21,29 +21,30 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 )
 
-// TestWithEncryptingFS_NilBarrierIsNoOp confirms that calling
-// WithEncryptingFS with a nil barrier leaves the Pebble FS untouched
-// — required so existing tests and non-encrypted deployments
-// continue to work.
-func TestWithEncryptingFS_NilBarrierIsNoOp(t *testing.T) {
+// TestWithEncryptor_NilBarrierIsNoOp confirms that calling
+// WithEncryptor with a nil-barrier encryptor leaves the Pebble FS
+// untouched — required so existing tests and non-encrypted
+// deployments continue to work.
+func TestWithEncryptor_NilBarrierIsNoOp(t *testing.T) {
 	var opts pebble.Options
-	store.WithEncryptingFS(nil)(&opts)
+	store.WithEncryptor(atrest.New(nil))(&opts)
 	if opts.FS != nil {
 		t.Errorf("FS = %v, want nil for nil barrier", opts.FS)
 	}
 }
 
-// TestWithEncryptingFS_AppliesWrapper confirms the option installs a
+// TestWithEncryptor_AppliesWrapper confirms the option installs a
 // non-nil wrapper FS when given a real barrier.
-func TestWithEncryptingFS_AppliesWrapper(t *testing.T) {
+func TestWithEncryptor_AppliesWrapper(t *testing.T) {
 	dir := t.TempDir()
 	barrier := newTestBarrier(t, dir)
 	var opts pebble.Options
-	store.WithEncryptingFS(barrier)(&opts)
+	store.WithEncryptor(atrest.New(barrier))(&opts)
 	if opts.FS == nil {
 		t.Fatal("FS = nil, want encrypting wrapper")
 	}
@@ -52,16 +53,16 @@ func TestWithEncryptingFS_AppliesWrapper(t *testing.T) {
 	}
 }
 
-// TestWithEncryptingFS_PebbleRoundTrip verifies that a Pebble database
+// TestWithEncryptor_PebbleRoundTrip verifies that a Pebble database
 // constructed with an encrypting FS option produces ciphertext on
 // disk and round-trips values correctly.
-func TestWithEncryptingFS_PebbleRoundTrip(t *testing.T) {
+func TestWithEncryptor_PebbleRoundTrip(t *testing.T) {
 	dataDir := t.TempDir()
 	sealDir := t.TempDir()
 	barrier := newTestBarrier(t, sealDir)
 
 	var opts pebble.Options
-	store.WithEncryptingFS(barrier)(&opts)
+	store.WithEncryptor(atrest.New(barrier))(&opts)
 
 	db, err := pebble.Open(dataDir, &opts)
 	if err != nil {

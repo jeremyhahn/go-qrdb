@@ -661,7 +661,7 @@ func TestMVCCEngine_CloseWithIndexes(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 
 	// Create an index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -767,7 +767,7 @@ func TestMVCCEngine_IndexCreate(t *testing.T) {
 	})
 
 	// Create index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 3, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -796,7 +796,7 @@ func TestMVCCEngine_IndexCreateDuplicate(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -879,7 +879,7 @@ func TestMVCCEngine_IndexCreate_NotVisibleUntilBackfilled(t *testing.T) {
 		}
 	}()
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_city", "city", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_city", "city", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: total + 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -903,7 +903,7 @@ func TestMVCCEngine_IndexDrop(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index.
-	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -960,8 +960,8 @@ func TestMVCCEngine_IndexList(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create indexes.
-	cmd1 := mustEncode(protocol.EncodeIndexCreate("idx_a", "field_a", false, false, false))
-	cmd2 := mustEncode(protocol.EncodeIndexCreate("idx_b", "field_b", false, false, false))
+	cmd1 := mustEncode(protocol.EncodeIndexCreateOpts("idx_a", "field_a", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
+	cmd2 := mustEncode(protocol.EncodeIndexCreateOpts("idx_b", "field_b", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd1}, {Index: 2, Cmd: cmd2}}
 	results := make([]sm.Result, 2)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1592,7 +1592,7 @@ func TestMVCCEngine_Lookup_IndexScan(t *testing.T) {
 		mvccPutEntry(2, []byte("u:2"), []byte(`{"age":"30"}`), 0),
 	})
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_age", "age", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_age", "age", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 3, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1838,7 +1838,7 @@ func TestMVCCEngine_IndexUpdateViaPut(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index first.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1870,7 +1870,7 @@ func TestMVCCEngine_IndexRemoveViaDelete(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3099,7 +3099,7 @@ func TestMVCCEngine_WithMVCCPebbleDB(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index -- should use PebbleIndex.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3324,7 +3324,7 @@ func TestMVCCEngine_IndexDrop_ClearAndClose(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index, put data, then drop.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_x", "x", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_x", "x", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3621,7 +3621,7 @@ func TestMVCCEngine_BaseKVPut_ThenIndexCreate_ThenQuery(t *testing.T) {
 	})
 
 	// Step 2: Create index on field "f2" (same as GUI "Create Index").
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("f2", "f2", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("f2", "f2", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3648,7 +3648,7 @@ func TestMVCCEngine_BaseKVPut_AfterIndexCreate_ThenQuery(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Step 1: Create index on field "f2" FIRST.
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("f2", "f2", false, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("f2", "f2", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3687,7 +3687,7 @@ func TestMVCCEngine_UniqueIndex_ViolationAbortsMVCCPut(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create a unique index on field "email".
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -3727,7 +3727,7 @@ func TestMVCCEngine_UniqueIndex_ViolationAbortsBaseKVPut(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create a unique index on field "uid".
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_uid", "uid", true, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_uid", "uid", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -3765,7 +3765,7 @@ func TestMVCCEngine_UniqueIndex_UpdateSameKeyAllowed(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -3839,7 +3839,7 @@ func TestMVCCEngine_NumericIndex_ScanRange(t *testing.T) {
 	defer cleanup()
 
 	// Create a numeric index on field "f2".
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("f2num", "f2", false, false, true))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("f2num", "f2", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: true}))
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, make([]sm.Result, 1)); err != nil {
 		t.Fatalf("index create: %v", err)
 	}
@@ -3919,7 +3919,7 @@ func TestMVCCEngine_NumericIndex_NonNumericSkipped(t *testing.T) {
 	eng, cleanup := newMVCCEngineWithPebble(t)
 	defer cleanup()
 
-	idxCmd := mustEncode(protocol.EncodeIndexCreate("numskip", "score", false, false, true))
+	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("numskip", "score", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: true}))
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, make([]sm.Result, 1)); err != nil {
 		t.Fatalf("index create: %v", err)
 	}

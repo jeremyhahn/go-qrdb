@@ -29,7 +29,7 @@ func TestStorageBarrier_ConfigAccessor(t *testing.T) {
 		RootKeyPath:  "test/root-key",
 		DeploymentID: 42,
 	}
-	b, err := NewBarrier(slog.Default(), backend, cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(slog.Default(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestStorageBarrier_ConfigAccessor(t *testing.T) {
 func TestStorageBarrier_StrategiesAccessor(t *testing.T) {
 	backend := NewMemoryBackend()
 	sw := testSoftwareStrategy(t)
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, sw)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestStorageBarrier_StrategiesAccessor(t *testing.T) {
 func TestStorageBarrier_LoggerAccessor(t *testing.T) {
 	backend := NewMemoryBackend()
 	logger := slog.Default()
-	b, err := NewBarrier(logger, backend, BarrierConfig{
+	b, err := NewStorageBarrier(logger, backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -82,7 +82,7 @@ func TestStorageBarrier_LoggerAccessor(t *testing.T) {
 
 func TestStorageBarrier_Scan_Success(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -124,7 +124,7 @@ func TestStorageBarrier_Scan_Success(t *testing.T) {
 
 func TestStorageBarrier_Scan_ErrSealed(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -395,7 +395,7 @@ func TestNamespacedBackend_ScanError(t *testing.T) {
 
 func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
 	backend := NewMemoryBackend()
-	sysBarrier, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	sysBarrier, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -422,7 +422,7 @@ func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
 
 func TestStorageBarrier_Put_EncryptError(t *testing.T) {
 	backend := NewMemoryBackend()
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 	}, testSoftwareStrategy(t))
 	if err != nil {
@@ -457,7 +457,7 @@ func TestInitializeShamirDirect_ExistsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewBarrier(slog.Default(), errBackend, BarrierConfig{
+	b, err := NewStorageBarrier(slog.Default(), errBackend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
 	}, shamirStrat)

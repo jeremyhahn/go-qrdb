@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -113,15 +114,16 @@ func TestVectorStoreAdapter_EnsureNamespace_DefaultMetric(t *testing.T) {
 }
 
 // =============================================================================
-// GAP 3: WithBarrier no-op test
+// GAP 3: WithEncryptor no-op test
 // =============================================================================
 
-// TestWithBarrier_NilBarrierIsNoOp verifies that WithBarrier(nil) does not
-// modify the pebble options (no panic, no FS wrapper applied).
-func TestWithBarrier_NilBarrierIsNoOp(t *testing.T) {
-	// Applying a nil barrier option must not panic.
-	opt := vector.WithBarrier(nil)
-	require.NotNil(t, opt, "WithBarrier must return a non-nil option")
+// TestWithEncryptor_NilBarrierIsNoOp verifies that
+// WithEncryptor(atrest.New(nil)) does not modify the pebble options (no
+// panic, no FS wrapper applied).
+func TestWithEncryptor_NilBarrierIsNoOp(t *testing.T) {
+	// Applying a nil-barrier encryptor option must not panic.
+	opt := vector.WithEncryptor(atrest.New(nil))
+	require.NotNil(t, opt, "WithEncryptor must return a non-nil option")
 	// The option is only exercised during pebble.Open; we verify it exists and
 	// is callable without panicking. Integration tests cover the full open path.
 	assert.NotNil(t, opt)

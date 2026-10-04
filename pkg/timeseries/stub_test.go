@@ -121,9 +121,6 @@ func TestStubStorageZeroState(t *testing.T) {
 // TestStubStorageOptions verifies the stub option constructors return
 // applicable no-op options.
 func TestStubStorageOptions(t *testing.T) {
-	if opt := WithBarrier(nil); opt == nil {
-		t.Error("WithBarrier(nil) returned nil option")
-	}
 	if opt := WithEncryptor(nil); opt == nil {
 		t.Error("WithEncryptor(nil) returned nil option")
 	}

@@ -1339,7 +1339,7 @@ func runStart(f *startFlags) (err error) {
 			// before host construction. The data-plane Pebble instance is opened
 			// on top of seal/encfs which requires the barrier to be unsealed;
 			// we therefore (1) build the barrier+credential+registry up front,
-			// (2) thread store.WithEncryptingFS into the SM factory, and (3)
+			// (2) thread store.WithEncryptor into the SM factory, and (3)
 			// run a pre-host sealed-window listener that holds the boot until
 			// the operator drives unseal via the public API.
 			var sealSub *sealSubsystem

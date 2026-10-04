@@ -51,12 +51,13 @@ func TestWithEncryptor_NilBarrier(t *testing.T) {
 	assert.Equal(t, uint64(1), id)
 }
 
-// TestWithBarrier_NilBarrier verifies that WithBarrier with a nil StorageBarrier
-// delegates to WithEncryptor with a no-op encryptor, allowing plaintext operation.
-func TestWithBarrier_NilBarrier(t *testing.T) {
+// TestWithEncryptor_NilBarrierUpsert verifies that WithEncryptor with a
+// nil-barrier encryptor allows plaintext operation through a full
+// create-namespace/upsert/get round trip.
+func TestWithEncryptor_NilBarrierUpsert(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	opt := WithBarrier(nil)
+	opt := WithEncryptor(atrest.New(nil))
 	require.NotNil(t, opt)
 
 	config := DefaultConfig(tmpDir)

@@ -26,21 +26,6 @@ import (
 // ErrorCode classifies database errors into categories.
 type ErrorCode = dberrors.ErrorCode
 
-// ErrorCode constants — ErrCode* names (legacy aliases kept for compatibility).
-const (
-	ErrCodeNotFound          = dberrors.ErrNotFound
-	ErrCodeInternal          = dberrors.ErrInternal
-	ErrCodeConflict          = dberrors.ErrConflict
-	ErrCodeTimeout           = dberrors.ErrTimeout
-	ErrCodeUnavailable       = dberrors.ErrUnavailable
-	ErrCodeInvalidInput      = dberrors.ErrInvalidInput
-	ErrCodeAlreadyExists     = dberrors.ErrAlreadyExists
-	ErrCodeResourceExhausted = dberrors.ErrResourceExhausted
-	ErrCodeCanceled          = dberrors.ErrCanceled
-	ErrCodeNotImplemented    = dberrors.ErrNotImplemented
-	ErrCodeCircuitOpen       = dberrors.ErrCircuitOpen
-)
-
 // ErrorCode constants — canonical Err* names matching pkg/errors.
 // Note: ErrNotFound, ErrInternal, ErrConflict, ErrTimeout, and ErrUnavailable
 // are already declared in dao.go and are not repeated here.

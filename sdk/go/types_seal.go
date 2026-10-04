@@ -140,9 +140,6 @@ type SymmetricAlgorithm = seal.SymmetricAlgorithm
 // StorageBarrier is the core barrier that encrypts data at rest.
 type StorageBarrier = seal.StorageBarrier
 
-// Barrier is an alias for StorageBarrier.
-type Barrier = seal.Barrier
-
 // BarrierConfig holds configuration for a StorageBarrier.
 type BarrierConfig = seal.BarrierConfig
 
@@ -236,9 +233,6 @@ const DefaultQuorumTTL = seal.DefaultQuorumTTL
 
 // NewStorageBarrier creates a new StorageBarrier with the given configuration.
 var NewStorageBarrier = seal.NewStorageBarrier
-
-// NewBarrier is an alias for NewStorageBarrier.
-var NewBarrier = seal.NewBarrier
 
 // NewBarrierRegistry creates a new BarrierRegistry for the given system barrier.
 var NewBarrierRegistry = seal.NewBarrierRegistry

@@ -39,7 +39,7 @@ import (
 func indexCreateEntry(index uint64, name, fieldName string, unique, sparse bool) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   mustEncode(protocol.EncodeIndexCreate(name, fieldName, unique, sparse, false)),
+		Cmd:   mustEncode(protocol.EncodeIndexCreateOpts(name, fieldName, protocol.IndexCreateOptions{Unique: unique, Sparse: sparse, Numeric: false})),
 	}
 }
 

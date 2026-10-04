@@ -92,7 +92,7 @@ func TestIndexCreateOptions_FlagsAreDistinctBits(t *testing.T) {
 // other way round would reinterpret every replayed Raft log entry.
 //
 // The payload here is built BY HAND from the documented wire layout rather
-// than by calling the deprecated encoder, so the assertion does not depend on
+// than by calling the encoder under test, so the assertion does not depend on
 // the code under test to produce its own fixture.
 func TestDecodeIndexCreateOpts_LegacyPayloadIsCaseSensitive(t *testing.T) {
 	// [nameLen:2 LE][name][fieldLen:2 LE][field][flags:1]
@@ -121,11 +121,10 @@ func TestDecodeIndexCreateOpts_LegacyPayloadIsCaseSensitive(t *testing.T) {
 	}
 }
 
-// TestDecodeIndexCreate_DropsCaseInsensitivity pins the deprecated decoder's
-// documented limitation. It is what makes the Opts variant necessary, and a
-// caller still on the old signature must not be able to mistake its output
-// for a complete description of the command.
-func TestDecodeIndexCreate_DropsCaseInsensitivity(t *testing.T) {
+// TestEncodeDecodeIndexCreateOpts_RoundTripsCaseInsensitivity confirms the
+// case-insensitive bit set by EncodeIndexCreateOpts survives the round trip
+// through DecodeIndexCreateOpts.
+func TestEncodeDecodeIndexCreateOpts_RoundTripsCaseInsensitivity(t *testing.T) {
 	encoded, err := EncodeIndexCreateOpts("by_email", "email", IndexCreateOptions{CaseInsensitive: true})
 	if err != nil {
 		t.Fatalf("EncodeIndexCreateOpts: %v", err)
@@ -135,10 +134,6 @@ func TestDecodeIndexCreate_DropsCaseInsensitivity(t *testing.T) {
 		t.Fatalf("DecodeCommand: %v", err)
 	}
 
-	if _, _, _, _, _, err := DecodeIndexCreate(cmd.Payload); err != nil {
-		t.Fatalf("DecodeIndexCreate: %v", err)
-	}
-	// The deprecated form cannot report it at all; the Opts form must.
 	_, _, opts, err := DecodeIndexCreateOpts(cmd.Payload)
 	if err != nil {
 		t.Fatalf("DecodeIndexCreateOpts: %v", err)
@@ -148,13 +143,12 @@ func TestDecodeIndexCreate_DropsCaseInsensitivity(t *testing.T) {
 	}
 }
 
-// TestEncodeIndexCreate_DelegatesWithoutTheFlag proves the deprecated encoder
-// stayed on the safe side of the invariant: it cannot express
-// case-insensitivity, so everything it writes must decode as case-sensitive.
-func TestEncodeIndexCreate_DelegatesWithoutTheFlag(t *testing.T) {
-	encoded, err := EncodeIndexCreate("by_team", "team", true, true, true)
+// TestEncodeIndexCreateOpts_RoundTripsFlags confirms the unique, sparse and
+// numeric flags round-trip through EncodeIndexCreateOpts/DecodeIndexCreateOpts.
+func TestEncodeIndexCreateOpts_RoundTripsFlags(t *testing.T) {
+	encoded, err := EncodeIndexCreateOpts("by_team", "team", IndexCreateOptions{Unique: true, Sparse: true, Numeric: true})
 	if err != nil {
-		t.Fatalf("EncodeIndexCreate: %v", err)
+		t.Fatalf("EncodeIndexCreateOpts: %v", err)
 	}
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {

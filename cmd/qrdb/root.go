@@ -23,12 +23,6 @@ import (
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
-// annotationSkipClient marks a command whose PersistentPreRunE must skip
-// SDK client construction (and the server connection it performs). Used by
-// deprecation-redirect stubs that only emit a "command moved" error and by
-// any other command that must run without a reachable daemon.
-const annotationSkipClient = "qrdb/skip-client"
-
 // validLogLevels is the set of supported log levels for O(1) lookup.
 var validLogLevels = map[string]struct{}{
 	"trace": {},
@@ -121,12 +115,8 @@ Supported transports:
   embedded  In-process server (desktop/GUI build only)`,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// Skip client construction for commands that do not need a
-			// server connection: version/help, and any command annotated
-			// with annotationSkipClient (e.g. the deprecation-redirect
-			// stubs, which must emit their redirect even with no daemon
-			// reachable).
-			if cmd.Name() == "version" || cmd.Name() == "help" ||
-				cmd.Annotations[annotationSkipClient] == "true" {
+			// server connection: version/help.
+			if cmd.Name() == "version" || cmd.Name() == "help" {
 				return nil
 			}
 
@@ -230,7 +220,6 @@ Supported transports:
 	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newBootstrapCmd())
 	rootCmd.AddCommand(newCACmd())
-	rootCmd.AddCommand(newCertsRedirectCmd())
 	rootCmd.AddCommand(newCredentialCmd())
 	rootCmd.AddCommand(newDEKCmd())
 	rootCmd.AddCommand(newBarrierCmd())
