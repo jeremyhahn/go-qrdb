@@ -51,6 +51,18 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if soPIN != "" {
 		args["so_pin"] = soPIN
 	}
+	// secret is overwritten here, not left to EncodeArgs's generic struct
+	// encoding: req.Secret is []byte, which EncodeArgs (via encoding/json)
+	// renders as base64, but the server's handleCeremonyInitialize reads
+	// "secret" as plain text (go-qrdb#560 review item 7, follow-up) --
+	// the same convention BarrierInitialize/BarrierUnseal already use on
+	// this transport. Left to the generic path, the barrier ends up keyed
+	// to the base64 TEXT of the passphrase instead of the passphrase
+	// itself: initialize's own auto-unseal (which never leaves this
+	// process) stays internally consistent and so never notices, and the
+	// mismatch only surfaces on a later unseal call that sends the real
+	// passphrase.
+	args["secret"] = secretArg(req.Secret)
 
 	text, err := t.callTool(ctx, "qrdb_ceremony_initialize", args)
 	if err != nil {
