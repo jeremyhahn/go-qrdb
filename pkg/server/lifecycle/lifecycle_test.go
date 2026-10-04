@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -987,29 +988,49 @@ func TestBuildSealServicesOnly_WithStrategyRegistry(t *testing.T) {
 	}
 }
 
-// TestBuildServices_EmptyDataDir_ReturnsEmptyVectorDataDirError verifies that
-// BuildServices returns an EmptyVectorDataDirError when infra.DataDir is empty.
-// The vector storage subsystem is backed exclusively by PebbleDB and requires
-// an absolute data directory; silently writing to a relative "./vector" path
-// in the process working directory is never correct.
-func TestBuildServices_EmptyDataDir_ReturnsEmptyVectorDataDirError(t *testing.T) {
+// TestBuildServices_EmptyDataDir_VectorStorageIsInMemory verifies that
+// BuildServices no longer requires a data directory for the vector
+// subsystem (go-qrdb#578): a node with an empty DataDir -- a memory-engine
+// node, by sdk/go/node's own convention -- opens successfully with a
+// populated Vector service backed by an in-memory store, and never touches
+// the filesystem for it.
+func TestBuildServices_EmptyDataDir_VectorStorageIsInMemory(t *testing.T) {
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()
 
 	hub := watch.NewHub()
 	defer hub.Close()
 
-	_, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	before, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", wd, err)
+	}
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
 		Host:     host,
 		WatchHub: hub,
-		DataDir:  "", // intentionally empty
+		DataDir:  "", // intentionally empty: a memory-engine node
 	})
-	if err == nil {
-		t.Fatal("expected EmptyVectorDataDirError, got nil")
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
 	}
-	var target *lifecycle.EmptyVectorDataDirError
-	if !errors.As(err, &target) {
-		t.Errorf("expected *EmptyVectorDataDirError, got %T: %v", err, err)
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.Vector == nil {
+		t.Fatal("Vector service is nil; expected it to be populated even with an empty DataDir")
+	}
+
+	after, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", wd, err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("working directory grew from %d entries to %d; an empty-DataDir node must create nothing on disk",
+			len(before), len(after))
 	}
 }
 

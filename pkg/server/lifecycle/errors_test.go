@@ -243,27 +243,6 @@ func TestEmbeddingProviderError_ErrorsAs(t *testing.T) {
 	}
 }
 
-// TestEmptyVectorDataDirError_Error verifies that the error message clearly
-// identifies the root cause (empty DataDir) and the subsystem (vector storage).
-func TestEmptyVectorDataDirError_Error(t *testing.T) {
-	err := &lifecycle.EmptyVectorDataDirError{}
-	msg := err.Error()
-	if !strings.Contains(msg, "DataDir") {
-		t.Errorf("expected DataDir in message, got: %q", msg)
-	}
-	if !strings.Contains(msg, "vector") {
-		t.Errorf("expected 'vector' in message, got: %q", msg)
-	}
-}
-
-func TestEmptyVectorDataDirError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.EmptyVectorDataDirError{}
-	var target *lifecycle.EmptyVectorDataDirError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
 // The four typed errors below had no test at all. They assert the WHOLE
 // message rather than a substring: these carry an interpolated field (a
 // backend name, a wrapped cause), and a substring check on the static prefix

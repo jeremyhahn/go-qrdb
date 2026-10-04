@@ -211,21 +211,6 @@ func (e *UserAuthFactorServiceError) Unwrap() error {
 	return e.Err
 }
 
-// EmptyVectorDataDirError is returned when the vector storage subsystem is
-// about to be opened but infra.DataDir is empty. The vector store is backed
-// exclusively by PebbleDB and requires a valid absolute data directory; an
-// empty DataDir would cause Pebble to write relative-path artifacts into the
-// process working directory, which is never the intended behaviour. Callers
-// using a memory storage backend must still supply a DataDir for the vector
-// store (e.g. t.TempDir() in tests) or disable the vector subsystem.
-type EmptyVectorDataDirError struct{}
-
-// Error returns a human-readable description.
-func (e *EmptyVectorDataDirError) Error() string {
-	return "lifecycle: infra.DataDir must not be empty when the vector storage subsystem is enabled; " +
-		"provide an absolute data directory or disable the vector subsystem"
-}
-
 // EmbeddingCacheError is returned when the embedding LRU cache fails to
 // initialize.
 type EmbeddingCacheError struct {

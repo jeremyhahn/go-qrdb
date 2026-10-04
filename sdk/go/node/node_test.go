@@ -51,10 +51,11 @@ func TestNewStandaloneNode_NilConfig(t *testing.T) {
 
 func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
-	// In-memory primary storage, but vector storage still requires a disk
-	// directory (PebbleDB-only subsystem). Use t.TempDir() so no artifacts
-	// escape the test sandbox.
-	cfg.Raft.DataDir = t.TempDir()
+	// In-memory primary storage AND no data directory at all: the vector
+	// subsystem used to require one regardless (PebbleDB-only, go-qrdb#578),
+	// so a memory-engine node had to be handed a t.TempDir() it never
+	// otherwise needed. It no longer does.
+	cfg.Raft.DataDir = ""
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	// Disable all protocol servers so Start() doesn't try to bind ports.
 	cfg.Protocols.REST = false
@@ -62,6 +63,11 @@ func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	cfg.Protocols.QUIC = false
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
+
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	before, err := os.ReadDir(wd)
+	require.NoError(t, err)
 
 	n, err := NewStandaloneNode(context.Background(), cfg, nil)
 	require.NoError(t, err)
@@ -73,7 +79,19 @@ func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	assert.NotNil(t, n.KVService(), "KVService must be non-nil")
 	assert.NotNil(t, n.AdminService(), "AdminService must be non-nil")
 
+	// Serves KV: an empty-DataDir node is a working node, not just one that
+	// constructs without error.
+	ctx := context.Background()
+	require.NoError(t, n.Client().KV().Put(ctx, "k", []byte("v")))
+	val, err := n.Client().KV().Get(ctx, "k")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v"), val)
+
 	require.NoError(t, n.Close())
+
+	after, err := os.ReadDir(wd)
+	require.NoError(t, err)
+	assert.Equal(t, len(before), len(after), "an empty-DataDir memory node must create nothing on disk")
 }
 
 func TestNewStandaloneNode_MemoryBackend_WithServerOption(t *testing.T) {

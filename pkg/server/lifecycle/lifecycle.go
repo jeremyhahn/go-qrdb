@@ -665,29 +665,43 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
 
-	// Vector service with PebbleDB-backed storage. Route encryption through
-	// the shared Encryptor so vector storage and the MVCC state machine use
-	// one code path and one instance. When Infra.Encryptor is nil, derive a
-	// no-op Encryptor from SealBarrier for callers that only set that field.
-	enc := infra.Encryptor
-	if enc == nil {
-		enc = atrest.New(infra.SealBarrier)
-	}
-
+	// Vector storage follows the primary engine (go-qrdb#578): a node with no
+	// data directory is a memory-engine node (see resolveBackend in
+	// sdk/go/node, which leaves DataDir empty exactly for
+	// database.BackendMemory), and the vector subsystem must not be the one
+	// thing that still requires a directory. MemoryVectorStorage satisfies
+	// the identical vectorstorage.Storage interface with no on-disk
+	// footprint, the same relationship pkg/storage/memory already has to
+	// PebbleDB for the primary KV engine (see NewLocalStorage).
+	//
+	// Encryption-at-rest applies only to the Pebble-backed path: there is no
+	// file for atrest to wrap when nothing is written to disk.
+	var vectorStorage vectorstorage.Storage
 	if infra.DataDir == "" {
-		return nil, &EmptyVectorDataDirError{}
-	}
-	vectorDataDir := filepath.Join(infra.DataDir, "vector")
-	vectorCfg := vectorstorage.DefaultConfig(vectorDataDir)
-	vectorLog := logger.NewAdapter(newMinimalLogger(log))
+		vectorStorage = vectorstorage.NewMemoryVectorStorage()
+	} else {
+		// Route encryption through the shared Encryptor so vector storage and
+		// the MVCC state machine use one code path and one instance. When
+		// Infra.Encryptor is nil, derive a no-op Encryptor from SealBarrier
+		// for callers that only set that field.
+		enc := infra.Encryptor
+		if enc == nil {
+			enc = atrest.New(infra.SealBarrier)
+		}
 
-	vectorStorageOpts := []vectorstorage.StorageOption{
-		vectorstorage.WithEncryptor(enc),
+		vectorDataDir := filepath.Join(infra.DataDir, "vector")
+		vectorCfg := vectorstorage.DefaultConfig(vectorDataDir)
+
+		vectorStorageOpts := []vectorstorage.StorageOption{
+			vectorstorage.WithEncryptor(enc),
+		}
+		pebbleVectorStorage, err := vectorstorage.NewPebbleVectorStorage(vectorCfg, logger.NewAdapter(newMinimalLogger(log)), vectorStorageOpts...)
+		if err != nil {
+			return nil, &VectorStorageError{Err: err}
+		}
+		vectorStorage = pebbleVectorStorage
 	}
-	vectorStorage, err := vectorstorage.NewPebbleVectorStorage(vectorCfg, vectorLog, vectorStorageOpts...)
-	if err != nil {
-		return nil, &VectorStorageError{Err: err}
-	}
+	vectorLog := logger.NewAdapter(newMinimalLogger(log))
 	n.addCloser(func() error { return vectorStorage.Close() })
 
 	vectorSvc, err := service.NewVectorService(
