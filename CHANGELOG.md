@@ -206,6 +206,174 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   now a real, newly-possible cause of that error, and it must classify as a
   cancellation/deadline, not a node-side fault.
 
+### Added
+
+- `cert.WithKeyProvider` and `server.WithCertKeyProvider`: the login CA (Key
+  B) now signs through a `cakey.Provider` the same way. The built-in default
+  is a `cakey.SoftwareProvider` per tenant at `__sys:cert_ca/{tenantID}/`,
+  constructed lazily; an injected provider (`WithCertKeyProvider`, forwarded
+  into `lifecycle.Infra.CertKeyProvider` by `sdk/go/node`'s standalone and
+  clustered builders and the `qrdb_embedded` Wails binding via the new
+  `EmbeddedServerBinding.SetCertKeyProvider`) replaces it entirely: no
+  software key is ever generated or stored for that deployment. `cmd/qrdbd`
+  leaves it unset, as a pure-software composition with no hardware injection
+  surface of its own. `DefaultCertProvider.getCAMaterial` no longer returns
+  raw key bytes; every client certificate is signed through the resolved
+  provider's `crypto.Signer`.
+- `DefaultCertProvider.CACertPEMs` enumerates every tenant's Key B CA
+  certificate (or the single injected provider's), the seam the dynamic
+  client-auth trust pool reads from.
+- `pkg/clienttrust`: the ONE shared implementation of the dynamic
+  client-auth trust pool AND the issuer-tenant binding (`IsClusterCA`,
+  `VerifyIssuer`, implementing the new `auth.IssuerVerifier` interface) --
+  deliberately the SAME object, so Key B is never trusted at the TLS layer
+  without the binding also being enforceable at the authentication layer.
+  `Pool.Wire` installs `tls.Config.GetConfigForClient` on a composer's own
+  `*tls.Config`, verifying a presented client certificate against Key A
+  (the config's own `ClientCAs`, read fresh on every connection) plus every
+  tenant's Key B CA certificate (`Pool.SetKeyBProvider`, installed once the
+  `CertProvider` exists post-unseal). `Pool.SetClusterCA` is resolved fresh
+  and unconditionally on every check too, for the cluster-CA EXEMPTION
+  (both at the TLS layer -- adding the cluster CA to the widened pool --
+  and the issuer-tenant binding) -- never configuring it (no cluster-CA
+  concept at all) still trusts Key B via the per-tenant binding alone;
+  an installed resolver that starts FAILING (a reseal, a transient store
+  failure) withdraws Key B trust entirely, for that call only. The widened
+  pool is cached for 2 seconds (`SetKeyBProvider`/`SetClusterCA` invalidate
+  it immediately), mitigating the per-handshake cost of scanning and
+  parsing every tenant's CA certificate (measured at ~20ms at 1,000
+  tenants uncached, ~20µs cached). A Key B CA created, or rotated to an
+  HSM-backed one, after the listener started is picked up within that
+  window, with no restart.
+  - `clienttrust.ReassertListenerTLS` is the ONE shared helper every
+    listener-specific TLS override (REST/gRPC/Unix/MCP's TLS 1.3
+    `MinVersion` floor, QUIC's exclusive ALPN protocol pin) composes with,
+    rather than each hand-rolling the same clone-and-rewrap: a bare
+    `Clone()` of a config carrying a dynamic `GetConfigForClient` hook
+    copies the hook's closure, not its effect, silently dropping the
+    override on any connection that takes the hook's widened-pool path.
+  - `cmd/qrdbd`'s `TLSBundle.wireClientTrustPool`/`SetKeyBProvider`/
+    `SetClusterCA`/`TrustPool` and `sdk/go/node`'s `wireClientAndServer`
+    (which now builds ONE pool and wires it to both the TLS layer and the
+    auth middleware) both wire this package rather than keeping independent
+    copies of the logic; the `qrdb_embedded` composer opens no network TLS
+    listener, so there is nothing to wire it onto there. The
+    peer/Raft/enrollment transport is unaffected: it already built its own
+    trust pool directly from Key A's certificate PEM, never from a
+    client-facing listener's config, so a Key B leaf continues to be refused
+    there (now proven directly, `pkg/clustertls/peer_trust_domain_test.go`).
+- `auth.IssuerVerifier`: a verified client certificate's issuing CA must
+  be the cluster CA (Key A, any tenant) or the Key B CA registered for the
+  tenant the certificate's own Subject names -- never a foreign tenant's Key
+  B CA. Checked against EVERY verified chain `MTLSAuthenticator.Authenticate`
+  is handed, succeeding if any one satisfies it, and separately in
+  `AuthMiddleware.authenticateOnBehalf` (which never runs the authenticator
+  chain, so does not inherit the first check) against the on-behalf
+  forwarding path's peer certificate, so a Key B-signed node-SAN leaf cannot
+  forward a request as the cluster. `cert.DefaultCertProvider.IsTenantIssuer`
+  is the seam it reads Key B's registered CA from, LOAD-ONLY -- a probe for
+  a nonexistent tenant answers false rather than minting a CA to answer
+  itself. `pkg/auth/wiring.BuildAuthMiddleware` wires the SAME verifier into
+  both consumers from one `IssuerVerifier` config field, giving `cmd/qrdbd`
+  and `sdk/go/node` parity in one place. A mismatch is
+  `*auth.IssuerTenantMismatchError`. `Pool.IsStaticallyTrusted` adds a third
+  exemption alongside the cluster CA: a certificate already trusted via the
+  listener's OWN static `ClientCAs` (an operator-supplied additional client
+  CA, or a deployment establishing mTLS identity through its own CA
+  independent of Key A/Key B) is pre-existing trust the binding does not
+  retroactively restrict -- Key B's dynamic widening is additive to that
+  trust, and the binding polices the addition, not what was already there.
+- `cert.DefaultCertProvider.Initialize`/`Unseal`/`getCAMaterial`'s
+  auto-init-on-first-use of a tenant's built-in CA key is now serialized per
+  tenant: two callers racing the first-ever certificate issuance for a
+  brand-new tenant previously could both observe "no CA exists yet" and both
+  generate and persist one, producing a leaf signed by whichever key lost
+  the race to be cached in memory while a DIFFERENT key was the one actually
+  persisted last.
+
+### Security
+
+- **BREAKING: per-tenant Key B CAs replace the single shared login CA.**
+  Every tenant now has its OWN registered Key B CA
+  (`__sys:cert_ca/{tenantID}/`), and the issuer-tenant binding
+  (`auth.IssuerVerifier`, above) enforces that a tenant's login certificates
+  are anchored at ITS OWN CA, not any other tenant's. **An existing tenant
+  login certificate anchored at the OLD single shared CA stops
+  authenticating once the binding is wired**, because that CA is not the
+  new per-tenant one the binding checks against. There is no migration
+  code: old systems reissue affected tenants' login certificates against
+  their own CA. This is a pre-publication breaking change with zero
+  external consumers to migrate at the time it landed.
+- **A verified on-behalf cluster-forwarding assertion now requires the
+  cluster CA as the peer certificate's issuer, not merely a node-shaped
+  SPIFFE SAN.** `forward.ClusterPeer` checks only the SAN's SHAPE; with
+  every tenant's Key B CA trusted on the same client-facing listener, a Key
+  B leaf carrying a forged node SPIFFE SAN could otherwise present an
+  honored on-behalf assertion AS THE CLUSTER. `AuthMiddleware.
+  authenticateOnBehalf` now also requires `IssuerVerifier.IsClusterCA`
+  against the verified chain's direct issuer, failing closed when unknown.
+- **The dynamic Key B trust pool and the issuer-tenant binding could
+  disagree about whether Key B was trusted at all.** Each composer wired
+  `SetKeyBProvider` without a corresponding cluster-CA resolver reaching the
+  binding (or vice versa), so Key B could be trusted at the TLS layer with
+  the binding unenforced at the authentication layer, or built as two
+  independently-constructed pools that drifted out of sync with each other.
+  `clienttrust.Pool` is now the ONE object both halves read, resolving the
+  cluster CA fresh and unconditionally on every check (see `pkg/clienttrust`
+  above); a transient resolution failure withdraws Key B trust for that
+  call only, never stickily.
+- **Every per-handshake scan of `__sys:cert_ca/` parsing every tenant's CA
+  was an unauthenticated, pre-auth cost an attacker controlled the rate
+  of**, measured at ~20ms at 1,000 tenants. The widened trust pool is now
+  cached for 2 seconds, invalidated immediately on a CA create/rotation
+  (`SetKeyBProvider`/`SetClusterCA`), cutting the measured cost to ~20µs.
+- **`IsTenantIssuer` and `CACertPEMs` could create certificate authority
+  material as a side effect of being asked about it.** `IsTenantIssuer`
+  called the built-in per-tenant provider's `Certificate` directly, which
+  auto-initializes a brand-new CA key via `cakey.SoftwareProvider.material`
+  on first use -- so an authentication-path probe for a tenant that had
+  never established a CA (including a nonexistent tenant named by a
+  presented leaf) minted one. `IsTenantIssuer` is now load-only: a tenant
+  with no established CA answers `false`, never creating one.
+  `Initialize`/`Unseal`/`getCAMaterial`'s own auto-init path is now
+  serialized per tenant for the same reason: two callers racing the
+  first-ever issuance for a brand-new tenant could both observe "nothing
+  exists" and both generate and persist a CA key, with whichever write
+  landed last silently winning over the other caller's already-cached,
+  now-orphaned in-memory key.
+
+### Fixed
+
+- **The documented Key B authentication parity gap is closed.** A Key
+  B-issued login certificate now authenticates on the client-facing
+  listeners of both the qrdbd daemon composer and an `sdk/go/node`-embedded
+  one that supplies its own TLS config via `server.WithTLS`. Proven directly
+  for all five remote transports in
+  `sdk/go/conformance/key_b_login_test.go`.
+- **A latent QUIC ALPN-negotiation bug the dynamic trust pool would have
+  triggered in production is fixed before it shipped.** `pkg/api/quic/
+  server.go` clones the shared TLS config and pins its own ALPN protocol,
+  but `Clone()` copies a `GetConfigForClient` closure's reference, not its
+  effect: the closure still cloned from the PRE-pin config, so any QUIC
+  connection that took the dynamic (Key B) path would have been served the
+  wrong ALPN list and failed the handshake. The listener now wraps the
+  dynamic hook and re-pins its ALPN list on whatever config the hook returns.
+- **The same closure-replacement hazard existed on REST, gRPC, Unix and
+  MCP's TLS 1.3 `MinVersion` floor**, not only QUIC's ALPN pin: each
+  `WithTLS` cloned and mutated the supplied config directly, so a
+  connection taking the dynamic trust-pool path would have been served
+  whatever `MinVersion` the pre-override config carried -- measured as a
+  TLS 1.2 downgrade. All four now compose with the same
+  `clienttrust.ReassertListenerTLS` helper QUIC's ALPN pin uses.
+- **`getCAMaterial` and `ExportPKCS12` could mix up two tenants' CA
+  certificates under concurrent calls.** Both read back the single
+  process-wide `p.caCertPEM`/`p.caCert` cache after resolving a specific
+  tenant's provider, so a second tenant's concurrent call landing in
+  between could hand the first tenant's caller the SECOND tenant's CA
+  certificate. Both now resolve and return the specific tenant's own
+  certificate directly from its `cakey.Provider`, never through the shared
+  cache.
+
 ## [0.40.1-alpha] - 2026-10-04
 
 A hotfix for v0.40.0-alpha, which could not boot multi-node clusters, plus durable leases and placement data-loss fixes. This release contains BREAKING changes; see the entries below. Highlights:
@@ -388,49 +556,6 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
 
 ### Added
 
-- `pkg/cakey`: the CA key provider seam (`Provider`, `SoftwareProvider`,
-  `StaticProvider`, `Adapter`). Both CA keys (the cluster CA and the login
-  CA) obtain their signing key only through this interface, so an embedder
-  (go-xkms) can inject an HSM/TPM/KMS-backed provider with no glue code and
-  qrdb never holds the key.
-- **Member-side CSR join uses single-use, identity-bound join tokens**,
-  replacing the earlier static shared admission secret. An admin mints a
-  token bound to a joining node's SPIFFE node identity and an expiry
-  (`clusterenroll.MintJoinToken`); only its SHA-256 digest is stored in the
-  replicated join-token store, and it is consumed atomically on first use
-  (compare-and-delete) — a second presentation, an expired token, or one
-  bound to a foreign trust domain, a tenant path, or an already-admitted
-  identity is refused identically to an unknown token, so the response
-  carries no token-validity oracle. The issued leaf carries the token's
-  bound identity as its sole URI SAN, never the joiner's self-reported
-  `node_uri` and never the signing member's own SANs. Join attempts are
-  rate-limited and locked out per source address, shared across the Noise_NK
-  and SPKI/Direct transports so switching transports mid-attack gains
-  nothing; `JoinServer` also bounds concurrent in-flight Noise_NK
-  handshakes.
-- An admin mints a join token through `POST /v1/cluster/join-tokens` (REST),
-  `qrdb admin join-token mint <node-id>` (CLI), the gRPC `MintJoinToken` RPC,
-  QUIC, Unix, or the `qrdb_mint_join_token` MCP tool, all backed by a new
-  `service.ClusterJoinTokenMinter` interface and permission
-  `cluster:join_token` (`ScopeCross`, platform-only — no built-in role
-  carries it by default). Implemented on all six transports (REST, gRPC,
-  QUIC, Unix, MCP, embedded) and their SDK clients.
-- `pkg/config.ResolveJoinToken` refuses a group- or world-readable
-  `--bootstrap-join-token-file`, one not owned by the process's own user, or
-  a resolved token shorter than `MinJoinTokenLength`, each with a typed
-  error.
-- The joiner verifies the leaf a signing member returns actually chains to
-  the anchor it fetched and carries its own public key
-  (`*clusterenroll.JoinedLeafVerifyError` otherwise), `cakey.AdoptIfAbsent`
-  refuses a key and certificate that do not belong to each other
-  (`*cakey.KeyCertMismatchError`), and `--bootstrap-join-url` /
-  `bootstrap.join_http_url` must use `https://`.
-- A sealed signing member refuses every join attempt — valid token or
-  not — with the same generic message, checked before the token is ever
-  consumed: consuming it first and discovering the seal only at issuance
-  would both burn a legitimately minted single-use token for nothing and
-  leak "this token was valid" to a prober.
-
 - `cert.WithKeyProvider` and `server.WithCertKeyProvider`: the login CA (Key
   B) now signs through a `cakey.Provider` the same way. The built-in default
   is a `cakey.SoftwareProvider` per tenant at `__sys:cert_ca/{tenantID}/`,
@@ -514,65 +639,6 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   the race to be cached in memory while a DIFFERENT key was the one actually
   persisted last.
 
-### Changed
-
-- **The cluster CA key (Key A) is stored like every other replicated system
-  record — no additional encryption layered on by `pkg/cakey` itself.** An
-  earlier revision wrapped it with the writing node's own
-  `seal.EncryptionBarrier` before persisting it; because the record is
-  REPLICATED and every node's barrier is its own, not shared cluster-wide,
-  every node other than the one that wrote it failed to decrypt its own
-  copy. Key A is now protected by whatever protects every other system-shard
-  record on that node: its own at-rest storage encryption when one is
-  configured, cluster mTLS while Raft replicates the write, and nothing at
-  all under seal strategy `none`. It is persisted through
-  `kvstore.MultiGuardedBatchKVStore` (`__sys:cluster_ca/`) as two separate
-  records -- the private key and the public certificate -- written
-  together in one atomic batch (`PutAllIfAllUnchanged`, guarded on both
-  being absent), closing the same torn-write window a single combined
-  record once did, while letting `Certificate(ctx)` read only the
-  certificate record on a cold cache: the key record is never fetched, let
-  alone parsed, unless something calls `Signer`. The `crypto.Signer`
-  `Signer` returns is opaque (cannot be type-asserted back to
-  `*ecdsa.PrivateKey`, and `Public()` returns a copy, not a pointer into
-  the live key) and re-checks both the barrier's sealed state and the
-  provider's own `Seal` generation on every `Sign` call, so a `Signer`
-  obtained before either refuses afterward even though the caller is still
-  holding it. `AdoptIfAbsent` refuses with a typed mismatch error, rather
-  than silently discarding the loser, when the stored certificate differs
-  from the one supplied to it. No node ever writes a CA private key to
-  `{dataDir}/ca-key.pem` as its durable copy again — see
-  `docs/certificate-authority/architecture.md`.
-- Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
-  (Key B) dynamically, loaded from the replicated store after unseal, in
-  addition to the cluster CA; the peer/Raft/enrollment transport continues
-  to trust the cluster CA only.
-- `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
-  minting a new CSR-signed certificate requires the barrier to be unsealed
-  once the init ceremony is operational. The ceremony CA now goes through
-  the `cakey.Provider` seam on both sides of unseal (`NewProviderCA` over a
-  `StaticProvider` before persist, and over the replicated `ClusterCAProv`
-  after), rather than a raw `LocalCA` built directly from `CAKeyPEM`.
-- Member-side CSR issuance ships: `clusterenroll.Join` no longer refuses
-  unconditionally with `*EnrollmentUnavailableError`. See
-  `docs/clustering/architecture.md`.
-- The first node's resumed enrollment listener requires only `ca.pem` to
-  restart, not `ca-key.pem` — which `cmd/qrdbd` deletes from disk once Key A
-  is confirmed durable in the replicated store, on every boot after the
-  first successful one. Requiring it made a first node's own second
-  restart fail closed forever; see `docs/clustering/engineering.md`.
-
-### Removed
-
-- The static, shared `--cluster-join-token-file` / `--cluster-join-token-env`
-  flags and YAML config (`cluster_join.token_file` / `cluster_join.token_env`)
-  on the signing-member side. A signing member now validates a presented
-  token against the single-use, identity-bound tokens an admin mints into
-  the replicated store, not a value it was configured with. The joiner-side
-  `--bootstrap-join-token-file` / `--bootstrap-join-token-env` flags are
-  unchanged in shape; they now carry a minted single-use token instead of a
-  static shared secret.
-
 ### Security
 
 - **BREAKING: per-tenant Key B CAs replace the single shared login CA.**
@@ -655,6 +721,125 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   certificate. Both now resolve and return the specific tenant's own
   certificate directly from its `cakey.Provider`, never through the shared
   cache.
+
+## [0.40.0-alpha] - 2026-10-04
+
+The CA key provider seam and replicated cluster CA. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **`pkg/cakey`: the CA key provider seam.** Both CA keys (the cluster CA and the login CA) are reached only through `cakey.Provider` (`Signer(ctx)`, `Certificate(ctx)`), shaped like go-xkms `CASigningIdentity`. qrdb ships the software provider, and go-xkms injects HSM or KMS providers.
+  - The software provider stores the certificate and key as separate records, written atomically.
+  - Its signer is opaque: it re-checks the barrier on every Sign, and `Seal` revokes it.
+- **The cluster CA is replicated.** Any member can sign a joiner's CSR. The CA key material is unreachable through every client data path, including the embedded transport, entity verbs and bulk import.
+- **Single-use, identity-bound join tokens** (`cluster:join_token`, ScopeCross), on all six transports and both SDKs.
+  - The CSR and proof of possession are validated before the token is consumed.
+  - Join identities are reserved with a TTL, and existing members are refused.
+  - Weak CSR keys are refused.
+- **`ceremony sign-csr` is refused in the post-operational sealed window.**
+
+### Added
+
+- `pkg/cakey`: the CA key provider seam (`Provider`, `SoftwareProvider`,
+  `StaticProvider`, `Adapter`). Both CA keys (the cluster CA and the login
+  CA) obtain their signing key only through this interface, so an embedder
+  (go-xkms) can inject an HSM/TPM/KMS-backed provider with no glue code and
+  qrdb never holds the key.
+- **Member-side CSR join uses single-use, identity-bound join tokens**,
+  replacing the earlier static shared admission secret. An admin mints a
+  token bound to a joining node's SPIFFE node identity and an expiry
+  (`clusterenroll.MintJoinToken`); only its SHA-256 digest is stored in the
+  replicated join-token store, and it is consumed atomically on first use
+  (compare-and-delete) — a second presentation, an expired token, or one
+  bound to a foreign trust domain, a tenant path, or an already-admitted
+  identity is refused identically to an unknown token, so the response
+  carries no token-validity oracle. The issued leaf carries the token's
+  bound identity as its sole URI SAN, never the joiner's self-reported
+  `node_uri` and never the signing member's own SANs. Join attempts are
+  rate-limited and locked out per source address, shared across the Noise_NK
+  and SPKI/Direct transports so switching transports mid-attack gains
+  nothing; `JoinServer` also bounds concurrent in-flight Noise_NK
+  handshakes.
+- An admin mints a join token through `POST /v1/cluster/join-tokens` (REST),
+  `qrdb admin join-token mint <node-id>` (CLI), the gRPC `MintJoinToken` RPC,
+  QUIC, Unix, or the `qrdb_mint_join_token` MCP tool, all backed by a new
+  `service.ClusterJoinTokenMinter` interface and permission
+  `cluster:join_token` (`ScopeCross`, platform-only — no built-in role
+  carries it by default). Implemented on all six transports (REST, gRPC,
+  QUIC, Unix, MCP, embedded) and their SDK clients.
+- `pkg/config.ResolveJoinToken` refuses a group- or world-readable
+  `--bootstrap-join-token-file`, one not owned by the process's own user, or
+  a resolved token shorter than `MinJoinTokenLength`, each with a typed
+  error.
+- The joiner verifies the leaf a signing member returns actually chains to
+  the anchor it fetched and carries its own public key
+  (`*clusterenroll.JoinedLeafVerifyError` otherwise), `cakey.AdoptIfAbsent`
+  refuses a key and certificate that do not belong to each other
+  (`*cakey.KeyCertMismatchError`), and `--bootstrap-join-url` /
+  `bootstrap.join_http_url` must use `https://`.
+- A sealed signing member refuses every join attempt — valid token or
+  not — with the same generic message, checked before the token is ever
+  consumed: consuming it first and discovering the seal only at issuance
+  would both burn a legitimately minted single-use token for nothing and
+  leak "this token was valid" to a prober.
+
+### Changed
+
+- **The cluster CA key (Key A) is stored like every other replicated system
+  record — no additional encryption layered on by `pkg/cakey` itself.** An
+  earlier revision wrapped it with the writing node's own
+  `seal.EncryptionBarrier` before persisting it; because the record is
+  REPLICATED and every node's barrier is its own, not shared cluster-wide,
+  every node other than the one that wrote it failed to decrypt its own
+  copy. Key A is now protected by whatever protects every other system-shard
+  record on that node: its own at-rest storage encryption when one is
+  configured, cluster mTLS while Raft replicates the write, and nothing at
+  all under seal strategy `none`. It is persisted through
+  `kvstore.MultiGuardedBatchKVStore` (`__sys:cluster_ca/`) as two separate
+  records -- the private key and the public certificate -- written
+  together in one atomic batch (`PutAllIfAllUnchanged`, guarded on both
+  being absent), closing the same torn-write window a single combined
+  record once did, while letting `Certificate(ctx)` read only the
+  certificate record on a cold cache: the key record is never fetched, let
+  alone parsed, unless something calls `Signer`. The `crypto.Signer`
+  `Signer` returns is opaque (cannot be type-asserted back to
+  `*ecdsa.PrivateKey`, and `Public()` returns a copy, not a pointer into
+  the live key) and re-checks both the barrier's sealed state and the
+  provider's own `Seal` generation on every `Sign` call, so a `Signer`
+  obtained before either refuses afterward even though the caller is still
+  holding it. `AdoptIfAbsent` refuses with a typed mismatch error, rather
+  than silently discarding the loser, when the stored certificate differs
+  from the one supplied to it. No node ever writes a CA private key to
+  `{dataDir}/ca-key.pem` as its durable copy again — see
+  `docs/certificate-authority/architecture.md`.
+- Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
+  (Key B) dynamically, loaded from the replicated store after unseal, in
+  addition to the cluster CA; the peer/Raft/enrollment transport continues
+  to trust the cluster CA only.
+- `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
+  minting a new CSR-signed certificate requires the barrier to be unsealed
+  once the init ceremony is operational. The ceremony CA now goes through
+  the `cakey.Provider` seam on both sides of unseal (`NewProviderCA` over a
+  `StaticProvider` before persist, and over the replicated `ClusterCAProv`
+  after), rather than a raw `LocalCA` built directly from `CAKeyPEM`.
+- Member-side CSR issuance ships: `clusterenroll.Join` no longer refuses
+  unconditionally with `*EnrollmentUnavailableError`. See
+  `docs/clustering/architecture.md`.
+- The first node's resumed enrollment listener requires only `ca.pem` to
+  restart, not `ca-key.pem` — which `cmd/qrdbd` deletes from disk once Key A
+  is confirmed durable in the replicated store, on every boot after the
+  first successful one. Requiring it made a first node's own second
+  restart fail closed forever; see `docs/clustering/engineering.md`.
+
+### Removed
+
+- The static, shared `--cluster-join-token-file` / `--cluster-join-token-env`
+  flags and YAML config (`cluster_join.token_file` / `cluster_join.token_env`)
+  on the signing-member side. A signing member now validates a presented
+  token against the single-use, identity-bound tokens an admin mints into
+  the replicated store, not a value it was configured with. The joiner-side
+  `--bootstrap-join-token-file` / `--bootstrap-join-token-env` flags are
+  unchanged in shape; they now carry a minted single-use token instead of a
+  static shared secret.
+
 
 ## [0.39.0-alpha] - 2026-10-04
 
