@@ -2699,24 +2699,39 @@ func runStart(f *startFlags) (err error) {
 				}
 			}
 
-			// Opt-in dynamic Raft membership: register self under a lease and, on the
-			// leader, reconcile the Raft group as nodes join and leave. OFF by default.
-			var membershipMgr *cluster.MembershipManager
+			// Every raft-mode node publishes its lease-backed member record -- its
+			// Raft address, the API endpoints it serves, and its liveness -- so a
+			// peer can reach it by replica id (replica forwarding resolves its
+			// targets from these records). Opt-in dynamic Raft membership does
+			// that AND, on the leader, reconciles the Raft group as nodes join and
+			// leave; without it, the advertiser publishes the record alone.
+			var memberRecord memberRecordCloser
 			if f.dynamicMembership && standalone {
 				slog.Warn("dynamic membership ignored: requires mode: raft")
 			}
-			if f.dynamicMembership && !standalone {
-				membershipMgr, err = startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
-				if err != nil {
+			switch {
+			case f.dynamicMembership && !standalone:
+				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				if mErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
-					return err
+					return mErr
 				}
+				memberRecord = membershipMgr
 				slog.Info("dynamic membership manager started",
 					"shard_id", f.shardID, "node_id", f.replicaID)
 				if dynamicMembershipStarted != nil {
 					dynamicMembershipStarted()
 				}
+			case !standalone:
+				advertiser, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				if aErr != nil {
+					srv.Stop()
+					_ = shutdownNode(nodeCloser)
+					return aErr
+				}
+				memberRecord = advertiser
+				slog.Info("member record published", "node_id", f.replicaID)
 			}
 
 			slog.Info("qrdbd node started, waiting for signals")
@@ -2726,9 +2741,9 @@ func runStart(f *startFlags) (err error) {
 			case <-sigCtx.Done():
 				slog.Info("received signal, shutting down")
 
-				if membershipMgr != nil {
-					if err := membershipMgr.Close(); err != nil {
-						slog.Error("membership manager close failed", slog.Any("error", err))
+				if memberRecord != nil {
+					if err := memberRecord.Close(); err != nil {
+						slog.Error("member record close failed", slog.Any("error", err))
 					}
 				}
 				withdrawFeatures(gateCloser)
@@ -2796,7 +2811,7 @@ func runStart(f *startFlags) (err error) {
 					}
 				}
 				withdrawFeatures(gateCloser)
-				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, membershipMgr, bootCancel, sealSub)
+				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, memberRecord, bootCancel, sealSub)
 				// handleSystemMigration stopped svcNode to release its store locks
 				// for re-encryption; nil it so the deferred Stop above is skipped.
 				svcNode = nil
@@ -3262,6 +3277,49 @@ func startDynamicMembership(
 		return nil, err
 	}
 	return mgr, nil
+}
+
+// memberRecordCloser is what keeps this node's member record published: the
+// dynamic membership manager, or the node advertiser when dynamic membership
+// is off. Closing it deregisters the record.
+type memberRecordCloser interface {
+	Close() error
+}
+
+// startNodeAdvertiser publishes this node's lease-backed member record --
+// its Raft address, the API endpoints it serves and the features it supports
+// -- and keeps the lease alive, without the dynamic-membership
+// reconfiguration loop. It runs on every raft-mode node that does not run
+// dynamic membership (which publishes the same record itself), so every
+// member is reachable by replica id.
+func startNodeAdvertiser(
+	ctx context.Context,
+	f *startFlags,
+	kvSvc service.KVServicer,
+	adminSvc service.AdminServicer,
+	mvccSvc service.MVCCKVServicer,
+	leaseSvc service.LeaseServicer,
+	watchSvc service.WatchServicer,
+) (*cluster.Advertiser, error) {
+	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+	if err != nil {
+		return nil, err
+	}
+	endpoints, err := advertisedAPIEndpoints(f)
+	if err != nil {
+		return nil, err
+	}
+	advertiser, err := client.NewNodeAdvertiser(
+		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
+		cluster.AdvertiseConfig{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := advertiser.Start(ctx); err != nil {
+		return nil, err
+	}
+	return advertiser, nil
 }
 
 // newEmbeddedClient builds an in-process (embedded) qrdb SDK client over the

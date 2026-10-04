@@ -28,7 +28,6 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -189,7 +188,7 @@ func handleSystemMigration(
 	host *quicraft.Host,
 	raftBackendReg *server.RaftBackendFactory,
 	tenantHostReg *server.TenantHostRegistry,
-	membershipMgr *cluster.MembershipManager,
+	memberRecord memberRecordCloser,
 	bootCancel context.CancelFunc,
 	sealSub *sealSubsystem,
 ) (reboot bool, err error) {
@@ -215,9 +214,9 @@ func handleSystemMigration(
 	if bootCancel != nil {
 		bootCancel()
 	}
-	if membershipMgr != nil {
-		if cerr := membershipMgr.Close(); cerr != nil {
-			slog.Error("membership manager close during migration failed", slog.Any("error", cerr))
+	if memberRecord != nil {
+		if cerr := memberRecord.Close(); cerr != nil {
+			slog.Error("member record close during migration failed", slog.Any("error", cerr))
 		}
 	}
 	if srv != nil {
