@@ -373,6 +373,81 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 	return res, err
 }
 
+// officerKeyFingerprint is the pair validateOfficerCredentials compares
+// across a batch to refuse two officers sharing a key, mirroring enrol's
+// own check against already-persisted holders (the loop below, over
+// `seen`, is that exact comparison -- bytes.Equal(spki) or an identical
+// encryption KEM+key -- applied within ONE batch instead of across calls).
+type officerKeyFingerprint struct {
+	spki   []byte
+	encKEM string
+	encKey []byte
+}
+
+// validateOfficerCredentials pre-validates EVERY officer's CSR (present,
+// parseable), key kind, encryption KEM/key, and factor set, and refuses a
+// key any TWO officers in the SAME batch share -- all PURE checks, no side
+// effect -- before ANY of them is enrolled (go-qrdb#560 review B3, "a
+// refused M-of-N init leaves partial state behind"). Without this, a batch
+// of N officers where only the LAST one is malformed enrolled (signed a
+// certificate, persisted a record for) the first N-1 before discovering
+// the last one's CSR does not even parse: Initialize then refused the
+// whole call, but with N-1 holders already committed.
+//
+// Called by Initialize alongside validateInitOptions and
+// validateAdminCredentialInputs, before pin.Provision, the TLS issue and
+// issueAdminCredential -- the same place, and for the same reason,
+// go-qrdb#548 review B3 already moved the admin-credential checks to.
+// d is the deps the real enrolment loop (holderScope.enrol, via register)
+// will use to resolve factor implementations; its Factors registry is
+// configured independently of CA, which Initialize has not yet stored
+// into a deps value at this point, so this check does not need d.CA.
+func validateOfficerCredentials(d *HolderDeps, officers []OfficerConfig) error {
+	seen := make([]officerKeyFingerprint, 0, len(officers))
+	for _, o := range officers {
+		if len(o.CSRPEM) == 0 {
+			return ErrMissingCSRPEM
+		}
+		csr, err := parseCSR(o.CSRPEM)
+		if err != nil {
+			return err
+		}
+		if _, ok := mtls.PublicKeyKind(csr.PublicKey); !ok {
+			return &UnsupportedHolderKeyError{Algorithm: csr.PublicKeyAlgorithm.String()}
+		}
+		spki, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
+		if err != nil {
+			return &CSRParseError{Err: err}
+		}
+		var encReq *EncryptionKeyEnrolment
+		if o.EncryptionKEM != "" || len(o.EncryptionKey) > 0 {
+			encReq = &EncryptionKeyEnrolment{KEM: o.EncryptionKEM, PublicKey: o.EncryptionKey}
+		}
+		encKEM, encKey, err := enrolmentEncryptionKey(encReq, csr)
+		if err != nil {
+			return err
+		}
+		for _, s := range seen {
+			if bytes.Equal(s.spki, spki) || (s.encKEM == encKEM && bytes.Equal(s.encKey, encKey)) {
+				return ErrDuplicateHolderKey
+			}
+		}
+		seen = append(seen, officerKeyFingerprint{spki: spki, encKEM: encKEM, encKey: encKey})
+
+		req := RegisterOfficerRequest{
+			Username: o.Username, Role: o.Role, CSRPEM: o.CSRPEM,
+			Factors: o.Factors, Designated: o.Designated,
+		}
+		if _, err := resolveFactors(d, req); err != nil {
+			return err
+		}
+		if _, err := designatedFactor(req); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // enrol enrols one holder: it has the CA issue the holder a certificate
 // carrying a CA-assigned identity, records the envelope recipient key and
 // every enrolled factor's public material, and persists the public record.

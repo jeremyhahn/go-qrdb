@@ -340,6 +340,19 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		return nil, err
 	}
 
+	// Every officer's CSR, key kind, encryption KEM/key and factor set is
+	// validated as a batch, PURELY, before any of them is enrolled
+	// (go-qrdb#560 review B3, "a refused M-of-N init leaves partial state
+	// behind"): without this, a batch where only the LAST officer is
+	// malformed enrolled (signed, persisted) every officer before it
+	// first. opts.Threshold < 2 means no officers are enrolled at all
+	// (the single-admin path below), so there is nothing to validate here.
+	if opts.Threshold >= 2 {
+		if err := validateOfficerCredentials(&s.deps, opts.Officers); err != nil {
+			return nil, err
+		}
+	}
+
 	// A BYO-TLS node (ca == nil) has no CA to self-issue a TLS certificate
 	// with, so its OWN configured leaf (s.config.ServerCertPEM) must
 	// already be present and parseable. Checked here, alongside the other

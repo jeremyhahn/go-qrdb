@@ -178,6 +178,74 @@ func TestInitialize_HolderRegistrationFailureAborts(t *testing.T) {
 	assert.True(t, errorAs[*CSRParseError](err), err)
 }
 
+// TestInitialize_HolderRegistrationFailureAborts_NothingPersistedAndRetrySucceeds
+// strengthens the sibling test above with go-qrdb#560 review B3's own
+// assertion: a 2-of-2 init where officer 2's CSR is malformed refuses the
+// WHOLE call with nothing persisted for EITHER officer -- not just the bad
+// one -- and a corrected retry succeeds cleanly. Before B3's fix, officer 1
+// (alice) was already signed and persisted by the time officer 2 (bob)'s
+// malformed CSR was discovered, inside the per-officer enrollment loop;
+// this proves the pre-flight (validateOfficerCredentials) now catches it
+// before either officer is touched, and before pin.Provision, the TLS
+// issue or issueAdminCredential run at all.
+func TestInitialize_HolderRegistrationFailureAborts_NothingPersistedAndRetrySucceeds(t *testing.T) {
+	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+	opts := initOpts(2, alice, bob)
+	opts.Officers[1].CSRPEM = []byte("garbage")
+
+	_, err := e.svc.Initialize(ctx, e.ca, opts)
+	assert.True(t, errorAs[*CSRParseError](err), err)
+	assert.Equal(t, StateAwaitingInit, e.svc.State(), "a refused init must leave the ceremony awaiting, not partially initialized")
+	assert.False(t, e.pins.SOPINSet(), "a refused init must not have provisioned the SO PIN either")
+
+	officers, lerr := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, lerr)
+	assert.Empty(t, officers, "neither officer -- not even alice, who would have enrolled before bob's malformed CSR was ever reached -- must be persisted")
+
+	// A corrected retry, with bob's CSR fixed, must succeed cleanly: the
+	// refusal above must not have left any state (a provisioned PIN, an
+	// issued admin certificate, a half-enrolled alice) that would make
+	// this retry behave any differently from a genuinely first attempt.
+	opts.Officers[1].CSRPEM = bob.csrPEM
+	res, err := e.svc.Initialize(ctx, e.ca, opts)
+	require.NoError(t, err, "a corrected retry must succeed")
+	assert.Equal(t, StateEnrolling, res.State)
+	require.Len(t, res.Holders, 2)
+
+	officers, lerr = e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, lerr)
+	assert.Len(t, officers, 2, "both officers must be enrolled after the corrected retry")
+}
+
+// TestInitialize_DuplicateOfficerKeyWithinBatchRefusedBeforeEitherPersists
+// covers the other half of go-qrdb#560 review B3's "duplicate keys" pre-
+// flight: two officers submitting the SAME certificate key in ONE batch
+// must be refused -- and, critically, refused before the FIRST of the two
+// is ever enrolled. enrol's own duplicate check compares only against
+// ALREADY-PERSISTED holders, so without the batch-wide pre-flight the
+// first officer sharing a key would be signed and persisted, and only the
+// second would trip the check -- leaving the first as orphaned partial
+// state.
+func TestInitialize_DuplicateOfficerKeyWithinBatchRefusedBeforeEitherPersists(t *testing.T) {
+	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+	opts := initOpts(2, alice, bob)
+	opts.Officers[1].CSRPEM = alice.csrPEM // bob presents alice's own key
+
+	_, err := e.svc.Initialize(ctx, e.ca, opts)
+	assert.ErrorIs(t, err, ErrDuplicateHolderKey)
+	assert.Equal(t, StateAwaitingInit, e.svc.State())
+
+	officers, lerr := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, lerr)
+	assert.Empty(t, officers, "alice must not be enrolled just because she was first in the batch")
+}
+
 // TestSignCSRInit_CAAssignsTheHolderIdentity pins the §6 fix: the CA assigns
 // the certificate's identity from the request, never the CSR, and the SO PIN
 // is verified by the PIN backend. go-qrdb#548: sign-csr issues HOLDER
