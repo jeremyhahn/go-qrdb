@@ -42,15 +42,25 @@ const MaxJoinTokenTTLSeconds = math.MaxInt64 / int64(time.Second)
 // converting inline, so the guard cannot be present on some transports and
 // missing on others.
 //
-// ttlSeconds <= 0 converts to 0, which MintJoinToken (via
+// ttlSeconds == 0 converts to 0, which MintJoinToken (via
 // clusterenroll.MintJoinToken) already treats as "use the default TTL" --
 // this function does not duplicate that default, it only guards the
-// multiplication.
+// multiplication. A NEGATIVE ttlSeconds is deliberately NOT collapsed to 0
+// here: it converts to a negative time.Duration and is passed through
+// unchanged, so clusterenroll.MintJoinToken's own refusal
+// (*clusterenroll.JoinTokenTTLError) is what every transport sees for it,
+// identically -- this function silently defaulting a negative value here
+// would hide a caller bug (a bad subtraction, an unconverted unit) behind
+// an ordinary-looking token on some transports and not others, depending
+// on whether they happened to also validate it themselves.
 func ParseJoinTokenTTLSeconds(ttlSeconds int64) (time.Duration, error) {
 	if ttlSeconds > MaxJoinTokenTTLSeconds {
 		return 0, &JoinTokenTTLOverflowError{TTLSeconds: ttlSeconds}
 	}
-	if ttlSeconds <= 0 {
+	if ttlSeconds < -MaxJoinTokenTTLSeconds {
+		return 0, &JoinTokenTTLOverflowError{TTLSeconds: ttlSeconds}
+	}
+	if ttlSeconds == 0 {
 		return 0, nil
 	}
 	return time.Duration(ttlSeconds) * time.Second, nil

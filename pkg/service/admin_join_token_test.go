@@ -94,8 +94,10 @@ func TestAdminService_MintJoinToken_InvalidTTLSurfacesTypedError(t *testing.T) {
 
 // TestParseJoinTokenTTLSeconds covers every transport's conversion of a
 // wire-supplied ttl_seconds int64 to a time.Duration: the ordinary range,
-// the zero/negative "use the default" convention, exactly at the overflow
-// boundary, and just past it.
+// the zero "use the default" convention, a negative value (converted,
+// NOT collapsed to the default -- clusterenroll.MintJoinToken is what
+// refuses it, identically for every transport that calls through here),
+// exactly at the overflow boundary on both sides, and just past it.
 func TestParseJoinTokenTTLSeconds(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -105,10 +107,13 @@ func TestParseJoinTokenTTLSeconds(t *testing.T) {
 	}{
 		{name: "ordinary value", ttlSeconds: 3600, want: time.Hour},
 		{name: "zero means use the default", ttlSeconds: 0, want: 0},
-		{name: "negative means use the default", ttlSeconds: -1, want: 0},
+		{name: "negative converts, does not default", ttlSeconds: -1, want: -time.Second},
 		{name: "exactly at the overflow boundary", ttlSeconds: MaxJoinTokenTTLSeconds, want: time.Duration(MaxJoinTokenTTLSeconds) * time.Second},
 		{name: "one second past the boundary overflows", ttlSeconds: MaxJoinTokenTTLSeconds + 1, wantErr: true},
 		{name: "math.MaxInt64 overflows", ttlSeconds: math.MaxInt64, wantErr: true},
+		{name: "exactly at the negative overflow boundary", ttlSeconds: -MaxJoinTokenTTLSeconds, want: -time.Duration(MaxJoinTokenTTLSeconds) * time.Second},
+		{name: "one second past the negative boundary overflows", ttlSeconds: -MaxJoinTokenTTLSeconds - 1, wantErr: true},
+		{name: "math.MinInt64 overflows", ttlSeconds: math.MinInt64, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +132,32 @@ func TestParseJoinTokenTTLSeconds(t *testing.T) {
 				t.Fatalf("ParseJoinTokenTTLSeconds(%d) = %v, want %v", tc.ttlSeconds, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAdminService_MintJoinToken_NegativeTTLSecondsRefusedEndToEnd proves
+// every transport -- which all convert ttl_seconds through
+// ParseJoinTokenTTLSeconds before calling AdminService.MintJoinToken --
+// sees the IDENTICAL refusal for a negative ttl_seconds: ParseJoinTokenTTLSeconds
+// converts rather than defaults it, and clusterenroll.MintJoinToken is what
+// actually refuses the resulting negative duration.
+func TestAdminService_MintJoinToken_NegativeTTLSecondsRefusedEndToEnd(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	svc := NewAdminService(&mockHost{}, WithClusterJoinTokenStore(store, "test.cluster"))
+	admin := svc.(*AdminService)
+
+	ttl, err := ParseJoinTokenTTLSeconds(-5)
+	if err != nil {
+		t.Fatalf("ParseJoinTokenTTLSeconds(-5): %v", err)
+	}
+	if ttl != -5*time.Second {
+		t.Fatalf("ParseJoinTokenTTLSeconds(-5) = %v, want -5s", ttl)
+	}
+
+	_, _, err = admin.MintJoinToken(context.Background(), "node-1", ttl)
+	var ttlErr *clusterenroll.JoinTokenTTLError
+	if !errors.As(err, &ttlErr) {
+		t.Fatalf("MintJoinToken with a negative ttl_seconds = %v, want *clusterenroll.JoinTokenTTLError", err)
 	}
 }
 
