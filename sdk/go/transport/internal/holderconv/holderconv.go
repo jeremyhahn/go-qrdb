@@ -257,6 +257,13 @@ func TenantRevokeToPB(req *transport.TenantOfficerRevokeRequest) *pb.TenantBarri
 }
 
 // CeremonyInitToPB encodes a ceremony initialization.
+//
+// Secret is the one, unavoidable copy converting
+// transport.CeremonyInitializeRequest's wire string into the proto
+// message's bytes field (go-qrdb#560 review item 7): the SDK caller
+// supplied it as a Go string (transport.CeremonyInitializeRequest.Secret),
+// so a copy crossing into []byte here is the earliest this client can make
+// it wipeable, not an avoidable extra one.
 func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) *pb.CeremonyInitializeRequest {
 	officers := make([]*pb.CeremonyOfficer, len(req.Officers))
 	for i, o := range req.Officers {
@@ -275,11 +282,19 @@ func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) *pb.CeremonyInit
 		AdminCertPem:           req.AdminCertPEM,
 		AdminCertPoolPem:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
-		Secret:                 req.Secret,
+		Secret:                 []byte(req.Secret),
 	}
 }
 
 // CeremonyInitFromPB decodes a ceremony initialization result.
+//
+// AdminKeyPEM converts the proto's bytes field to
+// transport.CeremonyInitializeResponse's wire string (go-qrdb#560 review
+// item 7): that field stays a Go string so every SDK caller across every
+// transport sees the same type, and a string conversion of
+// resp.GetAdminKeyPem() already makes its own independent copy -- the
+// proto message resp belongs to, and may still be read from, this call's
+// caller, so nothing here wipes it.
 func CeremonyInitFromPB(resp *pb.CeremonyInitializeResponse) *transport.CeremonyInitializeResponse {
 	holders := make([]transport.CeremonyHolderCert, len(resp.GetHolders()))
 	for i, h := range resp.GetHolders() {
@@ -293,7 +308,7 @@ func CeremonyInitFromPB(resp *pb.CeremonyInitializeResponse) *transport.Ceremony
 		ShareCount:            int(resp.GetShareCount()),
 		Holders:               holders,
 		AdminCertPEM:          resp.GetAdminCertPem(),
-		AdminKeyPEM:           resp.GetAdminKeyPem(),
+		AdminKeyPEM:           string(resp.GetAdminKeyPem()),
 		AdminCredentialSource: resp.GetAdminCredentialSource(),
 	}
 }

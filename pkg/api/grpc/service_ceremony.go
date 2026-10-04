@@ -50,7 +50,14 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-	return holderpb.CeremonyInitToPB(result), nil
+	// resp owns an independent bytes.Clone of result.AdminKeyPEM
+	// (holderpb.CeremonyInitToPB's own doc comment), so wiping result's
+	// copy here, now that resp is fully built, cannot zero resp's bytes
+	// out from under the still-pending marshal and send
+	// (go-qrdb#560 review item 7: every transport, not only REST).
+	resp := holderpb.CeremonyInitToPB(result)
+	result.WipeAdminKeyPEM()
+	return resp, nil
 }
 
 // CeremonyStatus returns the current ceremony state and SPKI pin.

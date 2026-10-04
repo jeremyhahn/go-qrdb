@@ -88,10 +88,14 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// The admin key, when the generate path produced one, is wiped from this
-	// handler's own copy immediately after writeJSON serializes the response
-	// (go-qrdb#548) -- not yet reachable over this transport (see the TODO
-	// above), but WipeAdminKeyPEM is a safe no-op when result carries none.
+	// The admin key, when the generate path produced one, is wiped from
+	// this handler's own copy of result once writeJSON has already
+	// serialized and written the response (go-qrdb#548) -- the response
+	// itself carries an independent string copy
+	// (holderwire.CeremonyInitTo's string(...) conversion), so this wipe
+	// cannot reach it. Every other transport now wipes the same way
+	// (go-qrdb#560 review item 7); WipeAdminKeyPEM is a safe no-op when
+	// result carries none.
 	defer result.WipeAdminKeyPEM()
 	writeJSON(w, holderwire.CeremonyInitTo(result))
 }

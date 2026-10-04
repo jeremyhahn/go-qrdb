@@ -257,6 +257,12 @@ func generateAdminCSR() (csrPEM, keyPEM []byte, err error) {
 	}
 	csrPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	// keyDER is the raw, unencoded private key: pem.EncodeToMemory above
+	// already copied it into keyPEM's own PEM block, so this copy has no
+	// further use and must not be left unwiped (go-qrdb#560 review item
+	// 7) alongside the one keyPEM callers actually need and are
+	// responsible for wiping once they are done with it.
+	secure.Wipe(keyDER)
 	return csrPEM, keyPEM, nil
 }
 

@@ -19,6 +19,7 @@
 package holderpb
 
 import (
+	"bytes"
 	"encoding/json"
 	"time"
 
@@ -255,6 +256,15 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) *service.CeremonyInit
 }
 
 // CeremonyInitToPB converts a ceremony initialization result.
+//
+// AdminKeyPem is an explicit bytes.Clone of r.AdminKeyPEM, not a shared
+// slice: the admin_key_pem proto field is bytes (go-qrdb#560 review item
+// 7), and every transport that calls this wipes r.AdminKeyPEM
+// (CeremonyInitResult.WipeAdminKeyPEM) once it has built its outgoing
+// response -- sharing the backing array would zero the response's own
+// copy, still unmarshaled and unsent, out from under it. The clone is the
+// one, unavoidable copy this value's single delivery to its caller
+// requires; nothing beyond this call and the one wipe retains another.
 func CeremonyInitToPB(r *service.CeremonyInitResult) *pb.CeremonyInitializeResponse {
 	holders := make([]*pb.CeremonyHolderCert, len(r.Holders))
 	for i, h := range r.Holders {
@@ -268,7 +278,7 @@ func CeremonyInitToPB(r *service.CeremonyInitResult) *pb.CeremonyInitializeRespo
 		ShareCount:            int32(r.ShareCount), //nolint:gosec // bounded by the holder count
 		Holders:               holders,
 		AdminCertPem:          string(r.AdminCertPEM),
-		AdminKeyPem:           string(r.AdminKeyPEM),
+		AdminKeyPem:           bytes.Clone(r.AdminKeyPEM),
 		AdminCredentialSource: r.AdminCredentialSource,
 	}
 }

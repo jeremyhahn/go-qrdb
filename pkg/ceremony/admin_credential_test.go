@@ -362,3 +362,30 @@ func TestWipeAdminKeyPEM_NilSafe(t *testing.T) {
 	r2.WipeAdminKeyPEM()
 	assert.Nil(t, r2.AdminKeyPEM)
 }
+
+// TestGenerateAdminCSR_ProducesAVerifiableCSRAndMatchingKey is the
+// regression guard for wiping generateAdminCSR's intermediate keyDER
+// (go-qrdb#560 review item 7): it must run strictly AFTER
+// pem.EncodeToMemory has already copied those bytes into keyPEM's own PEM
+// block, never before. Two independent calls are made to rule out any
+// aliasing between them (e.g. a wipe reaching into the wrong call's
+// buffer), and each call's own CSR must verify against its own key.
+func TestGenerateAdminCSR_ProducesAVerifiableCSRAndMatchingKey(t *testing.T) {
+	for i := 0; i < 2; i++ {
+		csrPEM, keyPEM, err := generateAdminCSR()
+		require.NoError(t, err)
+
+		keyBlock, _ := pem.Decode(keyPEM)
+		require.NotNil(t, keyBlock, "keyPEM must decode")
+		priv, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+		require.NoError(t, err)
+
+		csrBlock, _ := pem.Decode(csrPEM)
+		require.NotNil(t, csrBlock, "csrPEM must decode")
+		csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
+		require.NoError(t, err)
+		require.NoError(t, csr.CheckSignature(), "the CSR must verify against its own (unwiped) public key")
+
+		assert.True(t, priv.PublicKey.Equal(csr.PublicKey), "keyPEM and csrPEM must describe the same key pair")
+	}
+}

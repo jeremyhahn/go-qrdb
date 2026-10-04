@@ -107,6 +107,43 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	}
 }
 
+// TestHandleCeremonyInitialize_WipesAdminKeyPEM proves the generate path's
+// private key is wiped from the service-layer result
+// (CeremonyInitResult.WipeAdminKeyPEM) once this handler has built its own,
+// independent copy for the wire response -- go-qrdb#560 review item 7:
+// "WipeAdminKeyPEM runs on every transport, not only REST." The client
+// must still receive the correct, un-zeroed key: proving the wipe happens
+// AFTER holderpb.CeremonyInitToPB's bytes.Clone, never before it.
+func TestHandleCeremonyInitialize_WipesAdminKeyPEM(t *testing.T) {
+	result := &service.CeremonyInitResult{
+		SPKIPin:               "sha256/testpin",
+		AdminCertPEM:          []byte("admin-cert"),
+		AdminKeyPEM:           []byte("admin-key"),
+		AdminCredentialSource: "generated",
+	}
+	ceremonySvc := &mockCeremonyService{
+		ceremonyInitializeFn: func(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+			return result, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+
+	resp, err := srv.handleCeremonyInitialize(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var initResp pb.CeremonyInitializeResponse
+	if err := proto.Unmarshal(resp, &initResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(initResp.GetAdminKeyPem()) != "admin-key" {
+		t.Fatalf("client must still receive the un-zeroed key, got %q", initResp.GetAdminKeyPem())
+	}
+	if result.AdminKeyPEM != nil {
+		t.Fatalf("expected the service result's AdminKeyPEM to be wiped (nil) after the call, got %q", result.AdminKeyPEM)
+	}
+}
+
 // TestHandleCeremonyInitialize_ForwardsAllFields is the regression guard for
 // the bug where the QUIC handleCeremonyInitialize handler only forwarded
 // SoPin/UserPin into service.CeremonyInitializeOptions, silently dropping
@@ -136,7 +173,7 @@ func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 		AdminCertPem:     "admin-cert-in",
 		AdminCertPoolPem: "admin-pool",
 		AdminGenerate:    true,
-		Secret:           "barrier-secret",
+		Secret:           []byte("barrier-secret"),
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -179,10 +216,10 @@ func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	if !got.AdminGenerate {
 		t.Error("AdminGenerate not forwarded")
 	}
-	if got.Secret != "barrier-secret" {
+	if string(got.Secret) != "barrier-secret" {
 		t.Errorf("Secret = %q, want %q", got.Secret, "barrier-secret")
 	}
-	if initResp.GetAdminCertPem() != "admin-cert" || initResp.GetAdminKeyPem() != "admin-key" || initResp.GetAdminCredentialSource() != "generated" {
+	if initResp.GetAdminCertPem() != "admin-cert" || string(initResp.GetAdminKeyPem()) != "admin-key" || initResp.GetAdminCredentialSource() != "generated" {
 		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",
 			initResp.GetAdminCertPem(), initResp.GetAdminKeyPem(), initResp.GetAdminCredentialSource())
 	}

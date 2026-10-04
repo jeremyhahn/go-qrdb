@@ -3735,7 +3735,10 @@ message CeremonyInitializeRequest {
     string admin_cert_pem = 10;
     string admin_cert_pool_pem = 11;
     bool admin_generate = 12;
-    string secret = 13;
+    // secret is bytes, not string: it is the plaintext system-barrier
+    // passphrase, and a Go string is immutable and can never be wiped from
+    // memory after use the way a []byte can (go-qrdb#560 review item 7).
+    bytes secret = 13;
 }
 
 // CeremonyInitializeResponse returns the result of ceremony initialization.
@@ -3752,7 +3755,11 @@ message CeremonyInitializeResponse {
     int32 share_count = 7;
     repeated CeremonyHolderCert holders = 8;
     string admin_cert_pem = 9;
-    string admin_key_pem = 10;
+    // admin_key_pem is bytes, not string: it is the generated bootstrap
+    // admin's private key, and a Go string is immutable and can never be
+    // wiped from memory after use the way a []byte can (go-qrdb#560 review
+    // item 7).
+    bytes admin_key_pem = 10;
     string admin_credential_source = 11;
 }
 

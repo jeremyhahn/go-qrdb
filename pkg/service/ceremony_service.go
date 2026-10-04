@@ -102,7 +102,17 @@ type CeremonyInitializeOptions struct {
 	// needs one (e.g. "passphrase"); must be empty for "none". Ignored in
 	// M-of-N mode, where the barrier stays sealed until officers later
 	// reconstruct it from their shares.
-	Secret string
+	//
+	// []byte, not string (go-qrdb#560 review item 7): a Go string is
+	// immutable and can never be wiped from memory after use. Every
+	// caller that populates this from a wire string (holderwire.go, the
+	// JSON/embedded path) necessarily makes that one, unavoidable
+	// string-to-[]byte copy at the point of receipt; from here down,
+	// through ceremony.InitializeOptions.Secret (already []byte), the
+	// value is wipeable and CeremonyInitialize no longer has to make a
+	// SECOND, equally unwiped copy of its own to hand off to the core
+	// ceremony package.
+	Secret []byte
 }
 
 // CeremonyOfficerConfig names one initial share holder. CSRPEM is a PEM
@@ -237,7 +247,7 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		AdminCertPEM:           []byte(opts.AdminCertPEM),
 		AdminCertPoolPEM:       []byte(opts.AdminCertPoolPEM),
 		AdminGenerate:          opts.AdminGenerate,
-		Secret:                 []byte(opts.Secret),
+		Secret:                 opts.Secret,
 	}
 	if id := auth.IdentityFromContext(ctx); id != nil {
 		copts.Enroller = id.Subject

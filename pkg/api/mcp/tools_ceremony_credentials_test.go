@@ -227,6 +227,49 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	}
 }
 
+// TestHandleCeremonyInitialize_WipesAdminKeyPEM proves the generate path's
+// private key is wiped from the service-layer result
+// (CeremonyInitResult.WipeAdminKeyPEM) once this handler has built its own,
+// independent string copy for the wire response -- go-qrdb#560 review
+// item 7: "WipeAdminKeyPEM runs on every transport, not only REST." The
+// client must still receive the correct, un-zeroed key: proving the wipe
+// happens AFTER holderwire.CeremonyInitTo's string(...) copy and after
+// holderResult has already serialized it, never before.
+func TestHandleCeremonyInitialize_WipesAdminKeyPEM(t *testing.T) {
+	result := &service.CeremonyInitResult{
+		SPKIPin:               "abc123pin",
+		State:                 "initialized",
+		AdminCertPEM:          []byte("admin-cert"),
+		AdminKeyPEM:           []byte("admin-key"),
+		AdminCredentialSource: "generated",
+	}
+	svc := newMockCeremonyService()
+	svc.initializeFn = func(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+		return result, nil
+	}
+	handler := handleCeremonyInitialize(svc, &mockCeremonyCA{})
+
+	req := buildCallToolRequest(t, "qrdb_ceremony_initialize", map[string]any{})
+	out, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCeremonyInitialize: %v", err)
+	}
+
+	text := resultText(t, out)
+	var wire struct {
+		AdminKeyPEM string `json:"admin_key_pem"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		t.Fatalf("unmarshal admin_key_pem: %v", jsonErr)
+	}
+	if wire.AdminKeyPEM != "admin-key" {
+		t.Fatalf("client must still receive the un-zeroed key, got %q", wire.AdminKeyPEM)
+	}
+	if result.AdminKeyPEM != nil {
+		t.Fatalf("expected the service result's AdminKeyPEM to be wiped (nil) after the call, got %q", result.AdminKeyPEM)
+	}
+}
+
 // TestHandleCeremonyInitialize_ForwardsAllFields is the regression guard for
 // the bug where the MCP qrdb_ceremony_initialize tool handler only forwarded
 // so_pin/user_pin into service.CeremonyInitializeOptions, silently dropping

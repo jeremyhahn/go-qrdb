@@ -224,7 +224,14 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.Ceremon
 		AdminCertPEM:           req.AdminCertPEM,
 		AdminCertPoolPEM:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
-		Secret:                 req.Secret,
+		// transport.CeremonyInitializeRequest.Secret stays a wire string
+		// (REST/MCP/embedded's JSON-shaped request); this is the one,
+		// unavoidable copy converting it to the []byte
+		// service.CeremonyInitializeOptions.Secret carries from here down,
+		// so nothing downstream has to make a second, equally unwiped
+		// copy of its own to hand off to the core ceremony package
+		// (go-qrdb#560 review item 7).
+		Secret: []byte(req.Secret),
 	}
 }
 

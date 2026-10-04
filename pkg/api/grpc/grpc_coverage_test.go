@@ -1318,6 +1318,30 @@ func TestGRPC_CeremonyInitialize_Success(t *testing.T) {
 	}
 }
 
+// TestGRPC_CeremonyInitialize_WipesAdminKeyPEM proves the generate path's
+// private key is wiped from the service-layer result (CeremonyInitResult.
+// WipeAdminKeyPEM) once this handler has built its own, independent copy
+// for the wire response -- go-qrdb#560 review item 7: "WipeAdminKeyPEM
+// runs on every transport, not only REST." The client must still receive
+// the correct, un-zeroed key: proving the wipe happens AFTER
+// holderpb.CeremonyInitToPB's bytes.Clone, never before it.
+func TestGRPC_CeremonyInitialize_WipesAdminKeyPEM(t *testing.T) {
+	ceremonySvc := newMockCeremonyService()
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc), WithCeremonyCA(&stubCeremonyCA{}))
+	defer cleanup()
+
+	resp, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
+	if err != nil {
+		t.Fatalf("CeremonyInitialize failed: %v", err)
+	}
+	if string(resp.GetAdminKeyPem()) != "admin-key" {
+		t.Fatalf("client must still receive the un-zeroed key, got %q", resp.GetAdminKeyPem())
+	}
+	if ceremonySvc.initResult.AdminKeyPEM != nil {
+		t.Fatalf("expected the service result's AdminKeyPEM to be wiped (nil) after the call, got %q", ceremonySvc.initResult.AdminKeyPEM)
+	}
+}
+
 // TestGRPC_CeremonyInitialize_NilCeremonyCAReachesTheService proves a
 // server with a ceremony service but no CeremonyCA (WithCeremonyCA never
 // applied, as a BYO-TLS deployment configures it) reaches the ceremony
@@ -1373,7 +1397,7 @@ func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 		AdminCertPem:     "admin-cert-in",
 		AdminCertPoolPem: "admin-pool",
 		AdminGenerate:    true,
-		Secret:           "barrier-secret",
+		Secret:           []byte("barrier-secret"),
 	})
 	if err != nil {
 		t.Fatalf("CeremonyInitialize failed: %v", err)
@@ -1407,10 +1431,10 @@ func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	if !got.AdminGenerate {
 		t.Error("AdminGenerate not forwarded")
 	}
-	if got.Secret != "barrier-secret" {
+	if string(got.Secret) != "barrier-secret" {
 		t.Errorf("Secret = %q, want %q", got.Secret, "barrier-secret")
 	}
-	if resp.GetAdminCertPem() != "admin-cert" || resp.GetAdminKeyPem() != "admin-key" || resp.GetAdminCredentialSource() != "generated" {
+	if resp.GetAdminCertPem() != "admin-cert" || string(resp.GetAdminKeyPem()) != "admin-key" || resp.GetAdminCredentialSource() != "generated" {
 		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",
 			resp.GetAdminCertPem(), resp.GetAdminKeyPem(), resp.GetAdminCredentialSource())
 	}

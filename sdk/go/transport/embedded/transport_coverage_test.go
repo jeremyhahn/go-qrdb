@@ -983,6 +983,40 @@ func TestEmbeddedCeremony_Initialize_ForwardsAllFields(t *testing.T) {
 	}
 }
 
+// TestEmbeddedCeremony_Initialize_WipesAdminKeyPEM proves the generate
+// path's private key is wiped from the service-layer result
+// (CeremonyInitResult.WipeAdminKeyPEM) once this transport has built its
+// own, independent string copy for the response -- go-qrdb#560 review item
+// 7: "WipeAdminKeyPEM runs on every transport, not only REST." The caller
+// must still receive the correct, un-zeroed key: proving the wipe happens
+// AFTER holderwire.CeremonyInitTo's string(...) copy, never before it.
+func TestEmbeddedCeremony_Initialize_WipesAdminKeyPEM(t *testing.T) {
+	result := &service.CeremonyInitResult{
+		SPKIPin:               "pin",
+		State:                 "initialized",
+		AdminCertPEM:          []byte("admin-cert"),
+		AdminKeyPEM:           []byte("admin-key"),
+		AdminCredentialSource: "generated",
+	}
+	mock := &mockCeremonyService{
+		initFn: func(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+			return result, nil
+		},
+	}
+	tr := newExtTransport(t, WithCeremonyService(mock), WithCeremonyCA(&mockCeremonyCA{}))
+
+	resp, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{})
+	if err != nil {
+		t.Fatalf("CeremonyInitialize: %v", err)
+	}
+	if resp.AdminKeyPEM != "admin-key" {
+		t.Fatalf("caller must still receive the un-zeroed key, got %q", resp.AdminKeyPEM)
+	}
+	if result.AdminKeyPEM != nil {
+		t.Fatalf("expected the service result's AdminKeyPEM to be wiped (nil) after the call, got %q", result.AdminKeyPEM)
+	}
+}
+
 // TestEmbeddedCeremony_Initialize_NilRequest ensures the embedded transport
 // rejects a nil request rather than dereferencing it.
 func TestEmbeddedCeremony_Initialize_NilRequest(t *testing.T) {

@@ -107,7 +107,15 @@ func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.Ceremony
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
-		return holderResult("qrdb_ceremony_initialize", holderwire.CeremonyInitTo(result))
+		// out carries its own independent string copy of result.AdminKeyPEM
+		// (holderwire.CeremonyInitTo's string(...) conversion), and
+		// holderResult fully serializes it to JSON text before returning,
+		// so wiping result's copy here, now that out is built and about
+		// to be returned, cannot affect the response already handed back
+		// (go-qrdb#560 review item 7: every transport, not only REST).
+		out := holderwire.CeremonyInitTo(result)
+		result.WipeAdminKeyPEM()
+		return holderResult("qrdb_ceremony_initialize", out)
 	}
 }
 
