@@ -1,6 +1,6 @@
 # Backup and Restore — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 ## Exported surface
 
@@ -25,8 +25,8 @@ const (
 
 type EncryptionType string
 const (
-	EncryptionNone   EncryptionType = "none"      // default
-	EncryptionAES256 EncryptionType = "aes256"    // AES-256-GCM, authenticated
+	EncryptionNone   EncryptionType = "none"      // plaintext; only by explicit request
+	EncryptionAES256 EncryptionType = "aes256"    // AES-256-GCM, authenticated -- the default when Encryption is left empty
 )
 
 type BackupStatus string
@@ -40,8 +40,8 @@ const (
 type BackupRequest struct {
 	Destination   string            `json:"destination"`              // required
 	Compression   CompressionType   `json:"compression,omitempty"`
-	Encryption    EncryptionType    `json:"encryption,omitempty"`
-	EncryptionKey []byte            `json:"encryption_key,omitempty"` // required when Encryption != none
+	Encryption    EncryptionType    `json:"encryption,omitempty"`     // empty defaults to aes256 server-side, NOT none
+	EncryptionKey []byte            `json:"encryption_key,omitempty"` // required unless Encryption is explicitly none
 	Metadata      map[string]string `json:"metadata,omitempty"`
 	ShardIDs      []uint64          `json:"shard_ids,omitempty"`      // empty = all shards
 }
@@ -96,8 +96,15 @@ type VerifyResult struct {
 - **Verification recomputes SHA-256 and compares it to the stored checksum.**
   `VerifyResult` reports both values, so a mismatch is diagnosable rather than a
   bare boolean.
-- **Encryption is conditional, and the condition is enforced in both
-  directions**: `Encryption != none` without `EncryptionKey` is refused, and
+- **`aes256` is the default, not `none`.** `Encryption` left empty defaults to
+  `EncryptionAES256`; it is never silently treated as plaintext. Plaintext is
+  reachable only by setting `Encryption` to `EncryptionNone` explicitly, and
+  that choice is logged at WARN and, where a compliance audit logger is
+  configured, recorded in the audit trail.
+- **Encryption is conditional in both directions, and the condition is
+  enforced in both**: a request with `Encryption` empty or `aes256` and no
+  `EncryptionKey` is refused (`BackupEncryptionRequiredError` when empty,
+  `BackupEncryptionKeyRequiredError` when `aes256` was named explicitly), and
   restoring an encrypted backup without `DecryptionKey` is refused. No path
   silently writes or reads plaintext.
 - **`ValidateFirst` runs verification before touching shard state.** A checksum
@@ -141,7 +148,8 @@ proves the refusal.
 | `BackupEmptyDestinationError` | `Destination` empty on create | yes |
 | `BackupInvalidCompressionError` | unsupported compression type | yes |
 | `BackupInvalidEncryptionError` | unsupported encryption type | yes |
-| `BackupEncryptionKeyRequiredError` | encryption enabled, no key | **yes** |
+| `BackupEncryptionRequiredError` | `Encryption` left empty, no key | **yes** |
+| `BackupEncryptionKeyRequiredError` | `Encryption` named explicitly, no key | **yes** |
 | `BackupCreateError` | snapshot capture failed | yes |
 | `BackupEmptyIDError` | ID empty on get/delete/verify/restore | yes |
 | `BackupNotFoundError` | no backup with that ID | yes |
@@ -181,11 +189,17 @@ path.
 ## Test strategy
 
 - **Unit**: create with each compression and encryption combination, the
-  key-required refusals in both directions, checksum computation and mismatch
+  default-with-no-key refusal, the explicit-encryption-with-no-key refusal,
+  the decryption-key-required refusal, checksum computation and mismatch
   detection, selective shard capture and restore, per-shard error reporting,
   and `ListBackups` ordering.
-- **The two key-required refusals are security tests.** They are what stop a
-  backup being written in plaintext by omission.
+- **The encryption-required refusals are security tests.** They are what stop
+  a backup being written in plaintext by omission -- the default is
+  encrypted, and getting plaintext takes an explicit, visible choice.
+- **Conformance**: per-transport coverage of the three encryption scenarios
+  (default with no key refused, default with a key encrypts and restores,
+  explicit `none` writes plaintext and warns/audits) lives in
+  `sdk/go/conformance`.
 - **Integration**: `backup_restore_test.go` lives in the **cluster stage**
   (`make integration-test-cluster`), which is **not currently wired into CI** —
   so backup and restore are not exercised end to end by CI today. This is a

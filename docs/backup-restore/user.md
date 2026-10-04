@@ -1,6 +1,6 @@
 # Backup and Restore — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Capture shard state to somewhere else, check it is intact, and put it back.
 This is disaster recovery. For undoing a handful of keys, use
@@ -16,10 +16,20 @@ This is disaster recovery. For undoing a handful of keys, use
 - For an object-store destination, a daemon built with the matching go-objstore
   tag (`WITH_AWS_S3=1` and friends).
 
+## Encryption is the default
+
+**Backups are encrypted (`aes256`) unless you say otherwise.** Leave
+`--encryption` off and supply `--encryption-key` (or rely on a server-side KMS
+key reference, where the deployment provides one) to keep the default. Want
+plaintext? Say so outright with `--encryption none` — that choice is logged
+and, where a compliance audit trail is configured, recorded. There is no
+silent fallback either way: omitting both the key and `--encryption none`
+is refused.
+
 ## First run
 
 ```bash
-qrdb backup create --destination /backups/daily
+qrdb backup create --destination /backups/daily --encryption-key "$BACKUP_KEY"
 qrdb backup list
 ```
 
@@ -27,12 +37,16 @@ Record the `id`. You will need it to verify or restore.
 
 ## Common tasks
 
-**A real nightly backup.** Compress, encrypt, and send it off the box.
+**A real nightly backup.** Compress, encrypt (the default), and send it off
+the box.
 
 ```bash
 qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption aes256 --encryption-key "$BACKUP_KEY"
+     --compression zstd --encryption-key "$BACKUP_KEY"
 ```
+
+`--encryption aes256` is implied here; naming it is optional as long as a key
+is supplied.
 
 Keep `$BACKUP_KEY` somewhere you will still have it when the machine you are
 backing up is gone. A backup you cannot decrypt is not a backup.
@@ -68,6 +82,17 @@ qrdb backup restore --id bkp-20260819-0300 \
      --decryption-key "$BACKUP_KEY" --validate
 ```
 
+**Write a backup in plaintext, deliberately.** Only when you have a specific
+reason to — a backup covering the system shard carries the cluster CA and
+every tenant's login CA key material in the clear.
+
+```bash
+qrdb backup create --destination /backups/scratch --encryption none
+```
+
+The CLI prints a warning when you do this, and the server logs it (and
+audits it, where a compliance audit trail is configured).
+
 **See what you have and clear out the old.**
 
 ```bash
@@ -81,9 +106,16 @@ job, same as creating them.
 
 ## Troubleshooting
 
-**"encryption key required".** You asked for `--encryption aes256` without
-`--encryption-key`. This is refused rather than falling back to plaintext,
-because a backup silently written unencrypted is the worst possible outcome.
+**"backups are encrypted by default".** You left `--encryption` unset (or
+named `aes256` explicitly) and supplied no `--encryption-key`. The default is
+encrypted, not plaintext, so this is refused rather than minting a key you
+don't have or falling back to plaintext you didn't ask for. Supply a key, or
+say `--encryption none` if you actually want plaintext.
+
+**"encryption key required".** Same refusal, phrased slightly differently in
+older releases that required `--encryption aes256` to be named explicitly.
+Either way, the fix is the same: supply `--encryption-key`, or choose
+`--encryption none`.
 
 **"decryption key required".** The backup was encrypted. Without the key it
 cannot be restored — there is no recovery path. This is why the key belongs in

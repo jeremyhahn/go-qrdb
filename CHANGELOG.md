@@ -1525,6 +1525,30 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   wrappers check every guard's and write's key before forwarding, so the
   refusal matches what an embedded, same-process caller already got.
 
+### Security
+
+- **BREAKING: backups are encrypted (`aes256`) by default, on every
+  surface.** `BackupOptions.Encryption`/`BackupRequest.Encryption` left empty
+  no longer means plaintext: it now defaults to AES-256-GCM and then
+  requires an encryption key (or a server-side KMS key reference, where the
+  deployment provides one), refusing with a new typed error,
+  `BackupEncryptionRequiredError` (`InvalidArgument`), when neither is
+  supplied. Plaintext is now reachable only by naming `Encryption: "none"`
+  explicitly, which is logged at WARN and, where a compliance audit logger
+  is configured (`BackupService.WithAuditLogger`/`SetAuditLogger`), recorded
+  in the audit trail. **Any script or CI job that relied on the old
+  plaintext default must now pass an encryption key or
+  `--encryption none`** (CLI), or the equivalent explicit field on the REST,
+  gRPC, QUIC, MCP, Unix and embedded transports, the Go and TypeScript SDKs,
+  and the desktop/web Backup Manager. The CLI's `--encryption` flag now
+  defaults to unset (not `none`) and passes that through so the server's
+  default applies; an explicit `--encryption none` prints a warning naming
+  the destination. The desktop/web UI's encryption selector defaulted to
+  `"none"` and used the wrong wire value (`"aes256gcm"` instead of the
+  server's `"aes256"`) -- both are fixed, and the UI now always sends the
+  field explicitly rather than omitting it on a plaintext choice, with an
+  inline warning when plaintext is selected.
+
 ## [0.41.0-alpha] - 2026-10-04
 
 Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). This release contains BREAKING API changes; see the entries below. Highlights:

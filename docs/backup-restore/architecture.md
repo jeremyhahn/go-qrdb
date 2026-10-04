@@ -1,6 +1,6 @@
 # Backup and Restore — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 ## Problem
 
@@ -28,10 +28,18 @@ Selective at both ends: back up specific shards, restore specific shards.
 - **Filesystem-level copy of the data directory.** Rejected: not consistent
   under load, not portable across topologies, and it captures nothing about
   which shards it holds.
-- **Encryption always on.** Rejected as a default (`none` is the default), but
-  the *conditional* rule is strict: enabling encryption without a key is
-  refused, and restoring an encrypted backup without a key is refused. There is
-  no path that silently writes or reads plaintext.
+- **A silently-minted encryption key.** Rejected: a caller that asks for the
+  default (leaves `Encryption` unset) and supplies no key is refused outright
+  (`BackupEncryptionRequiredError`), naming both ways out -- supply a key (or
+  a KMS key reference, where the deployment provides one), or choose `none`
+  explicitly. This package never invents key material on a caller's behalf.
+- **Plaintext as the default.** Rejected: `aes256` is the default encryption
+  algorithm on every backup surface (all transports, both SDKs, the CLI, the
+  desktop and web UI). A caller that wants plaintext must set `Encryption` to
+  `none` outright; that choice is logged at WARN and, where a compliance audit
+  logger is configured, recorded in the audit trail. Restoring an encrypted
+  backup without a key is refused the same way it always was. There is no path
+  that silently writes or reads plaintext.
 - **Verification folded into restore.** Rejected as mandatory: verification is a
   separate operation you can run on a schedule, and `ValidateFirst` makes it
   optional-but-available on restore. A backup you have never verified is a
@@ -118,21 +126,22 @@ wrap made it look.
   "Admin-only": a system-tenant role explicitly granted only
   `backup:create`/`backup:read`, without the Admin role, can still extract a
   full snapshot by this same reasoning.
-- **A backup leaves the process and usually the machine, and is NOT
-  encrypted by default.** `--encryption none` is the default (see
-  "Alternatives rejected" above): creating a backup with no `--encryption`
-  flag writes it in whatever state its captured records were already in,
-  CA key material included, with no additional protection of its own. An
-  operator who has not explicitly passed `--encryption aes256
-  --encryption-key …` (or the API/SDK equivalent) IS writing an unencrypted
-  backup today, and if that backup's source shard held Key A or Key B under
-  seal strategy `none`, the backup holds them in the clear. Treat encryption
-  at rest and in transit for every backup containing the system shard as
-  mandatory operational policy, not an optional hardening step: an
-  unencrypted backup of a barrier-encrypted store is plaintext outside the
-  barrier, and the CA keys it also carries have no barrier of their own to
-  have been outside of in the first place (see [CA key
-  material](#ca-key-material)).
+- **A backup leaves the process and usually the machine; it is encrypted by
+  default.** `aes256` is the default (see "Alternatives rejected" above):
+  creating a backup with no `--encryption` flag and a key configured
+  encrypts every captured record, CA key material included. An operator who
+  explicitly passes `--encryption none` (or the API/SDK equivalent) IS
+  writing an unencrypted backup, and if that backup's source shard held Key
+  A or Key B under seal strategy `none`, the backup holds them in the clear.
+  Treat encryption at rest and in transit for every backup containing the
+  system shard as mandatory operational policy, not an optional hardening
+  step: an unencrypted backup of a barrier-encrypted store is plaintext
+  outside the barrier, and the CA keys it also carries have no barrier of
+  their own to have been outside of in the first place (see [CA key
+  material](#ca-key-material)). That is why encryption is the default
+  rather than an opt-in: a caller gets plaintext only by choosing it
+  explicitly (`Encryption: none`), never by omission, and that choice is
+  visible -- logged at WARN and, where configured, audited.
 - **Restore is the most destructive operation in the system** — it overwrites
   shard state. `backup:restore` is a distinct permission from
   `backup:create`/`backup:read` for exactly that reason, and `backup:delete` is

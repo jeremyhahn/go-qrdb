@@ -1,6 +1,6 @@
 # Backup and Restore — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -39,8 +39,10 @@ it is an operation on the cluster, taking a backup as input.
 ```
 
 `destination` is required; a local path or an object-store URI. `shard_ids`
-empty means **all shards**. `encryption_key` is **required** when `encryption`
-is not `none`.
+empty means **all shards**. `encryption` left unset (or empty string on the
+wire) defaults to `aes256` -- it is **not** plaintext by omission. In either
+case (unset or explicitly `aes256`) `encryption_key` is **required**; a
+caller that wants plaintext must send `encryption: "none"` outright.
 
 Response — `BackupInfo`:
 
@@ -97,12 +99,19 @@ into one failure.
 
 | Encryption | Meaning |
 |---|---|
-| `none` | default |
-| `aes256` | AES-256-GCM, authenticated |
+| `aes256` | AES-256-GCM, authenticated — the default when `encryption` is left unset |
+| `none` | plaintext — only by explicit request; logged at WARN and, where a compliance audit logger is configured, recorded |
+
+**BREAKING:** `aes256` became the default; it was previously `none`. A caller
+that relied on the old plaintext default must now send `encryption_key` (or
+configure a server-side KMS key reference), or send `encryption: "none"`
+explicitly to keep writing plaintext. A request that names neither is
+refused with `BackupEncryptionRequiredError` (`INVALID_ARGUMENT`), distinct
+from the pre-existing `BackupEncryptionKeyRequiredError` that fires when
+`aes256` is named explicitly without a key.
 
 The checksum provides **integrity**; authenticated encryption provides
-**authenticity**. They are different properties and only the first is on by
-default.
+**authenticity**. They are different properties, and now both default to on.
 
 ## Status and error mapping
 
@@ -111,7 +120,8 @@ default.
 | Success | 200 | `OK` |
 | Empty destination / empty ID | 400 | `INVALID_ARGUMENT` |
 | Unsupported compression or encryption type | 400 | `INVALID_ARGUMENT` |
-| Encryption requested without a key | 400 | `INVALID_ARGUMENT` — **fail closed** |
+| Default encryption (unset) and no key | 400 | `INVALID_ARGUMENT` — `BackupEncryptionRequiredError`, **fail closed** |
+| Encryption explicitly requested without a key | 400 | `INVALID_ARGUMENT` — `BackupEncryptionKeyRequiredError`, **fail closed** |
 | Encrypted backup restored without a decryption key | 400 | `INVALID_ARGUMENT` — **fail closed** |
 | Backup not found | 404 | `NOT_FOUND` |
 | Checksum mismatch under `validate_first` | 409 | `FAILED_PRECONDITION` — restore aborts before touching shards |

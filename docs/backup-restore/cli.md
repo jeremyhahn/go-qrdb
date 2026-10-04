@@ -1,6 +1,6 @@
 # Backup and Restore — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Command group: `qrdb backup` — create, list, inspect, verify, delete and restore
 backups. All verbs accept the root persistent flags documented in
@@ -15,18 +15,29 @@ standalone mode they refuse with `requires mode: raft`.
 |---|---|---|---|
 | `--destination` | string | — | storage path or URI, e.g. `/backups/daily` or `s3://bucket/prefix` |
 | `--compression` | string | `none` | `none \| zstd \| snappy` |
-| `--encryption` | string | `none` | `none \| aes256` |
-| `--encryption-key` | string | — | **required when `--encryption` is not `none`** |
+| `--encryption` | string | *(unset)* | `aes256 \| none` — unset defaults to `aes256` server-side |
+| `--encryption-key` | string | — | **required unless `--encryption` is explicitly `none`** |
+
+**BREAKING (since the encrypt-by-default change): `--encryption` left unset no
+longer means plaintext.** The server defaults an unset `--encryption` to
+`aes256` and then requires `--encryption-key` (or a server-side KMS key
+reference, where the deployment provides one). A script that relied on the
+old plaintext default must now pass `--encryption-key`, or pass
+`--encryption none` to keep writing plaintext.
 
 ```bash
-qrdb backup create --destination /backups/daily
+qrdb backup create --destination /backups/daily --encryption-key "$BACKUP_KEY"
 
 qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption aes256 --encryption-key "$BACKUP_KEY"
+     --compression zstd --encryption-key "$BACKUP_KEY"
+
+# Explicit plaintext override -- the CLI warns, the server logs and audits it.
+qrdb backup create --destination /backups/scratch --encryption none
 ```
 
-Creating with encryption but no key is refused. Backing up specific shards is an
-API-level option (`shard_ids`) and has no CLI flag; the CLI captures all shards.
+Creating with the default (or an explicit `aes256`) and no key is refused.
+Backing up specific shards is an API-level option (`shard_ids`) and has no CLI
+flag; the CLI captures all shards.
 
 The response carries the backup `id` and its `checksum` — record both.
 
