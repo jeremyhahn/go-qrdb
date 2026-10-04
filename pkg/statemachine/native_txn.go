@@ -16,10 +16,12 @@ package statemachine
 
 import (
 	"bytes"
+	"strconv"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -65,6 +67,58 @@ import (
 type keyspace interface {
 	Get(key []byte) ([]byte, error)
 	ApplyAtomic(muts []Mutation) error
+}
+
+// leaseKeyspace is a keyspace that keeps leases: a put in a batch or a
+// transaction may name one, and every committed write binds or releases its
+// key in the same commit. KVStateMachine is one (leasedKeyspace);
+// RegularStateMachine is not, and refuses a lease-bearing operation.
+type leaseKeyspace interface {
+	keyspace
+
+	// hasLease reports whether the keyspace holds lease id.
+	hasLease(id int64) bool
+
+	// commitLeased applies muts all or nothing with each key's binding:
+	// a put to leases[i], a delete to none.
+	commitLeased(muts []Mutation, leases []int64) error
+}
+
+// leasedKeyspace adapts a KVStateMachine to leaseKeyspace.
+type leasedKeyspace struct {
+	k *KVStateMachine
+}
+
+func (ks leasedKeyspace) Get(key []byte) ([]byte, error)    { return ks.k.backend.Get(key) }
+func (ks leasedKeyspace) ApplyAtomic(muts []Mutation) error { return ks.k.commitLeased(muts, nil) }
+func (ks leasedKeyspace) hasLease(id int64) bool            { return ks.k.lessor.Has(id) }
+func (ks leasedKeyspace) commitLeased(muts []Mutation, leases []int64) error {
+	return ks.k.commitLeased(muts, leases)
+}
+
+// Compile-time interface check.
+var _ leaseKeyspace = leasedKeyspace{}
+
+// leaseRefusedError reports that an operation names a lease the keyspace does
+// not hold. The handler answers it with the lease-not-found application error
+// every replica returns alike; it never reaches Raft as an error.
+type leaseRefusedError struct {
+	ID int64
+}
+
+// Error returns a human-readable description.
+func (e *leaseRefusedError) Error() string {
+	return "statemachine: lease " + strconv.FormatInt(e.ID, 10) + " not found"
+}
+
+// commitOps commits a decoded operation set: through commitLeased on a keyspace
+// that keeps leases, so every key's binding commits with it, and through
+// ApplyAtomic otherwise.
+func commitOps(ks keyspace, muts []Mutation, leases []int64) error {
+	if lk, ok := ks.(leaseKeyspace); ok {
+		return lk.commitLeased(muts, leases)
+	}
+	return ks.ApplyAtomic(muts)
 }
 
 // Transaction compare targets and results on the wire. They mirror
@@ -157,11 +211,11 @@ func applyNativeTransaction(ks keyspace, payload []byte) (txnOutcome, error) {
 	if !succeeded {
 		ops = txn.FailureOps
 	}
-	muts, err := batchMutations(ops)
+	muts, leases, err := batchMutations(ks, ops)
 	if err != nil {
 		return txnOutcome{}, err
 	}
-	if err := ks.ApplyAtomic(muts); err != nil {
+	if err := commitOps(ks, muts, leases); err != nil {
 		return txnOutcome{}, &StorageError{Op: "transaction", Inner: err}
 	}
 	return txnOutcome{succeeded: succeeded, applied: muts}, nil
@@ -220,27 +274,37 @@ func compareOutcome(result byte, cmp int) bool {
 }
 
 // batchMutations converts a decoded operation set into the mutations it
-// commits, refusing the WHOLE set before anything is applied when any
-// operation is one these state machines cannot execute.
+// commits and the lease each one binds its key to, refusing the WHOLE set
+// before anything is applied when any operation is one ks cannot execute.
 //
-// A lease-bearing put is refused rather than applied without its lease: no
-// state machine in this package can attach a key to a lease, and a write that
-// silently dropped the lease would make a key meant to expire live forever.
-func batchMutations(ops []protocol.DecodedOp) ([]Mutation, error) {
+// A lease-bearing put needs a keyspace that keeps leases. On one that does,
+// a lease it does not hold refuses the set (*leaseRefusedError). On one that
+// does not, the put is refused rather than applied without its lease: a write
+// that silently dropped the lease would make a key meant to expire live
+// forever.
+func batchMutations(ks keyspace, ops []protocol.DecodedOp) ([]Mutation, []int64, error) {
 	if err := validateBatchOps(ops); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	lk, keepsLeases := ks.(leaseKeyspace)
 	muts := make([]Mutation, len(ops))
+	leases := make([]int64, len(ops))
 	for i, op := range ops {
 		if err := validateClientKey("batch op", op.Key); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if op.LeaseID != 0 {
-			return nil, &ServiceNotConfiguredError{Service: "lease attachment"}
+			if !keepsLeases {
+				return nil, nil, &ServiceNotConfiguredError{Service: "lease attachment"}
+			}
+			if !lk.hasLease(op.LeaseID) {
+				return nil, nil, &leaseRefusedError{ID: op.LeaseID}
+			}
 		}
 		muts[i] = Mutation{Key: op.Key, Value: op.Value, Delete: batchOpIsDelete(op.Type)}
+		leases[i] = op.LeaseID
 	}
-	return muts, nil
+	return muts, leases, nil
 }
 
 // applyNativeBatch commits an OpBatch payload to ks all or nothing.
@@ -249,11 +313,11 @@ func applyNativeBatch(ks keyspace, payload []byte) ([]Mutation, error) {
 	if err != nil {
 		return nil, &IncompleteDataError{Reason: "batch: " + err.Error()}
 	}
-	muts, err := batchMutations(ops)
+	muts, leases, err := batchMutations(ks, ops)
 	if err != nil {
 		return nil, err
 	}
-	if err := ks.ApplyAtomic(muts); err != nil {
+	if err := commitOps(ks, muts, leases); err != nil {
 		return nil, &StorageError{Op: "batch", Inner: err}
 	}
 	return muts, nil
@@ -312,8 +376,25 @@ func validateClientKey(op string, key []byte) error {
 	if len(key) == 0 {
 		return &InvalidKeyError{Op: op, Reason: "empty key"}
 	}
-	if _, reserved := reservedKeys[string(key)]; reserved {
+	if isStateMachineKey(key) {
 		return &InvalidKeyError{Op: op, Reason: "key is reserved for the state machine's own bookkeeping"}
 	}
 	return nil
+}
+
+// isStateMachineKey reports whether key is one of the state machine's own
+// records -- a reserved key or a lease-table record -- rather than client data.
+// Clients may not write one, and enumeration does not return one.
+func isStateMachineKey(key []byte) bool {
+	if _, reserved := reservedKeys[string(key)]; reserved {
+		return true
+	}
+	return lease.IsTableKey(key)
+}
+
+// reachesStateMachineKeys reports whether an enumeration rooted at prefix can
+// match a state machine key. Every one begins with 0x00, so only the empty
+// prefix and prefixes that begin with it can.
+func reachesStateMachineKeys(prefix []byte) bool {
+	return len(prefix) == 0 || prefix[0] == 0x00
 }

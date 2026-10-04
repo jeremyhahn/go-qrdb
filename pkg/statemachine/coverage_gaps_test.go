@@ -57,23 +57,6 @@ func (m *gapErrIndexManager) Scan(indexName string, start, end []byte) (map[stri
 }
 func (m *gapErrIndexManager) List() ([]interface{}, error) { return nil, nil }
 
-// gapErrLeaseManager returns errors from Grant, Revoke, and KeepAlive.
-type gapErrLeaseManager struct {
-	grantErr     error
-	revokeErr    error
-	keepAliveErr error
-}
-
-func (m *gapErrLeaseManager) Grant(ttl int64) (int64, int64, error) {
-	return 0, 0, m.grantErr
-}
-func (m *gapErrLeaseManager) Revoke(leaseID int64) error { return m.revokeErr }
-func (m *gapErrLeaseManager) KeepAlive(leaseID int64) (int64, error) {
-	return 0, m.keepAliveErr
-}
-func (m *gapErrLeaseManager) TimeToLive(leaseID int64) (interface{}, error) { return nil, nil }
-func (m *gapErrLeaseManager) Leases() (interface{}, error)                  { return nil, nil }
-
 // gapErrTSStore returns errors from all write operations.
 type gapErrTSStore struct {
 	writeErr      error
@@ -191,51 +174,6 @@ func TestKVDispatch_IndexDrop_StorageError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // kv_dispatch.go — Lease error paths
 // ---------------------------------------------------------------------------
-
-func TestKVDispatch_LeaseGrant_Error(t *testing.T) {
-	grantErr := stderrors.New("grant failed")
-	lm := &gapErrLeaseManager{grantErr: grantErr}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVLeaseManager(lm))
-
-	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected error from LeaseManager.Grant failure")
-	}
-}
-
-func TestKVDispatch_LeaseRevoke_Error(t *testing.T) {
-	revokeErr := stderrors.New("revoke failed")
-	lm := &gapErrLeaseManager{revokeErr: revokeErr}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVLeaseManager(lm))
-
-	cmd := mustEncode(protocol.EncodeLeaseRevoke(100))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected error from LeaseManager.Revoke failure")
-	}
-}
-
-func TestKVDispatch_LeaseKeepAlive_Error(t *testing.T) {
-	keepAliveErr := stderrors.New("keep-alive failed")
-	lm := &gapErrLeaseManager{keepAliveErr: keepAliveErr}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVLeaseManager(lm))
-
-	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(100))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected error from LeaseManager.KeepAlive failure")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // kv_dispatch.go — TimeSeries error paths
@@ -1897,8 +1835,7 @@ func TestKVDispatch_IndexDrop_DecodeError(t *testing.T) {
 }
 
 func TestKVDispatch_LeaseGrant_DecodeError(t *testing.T) {
-	lm := &gapErrLeaseManager{}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVLeaseManager(lm))
+	k := NewKVStateMachine(NewStandardBackend())
 
 	// Truncated LeaseGrant payload (needs 8 bytes for int64 TTL)
 	entries := []sm.Entry{{Cmd: []byte{protocol.OpLeaseGrant, 0x01}}}
@@ -1911,8 +1848,7 @@ func TestKVDispatch_LeaseGrant_DecodeError(t *testing.T) {
 }
 
 func TestKVDispatch_LeaseRevoke_DecodeError(t *testing.T) {
-	lm := &gapErrLeaseManager{}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVLeaseManager(lm))
+	k := NewKVStateMachine(NewStandardBackend())
 
 	entries := []sm.Entry{{Cmd: []byte{protocol.OpLeaseRevoke, 0x01}}}
 	results := make([]sm.Result, 1)
@@ -1924,8 +1860,7 @@ func TestKVDispatch_LeaseRevoke_DecodeError(t *testing.T) {
 }
 
 func TestKVDispatch_LeaseKeepAlive_DecodeError(t *testing.T) {
-	lm := &gapErrLeaseManager{}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVLeaseManager(lm))
+	k := NewKVStateMachine(NewStandardBackend())
 
 	entries := []sm.Entry{{Cmd: []byte{protocol.OpLeaseKeepAlive, 0x01}}}
 	results := make([]sm.Result, 1)

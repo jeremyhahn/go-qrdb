@@ -3242,6 +3242,13 @@ func shutdownNode(node io.Closer) error {
 // the same encryptor: pebble storage is opened on that encfs too, and storage
 // that cannot be encrypted (file) is refused here, at start, while the seal
 // barrier is enabled (SealedSMStoragePlaintextError), rather than opened.
+//
+// Every registry type is built with the node's lessor too
+// (statemachine.WithKVLessor): it keeps its leases durably in its own
+// keyspace, and the leader-side expiry sweeper this node runs over lr revokes
+// them. A type that cannot keep leases is refused at start
+// (SMLeasesUnsupportedError) rather than run without them: cluster membership
+// and the feature gate are lease-backed, so it could not form a cluster.
 func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
 	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
 	switch f.smType {
@@ -3261,7 +3268,8 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, h
 		), nil
 	default:
 		return resolveCreateFunc(f.smType, f.smBackend,
-			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage, Encryptor: enc})
+			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage, Encryptor: enc},
+			statemachine.WithKVLessor(lr))
 	}
 }
 
@@ -3274,10 +3282,14 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, h
 // that carries its own storage is SMStorageTypeMismatchError. Which types are
 // storage-generic is the registry's answer (Descriptor.StorageGeneric), not a
 // list kept here.
-func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig) (sm.CreateFunc, error) {
-	createFn, err := statemachine.ResolveTypedWithStorage(smType, smBackend, sc)
+func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig, opts ...statemachine.KVOption) (sm.CreateFunc, error) {
+	createFn, err := statemachine.ResolveTypedWithStorage(smType, smBackend, sc, opts...)
 	if err == nil {
 		return createFn, nil
+	}
+	var notKV *statemachine.KVOptionsNotApplicableError
+	if errors.As(err, &notKV) {
+		return nil, &SMLeasesUnsupportedError{SMType: smType, Err: err}
 	}
 	var unknownStorage *statemachine.UnknownSMStorageError
 	if errors.As(err, &unknownStorage) {

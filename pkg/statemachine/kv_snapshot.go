@@ -26,10 +26,16 @@ func (k *KVStateMachine) SaveSnapshot(w io.Writer, stopper <-chan struct{}) erro
 // GetHash's own fix): GetHash takes batch.Lock() too, and without this a
 // hash could land mid-recovery, a state no replica settles in, same
 // reasoning as a hash mid-Update.
+//
+// The snapshot carries the lease table, so the Lessor is rebuilt from it
+// before any entry applies over the recovered state.
 func (k *KVStateMachine) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) error {
 	k.batch.Lock()
 	defer k.batch.Unlock()
-	return k.backend.RecoverSnapshot(r, stopper)
+	if err := k.backend.RecoverSnapshot(r, stopper); err != nil {
+		return err
+	}
+	return k.restoreLessor()
 }
 
 // GetHash delegates hash computation to the backend, between batches: it

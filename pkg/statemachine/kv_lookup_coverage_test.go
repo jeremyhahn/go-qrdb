@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -91,81 +90,6 @@ func TestKVLookup_IndexList_WithManager(t *testing.T) {
 // ---------------------------------------------------------------------------
 // lookupLease: nil-guard branches for pointer and value variants
 // ---------------------------------------------------------------------------
-
-func TestKVLookup_LeaseTimeToLive_Pointer_NotConfigured(t *testing.T) {
-	k := newTestKVSM()
-	_, err := k.Lookup(&lease.LeaseTimeToLiveQuery{ID: 1})
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-	if sncErr.Service != "lease" {
-		t.Fatalf("expected service 'lease', got %q", sncErr.Service)
-	}
-}
-
-func TestKVLookup_LeaseTimeToLive_Value_NotConfigured(t *testing.T) {
-	k := newTestKVSM()
-	_, err := k.Lookup(lease.LeaseTimeToLiveQuery{ID: 1})
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-}
-
-func TestKVLookup_LeasesQuery_Pointer_NotConfigured(t *testing.T) {
-	k := newTestKVSM()
-	_, err := k.Lookup(&lease.LeasesQuery{})
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-}
-
-func TestKVLookup_LeasesQuery_Value_NotConfigured(t *testing.T) {
-	k := newTestKVSM()
-	_, err := k.Lookup(lease.LeasesQuery{})
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-}
-
-func TestKVLookup_LeaseTimeToLive_WithManager(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-	_, err := k.Lookup(lease.LeaseTimeToLiveQuery{ID: 42})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-}
-
-func TestKVLookup_LeaseTimeToLive_Pointer_WithManager(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-	_, err := k.Lookup(&lease.LeaseTimeToLiveQuery{ID: 42})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-}
-
-func TestKVLookup_LeasesQuery_WithManager(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-	_, err := k.Lookup(lease.LeasesQuery{})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-}
-
-func TestKVLookup_LeasesQuery_Pointer_WithManager(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-	_, err := k.Lookup(&lease.LeasesQuery{})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // lookupMVCC: nil-guard branches for pointer and value variants

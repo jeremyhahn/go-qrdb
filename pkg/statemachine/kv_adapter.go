@@ -186,7 +186,14 @@ var (
 // actually is instead of reporting "fresh" and replaying the whole log
 // over non-empty state (the defect this fixes). An absent key means a
 // genuinely fresh store and returns 0.
+//
+// It first rebuilds the Lessor from the lease table in that storage: the
+// replica resumes after the entries that granted its leases and bound its
+// keys, so nothing will replay them.
 func (a *DiskAdapter) Open(_ context.Context, _ string, _ <-chan struct{}) (uint64, error) {
+	if err := a.restoreLessor(); err != nil {
+		return 0, err
+	}
 	val, err := a.store.Get([]byte(diskMetaKeyLastApplied))
 	if err != nil {
 		// Some backends report a missing key as an error rather than the

@@ -273,38 +273,6 @@ func TestKVDispatch_IndexDrop_NotConfigured(t *testing.T) {
 // kv_dispatch: Lease not configured for revoke and keep-alive
 // ---------------------------------------------------------------------------
 
-func TestKVDispatch_LeaseRevoke_NotConfigured(t *testing.T) {
-	k := newTestKVSM()
-	payload := mustEncode(protocol.EncodeLeaseRevoke(100))
-	cmd := append([]byte{protocol.OpLeaseRevoke}, payload...)
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err != nil {
-		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
-	}
-	if !bytes.Contains(results[0].Data, []byte("lease")) {
-		t.Fatalf("expected Data to mention lease, got %q", results[0].Data)
-	}
-}
-
-func TestKVDispatch_LeaseKeepAlive_NotConfigured(t *testing.T) {
-	k := newTestKVSM()
-	payload := mustEncode(protocol.EncodeLeaseKeepAlive(100))
-	cmd := append([]byte{protocol.OpLeaseKeepAlive}, payload...)
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err != nil {
-		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
-	}
-	if !bytes.Contains(results[0].Data, []byte("lease")) {
-		t.Fatalf("expected Data to mention lease, got %q", results[0].Data)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // kv_dispatch: TS handlers not configured
 // ---------------------------------------------------------------------------

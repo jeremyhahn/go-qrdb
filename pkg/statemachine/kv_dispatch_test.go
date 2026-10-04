@@ -90,35 +90,6 @@ func (m *kvMockIndexManager) List() ([]interface{}, error) {
 	return nil, nil
 }
 
-type kvMockLeaseManager struct {
-	grantCalled     bool
-	revokeCalled    bool
-	keepAliveCalled bool
-}
-
-func (m *kvMockLeaseManager) Grant(ttl int64) (int64, int64, error) {
-	m.grantCalled = true
-	return 100, ttl, nil
-}
-
-func (m *kvMockLeaseManager) Revoke(leaseID int64) error {
-	m.revokeCalled = true
-	return nil
-}
-
-func (m *kvMockLeaseManager) KeepAlive(leaseID int64) (int64, error) {
-	m.keepAliveCalled = true
-	return 30, nil
-}
-
-func (m *kvMockLeaseManager) TimeToLive(leaseID int64) (interface{}, error) {
-	return nil, nil
-}
-
-func (m *kvMockLeaseManager) Leases() (interface{}, error) {
-	return nil, nil
-}
-
 type kvMockTimeSeriesStore struct {
 	writeCalled      bool
 	writeBatchCalled bool
@@ -187,21 +158,22 @@ func TestKVDispatch_MVCCPut(t *testing.T) {
 	}
 }
 
-func TestKVDispatch_MVCCPut_NotConfigured(t *testing.T) {
+func TestKVDispatch_MVCCPut_WithoutMVCCStoreIsANativePut(t *testing.T) {
 	k := newTestKVSM()
 
 	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	// Update must not return an error — ServiceNotConfiguredError is encoded
-	// in result.Data to prevent Raft lastApplied from stalling.
-	err := k.Update(entries, results)
-	if err != nil {
-		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
+	if err := k.Update(entries, results); err != nil {
+		t.Fatalf("Update: %v", err)
 	}
-	if len(results[0].Data) == 0 {
-		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	if len(results[0].Data) != 0 {
+		t.Fatalf("native put refused: %q", results[0].Data)
+	}
+	got, err := k.Lookup([]byte("k"))
+	if err != nil || string(got.([]byte)) != "v" {
+		t.Fatalf("Lookup = %v, %v; want the value the put wrote", got, err)
 	}
 }
 
@@ -221,19 +193,21 @@ func TestKVDispatch_MVCCDelete(t *testing.T) {
 	}
 }
 
-func TestKVDispatch_MVCCDelete_NotConfigured(t *testing.T) {
+func TestKVDispatch_MVCCDelete_WithoutMVCCStoreIsANativeDelete(t *testing.T) {
 	k := newTestKVSM()
+	put := mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))
+	del := mustEncode(protocol.EncodeMVCCDelete([]byte("k")))
+	entries := []sm.Entry{{Index: 1, Cmd: put}, {Index: 2, Cmd: del}}
+	results := make([]sm.Result, 2)
 
-	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("k")))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err != nil {
-		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
+	if err := k.Update(entries, results); err != nil {
+		t.Fatalf("Update: %v", err)
 	}
-	if len(results[0].Data) == 0 {
-		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	if len(results[1].Data) != 0 {
+		t.Fatalf("native delete refused: %q", results[1].Data)
+	}
+	if got, err := k.Lookup([]byte("k")); err != nil || got != nil {
+		t.Fatalf("Lookup = %v, %v; want the key gone", got, err)
 	}
 }
 
@@ -328,60 +302,6 @@ func TestKVDispatch_IndexDrop(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Lease dispatch tests
 // ---------------------------------------------------------------------------
-
-func TestKVDispatch_LeaseGrant(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-
-	payload := mustEncode(protocol.EncodeLeaseGrant(30))
-	cmd := append([]byte{protocol.OpLeaseGrant}, payload...)
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	if err := k.Update(entries, results); err != nil {
-		t.Fatalf("LeaseGrant failed: %v", err)
-	}
-	if !lm.grantCalled {
-		t.Fatal("expected LeaseManager.Grant to be called")
-	}
-	if results[0].Value != 100 { // mock returns leaseID=100
-		t.Fatalf("expected leaseID 100, got %d", results[0].Value)
-	}
-}
-
-func TestKVDispatch_LeaseRevoke(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-
-	payload := mustEncode(protocol.EncodeLeaseRevoke(100))
-	cmd := append([]byte{protocol.OpLeaseRevoke}, payload...)
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	if err := k.Update(entries, results); err != nil {
-		t.Fatalf("LeaseRevoke failed: %v", err)
-	}
-	if !lm.revokeCalled {
-		t.Fatal("expected LeaseManager.Revoke to be called")
-	}
-}
-
-func TestKVDispatch_LeaseKeepAlive(t *testing.T) {
-	lm := &kvMockLeaseManager{}
-	k := newTestKVSM(WithKVLeaseManager(lm))
-
-	payload := mustEncode(protocol.EncodeLeaseKeepAlive(100))
-	cmd := append([]byte{protocol.OpLeaseKeepAlive}, payload...)
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	if err := k.Update(entries, results); err != nil {
-		t.Fatalf("LeaseKeepAlive failed: %v", err)
-	}
-	if !lm.keepAliveCalled {
-		t.Fatal("expected LeaseManager.KeepAlive to be called")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Time-series dispatch tests

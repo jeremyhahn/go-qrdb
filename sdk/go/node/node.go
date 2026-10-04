@@ -1273,15 +1273,16 @@ func (n *Node) closeDatabaseManager() {
 // store wired with the supplied lessor / watch-hub / time-series / encryptor
 // options — the only state machine that keeps revisions. Any other
 // cfg.Raft.SMType (e.g. "memory", "concurrent", "fast", "disk") selects that
-// factory from the statemachine registry: KV, batches, the guarded verbs and
-// transactions, without watch / lease / time-series (go-qrdb#136). A
+// factory from the statemachine registry: KV, batches, the guarded verbs,
+// transactions (go-qrdb#136) and durable leases kept in lr -- the lessor the
+// node's expiry sweeper watches -- without watch or time-series. A
 // storage-generic one ("disk", "fast") composes the storage raft.sm_storage
 // selects under raft.data_dir, exactly as the daemon does, carrying the
 // node's at-rest encryptor: with the seal barrier enabled, pebble storage is
 // opened on the barrier's encfs and file storage — which has no encrypting
 // seam — is refused rather than left in plaintext. A non-pebble sm_storage for
 // any other type is refused rather than ignored.
-func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor) (sm.CreateFunc, error) {
+func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor, lr *lease.Lessor) (sm.CreateFunc, error) {
 	if usesClusteredMVCCStore(cfg) {
 		if cfg.Raft.SMStorage != "" && cfg.Raft.SMStorage != "pebble" {
 			return nil, &ConfigError{
@@ -1292,7 +1293,8 @@ func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvcc
 		return store.NewMVCCCreateFuncWith(pebbleOpts, mvccOpts...), nil
 	}
 	fn, err := statemachine.ResolveTypedWithStorage(cfg.Raft.SMType, cfg.Raft.SMBackend,
-		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor})
+		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor},
+		statemachine.WithKVLessor(lr))
 	if err != nil {
 		field := "raft.sm_type"
 		var unencrypted *statemachine.SMStorageUnencryptedError
@@ -1553,7 +1555,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	if pending.noSyncWrites {
 		mvccOpts = append(mvccOpts, store.WithNoSync())
 	}
-	createFn, err := clusteredCreateFunc(pending.cfg, pebbleOpts, mvccOpts, encryptor)
+	createFn, err := clusteredCreateFunc(pending.cfg, pebbleOpts, mvccOpts, encryptor, lr)
 	if err != nil {
 		return err
 	}
@@ -2389,7 +2391,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	if nOpts.noSyncWrites {
 		mvccOptsNoSeal = append(mvccOptsNoSeal, store.WithNoSync())
 	}
-	createFn, err := clusteredCreateFunc(cfg, pebbleOpts, mvccOptsNoSeal, nil)
+	createFn, err := clusteredCreateFunc(cfg, pebbleOpts, mvccOptsNoSeal, nil, lr)
 	if err != nil {
 		return nil, err
 	}

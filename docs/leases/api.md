@@ -66,7 +66,7 @@ carries `leases`.
 | Success | 200 | `OK` |
 | Lease not found (expired, revoked, never existed) | 404 | `NOT_FOUND` |
 | `ttl <= 0` on grant | 400 | `INVALID_ARGUMENT` — `service.CommandRejectedError` |
-| Grant on a state machine built without a lessor | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError`, message `statemachine: lease not configured` |
+| Grant on a state machine built without a lessor — only the legacy `regular` state machine, which `qrdbd` refuses to start on | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError`, message `statemachine: lease not configured` |
 | Lessor closed on this replica | 503 | `UNAVAILABLE` — `service.SubsystemClosedError` |
 | Grant whose lease ID is already held | 409 | `ALREADY_EXISTS` — `service.CommandConflictError` |
 | Any other lessor failure during apply | 500 | `INTERNAL` — `service.ApplyFaultError` |

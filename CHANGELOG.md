@@ -220,7 +220,38 @@ Recovery train: stranded fixes brought onto main. Highlights:
   purpose is listed by exact path, with its reason, in `EXECUTABLE_EXEMPT` at
   the top of `scripts/check-public-releasable.sh`; the list is empty today.
 
+### Changed — BREAKING
+
+- **`qrdbd --sm regular` is refused at start.** The legacy `regular` state
+  machine keeps no leases, and cluster membership and the feature gate are
+  lease-backed, so a node on it could never register itself. Start fails with
+  `SMLeasesUnsupportedError`; use `--sm standard`, the same in-memory state
+  machine with leases. The SDK's clustered node refuses it the same way
+  (`statemachine.KVOptionsNotApplicableError`).
+- **`statemachine.WithKVLeaseManager` is replaced by `WithKVLessor`.** A
+  `KVStateMachine` keeps durable leases in a `lease.Lessor`, its own or the one
+  injected; the in-memory `LeaseManager` path it took before is gone.
+  `statemachine.StorageGenericFactory` and `ResolveTypedWithStorage` take
+  `KVOption`s.
+
 ### Fixed
+
+- **The memory, concurrent, highperf, fast and disk state machines keep
+  durable leases, so a cluster on them forms.** Every `KVStateMachine` answered
+  a lease grant with "lease not configured", so a multi-node cluster on any of
+  them failed to start: each node's lease-backed membership registration was
+  refused. They now keep leases exactly as the `pebble` state machine does: in
+  the lease table under `\x00qrdb.lease/` in their own keyspace, staged into the
+  same atomic apply set as the write that caused each change, carried in
+  snapshots and covered by the replica hash. The lessor is rebuilt from the
+  table when the disk state machine opens and after any snapshot recovery, and
+  starts empty with an in-memory state machine. A put, batch or transaction
+  naming a lease binds the key; a later plain write or delete releases it; a
+  compare-and-swap keeps it; revoking the lease deletes exactly the keys still
+  bound to it. `qrdbd` and the SDK's clustered node build these state machines
+  with the node's lessor, so the leader's expiry sweeper revokes their expired
+  leases. The lease table is refused to client writes and hidden from reads and
+  enumeration. No new opcode and no feature gate.
 
 - **etcd listener: a compaction before activation is retryable.** A `Compact` refused because the
   cluster had not yet activated `prefix-compaction` (`featuregate.NotActiveError`) answered

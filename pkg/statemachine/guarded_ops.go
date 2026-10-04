@@ -165,7 +165,7 @@ func (k *KVStateMachine) handleCompareAndDelete(payload []byte, revision uint64)
 		return sm.Result{Value: protocol.ResultNotDeleted}, nil
 	}
 
-	if derr := k.backend.DeleteDurable(key); derr != nil {
+	if derr := k.deleteKey(key, true); derr != nil {
 		return sm.Result{}, &StorageError{Op: "compare_and_delete", Inner: derr}
 	}
 
@@ -202,6 +202,9 @@ func (k *KVStateMachine) handleCompareAndSwap(payload []byte, revision uint64) (
 		return sm.Result{Value: protocol.ResultNotSwapped}, nil
 	}
 
+	// A compare-and-swap edits the value and leaves the key's lease alone, as
+	// the pebble state machine does: it is a renewal of what the holder
+	// already has, not a re-attachment, so its binding record is untouched.
 	if perr := k.backend.PutDurable(key, next); perr != nil {
 		return sm.Result{}, &StorageError{Op: "compare_and_swap", Inner: perr}
 	}

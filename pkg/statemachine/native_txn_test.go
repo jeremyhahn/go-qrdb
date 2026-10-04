@@ -248,10 +248,10 @@ func TestNarrowCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.KV || !got.Batch || !got.Transaction {
+	if !got.KV || !got.Batch || !got.Transaction || !got.Lease {
 		t.Errorf("memory lost a capability it serves: %+v", got)
 	}
-	if got.MVCC || got.Watch || got.Lease || got.Index || got.TimeSeries || got.Lock {
+	if got.MVCC || got.Watch || got.Index || got.TimeSeries || got.Lock {
 		t.Errorf("memory reports a capability it does not serve: %+v", got)
 	}
 	if !got.Vector || !got.Cluster {

@@ -154,7 +154,8 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | Malformed request (unknown op type, missing key) | invalid-argument | yes |
 | Empty key in a compare or an op | refused before proposal (`service.InvalidKeyError` inside `EncodeRequestError`, invalid-argument); a state machine that receives one anyway refuses it as an application result and keeps applying | **yes** |
 | Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
-| Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular`) | whole transaction or batch refused as an unsupported capability, nothing written | **yes** |
+| Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`) | the key is bound to the lease in the same commit; a lease the state machine does not hold refuses the whole transaction or batch with lease-not-found, nothing written | **yes** |
+| Lease-bearing op on the legacy `regular` `sm_type` | whole transaction or batch refused as an unsupported capability, nothing written | **yes** |
 | Import file exceeds the transport ceiling | refused before parsing | **yes** |
 | Import format cannot be inferred and none given | refused | **yes** |
 | `--transactional` import, any row fails | whole import rolled back, `ImportResult.Failed > 0` | **yes** |

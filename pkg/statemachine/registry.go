@@ -114,6 +114,11 @@ type entry struct {
 	// ResolveTypedWithStorage builds it from. factory is then the same
 	// construction over the zero StorageConfig.
 	generic StorageGenericFactory
+
+	// kv is set for an in-memory KVStateMachine type: the construction that
+	// takes KVOptions, which ResolveTypedWithStorage passes through. factory
+	// is then the same construction with none.
+	kv func(opts ...KVOption) sm.CreateFunc
 }
 
 // StorageFactory creates the storage.Storage one replica of a storage-generic
@@ -121,8 +126,9 @@ type entry struct {
 type StorageFactory func(shardID, replicaID uint64) storage.Storage
 
 // StorageGenericFactory builds a storage-generic state machine's create
-// function over the storage newStorage returns for each replica.
-type StorageGenericFactory func(newStorage StorageFactory) sm.CreateFunc
+// function over the storage newStorage returns for each replica, configured
+// by opts.
+type StorageGenericFactory func(newStorage StorageFactory, opts ...KVOption) sm.CreateFunc
 
 // StorageConfig is where a storage-generic state machine keeps its
 // per-replica storage: raft.data_dir and raft.sm_storage.
@@ -211,6 +217,19 @@ func (r *Registry) RegisterWithDescriptor(name string, factory Factory, desc Des
 	r.mu.Unlock()
 }
 
+// registerKV adds or replaces an in-memory KVStateMachine type, whose
+// construction takes KVOptions.
+func (r *Registry) registerKV(name string, factory func(opts ...KVOption) sm.CreateFunc, desc Descriptor) {
+	desc.Name = name
+	r.mu.Lock()
+	r.entries[name] = entry{
+		factory:    func() sm.CreateFunc { return factory() },
+		descriptor: desc,
+		kv:         factory,
+	}
+	r.mu.Unlock()
+}
+
 // RegisterStorageGeneric adds or replaces a STORAGE-GENERIC state machine: one
 // that composes whichever storage raft.sm_storage selects, built per
 // resolution by ResolveTypedWithStorage.
@@ -276,7 +295,11 @@ func (r *Registry) ResolveTyped(smType, smBackend string) (sm.CreateFunc, error)
 // non-pebble sc.Kind is refused for it with SMStorageNotApplicableError rather
 // than silently ignored. An unknown sc.Kind is refused with
 // UnknownSMStorageError.
-func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig) (sm.CreateFunc, error) {
+//
+// opts configure a KVStateMachine type -- the composition root's lessor, for
+// one (WithKVLessor). A state machine that is not one cannot honour them, and
+// is refused with KVOptionsNotApplicableError rather than built without them.
+func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig, opts ...KVOption) (sm.CreateFunc, error) {
 	if _, ok := storageKinds[sc.Kind]; !ok {
 		return nil, &UnknownSMStorageError{Kind: sc.Kind}
 	}
@@ -289,12 +312,18 @@ func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageC
 		if sc.selectsNonDefaultStorage() {
 			return nil, &SMStorageNotApplicableError{SMType: name, Kind: sc.Kind}
 		}
+		if e.kv != nil {
+			return e.kv(opts...), nil
+		}
+		if len(opts) > 0 {
+			return nil, &KVOptionsNotApplicableError{SMType: name}
+		}
 		return e.factory(), nil
 	}
 	if sc.persistsPlaintext() {
 		return nil, &SMStorageUnencryptedError{SMType: name, Kind: sc.Kind}
 	}
-	return e.generic(newStorageFactory(sc)), nil
+	return e.generic(newStorageFactory(sc), opts...), nil
 }
 
 // Describe returns the Descriptor for the given name. Returns
@@ -367,6 +396,19 @@ func (e *UnknownSMStorageError) Error() string {
 	return "statemachine: unknown sm_storage " + strconv.Quote(e.Kind) + "; use pebble, file or memory"
 }
 
+// KVOptionsNotApplicableError is returned when KVStateMachine options -- the
+// composition root's lessor, among them -- are passed for a state machine
+// that is not a KVStateMachine and so cannot honour them.
+type KVOptionsNotApplicableError struct {
+	SMType string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *KVOptionsNotApplicableError) Error() string {
+	return "statemachine: sm_type " + strconv.Quote(e.SMType) +
+		" is not a KV state machine and cannot take its options (the node's lessor); use \"standard\" or another KV sm_type"
+}
+
 // SMStorageNotApplicableError is returned when a non-pebble sm_storage is
 // asked of a state machine that carries its own storage.
 type SMStorageNotApplicableError struct {
@@ -436,12 +478,18 @@ func newDefaultRegistry() *Registry {
 	// Every state machine this package registers serves the same plane: KV,
 	// the guarded single-key verbs, all-or-nothing batches, and transactions
 	// decided against its own keyspace (native_txn.go, go-qrdb#136). None is
-	// constructed with a lease manager, index manager, time-series store,
-	// watch manager or MVCC store, so none declares those; declaring one
-	// requires wiring it AND the behaviour test in descriptor_truth_test.go
-	// passing for it (go-qrdb#135).
+	// constructed with an index manager, time-series store, watch manager or
+	// MVCC store, so none declares those; declaring one requires wiring it AND
+	// the behaviour test in descriptor_truth_test.go passing for it
+	// (go-qrdb#135).
 	caps := func() []Capability {
 		return []Capability{CapabilityKV, CapabilityBatch, CapabilityTransaction}
+	}
+	// Every KVStateMachine also keeps durable leases (kv_lease.go): its own
+	// lessor, or the composition root's (WithKVLessor). The legacy "regular"
+	// state machine does not.
+	kvCaps := func() []Capability {
+		return append(caps(), CapabilityLease)
 	}
 
 	// ---------------------------------------------------------------
@@ -450,62 +498,57 @@ func newDefaultRegistry() *Registry {
 
 	// "memory" and "standard" are aliases for the pure in-memory
 	// KVStateMachine backed by StandardBackend.
-	standardFactory := func() sm.CreateFunc {
-		return NewKVStandardCreateFunc()
-	}
 	standardDesc := Descriptor{
 		Description:  "Pure in-memory KV state machine with no persistence",
 		Persistence:  PersistenceMemory,
 		Kind:         SMKindRegular,
-		Capabilities: caps(),
+		Capabilities: kvCaps(),
 	}
-	r.RegisterWithDescriptor("memory", standardFactory, standardDesc)
-	r.RegisterWithDescriptor("standard", standardFactory, standardDesc)
+	r.registerKV("memory", NewKVStandardCreateFunc, standardDesc)
+	r.registerKV("standard", NewKVStandardCreateFunc, standardDesc)
 
 	// "concurrent" is the sharded in-memory KV state machine backed by
 	// ConcurrentBackend, allowing concurrent Lookups during Update.
-	r.RegisterWithDescriptor("concurrent", func() sm.CreateFunc {
-		return NewKVConcurrentCreateFunc()
-	}, Descriptor{
+	r.registerKV("concurrent", NewKVConcurrentCreateFunc, Descriptor{
 		Description:  "Sharded in-memory KV SM with concurrent reads",
 		Persistence:  PersistenceMemory,
 		Kind:         SMKindConcurrent,
-		Capabilities: caps(),
+		Capabilities: kvCaps(),
 	})
 
 	// "fast" is the 256-shard cache SM with ordered asynchronous
 	// write-through to the storage raft.sm_storage selects, backed by
 	// FastBackend.
-	r.RegisterStorageGeneric("fast", func(newStorage StorageFactory) sm.CreateFunc {
-		return NewKVFastCreateFunc(newStorage)
+	r.RegisterStorageGeneric("fast", func(newStorage StorageFactory, opts ...KVOption) sm.CreateFunc {
+		return NewKVFastCreateFunc(newStorage, opts...)
 	}, Descriptor{
 		Description:  "High-performance 256-shard cache SM with write-through to raft.sm_storage",
 		Persistence:  PersistenceHybrid,
 		Kind:         SMKindRegular,
-		Capabilities: caps(),
+		Capabilities: kvCaps(),
 	})
 
 	// "disk" is a synchronous disk-backed KV state machine using
 	// DiskBackend over the storage raft.sm_storage selects.
-	r.RegisterStorageGeneric("disk", func(newStorage StorageFactory) sm.CreateFunc {
-		return NewKVDiskCreateFunc(newStorage)
+	r.RegisterStorageGeneric("disk", func(newStorage StorageFactory, opts ...KVOption) sm.CreateFunc {
+		return NewKVDiskCreateFunc(newStorage, opts...)
 	}, Descriptor{
 		Description:  "Synchronous disk-backed KV SM over raft.sm_storage",
 		Persistence:  PersistenceDisk,
 		Kind:         SMKindDisk,
-		Capabilities: caps(),
+		Capabilities: kvCaps(),
 	})
 
 	// "highperf" is a high-performance in-memory concurrent SM with
 	// configurable shard count (default 256). No disk persistence.
 	// Designed for data-plane state (conntrack, NAT sessions).
-	r.RegisterWithDescriptor("highperf", func() sm.CreateFunc {
-		return NewKVHighPerfCreateFunc(nil)
+	r.registerKV("highperf", func(opts ...KVOption) sm.CreateFunc {
+		return NewKVHighPerfCreateFunc(nil, opts...)
 	}, Descriptor{
 		Description:  "High-performance in-memory concurrent state machine with configurable sharding",
 		Persistence:  PersistenceMemory,
 		Kind:         SMKindConcurrent,
-		Capabilities: caps(),
+		Capabilities: kvCaps(),
 	})
 
 	// ---------------------------------------------------------------
@@ -610,9 +653,9 @@ func ResolveTyped(smType, smBackend string) (sm.CreateFunc, error) {
 }
 
 // ResolveTypedWithStorage looks up a state machine from the default registry
-// and builds it over sc; see Registry.ResolveTypedWithStorage.
-func ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig) (sm.CreateFunc, error) {
-	return defaultRegistry.ResolveTypedWithStorage(smType, smBackend, sc)
+// and builds it over sc with opts; see Registry.ResolveTypedWithStorage.
+func ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig, opts ...KVOption) (sm.CreateFunc, error) {
+	return defaultRegistry.ResolveTypedWithStorage(smType, smBackend, sc, opts...)
 }
 
 // RegisterStorageGeneric adds a storage-generic state machine to the default

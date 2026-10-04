@@ -16,6 +16,7 @@ package statemachine
 
 import (
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -52,10 +54,15 @@ type KVStateMachine struct {
 	// they were; Lookup takes no part in it, so a read may run during a batch.
 	batch sync.RWMutex
 
+	// lessor holds the state machine's leases. It is never nil: every
+	// KVStateMachine serves leases, durably (kv_lease.go). WithKVLessor
+	// injects the composition root's, so its expiry sweeper sees the same
+	// leases; otherwise the state machine has its own.
+	lessor *lease.Lessor
+
 	// Optional subsystem managers.
 	watchManager WatchManager
 	indexManager IndexManager
-	leaseManager LeaseManager
 	tsStore      TimeSeriesStore
 	mvccStore    MVCCStore
 }
@@ -70,6 +77,9 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 
 	for _, opt := range opts {
 		opt(k)
+	}
+	if k.lessor == nil {
+		k.lessor = lease.NewLessor()
 	}
 
 	k.handlers = map[byte]updateHandler{
@@ -199,7 +209,7 @@ func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, 
 	}
 	value := payload[2+keyLen:]
 
-	if err := k.backend.Put(key, value); err != nil {
+	if err := k.putKey(key, value, false); err != nil {
 		return sm.Result{}, &StorageError{Op: "put", Inner: err}
 	}
 
@@ -226,7 +236,7 @@ func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Resul
 	if kerr := validateClientKey("delete", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
-	if err := k.backend.Delete(key); err != nil {
+	if err := k.deleteKey(key, false); err != nil {
 		return sm.Result{}, &StorageError{Op: "delete", Inner: err}
 	}
 
@@ -237,12 +247,42 @@ func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Resul
 	return sm.Result{Value: revision}, nil
 }
 
+// putKey writes one key with no lease. A key bound to a lease leaves it: the
+// write and the release commit together (commitLeased). Otherwise the write
+// takes the backend's ordinary path -- Put, or PutDurable for the guarded
+// verbs, whose answer must survive a restart.
+func (k *KVStateMachine) putKey(key, value []byte, durable bool) error {
+	if k.bound(key) {
+		return k.commitLeased([]Mutation{{Key: key, Value: value}}, nil)
+	}
+	if durable {
+		return k.backend.PutDurable(key, value)
+	}
+	return k.backend.Put(key, value)
+}
+
+// deleteKey removes one key, releasing it from any lease it is bound to in the
+// same commit; see putKey.
+func (k *KVStateMachine) deleteKey(key []byte, durable bool) error {
+	if k.bound(key) {
+		return k.commitLeased([]Mutation{{Key: key, Delete: true}}, nil)
+	}
+	if durable {
+		return k.backend.DeleteDurable(key)
+	}
+	return k.backend.Delete(key)
+}
+
 // handleBatch applies a batch of put and delete operations all or nothing,
 // through Backend.ApplyAtomic: an unsupported operation refuses the whole
 // batch before any of it is applied, no concurrent Lookup sees part of it, and
 // a crash leaves all of it or none. Watchers are notified after the commit.
 func (k *KVStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
-	muts, err := applyNativeBatch(k.backend, payload)
+	muts, err := applyNativeBatch(leasedKeyspace{k}, payload)
+	var refused *leaseRefusedError
+	if errors.As(err, &refused) {
+		return sm.Result{Data: protocol.EncodeLeaseNotFoundError(refused.ID)}, nil
+	}
 	if err != nil {
 		return sm.Result{}, err
 	}

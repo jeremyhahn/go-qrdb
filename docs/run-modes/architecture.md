@@ -130,11 +130,18 @@ and transactions, decided inside apply against the state machine's own
 keyspace, so guarded batches and multi-key transactions behave the same on
 all of them. What differs is what else a type carries:
 
-| `sm_type` | Transactions and guarded batches | Revision compares, `--at-revision` | Lease, watch, lock, index, time series |
-|---|---|---|---|
-| `mvcc` | yes | yes | yes |
-| `pebble` (default) | yes | refused (value and version compares only) | yes |
-| `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | yes | refused (value and version compares only) | no |
+| `sm_type` | Transactions and guarded batches | Revision compares, `--at-revision` | Lease | Watch, lock, index, time series |
+|---|---|---|---|---|
+| `mvcc` | yes | yes | yes | yes |
+| `pebble` (default) | yes | refused (value and version compares only) | yes | yes |
+| `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf` | yes | refused (value and version compares only) | yes, durable | no |
+| `regular` (legacy) | yes | refused (value and version compares only) | no — refused at start | no |
+
+Every state machine but `regular` keeps durable leases in its own keyspace
+(see [../leases/engineering.md](../leases/engineering.md)). Cluster
+membership and the feature gate are lease-backed, so `qrdbd` refuses to start
+on `regular` (`SMLeasesUnsupportedError`) rather than run a node that cannot
+register itself.
 
 A node's capability report names exactly what its `sm_type` serves.
 

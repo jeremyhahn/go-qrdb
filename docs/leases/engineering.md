@@ -1,6 +1,6 @@
 # Leases — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
 
 ## Exported surface
 
@@ -76,6 +76,31 @@ func IsTableKey(k []byte) bool
 
 `statemachine.LeaseRefusal` and `statemachine.OpsLeaseRefusal` answer, before a
 write stages anything, whether it names a lease the state machine cannot bind.
+
+`pkg/statemachine`'s `KVStateMachine` -- every `sm_type` it builds: `memory`,
+`standard`, `concurrent`, `highperf`, `fast` and `disk` -- keeps durable leases
+too, in the same table under the same prefix, and serves the same opcodes:
+
+```go
+func WithKVLessor(lr *lease.Lessor) KVOption // the composition root's lessor
+
+// ResolveTypedWithStorage passes KV options through to a KVStateMachine type
+// and refuses them, with *KVOptionsNotApplicableError, for any other type.
+func ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig, opts ...KVOption) (sm.CreateFunc, error)
+```
+
+A `KVStateMachine` always has a lessor: its own, or the one `WithKVLessor`
+injects -- the one the composition root's expiry sweeper watches. Every lease
+mutation is staged into the same `Backend.ApplyAtomic` set as the write that
+caused it, on every backend. With no MVCC store, `OpMVCCPut` and
+`OpMVCCDelete` are the native lease-bearing put and the delete, as on the
+`pebble` state machine. The lessor is rebuilt from the table when an
+in-memory state machine is created (over its empty keyspace), when the disk
+state machine opens its storage, and after any snapshot recovery. The legacy
+`regular` state machine keeps no leases; `qrdbd` and the SDK's clustered node
+refuse it at start (`SMLeasesUnsupportedError` / the registry's
+`KVOptionsNotApplicableError`), because cluster membership and the feature gate
+are lease-backed.
 
 ## Invariants
 
@@ -288,6 +313,17 @@ keep-alive starts returning not-found does anyway.
   idempotence, unknown leases and write faults; `table_test.go` covers the
   table round trip, replacement on restore, every corruption the reader
   refuses, and read faults.
+- **KV state machines**: `pkg/statemachine/kv_lease_test.go` runs grant,
+  keep-alive, revoke deleting exactly the bound keys, re-binding on a later
+  write (plain put, delete, a move to another lease; compare-and-swap keeping
+  it), batch and transaction binding with refusal of an unknown lease,
+  snapshot recovery onto a fresh replica with its next lease id and replica
+  hash, and log-replay determinism on every backend: standard, concurrent,
+  highperf, fast and disk. The disk state machine is also restarted over its
+  own storage, and a corrupt table fails its open. Removing any one of the
+  table restore on snapshot recovery, the restore on open, the release on a
+  plain write, the reset on create, the revoke's deletes, or the client-write
+  refusal turns a case red.
 - **State machine**: `pkg/store/lease_binding_test.go` runs every case against
   both lease-capable state machines through committed commands only. It covers
   re-put under another lease, re-put without a lease, base KV put,
@@ -300,10 +336,12 @@ keep-alive starts returning not-found does anyway.
   already correct.
 - **Integration** (`test/integration/lease_binding_test.go`): a three-node
   qrdbd cluster re-puts and revokes, then repeats the check after a full
-  cluster restart over the same data directories, on every replica. qrdbd
-  serves leases only on an MVCC shard, so these run on `sm_type: mvcc`. The
-  standalone multi-protocol suite repeats the re-put case over every
-  transport.
+  cluster restart over the same data directories, on every replica, on
+  `sm_type: mvcc`. The standalone multi-protocol suite repeats the re-put case
+  over every transport. A three-node cluster on `sm_type: memory`
+  (`TestDEK_Cluster_EveryNodeDecryptsEveryVersion`) and on `sm_type: disk`
+  over file storage (`TestRaftSMOverFileStorage_ThreeNodeCluster`) forms only
+  because its lease-backed membership registrations now apply.
 - **No `time.Sleep`.** Expiry is exercised by driving the clock/tick seam, not
   by waiting — the repo rule and the only way these tests stay deterministic on
   a loaded runner.

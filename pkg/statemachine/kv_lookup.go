@@ -20,7 +20,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -76,8 +75,12 @@ func (k *KVStateMachine) Lookup(query interface{}) (interface{}, error) {
 	}
 }
 
-// lookupKey performs a point lookup via the backend.
+// lookupKey performs a point lookup via the backend. A state machine key is
+// not client data and reads as absent.
 func (k *KVStateMachine) lookupKey(key []byte) (interface{}, error) {
+	if isStateMachineKey(key) {
+		return nil, nil
+	}
 	val, err := k.backend.Get(key)
 	if err != nil {
 		return nil, err
@@ -88,9 +91,35 @@ func (k *KVStateMachine) lookupKey(key []byte) (interface{}, error) {
 	return val, nil
 }
 
-// lookupPrefix performs a prefix scan via the backend.
+// lookupPrefix performs a prefix scan via the backend. The state machine's
+// own records (isStateMachineKey) are not returned: they are not client data.
+// A limit counts only what is returned, so the backend is asked for every
+// match when the prefix can reach those records.
 func (k *KVStateMachine) lookupPrefix(pq *PrefixQuery) (interface{}, error) {
-	return k.backend.Scan(pq.Prefix, pq.Limit)
+	limit := pq.Limit
+	if reachesStateMachineKeys(pq.Prefix) {
+		limit = 0
+	}
+	data, err := k.backend.Scan(pq.Prefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	for key := range data {
+		if isStateMachineKey([]byte(key)) {
+			delete(data, key)
+		}
+	}
+	if pq.Limit > 0 && len(data) > pq.Limit {
+		keys := make([]string, 0, len(data))
+		for key := range data {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys[pq.Limit:] {
+			delete(data, key)
+		}
+	}
+	return data, nil
 }
 
 // listKeys returns a sorted slice of keys matching the given prefix.
@@ -100,9 +129,12 @@ func (k *KVStateMachine) listKeys(prefix string) ([]string, error) {
 		return nil, err
 	}
 
-	result := make([]string, len(keys))
-	for i, key := range keys {
-		result[i] = string(key)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if isStateMachineKey(key) {
+			continue
+		}
+		result = append(result, string(key))
 	}
 	sort.Strings(result)
 	return result, nil
@@ -133,45 +165,6 @@ func (k *KVStateMachine) lookupIndex(query interface{}) (interface{}, bool, erro
 			return nil, true, &ServiceNotConfiguredError{Service: "index"}
 		}
 		result, err := k.indexManager.List()
-		return result, true, err
-
-	default:
-		return nil, false, nil
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Lease lookups
-// ---------------------------------------------------------------------------
-
-func (k *KVStateMachine) lookupLease(query interface{}) (interface{}, bool, error) {
-	switch q := query.(type) {
-	case *lease.LeaseTimeToLiveQuery:
-		if k.leaseManager == nil {
-			return nil, true, &ServiceNotConfiguredError{Service: "lease"}
-		}
-		result, err := k.leaseManager.TimeToLive(q.ID)
-		return result, true, err
-
-	case lease.LeaseTimeToLiveQuery:
-		if k.leaseManager == nil {
-			return nil, true, &ServiceNotConfiguredError{Service: "lease"}
-		}
-		result, err := k.leaseManager.TimeToLive(q.ID)
-		return result, true, err
-
-	case *lease.LeasesQuery:
-		if k.leaseManager == nil {
-			return nil, true, &ServiceNotConfiguredError{Service: "lease"}
-		}
-		result, err := k.leaseManager.Leases()
-		return result, true, err
-
-	case lease.LeasesQuery:
-		if k.leaseManager == nil {
-			return nil, true, &ServiceNotConfiguredError{Service: "lease"}
-		}
-		result, err := k.leaseManager.Leases()
 		return result, true, err
 
 	default:

@@ -14,7 +14,11 @@
 
 package statemachine
 
-import "log/slog"
+import (
+	"log/slog"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+)
 
 // KVOption configures a KVStateMachine at construction time using the
 // functional options pattern.
@@ -43,12 +47,19 @@ func WithKVIndexManager(im IndexManager) KVOption {
 	}
 }
 
-// WithKVLeaseManager attaches a LeaseManager that handles lease grant,
-// revoke, and keep-alive operations. When not set, lease operations
-// return ServiceNotConfiguredError.
-func WithKVLeaseManager(lm LeaseManager) KVOption {
+// WithKVLessor makes lr the lessor the state machine keeps its leases in.
+// The composition root passes the lessor its leader-side expiry sweeper
+// (lease.Lessor.RunExpiry) watches, so an expired lease is revoked and its
+// keys deleted. Without it the state machine has a lessor of its own.
+//
+// A Lessor serves exactly one replica: the state machine restores it from its
+// own lease table, which would erase a second replica's leases. A nil lr is
+// ignored.
+func WithKVLessor(lr *lease.Lessor) KVOption {
 	return func(k *KVStateMachine) {
-		k.leaseManager = lm
+		if lr != nil {
+			k.lessor = lr
+		}
 	}
 }
 

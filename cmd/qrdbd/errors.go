@@ -117,6 +117,22 @@ func (e *SMStorageTypeMismatchError) Error() string {
 	return "cli: sm-storage " + strconv.Quote(e.Storage) + " applies to the storage-generic state machines only; use --sm disk or --sm fast (got " + strconv.Quote(e.SMType) + ")"
 }
 
+// SMLeasesUnsupportedError is returned when --sm selects a state machine that
+// cannot keep the node's leases. Cluster membership and the feature gate are
+// lease-backed, so the node is refused at start rather than run without them.
+type SMLeasesUnsupportedError struct {
+	SMType string
+	Err    error
+}
+
+// Error returns a human-readable description.
+func (e *SMLeasesUnsupportedError) Error() string {
+	return "cli: sm " + strconv.Quote(e.SMType) + " cannot keep leases, which cluster membership requires; use --sm standard or another KV state machine: " + e.Err.Error()
+}
+
+// Unwrap returns the registry's refusal.
+func (e *SMLeasesUnsupportedError) Unwrap() error { return e.Err }
+
 // UnknownSMError is returned when the --sm flag specifies an unknown
 // state machine type.
 type UnknownSMError struct {

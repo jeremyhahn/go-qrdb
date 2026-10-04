@@ -99,7 +99,7 @@ func (k *KVStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (sm.
 	// the write has taken effect and returns the failure instead of logging
 	// it. handlePut below keeps Put, deliberately — "your write is queued" and
 	// "your claim succeeded" are different promises.
-	if perr := k.backend.PutDurable(key, value); perr != nil {
+	if perr := k.putKey(key, value, true); perr != nil {
 		return sm.Result{}, &StorageError{Op: "put_if_absent", Inner: perr}
 	}
 

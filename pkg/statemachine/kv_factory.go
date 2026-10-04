@@ -29,6 +29,7 @@ func NewKVStandardCreateFunc(opts ...KVOption) sm.CreateFunc {
 	return sm.NewCreateFunc(func(_, _ uint64) sm.StateMachine {
 		backend := NewStandardBackend()
 		kvsm := NewKVStateMachine(backend, opts...)
+		kvsm.resetLessor()
 		return &StandardAdapter{KVStateMachine: kvsm}
 	})
 }
@@ -41,6 +42,7 @@ func NewKVConcurrentCreateFunc(opts ...KVOption) sm.CreateFunc {
 	return sm.NewConcurrentCreateFunc(func(_, _ uint64) sm.ConcurrentStateMachine {
 		backend := NewConcurrentBackend()
 		kvsm := NewKVStateMachine(backend, opts...)
+		kvsm.resetLessor()
 		return &ConcurrentAdapter{KVStateMachine: kvsm}
 	})
 }
@@ -74,6 +76,7 @@ func NewKVFastCreateFunc(storageFactory func(shardID, replicaID uint64) storage.
 			panic("statemachine: failed to reset fast state machine storage: " + err.Error())
 		}
 		kvsm := NewKVStateMachine(backend, opts...)
+		kvsm.resetLessor()
 		return &StandardAdapter{KVStateMachine: kvsm}
 	})
 }

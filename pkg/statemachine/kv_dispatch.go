@@ -15,6 +15,8 @@
 package statemachine
 
 import (
+	"errors"
+
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -25,10 +27,11 @@ import (
 // ---------------------------------------------------------------------------
 
 // handleMVCCPut decodes an MVCC Put command and delegates to the
-// configured MVCCStore.
+// configured MVCCStore. Without one it is the native lease-bearing put
+// (handleNativeMVCCPut).
 func (k *KVStateMachine) handleMVCCPut(payload []byte, revision uint64) (sm.Result, error) {
 	if k.mvccStore == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
+		return k.handleNativeMVCCPut(payload, revision)
 	}
 
 	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
@@ -44,10 +47,11 @@ func (k *KVStateMachine) handleMVCCPut(payload []byte, revision uint64) (sm.Resu
 }
 
 // handleMVCCDelete decodes an MVCC Delete command and delegates to the
-// configured MVCCStore.
+// configured MVCCStore. Without one it is the native delete
+// (handleNativeMVCCDelete).
 func (k *KVStateMachine) handleMVCCDelete(payload []byte, revision uint64) (sm.Result, error) {
 	if k.mvccStore == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
+		return k.handleNativeMVCCDelete(payload, revision)
 	}
 
 	key, err := protocol.DecodeMVCCDelete(payload)
@@ -89,7 +93,11 @@ func (k *KVStateMachine) handleMVCCRange(payload []byte, revision uint64) (sm.Re
 // pebble state machine; see native_txn.go.
 func (k *KVStateMachine) handleTransaction(payload []byte, revision uint64) (sm.Result, error) {
 	if k.mvccStore == nil {
-		out, err := applyNativeTransaction(k.backend, payload)
+		out, err := applyNativeTransaction(leasedKeyspace{k}, payload)
+		var refused *leaseRefusedError
+		if errors.As(err, &refused) {
+			return sm.Result{Data: protocol.EncodeLeaseNotFoundError(refused.ID)}, nil
+		}
 		if err != nil {
 			return sm.Result{}, err
 		}
@@ -189,68 +197,6 @@ func (k *KVStateMachine) handleIndexDrop(payload []byte, revision uint64) (sm.Re
 
 	if dropErr := k.indexManager.DropIndex(name, dropOpts); dropErr != nil {
 		return indexManagerFailure("index-drop", dropErr)
-	}
-
-	return sm.Result{Value: revision}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Lease write handlers
-// ---------------------------------------------------------------------------
-
-// handleLeaseGrant decodes a Lease Grant command and delegates to the
-// configured LeaseManager.
-func (k *KVStateMachine) handleLeaseGrant(payload []byte, _ uint64) (sm.Result, error) {
-	if k.leaseManager == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
-	}
-
-	ttl, err := protocol.DecodeLeaseGrant(payload)
-	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "lease grant: " + err.Error()}
-	}
-
-	leaseID, _, grantErr := k.leaseManager.Grant(ttl)
-	if grantErr != nil {
-		return sm.Result{}, grantErr
-	}
-
-	return sm.Result{Value: uint64(leaseID)}, nil
-}
-
-// handleLeaseRevoke decodes a Lease Revoke command and delegates to
-// the configured LeaseManager.
-func (k *KVStateMachine) handleLeaseRevoke(payload []byte, revision uint64) (sm.Result, error) {
-	if k.leaseManager == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
-	}
-
-	leaseID, err := protocol.DecodeLeaseRevoke(payload)
-	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "lease revoke: " + err.Error()}
-	}
-
-	if revokeErr := k.leaseManager.Revoke(leaseID); revokeErr != nil {
-		return sm.Result{}, revokeErr
-	}
-
-	return sm.Result{Value: revision}, nil
-}
-
-// handleLeaseKeepAlive decodes a Lease KeepAlive command and delegates
-// to the configured LeaseManager.
-func (k *KVStateMachine) handleLeaseKeepAlive(payload []byte, revision uint64) (sm.Result, error) {
-	if k.leaseManager == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
-	}
-
-	leaseID, err := protocol.DecodeLeaseKeepAlive(payload)
-	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "lease keep-alive: " + err.Error()}
-	}
-
-	if _, keepAliveErr := k.leaseManager.KeepAlive(leaseID); keepAliveErr != nil {
-		return sm.Result{}, keepAliveErr
 	}
 
 	return sm.Result{Value: revision}, nil

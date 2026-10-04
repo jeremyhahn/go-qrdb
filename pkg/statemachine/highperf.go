@@ -98,6 +98,7 @@ func NewKVHighPerfCreateFunc(cfg *HighPerfConfig, opts ...KVOption) sm.CreateFun
 	return sm.NewConcurrentCreateFunc(func(_, _ uint64) sm.ConcurrentStateMachine {
 		backend := NewHighPerfBackend(cfg)
 		kvsm := NewKVStateMachine(backend, opts...)
+		kvsm.resetLessor()
 		return &HighPerfAdapter{KVStateMachine: kvsm, backend: backend}
 	})
 }

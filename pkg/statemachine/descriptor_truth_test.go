@@ -33,8 +33,8 @@ import (
 // capability that was never built (go-qrdb#135, found by the #121 matrix).
 //
 // Every registry factory constructs its state machine with ZERO options, so
-// the optional subsystems — MVCC store, lease manager, index manager,
-// time-series store — are all nil. WithKVMVCCStore has no production caller
+// the optional subsystems — MVCC store, index manager, time-series store —
+// are all nil. (Leases are not optional: every KVStateMachine keeps them.) WithKVMVCCStore has no production caller
 // anywhere in this repository. The declarations said otherwise.
 //
 // This test measures each capability by EXERCISING it and compares the result
@@ -74,7 +74,11 @@ func capabilityProbes(t *testing.T) []probeOp {
 			op := mustCmd(protocol.EncodeOp(kv.OpPut, []byte("probe"), []byte("v"), nil, 0))
 			return mustCmd(protocol.EncodeBatch([][]byte{op}))
 		}},
-		{CapabilityMVCC, func() []byte { return []byte{protocol.OpMVCCPut} }},
+		// OpMVCCRange, not OpMVCCPut: the lease-bearing put (OpMVCCPut) is
+		// served by every state machine that keeps leases -- revision
+		// history or none, as pebble does -- so only a range read at a
+		// revision separates an MVCC store from the rest.
+		{CapabilityMVCC, func() []byte { return []byte{protocol.OpMVCCRange} }},
 		// A REAL transaction, not a bare opcode: since go-qrdb#136 the
 		// registry's state machines serve transactions natively, and only a
 		// transaction that evaluates and commits proves it.
