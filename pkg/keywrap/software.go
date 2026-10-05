@@ -220,15 +220,15 @@ func (p *SoftwareProvider) readKeyFile(keyRef string) ([]byte, error) {
 		return nil, &KeyAccessError{}
 	}
 
-	f, err := p.root.Open(keyRef)
-	if err != nil {
-		slog.Error("keywrap: key file open failed",
-			"dir", p.dir, "key_ref", keyRef, "error", err)
-		return nil, &KeyAccessError{}
-	}
-	defer func() { _ = f.Close() }()
-
-	info, err := f.Stat()
+	// Stat BEFORE Open, via the Root (so this still follows a symlink the
+	// same way the opened file's own Stat would, and still stays
+	// confined to the root): os.Open on a FIFO blocks until some other
+	// process opens the write end, so a key reference naming a named
+	// pipe planted inside the confined key directory would otherwise
+	// hang this call -- and every caller waiting on it -- indefinitely.
+	// Refusing a non-regular file here means Open is never even
+	// attempted against one.
+	info, err := p.root.Stat(keyRef)
 	if err != nil {
 		slog.Error("keywrap: key file stat failed",
 			"dir", p.dir, "key_ref", keyRef, "error", err)
@@ -239,6 +239,14 @@ func (p *SoftwareProvider) readKeyFile(keyRef string) ([]byte, error) {
 			"dir", p.dir, "key_ref", keyRef, "mode", info.Mode().String())
 		return nil, &KeyAccessError{}
 	}
+
+	f, err := p.root.Open(keyRef)
+	if err != nil {
+		slog.Error("keywrap: key file open failed",
+			"dir", p.dir, "key_ref", keyRef, "error", err)
+		return nil, &KeyAccessError{}
+	}
+	defer func() { _ = f.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(f, softwareKeyReadLimit))
 	if err != nil {
