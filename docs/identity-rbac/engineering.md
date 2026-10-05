@@ -846,10 +846,15 @@ that may also change the isolation tier, `AuthorizeTenantBarrierInit` and
 `AuthorizeTenantBarrierSealedOp` for the two bootstrap/sealed-window
 fallbacks, and `FilterTenantList` to narrow `ListTenants` the same way REST's
 `handleListTenants` does. The per-tenant share-claim and quorum handshakes
-carry no RBAC permission on any transport (`permission.IdentityGated`); they
-are unchanged except that the quorum pair now marks its context with the
-same holder-provenance check (`claimContext`) the share-claim handshake
-already used. `tenant_authz_test.go`'s
+carry no RBAC permission on any transport (`permission.IdentityGated`); a
+later review pass found neither required even an authenticated caller on
+the embedded transport, let alone a permission, and both now call
+`requireIdentity` (the `IdentityGated` floor), exactly as every other
+`IdentityGated` operation does. The quorum handshakes also had a holder-
+provenance context marking (`claimContext`) that turned out to be a no-op
+— nothing downstream reads it on the quorum path, only on share-claim — and
+it was removed rather than left as dead code implying a protection it
+never provided. `tenant_authz_test.go`'s
 `TestTenantClientAuthorizationSurface_CoversEveryMethod` enumerates every
 `transport.TenantClient` method via reflection and fails the build if a new
 one ships with no declared authorization mechanism;
@@ -877,16 +882,66 @@ exactly. `transport_authz_coverage_test.go`'s
 tenant-only buildgate above to reflect over every exported method of the
 concrete `*Transport` type (not `transport.Client`, which omits RAG,
 embedding, auth-factor, SQL, and the guarded-write KV verbs), so a method
-added without stating its authorization mechanism fails the build. Two
-sub-clients could not be reached this way (their methods live on a
-different concrete type, invisible to that reflection): `SealStore*` has no
-`pkg/permission` entry at all (no network route exposes it), so it gets a
-documented floor — `AuthMiddleware.AuthorizeTarget` with
-`permission.IdentityGated`, requiring only an authenticated caller, pending
-an owner decision on whether it earns its own permission family —
-and `FactorClient`'s four methods (`Enroll`/`List`/`Remove`/`Verify`, each
-keyed by a `userID`) remain unauthorized, a known, explicitly flagged gap
-rather than a silent one.
+added without stating its authorization mechanism fails the build.
+
+**Sub-clients are a separate concrete type, invisible to reflection over
+`*Transport` — a second gate closes that blind spot.** `FactorClient`'s
+four methods (`Enroll`/`List`/`Remove`/`Verify`, each keyed by a `userID`),
+`VolumePoolClient`, `PermissionClient`, and `RBACClient.ListPermissions`
+were an explicitly flagged, open gap for exactly this reason — a security
+review followed up and closed it. `FactorClient`'s four now call
+`authorizeUserTarget` against the SAME `user_authfactors` permissions the
+network's `userauthfactor.*` family checks for the identical underlying
+service (`Verify` maps to `user_authfactors:login`, the challenge-response
+check a login flow performs). `VolumePoolClient`/`PermissionClient` and
+`RBACClient.ListPermissions` authorize ambient-self, the same way the rest
+of `operationPermissions` does. `RBACClient.Authorize` stays unauthorized
+on purpose: it decides about an explicit identity ARGUMENT, never the
+ambient caller, so it is a policy-evaluation primitive, not an
+authorization checkpoint of its own.
+`transport_authz_subclients_test.go`'s
+`TestSubClientAuthorizationSurface_CoversEveryMethod` reflects over each
+sub-client's own concrete type the same way the `*Transport` gate does, so
+a future sub-client method is caught by construction. A behavioral
+sibling, `TestAmbientOperations_DenyANoPermissionIdentity`, invokes every
+declared operation (bare and dotted) with a no-permission identity and
+asserts a real denial — declaring a permission is not the same as the
+permission actually gating the call, and this gate found two places where
+it didn't: `ResolvePermissions` and `GetUserByCertThumbprint` both checked
+a service-nil guard before calling `authorize()`, so a misconfigured node
+answered an unauthenticated caller "not implemented" instead of a
+refusal. `authorize()` itself now fails CLOSED on an unregistered method
+key (`UnregisteredOperationError`) rather than silently admitting one,
+making the declaration gates load-bearing rather than advisory.
+
+`SealStore*` has no `pkg/permission` entry of its own because no network
+route exposes it (checked REST, gRPC, QUIC, MCP). Rather than leaving it
+behind the bare `IdentityGated` floor indefinitely, a new permission,
+`permission.SealStoreManage` (`seal:store_manage`, `ScopeCross`,
+SO-exclusive — explicitly not granted to the narrower Admin role), now
+gates all six methods.
+
+`Health` and the sealed-window bootstrap/unseal verbs (`BarrierInitialize`,
+`BarrierUnseal`, `BarrierInitializeShamir`, `OfficerRegister`,
+`RecoveryOfficerRegister`, `CeremonyInitialize`, `CeremonySignCSR`) are
+public on the embedded transport, matching every network listener's own
+sealed-window posture: an embedded node has no IAM store to authenticate
+against while sealed, so the embedder must be able to drive these
+in-process, gated instead by the SO-PIN or passphrase the sealed-window
+ceremony itself checks. `BarrierStatus`/`CeremonyStatus`/`Status` stay
+RBAC-gated, since REST gates them outside the sealed window too.
+
+`operationPermissions` is checked against `pkg/api/quic`'s own
+method-permission table (`quic.Server.MethodPermissions()`) by
+`transport_authz_quic_drift_test.go`, so the transcription this whole
+mechanism depends on cannot silently drift from what QUIC enforces: every
+one of QUIC's 235 current methods is either mapped to its embedded
+counterpart and checked for permission equality, or named in a small,
+reasoned exclusion list (public / identity-gated / target-resolved),
+method by method — bare string transforms were tried and rejected because
+45 of the 235 collide by coincidence with an unrelated embedded key (e.g.
+`cert.List` strips to `List`, already KV's unrelated key).
+
 `sdk/go/transport/embedded/probe_kv_users_roles_test.go` is the headline
 probe: a tenant-scoped identity cannot read, write, or delete another
 tenant's user or role, and an identity holding none of the relevant
@@ -899,12 +954,32 @@ the seam: it builds a synthetic `auth.Identity` from the login attempt's
 RESOLVED principal (never the caller-supplied lookup key, which is
 attacker-controlled before any proof is verified) and hands it to
 `checkRateLimit`, the exact engine and `(tenant, subject, permission)` key
-`authorize()` already uses. The embedded `LoginClient.FinishLogin`
+`authorize()` already uses — and now also audits a refusal the same way
+`authorize()` audits every decision. The embedded `LoginClient.FinishLogin`
 (`sdk/go/transport/embedded/login.go`) charges it under
 `permission.UserAuthFactorsLogin` right after resolving the principal and
 before verifying its proof, so repeated guesses against one real account
 are throttled regardless of whether each individual guess's signature
 would fail.
+
+`BeginLogin` is now rate-limited too, under a SEPARATE sentinel
+permission, `permission.LoginBeginAttempt` — deliberately not
+`UserAuthFactorsLogin`. The two throttles are different threat models
+(volumetric challenge-issuance spam at `BeginLogin`, keyed by a fixed
+tenant-wide subject since there is no resolved principal yet, vs.
+per-account brute force at `FinishLogin`, keyed by the resolved
+principal) that need independently tunable `ratelimit.Policy` values:
+sharing one `Permission` key makes that impossible to tune in
+production, and surfaced as a real test collision during review (a
+single declared `Policy` exhausted BOTH buckets, so the SECOND
+`BeginLogin` call in a two-attempt test failed before the SECOND
+`FinishLogin` call was ever reached). `LoginBeginAttempt`, like
+`IdentityGated`, is deliberately not registered in the permission
+catalog — it exists purely as a rate-limit dimension key, never an RBAC
+grant. `sdk/go/node`'s `AuthMiddlewareConfig` wiring of
+`RateLimitPolicies`/`RateLimiter` (sourced from the node's own
+`WithRateLimitPolicies`/`WithRateLimiter` options) applies to both
+throttles on every transport of an embedded node, including this one.
 
 **A body is read the way its handler reads it.** A target named in a request
 body is decoded into the handler's OWN request type with the handler's own

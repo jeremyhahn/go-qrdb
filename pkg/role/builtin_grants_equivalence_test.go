@@ -75,6 +75,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.ACMEOrdersRead, permission.ACMEOrdersList,
 	permission.ACMEEABRead, permission.ACMEEABList,
 	permission.ACMEEABCreate, permission.ACMEEABDelete,
+	permission.SealStoreManage,
 }
 
 var goldenAdminPermissions = []permission.Permission{
