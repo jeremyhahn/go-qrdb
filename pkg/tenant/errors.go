@@ -184,18 +184,22 @@ func (e *CrossTenantDeniedError) Error() string {
 		" is not permitted to " + e.Op + " in tenant " + e.RequestedTenantID
 }
 
-// PlatformOperatorRequiredError is returned when a caller not bound to the
-// system tenant attempts a platform-operator-only tenant provisioning
-// operation: creating a tenant, or changing its quotas, entitlements or
-// isolation tier. These are ScopeCross permissions in the RBAC layer
-// (pkg/permission/tenant_provisioning_scope.go) and every network transport
-// refuses them before the request reaches the tenant service, because its
-// entry check runs AuthMiddleware. The embedded transport runs no
-// AuthMiddleware in front of it, so RequirePlatformOperator enforces the
-// identical rule directly: it does not matter which tenant the request
-// names, only whether the caller is the system tenant. It maps to 403
-// Forbidden / PermissionDenied wherever a network transport's error
-// translation sees it, exactly like *CrossTenantDeniedError.
+// PlatformOperatorRequiredError's shape: a caller not bound to the system
+// tenant attempting a platform-operator-only tenant provisioning operation
+// (creating a tenant, or changing its quotas, entitlements or isolation
+// tier). These are ScopeCross permissions in the RBAC layer
+// (pkg/permission/tenant_provisioning_scope.go), and the ONE mechanism that
+// refuses them, on every transport alike including the embedded one, is
+// AuthMiddleware.AuthorizeTarget's ScopeCross decision -- reached through
+// *rbac.PermissionDeniedError (wrapping auth.ErrUnauthorized), not this
+// type. This type is retained for the wire shape pkg/api/errclass/table.go
+// still classifies (403 Forbidden / PermissionDenied, exactly like
+// *CrossTenantDeniedError) but nothing in this repository constructs it:
+// RequirePlatformOperator, the structural check that used to produce it
+// independently of AuthMiddleware, was retired (go-qrdb's "one pluggable
+// auth chain on every transport" ruling) because it was a SECOND mechanism
+// answering the same question the RBAC decision already answers, and the
+// two could disagree.
 type PlatformOperatorRequiredError struct {
 	// IdentityTenantID is the caller's authenticated (or, with none bound,
 	// implicit system-tenant) tenant.

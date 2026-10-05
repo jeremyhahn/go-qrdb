@@ -89,49 +89,6 @@ func TestConfine(t *testing.T) {
 	}
 }
 
-func TestRequirePlatformOperator(t *testing.T) {
-	tests := []struct {
-		name   string
-		ctx    context.Context
-		denied bool
-	}{
-		{"system tenant", identityCtx(tenantid.System), false},
-		{"no tenant binding is the system tenant", context.Background(), false},
-		{"a tenant identity", identityCtx("acme"), true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := RequirePlatformOperator(tc.ctx, "test op")
-			if tc.denied {
-				var denied *PlatformOperatorRequiredError
-				if !errors.As(err, &denied) {
-					t.Fatalf("err = %v; want *PlatformOperatorRequiredError", err)
-				}
-				if denied.Op != "test op" {
-					t.Errorf("error = %+v; want it to name the op", denied)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("RequirePlatformOperator: %v", err)
-			}
-		})
-	}
-}
-
-// Unlike Confine, a tenant acting on its OWN tenant is still refused: these
-// are platform-operator-only operations, not self-service ones.
-func TestRequirePlatformOperator_OwnTenantIsStillDenied(t *testing.T) {
-	err := RequirePlatformOperator(identityCtx("acme"), "set a tenant's quotas")
-	var denied *PlatformOperatorRequiredError
-	if !errors.As(err, &denied) {
-		t.Fatalf("err = %v; want *PlatformOperatorRequiredError", err)
-	}
-	if denied.IdentityTenantID != "acme" {
-		t.Errorf("IdentityTenantID = %q, want acme", denied.IdentityTenantID)
-	}
-}
-
 func TestConfineAuditFilter(t *testing.T) {
 	from := time.Unix(100, 0).UTC()
 	in := audit.Filter{From: from, Actor: "a", Resource: "r", Action: "x", Outcome: "success", Limit: 5, Cursor: "c"}
