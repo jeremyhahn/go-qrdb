@@ -170,3 +170,15 @@ func TestTrustPoolClusterCA_NoClusterCAConcept(t *testing.T) {
 		t.Fatalf("lifecycle.TrustPoolClusterCA = %v, want nil", ca)
 	}
 }
+
+// The resolution error names its stage and unwraps to its cause.
+func TestTrustPoolClusterCAError(t *testing.T) {
+	cause := errors.New("bad der")
+	err := &lifecycle.TrustPoolClusterCAError{Stage: "parse", Err: cause}
+	if !errors.Is(err, cause) || err.Error() != "lifecycle: parse: bad der" {
+		t.Fatalf("error = %q (unwraps to cause: %v)", err.Error(), errors.Is(err, cause))
+	}
+	if got := (&lifecycle.TrustPoolClusterCAError{Stage: "parse"}).Error(); got != "lifecycle: parse" {
+		t.Fatalf("error without a cause = %q", got)
+	}
+}

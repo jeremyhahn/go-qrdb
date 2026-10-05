@@ -116,3 +116,66 @@ func TestReplicaHost_RefusesAnUnknownHost(t *testing.T) {
 		t.Fatalf("a refused add must propose nothing: nodes %v, observers %v", m.Nodes, m.Observers)
 	}
 }
+
+// The rest of the replica host: a nil gate admits every replica, an added
+// replica is removed, the leader is reported, and a leader transfer to a
+// replica the group does not hold is refused by the host.
+func TestReplicaHost_RemoveLeaderAndTransfer(t *testing.T) {
+	c, adder := newAdderCluster(t)
+	ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
+	defer cancel()
+	if err := adder.AdmitReplica(dedicatedAdderShard, c.Addrs[1]); err != nil {
+		t.Fatalf("AdmitReplica with no gate = %v; want admitted", err)
+	}
+	leader, ok, err := adder.LeaderReplicaID(ctx, dedicatedAdderShard)
+	if err != nil || !ok || leader != 1 {
+		t.Fatalf("LeaderReplicaID = %d, %v, %v; want replica 1", leader, ok, err)
+	}
+	if err := adder.AddObserver(ctx, dedicatedAdderShard, 2, c.Addrs[1]); err != nil {
+		t.Fatalf("AddObserver: %v", err)
+	}
+	if err := adder.RemoveFollowerNode(ctx, dedicatedAdderShard, 2); err != nil {
+		t.Fatalf("RemoveFollowerNode: %v", err)
+	}
+	m, err := c.Hosts[0].GetShardMembership(dedicatedAdderShard)
+	if err != nil {
+		t.Fatalf("GetShardMembership: %v", err)
+	}
+	if _, still := m.Observers[2]; still {
+		t.Fatalf("replica 2 still a member after removal: %v", m.Observers)
+	}
+	if err := adder.RequestLeaderTransfer(ctx, dedicatedAdderShard, 9); err == nil {
+		t.Fatal("a leader transfer to a replica the group does not hold was accepted")
+	}
+}
+
+// A cancelled context ends a membership change at once.
+func TestReplicaHost_CancelledContext(t *testing.T) {
+	_, adder := newAdderCluster(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := adder.RemoveFollowerNode(ctx, dedicatedAdderShard, 2); err == nil {
+		t.Fatal("RemoveFollowerNode with a cancelled context succeeded")
+	}
+}
+
+// A change to a group the host does not run is refused by the host, never
+// waited on.
+func TestReplicaHost_UnknownGroupRefused(t *testing.T) {
+	c, adder := newAdderCluster(t)
+	ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
+	defer cancel()
+	const unknownShard = 4242
+	if err := adder.RemoveFollowerNode(ctx, unknownShard, 2); err == nil {
+		t.Fatal("RemoveFollowerNode on a group the host does not run succeeded")
+	}
+	if _, _, err := adder.LeaderReplicaID(ctx, unknownShard); err == nil {
+		t.Fatal("LeaderReplicaID of a group the host does not run succeeded")
+	}
+	if err := adder.AddObserver(ctx, unknownShard, 2, c.Addrs[1]); err == nil {
+		t.Fatal("AddObserver on a group the host does not run succeeded")
+	}
+	if err := adder.AddFollowerNode(ctx, unknownShard, 2, c.Addrs[1]); err == nil {
+		t.Fatal("AddFollowerNode on a group the host does not run succeeded")
+	}
+}
