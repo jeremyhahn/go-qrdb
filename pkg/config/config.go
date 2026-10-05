@@ -955,23 +955,25 @@ type AuthConfig struct {
 	// MTLSBindingPolicy selects whether a certificate login must present a
 	// certificate enrolled on the account it names (go-qrdb#517).
 	//
-	//   "enrolled" (default, and what an empty value means)
-	//       An account's bindings are enforced only once it has one. An
-	//       account with no bindings authenticates on the certificate's CN and
-	//       tenant alone.
-	//
-	//   "required"
+	//   "required" (default, and what an empty value means)
 	//       EVERY certificate login must present a certificate enrolled on the
 	//       account it names. An account with no bindings, and a certificate
 	//       naming no account, are refused (401 / UNAUTHENTICATED).
 	//
-	// "required" is a lockout risk, so the node REFUSES TO BOOT under it when
-	// the bootstrap admin could not log in: it must exist and hold at least
-	// one unexpired certificate binding. Migrate by enrolling every account's
-	// certificate under "enrolled" first; roll back by setting "enrolled".
+	//   "enrolled"
+	//       An account's bindings are enforced only once it has one. An
+	//       account with no bindings authenticates on the certificate's CN and
+	//       tenant alone.
+	//
+	// "required" is a lockout risk, so a node whose bootstrap admin could
+	// not log in under it does not refuse to boot: it serves ONLY the
+	// ceremony status and admin-credential-retry endpoints ("awaiting admin
+	// credential") until the admin exists and holds at least one unexpired
+	// certificate binding. Migrate by enrolling every account's certificate
+	// under "enrolled" first; roll back by setting "enrolled" again.
 	//
 	// An unrecognised value FAILS THE BOOT rather than resolving to either
-	// posture. Default: "enrolled".
+	// posture. Default: "required".
 	MTLSBindingPolicy string `yaml:"mtls_binding_policy"`
 
 	// ABAC configures the optional attribute-based access control decorator

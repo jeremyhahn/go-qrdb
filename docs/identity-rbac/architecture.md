@@ -127,44 +127,57 @@ mint an identity for an unenrolled account, because no unenrolled account
 admits a certificate. An unrecognised value fails the boot rather than
 resolving to either posture.
 
-**`required` refuses to boot when it would lock the admin out.** The bootstrap
-admin (`admin` in the `system` tenant) must exist and hold at least one
-unexpired binding, or the node stops with a diagnostic
-(`*firstboot.AdminCertBindingRequiredError`) naming the reason and the way
-back. This is checked in two places, because two different layers create the
-admin:
+**`required` boots into "awaiting admin credential" rather than locking the
+admin out, or refusing to boot, outright.** The bootstrap admin (`admin` in
+the `system` tenant) must exist and hold at least one unexpired binding for
+the node to serve normally; when it does not, the node comes up anyway,
+serving ONLY ceremony status and ceremony-initialize (the admin-credential
+retry) — every other request is refused with
+`*middleware.AwaitingAdminCredentialError` until a certificate binds, with no
+restart required once it does (`firstboot.AwaitingAdminCredentialProbe`,
+`firstboot.WatchForAdminBound` — see
+[../firstboot/architecture.md](../firstboot/architecture.md)). This posture
+is decided in two places, because two different layers create the admin:
 
-- **`firstboot.Initialize`**, given the policy, refuses **before writing
-  anything** when it would create an admin it cannot bind (no `CertBinder`, or
-  no admin certificate path), and refuses an existing admin with no live
-  binding. It then verifies the **outcome** by reading the admin back: a CA that
-  returned an empty certificate, a user surface that returned no admin, or a
-  binder that reported success without binding all fail first boot.
+- **`firstboot.Initialize`** no longer refuses when it would create an admin
+  it cannot bind (no `CertBinder`, or no admin certificate path): that is now
+  the ordinary "awaiting" case. It still refuses outright, before writing
+  anything, for a genuine wiring bug — a credential path configured with no
+  way to bind it at all — and for a lifecycle or permitted-method block no
+  certificate could fix regardless.
 - **The composer**, after first boot, calls `firstboot.VerifyAdminCertBinding`
-  and refuses to start on its error. The daemon does this on every boot,
-  reading the admin through the **linearizable** store: a follower's
-  StaleRead copy may not yet hold a binding the leader enrolled, and judging it
-  would refuse a boot that should succeed. A read that cannot be served yet is
-  retried for up to 30 seconds (`firstboot.VerifyAdminCertBindingWithin`), then
-  refuses. **The daemon's own first boot DOES wire a `CertBinder`**
+  and lets its result decide the "awaiting" posture rather than refusing to
+  start. The daemon does this on every boot, reading the admin through the
+  **linearizable** store: a follower's StaleRead copy may not yet hold a
+  binding the leader enrolled, and judging it would wrongly enter "awaiting"
+  on a boot that should serve normally. A read that cannot be served yet is
+  retried for up to 30 seconds (`firstboot.VerifyAdminCertBindingWithin`),
+  and only a lookup FAILURE (not a verdict) still logs and serves normally
+  rather than entering "awaiting" over an infrastructure fault alone. **The
+  daemon's own first boot DOES wire a `CertBinder`**
   (`firstboot.UserCertBinder` over its own user store) and an
   admin certificate path (the one `qrdb init` resolved through
   `--admin-csr`/`--admin-cert`/generate, carried from the ceremony to first
-  boot through the replicated system store — see
-  [../firstboot/architecture.md](../firstboot/architecture.md)), so a fresh
-  daemon under the `required` default boots cleanly rather than refusing.
-- **The SDK node** checks at start: it refuses to boot when an existing admin
-  holds no live binding (with the same bounded wait), and defers a missing
-  admin to first boot. `Node.FirstBoot` runs first-boot under the node's own
-  policy — raising, never lowering, what the embedder passed — and verifies the
+  boot through the replicated system store), so a fresh daemon under the
+  `required` default serves normally rather than entering "awaiting" at all.
+- **The SDK node** checks at start the same way (with the same bounded
+  wait), and re-checks immediately after `Node.FirstBoot`/
+  `Node.FirstBootWithCeremony` runs, so a node whose first boot just created
+  the admin unbound enters "awaiting" in the same call rather than needing a
+  restart. `Node.FirstBoot` runs first-boot under the node's own policy —
+  raising, never lowering, what the embedder passed — and verifies the
   result against the store the node authenticates with.
 
-**Only `Node.FirstBoot` guarantees the admin is never locked out on an
-embedded node.** An embedder that calls `firstboot.Initialize` (or the SDK's
-`FirstBootInitialize`) directly, without passing the policy, can create an
-admin with no binding inside a node that is already serving; that node admits
-nobody by certificate until it is restarted, when its start check refuses to
-boot. Embedders must bootstrap through `Node.FirstBoot`.
+**Only `Node.FirstBoot`/`Node.FirstBootWithCeremony` re-decide "awaiting"
+immediately on an embedded node.** An embedder that calls
+`firstboot.Initialize` (or the SDK's `FirstBootInitialize`) directly, without
+going through one of those two methods, can create an admin with no binding
+inside a node that is already serving; that node admits nobody by
+certificate but does not enter "awaiting" either, since nothing told its
+probe to re-check, until it is restarted, when its start check correctly
+finds the now-existing, now-unbound admin and enters "awaiting" then.
+Embedders should bootstrap through `Node.FirstBoot` or
+`Node.FirstBootWithCeremony` to get that reconciliation without a restart.
 
 **The same posture guards the admin at runtime.** Under `required`, every user
 store the daemon and the SDK node build (`user.WithBootstrapAdminBindingRequired`,

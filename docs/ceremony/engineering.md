@@ -145,13 +145,16 @@ durable, replicated state.
   error, a duplicate-key race against a concurrent enrolment the batch
   pre-flight could not see. A failure rolls back every officer THIS call
   already enrolled, in reverse order, and best-effort un-provisions the
-  SO/User PINs through the new `pin.ProvisionRollback` optional capability
-  (reached by type assertion, like `FIDO2HashVerifier`; implemented by
-  `pin.SoftwareBackend`, which un-sets its in-memory PIN state) when the
-  backend supports it. Both are best-effort: a hardware PIN backend may
-  have no way to undo a native provisioning step, in which case a retry
-  supplying the SAME SO/User PINs still succeeds (`pin.Provision`'s own
-  idempotent re-verify); only a retry that changes either PIN is affected.
+  SO/User PINs through the `pin.ProvisionRollback` optional capability
+  (reached by type assertion, like `FIDO2HashVerifier`) when the backend
+  supports it. `pin.SoftwareBackend`'s `RollbackProvision` DELETES the
+  persisted SO and User PIN records (`pin.Storage.Delete`), not merely its
+  own in-memory state, so a later retry is never blocked by a leftover
+  record occupying the slot the rolled-back attempt never got to use. Both
+  are best-effort: a hardware PIN backend may have no way to undo a native
+  provisioning step, in which case a retry supplying the SAME SO/User PINs
+  still succeeds (`pin.Provision`'s own idempotent re-verify); only a
+  retry that changes either PIN is affected.
 - **`ReissueAdminCredential` verifies the SO PIN through
   `pin.RequireProvisionedSOPIN`, not `pin.RequireSOPIN`.** An
   already-initialized ceremony always provisioned its SO
@@ -197,8 +200,23 @@ durable, replicated state.
     transport ever decorated with ANY of identity, certificate or remote
     address -- in practice, a caller a test builds by hand -- falls back to
     the single bare anonymous counter (`""`) that predates this address
-    keying. The transports and the service select the counter from the
-    request (`pin.ForCaller`, applied inside `pin.RequireSOPIN`,
+    keying. The address is keyed by HOST ONLY, with the port stripped and
+    an IPv6 host normalized (`auth.remoteHostOnly`): keying on host:port
+    would give a rotating ephemeral client port -- or a new connection per
+    request behind a pooling reverse proxy -- a FRESH counter every time,
+    defeating the isolation this bullet describes entirely.
+    **Caveat: behind a reverse proxy that does not forward the original
+    client address (no `X-Forwarded-For`/`Forwarded` header is read here),
+    every client behind that proxy shares the proxy's own one address, and
+    so shares one counter** -- the isolation this bullet describes stops
+    at the proxy, not the original client, because `auth.WithRemoteAddr`
+    is given whatever the transport's own listener reports as the peer
+    address, which for a proxied connection is the proxy itself. A
+    deployment that fronts qrdb with a reverse proxy and needs real
+    per-client isolation must either terminate TLS at qrdb directly or
+    accept that this cap is shared across every client behind the proxy.
+    The transports and the service select the
+    counter from the request (`pin.ForCaller`, applied inside `pin.RequireSOPIN`,
     `pin.RequireProvisionedSOPIN` and `pin.Provision`). Wrong PINs guessed
     anonymously, or by a tenant user, a share holder or anyone else holding a
     certificate the client CA issued, therefore lock out only that caller: the
@@ -342,7 +360,7 @@ durable, replicated state.
 |---|---|
 | `ceremony:initialize` | initializing the ceremony |
 | `ceremony:status` | reading state |
-| `ceremony:sign_csr` | issuing a system-tenant certificate (login or holder, by role) under the SO PIN |
+| `ceremony:sign_csr` | issuing a system-tenant HOLDER certificate (`so`/`custodian` only, never a login certificate) under the SO PIN |
 
 Holder permissions are listed in
 [../shamir-custody/api.md](../shamir-custody/api.md).

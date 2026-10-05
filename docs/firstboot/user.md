@@ -31,9 +31,14 @@ strategies), the CA and the six built-in roles. The ceremony also resolves
 the bootstrap admin's credential right there (see "Bringing your own admin
 credential" below) and prints it; first boot binds it to the admin account
 moments later, once the account exists. By default
-(`auth.mtls_binding_policy: required`) the daemon will not finish
-starting until that binding has committed — see Troubleshooting if it does
-not.
+(`auth.mtls_binding_policy: required`) the daemon starts regardless, but
+every node serves ONLY this ceremony's own status and retry endpoints
+("awaiting admin credential") until that binding commits; every node in
+the cluster — not only the one `qrdb init` happened to reach — leaves that
+state the moment it does, through an event-driven watch on the admin's
+replicated record rather than a restart or a per-request poll. See
+Troubleshooting if a node still reports awaiting after the binding should
+have committed.
 
 `qrdb init` is the ONLY way a fresh node's system barrier is ever brought
 up: `qrdb barrier init` targeting it is refused with a typed error pointing
@@ -176,13 +181,27 @@ required to reach either:
 
 Every other endpoint answers `503` /
 `{"code":"AWAITING_ADMIN_CREDENTIAL"}` until that retry binds a
-certificate. The transition back to normal serving happens on the node's
-very next check of the binding — there is no flag to flip and nothing to
-restart. If you would rather not wait for a production binding right now,
+certificate. The transition back to normal serving is event-driven, not a
+poll: the node that actually performs the retry (ordinarily the current
+Raft leader, since the retry is leader-gated) is told directly the moment
+the bind commits, and every OTHER node in the cluster learns of it through
+a watch on the admin's replicated record and leaves "awaiting" the same
+way — there is no flag to flip and nothing to restart, on any node. If you would rather not wait for a production binding right now,
 `auth.mtls_binding_policy: enrolled` lifts the restriction entirely (not a
 resting configuration — it does not meet FedRAMP, HIPAA or PCI DSS 4.0); see
 [../identity-rbac/user.md](../identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment)
 for migrating a fleet the other direction, back to `required`.
+
+**A node that already left "awaiting" does not re-enter it on its own if
+the admin's binding later expires while the node keeps running.** Leaving
+"awaiting" is permanent for that running process — a deliberate choice, so
+a certificate's natural expiry years into a node's uptime cannot silently
+reintroduce the lockout window this state exists to close. If the admin's
+only binding expires while the node is up, the fix is the same
+admin-credential retry described above (you do not need to wait for a
+restart to recover): only a NODE THAT RESTARTS re-runs the boot-time check
+that decides "awaiting" from scratch, and that restarted node WILL come up
+in "awaiting admin credential" if the expired binding was never replaced.
 
 **"AdminCSRPEM and AdminCertPEM are mutually exclusive" / "conflicting admin
 cert inputs".** You gave both `--admin-csr` and `--admin-cert`. Signing the
@@ -219,8 +238,14 @@ you. See [../barrier-seal/user.md](../barrier-seal/user.md).
 their permissions are fixed. Create additional roles instead:
 [../identity-rbac/user.md](../identity-rbac/user.md).
 
-**You lost the admin certificate.** Re-run `qrdb init` with a fresh
-`--admin-csr` or `--admin-cert` (see "no admin certificate binding" above) —
-this is the same retry path, not a separate recovery procedure. If you have
-also lost the ability to authenticate at all, you are into barrier recovery
+**You lost the admin certificate.** This is the SO-PIN-gated admin-credential
+reissue, reached through the same `qrdb init` command as the "awaiting"
+retry above (not a separate recovery procedure): re-run it with your SO PIN
+(`--so-pin`) and a fresh `--admin-csr` or `--admin-cert`. A running node —
+not only one that is "awaiting" — honours this call: it mints or adopts a
+fresh certificate and binds it to the admin account in the same step,
+without touching the barrier, the CA, or the SO/User PINs. The SO PIN is the
+only thing standing between this call and anyone who can reach the node, so
+treat it with the same care as the barrier's own secret. If you have also
+lost the ability to authenticate at all, you are into barrier recovery
 territory.

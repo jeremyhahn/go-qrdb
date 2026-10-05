@@ -105,12 +105,20 @@ Verifying an existing admin needs a read, so `Users` must also implement
 `AdminLookup`; one that cannot is refused, because the posture cannot be shown
 to hold. After its last step it reads the admin back and checks the outcome
 too, so a component that reported success without producing a binding is
-caught rather than trusted. The SDK node's `Node.FirstBoot` runs this under the
-node's own policy and verifies against the node's store. A composer that skips `Initialize` once the admin exists — the daemon
-does — runs the same predicate at every boot with `VerifyAdminCertBinding` and
-refuses to start on its error. Every refusal is
-`AdminCertBindingRequiredError`, naming the reason and the way back (start with
-`enrolled`, enrol the admin, set `required`).
+caught rather than trusted. The SDK node's `Node.FirstBoot`/
+`Node.FirstBootWithCeremony` run this under the node's own policy, verify
+against the node's store, and re-decide the node's "awaiting admin
+credential" posture immediately afterward, so a fresh node whose first boot
+just created the admin unbound enters that state without a restart. A
+composer that skips `Initialize` once the admin exists — the daemon does —
+runs the same predicate at every boot with `VerifyAdminCertBinding`, whose
+result decides that SAME posture rather than refusing to start: an existing
+admin with no live binding leaves the node serving only the ceremony status
+and admin-credential-retry endpoints until a certificate binds. The verdict
+behind every entry into that state is `AdminCertBindingRequiredError`,
+naming the reason and the way back (start with `enrolled`, enrol the admin,
+set `required`; or, once already on `required`, the SO-PIN-gated
+admin-credential reissue).
 
 ### Alternatives rejected
 

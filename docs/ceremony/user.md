@@ -61,7 +61,7 @@ qrdb --cert-file alice.crt --key-file alice.key \
 Everything after that — using the envelope to unseal, adding and revoking
 holders — is in [../shamir-custody/user.md](../shamir-custody/user.md).
 
-## Issuing a login certificate
+## Issuing a holder certificate
 
 `sign-csr` issues HOLDER certificates only: `--role so` for a
 Security Officer, `--role custodian` for a Shamir share holder. Neither holds

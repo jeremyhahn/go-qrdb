@@ -260,8 +260,9 @@ auth:
    tenant.**
 2. **Remove the `enrolled` line (or set it to `required`) on every node** and
    restart them. A node checks at boot that the bootstrap admin holds an
-   unexpired binding and **refuses to start** if it does not, with a message
-   naming the reason.
+   unexpired binding; if it does not, the node still starts, but serves ONLY
+   the ceremony status and admin-credential-retry endpoints ("awaiting admin
+   credential") until a certificate binds, with a message naming the reason.
 3. **Rolling back** is setting `enrolled` again and restarting. Nothing else
    changes — but remember `enrolled` does not meet FedRAMP, HIPAA or PCI DSS
    4.0, so treat it as a temporary step back, not a resting configuration.
@@ -330,9 +331,12 @@ make sure another key is enrolled first.
 with no live binding cannot log in by certificate at all, so withdrawing the
 last one locks it out rather than opening it. For the bootstrap `admin` in the
 `system` tenant the server refuses that withdrawal outright — **409** on REST,
-`FAILED_PRECONDITION` on gRPC and QUIC, a tool error on MCP — because a node
-whose admin cannot log in refuses to boot. Enrol the replacement key first; an
-expired binding does not count as one. For any other account the withdrawal is
+`FAILED_PRECONDITION` on gRPC and QUIC, a tool error on MCP — because a
+restart after it would find the admin unbound and come up in "awaiting admin
+credential," unable to repair itself by certificate: the recovery path out of
+that state (the SO-PIN-gated admin-credential reissue) is the only way back
+in, and this refusal keeps a node from reaching it by accident. Enrol the
+replacement key first; an expired binding does not count as one. For any other account the withdrawal is
 allowed and the account is locked out of certificate login until a key is
 enrolled again.
 

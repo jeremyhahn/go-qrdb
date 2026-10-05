@@ -138,8 +138,10 @@ auth:
   # permits it and counts the gap. See the note below before changing it.
   audit_failure_policy: "fail-closed"
   # Whether EVERY certificate login must present an enrolled key ("required",
-  # the default) or only accounts that enrolled one ("enrolled"). "required"
-  # refuses to boot while the bootstrap admin has no certificate binding.
+  # the default) or only accounts that enrolled one ("enrolled"). Under
+  # "required" a node whose bootstrap admin has no certificate binding
+  # still boots, but serves ONLY the ceremony status and admin-credential
+  # endpoints ("awaiting admin credential") until one binds.
   mtls_binding_policy: "required"
 
 seal:
@@ -737,11 +739,12 @@ Configures authentication and role-based access control (RBAC).
   account that has enrolled a certificate binding admits only that key, and
   an account that has not admits any certificate from the CA whose CN and
   tenant name it. `"required"` refuses the second kind — and a certificate
-  that names no account — with 401. The node **refuses to boot** under
+  that names no account — with 401. A node still **boots** under
   `"required"` when the bootstrap admin does not hold an unexpired binding
   (which is why `qrdb init` -- see [../firstboot/user.md](firstboot/user.md)
   -- issues and binds one in the same call that brings the system barrier
-  up), because a node that started would admit nobody able to repair it.
+  up), but comes up in "awaiting admin credential," serving only the two
+  verbs that can repair it, rather than admitting nobody able to.
   To relax to `"enrolled"` temporarily (e.g. while migrating), set it
   explicitly; roll back by removing it or setting `"required"`. Set the
   same value on every node. See [identity-rbac/architecture.md](identity-rbac/architecture.md#the-fleet-wide-posture-authmtls_binding_policy)
