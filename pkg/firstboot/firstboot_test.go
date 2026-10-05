@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
@@ -1806,7 +1807,7 @@ func TestRegisterBuiltInRoles_ConcurrentSeedersConverge(t *testing.T) {
 			t.Fatalf("StartShard(host %d): %v", i, err)
 		}
 	}
-	c.WaitReadable(t, shardID, c.Hosts...)
+	waitShardReadableWithin(t, c.Hosts, shardID, extraShardReadyBound)
 
 	// One role.RoleServicer per host, wired exactly like cmd/qrdbd's
 	// boot-time role store (bootRoleSvc in bootstrapUserRoleStores): a
@@ -1891,6 +1892,39 @@ func TestRegisterBuiltInRoles_ConcurrentSeedersConverge(t *testing.T) {
 			if !roleMatchesSeed(got, w) {
 				t.Errorf("host %d: role %q = %+v, want canonical %+v", i, w.Name, got, w)
 			}
+		}
+	}
+}
+
+// extraShardReadyBound bounds waitShardReadableWithin's wait for THIS
+// test's own second shard (every raftharness.NewCluster host already forms
+// and waits out shard.ShardKV's own election under raftharness.Bound, 2
+// minutes, before this test starts). Longer than raftharness.Bound: under
+// `make coverage`'s instrumentation overhead and full-suite parallel load,
+// a SECOND election on the same hosts was observed to miss that window
+// (two observed timeouts, each resolving on a bare retry under lighter
+// load) -- a genuine host-contention risk, not a defect in the election
+// itself, so the fix is more patience, not a different algorithm.
+const extraShardReadyBound = 5 * time.Minute
+
+// waitShardReadableWithin is raftharness.Cluster.WaitReadable with a wait
+// bound this test controls directly, rather than the package's own fixed
+// raftharness.Bound -- see extraShardReadyBound.
+func waitShardReadableWithin(t testing.TB, hosts []*quicraft.Host, shardID uint64, bound time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(bound)
+	for _, host := range hosts {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), bound)
+			_, err := host.SyncGetShardMembership(ctx, shardID)
+			cancel()
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("waitShardReadableWithin: shard %d membership never became readable: %v", shardID, err)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
