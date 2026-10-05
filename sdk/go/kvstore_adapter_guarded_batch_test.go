@@ -138,6 +138,55 @@ func TestKVStoreAdapter_MultiGuardedBatchKVStore_ReportsGuardFailure(t *testing.
 	}
 }
 
+// TestKVStoreAdapter_MultiGuardedBatchKVStore_RefusesEmptyKey proves the
+// adapter catches an empty guard or write key BEFORE issuing the
+// ExecuteTransaction RPC at all (go-qrdb#589's non-blocking ask): the
+// refusal is a local *kvstore.EmptyKeyError, and the transport's
+// executeFn is never called, over a transport that WOULD otherwise accept
+// the request.
+func TestKVStoreAdapter_MultiGuardedBatchKVStore_RefusesEmptyKey(t *testing.T) {
+	reached := false
+	txKV := &mockTransactionTransportKV{
+		mockTransportKV: newEmptyMockTransportKV(),
+		executeFn: func(context.Context, *transport.TransactionRequest, ...transport.WriteOption) (*transport.TransactionResponse, error) {
+			reached = true
+			return &transport.TransactionResponse{Succeeded: true}, nil
+		},
+	}
+	adapter, err := NewKVStoreAdapter(txKV, &mockTransportIndex{})
+	if err != nil {
+		t.Fatalf("NewKVStoreAdapter: %v", err)
+	}
+	batchStore := adapter.(kvstore.MultiGuardedBatchKVStore)
+
+	_, err = batchStore.PutAllIfAllUnchanged(context.Background(),
+		[]kvstore.Guard{{Key: "", Value: nil}},
+		[]kvstore.KV{{Key: "k", Value: []byte("v")}})
+	var emptyKey *kvstore.EmptyKeyError
+	if !errors.As(err, &emptyKey) {
+		t.Fatalf("empty guard key: err = %v (%T), want *kvstore.EmptyKeyError", err, err)
+	}
+	if emptyKey.Field != "guard" || emptyKey.Index != 0 {
+		t.Fatalf("empty guard key: err = %+v, want Field=guard Index=0", emptyKey)
+	}
+	if reached {
+		t.Fatal("an empty guard key reached ExecuteTransaction")
+	}
+
+	_, err = batchStore.PutAllIfAllUnchanged(context.Background(),
+		nil,
+		[]kvstore.KV{{Key: "k", Value: []byte("v")}, {Key: ""}})
+	if !errors.As(err, &emptyKey) {
+		t.Fatalf("empty write key: err = %v (%T), want *kvstore.EmptyKeyError", err, err)
+	}
+	if emptyKey.Field != "write" || emptyKey.Index != 1 {
+		t.Fatalf("empty write key: err = %+v, want Field=write Index=1", emptyKey)
+	}
+	if reached {
+		t.Fatal("an empty write key reached ExecuteTransaction")
+	}
+}
+
 // TestKVStoreAdapter_MultiGuardedBatchKVStore_RefusesWhenTransportLacksTheCapability
 // proves the adapter still satisfies kvstore.MultiGuardedBatchKVStore when
 // the underlying transport.KVClient is NOT a transport.TransactionClient,

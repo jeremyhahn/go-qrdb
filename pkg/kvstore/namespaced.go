@@ -365,6 +365,9 @@ type guardedNamespacedKVStore struct {
 // key and every write's key exactly as route() does for every other
 // operation.
 func (s *guardedNamespacedKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (bool, error) {
+	if err := validateGuardedBatchKeys([]Guard{{Key: guardKey, Value: guardValue}}, writes); err != nil {
+		return false, err
+	}
 	return s.inner.PutAllIfUnchanged(ctx, s.route(guardKey), guardValue, s.routeWrites(writes))
 }
 
@@ -405,7 +408,30 @@ func (s *guardedAtomicNamespacedKVStore) CompareAndSwap(ctx context.Context, key
 // PutAllIfUnchanged applies every write, confined to the namespace, only
 // while the namespaced guard key still holds guardValue.
 func (s *guardedAtomicNamespacedKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (bool, error) {
+	if err := validateGuardedBatchKeys([]Guard{{Key: guardKey, Value: guardValue}}, writes); err != nil {
+		return false, err
+	}
 	return s.guardedInner.PutAllIfUnchanged(ctx, s.route(guardKey), guardValue, s.routeWrites(writes))
+}
+
+// validateGuardedBatchKeys refuses an empty guard or write key BEFORE
+// route() turns it into a non-empty namespaced one ("" routed under prefix
+// "tenantdb." becomes "tenantdb.", which is no longer empty) -- route()
+// would otherwise hide exactly the key EmptyKeyError exists to catch from
+// every inner store's own check. Checked here, against the caller's
+// ORIGINAL key, ahead of every routeGuards/routeWrites call in this file.
+func validateGuardedBatchKeys(guards []Guard, writes []KV) error {
+	for i, g := range guards {
+		if g.Key == "" {
+			return &EmptyKeyError{Field: "guard", Index: i}
+		}
+	}
+	for i, w := range writes {
+		if w.Key == "" {
+			return &EmptyKeyError{Field: "write", Index: i}
+		}
+	}
+	return nil
 }
 
 // routeGuards rewrites each guard's key to its namespaced form, exactly as
@@ -443,6 +469,9 @@ type multiGuardedNamespacedKVStore struct {
 // PutAllIfAllUnchanged applies every write, confined to the namespace, only
 // while EVERY namespaced guard key still holds its expected value.
 func (s *multiGuardedNamespacedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []Guard, writes []KV) (bool, error) {
+	if err := validateGuardedBatchKeys(guards, writes); err != nil {
+		return false, err
+	}
 	return s.multiInner.PutAllIfAllUnchanged(ctx, s.routeGuards(guards), s.routeWrites(writes))
 }
 
@@ -461,5 +490,8 @@ type multiGuardedAtomicNamespacedKVStore struct {
 // PutAllIfAllUnchanged applies every write, confined to the namespace, only
 // while EVERY namespaced guard key still holds its expected value.
 func (s *multiGuardedAtomicNamespacedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []Guard, writes []KV) (bool, error) {
+	if err := validateGuardedBatchKeys(guards, writes); err != nil {
+		return false, err
+	}
 	return s.multiInner.PutAllIfAllUnchanged(ctx, s.routeGuards(guards), s.routeWrites(writes))
 }

@@ -17,6 +17,7 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -395,4 +396,76 @@ func TestNewNamespacedKVStore_MultiGuardedAtomicCapability(t *testing.T) {
 			t.Errorf("expected inner key %q to exist", k)
 		}
 	}
+}
+
+// TestNewNamespacedKVStore_RefusesEmptyKeyBeforeRouting proves every guarded
+// wrapper variant catches an empty guard or write key against the CALLER's
+// original key, before route() turns "" into the non-empty namespace
+// prefix itself -- which would hide the empty key from every inner store's
+// own check (go-qrdb#589's non-blocking ask). None of the four variants may
+// reach their inner store for either case.
+func TestNewNamespacedKVStore_RefusesEmptyKeyBeforeRouting(t *testing.T) {
+	ctx := context.Background()
+	assertEmptyKey := func(t *testing.T, err error, field string, index int) {
+		t.Helper()
+		var emptyKey *EmptyKeyError
+		if !errors.As(err, &emptyKey) {
+			t.Fatalf("err = %v (%T), want *EmptyKeyError", err, err)
+		}
+		if emptyKey.Field != field || emptyKey.Index != index {
+			t.Fatalf("err = %+v, want Field=%s Index=%d", emptyKey, field, index)
+		}
+	}
+
+	t.Run("guarded-only PutAllIfUnchanged", func(t *testing.T) {
+		inner := &fakeGuardedStore{KVStore: NewMemoryKVStore()}
+		store, err := NewNamespacedKVStore(inner, "acme/")
+		require.NoError(t, err)
+		guarded := store.(GuardedBatchKVStore)
+
+		_, err = guarded.PutAllIfUnchanged(ctx, "", nil, []KV{{Key: "k", Value: []byte("v")}})
+		assertEmptyKey(t, err, "guard", 0)
+		if v, _ := inner.Get(ctx, "acme/"); v != nil {
+			t.Error("the empty guard key reached the inner store as a namespaced key")
+		}
+	})
+
+	t.Run("guarded-atomic PutAllIfUnchanged", func(t *testing.T) {
+		inner := &fakeGuardedAtomicStore{AtomicKVStore: NewMemoryKVStore()}
+		store, err := NewNamespacedKVStore(inner, "acme/")
+		require.NoError(t, err)
+		guarded := store.(GuardedBatchKVStore)
+
+		_, err = guarded.PutAllIfUnchanged(ctx, "g", []byte("v"), []KV{{Key: "", Value: []byte("v")}})
+		assertEmptyKey(t, err, "write", 0)
+		if v, _ := inner.Get(ctx, "acme/"); v != nil {
+			t.Error("the empty write key reached the inner store as a namespaced key")
+		}
+	})
+
+	t.Run("multi-guarded-only PutAllIfAllUnchanged", func(t *testing.T) {
+		inner := &fakeMultiGuardedStore{KVStore: NewMemoryKVStore()}
+		store, err := NewNamespacedKVStore(inner, "acme/")
+		require.NoError(t, err)
+		multi := store.(MultiGuardedBatchKVStore)
+
+		_, err = multi.PutAllIfAllUnchanged(ctx, []Guard{{Key: "ok"}, {Key: ""}}, []KV{{Key: "k", Value: []byte("v")}})
+		assertEmptyKey(t, err, "guard", 1)
+		if v, _ := inner.Get(ctx, "acme/"); v != nil {
+			t.Error("the empty guard key reached the inner store as a namespaced key")
+		}
+	})
+
+	t.Run("multi-guarded-atomic PutAllIfAllUnchanged", func(t *testing.T) {
+		inner := &fakeMultiGuardedAtomicStore{AtomicKVStore: NewMemoryKVStore()}
+		store, err := NewNamespacedKVStore(inner, "acme/")
+		require.NoError(t, err)
+		multi := store.(MultiGuardedBatchKVStore)
+
+		_, err = multi.PutAllIfAllUnchanged(ctx, nil, []KV{{Key: "k", Value: []byte("v")}, {Key: ""}})
+		assertEmptyKey(t, err, "write", 1)
+		if v, _ := inner.Get(ctx, "acme/"); v != nil {
+			t.Error("the empty write key reached the inner store as a namespaced key")
+		}
+	})
 }

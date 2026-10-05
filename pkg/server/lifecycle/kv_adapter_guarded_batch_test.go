@@ -330,6 +330,44 @@ func TestExecuteGuardedBatch_NilTransactionServiceRefuses(t *testing.T) {
 	}
 }
 
+// TestExecuteGuardedBatch_RefusesEmptyKey proves an empty guard or write key
+// is refused locally, as *kvstore.EmptyKeyError, before tx.Execute is even
+// called -- go-qrdb#589's non-blocking ask that the server-side guarded
+// batch path give the same typed refusal the SDK adapter and an embedded,
+// same-process caller both give.
+func TestExecuteGuardedBatch_RefusesEmptyKey(t *testing.T) {
+	reached := false
+	tx := &mockTransactionServicer{executeFn: func(context.Context, []service.Compare, []service.Op, []service.Op) (*service.TransactionResponse, error) {
+		reached = true
+		return &service.TransactionResponse{Succeeded: true}, nil
+	}}
+
+	_, err := ExecuteGuardedBatch(context.Background(), tx,
+		[]kvstore.Guard{{Key: ""}},
+		[]kvstore.KV{{Key: "k", Value: []byte("v")}})
+	var emptyKey *kvstore.EmptyKeyError
+	if !errors.As(err, &emptyKey) {
+		t.Fatalf("empty guard key: err = %v (%T), want *kvstore.EmptyKeyError", err, err)
+	}
+	if emptyKey.Field != "guard" {
+		t.Errorf("empty guard key: Field = %q, want guard", emptyKey.Field)
+	}
+
+	_, err = ExecuteGuardedBatch(context.Background(), tx,
+		nil,
+		[]kvstore.KV{{Key: "k", Value: []byte("v")}, {Key: ""}})
+	if !errors.As(err, &emptyKey) {
+		t.Fatalf("empty write key: err = %v (%T), want *kvstore.EmptyKeyError", err, err)
+	}
+	if emptyKey.Field != "write" || emptyKey.Index != 1 {
+		t.Fatalf("empty write key: err = %+v, want Field=write Index=1", emptyKey)
+	}
+
+	if reached {
+		t.Fatal("an empty key reached tx.Execute")
+	}
+}
+
 // TestExecuteGuardedBatch_SendsWritesAsSuccessOps confirms the proposal
 // shape: one put per write, in order, as success operations only.
 func TestExecuteGuardedBatch_SendsWritesAsSuccessOps(t *testing.T) {

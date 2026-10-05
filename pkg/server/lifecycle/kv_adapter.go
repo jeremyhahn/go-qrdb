@@ -582,6 +582,24 @@ func ExecuteGuardedBatch(ctx context.Context, tx service.TransactionServicer, gu
 	if tx == nil {
 		return false, &kvstore.GuardedBatchUnsupportedError{Err: ErrTransactionServiceRequired}
 	}
+
+	// tx.Execute refuses an empty key too (service.InvalidKeyError, wrapped
+	// in service.EncodeRequestError) -- but a caller that holds this
+	// function only through its kvstore.MultiGuardedBatchKVStore view (every
+	// server-side composition that hands out a kvstore.KVStore rather than a
+	// service.TransactionServicer) cannot import pkg/service to name that
+	// refusal. Checking here first gives it the kvstore-layer type instead.
+	for i, g := range guards {
+		if g.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "guard", Index: i}
+		}
+	}
+	for i, w := range writes {
+		if w.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "write", Index: i}
+		}
+	}
+
 	ops := make([]service.Op, 0, len(writes))
 	for _, w := range writes {
 		if w.Delete {

@@ -185,6 +185,26 @@ func (a *kvStoreAdapter) PutAllIfAllUnchanged(ctx context.Context, guards []kvst
 		return false, kvstore.ErrAtomicWriteUnsupported
 	}
 
+	// No state machine can store an empty key, and ExecuteTransaction's
+	// server side refuses one the same way (service.InvalidKeyError,
+	// wrapped in service.EncodeRequestError) -- but only AFTER a full
+	// round trip over a network transport, and REST/gRPC/QUIC/Unix/MCP all
+	// lose that error's specific Go type crossing the wire, leaving a
+	// caller with a generic failure. An embedded, same-process caller
+	// never crosses a wire and keeps the real type. Checking here, before
+	// the RPC is even issued, gives every transport the identical typed
+	// refusal with no round trip, matching what embedded already has.
+	for i, g := range guards {
+		if g.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "guard", Index: i}
+		}
+	}
+	for i, w := range writes {
+		if w.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "write", Index: i}
+		}
+	}
+
 	compares := make([]transport.Compare, 0, len(guards)*2)
 	for _, g := range guards {
 		if g.Value == nil {

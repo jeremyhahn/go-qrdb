@@ -184,3 +184,10 @@ type KVIndexScanError = kvstore.IndexScanError
 
 // KVIndexRegistrationError is returned when KVStore index registration fails.
 type KVIndexRegistrationError = kvstore.IndexRegistrationError
+
+// KVEmptyKeyError is returned by a MultiGuardedBatchKVStore's
+// PutAllIfUnchanged/PutAllIfAllUnchanged when a guard or a write in the
+// batch names an empty key. The SDK's KVStore() adapter checks this before
+// issuing the underlying ExecuteTransaction RPC, so every transport reports
+// the identical typed refusal with no round trip.
+type KVEmptyKeyError = kvstore.EmptyKeyError

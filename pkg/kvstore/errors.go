@@ -14,7 +14,10 @@
 
 package kvstore
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+)
 
 // ErrIndexUnsupported is returned by RegisterEntityIndexes, QueryIndex,
 // ScanIndex, QueryCompoundIndex and ScanCompoundIndex on a store that cannot
@@ -328,6 +331,30 @@ type IndexScanError struct {
 // Error returns a human-readable description of the index scan failure.
 func (e *IndexScanError) Error() string {
 	return "kvstore index scan " + e.IndexName + ": " + e.Reason
+}
+
+// EmptyKeyError is returned by MultiGuardedBatchKVStore's
+// PutAllIfUnchanged/PutAllIfAllUnchanged when a guard or a write in the
+// batch names an empty key.
+//
+// No state machine can store an empty key -- service.TransactionServicer.Execute
+// refuses one identically, wrapped in service.EncodeRequestError, before
+// proposing anything -- so this is the SAME refusal expressed at the
+// kvstore layer, for a caller that cannot or should not import pkg/service.
+// sdk.kvStoreAdapter checks this before issuing the underlying
+// ExecuteTransaction RPC so every SDK transport reports the identical typed
+// refusal with no round trip, exactly as an embedded, same-process caller
+// already does.
+type EmptyKeyError struct {
+	// Field names what carried the empty key: "guard" or "write".
+	Field string
+	// Index is the guard's or write's position in its slice.
+	Index int
+}
+
+// Error returns a human-readable description of the refused key.
+func (e *EmptyKeyError) Error() string {
+	return "kvstore: " + e.Field + " " + strconv.Itoa(e.Index) + " names an empty key"
 }
 
 // IndexRegistrationError wraps an index registration error.
