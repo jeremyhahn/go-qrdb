@@ -356,12 +356,22 @@ func TestRaftSMOverFileStorage_ThreeNodeCluster(t *testing.T) {
 }
 
 // TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard is the
-// clustered, end-to-end acceptance for go-qrdb#592 F1: a 65,535-byte key
-// (protocol.MaxClientKeyLength, the exact boundary where a 2-byte
+// clustered, end-to-end acceptance for go-qrdb#592 F1: a key near
+// protocol.MaxClientKeyLength (the exact boundary where a 2-byte
 // key-length field's "N + keyLen" arithmetic wrapped in 16-bit arithmetic
 // while keyLen was still a uint16) must apply on EVERY replica of a real
 // 3-node raft group running sm_storage: file, and the shard must stay
 // healthy afterward on every one of them.
+//
+// maxKey is MaxClientKeyLength minus margin, not the cap itself: the CLI's
+// own client, with no --database/--tenant given, namespaces the key with a
+// tenant/database prefix before it reaches the wire, and that prefix counts
+// against the SAME 65,535-byte cap the server enforces -- a property of
+// this harness's default scoping, not of the fix under test. The exact
+// byte boundary (65,525-65,536) is pinned at the Apply level, on every
+// state machine type, by pkg/statemachine's own boundary and raftharness
+// tests; this test's job is proving the fix holds through a REAL daemon
+// and the real CLI, not re-proving the exact boundary a second time.
 func TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -407,7 +417,7 @@ func TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard(t *testing.T) {
 		return append(base, rest2...)
 	}
 
-	maxKey := strings.Repeat("k", 65535)
+	maxKey := strings.Repeat("k", 65400)
 
 	// Write the max-length key through node 1 (leader forwarding routes to
 	// the leader).
