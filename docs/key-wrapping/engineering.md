@@ -40,12 +40,15 @@ func (r *DefaultRegistry) Lookup(id string) (Provider, error)
 
 type SoftwareProvider struct { /* unexported */ }
 
-func NewSoftwareProvider() *SoftwareProvider
+func NewSoftwareProvider(keyDir string) (*SoftwareProvider, error)
 
 func (p *SoftwareProvider) ProviderID() string
-func (p *SoftwareProvider) Wrap(ctx context.Context, keyFilePath string, dek []byte) ([]byte, error)
-func (p *SoftwareProvider) Unwrap(ctx context.Context, keyFilePath string, wrapped []byte) ([]byte, error)
+func (p *SoftwareProvider) Wrap(ctx context.Context, keyRef string, dek []byte) ([]byte, error)
+func (p *SoftwareProvider) Unwrap(ctx context.Context, keyRef string, wrapped []byte) ([]byte, error)
 ```
+
+`keyRef` is a bare file NAME inside `keyDir`, opened through an `*os.Root` —
+never a path (go-qrdb security review, backup-encrypt-default #B4).
 
 `pkg/service` (backup), additions over the existing surface in
 [backup-restore/engineering.md](../backup-restore/engineering.md):
@@ -77,6 +80,13 @@ type RestoreOptions struct {
 
 func WithKeyWrapRegistry(r keywrap.Registry) BackupServiceOption
 func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption
+func WithKeyDir(dir string) BackupServiceOption
+func WithAuditFailurePolicy(p audit.FailurePolicy) BackupServiceOption
+
+// NewBackupService now returns an error: a WithKeyWrapProvider collision
+// with an ID already registered is returned typed, never discarded
+// (go-qrdb security review, backup-encrypt-default #B6).
+func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOption) (BackupServicer, error)
 ```
 
 **`EncryptionKey`/`DecryptionKey` (raw KEK bytes) are retired, not merely
@@ -97,9 +107,17 @@ reference (a key-file path for `"software"`), never raw bytes.
 - **Every DEK is fresh random, every backup, never reused.** `crypto/rand`,
   32 bytes, generated inside `CreateBackup` and nowhere persisted
   unwrapped.
-- **`SoftwareProvider` refuses a key file that is not exactly 32 bytes.**
-  Not truncated, not padded, not hashed to size — `*InvalidKeyLengthError`
-  naming the length actually found.
+- **`SoftwareProvider` refuses a key file that is not exactly 32 bytes, or
+  a `keyRef` that is not a bare file name inside its configured
+  directory.** Not truncated, not padded, not hashed to size. Every such
+  failure -- a rejected name, a missing file, a non-regular file, the
+  wrong length -- collapses into ONE detail-free `*KeyAccessError`: the
+  directory, the rejected name, the OS error, and the length actually
+  read are logged on the server only, never returned, so the error cannot
+  be used as a filesystem oracle by a caller who may be remote
+  (go-qrdb security review, backup-encrypt-default #B4). `*KeyDirectoryError`
+  stays separate and detailed: it fires only at construction, when the
+  configured directory itself cannot be opened.
 - **AES-256-GCM, both envelope layers, no hand-rolled crypto.** `Wrap`/
   `Unwrap` and the per-shard payload encryption both use `crypto/aes` +
   `crypto/cipher.NewGCM`, a fresh 12-byte nonce per call (`crypto/rand`),
@@ -109,11 +127,16 @@ reference (a key-file path for `"software"`), never raw bytes.
   trusted metadata (ID, destination, shard ID, format version) at restore
   time, never read back from the (untrusted, until authenticated) stored
   artifact itself.
-- **A GCM authentication failure, at either layer, is `*UnwrapFailedError`
-  (keywrap layer) or `*BackupDecryptionFailedError` (service layer) --
-  never distinguished from "tampered" vs "wrong key" in what is returned.**
-  Both collapse to one typed, fail-closed outcome so a caller cannot use the
-  distinction to narrow down a correct key.
+- **A GCM authentication failure on the DEK-wrap layer is
+  `*UnwrapFailedError` (keywrap) / `*BackupDecryptionFailedError`
+  (service); a failure on a SHARD's own ciphertext is
+  `*BackupShardIntegrityError` -- a DIFFERENT type, deliberately, since
+  the latter has nothing to do with the KEK or the wrapped DEK
+  (go-qrdb security review, backup-encrypt-default: conflating the two
+  previously reported a tampered shard as "wrong key-encrypting key").**
+  Neither layer distinguishes "tampered" from "wrong key" WITHIN itself --
+  both collapse to one typed, fail-closed outcome per layer so a caller
+  cannot use the distinction to narrow down a correct key.
 - **Every key buffer is zeroed after use.** `secure.Wipe` on the DEK after
   it has sealed/opened every shard in a backup, and on `SoftwareProvider`'s
   in-memory copy of the key file's contents after each `Wrap`/`Unwrap`
@@ -149,7 +172,8 @@ reference (a key-file path for `"software"`), never raw bytes.
 
 | Error type | Condition | Fails closed? |
 |---|---|---|
-| `InvalidKeyLengthError` | key file is not exactly 32 bytes | yes |
+| `KeyAccessError` | `keyRef` is not a bare name, or does not resolve to a regular, exactly-32-byte file inside the configured directory | yes |
+| `KeyDirectoryError` | `NewSoftwareProvider`'s configured directory cannot be opened as an `*os.Root` | yes (construction-time) |
 | `ProviderAlreadyRegisteredError` | `Register` called with a duplicate ID | yes |
 | `ProviderNotRegisteredError` | `LookupFactory`/`Lookup` called with an unregistered ID | yes |
 | `UnwrapFailedError` | GCM authentication failed on `Unwrap` (wrong KEK or tampered `wrapped`) | **yes** |
@@ -158,7 +182,13 @@ reference (a key-file path for `"software"`), never raw bytes.
 
 | Error type | Condition | Fails closed? |
 |---|---|---|
-| `BackupDecryptionFailedError` | An unregistered `KeyProviderID` (create or restore), a `Wrap`/`Unwrap` failure (bad key reference, wrong KEK, or a tampered wrapped DEK), or a shard's own GCM `Open` failure during restore | **yes** |
+| `BackupDecryptionFailedError` | An unregistered `KeyProviderID` (create or restore), or a `Wrap`/`Unwrap` failure (bad key reference, wrong KEK, or a tampered wrapped DEK) | **yes** |
+| `BackupShardIntegrityError` | A shard's own digest or GCM `Open` failed during restore -- distinct from the KEK-layer failure above | **yes** |
+| `BackupManifestInvalidError` | The authenticated manifest failed to authenticate or decode | **yes** |
+| `BackupMetadataMismatchError` | The stored metadata and the artifact disagree about encryption, or the manifest's own backup ID/destination/provider does not match the metadata it was read alongside | **yes** |
+| `BackupVerificationFailedError` | RestoreBackup's top-level, pre-import verification failure for a specific target shard (wraps one of the above) | **yes** |
+| `BackupShardNotFoundError` | A target shard has no stored payload, or no manifest entry | **yes** |
+| `BackupKeyDirNotConfiguredError` | The built-in `"software"` provider is resolved with no `WithKeyDir`/`lifecycle.Infra.KeyDir` configured | **yes** |
 
 `BackupDecryptionFailedError` retires `BackupDecryptionKeyRequiredError`:
 restore no longer requires the caller to supply anything (the envelope's
@@ -196,10 +226,25 @@ not work, not a server-side failure.
   `RestoreBackup`, and assert they do not contain the known plaintext
   fixture) and which restores correctly with the matching key file; a
   wrong key file on restore gives `*BackupDecryptionFailedError`; a
-  single-byte tamper of a stored shard's ciphertext gives the same typed
-  error; an explicit `none` backup's stored bytes ARE the plaintext
-  (negative control for the "not the plaintext" assertion above) and still
-  warn/audit exactly as the already-shipped mechanism does.
+  single-byte tamper of a stored shard's ciphertext gives
+  `*BackupShardIntegrityError`, wrapped in a top-level
+  `*BackupVerificationFailedError`, with NOTHING imported; an explicit
+  `none` backup's stored bytes ARE the plaintext (negative control for the
+  "not the plaintext" assertion above) and still warn/audit exactly as the
+  already-shipped mechanism does.
+- **Unit, `pkg/service` (backup) -- the review's own regression suite**: a
+  backup whose stored metadata and envelope disagree (either direction) is
+  refused with `*BackupMetadataMismatchError`; a tampered manifest is
+  refused with `*BackupManifestInvalidError`; a shard dropped from storage
+  after creation (present in the manifest, absent from the artifact) is
+  caught by the DEFAULT restore target (no explicit `TargetShards`), not
+  only an explicit one; a plaintext-override audit write failure under
+  `FailClosed` refuses the backup/restore and stores nothing, while
+  `FailOpen` (and `SetAuditFailurePolicy` applied after construction)
+  still proceeds; a duplicate `WithKeyWrapProvider` registration returns
+  `*keywrap.ProviderAlreadyRegisteredError` from `NewBackupService` rather
+  than being discarded. Each of these is paired with a mutation check:
+  reverting the corresponding fix makes the test fail.
 - **Integration**: a backup created with a `fakeHardwareProvider`
   registered under a non-`"software"` ID round-trips through create,
   list (confirms `KeyProviderID` on `BackupInfo` matches), and restore —
@@ -208,20 +253,27 @@ not work, not a server-side failure.
 
 ## Configuration
 
-No dedicated config section for `pkg/keywrap` itself — a `Registry` is
-composed in code (`WithKeyWrapRegistry`/`WithKeyWrapProvider`), matching
-`StrategyRegistry`'s own composition-not-configuration shape. The backup
-surface's own flags/fields (`--encryption-key-file`, `KeyRef`) are
-documented in [cli.md](cli.md) and
+The `Registry` itself is composed in code (`WithKeyWrapRegistry`/
+`WithKeyWrapProvider`), matching `StrategyRegistry`'s own
+composition-not-configuration shape. The one genuinely configured value is
+the built-in `"software"` provider's key DIRECTORY (`WithKeyDir`/
+`lifecycle.Infra.KeyDir`/`--backup-key-dir`): every key file it reads must
+live inside it, by NAME, confined via `*os.Root` (go-qrdb security review,
+backup-encrypt-default #B4). The backup surface's own flags/fields
+(`--encryption-key-file`, `KeyRef`) are documented in [cli.md](cli.md) and
 [backup-restore/cli.md](../backup-restore/cli.md).
 
 ## Persistence
 
-A backup's envelope metadata (`format_version`, `provider_id`, `key_ref`,
-`wrapped_dek`) is stored alongside its existing manifest fields (ID,
-timestamp, checksum, ...), wherever that manifest already lives — the
-in-memory registry for a non-durable backup, or the configured
-`BackupSink` for a durable one. It is read back only by `RestoreBackup`
-and `VerifyBackup`; `ListBackups`/`GetBackup` expose `KeyProviderID` alone
+A backup's envelope (`BackupEnvelope`: `format_version`, `provider_id`,
+`key_ref`, `wrapped_dek`, and `sealed_manifest` -- the AUTHENTICATED
+manifest described under [architecture.md's envelope
+format](architecture.md#envelope-format), not to be confused with the
+backup's own ordinary metadata record below) is stored SEPARATELY from
+`BackupInfo` (ID, timestamp, checksum, ...), wherever that metadata record
+already lives — the in-memory registry for a non-durable backup, or the
+configured `BackupSink` for a durable one. The envelope is read back only
+by `RestoreBackup`, `DecryptBackupShard`, and `VerifyBackup`;
+`ListBackups`/`GetBackup` expose `KeyProviderID` alone
 (see [architecture.md](architecture.md#backup-integration) for why the
 wrapped DEK itself is not surfaced on the wire).

@@ -23,7 +23,7 @@ the fields this feature adds or changes to that existing schema.
 | Field | Type | Meaning |
 |---|---|---|
 | `key_provider_id` | string | the registered `keywrap.Provider` ID to wrap this backup's DEK with. Empty defaults to `"software"` when `key_ref` is set. |
-| `key_ref` | string | the key reference the named provider resolves — a key-file path for `"software"`. |
+| `key_ref` | string | the key reference the named provider resolves — for `"software"`, the bare NAME of a key file inside the server's configured key directory (`--backup-key-dir`), never a path. |
 
 **`encryption_key` is retired** (owner ruling — see
 [architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired)):
@@ -54,7 +54,7 @@ DEK, the envelope's nonce, or the format version is surfaced here — see
 { "backup_id": "bkp-20261004-0300",
   "target_shards": [1, 2],
   "validate_first": true,
-  "decryption_key_ref": "/etc/qrdb/backup.key" }
+  "decryption_key_ref": "backup.key" }
 ```
 
 | Field | Type | Meaning |
@@ -67,8 +67,8 @@ DEK, the envelope's nonce, or the format version is surfaced here — see
 The provider actually used to `Unwrap` is whichever `key_provider_id` the
 backup itself was created under — a restore request does not choose a
 different provider than the one that wrapped the DEK; `decryption_key_ref`
-only supplies that provider's own reference (the key file's path, for
-`"software"`).
+only supplies that provider's own reference (a bare file NAME inside the
+server's configured key directory, for `"software"`).
 
 ## Capability matrix
 
@@ -82,7 +82,8 @@ the matrix in [backup-restore/api.md](../backup-restore/api.md#capability-matrix
 |---|---|---|
 | `key_provider_id` names an unregistered provider (create or restore) | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
 | Wrong key file on restore (an explicit `decryption_key_ref` override, or the stored reference, that does not match) | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
-| Tampered shard ciphertext on restore | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
+| Tampered shard ciphertext, or a tampered manifest, on restore — aborts the WHOLE restore, before any shard is imported | 400 | `INVALID_ARGUMENT` — `*BackupVerificationFailedError` (wrapping `*BackupShardIntegrityError` or `*BackupManifestInvalidError`) |
+| Stored metadata and the artifact disagree about encryption (a downgrade attempt) | 400 | `INVALID_ARGUMENT` — `*BackupMetadataMismatchError` |
 
 These join, not replace, the existing mapping table in
 [backup-restore/api.md](../backup-restore/api.md#status-and-error-mapping).
