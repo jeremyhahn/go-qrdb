@@ -305,12 +305,16 @@ services:
         done
         # Claim each holder's envelope over the holder's own mTLS session: the
         # envelope is delivered once, sealed to the holder's key. The handshake
-        # is begin (returns a hex nonce) -> sign SHA-256(nonce) with the holder
-        # key (ECDSA ASN.1-DER, exactly what `openssl dgst -sha256 -sign`
-        # produces) -> complete (returns the base64 envelope). The holders
-        # file lists each holder's certificate, key and envelope, relative to
-        # /data/raft, so the integration-test runner can drive the
-        # authenticated quorum with them.
+        # is begin (returns a hex nonce) -> sign SHA-256 of the DOMAIN-SEPARATED
+        # claim message (pkg/ceremony/claim_message.go ShareClaimMessage:
+        # "qrdb/share-claim/v1" NUL "system" NUL the holder's own username NUL
+        # the raw nonce bytes -- never the bare nonce, so a signature obtained
+        # here can never answer an mtls quorum-factor challenge or another
+        # holder's claim) with the holder key (ECDSA ASN.1-DER, exactly what
+        # `openssl dgst -sha256 -sign` produces) -> complete (returns the
+        # base64 envelope). The holders file lists each holder's certificate,
+        # key and envelope, relative to /data/raft, so the integration-test
+        # runner can drive the authenticated quorum with them.
         if [ ! -s /data/raft/shamir-init.json ]; then
           echo "Claiming share-holder envelopes..."
           : > $$OFFDIR/holders.jsonl
@@ -326,7 +330,18 @@ services:
               continue
             fi
             printf '%s' "$$NONCE" | xxd -r -p > $$OFFDIR/so-$$n.nonce
-            SIG=$$(openssl dgst -sha256 -sign $$OFFDIR/so-$$n.key $$OFFDIR/so-$$n.nonce | base64 -w0)
+            # The server verifies a DOMAIN-SEPARATED message
+            # (pkg/ceremony/claim_message.go ShareClaimMessage), never a
+            # signature over the bare nonce: ShareClaimContext NUL scopeLabel
+            # NUL username NUL nonce -- so a signature obtained for one
+            # purpose (an mtls quorum-factor challenge, another claim) can
+            # never answer this one. These are the system barrier's
+            # unseal-domain officers (POST /v1/barrier/officers, not
+            # /v1/barrier/recovery/officers), whose scopeLabel is "system"
+            # (BarrierScope.ClaimLabel's default case, SystemClaimLabel).
+            printf 'qrdb/share-claim/v1\0system\0so-%s\0' "$$n" > $$OFFDIR/so-$$n.msg
+            cat $$OFFDIR/so-$$n.nonce >> $$OFFDIR/so-$$n.msg
+            SIG=$$(openssl dgst -sha256 -sign $$OFFDIR/so-$$n.key $$OFFDIR/so-$$n.msg | base64 -w0)
             jq -n --arg nonce "$$NONCE" --arg sig "$$SIG" '{nonce_hex: $$nonce, signature: $$sig}' \
               | curl -ks --max-time 10 -X POST $$SOAUTH \
                   -H 'Content-Type: application/json' \
@@ -339,7 +354,7 @@ services:
               cat $$OFFDIR/so-$$n.complete.json || true
               continue
             fi
-            rm -f $$OFFDIR/so-$$n.complete.json $$OFFDIR/so-$$n.nonce
+            rm -f $$OFFDIR/so-$$n.complete.json $$OFFDIR/so-$$n.nonce $$OFFDIR/so-$$n.msg
             jq -cn --arg u "so-$$n" '{username: $$u, cert: ("officers/" + $$u + ".crt"), key: ("officers/" + $$u + ".key"), envelope: ("officers/" + $$u + ".env")}' \
               >> $$OFFDIR/holders.jsonl
             echo "Holder so-$$n envelope claimed"
