@@ -67,14 +67,18 @@ barrier-encrypted, tenant-safe storage. The code does this instead:
 
 - **One node-local store for everything.** The vector service is built once per
   node, shared by every tenant and every database on the node, over a Pebble
-  store at `{DataDir}/vector`, or an entirely in-memory store
-  (`vectorstorage.MemoryVectorStorage`) when the node's primary engine is
-  explicitly `database.BackendMemory` (`lifecycle.Infra.Backend`, not
-  `DataDir`'s emptiness) -- the vector subsystem follows the node's primary
-  engine rather than requiring a directory a memory-engine node has no
-  other reason to have. A persistent backend with no data directory is
-  refused (`*lifecycle.EmptyVectorDataDirError`), not silently handed an
-  in-memory store.
+  store at `{DataDir}/vector` whenever a data directory is available --
+  regardless of the primary engine's own backend type, since
+  `sdk/go/driver/node` deliberately roots even a memory-backend node's
+  vector store and database catalog in a real directory when it has one --
+  or an entirely in-memory store (`vectorstorage.MemoryVectorStorage`) when
+  there is no directory at all. **With no directory, `lifecycle.Infra.Backend`
+  -- not `DataDir`'s emptiness alone -- decides what happens next**: a
+  node whose primary engine is explicitly `database.BackendMemory` gets the
+  in-memory vector store, exactly as before; any OTHER backend with no
+  directory is a configuration mistake, refused with
+  `*lifecycle.EmptyVectorDataDirError` rather than silently handed one
+  anyway.
 - **Isolation is a name prefix.** A database's namespaces are distinguished by
   the `<tenant>/<db>/` prefix the request resolver adds to the namespace name,
   plus a tenant scope the service adds itself.

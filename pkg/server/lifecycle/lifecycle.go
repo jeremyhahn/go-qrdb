@@ -679,28 +679,32 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
 
-	// Vector storage follows the primary engine (go-qrdb#578), decided by
-	// infra.Backend -- the engine's own declared type -- not by DataDir's
-	// emptiness. DataDir being empty is a FACT about configuration;
-	// Backend == database.BackendMemory is the caller's actual DECISION to
-	// run ephemeral, and only the decision should route storage away from
-	// disk. Checking DataDir alone would hand a Pebble-backed node an
-	// in-memory vector store -- silently, successfully, and durably wrong
-	// -- the moment its DataDir happened to be misconfigured as empty,
-	// instead of refusing. MemoryVectorStorage satisfies the identical
-	// vectorstorage.Storage interface with no on-disk footprint, the same
-	// relationship pkg/storage/memory already has to PebbleDB for the
-	// primary KV engine (see NewLocalStorage).
+	// Vector storage uses the directory when one is available, exactly as
+	// before go-qrdb#578; what #578 adds is infra.Backend deciding what
+	// happens when NO directory is available, instead of DataDir's
+	// emptiness alone deciding everything. A directory, when the caller
+	// supplies one, is used for Pebble-backed vector storage regardless of
+	// the primary engine's own backend type -- sdk/go/driver/node
+	// deliberately roots a memory-backend node's vector store and database
+	// catalog in a real directory (its own resolveDataDir doc comment:
+	// "the vector store ... [is] file-backed regardless of the KV
+	// backend"), and that choice is the caller's to make, not something
+	// this function overrides. An EMPTY directory is where the decision
+	// actually lives: Backend == database.BackendMemory is the caller's
+	// explicit choice to run ephemeral, honoured by MemoryVectorStorage;
+	// any other backend with no directory is a configuration mistake, not
+	// a request for an ephemeral store, and is refused
+	// (EmptyVectorDataDirError) instead of silently handed one anyway.
 	//
 	// Encryption-at-rest applies only to the Pebble-backed path: there is no
 	// file for atrest to wrap when nothing is written to disk.
 	var vectorStorage vectorstorage.Storage
-	if infra.Backend == database.BackendMemory {
+	if infra.DataDir == "" && infra.Backend != database.BackendMemory {
+		return nil, &EmptyVectorDataDirError{Backend: infra.Backend}
+	}
+	if infra.DataDir == "" {
 		vectorStorage = vectorstorage.NewMemoryVectorStorage()
 	} else {
-		if infra.DataDir == "" {
-			return nil, &EmptyVectorDataDirError{Backend: infra.Backend}
-		}
 		// Route encryption through the shared Encryptor so vector storage and
 		// the MVCC state machine use one code path and one instance. When
 		// Infra.Encryptor is nil, derive a no-op Encryptor from SealBarrier

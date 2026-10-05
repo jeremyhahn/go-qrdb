@@ -25,6 +25,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1060,6 +1061,40 @@ func TestBuildServices_PersistentBackend_EmptyDataDirRefuses(t *testing.T) {
 		if !errors.As(err, &refusal) {
 			t.Fatalf("backend %q: err = %v (%T), want *lifecycle.EmptyVectorDataDirError", backend, err, err)
 		}
+	}
+}
+
+// TestBuildServices_MemoryBackend_WithDataDir_VectorStorageUsesPebble
+// proves the directory still wins when a memory-backend node ALSO has one:
+// sdk/go/driver/node deliberately roots even a memory-backend node's
+// vector store in a real directory when it has one (its own
+// resolveDataDir doc comment), so BuildServices must not force
+// MemoryVectorStorage just because Backend is database.BackendMemory --
+// only an EMPTY DataDir makes Backend the deciding factor.
+func TestBuildServices_MemoryBackend_WithDataDir_VectorStorageUsesPebble(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	dataDir := t.TempDir()
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  dataDir,
+		Backend:  database.BackendMemory,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.Vector == nil {
+		t.Fatal("Vector service is nil")
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "vector")); statErr != nil {
+		t.Errorf("expected the supplied data dir to hold the vector store: %v", statErr)
 	}
 }
 

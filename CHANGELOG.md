@@ -411,18 +411,21 @@ are not reconstructed here — their history is in the git log.
 - **A memory-engine node no longer needs a vector data directory
   (#578).** `pkg/storage/vector.MemoryVectorStorage` implements
   `vector.Storage` entirely in process memory. `lifecycle.Infra` gains a
-  `Backend database.BackendType` field; `BuildServices` selects
-  `MemoryVectorStorage` when it is explicitly `database.BackendMemory`,
-  never from `DataDir` being empty on its own -- `DataDir` is a fact about
-  configuration, and only `Backend` is the caller's actual decision to run
-  ephemeral. A persistent backend (the zero value, or any explicit
-  non-memory value) with an empty `DataDir` is refused with the typed
-  `*lifecycle.EmptyVectorDataDirError` rather than silently handed an
-  in-memory vector store that would lose data on every restart.
-  `sdk/go/node` and `cmd/qrdbd` both set `Backend` from the same
-  configuration value (`databases[0].backend`) they already use to choose
-  the primary engine, so a memory-engine node continues to need no vector
-  data directory exactly as before.
+  `Backend database.BackendType` field, consulted only when `DataDir` is
+  empty -- a supplied directory is still used for Pebble-backed vector
+  storage regardless of the primary engine's own backend type (unchanged:
+  `sdk/go/driver/node` deliberately roots even a memory-backend node's
+  vector store in a real directory when it has one). With an empty
+  `DataDir`, `Backend == database.BackendMemory` selects the in-memory
+  store, exactly as before; any OTHER backend with an empty `DataDir` is
+  now refused with the typed `*lifecycle.EmptyVectorDataDirError` instead
+  of silently handed an in-memory vector store that would lose data on
+  every restart -- previously that silent fallback happened for ANY
+  backend whenever `DataDir` was empty, which a persistent engine's own
+  misconfiguration could trigger. `sdk/go/node` and `cmd/qrdbd` both set
+  `Backend` from the same configuration value (`databases[0].backend`)
+  they already use to choose the primary engine, so a memory-engine node
+  continues to need no vector data directory exactly as before.
 - **`sdk/go` re-exports the atomic, mode-enforcing file writer (#580).**
   `pkg/util/securefile.WriteFileAtomic` (moved out of `pkg/clustertls`) and
   new `CreateExclusive` (O_EXCL, create-only, typed `*FileExistsError`) are
