@@ -1092,12 +1092,27 @@ func (s *BackupService) loadEntry(ctx context.Context, id string) (*backupEntry,
 	if err != nil {
 		return nil, err
 	}
-	var envelope *BackupEnvelope
-	if info.Encryption != EncryptionNone {
-		envelope, err = s.sink.ReadEnvelope(ctx, id)
-		if err != nil {
-			return nil, err
-		}
+	// The envelope is ALWAYS read back, regardless of what info.Encryption
+	// claims: a sink is attacker-editable storage, and a meta record
+	// flipped to "none" while the original envelope object is left in
+	// place is exactly the downgrade checkEncryptionConsistency exists to
+	// catch (go-qrdb security review, backup-encrypt-default #B2). Reading
+	// it conditionally on info.Encryption let that edit mask its own
+	// envelope from ever being loaded, so checkEncryptionConsistency saw a
+	// nil envelope and a "none" claim -- a shape it reads as consistent --
+	// every time, on every FRESH service (a restart, or qrdbd's offline
+	// restore), never only the in-memory, same-process case. ReadEnvelope
+	// already returns a nil envelope and a nil error for a backup that
+	// genuinely carries none (see its own doc comment); refusing here when
+	// one claims "none" but an envelope exists anyway catches the
+	// downgrade even for a caller (VerifyBackup) that never calls
+	// checkEncryptionConsistency itself.
+	envelope, err := s.sink.ReadEnvelope(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if info.Encryption == EncryptionNone && envelope != nil {
+		return nil, &BackupMetadataMismatchError{BackupID: id}
 	}
 	return &backupEntry{info: info, shards: shards, envelope: envelope}, nil
 }
