@@ -185,22 +185,45 @@ func (h *hardConfinedWatch) WatchEntityType(ctx context.Context, req *WatchEntit
 	if !hardConfinedPrefixOverlaps(prefix) {
 		return inner, nil
 	}
-	return newHardConfinedFilteredEntityEvents(inner), nil
+	return newHardConfinedFilteredEntityEvents(ctx, inner), nil
 }
 
 // hardConfinedFilteredEntityEvents is hardConfinedFilteredWatcher's analog
 // for WatchEntityType's own channel of WatchEntityEvent: every event whose
 // composed storage key (entityKey) lies in the hard-confined namespace is
 // dropped before it reaches the caller.
-func newHardConfinedFilteredEntityEvents(inner <-chan WatchEntityEvent) <-chan WatchEntityEvent {
+//
+// The send to out is selected against ctx.Done() (go-qrdb#591's review,
+// non-blocking 4): out is unbuffered and this is the only goroutine that
+// ever sends to it, so a caller that stops reading -- abandons the
+// returned channel without draining it, rather than ranging it to
+// completion -- would otherwise leave this goroutine parked on `out <- ev`
+// forever, pinning inner's own upstream watch open for as long as the
+// process runs. Returning on ctx.Done() instead lets the caller's own
+// cancellation (the ONLY way whoever handed us ctx expects this watch to
+// end) reclaim this goroutine even when nothing is listening on out
+// anymore.
+func newHardConfinedFilteredEntityEvents(ctx context.Context, inner <-chan WatchEntityEvent) <-chan WatchEntityEvent {
 	out := make(chan WatchEntityEvent)
 	go func() {
 		defer close(out)
-		for ev := range inner {
-			if isHardConfinedKey(entityKey(ev.EntityType, ev.ID)) {
-				continue
+		for {
+			select {
+			case ev, ok := <-inner:
+				if !ok {
+					return
+				}
+				if isHardConfinedKey(entityKey(ev.EntityType, ev.ID)) {
+					continue
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
 			}
-			out <- ev
 		}
 	}()
 	return out

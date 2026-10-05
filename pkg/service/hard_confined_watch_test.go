@@ -301,6 +301,47 @@ func TestHardConfinedWatch_WatchEntityTypeFiltersASubPathOverlap(t *testing.T) {
 	}
 }
 
+// TestHardConfinedWatch_WatchEntityTypeFilterGoroutineExitsOnContextDone is
+// the red/green proof for go-qrdb#591's review (non-blocking 4):
+// newHardConfinedFilteredEntityEvents' forwarding goroutine must not block
+// forever on `out <- ev` when nothing ever reads from the returned
+// channel -- a caller that abandons it (rather than draining it to
+// completion) must still let the goroutine exit once its ctx ends, instead
+// of leaking it, and pinning the underlying watch open, for the rest of
+// the process's life.
+func TestHardConfinedWatch_WatchEntityTypeFilterGoroutineExitsOnContextDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeWatch{entityTypeChan: make(chan WatchEntityEvent, 1)}
+	w := NewHardConfinedWatch(fake)
+
+	subPathType := EntityType(string(confinedEntityType) + "/sub")
+	ch, err := w.WatchEntityType(ctx, &WatchEntityTypeRequest{EntityType: subPathType})
+	if err != nil {
+		t.Fatalf("WatchEntityType(sub-path overlap) = %v, want no refusal", err)
+	}
+
+	// Pushed into a buffered channel, so this send itself never blocks;
+	// the forwarding goroutine's own attempt to relay it onto the
+	// unbuffered `ch` -- with nothing here ever reading from `ch` -- is
+	// exactly the blocking send this test targets.
+	fake.entityTypeChan <- WatchEntityEvent{EntityType: subPathType, ID: "ordinary-id"}
+
+	// Give the goroutine a moment to reach its blocking send before
+	// canceling, so this test actually exercises that send rather than
+	// racing ahead of it.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected ch to close once ctx ended, not to deliver a value nobody raced to read")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ch never closed after ctx was canceled: the forwarding goroutine leaked, blocked on an unread send")
+	}
+}
+
 // TestHardConfinedWatch_EntityMethodsPassThroughForOrdinaryTypes proves an
 // unconfined entity type is unaffected.
 func TestHardConfinedWatch_EntityMethodsPassThroughForOrdinaryTypes(t *testing.T) {
