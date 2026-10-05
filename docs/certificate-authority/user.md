@@ -50,6 +50,17 @@ that tenant. You may name your own tenant; naming another is refused, for
 everyone — a platform operator in the `system` tenant included. The same rule
 governs `ca list` and `ca revoke`.
 
+**A certificate must be signed by the CA it claims to belong to.** Every
+tenant has its own CA, and the server checks that a presented certificate's
+issuer is EITHER the cluster's own CA or the specific tenant's CA named in
+the certificate's OU (or SPIFFE SAN) — never a different tenant's CA, even
+though every tenant's CA is trusted on the same connection. A certificate
+tenant A's CA signed, but whose Subject claims tenant B, is refused. This
+cannot happen through `qrdb ca issue` (which always signs with the named
+tenant's own CA); it can only happen by hand-crafting a certificate, or by a
+tenant's CA itself being rotated in a way that no longer matches what was
+issued.
+
 ## Common tasks
 
 **Issue for a specific tenant, with a shorter life.**
@@ -151,6 +162,12 @@ paths were **not** renamed and are still `/certs/...`.
 
 **The certificate authenticates but you cannot do anything.** Authentication and
 authorization are separate. Check the user binding and the role assignment.
+
+**A certificate that used to work now fails authentication with no
+revocation and no expiry.** Check whether it was signed by a CA that no
+longer matches the tenant it claims (the issuer-tenant binding, above) —
+this is distinct from revocation and from the barrier being sealed, and
+the error names the mismatch rather than looking like either of those.
 
 **`ca issue`, `ca list` or `ca revoke` was refused with a permission error even
 though you hold the `certs:*` permissions.** Those permissions apply to your own

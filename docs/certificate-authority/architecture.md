@@ -843,11 +843,15 @@ copies of the same logic:
   created — or rotated to an HSM-backed one via `WithCertKeyProviderFactory`
   — after the listener started is picked up on the next connection, not
   only at boot.
-  `GetConfigForClient` returning `(nil, nil)` keeps the original, static
-  (Key A-only) config, which is what happens before the first
-  `SetKeyBProvider` call, and on every call where `CACertPEMs` fails — the
-  ordinary outcome while sealed in Raft mode, where the replicated store
-  cannot be opened at all.
+  `GetConfigForClient` returning `(base, nil)` — the unmodified base
+  config, never `nil` — keeps the original, static (Key A-only) config on
+  a failed resolution: `base` is `cfg` itself when `Wire`'s caller
+  installed no prior `GetConfigForClient` hook (the ordinary case), or
+  whatever a composed PRIOR hook itself returned, so that hook's own
+  effect is never discarded on this path. This is what happens before the
+  first `SetKeyBProvider` call, and on every call where `CACertPEMs`
+  fails — the ordinary outcome while sealed in Raft mode, where the
+  replicated store cannot be opened at all.
   - **The pool and the issuer-tenant binding are the SAME object.**
     `clienttrust.Pool` is both the TLS-layer widening decision and the
     authentication-layer binding check (`IsClusterCA`, `VerifyIssuer` —
@@ -868,8 +872,8 @@ copies of the same logic:
     authentication layer. `Pool` cannot verify that obligation for itself;
     see `SetKeyBProvider`'s own doc comment.
   - **The resolution is bounded by a deadline derived from the handshake
-    itself, and can never generate a CA** (owner ruling, go-qrdb#591's
-    review). `configForClient` derives its context from the handshake's own
+    itself, and can never generate a CA** (owner ruling). `configForClient`
+    derives its context from the handshake's own
     `*tls.ClientHelloInfo.Context()` with an additional bounded timeout
     (`handshakeTrustTimeout`), never `context.Background()`: an unbounded
     resolve on the handshake path would let one slow storage read hang that
@@ -1067,11 +1071,11 @@ provider.
   (`certs:generate`, `certs:revoke`, `certs:list`).
 - **An injected `cakey.ProviderFactory` (`WithKeyProviderFactory` /
   `WithCertKeyProviderFactory`) replaces the built-in per-tenant default
-  one tenant at a time, never with one shared CA** (owner ruling,
-  go-qrdb#591's review — this reverses an earlier revision of this
-  document, which described a single injected `cakey.Provider` serving
-  every tenant; that shape made the issuer-tenant binding vacuous and is no
-  longer how this seam is typed). `resolveKeyProvider` calls
+  one tenant at a time, never with one shared CA** (owner ruling — this
+  reverses an earlier revision of this document, which described a single
+  injected `cakey.Provider` serving every tenant; that shape made the
+  issuer-tenant binding vacuous and is no longer how this seam is typed).
+  `resolveKeyProvider` calls
   `factory.ProviderForTenant(tenantID)` for the SAME `tenantID` every other
   accessor on the path is resolving for, so `IsTenantIssuer` compares each
   tenant's CLAIMED certificate against THAT tenant's own registered CA,

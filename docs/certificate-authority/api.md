@@ -164,6 +164,39 @@ A node caches a not-revoked answer for `auth.revocation_cache_ttl` (default
 authenticates**. `0` disables caching. A revoked answer is cached without
 expiry, because revocation here is a one-way door.
 
+## Authenticating with the wrong tenant's CA (issuer-tenant binding)
+
+Every tenant's Key B CA is trusted on the SAME client-facing listener (see
+[architecture.md](architecture.md#issuer-tenant-binding)), so a verified
+chain alone is not enough: the issuer-tenant binding additionally requires
+that chain's issuer be either the cluster CA (Key A, any tenant) or the
+Key B CA registered for the tenant the leaf's own Subject names — never a
+*foreign* tenant's Key B CA. This is enforced on the authentication path of
+every transport, the same layer revocation is, and separately on the
+on-behalf forwarding path (`AuthMiddleware.authenticateOnBehalf`, which
+never runs the authenticator chain so does not inherit the first check).
+
+| Condition | REST | gRPC / Unix |
+|---|---|---|
+| Verified chain's issuer is not tenant X's registered CA, for a leaf claiming tenant X | 401 | `UNAUTHENTICATED` — `*auth.IssuerTenantMismatchError` |
+| The issuer-tenant lookup itself failed (barrier sealed, store unreachable) | 401 | `UNAUTHENTICATED` — `*auth.IssuerTenantMismatchError` wrapping the cause |
+| On-behalf forwarding peer's issuer is not the cluster CA | 401 | `UNAUTHENTICATED` |
+
+`IssuerTenantMismatchError` matches `auth.ErrInvalidCertificate` under
+`errors.Is`/`errors.As`, so every transport classifies it exactly as a
+malformed or untrusted certificate — a caller sees the same error shape a
+revoked or otherwise invalid certificate produces, not a distinct status
+that would let a prober distinguish "right CA, wrong tenant" from "no CA
+trusts this at all."
+
+An injected `cakey.ProviderFactory` (`WithKeyProviderFactory` /
+`WithCertKeyProviderFactory`) is checked the same way, resolved per tenant
+(`factory.ProviderForTenant(tenantID)`) — never a single shared provider
+serving every tenant, which would make this binding vacuous (every
+tenant's certificate would verify against the SAME injected CA). See
+[architecture.md](architecture.md#the-ca-key-provider-seam-pkgcakey) for
+the full rationale.
+
 ## Revocation semantics
 
 Revocation is an internal blocklist keyed by serial. **No CRL is published and
