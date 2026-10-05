@@ -128,8 +128,8 @@ The certificate (and, for the generate path, the key) are printed by `qrdb
 init` itself — capture them immediately; the key cannot be retrieved again.
 First boot binds the certificate's thumbprint to the admin account once that
 account exists, which may be moments after `qrdb init` returns rather than
-inside the same call: see Troubleshooting below for what to do if the daemon
-does not finish starting.
+inside the same call: see Troubleshooting below for what the daemon does
+when that binding has not arrived by the time it finishes starting.
 
 ## Troubleshooting
 
@@ -197,11 +197,21 @@ the admin's binding later expires while the node keeps running.** Leaving
 "awaiting" is permanent for that running process — a deliberate choice, so
 a certificate's natural expiry years into a node's uptime cannot silently
 reintroduce the lockout window this state exists to close. If the admin's
-only binding expires while the node is up, the fix is the same
-admin-credential retry described above (you do not need to wait for a
-restart to recover): only a NODE THAT RESTARTS re-runs the boot-time check
-that decides "awaiting" from scratch, and that restarted node WILL come up
-in "awaiting admin credential" if the expired binding was never replaced.
+only binding expires while the node is up, the same admin-credential retry
+described above still works (you do not need to wait for a restart), but
+it is reached differently on a node that is not "awaiting": `ceremony:initialize`
+is an SO-exclusive, RBAC-gated permission like any other, and the
+awaiting-mode bypass that otherwise admits the call unauthenticated no
+longer applies once a node has left that state. The retry request itself
+must therefore authenticate as an SO — present an SO holder certificate
+over mTLS (`--cert-file`/`--key-file`, the credential issued when the
+ceremony enrolled that officer, never the admin's own certificate) — in
+addition to presenting the SO PIN the retry has always required. Only a
+NODE THAT RESTARTS re-runs the boot-time check that decides "awaiting"
+from scratch, and that restarted node WILL come up in "awaiting admin
+credential" if the expired binding was never replaced — at which point the
+retry goes back to being reachable with the SO PIN alone, no SO identity
+required.
 
 **"AdminCSRPEM and AdminCertPEM are mutually exclusive" / "conflicting admin
 cert inputs".** You gave both `--admin-csr` and `--admin-cert`. Signing the
@@ -238,14 +248,34 @@ you. See [../barrier-seal/user.md](../barrier-seal/user.md).
 their permissions are fixed. Create additional roles instead:
 [../identity-rbac/user.md](../identity-rbac/user.md).
 
-**You lost the admin certificate.** This is the SO-PIN-gated admin-credential
-reissue, reached through the same `qrdb init` command as the "awaiting"
-retry above (not a separate recovery procedure): re-run it with your SO PIN
-(`--so-pin`) and a fresh `--admin-csr` or `--admin-cert`. A running node —
-not only one that is "awaiting" — honours this call: it mints or adopts a
-fresh certificate and binds it to the admin account in the same step,
-without touching the barrier, the CA, or the SO/User PINs. The SO PIN is the
-only thing standing between this call and anyone who can reach the node, so
-treat it with the same care as the barrier's own secret. If you have also
-lost the ability to authenticate at all, you are into barrier recovery
-territory.
+**You lost the admin certificate.** Whether this call can help you depends
+on whether the admin account's EXISTING binding is still live (unexpired),
+not merely on whether you still hold the private key:
+
+- **The existing binding is still live.** The reissue refuses with
+  `AdminAlreadyBoundError` — this is not a bug to work around; a working
+  binding is deliberately never silently replaced, precisely because
+  "the operator lost the key file" and "the account's credential was
+  compromised and someone else has it" look identical from the server's
+  side, and the second case must never self-service a replacement. There
+  is no SO-PIN override for this refusal. Recovery becomes available once
+  that binding's own expiry (`NotAfter`) passes — the account is not
+  stuck forever, only until then.
+- **The existing binding has expired (or never bound at all).** This is
+  the SO-PIN-gated admin-credential reissue, reached through the same
+  `qrdb init` command as the "awaiting" retry above (not a separate
+  recovery procedure): re-run it with your SO PIN (`--so-pin`) and a
+  fresh `--admin-csr` or `--admin-cert`. It mints or adopts a fresh
+  certificate and binds it to the admin account in the same step, without
+  touching the barrier, the CA, or the SO/User PINs. On a node that is
+  "awaiting", the SO PIN is the only thing standing between this call and
+  anyone who can reach the node. On a node that is NOT "awaiting" (the
+  common case — see "does not re-enter it on its own" above), the call is
+  additionally gated like any other SO-exclusive permission: it must
+  authenticate as an SO over mTLS (an SO holder certificate, never the
+  admin's own) as well as present the SO PIN. Treat the SO PIN with the
+  same care as the barrier's own secret either way.
+
+If you have also lost the ability to authenticate at all — no admin
+credential, no SO identity, and the binding is still live — you are into
+barrier recovery territory.
