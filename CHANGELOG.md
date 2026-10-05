@@ -81,6 +81,8 @@ are not reconstructed here — their history is in the git log.
   placement written or deleted, as the node applies it. Replica forwarding
   invalidates its leader cache from it. `Node.PlacementStore` keeps no feed,
   so the tenant shard reconciler's convergence is unchanged.
+- **`--backup-key-dir`** (`qrdbd start`): the directory the built-in `"software"` key-wrap provider's key files must live inside. Required to create or restore an encrypted backup with the built-in provider; kept outside `--data-dir`/`--backup-dir` on purpose, so a backup made with a key from this directory is still restorable after `--data-dir` is lost entirely. `--restore-decryption-key-file`'s value is now a bare file NAME inside this directory, never a path.
+- **`server.WithKeyDir`** mirrors `--backup-key-dir` for every embedder that composes through `pkg/server`/`sdk/go/node` (both the seal-enabled and seal-disabled construction paths) rather than `cmd/qrdbd` directly, forwarded via the same `ResolveCryptoOptions`/`lifecycle.Infra.KeyDir` path `WithStrategyRegistry` already uses.
 
 ### Fixed
 
@@ -318,6 +320,64 @@ are not reconstructed here — their history is in the git log.
   restoring binary opens them as data directories under the new one. See
   [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)
   and [docs/backup-restore/user.md](docs/backup-restore/user.md).
+- **`RestoreBackup` is now atomic: every target shard is authenticated and decrypted before any is imported.** A security review of the backup-encrypt-default feature found that a tampered shard aborted only that shard, leaving every shard already imported in place with no top-level error. Restore now runs two passes -- verify all, then import all -- and a failure anywhere in the first pass returns a single typed `*BackupVerificationFailedError` and imports nothing.
+- **Restore refuses when a backup's stored metadata and its envelope disagree about encryption.** An envelope present while the metadata claims `encryption: "none"` (or the reverse) is now `*BackupMetadataMismatchError`, closing a downgrade path where metadata could be edited independently of the cryptographic artifact.
+- **Each backup now carries an authenticated manifest** (format version, algorithm, key-wrap provider/reference, backup ID, destination, and a SHA-256 digest per shard, sealed under the backup's own DEK) that restore authenticates before touching any shard. A restore with no explicit target now defaults to the manifest's own recorded shard set rather than whatever the artifact still has, so a shard dropped from storage after creation is caught instead of silently restoring fewer shards with no error.
+- **A tampered shard's own ciphertext now reports `*BackupShardIntegrityError`**, not `keywrap.UnwrapFailedError` (a wrong-KEK/wrapped-DEK failure one layer up) -- the prior reuse reported plain ciphertext tampering as "wrong key-encrypting key".
+- **The plaintext-override audit record (backup create and restore) is now gating, not best-effort.** It is emitted after the backup/restore has its ID and carries it, before any shard is touched; under this node's audit failure policy (`BackupService.WithAuditFailurePolicy`/`SetAuditFailurePolicy`, default `FailClosed`) an unrecordable override now refuses the operation instead of proceeding silently. `lifecycle.BuildServices` now always wires the compliance audit logger and failure policy into the Backup service (it previously built it with neither), and `sdk/go/node`'s seal-disabled construction paths get the same wiring.
+- **`keywrap.SoftwareProvider`'s key files are now confined to one configured directory**, opened as an `*os.Root` (`NewSoftwareProvider(keyDir)`). `KeyRef`/`DecryptionKeyRef` are bare file NAMES inside it, never paths: a value containing a path separator, `""`, `"."`, or `".."` is refused, a file read is capped at 33 bytes regardless of its real size, and every failure collapses into one detail-free `*KeyAccessError` logged with full detail on the server only -- closing a filesystem oracle and a denial-of-service lever (`/dev/zero`) a caller-controlled, unconstrained key-reference path previously allowed.
+- **A collision between an injected `WithKeyWrapProvider` and an already-registered provider ID is now a typed, returned error**, not discarded. `NewBackupService` now returns `(BackupServicer, error)`.
+- **`pkg/server` gains `WithKeyWrapRegistry`/`WithKeyWrapProvider`**, mirroring `WithStrategyRegistry`'s shape and `CryptoOptions` forwarding, so an embedder's key-wrap provider reaches the Backup service through the same composition path hardware seal strategies already use. `cmd/qrdbd`'s offline, boot-time disaster-recovery restore path now resolves an injected provider through the same seam its live daemon startup uses, rather than building its own disconnected default registry.
+- **`cmd/qrdbd/restore.go`'s offline restore no longer collapses every `DecryptBackupShard` failure other than a decryption failure into "shard not in artifact".** Only a genuinely absent shard (`*service.BackupShardNotFoundError`) is reported that way; every other cause (a tampered manifest, a metadata mismatch, an unregistered provider) now reports as a decrypt-phase `*RestoreBackupError` naming the real cause.
+
+### Security
+
+- **BREAKING: backups are genuinely encrypted (`aes256`) by default, on
+  every surface, through a new KEK-provider seam (`pkg/keywrap`).**
+  `BackupOptions.Encryption`/`BackupRequest.Encryption` left empty no
+  longer means plaintext: it now defaults to AES-256-GCM and then requires
+  a key reference (`BackupOptions.KeyRef` / `key_ref` on the wire),
+  refusing with a new typed error, `BackupEncryptionRequiredError`
+  (`InvalidArgument`), when neither is supplied. Plaintext is now reachable
+  only by naming `Encryption: "none"` explicitly, which is logged at WARN
+  and, where a compliance audit logger is configured
+  (`BackupService.WithAuditLogger`/`SetAuditLogger`), recorded in the audit
+  trail. Each backup now mints a fresh per-backup data-encrypting key
+  (DEK), encrypts every shard under it with AES-256-GCM (AAD binds a shard
+  to its own backup), and wraps the DEK under a key-encrypting key (KEK)
+  resolved through `keywrap.Provider` — qrdb ships a `"software"` provider
+  (a 32-byte key file); go-xkms registers hardware or cloud-KMS providers
+  via `WithKeyWrapRegistry`/`WithKeyWrapProvider`. The wrapped DEK, key
+  reference, and provider ID are persisted in the backup's own envelope
+  (`BackupInfo.KeyProviderID` is the only piece exposed on the wire);
+  restore resolves and unwraps it automatically, needing no key material
+  supplied at all in the common case. A wrong key or an unregistered
+  provider refuses with the same typed `BackupDecryptionFailedError`
+  (`InvalidArgument`), deliberately not distinguished from each other; a
+  tampered SHARD's own ciphertext is a different typed error,
+  `*BackupShardIntegrityError`, checked at a different layer (see the
+  Fixed entry above) -- the two are never conflated.
+  **BREAKING: the inline raw-key path is retired, not merely
+  deprecated — `BackupOptions.EncryptionKey`/`RestoreOptions.DecryptionKey`
+  (Go SDK), `encryption_key`/`decryption_key` (REST/gRPC/QUIC/MCP wire
+  fields), and the CLI's `--encryption-key`/`--decryption-key` flags are
+  all removed.** Every key is now referenced through a provider —
+  `BackupOptions.KeyRef`/`RestoreOptions.DecryptionKeyRef`, `key_ref`/
+  `decryption_key_ref` on the wire, `--encryption-key-file`/
+  `--decryption-key-file` on the CLI — never passed as bytes over the wire
+  or in a flag value. **Any script or CI job that relied on the old
+  plaintext default, or on `--encryption-key`, must now pass
+  `--encryption-key-file <name>` or `--encryption none`** (CLI), or the
+  equivalent field on the REST, gRPC, QUIC, MCP, Unix and embedded
+  transports, the Go and TypeScript SDKs, and the desktop/web Backup
+  Manager. The desktop/web UI's encryption selector defaulted to `"none"`
+  and used the wrong wire value (`"aes256gcm"` instead of the server's
+  `"aes256"`) -- both are fixed, and the UI now always sends the field
+  explicitly rather than omitting it on a plaintext choice, with an inline
+  warning when plaintext is selected; its key field now names a key file,
+  not a path and not a secret-bytes input. See
+  [docs/key-wrapping/](docs/key-wrapping/architecture.md) and
+  [docs/backup-restore/](docs/backup-restore/architecture.md).
 
 - **`qrdb barrier seal --so-pin` sends the SO PIN.** The CLI parsed the flag
   and dropped it, so once `qrdb init` had provisioned an SO PIN every CLI seal
@@ -1030,15 +1090,6 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
 - **Integration coverage: every system-scope `barrier` passphrase and Shamir verb runs on all five transports.** This covers officer register, list, claim and claim-begin/complete; quorum seal, unseal and root-token; rekey; the recovery domain; `ceremony sign-csr`; `batch import`; `audit verify`; node and database compaction. The CLI test binary is now built with the daemon's full tag set, so the SQL protocol surface is actually exercised.
 - **The standalone integration stage's Docker image baked `qrdbd` and `qrdb` from a literal, narrower tag list than `BUILD_TAGS`** (`'codec_json raft qrdb_ts qrdb_vector'` for `qrdbd`, `'qrdb_ts qrdb_vector'` for `qrdb`), so the server and the CLI driving it had each compiled a different, incomplete feature set — fourteen standalone tests failed on "unknown flag" for `--sql-concurrency`, `--etcd`, `--mysql`, `--postgresql`. `.devcontainer/Dockerfile`'s integration stage now takes a `QRDB_BUILD_TAGS` build ARG that `make integration-image` overrides with `BUILD_TAGS` itself, and a new buildgate (`test/buildgates/docker_build_tags_test.go`) asserts the ARG's default stays byte-for-byte equal to `make -s print-build-tags` so the two cannot drift apart silently again.
 - **The standalone Shamir server's bootstrap entrypoint signed the bare claim nonce instead of the domain-separated claim message** `pkg/ceremony/claim_message.go`'s `verifyShareClaim` checks against, so every officer's `claim/complete` failed "nonce signature verification failed" and the holders file the standalone Shamir CLI tests depend on came up with zero holders every run. The entrypoint (`test/integration/api/docker-compose.yml`) now signs `ShareClaimMessage`, the same message the product's own claim verification expects.
-- **`RestoreBackup` is now atomic: every target shard is authenticated and decrypted before any is imported.** A security review of the backup-encrypt-default feature found that a tampered shard aborted only that shard, leaving every shard already imported in place with no top-level error. Restore now runs two passes -- verify all, then import all -- and a failure anywhere in the first pass returns a single typed `*BackupVerificationFailedError` and imports nothing.
-- **Restore refuses when a backup's stored metadata and its envelope disagree about encryption.** An envelope present while the metadata claims `encryption: "none"` (or the reverse) is now `*BackupMetadataMismatchError`, closing a downgrade path where metadata could be edited independently of the cryptographic artifact.
-- **Each backup now carries an authenticated manifest** (format version, algorithm, key-wrap provider/reference, backup ID, destination, and a SHA-256 digest per shard, sealed under the backup's own DEK) that restore authenticates before touching any shard. A restore with no explicit target now defaults to the manifest's own recorded shard set rather than whatever the artifact still has, so a shard dropped from storage after creation is caught instead of silently restoring fewer shards with no error.
-- **A tampered shard's own ciphertext now reports `*BackupShardIntegrityError`**, not `keywrap.UnwrapFailedError` (a wrong-KEK/wrapped-DEK failure one layer up) -- the prior reuse reported plain ciphertext tampering as "wrong key-encrypting key".
-- **The plaintext-override audit record (backup create and restore) is now gating, not best-effort.** It is emitted after the backup/restore has its ID and carries it, before any shard is touched; under this node's audit failure policy (`BackupService.WithAuditFailurePolicy`/`SetAuditFailurePolicy`, default `FailClosed`) an unrecordable override now refuses the operation instead of proceeding silently. `lifecycle.BuildServices` now always wires the compliance audit logger and failure policy into the Backup service (it previously built it with neither), and `sdk/go/node`'s seal-disabled construction paths get the same wiring.
-- **`keywrap.SoftwareProvider`'s key files are now confined to one configured directory**, opened as an `*os.Root` (`NewSoftwareProvider(keyDir)`). `KeyRef`/`DecryptionKeyRef` are bare file NAMES inside it, never paths: a value containing a path separator, `""`, `"."`, or `".."` is refused, a file read is capped at 33 bytes regardless of its real size, and every failure collapses into one detail-free `*KeyAccessError` logged with full detail on the server only -- closing a filesystem oracle and a denial-of-service lever (`/dev/zero`) a caller-controlled, unconstrained key-reference path previously allowed.
-- **A collision between an injected `WithKeyWrapProvider` and an already-registered provider ID is now a typed, returned error**, not discarded. `NewBackupService` now returns `(BackupServicer, error)`.
-- **`pkg/server` gains `WithKeyWrapRegistry`/`WithKeyWrapProvider`**, mirroring `WithStrategyRegistry`'s shape and `CryptoOptions` forwarding, so an embedder's key-wrap provider reaches the Backup service through the same composition path hardware seal strategies already use. `cmd/qrdbd`'s offline, boot-time disaster-recovery restore path now resolves an injected provider through the same seam its live daemon startup uses, rather than building its own disconnected default registry.
-- **`cmd/qrdbd/restore.go`'s offline restore no longer collapses every `DecryptBackupShard` failure other than a decryption failure into "shard not in artifact".** Only a genuinely absent shard (`*service.BackupShardNotFoundError`) is reported that way; every other cause (a tampered manifest, a metadata mismatch, an unregistered provider) now reports as a decrypt-phase `*RestoreBackupError` naming the real cause.
 
 - **The documented Key B authentication parity gap is closed.** A Key
   B-issued login certificate now authenticates on the client-facing
@@ -1533,57 +1584,6 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   `ExecuteGuardedBatch`, and all four of `pkg/kvstore`'s namespaced guarded
   wrappers check every guard's and write's key before forwarding, so the
   refusal matches what an embedded, same-process caller already got.
-- **`--backup-key-dir`** (`qrdbd start`): the directory the built-in `"software"` key-wrap provider's key files must live inside. Required to create or restore an encrypted backup with the built-in provider; kept outside `--data-dir`/`--backup-dir` on purpose, so a backup made with a key from this directory is still restorable after `--data-dir` is lost entirely. `--restore-decryption-key-file`'s value is now a bare file NAME inside this directory, never a path.
-- **`server.WithKeyDir`** mirrors `--backup-key-dir` for every embedder that composes through `pkg/server`/`sdk/go/node` (both the seal-enabled and seal-disabled construction paths) rather than `cmd/qrdbd` directly, forwarded via the same `ResolveCryptoOptions`/`lifecycle.Infra.KeyDir` path `WithStrategyRegistry` already uses.
-
-### Security
-
-- **BREAKING: backups are genuinely encrypted (`aes256`) by default, on
-  every surface, through a new KEK-provider seam (`pkg/keywrap`).**
-  `BackupOptions.Encryption`/`BackupRequest.Encryption` left empty no
-  longer means plaintext: it now defaults to AES-256-GCM and then requires
-  a key reference (`BackupOptions.KeyRef` / `key_ref` on the wire),
-  refusing with a new typed error, `BackupEncryptionRequiredError`
-  (`InvalidArgument`), when neither is supplied. Plaintext is now reachable
-  only by naming `Encryption: "none"` explicitly, which is logged at WARN
-  and, where a compliance audit logger is configured
-  (`BackupService.WithAuditLogger`/`SetAuditLogger`), recorded in the audit
-  trail. Each backup now mints a fresh per-backup data-encrypting key
-  (DEK), encrypts every shard under it with AES-256-GCM (AAD binds a shard
-  to its own backup), and wraps the DEK under a key-encrypting key (KEK)
-  resolved through `keywrap.Provider` — qrdb ships a `"software"` provider
-  (a 32-byte key file); go-xkms registers hardware or cloud-KMS providers
-  via `WithKeyWrapRegistry`/`WithKeyWrapProvider`. The wrapped DEK, key
-  reference, and provider ID are persisted in the backup's own envelope
-  (`BackupInfo.KeyProviderID` is the only piece exposed on the wire);
-  restore resolves and unwraps it automatically, needing no key material
-  supplied at all in the common case. A wrong key or an unregistered
-  provider refuses with the same typed `BackupDecryptionFailedError`
-  (`InvalidArgument`), deliberately not distinguished from each other; a
-  tampered SHARD's own ciphertext is a different typed error,
-  `*BackupShardIntegrityError`, checked at a different layer (see the
-  Fixed entry above) -- the two are never conflated.
-  **BREAKING: the inline raw-key path is retired, not merely
-  deprecated — `BackupOptions.EncryptionKey`/`RestoreOptions.DecryptionKey`
-  (Go SDK), `encryption_key`/`decryption_key` (REST/gRPC/QUIC/MCP wire
-  fields), and the CLI's `--encryption-key`/`--decryption-key` flags are
-  all removed.** Every key is now referenced through a provider —
-  `BackupOptions.KeyRef`/`RestoreOptions.DecryptionKeyRef`, `key_ref`/
-  `decryption_key_ref` on the wire, `--encryption-key-file`/
-  `--decryption-key-file` on the CLI — never passed as bytes over the wire
-  or in a flag value. **Any script or CI job that relied on the old
-  plaintext default, or on `--encryption-key`, must now pass
-  `--encryption-key-file <name>` or `--encryption none`** (CLI), or the
-  equivalent field on the REST, gRPC, QUIC, MCP, Unix and embedded
-  transports, the Go and TypeScript SDKs, and the desktop/web Backup
-  Manager. The desktop/web UI's encryption selector defaulted to `"none"`
-  and used the wrong wire value (`"aes256gcm"` instead of the server's
-  `"aes256"`) -- both are fixed, and the UI now always sends the field
-  explicitly rather than omitting it on a plaintext choice, with an inline
-  warning when plaintext is selected; its key field now names a key file,
-  not a path and not a secret-bytes input. See
-  [docs/key-wrapping/](docs/key-wrapping/architecture.md) and
-  [docs/backup-restore/](docs/backup-restore/architecture.md).
 
 ## [0.41.0-alpha] - 2026-10-04
 
