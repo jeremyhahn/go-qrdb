@@ -839,6 +839,11 @@ type Node struct {
 	// nothing.
 	embeddedCaller []*x509.Certificate
 
+	// clusterIdentity is a clustered node's certificate, key and cluster CA
+	// (WithRaftMTLS): its mTLS identity to peers and the key its tenant keys
+	// are delivered to. Nil on a standalone node.
+	clusterIdentity *quicraftconfig.MTLSConfig
+
 	// peerAttestation carries WithPeerAttestationGate from the node
 	// constructor to wireClientAndServer.
 	peerAttestation *middleware.PeerAttestationGate
@@ -2403,6 +2408,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
 		return nil, err
 	}
+	n.clusterIdentity = nOpts.raftMTLS
 
 	dataDir := cfg.Raft.DataDir
 	if dataDir == "" {
@@ -3128,6 +3134,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if authMW != nil {
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}
+	allOpts = append(allOpts, n.raftTenantClusterOptions(svcNode, cfg, authMW, standalone)...)
 	if barrier != nil {
 		allOpts = append(allOpts, server.WithSealedWindowProbe(barrier))
 	}
