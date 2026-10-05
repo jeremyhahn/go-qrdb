@@ -19,18 +19,28 @@ This is disaster recovery. For undoing a handful of keys, use
 ## Encryption is the default
 
 **Backups are encrypted (`aes256`) unless you say otherwise.** Leave
-`--encryption` off and supply `--encryption-key-file` (a path to a 32-byte
-key file — see [../key-wrapping/user.md](../key-wrapping/user.md) for the
-full key-management story) to keep the default. Want plaintext? Say so
+`--encryption` off and supply `--encryption-key-file` (the NAME of a
+32-byte key file inside the server's `--backup-key-dir`, never a path —
+see [../key-wrapping/user.md](../key-wrapping/user.md) for the full
+key-management story) to keep the default. Want plaintext? Say so
 outright with `--encryption none` — that choice is logged and, where a
 compliance audit trail is configured, recorded. There is no silent fallback
 either way: omitting both the key file and `--encryption none` is refused.
 
 ## First run
 
+On the server, before the daemon starts:
+
 ```bash
-openssl rand -out /etc/qrdb/backup.key 32 && chmod 600 /etc/qrdb/backup.key
-qrdb backup create --destination /backups/daily --encryption-key-file /etc/qrdb/backup.key
+mkdir -p /etc/qrdb/keys && chmod 700 /etc/qrdb/keys
+openssl rand -out /etc/qrdb/keys/backup.key 32 && chmod 600 /etc/qrdb/keys/backup.key
+qrdbd start --backup-key-dir /etc/qrdb/keys ...
+```
+
+From the CLI, naming the file by NAME, not path:
+
+```bash
+qrdb backup create --destination /backups/daily --encryption-key-file backup.key
 qrdb backup list
 ```
 
@@ -43,13 +53,13 @@ the box.
 
 ```bash
 qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption-key-file /etc/qrdb/backup.key
+     --compression zstd --encryption-key-file backup.key
 ```
 
 `--encryption aes256` is implied here; naming it is optional as long as a key
 reference is supplied.
 
-Keep `/etc/qrdb/backup.key` somewhere you will still have it when the
+Keep `/etc/qrdb/keys/backup.key` somewhere you will still have it when the
 machine you are backing up is gone. A backup you cannot decrypt is not a
 backup.
 
@@ -89,7 +99,7 @@ key file moved, or you're restoring on a different machine):
 
 ```bash
 qrdb backup restore --id bkp-20260819-0300 \
-     --decryption-key-file /etc/qrdb/backup.key --validate
+     --decryption-key-file backup.key --validate
 ```
 
 **Write a backup in plaintext, deliberately.** Only when you have a specific
@@ -130,16 +140,27 @@ Either way, the fix is the same: supply `--encryption-key-file`, or choose
 
 **A typed refusal on restore naming the key.** The backup's own stored key
 reference did not resolve (the key file is gone, or you overrode it with
-the wrong path via `--decryption-key-file`). There is no recovery path
+the wrong name via `--decryption-key-file`). There is no recovery path
 without the matching key file — this is why the key file belongs in your
 key management, not only on the machine being backed up.
 
 **Restore aborted with a checksum mismatch.** `--validate` did its job: the
 backup is corrupt or truncated, and nothing was written. Try an older backup.
 
-**Restore finished but some shards failed.** The result lists per-shard errors
-and counts the ones that succeeded. Fix the underlying problem for those shards
-and re-run the restore for just them with `--shards`.
+**Restore refused outright, nothing written.** A tampered or missing shard,
+a tampered manifest, or a stored-metadata/artifact mismatch all abort the
+WHOLE restore with one typed error before anything is imported — restore
+verifies every target shard before importing any of them, specifically so
+a problem with one shard can never leave another already imported. There
+is no partial state to clean up; fix the underlying problem (a wrong key,
+a corrupted artifact) and retry the whole restore.
+
+**Restore finished but some shards failed.** This is a different, narrower
+case: every shard already passed verification, and the underlying storage
+layer itself refused the import for some of them (an operational failure,
+not a cryptographic one). The result lists per-shard errors and counts the
+ones that succeeded; fix the underlying storage problem and re-run the
+restore for just those shards with `--shards`.
 
 **A backup shows `status: failed` in `list`.** A failed create is recorded
 rather than discarded, and `error_message` says why. That is deliberate — a

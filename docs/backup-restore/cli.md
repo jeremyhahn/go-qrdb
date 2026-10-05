@@ -26,10 +26,10 @@ the old plaintext default must now pass `--encryption-key-file`, or pass
 `--encryption none` to keep writing plaintext.
 
 ```bash
-qrdb backup create --destination /backups/daily --encryption-key-file /etc/qrdb/backup.key
+qrdb backup create --destination /backups/daily --encryption-key-file backup.key
 
 qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption-key-file /etc/qrdb/backup.key
+     --compression zstd --encryption-key-file backup.key
 
 # Explicit plaintext override -- the CLI warns, the server logs and audits it.
 qrdb backup create --destination /backups/scratch --encryption none
@@ -93,14 +93,20 @@ qrdb backup restore --id bkp-20260819-0300 --validate
 
 # Restore two shards, overriding the key reference (the key file moved).
 qrdb backup restore --id bkp-20260819-0300 --shards 1,2 \
-     --decryption-key-file /etc/qrdb/backup.key --validate
+     --decryption-key-file backup.key --validate
 ```
 
 With `--validate`, a checksum mismatch aborts before any shard is touched.
-A wrong key reference (stored or overridden) is refused.
+A wrong key reference (stored or overridden), a tampered shard or manifest,
+or a stored-metadata/artifact mismatch all abort the WHOLE restore with one
+typed error, before any shard is imported: every target shard is
+authenticated and decrypted first, and a failure anywhere imports nothing.
 
-The result reports how many shards were restored and lists **per-shard errors**,
-so a partial restore names exactly what failed.
+The result reports how many shards were restored and lists **per-shard
+errors** only for an OPERATIONAL import failure after every shard has
+already passed verification (the underlying store refused a particular
+shard) — a narrower case than a cryptographic one, named precisely rather
+than collapsed into the top-level refusal above.
 
 ## `qrdb backup delete <id>`
 

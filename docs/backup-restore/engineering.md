@@ -119,9 +119,20 @@ type VerifyResult struct {
   file moved, or restore runs on a different node).
 - **`ValidateFirst` runs verification before touching shard state.** A checksum
   mismatch aborts the restore rather than half-applying it.
-- **Restore reports per-shard errors.** `RestoreResult.Errors` is a
-  `[]ShardError`, so a partial restore names exactly which shards failed and
-  `ShardsRestored` counts the ones that succeeded.
+- **Restore authenticates and decrypts every target shard before importing
+  any of them.** A tampered or missing shard, a tampered manifest (see
+  [../key-wrapping/architecture.md](../key-wrapping/architecture.md#envelope-format)),
+  or a stored-metadata/artifact mismatch all abort the WHOLE restore with
+  one typed `*BackupVerificationFailedError`/`*BackupMetadataMismatchError`
+  and import nothing -- this is what closes the defect a security review of
+  this feature found: decrypting and importing shard by shard meant a
+  single tampered shard aborted only that shard, leaving every shard
+  already imported in place with no top-level error.
+- **Restore reports per-shard errors only for an OPERATIONAL import
+  failure.** `RestoreResult.Errors` (`[]ShardError`) is populated only once
+  every target shard has already passed verification and the underlying
+  store refuses the import for some of them -- a narrower case than the
+  bullet above, and `ShardsRestored` counts the ones that succeeded.
 - **Restore overwrites shard state.** It is the most destructive operation the
   API offers.
 - **Backups are full, never incremental.** Each capture is complete for the

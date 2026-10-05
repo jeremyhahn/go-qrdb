@@ -92,8 +92,13 @@ Response — `RestoreResult`:
   "errors": [ { "shard_id": 3, "message": "…" } ] }
 ```
 
-**Restore reports per-shard errors** rather than collapsing a partial restore
-into one failure.
+**Restore authenticates and decrypts every target shard BEFORE importing any
+of them**; a tampered/missing shard, a tampered manifest, or a stored-
+metadata/artifact mismatch aborts the whole restore with one typed,
+top-level error and imports nothing. `errors`/`shards_restored` above
+report a narrower case: an OPERATIONAL import failure after every shard
+has already passed verification, named per shard rather than collapsed
+into the top-level refusal.
 
 `POST /v1/backups/{id}/verify` — `VerifyResult`:
 
