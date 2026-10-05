@@ -3092,8 +3092,9 @@ export interface BackupRequest {
      */
     readonly keyProviderId?: string;
     /**
-     * The key reference the named provider resolves -- a key-file path on
-     * the SERVER's own node for the built-in "software" provider. Required
+     * The key reference the named provider resolves -- for the built-in
+     * "software" provider, the bare NAME of a key file inside the
+     * server's own configured key directory, never a path. Required
      * unless encryption is explicitly "none". There is no inline raw-key
      * field: a key's bytes never travel over the wire.
      */
