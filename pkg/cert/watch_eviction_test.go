@@ -36,9 +36,10 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeWatcher struct {
-	events chan watch.WatchResponse
-	closed chan struct{}
-	once   sync.Once
+	events     chan watch.WatchResponse
+	closed     chan struct{}
+	once       sync.Once
+	eventsOnce sync.Once
 }
 
 func newFakeWatcher() *fakeWatcher {
@@ -51,6 +52,16 @@ func (w *fakeWatcher) Err() error                         { return nil }
 func (w *fakeWatcher) Close() error {
 	w.once.Do(func() { close(w.closed) })
 	return nil
+}
+
+// closeEvents closes the events channel directly, simulating the hub
+// closing a watcher out from under its consumer -- distinct from Close,
+// which a CONSUMER calls to stop watching and which this double never
+// reacts to by closing events itself, matching a real watch.Watcher: the
+// two directions are not the same event, so this uses its own sync.Once
+// rather than Close's.
+func (w *fakeWatcher) closeEvents() {
+	w.eventsOnce.Do(func() { close(w.events) })
 }
 
 // deliver sends a single-event response, blocking until consumeCertCADeletes
@@ -319,4 +330,50 @@ func TestDefaultCertProvider_WatchForDeletions_IgnoresUnrelatedKeys(t *testing.T
 	if !stillCached {
 		t.Error("an unrelated record under the cert_ca prefix evicted acme's cache entry")
 	}
+}
+
+// TestDefaultCertProvider_WatchForDeletions_ReestablishesClosedWatch is
+// go-qrdb#591's review (non-blocking) red/green proof: the hub closing a
+// watcher's events channel out from under its consumer -- simulated here
+// by closeEvents, distinct from a consumer-initiated Close -- must not
+// leave eviction permanently dark for the rest of this provider's life.
+// The supervisor re-establishes a fresh watch against the SAME
+// WatchServicer, and an event delivered on THAT NEW watcher is still
+// acted on.
+func TestDefaultCertProvider_WatchForDeletions_ReestablishesClosedWatch(t *testing.T) {
+	old := watchReestablishBackoff
+	watchReestablishBackoff = time.Millisecond
+	t.Cleanup(func() { watchReestablishBackoff = old })
+
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "dave", TenantID: "acme"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+
+	firstWatcher := ws.watcherFor(t, prefixCertCA)
+	firstWatcher.closeEvents()
+
+	// The supervisor re-establishes by calling WatchPrefix again, which
+	// registers a NEW *fakeWatcher for the same prefix; poll for it to
+	// stop being the one that just closed.
+	var secondWatcher *fakeWatcher
+	pollUntil(t, func() bool {
+		secondWatcher = ws.watcherFor(t, prefixCertCA)
+		return secondWatcher != firstWatcher
+	})
+
+	secondWatcher.deliver(t, watch.EventDelete, prefixCertCA+"acme/material")
+	pollUntil(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		_, stillCached := p.perTenant["acme"]
+		return !stillCached
+	})
 }

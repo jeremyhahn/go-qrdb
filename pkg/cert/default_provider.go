@@ -52,6 +52,13 @@ const (
 	// caTTL is the CA certificate validity period (10 years).
 	caTTL = 87600 * time.Hour
 
+	// perTenantRevalidateTTL bounds how long a cached perTenant entry is
+	// trusted without revalidation, independent of watch-driven eviction
+	// (go-qrdb#591's review, non-blocking defense in depth): see
+	// perTenant's own field doc comment for why this exists alongside,
+	// not instead of, WatchForDeletions.
+	perTenantRevalidateTTL = 5 * time.Minute
+
 	// prefixCertCA is the KVStore key prefix for CA material (consumed by
 	// cakey.SoftwareProvider, one instance per tenant -- see
 	// resolveKeyProvider).
@@ -120,13 +127,14 @@ func WithKeyProviderFactory(f cakey.ProviderFactory) ProviderOption {
 	}
 }
 
-// WithWatchService enables cache eviction on a deleted tenant's Key B CA:
-// see WatchForDeletions, which the caller must still call explicitly (this
-// option only stores w; it starts nothing). A nil w (the default) leaves
-// eviction entirely event-driven-off -- the built-in per-tenant cache
-// (perTenant) and any subscribed downstream cache (pkg/clienttrust.Pool,
-// via InvalidationSource) age out only by their own TTLs, same as before
-// this option existed.
+// WithWatchService enables fast, event-driven cache eviction on a deleted
+// tenant's Key B CA: see WatchForDeletions, which the caller must still
+// call explicitly (this option only stores w; it starts nothing). A nil w
+// (the default) leaves eviction event-driven-off entirely -- the built-in
+// per-tenant cache (perTenant) still ages out on its own
+// (perTenantRevalidateTTL), independent of this option, but a deleted
+// tenant's CA then stays trusted for up to that TTL rather than being
+// dropped immediately.
 func WithWatchService(w service.WatchServicer) ProviderOption {
 	return func(o *providerOptions) {
 		o.watchSvc = w
@@ -178,7 +186,17 @@ type DefaultCertProvider struct {
 	// that has resolved Key B material, keyed by tenant ID, constructed
 	// lazily on first use. Empty and never consulted when
 	// keyProviderFactory is injected.
-	perTenant map[string]*cakey.SoftwareProvider
+	//
+	// Each entry also ages out on its own, independent of the watch-driven
+	// eviction WatchForDeletions installs (go-qrdb#591's review, non-
+	// blocking defense in depth): the watch is the fast, event-driven
+	// path, but a watch that never fires -- the hub never delivered the
+	// event, or a future teardown step this package has no visibility
+	// into deletes the record some other way -- must not leave a deleted
+	// tenant's key and certificate cached here forever. resolveKeyProvider
+	// treats an entry older than perTenantRevalidateTTL as a miss and
+	// rebuilds it from whatever the store currently holds.
+	perTenant map[string]*perTenantEntry
 
 	defaultTTL time.Duration
 
@@ -302,47 +320,58 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 	return nil
 }
 
+// perTenantEntry is one cached entry in DefaultCertProvider.perTenant: the
+// built-in cakey.SoftwareProvider for a tenant, alongside when it was
+// constructed, so resolveKeyProvider can revalidate it independent of
+// watch-driven eviction (go-qrdb#591's review, non-blocking defense in
+// depth; see perTenant's own field doc comment).
+type perTenantEntry struct {
+	sp      *cakey.SoftwareProvider
+	builtAt time.Time
+}
+
 // resolveKeyProvider returns the cakey.Provider that signs Key B material
 // for tenantID: f.ProviderForTenant(tenantID) when WithKeyProviderFactory
 // was used -- resolved FRESH for this specific tenant, never a value shared
 // across tenants -- otherwise the built-in cakey.SoftwareProvider for
 // tenantID, constructed lazily and cached in perTenant on first use.
 //
-// The common case -- tenantID already cached -- takes ONLY a read lock
-// (go-qrdb#591's review, non-blocking): IsTenantIssuer calls this on every
-// authentication request, and an exclusive lock per call serialized every
-// tenant's authentication through one lock for a map read that never
-// writes anything. The slow path (construct and cache a new
-// cakey.SoftwareProvider) still takes the exclusive lock, and re-checks
-// the map after acquiring it: another goroutine may have already won the
-// race to construct tenantID's provider between this call's RUnlock and
-// Lock.
+// The common case -- tenantID already cached and not yet due for
+// revalidation -- takes ONLY a read lock (go-qrdb#591's review, non-
+// blocking): IsTenantIssuer calls this on every authentication request,
+// and an exclusive lock per call serialized every tenant's authentication
+// through one lock for a map read that never writes anything. The slow
+// path (construct and cache a new cakey.SoftwareProvider, or rebuild an
+// entry older than perTenantRevalidateTTL) still takes the exclusive lock,
+// and re-checks the map's freshness after acquiring it: another goroutine
+// may have already won the race to rebuild tenantID's entry between this
+// call's RUnlock and Lock.
 func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provider, error) {
 	if p.keyProviderFactory != nil {
 		return p.keyProviderFactory.ProviderForTenant(tenantID)
 	}
 
 	p.mu.RLock()
-	sp, ok := p.perTenant[tenantID]
+	entry, ok := p.perTenant[tenantID]
 	p.mu.RUnlock()
-	if ok {
-		return sp, nil
+	if ok && time.Since(entry.builtAt) < perTenantRevalidateTTL {
+		return entry.sp, nil
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if sp, ok := p.perTenant[tenantID]; ok {
-		return sp, nil
+	if entry, ok := p.perTenant[tenantID]; ok && time.Since(entry.builtAt) < perTenantRevalidateTTL {
+		return entry.sp, nil
 	}
 	if p.perTenant == nil {
-		p.perTenant = make(map[string]*cakey.SoftwareProvider)
+		p.perTenant = make(map[string]*perTenantEntry)
 	}
 	subject := pkix.Name{
 		CommonName:         "qrdb-ca",
 		OrganizationalUnit: []string{tenantID},
 	}
-	sp = cakey.NewSoftwareProvider(p.kvStore, p.barrier, prefixCertCA+tenantID+"/", subject, caTTL)
-	p.perTenant[tenantID] = sp
+	sp := cakey.NewSoftwareProvider(p.kvStore, p.barrier, prefixCertCA+tenantID+"/", subject, caTTL)
+	p.perTenant[tenantID] = &perTenantEntry{sp: sp, builtAt: time.Now()}
 	return sp, nil
 }
 
@@ -380,8 +409,8 @@ func (p *DefaultCertProvider) Seal() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, sp := range p.perTenant {
-		sp.Seal()
+	for _, entry := range p.perTenant {
+		entry.sp.Seal()
 	}
 	return nil
 }

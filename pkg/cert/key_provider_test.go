@@ -279,6 +279,50 @@ func TestDefaultCertProvider_CACertPEMs_BuiltInMultiTenant(t *testing.T) {
 	}
 }
 
+// TestDefaultCertProvider_ResolveKeyProvider_RevalidatesPastTTL is
+// go-qrdb#591's review (non-blocking defense in depth) red/green proof: a
+// perTenant entry older than perTenantRevalidateTTL must be rebuilt by
+// resolveKeyProvider on the next call, independent of whatever
+// WatchForDeletions would otherwise have evicted it for -- the TTL is the
+// backstop for a watch event that never arrives (the hub never delivered
+// it, or some future teardown path deletes the record a way this package
+// has no watch on).
+func TestDefaultCertProvider_ResolveKeyProvider_RevalidatesPastTTL(t *testing.T) {
+	p, _, _ := newTestProvider()
+
+	first, err := p.resolveKeyProvider("acme")
+	if err != nil {
+		t.Fatalf("resolveKeyProvider: %v", err)
+	}
+
+	p.mu.Lock()
+	entry, ok := p.perTenant["acme"]
+	if !ok {
+		p.mu.Unlock()
+		t.Fatal("expected acme to be cached in perTenant after the first resolve")
+	}
+	entry.builtAt = time.Now().Add(-perTenantRevalidateTTL - time.Second)
+	p.mu.Unlock()
+
+	second, err := p.resolveKeyProvider("acme")
+	if err != nil {
+		t.Fatalf("resolveKeyProvider (after TTL expiry): %v", err)
+	}
+	if second == first {
+		t.Fatal("expected a perTenant entry older than perTenantRevalidateTTL to be rebuilt, not reused")
+	}
+
+	// A fresh resolve immediately afterward must NOT rebuild again: the
+	// revalidation is bounded by the TTL, not unconditional.
+	third, err := p.resolveKeyProvider("acme")
+	if err != nil {
+		t.Fatalf("resolveKeyProvider (immediately after revalidation): %v", err)
+	}
+	if third != second {
+		t.Fatal("expected the freshly-revalidated entry to be reused, not rebuilt again immediately")
+	}
+}
+
 func TestDefaultCertProvider_CACertPEMs_Empty(t *testing.T) {
 	p, _, _ := newTestProvider()
 	pems, err := p.CACertPEMs(context.Background())

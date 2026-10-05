@@ -16,11 +16,23 @@ package cert
 
 import (
 	"context"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
+
+// watchReestablishBackoff bounds how long WatchForDeletions' supervisors
+// wait before asking the hub for a fresh watcher, after one of its two
+// watched channels closes for a reason other than ctx being canceled
+// (go-qrdb#591's review, non-blocking): the hub closing a watcher's
+// channel is not necessarily terminal for the whole process (a
+// mid-reconnect window, a leader transfer), and a consumer goroutine that
+// simply exits on that leaves eviction permanently dark for the rest of
+// this node's life, with nothing visible to say so.
+var watchReestablishBackoff = 2 * time.Second
 
 // WatchForDeletions starts two background watchers -- over __sys:cert_ca/
 // for DELETE events and over the tenant tombstone prefix
@@ -40,10 +52,12 @@ import (
 //     store now holds.
 //   - A tenant.TombstonePrefix + tenantID write -- pkg/tenant's
 //     DeleteTenant, which every tenant deletion goes through regardless of
-//     isolation mode -- evicts perTenant[tenantID] too (belt-and-braces:
-//     today's teardown does not itself touch __sys:cert_ca/, so this is
-//     presently the only replicated signal for the built-in path as well)
-//     and, unconditionally, calls every OnInvalidate subscriber. This is
+//     isolation mode -- evicts perTenant[tenantID] too and, unconditionally,
+//     calls every OnInvalidate subscriber. Ordinary tenant teardown already
+//     reaches the built-in path through the cert_ca DELETE watcher above as
+//     well -- service.TenantKeyPrefixes's reclaim sweep includes
+//     __sys:cert_ca/{tenantID}/, so deleting a tenant deletes its Key B
+//     material and certificate records too -- but the tombstone write is
 //     the ONLY eviction signal a factory-backed tenant has: resolveKeyProvider
 //     never caches a factory's own Provider in perTenant, so there is
 //     nothing there to evict, but the widened trust pool's OWN cache
@@ -69,9 +83,64 @@ func (p *DefaultCertProvider) WatchForDeletions(ctx context.Context) error {
 		_ = certCAWatcher.Close()
 		return &StoreError{Op: "watch", Detail: tenant.TombstonePrefix, Err: err}
 	}
-	go p.consumeCertCADeletes(ctx, certCAWatcher)
-	go p.consumeTombstonePuts(ctx, tombstoneWatcher)
+	go p.superviseWatch(ctx, "cert_ca deletions", prefixCertCA,
+		[]watch.WatchOption{watch.WithFilters(watch.WatchFilterNoPut)}, certCAWatcher, p.consumeCertCADeletes)
+	go p.superviseWatch(ctx, "tenant tombstones", tenant.TombstonePrefix,
+		[]watch.WatchOption{watch.WithFilters(watch.WatchFilterNoDelete)}, tombstoneWatcher, p.consumeTombstonePuts)
 	return nil
+}
+
+// superviseWatch runs consume over w until ctx is canceled or w's channel
+// closes. A close while ctx is still live is NOT treated as a clean
+// shutdown (go-qrdb#591's review, non-blocking): it is logged at WARN,
+// naming label and prefix, and the watch is re-established against
+// p.watchSvc, backing off between attempts -- bounded by ctx throughout,
+// so a canceled context during a backoff wait stops retrying rather than
+// looping forever on a hub that is gone for good (process shutdown).
+// Both of WatchForDeletions' watchers run through this so eviction never
+// goes permanently dark for the rest of this node's life on one closed
+// channel.
+func (p *DefaultCertProvider) superviseWatch(ctx context.Context, label, prefix string, opts []watch.WatchOption, w watch.Watcher, consume func(context.Context, watch.Watcher)) {
+	for {
+		consume(ctx, w)
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("qrdb/cert: watch closed; re-establishing",
+			slog.String("watch", label), slog.String("prefix", prefix))
+
+		next, err := p.reestablishWatch(ctx, label, prefix, opts)
+		if err != nil {
+			// Only reachable when ctx itself ended during the retry loop.
+			return
+		}
+		w = next
+	}
+}
+
+// reestablishWatch retries p.watchSvc.WatchPrefix, backing off
+// watchReestablishBackoff between attempts, until it succeeds or ctx ends.
+// Returns an error only when ctx itself is done -- a WatchPrefix failure
+// is logged at WARN and retried, never given up on while ctx is still
+// live, since the hub being briefly unavailable (not yet ready, a
+// mid-reconnect window) is exactly the condition this exists to ride out.
+func (p *DefaultCertProvider) reestablishWatch(ctx context.Context, label, prefix string, opts []watch.WatchOption) (watch.Watcher, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(watchReestablishBackoff):
+		}
+		w, err := p.watchSvc.WatchPrefix(ctx, prefix, opts...)
+		if err == nil {
+			return w, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		slog.Warn("qrdb/cert: re-establishing watch failed; will retry",
+			slog.String("watch", label), slog.String("prefix", prefix), slog.Any("error", err))
+	}
 }
 
 // OnInvalidate registers fn to be called, going forward, whenever a
