@@ -188,7 +188,11 @@ func (n *restoreDRNode) restartWithOfflineRestore(t *testing.T, bin, prefix, bac
 		}
 	}
 
-	args := append(append([]string{}, n.startArgs...), "--restore-backup-id", backupID)
+	// --allow-plaintext-restore is harmless (and ignored) when the named
+	// backup is encrypted; passed unconditionally here so this one helper
+	// serves both the plaintext and encrypted disaster-recovery scenarios
+	// below without needing to know which backup it is restoring.
+	args := append(append([]string{}, n.startArgs...), "--restore-backup-id", backupID, "--allow-plaintext-restore")
 	n.proc = startNode(t, bin, args, prefix)
 
 	waitForBarrierStatusReachable(t, n.ca, n.adminPort, 90*time.Second)
