@@ -135,6 +135,31 @@ func bootConfinedCell(t *testing.T, tk transportKind, callerTenant string) confi
 	return confinedCell{client: c, node: booted, ctx: ctx, callerTenant: callerTenant}
 }
 
+// addRoleToEmbeddedIdentity rebinds c.ctx's identity (embedded cells only)
+// to also hold roleID, mirroring what a REAL identity re-authenticating
+// against the "matrix" user's now-updated role list would carry: a remote
+// cell's client certificate resolves to the CURRENT user record on every
+// call, so a role granted to the user mid-test takes effect on its next
+// request automatically, but the embedded cell's ctx is a one-time
+// snapshot (auth.Identity.Roles) that does not refresh itself when a test
+// helper (grantKV and its siblings) grants the user a role AFTER boot.
+func (c *confinedCell) addRoleToEmbeddedIdentity(t *testing.T, tk transportKind, roleID string) {
+	t.Helper()
+	if tk != embeddedTransport {
+		return
+	}
+	id := auth.IdentityFromContext(c.ctx)
+	if id == nil {
+		t.Fatal("addRoleToEmbeddedIdentity: c.ctx carries no identity")
+	}
+	roles := append(append([]string{}, id.Roles...), roleID)
+	c.ctx = tenant.WithTenantID(auth.WithIdentity(c.ctx, &auth.Identity{
+		Subject:  id.Subject,
+		TenantID: id.TenantID,
+		Roles:    roles,
+	}), c.callerTenant)
+}
+
 // seedConfinementFixtures creates acme and globex, and the "matrix" user the
 // remote cells authenticate as, holding the built-in Admin role of
 // callerTenant. It returns that role's id.

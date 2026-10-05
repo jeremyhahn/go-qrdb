@@ -205,6 +205,11 @@ const (
 	// PermissionSealOfficerRevoke ("seal:officer_revoke") revokes a share
 	// holder of the node barrier through a quorum-gated rekey.
 	PermissionSealOfficerRevoke = permission.SealOfficerRevoke
+
+	// PermissionSealStoreManage ("seal:store_manage") manages the generic
+	// secret store a seal strategy keeps for its own state (embedded-SDK-
+	// only; no network route exists for it).
+	PermissionSealStoreManage = permission.SealStoreManage
 )
 
 // The cluster-admin permissions are cross-scope because the cluster's Raft

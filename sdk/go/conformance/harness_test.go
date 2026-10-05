@@ -470,15 +470,69 @@ func (c cell) boot(t *testing.T) clients {
 // battery in matrix_test.go and concurrency_test.go would need to build its
 // own identity-bound context at each of its dozens of call sites instead of
 // calling boundedCtx(t) as they already do.
+//
+// It also forwards transport.IndexClient when inner's underlying concrete
+// value implements it (the embedded cell's does: inner is *Transport
+// itself), with the same identity binding -- some batteries type-assert
+// cl.kv to IndexClient directly (sdk.NewKVStoreAdapter's guarded-batch
+// tests), and inner alone, boxed behind the narrower GuardedKVClient
+// interface this struct declares, would fail that assertion even though
+// the concrete value underneath answers it.
 type authInjectingKV struct {
 	inner    transport.GuardedKVClient
 	identity *auth.Identity
 }
 
-var _ transport.GuardedKVClient = authInjectingKV{}
+var (
+	_ transport.GuardedKVClient   = authInjectingKV{}
+	_ transport.IndexClient       = authInjectingKV{}
+	_ transport.TransactionClient = authInjectingKV{}
+)
 
 func (a authInjectingKV) bind(ctx context.Context) context.Context {
 	return tenant.WithTenantID(auth.WithIdentity(ctx, a.identity), a.identity.TenantID)
+}
+
+func (a authInjectingKV) index() transport.IndexClient {
+	idx, ok := a.inner.(transport.IndexClient)
+	if !ok {
+		panic("authInjectingKV: inner does not implement transport.IndexClient")
+	}
+	return idx
+}
+
+func (a authInjectingKV) IndexCreate(ctx context.Context, name, fieldName string, config transport.IndexConfig) error {
+	return a.index().IndexCreate(a.bind(ctx), name, fieldName, config)
+}
+
+func (a authInjectingKV) IndexDrop(ctx context.Context, name string) error {
+	return a.index().IndexDrop(a.bind(ctx), name)
+}
+
+func (a authInjectingKV) IndexQuery(ctx context.Context, indexName, value string) (*transport.IndexQueryResponse, error) {
+	return a.index().IndexQuery(a.bind(ctx), indexName, value)
+}
+
+func (a authInjectingKV) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
+	return a.index().IndexScan(a.bind(ctx), indexName, start, end)
+}
+
+func (a authInjectingKV) IndexList(ctx context.Context) (*transport.IndexListResponse, error) {
+	return a.index().IndexList(a.bind(ctx))
+}
+
+// ExecuteTransaction forwards to the underlying concrete value's
+// transport.TransactionClient capability, with the same identity binding --
+// sdk.NewKVStoreAdapter's PutAllIfAllUnchanged type-asserts its kv argument
+// to TransactionClient directly, so authInjectingKV must carry the
+// capability itself rather than relying on the separate authInjectingTxn
+// wrapper cl.txn holds.
+func (a authInjectingKV) ExecuteTransaction(ctx context.Context, req *transport.TransactionRequest, opts ...transport.WriteOption) (*transport.TransactionResponse, error) {
+	tx, ok := a.inner.(transport.TransactionClient)
+	if !ok {
+		panic("authInjectingKV: inner does not implement transport.TransactionClient")
+	}
+	return tx.ExecuteTransaction(a.bind(ctx), req, opts...)
 }
 
 func (a authInjectingKV) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {

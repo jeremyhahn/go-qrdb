@@ -527,9 +527,16 @@ func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID strin
 }
 
 // TenantBarrierShareClaimBegin issues a claim nonce to a tenant holder, who
-// must present its certificate on ctx.
+// must present its certificate on ctx. IdentityGated: an authenticated
+// caller is required (requireIdentity), rate limited and audited, exactly
+// as permission.IdentityGated is on every network transport; the holder's
+// BINDING authorization is the certificate or in-process claim claimContext
+// resolves, which requireIdentity does not replace.
 func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
 	if err := t.gate("TenantBarrierShareClaimBegin"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()
@@ -550,6 +557,9 @@ func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *tr
 	if err := t.gate("TenantBarrierShareClaimComplete"); err != nil {
 		return nil, err
 	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
@@ -563,21 +573,24 @@ func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *tr
 }
 
 // TenantBarrierQuorumBegin issues a tenant holder's quorum challenge.
+// IdentityGated: no RBAC PERMISSION gates a quorum challenge -- a holder's
+// BINDING authorization is the factor it presents, not an RBAC role -- but
+// an authenticated caller is required (requireIdentity), rate limited and
+// audited, exactly as permission.IdentityGated is on every network
+// transport. ctx carries no claimContext marking: that marker exists for
+// the share-CLAIM handshake's certificate-binding fallback, which the
+// quorum handshake never reads, so marking ctx for it was a no-op.
 func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport.TenantQuorumBeginRequest) (*transport.QuorumChallenge, error) {
 	if err := t.gate("TenantBarrierQuorumBegin"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
 	}
-	// No RBAC permission gates a quorum challenge -- a holder authenticates
-	// through the factor it presents, not an RBAC role, exactly as the
-	// share-claim handshake does. ctx is still marked with the same
-	// claimContext provenance (a presented certificate, or the in-process
-	// marker) so the seal/ceremony layer underneath sees it exactly as it
-	// would for a claim.
-	ctx, _ = claimContext(ctx)
 	challenge, err := svc.TenantBarrierQuorumBegin(ctx, req.TenantID, seal.QuorumOp(req.Op), req.Username, req.Factor)
 	if err != nil {
 		return nil, err
@@ -585,19 +598,20 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 	return holderwire.ChallengeTo(challenge), nil
 }
 
-// TenantBarrierQuorumSubmit submits one authenticated tenant holder's share.
+// TenantBarrierQuorumSubmit submits one authenticated tenant holder's
+// share. IdentityGated -- see TenantBarrierQuorumBegin's doc comment.
 func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
 	if err := t.gate("TenantBarrierQuorumSubmit"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
 	}
-	// Same provenance marking as TenantBarrierQuorumBegin, and for the same
-	// reason: no RBAC permission gates a quorum submission either.
-	ctx, thumbprint := claimContext(ctx)
-	out, err := svc.TenantBarrierQuorumSubmit(ctx, req.TenantID, holderwire.TenantSubmitFrom(req, thumbprint))
+	out, err := svc.TenantBarrierQuorumSubmit(ctx, req.TenantID, holderwire.TenantSubmitFrom(req, quorumThumbprint(ctx)))
 	if err != nil {
 		return nil, err
 	}

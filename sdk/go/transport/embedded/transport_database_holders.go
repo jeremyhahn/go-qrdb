@@ -114,6 +114,9 @@ func (t *Transport) DatabaseBarrierShareClaimBegin(ctx context.Context, req *tra
 	if err := t.gate("DatabaseBarrierShareClaimBegin"); err != nil {
 		return nil, err
 	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierShareClaimBegin"}
 	}
@@ -133,6 +136,9 @@ func (t *Transport) DatabaseBarrierShareClaimBegin(ctx context.Context, req *tra
 // exactly once.
 func (t *Transport) DatabaseBarrierShareClaimComplete(ctx context.Context, req *transport.DatabaseShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if err := t.gate("DatabaseBarrierShareClaimComplete"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil {
@@ -155,6 +161,16 @@ func (t *Transport) DatabaseBarrierQuorumBegin(ctx context.Context, req *transpo
 	if err := t.gate("DatabaseBarrierQuorumBegin"); err != nil {
 		return nil, err
 	}
+	// IdentityGated: no RBAC PERMISSION gates a quorum challenge -- a
+	// holder's BINDING authorization is the factor it presents -- but an
+	// authenticated caller is required, rate limited and audited, exactly
+	// as permission.IdentityGated is on every network transport. ctx
+	// carries no claimContext marking: that marker serves the share-CLAIM
+	// handshake's certificate-binding fallback, which the quorum handshake
+	// never reads.
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierQuorumBegin"}
 	}
@@ -162,9 +178,6 @@ func (t *Transport) DatabaseBarrierQuorumBegin(ctx context.Context, req *transpo
 	if err != nil {
 		return nil, delayed("DatabaseBarrierQuorumBegin", err)
 	}
-	// No RBAC permission gates a quorum challenge; ctx is marked with the
-	// same claimContext provenance the share-claim handshake above uses.
-	ctx, _ = claimContext(ctx)
 	challenge, err := hs.DatabaseBarrierQuorumBegin(ctx, req.Database, holderwire.BeginFrom(&req.QuorumBeginRequest))
 	if err != nil {
 		return nil, delayed("DatabaseBarrierQuorumBegin", err)
@@ -177,6 +190,10 @@ func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transp
 	if err := t.gate("DatabaseBarrierQuorumSubmit"); err != nil {
 		return nil, err
 	}
+	// IdentityGated -- see DatabaseBarrierQuorumBegin's doc comment.
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierQuorumSubmit"}
 	}
@@ -184,10 +201,7 @@ func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transp
 	if err != nil {
 		return nil, delayed("DatabaseBarrierQuorumSubmit", err)
 	}
-	// Same provenance marking as DatabaseBarrierQuorumBegin, and for the
-	// same reason.
-	ctx, thumbprint := claimContext(ctx)
-	sub := holderwire.SubmitFrom(&req.QuorumSubmitRequest, thumbprint)
+	sub := holderwire.SubmitFrom(&req.QuorumSubmitRequest, quorumThumbprint(ctx))
 	defer secure.Wipe(sub.Share)
 	out, err := hs.DatabaseBarrierQuorumSubmit(ctx, req.Database, sub)
 	if err != nil {

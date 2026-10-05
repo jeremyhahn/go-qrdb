@@ -46,12 +46,8 @@ var subClientTargetResolvedOperations = map[string]struct{}{
 }
 
 // subClientIdentityGatedOperations are sub-client methods requiring an
-// authenticated caller but no specific permission -- RBACClient.Authorize,
-// an introspection tool ("can THIS identity do THAT"), not an operation on
-// the caller's own identity.
-var subClientIdentityGatedOperations = map[string]struct{}{
-	"RBACClient.Authorize": {},
-}
+// authenticated caller but no specific permission.
+var subClientIdentityGatedOperations = map[string]struct{}{}
 
 // subClientPublicOperations are sub-client methods reachable with no
 // identity at all:
@@ -65,6 +61,10 @@ var subClientIdentityGatedOperations = map[string]struct{}{
 //   - AuditClient.EmitAudit stamps the caller's own tenant and runs no
 //     permission check on any transport -- see its own doc comment in
 //     audit.go.
+//   - RBACClient.Authorize is a policy-evaluation PRIMITIVE deciding about
+//     an explicit identity ARGUMENT, never an ambient caller identity read
+//     from ctx -- see its own doc comment in rbac.go for why there is no
+//     caller to additionally authenticate.
 var subClientPublicOperations = map[string]struct{}{
 	"LoginClient.ResolveIdentity":   {},
 	"LoginClient.BeginLogin":        {},
@@ -73,6 +73,7 @@ var subClientPublicOperations = map[string]struct{}{
 	"SessionClient.ResolveIdentity": {},
 	"SessionClient.Revoke":          {},
 	"AuditClient.EmitAudit":         {},
+	"RBACClient.Authorize":          {},
 }
 
 // subClientTypes names every concrete type a "Phase 3 provider" accessor on

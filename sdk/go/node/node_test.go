@@ -57,6 +57,11 @@ func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	// otherwise needed. It no longer does.
 	cfg.Raft.DataDir = ""
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	// This test is about construction and the memory-engine/no-data-dir
+	// capability, not authorization; see sdk/go/transport/embedded's probe
+	// tests and node/auth_middleware_test.go for dedicated auth-enabled
+	// coverage.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	// Disable all protocol servers so Start() doesn't try to bind ports.
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false

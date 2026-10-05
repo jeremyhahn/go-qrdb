@@ -569,35 +569,77 @@ func (t *Transport) claimComplete(ctx context.Context, domain seal.QuorumDomain,
 }
 
 // ShareClaimBegin issues a claim nonce to an unseal-key holder.
+// IdentityGated: an authenticated caller is required (requireIdentity),
+// rate limited and audited exactly as permission.IdentityGated is on every
+// network transport; the holder's BINDING authorization is the certificate
+// or in-process claim claimContext resolves, which requireIdentity does
+// not replace.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if err := t.gate("ShareClaimBegin"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	return t.claimBegin(ctx, seal.DomainUnseal, req)
 }
 
 // ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
+// IdentityGated -- see ShareClaimBegin's doc comment.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if err := t.gate("ShareClaimComplete"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	return t.claimComplete(ctx, seal.DomainUnseal, req)
 }
 
 // RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
+// IdentityGated -- see ShareClaimBegin's doc comment.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if err := t.gate("RecoveryShareClaimBegin"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	return t.claimBegin(ctx, seal.DomainRecovery, req)
 }
 
 // RecoveryShareClaimComplete delivers a recovery holder's envelope once.
+// IdentityGated -- see ShareClaimBegin's doc comment.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if err := t.gate("RecoveryShareClaimComplete"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	return t.claimComplete(ctx, seal.DomainRecovery, req)
 }
 
 // BarrierQuorumBegin issues the factor challenge a holder answers.
+// IdentityGated: no RBAC PERMISSION gates a quorum challenge -- a holder's
+// BINDING authorization is the factor it presents, not an RBAC role -- but
+// an authenticated caller is required (requireIdentity), rate limited and
+// audited, exactly as permission.IdentityGated is on every network
+// transport. ctx carries no claimContext marking here: that marker exists
+// for the share-CLAIM handshake's certificate-binding fallback
+// (pkg/ceremony.claimCertificate), which the quorum handshake never reads,
+// so marking ctx for it was a no-op.
 func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	if err := t.gate("BarrierQuorumBegin"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	svc, err := t.barrierService()
 	if err != nil {
 		return nil, delayed("BarrierQuorumBegin", err)
 	}
-	// No RBAC permission gates a quorum challenge -- a holder authenticates
-	// through the factor it presents, not an RBAC role. ctx is marked with
-	// the same claimContext provenance the share-claim handshake uses.
-	ctx, _ = claimContext(ctx)
 	challenge, err := svc.BarrierQuorumBegin(ctx, holderwire.BeginFrom(req))
 	if err != nil {
 		return nil, delayed("BarrierQuorumBegin", err)
@@ -606,15 +648,22 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 }
 
 // BarrierQuorumSubmit submits one authenticated holder's share.
+// IdentityGated -- see BarrierQuorumBegin's doc comment. The submission's
+// provenance thumbprint is read directly from ctx's TLS state (when a
+// connection carries one) rather than through claimContext, for the same
+// reason BarrierQuorumBegin carries no claimContext marking.
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if err := t.gate("BarrierQuorumSubmit"); err != nil {
+		return nil, err
+	}
+	if err := t.requireIdentity(ctx); err != nil {
+		return nil, err
+	}
 	svc, err := t.barrierService()
 	if err != nil {
 		return nil, delayed("BarrierQuorumSubmit", err)
 	}
-	// Same provenance marking as BarrierQuorumBegin, and for the same
-	// reason.
-	ctx, thumbprint := claimContext(ctx)
-	out, err := svc.BarrierQuorumSubmit(ctx, holderwire.SubmitFrom(req, thumbprint))
+	out, err := svc.BarrierQuorumSubmit(ctx, holderwire.SubmitFrom(req, quorumThumbprint(ctx)))
 	if err != nil {
 		return nil, delayed("BarrierQuorumSubmit", err)
 	}

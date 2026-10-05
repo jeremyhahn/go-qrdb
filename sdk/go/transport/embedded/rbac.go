@@ -96,16 +96,18 @@ func validateIdentity(id *transport.Identity) error {
 	return nil
 }
 
-// Authorize delegates to the wrapped auth.Authorizer. It is an
-// introspection tool -- "can THIS identity do THAT" -- not an operation on
-// the caller's own identity, so it carries no permission.Permission of its
-// own; permission.IdentityGated is its floor, requiring an authenticated
-// caller so the probe itself is not reachable anonymously.
+// Authorize delegates to the wrapped auth.Authorizer. It is a policy-
+// evaluation PRIMITIVE -- "would THIS identity be allowed to do THAT" --
+// not an operation on an ambient caller's own identity: the identity it
+// decides about is the explicit identity argument, never one read from
+// ctx, so there is no caller to additionally authenticate here. Holding a
+// reference to the embedded *Transport at all is already the trust
+// boundary, exactly as constructing an auth.Authorizer directly and
+// calling Authorize on it would be; validateIdentity below is the
+// structural check on the identity ARGUMENT's shape, not an authentication
+// of the caller.
 func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity, resource, action string) error {
 	if err := c.transport.gate("RBACClient.Authorize"); err != nil {
-		return err
-	}
-	if err := c.transport.requireIdentity(ctx); err != nil {
 		return err
 	}
 	if c.transport.closed.Load() {

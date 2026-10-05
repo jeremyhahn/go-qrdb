@@ -139,6 +139,22 @@ func claimContext(ctx context.Context) (context.Context, string) {
 	return ceremony.WithInProcessClaim(ctx), ""
 }
 
+// quorumThumbprint derives the caller's certificate thumbprint for a quorum
+// submission's provenance, or "" when none is presented (an in-process
+// caller, authenticated through requireIdentity's permission.IdentityGated
+// check rather than a certificate). Unlike claimContext it does not mark
+// ctx with ceremony.WithInProcessClaim: that marker exists for the
+// share-CLAIM handshake's certificate-binding fallback
+// (pkg/ceremony.claimCertificate), which the quorum handshake never reads,
+// so marking ctx for it here would be a no-op.
+func quorumThumbprint(ctx context.Context) string {
+	thumb, err := contextCertThumbprint(ctx)
+	if err != nil {
+		return ""
+	}
+	return thumb
+}
+
 // CeremonySignCSR submits a CSR for signing during or after the ceremony
 // by delegating to the injected CeremonyServicer.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {

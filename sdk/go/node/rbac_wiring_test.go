@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -193,7 +194,6 @@ func TestEmbeddedNode_RBACAuthorize_ScopeRule(t *testing.T) {
 // TestEmbeddedNode_RBACListPermissions_Works asserts the descriptive
 // ListPermissions surface still resolves through the wired role service.
 func TestEmbeddedNode_RBACListPermissions_Works(t *testing.T) {
-	ctx := context.Background()
 	n := newMemoryNodeWithUser(t)
 	svcNode := n.Services()
 	rbacClient := n.Client().RBAC()
@@ -204,6 +204,19 @@ func TestEmbeddedNode_RBACListPermissions_Works(t *testing.T) {
 		TenantID: tenantid.System,
 		Roles:    []string{adminRoleID},
 	}
+
+	// RBACClient.ListPermissions hands back an identity's effective
+	// permissions, so the CALLER needs permissions:resolve -- the same
+	// permission the pre-existing role.resolve-permissions network route
+	// requires, and one no built-in role grants, so the caller here is a
+	// purpose-built role, exactly as a real embedder would need.
+	callerRoleID := seedNarrowRole(t, svcNode.Role, tenantid.System, "permissions-resolver",
+		permission.PermissionsResolve)
+	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), &auth.Identity{
+		Subject:  "resolver",
+		TenantID: tenantid.System,
+		Roles:    []string{callerRoleID},
+	}), tenantid.System)
 
 	perms, err := rbacClient.ListPermissions(ctx, id)
 	require.NoError(t, err)

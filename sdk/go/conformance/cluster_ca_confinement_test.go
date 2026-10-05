@@ -26,7 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -126,10 +129,11 @@ func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
 			var booted *node.Node
+			var roleID string
 			secretMaterial, fakeCertDER := generateFakeClusterCA(t)
 			client := bootAuthorizedCell(t, tk, func(n *node.Node) {
 				booted = n
-				seedIdentityFixtures(t, n, rawKVPerms...)
+				roleID, _ = seedIdentityFixtures(t, n, rawKVPerms...)
 				if err := n.Services().KV.Put(context.Background(), clusterCAMaterialKey, secretMaterial); err != nil {
 					t.Fatalf("%s: seeding the cluster CA key material directly: %v", tk, err)
 				}
@@ -145,6 +149,18 @@ func TestClusterCAKeyMaterial_UnreachableOnEveryRemoteTransport(t *testing.T) {
 			}
 
 			ctx := boundedCtx(t)
+			if tk == embeddedTransport {
+				// The embedded transport authenticates nothing on its own;
+				// bind the same identity and tenant the remote cells
+				// authenticate as via their client certificate (the pair
+				// every embedded authorization gate reads: auth.WithIdentity
+				// paired with tenant.WithTenantID).
+				ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+					Subject:  "matrix",
+					TenantID: tenantid.System,
+					Roles:    []string{roleID},
+				}), tenantid.System)
+			}
 
 			if v, err := client.KV().Get(ctx, clusterCAMaterialKey); err == nil && v != nil {
 				t.Fatalf("%s: KV().Get(cluster CA key) = %q, want absent or refused", tk, v)

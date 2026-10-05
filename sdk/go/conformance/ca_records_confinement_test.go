@@ -72,7 +72,7 @@ func certCARecordKeys(prefix string) []string {
 // a confinement test over the KV/MVCC/Watch surface needs its own,
 // explicitly-granted role -- one broad enough that a refusal the test
 // observes is confinement, not an incidental RBAC denial.
-func grantKV(t *testing.T, n *node.Node, tenantID, username string) {
+func grantKV(t *testing.T, n *node.Node, tenantID, username string) string {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -97,6 +97,7 @@ func grantKV(t *testing.T, n *node.Node, tenantID, username string) {
 	if _, err := svc.User.UpdateUser(ctx, &user.UpdateUserRequest{ID: u.ID, RoleIDs: roleIDs}); err != nil {
 		t.Fatalf("grant KV role to %s: %v", username, err)
 	}
+	return r.ID
 }
 
 // assertCAKeyUnreachable proves key's VALUE never reaches the caller
@@ -262,7 +263,8 @@ func TestCertRecords_NotReadableThroughGenericKV(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootConfinedCell(t, tk, confineAcme)
-			grantKV(t, c.node, confineAcme, "matrix")
+			roleID := grantKV(t, c.node, confineAcme, "matrix")
+			c.addRoleToEmbeddedIdentity(t, tk, roleID)
 
 			// Force Key B material to actually exist for both tenants, so a
 			// successful read would be a real secret disclosure and not

@@ -460,6 +460,15 @@ func (e *holderE2E) holderClient(h *e2eHolder, sealed bool) (holderAPI, context.
 		if sealed {
 			return sealedServiceHolders{svc: e.n.Services().Barrier}, ctx
 		}
+		// The share-claim/quorum handshakes are IdentityGated on the
+		// embedded transport exactly as on the network (owner security
+		// review): an authenticated caller is required, even though no
+		// RBAC permission or role backs the holder's BINDING authorization
+		// (the certificate/factor the handshake itself verifies). The
+		// in-process holder flow binds that minimal identity here, the
+		// same way a remote holder's client certificate resolves to one
+		// through the server's authenticator chain.
+		ctx = auth.WithIdentity(ctx, &auth.Identity{Subject: h.name})
 		return e.n.Client().Barrier(), ctx
 	}
 	return e.dial(h.tlsConfig(e.pool)).Barrier(), boundedCtx(e.t)
