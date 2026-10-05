@@ -128,9 +128,6 @@ are not reconstructed here — their history is in the git log.
 - **qrdbd publishes its member record in the background.** Boot no longer
   waits on the replicated write, and a SIGTERM during boot no longer fails
   `qrdbd start` with "failed to register self".
-
-### Fixed
-
 - **First boot could crash a node with `register role <name> failed: role: id
   already exists`** when several seeders raced the SAME built-in role under
   its deterministic `role.SystemRoleID`: concurrent nodes' own first-boot
