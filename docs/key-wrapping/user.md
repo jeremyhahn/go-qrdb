@@ -181,11 +181,16 @@ key, a key file, or `--encryption none`. Supply one of the three.
 `--backup-key-dir`, so the built-in `"software"` provider has nowhere to
 look for key files at all. Restart it with the flag set.
 
-**"decryption failed" / a typed refusal on restore.** Either the key file
-does not match the one used at create time, or the backup's stored data
-was altered. Both report the same way on purpose — qrdb will not tell an
-attacker which of the two it was, which would help them narrow down a
-correct key by trial and error. Nothing is restored either way.
+**"decryption failed" / a typed refusal on restore.** Two different
+things report two different ways, deliberately. A tampered SHARD's own
+ciphertext — its AES-256-GCM authentication tag no longer matches —
+returns `*BackupVerificationFailedError` wrapping
+`*BackupShardIntegrityError`. A wrong key file, or a tampered WRAPPED
+DEK (the key-encrypting layer one step up from a shard's own
+ciphertext), both report as `*BackupDecryptionFailedError` — these two
+are collapsed into the same error on purpose, so an attacker cannot use
+the difference to narrow down a correct key by trial and error. Nothing
+is restored either way, regardless of which error you see.
 
 **"is stored as plaintext; restoring it requires an explicit opt-in".**
 Restoring a backup whose OWN stored state is plaintext always requires

@@ -85,6 +85,7 @@ the matrix in [backup-restore/api.md](../backup-restore/api.md#capability-matrix
 | Tampered shard ciphertext on restore — aborts the WHOLE restore, before any shard is imported | 400 | `INVALID_ARGUMENT` — `*BackupVerificationFailedError` (wrapping `*BackupShardIntegrityError`) |
 | Tampered manifest on restore (the sealed header, not a shard) — aborts before any shard is touched | 400 | `INVALID_ARGUMENT` — `*BackupManifestInvalidError`, returned directly (not wrapped in `*BackupVerificationFailedError`: the manifest is authenticated once, up front, before PASS 1's per-shard verification loop even starts) |
 | Stored metadata and the artifact disagree about encryption (a downgrade attempt) | 400 | `INVALID_ARGUMENT` — `*BackupMetadataMismatchError` |
+| The built-in `"software"` key-wrap provider is resolved with no key directory configured (`--backup-key-dir` / `server.WithKeyDir` / `lifecycle.Infra.KeyDir`) — a server-side capability gap, never a caller-supplied-value problem | 501 | `UNIMPLEMENTED` — `*BackupKeyDirNotConfiguredError` |
 
 These join, not replace, the existing mapping table in
 [backup-restore/api.md](../backup-restore/api.md#status-and-error-mapping).
