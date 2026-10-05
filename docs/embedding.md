@@ -211,6 +211,36 @@ authenticate for any tenant. Verbs that sign with the cluster CA (ceremony
 CSR signing, officer registration, join tokens) refuse on such a node, as on a
 BYO-TLS `qrdbd` node; give the node a cluster CA key to use them.
 
+#### Injecting the cluster CA key
+
+An embedder that keeps the cluster CA's key in an HSM, a TPM or a cloud KMS
+injects it as a `cakey.Provider` -- `cakey.Adapter` wraps any signer -- and
+the node signs with it, as `qrdbd` and `pkg/server` do:
+
+```go
+ca := cakey.Adapter{SignerFunc: hsmSigner, CertificateFunc: operatorCACert}
+n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts,
+    node.WithRaftMTLS(&node.RaftMTLSConfig{CACert: caPEM, Cert: certPEM, Key: keyPEM}),
+    node.WithClusterCAKeyProvider(ca), // the cluster CA (Key A): never generated, never stored
+)
+```
+
+With a provider injected the node is no longer BYO-TLS: its cluster CA is the
+provider's certificate, CSR signing and officer registration sign with it, and
+member-side CSR join (`cluster_join.enabled`, `cluster_join.listen_host`,
+`cluster_join.listen_port`) runs exactly as on `qrdbd` -- the node records its
+own join identity as admitted, starts the join listener, and serves the
+join-token verb from the same store. The per-tenant login CA (Key B) is
+injected separately, through `server.WithCertKeyProviderFactory` in
+`serverOpts`.
+
+#### Tenant defaults
+
+A tenant with no quotas or entitlements of its own gets the configuration's
+`tenant.default_quotas` and `tenant.default_entitlements`, read exactly as
+`qrdbd` reads them; `node.WithDefaultTenantEntitlements` overrides the
+configured entitlements.
+
 A multi-node Raft transport requires mTLS material (`WithRaftMTLS`) and the
 member identities: go-quicraft admits a member by its identity alone, and a
 founding node missing one is refused at start. See

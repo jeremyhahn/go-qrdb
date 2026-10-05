@@ -84,6 +84,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **An embedded node honours the configured tenant defaults, and composes
+  member-side CSR join, as `qrdbd` does.** `sdk/go/node` ignored
+  `tenant.default_quotas` and `tenant.default_entitlements` (a tenant created
+  through an embedded node got unlimited quotas and prefix-only
+  entitlements whatever the configuration said); it now reads them through
+  the same `ToQuotas`/`ToEntitlements` qrdbd uses, with
+  `WithDefaultTenantEntitlements` still overriding the entitlements. And it
+  never recorded its own join identity or started the join listener, so an
+  embedded node with a cluster CA key -- its own, or one injected with
+  `WithClusterCAKeyProvider` (an HSM or KMS) -- could not mint a join token
+  or sign a joiner's CSR. That composition now lives in
+  `lifecycle.StartClusterJoin`, which qrdbd and `sdk/go/node` both call.
 - **An embedded node on operator-supplied TLS has the operator's CA as its
   cluster CA, as `qrdbd` does (ruling 5).** A clustered `sdk/go/node` node
   handed its cluster identity (`WithRaftMTLS`) and no cluster CA key of its
