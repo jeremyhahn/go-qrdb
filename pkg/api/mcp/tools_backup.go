@@ -72,7 +72,7 @@ func toolBackupCreate() mcp.Tool {
 			mcp.Description("The registered keywrap.Provider to wrap this backup's DEK with. Defaults to 'software' when key_ref is set."),
 		),
 		mcp.WithString("key_ref",
-			mcp.Description("The key reference the named provider resolves -- a key-file path for 'software'. Required unless encryption is explicitly 'none'."),
+			mcp.Description("The key reference the named provider resolves -- the bare name of a key file inside the server's configured key directory for 'software'. Required unless encryption is explicitly 'none'."),
 		),
 		mcp.WithArray("shard_ids",
 			mcp.Description("Optional list of shard IDs to back up. Empty backs up all shards."),

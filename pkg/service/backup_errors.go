@@ -63,8 +63,9 @@ func (e *BackupEncryptionKeyRequiredError) Error() string {
 // nor a key reference. The default is EncryptionAES256, so defaulting into
 // it without key material would either mint a key this package does not
 // have, or silently fall back to plaintext -- both wrong. The caller must
-// choose: supply BackupOptions.KeyRef (a key-file path for the built-in
-// "software" keywrap provider, or a hardware/cloud-KMS reference a
+// choose: supply BackupOptions.KeyRef (the bare NAME of a key file inside
+// the server's configured key directory for the built-in "software"
+// keywrap provider, never a path, or a hardware/cloud-KMS reference a
 // go-xkms-registered provider resolves) to keep the default, or set
 // BackupOptions.Encryption to EncryptionNone outright to get plaintext.
 type BackupEncryptionRequiredError struct{}

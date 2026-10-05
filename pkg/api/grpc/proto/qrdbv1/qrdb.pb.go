@@ -20964,8 +20964,9 @@ type BackupCreateRequest struct {
 	// key_provider_id names the registered keywrap.Provider to wrap this
 	// backup's DEK with. Empty defaults to "software" when key_ref is set.
 	KeyProviderId string `protobuf:"bytes,7,opt,name=key_provider_id,json=keyProviderId,proto3" json:"key_provider_id,omitempty"`
-	// key_ref is the key reference the named provider resolves -- a
-	// key-file path for "software".
+	// key_ref is the key reference the named provider resolves -- the
+	// bare NAME of a key file inside the server's configured key
+	// directory for "software", never a path.
 	KeyRef        string `protobuf:"bytes,8,opt,name=key_ref,json=keyRef,proto3" json:"key_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

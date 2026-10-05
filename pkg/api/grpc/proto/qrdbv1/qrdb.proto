@@ -4182,8 +4182,9 @@ message BackupCreateRequest {
     // key_provider_id names the registered keywrap.Provider to wrap this
     // backup's DEK with. Empty defaults to "software" when key_ref is set.
     string              key_provider_id = 7;
-    // key_ref is the key reference the named provider resolves -- a
-    // key-file path for "software".
+    // key_ref is the key reference the named provider resolves -- the
+    // bare NAME of a key file inside the server's configured key
+    // directory for "software", never a path.
     string              key_ref         = 8;
 }
 
