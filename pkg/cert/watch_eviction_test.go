@@ -546,16 +546,15 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishmentInvalidatesEveryth
 
 	// No delete is ever delivered on the new watcher: reconciliation must
 	// come from reestablishment itself, not from an event this test never
-	// sends.
+	// sends. invalidateAll clears perTenant under the lock and runs the
+	// hooks after releasing it, so wait for both rather than asserting the
+	// hook in the window between them.
 	pollUntil(t, func() bool {
 		p.mu.RLock()
-		defer p.mu.RUnlock()
 		_, stillCached := p.perTenant["initech"]
-		return !stillCached
+		p.mu.RUnlock()
+		return !stillCached && atomic.LoadInt32(&invalidated) > 0
 	})
-	if got := atomic.LoadInt32(&invalidated); got == 0 {
-		t.Error("expected OnInvalidate to fire on watch reestablishment, even with no delete event delivered")
-	}
 }
 
 // TestDefaultCertProvider_WatchForDeletions_CertCAWatchFails proves a
