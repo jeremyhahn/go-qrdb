@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -337,6 +338,21 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	principal, factor, err := c.transport.loginResolver.ResolveFirst(resolveCtx, domainType, lookupKeys...)
 	if err != nil {
 		return nil, mapFactorError(err)
+	}
+
+	// Charged to the RESOLVED principal, never the caller-supplied
+	// LookupKey/hint: the lookup key is attacker-controlled before any
+	// proof is checked, so throttling by it would let repeated guesses
+	// against the SAME account each pick a fresh bucket by varying an
+	// irrelevant byte of the key. permission.UserAuthFactorsLogin is the
+	// same permission the network transports' login-factor verb carries;
+	// reusing it here, rather than a second login-specific permission,
+	// keeps one declared ratelimit.Policy governing both. A nil
+	// t.authMW or no declared policy is a no-op.
+	if c.transport.authMW != nil {
+		if err := c.transport.authMW.CheckLoginRateLimit(principal.TenantID, principal.Username, permission.UserAuthFactorsLogin); err != nil {
+			return nil, err
+		}
 	}
 
 	// Verify the proof-of-possession BEFORE issuing a bearer. The

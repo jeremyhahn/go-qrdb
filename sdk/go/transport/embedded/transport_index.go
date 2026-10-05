@@ -35,6 +35,9 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	if err := t.gate("IndexCreate"); err != nil {
 		return err
 	}
+	if err := t.authorize(ctx, "IndexCreate"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -64,6 +67,9 @@ func (t *Transport) IndexDrop(ctx context.Context, name string) error {
 	if err := t.gate("IndexDrop"); err != nil {
 		return err
 	}
+	if err := t.authorize(ctx, "IndexDrop"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -77,6 +83,9 @@ func (t *Transport) IndexDrop(ctx context.Context, name string) error {
 // delegating to the injected IndexServicer.
 func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*transport.IndexQueryResponse, error) {
 	if err := t.gate("IndexQuery"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "IndexQuery"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -100,6 +109,9 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 // by delegating to the injected IndexServicer.
 func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
 	if err := t.gate("IndexScan"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "IndexScan"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -133,6 +145,9 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 // the injected IndexServicer.
 func (t *Transport) IndexList(ctx context.Context) (*transport.IndexListResponse, error) {
 	if err := t.gate("IndexList"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "IndexList"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {

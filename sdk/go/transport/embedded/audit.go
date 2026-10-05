@@ -64,6 +64,15 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 	if c.transport.auditLogger == nil {
 		return &MissingAuditLoggerError{}
 	}
+	// No RBAC permission gates emitting a compliance event -- there is no
+	// network route for it, and any authenticated caller may record one.
+	// What must never happen is trusting a caller-supplied TenantID: the
+	// event is stamped with the CALLER's own tenant, exactly as every other
+	// embedded operation resolves its tenant, so a record can never read as
+	// having been made by a tenant that did not make it. This applies
+	// whether or not an AuthMiddleware is configured, because it is not an
+	// authorization decision.
+	ev.TenantID = tenant.CallerTenant(ctx)
 	return c.transport.auditLogger.Emit(ctx, auditconv.EventToDomain(ev))
 }
 
@@ -74,6 +83,9 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 // filter naming another tenant is refused with *tenant.CrossTenantDeniedError.
 func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (*transport.AuditPage, error) {
 	if err := c.transport.gate("AuditClient.QueryAudit"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.authorize(ctx, "AuditClient.QueryAudit"); err != nil {
 		return nil, err
 	}
 	if c.transport.closed.Load() {
@@ -114,6 +126,9 @@ func auditVerificationReportToTransport(r *audit.VerificationReport) *transport.
 // Verified=false is a TAMPER VERDICT, not an error -- see pkg/audit.Verify.
 func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
 	if err := c.transport.gate("AuditClient.VerifyChain"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.authorize(ctx, "AuditClient.VerifyChain"); err != nil {
 		return nil, err
 	}
 	if c.transport.closed.Load() {

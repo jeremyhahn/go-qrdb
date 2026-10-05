@@ -55,6 +55,9 @@ func (t *Transport) Query(ctx context.Context, database, query string) (*transpo
 	if err := t.gate("Query"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "Query"); err != nil {
+		return nil, err
+	}
 	svc := t.sqlSvc()
 	if svc == nil {
 		return nil, &NilServiceError{Service: "SQLServicer"}

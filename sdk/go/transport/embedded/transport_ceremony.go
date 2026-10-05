@@ -49,6 +49,9 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err := t.gate("CeremonyInitialize"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "CeremonyInitialize"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -83,6 +86,9 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 // injected CeremonyServicer.
 func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStatusResponse, error) {
 	if err := t.gate("CeremonyStatus"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "CeremonyStatus"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -136,6 +142,9 @@ func claimContext(ctx context.Context) (context.Context, string) {
 // by delegating to the injected CeremonyServicer.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
 	if err := t.gate("CeremonySignCSR"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "CeremonySignCSR"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {

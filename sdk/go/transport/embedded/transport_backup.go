@@ -40,6 +40,9 @@ func (t *Transport) CreateBackup(ctx context.Context, req *transport.BackupReque
 	if err := t.gate("CreateBackup"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "CreateBackup"); err != nil {
+		return nil, err
+	}
 	if t.backupSvc == nil {
 		return nil, &NilServiceError{Service: "BackupServicer"}
 	}
@@ -65,6 +68,9 @@ func (t *Transport) ListBackups(ctx context.Context) ([]transport.BackupInfo, er
 	if err := t.gate("ListBackups"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "ListBackups"); err != nil {
+		return nil, err
+	}
 	if t.backupSvc == nil {
 		return nil, &NilServiceError{Service: "BackupServicer"}
 	}
@@ -86,6 +92,9 @@ func (t *Transport) GetBackup(ctx context.Context, id string) (*transport.Backup
 	if err := t.gate("GetBackup"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "GetBackup"); err != nil {
+		return nil, err
+	}
 	if t.backupSvc == nil {
 		return nil, &NilServiceError{Service: "BackupServicer"}
 	}
@@ -103,6 +112,9 @@ func (t *Transport) DeleteBackup(ctx context.Context, id string) error {
 	if err := t.gate("DeleteBackup"); err != nil {
 		return err
 	}
+	if err := t.authorize(ctx, "DeleteBackup"); err != nil {
+		return err
+	}
 	if t.backupSvc == nil {
 		return &NilServiceError{Service: "BackupServicer"}
 	}
@@ -117,6 +129,9 @@ func (t *Transport) DeleteBackup(ctx context.Context, id string) error {
 // been configured.
 func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreRequest) (*transport.RestoreResult, error) {
 	if err := t.gate("RestoreBackup"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "RestoreBackup"); err != nil {
 		return nil, err
 	}
 	if t.backupSvc == nil {
@@ -140,6 +155,9 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 // service has been configured.
 func (t *Transport) VerifyBackup(ctx context.Context, id string) (*transport.VerifyResult, error) {
 	if err := t.gate("VerifyBackup"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "VerifyBackup"); err != nil {
 		return nil, err
 	}
 	if t.backupSvc == nil {

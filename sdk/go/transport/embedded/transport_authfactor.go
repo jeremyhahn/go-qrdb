@@ -32,6 +32,9 @@ func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFacto
 	if err := t.gate("EnrollFactor"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "EnrollFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -74,6 +77,9 @@ func (t *Transport) ChallengeFactor(ctx context.Context, req *transport.Challeng
 	if err := t.gate("ChallengeFactor"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "ChallengeFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -101,6 +107,9 @@ func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFacto
 	if err := t.gate("VerifyFactor"); err != nil {
 		return err
 	}
+	if err := t.authorize(ctx, "VerifyFactor"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -123,6 +132,9 @@ func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFacto
 // AuthFactorServicer.
 func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsRequest) (*transport.ListFactorsResponse, error) {
 	if err := t.gate("ListFactors"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ListFactors"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -173,6 +185,9 @@ func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsR
 // injected AuthFactorServicer.
 func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFactorRequest) error {
 	if err := t.gate("RevokeFactor"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "RevokeFactor"); err != nil {
 		return err
 	}
 	if t.closed.Load() {

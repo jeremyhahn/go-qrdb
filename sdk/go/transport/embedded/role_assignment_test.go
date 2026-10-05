@@ -140,7 +140,7 @@ func TestEmbeddedCreateUser_DeniedWithoutRolesAssign(t *testing.T) {
 func TestEmbeddedCreateUser_AllowedWithRolesAssignAndValidRole(t *testing.T) {
 	roleSvc := &mockRoleServicer{
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
-			return []permission.Permission{permission.RolesAssign}, nil
+			return []permission.Permission{permission.RolesAssign, permission.UsersCreate}, nil
 		},
 		getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
 			return &role.Role{ID: id, TenantID: "acme"}, nil
@@ -178,7 +178,7 @@ func TestEmbeddedCreateUser_AllowedWithRolesAssignAndValidRole(t *testing.T) {
 func TestEmbeddedCreateUser_RejectsRoleFromAnotherTenant(t *testing.T) {
 	roleSvc := &mockRoleServicer{
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
-			return []permission.Permission{permission.RolesAssign}, nil
+			return []permission.Permission{permission.RolesAssign, permission.UsersCreate}, nil
 		},
 		getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
 			return &role.Role{ID: id, TenantID: "globex"}, nil // wrong tenant
@@ -251,7 +251,9 @@ func TestEmbeddedUpdateUser_DeniedWithoutRolesAssign(t *testing.T) {
 func TestEmbeddedUpdateUser_WithoutRoleFieldsIsUngatedByRolesAssign(t *testing.T) {
 	roleSvc := &mockRoleServicer{
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
-			return nil, nil
+			// users:update only -- roles:assign is deliberately absent, so a
+			// grant here would hide the gate this test pins.
+			return []permission.Permission{permission.UsersUpdate}, nil
 		},
 	}
 	updated := false

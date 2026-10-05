@@ -24,6 +24,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -780,5 +784,61 @@ func TestLoginClient_FinishLogin_DeniesCrossTenantResolution(t *testing.T) {
 	var nf *transport.FactorNotFoundError
 	if !errors.As(err, &nf) {
 		t.Errorf("expected *transport.FactorNotFoundError, got %T", err)
+	}
+}
+
+// TestLoginClient_FinishLogin_RateLimitsRepeatedAttemptsOnTheResolvedPrincipal
+// pins AuthMiddleware.CheckLoginRateLimit's embedded seam end to end: a
+// second FinishLogin attempt against the SAME account, within the SAME
+// declared ratelimit.Policy window, is refused, even though each attempt
+// opens its own fresh BeginLogin session with its own nonce -- the charge
+// follows the RESOLVED principal (alice), not the per-attempt session or
+// lookup key.
+func TestLoginClient_FinishLogin_RateLimitsRepeatedAttemptsOnTheResolvedPrincipal(t *testing.T) {
+	svc := newMemUserAuthFactorService()
+	cred := []byte("cred-1")
+	enrolledFactor(t, svc, 1, auth.AuthFactorFIDO2, cred)
+	lookup := &memUserLookup{principals: map[uint64]*auth.Principal{
+		1: {ID: 1, Username: "alice", TenantID: "acme", Roles: []string{"User"}, Active: true},
+	}}
+	resolver := auth.NewLoginResolver(svc, lookup)
+
+	limiter := ratelimit.NewTokenBucketLimiter()
+	t.Cleanup(func() { _ = limiter.Close() })
+	policies := ratelimit.NewRegistry()
+	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1.0 / 3600, Burst: 1})
+	mw := authmw.New(rbac.New(&mockRoleServicer{}), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
+
+	tr, err := New(newMockKVService(), &mockAdminService{},
+		WithUserAuthFactorService(svc),
+		WithLoginResolver(resolver),
+		WithSessionIssuer(newMemSessionIssuer()),
+		WithAuthMiddleware(mw),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lc := tr.LoginClient()
+
+	attempt := func() error {
+		begin, err := lc.BeginLogin(context.Background(), transport.BeginLoginRequest{Type: transport.FactorTypeFIDO2})
+		if err != nil {
+			t.Fatalf("BeginLogin: %v", err)
+		}
+		_, err = lc.FinishLogin(context.Background(), transport.FinishLoginRequest{
+			SessionID: begin.SessionID,
+			Type:      transport.FactorTypeFIDO2,
+			LookupKey: cred,
+		})
+		return err
+	}
+
+	if err := attempt(); err != nil {
+		t.Fatalf("first attempt within burst: %v", err)
+	}
+	err = attempt()
+	var limited *authmw.RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("second attempt over burst: err = %v, want *authmw.RateLimitedError", err)
 	}
 }

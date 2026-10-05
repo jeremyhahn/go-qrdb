@@ -28,6 +28,9 @@ func (t *Transport) NodeCompaction(ctx context.Context) (*transport.DatabaseComp
 	if err := t.gate("NodeCompaction"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "NodeCompaction"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -43,6 +46,9 @@ func (t *Transport) NodeCompaction(ctx context.Context) (*transport.DatabaseComp
 // a context bound to any tenant but the system tenant.
 func (t *Transport) SetNodeCompaction(ctx context.Context, policy *transport.DatabaseCompactionConfig) (*transport.DatabaseCompactionConfig, error) {
 	if err := t.gate("SetNodeCompaction"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "SetNodeCompaction"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {

@@ -102,6 +102,66 @@ func TestCheckRateLimit_DeniesOverBurst(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// CheckLoginRateLimit unit tests -- the pre-identity seam BeginLogin/
+// FinishLogin use (sdk/go/transport/embedded/login.go), which reuses
+// checkRateLimit's exact engine and key scheme but is keyed from the
+// claimed login principal rather than an auth.Identity the authenticator
+// chain already produced.
+// ---------------------------------------------------------------------------
+
+func TestCheckLoginRateLimit_NilReceiverIsANoOp(t *testing.T) {
+	var m *AuthMiddleware
+	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+		t.Fatalf("a nil AuthMiddleware must authorize everything, got %v", err)
+	}
+}
+
+func TestCheckLoginRateLimit_NoOpWhenNotConfigured(t *testing.T) {
+	m := New(&mockAuthorizer{})
+	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+		t.Fatalf("want no error when rate limiting is not wired, got %v", err)
+	}
+}
+
+func TestCheckLoginRateLimit_DeniesOverBurst(t *testing.T) {
+	limiter := ratelimit.NewTokenBucketLimiter()
+	t.Cleanup(func() { _ = limiter.Close() })
+	policies := ratelimit.NewRegistry()
+	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
+	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+
+	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+		t.Fatalf("want the first attempt within burst allowed, got %v", err)
+	}
+	err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin)
+	var rl *RateLimitedError
+	if !asRateLimited(err, &rl) {
+		t.Fatalf("want a *RateLimitedError, got %T: %v", err, err)
+	}
+	if rl.Subject != "alice" || rl.TenantID != "acme" {
+		t.Fatalf("want the error to name the claimed principal, got %+v", rl)
+	}
+}
+
+func TestCheckLoginRateLimit_DistinctPrincipalsAreIndependent(t *testing.T) {
+	limiter := ratelimit.NewTokenBucketLimiter()
+	t.Cleanup(func() { _ = limiter.Close() })
+	policies := ratelimit.NewRegistry()
+	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
+	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+
+	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+		t.Fatalf("alice's first attempt: %v", err)
+	}
+	if err := m.CheckLoginRateLimit("acme", "bob", permission.UserAuthFactorsLogin); err != nil {
+		t.Fatalf("bob's own bucket must be untouched by alice's attempt, got %v", err)
+	}
+	if err := m.CheckLoginRateLimit("globex", "alice", permission.UserAuthFactorsLogin); err != nil {
+		t.Fatalf("alice in a different tenant must be a different bucket, got %v", err)
+	}
+}
+
 func TestCheckRateLimit_CallersAreIndependent(t *testing.T) {
 	limiter := ratelimit.NewTokenBucketLimiter()
 	t.Cleanup(func() { _ = limiter.Close() })

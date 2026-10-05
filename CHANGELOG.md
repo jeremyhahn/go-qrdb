@@ -539,6 +539,52 @@ are not reconstructed here — their history is in the git log.
   `TestTenantClientAuthorizationSurface_CoversEveryMethod` fails the build if
   a future `transport.TenantClient` method ships with no entry declaring how
   it is authorized.
+- **BREAKING, widened: the embedded transport authorizes its FULL
+  operation surface, not only the tenant-administration one above.** One
+  pluggable auth chain on all transports means KV, MVCC, transactions,
+  batch, watch, leases, locks, index, timeseries, vector, collections, RAG,
+  embedding, users, roles, certificates, credentials, tenant DEK, backup,
+  rebalance, databases (including the per-database barrier), SQL, ceremony,
+  the node barrier, and cluster admin now all authorize through the SAME
+  `pkg/auth/middleware` call and the SAME `pkg/permission` entry the
+  equivalent REST/gRPC/QUIC/MCP route resolves to — transcribed from
+  `pkg/api/quic/dispatch.go`, not a parallel table
+  (`sdk/go/transport/embedded/transport_authz_registry.go`). Users and
+  roles resolve their target (the tenant a user or role belongs to) the
+  same way `pkg/api/quic/targets.go` resolves it. Certificates additionally
+  keep `tenant.Confine`'s unconditional structural check (a certificate
+  authenticates as the tenant its Subject names, independent of whether
+  RBAC is configured) alongside the new RBAC grant check. `EmitAudit`
+  stamps the caller's own tenant onto every event, overwriting whatever a
+  caller supplied, unconditionally. `SealStore*`, which has no
+  network-exposed route and so no `pkg/permission` entry of its own, gets a
+  documented floor (an authenticated identity is required) rather than a
+  silent pass; `FactorClient`'s four methods (a different sub-client from
+  the one above) remain a documented, open gap pending an owner decision —
+  see the embedded-authorization report.
+  **BREAKING** for an embedder that composed the embedded transport with an
+  `AuthMiddleware`: a caller that previously reached KV, a user, a role, a
+  certificate, or any other operation in this list without holding its
+  permission now needs it. An embedder with no `AuthMiddleware` is
+  unaffected.
+  The buildgate widens accordingly:
+  `transport_authz_coverage_test.go`'s
+  `TestTransportClientAuthorizationSurface_CoversEveryMethod` reflects over
+  every exported method of the concrete embedded `*Transport` type (not
+  only `transport.Client`, which omits RAG, embedding, auth-factor, SQL,
+  and the guarded-write KV verbs) and fails the build if any one of them —
+  present or future — has no declared authorization mechanism.
+  Login attempts (`LoginClient.BeginLogin`/`FinishLogin`, the embedded
+  SDK's own pre-authentication ceremony) are now rate-limited through
+  `AuthMiddleware.CheckLoginRateLimit` — a new, minimal seam in
+  `pkg/auth/middleware` that reuses the exact rate-limit engine and
+  `(tenant, subject, permission)` key `authorize()`'s own rate-limit step
+  uses for an authenticated caller, keyed instead by the login attempt's
+  RESOLVED principal (never the caller-supplied lookup key/hint, which is
+  attacker-controlled before any proof is checked), charged under
+  `permission.UserAuthFactorsLogin` — the same permission a network
+  transport's login-factor verb carries, so one declared
+  `ratelimit.Policy` governs both rather than a second, login-specific one.
 
 ### Added
 

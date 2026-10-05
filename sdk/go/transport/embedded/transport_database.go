@@ -40,6 +40,9 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	if err := t.gate("CreateDatabase"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "CreateDatabase"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -97,6 +100,9 @@ func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.Da
 	if err := t.gate("GetDatabase"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "GetDatabase"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -112,6 +118,9 @@ func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.Da
 // NilServiceError when no database service has been configured.
 func (t *Transport) ListDatabases(ctx context.Context) ([]transport.DatabaseInfo, error) {
 	if err := t.gate("ListDatabases"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ListDatabases"); err != nil {
 		return nil, err
 	}
 	if t.dbSvc == nil {
@@ -131,6 +140,9 @@ func (t *Transport) DropDatabase(ctx context.Context, name string) error {
 	if err := t.gate("DropDatabase"); err != nil {
 		return err
 	}
+	if err := t.authorize(ctx, "DropDatabase"); err != nil {
+		return err
+	}
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -142,6 +154,9 @@ func (t *Transport) DropDatabase(ctx context.Context, name string) error {
 // NilServiceError when no database service has been configured.
 func (t *Transport) UpdateDatabaseProtocol(ctx context.Context, req transport.UpdateDatabaseProtocolRequest) (*transport.DatabaseInfo, error) {
 	if err := t.gate("UpdateDatabaseProtocol"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "UpdateDatabaseProtocol"); err != nil {
 		return nil, err
 	}
 	if t.dbSvc == nil {
@@ -164,6 +179,9 @@ func (t *Transport) UpdateDatabaseEtcd(ctx context.Context, req transport.Update
 	if err := t.gate("UpdateDatabaseEtcd"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "UpdateDatabaseEtcd"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -184,6 +202,9 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 	if err := t.gate("UpdateDatabaseRaft"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "UpdateDatabaseRaft"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -199,6 +220,9 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 // ScaleForTenant, as every verb of this transport is tenant-scoped.
 func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
 	if err := t.gate("ScaleDatabase"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ScaleDatabase"); err != nil {
 		return nil, err
 	}
 	if t.dbSvc == nil {
@@ -217,6 +241,9 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	if err := t.gate("UpdateDatabaseBarrier"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "UpdateDatabaseBarrier"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -233,6 +260,9 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 	if err := t.gate("UpdateDatabaseConnection"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "UpdateDatabaseConnection"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -247,6 +277,9 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 // injected DatabaseServicer.
 func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
 	if err := t.gate("UpdateDatabaseSQL"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "UpdateDatabaseSQL"); err != nil {
 		return nil, err
 	}
 	if t.dbSvc == nil {
@@ -266,6 +299,9 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 // tenant an unbound context resolves to included -- to its own databases.
 func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
 	if err := t.gate("UpdateDatabaseCompaction"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "UpdateDatabaseCompaction"); err != nil {
 		return nil, err
 	}
 	if t.dbSvc == nil {

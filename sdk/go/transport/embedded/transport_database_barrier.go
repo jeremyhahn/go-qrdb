@@ -28,6 +28,9 @@ func (t *Transport) SealDatabase(ctx context.Context, name string) error {
 	if err := t.gate("SealDatabase"); err != nil {
 		return err
 	}
+	if err := t.authorize(ctx, "SealDatabase"); err != nil {
+		return err
+	}
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -37,6 +40,9 @@ func (t *Transport) SealDatabase(ctx context.Context, name string) error {
 // UnsealDatabase unseals a database's encryption barrier via the injected service.
 func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) error {
 	if err := t.gate("UnsealDatabase"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "UnsealDatabase"); err != nil {
 		return err
 	}
 	if t.dbSvc == nil {
@@ -53,6 +59,9 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 // DatabaseBarrierStatus returns a database barrier's status via the injected service.
 func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*transport.DatabaseBarrierStatus, error) {
 	if err := t.gate("DatabaseBarrierStatus"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "DatabaseBarrierStatus"); err != nil {
 		return nil, err
 	}
 	if t.dbSvc == nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // WithRateLimiter installs the enforcement engine behind every transport's
@@ -84,4 +85,33 @@ func (m *AuthMiddleware) checkRateLimit(identity *auth.Identity, perm permission
 		}
 	}
 	return nil
+}
+
+// CheckLoginRateLimit enforces perm's declared Policy against a login
+// attempt's CLAIMED principal, before any authenticator chain has run and so
+// before there is a real auth.Identity to key checkRateLimit against. It is
+// the one seam a pre-authentication login ceremony (the embedded
+// transport's BeginLogin/FinishLogin, sdk/go/transport/embedded/login.go)
+// uses to reach the SAME rate-limit engine and the SAME per-(tenant,
+// subject, permission) bucket authorize()'s checkRateLimit enforces for an
+// authenticated caller -- there is no second limiter and no second key
+// scheme, only a second place identity comes from.
+//
+// principal must be the RESOLVED account a login attempt is against (e.g.
+// auth.Principal.Username), never a caller-supplied hint: a hint is
+// attacker-controlled before any proof is checked, so keying on it would
+// let an attacker pick a fresh, unthrottled bucket for every guess by
+// varying the hint while still targeting the same account. tenantID is
+// normalized the same way every other tenant value is
+// (tenantid.Normalize), so "" and the system tenant's canonical id share
+// one bucket.
+//
+// A nil receiver, no limiter, no declared policies, or no Policy registered
+// for perm is a no-op, exactly like checkRateLimit.
+func (m *AuthMiddleware) CheckLoginRateLimit(tenantID, principal string, perm permission.Permission) error {
+	if m == nil {
+		return nil
+	}
+	identity := &auth.Identity{Subject: principal, TenantID: tenantid.Normalize(tenantID)}
+	return m.checkRateLimit(identity, perm)
 }

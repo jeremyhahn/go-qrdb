@@ -47,6 +47,9 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateUser"}
 	}
+	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersCreate); err != nil {
+		return nil, err
+	}
 	if len(req.RoleIDs) > 0 {
 		if err := t.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, t.roleSvc, req.TenantID, req.RoleIDs); err != nil {
 			return nil, err
@@ -77,6 +80,9 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUser"}
 	}
+	if err := t.authorizeUserTarget(ctx, id, permission.UsersRead); err != nil {
+		return nil, err
+	}
 	u, err := t.userSvc.GetUser(ctx, id)
 	if err != nil {
 		return nil, err
@@ -93,6 +99,9 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByUsername"}
 	}
+	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.UsersRead); err != nil {
+		return nil, err
+	}
 	u, err := t.userSvc.GetUserByUsername(ctx, tenantID, username)
 	if err != nil {
 		return nil, err
@@ -107,6 +116,9 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByEmail"}
+	}
+	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.UsersRead); err != nil {
+		return nil, err
 	}
 	u, err := t.userSvc.GetUserByEmail(ctx, tenantID, email)
 	if err != nil {
@@ -124,6 +136,9 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByCertThumbprint"}
 	}
+	if err := t.authorize(ctx, "GetUserByCertThumbprint"); err != nil {
+		return nil, err
+	}
 	u, err := t.userSvc.UserByCertThumbprint(ctx, thumbprint)
 	if err != nil {
 		return nil, err
@@ -139,6 +154,9 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "AddCertBinding"}
+	}
+	if err := t.authorizeUserTarget(ctx, userID, permission.UsersAddCertBinding); err != nil {
+		return nil, err
 	}
 	u, err := t.userSvc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
 	if err != nil {
@@ -156,6 +174,9 @@ func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbp
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "RemoveCertBinding"}
 	}
+	if err := t.authorizeUserTarget(ctx, userID, permission.UsersRemoveCertBinding); err != nil {
+		return nil, err
+	}
 	u, err := t.userSvc.RemoveCertBinding(ctx, userID, thumbprint)
 	if err != nil {
 		return nil, err
@@ -170,6 +191,9 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateUser"}
+	}
+	if err := t.authorizeUserTarget(ctx, req.ID, permission.UsersUpdate); err != nil {
+		return nil, err
 	}
 	updateReq := &user.UpdateUserRequest{
 		ID:           req.ID,
@@ -210,6 +234,9 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteUser"}
 	}
+	if err := t.authorizeUserTarget(ctx, id, permission.UsersDelete); err != nil {
+		return err
+	}
 	return t.userSvc.DeleteUser(ctx, id)
 }
 
@@ -220,6 +247,9 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ListUsers"}
+	}
+	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersList); err != nil {
+		return nil, err
 	}
 	resp, err := t.userSvc.ListUsers(ctx, &user.ListUsersRequest{
 		TenantID: req.TenantID,
@@ -250,6 +280,9 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "EnableUser"}
 	}
+	if err := t.authorizeUserTarget(ctx, id, permission.UsersEnable); err != nil {
+		return err
+	}
 	return t.userSvc.EnableUser(ctx, id)
 }
 
@@ -260,6 +293,9 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DisableUser"}
+	}
+	if err := t.authorizeUserTarget(ctx, id, permission.UsersDisable); err != nil {
+		return err
 	}
 	return t.userSvc.DisableUser(ctx, id)
 }
@@ -275,6 +311,9 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateRole"}
+	}
+	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesCreate); err != nil {
+		return nil, err
 	}
 	perms := stringsToPermissions(req.Permissions)
 	rl, err := t.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
@@ -297,6 +336,9 @@ func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, er
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetRole"}
 	}
+	if err := t.authorizeRoleTarget(ctx, id, permission.RolesRead); err != nil {
+		return nil, err
+	}
 	rl, err := t.roleSvc.GetRole(ctx, id)
 	if err != nil {
 		return nil, err
@@ -311,6 +353,9 @@ func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleReq
 	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateRole"}
+	}
+	if err := t.authorizeRoleTarget(ctx, req.ID, permission.RolesUpdate); err != nil {
+		return nil, err
 	}
 	perms := stringsToPermissions(req.Permissions)
 	rl, err := t.roleSvc.UpdateRole(ctx, &role.UpdateRoleRequest{
@@ -332,6 +377,9 @@ func (t *Transport) DeleteRole(ctx context.Context, id string) error {
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteRole"}
 	}
+	if err := t.authorizeRoleTarget(ctx, id, permission.RolesDelete); err != nil {
+		return err
+	}
 	return t.roleSvc.DeleteRole(ctx, id)
 }
 
@@ -342,6 +390,9 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ListRoles"}
+	}
+	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesList); err != nil {
+		return nil, err
 	}
 	resp, err := t.roleSvc.ListRoles(ctx, &role.ListRolesRequest{
 		TenantID: req.TenantID,
@@ -432,8 +483,11 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 }
 
 // ListPermissions returns all registered permission categories.
-func (t *Transport) ListPermissions(_ context.Context) (*transport.ListPermissionsResponse, error) {
+func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermissionsResponse, error) {
 	if err := t.gate("ListPermissions"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ListPermissions"); err != nil {
 		return nil, err
 	}
 	cats := permission.Categories()
@@ -458,11 +512,20 @@ func (t *Transport) ListPermissions(_ context.Context) (*transport.ListPermissio
 
 // GenerateCert creates a client certificate via the embedded cert provider.
 //
-// The certificate authenticates as req.Username in req.TenantID, so it is
-// minted only for the caller's own tenant (tenant.Confine): a request naming
-// another tenant is refused with *tenant.CrossTenantDeniedError, the system
-// tenant included -- the rule certs:generate's ScopeSelfStrict enforces on the
-// network transports.
+// The certificate authenticates as req.Username in req.TenantID. Two
+// independent checks gate it, run in this order:
+//
+//  1. tenant.Confine -- a STRUCTURAL guarantee, not an authorization policy:
+//     a certificate this CA signs authenticates as the tenant its Subject
+//     names, so minting one for another tenant would be minting someone
+//     else's identity. It runs unconditionally, with or without RBAC,
+//     exactly like finalizeIdentity's tenant fold on every network
+//     transport.
+//  2. AuthMiddleware.AuthorizeCertTenant -- the RBAC grant, the SAME shared
+//     gate the network transports use (pkg/auth/middleware/cert_authz.go):
+//     certs:generate's ScopeSelfStrict admits only the caller's own tenant,
+//     the system tenant included. A nil AuthMiddleware authorizes
+//     everything here, matching every other permission gate in this file.
 func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
 	if err := t.gate("GenerateCert"); err != nil {
 		return nil, err
@@ -471,6 +534,9 @@ func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCer
 		return nil, &transport.NotImplementedError{Method: "GenerateCert"}
 	}
 	if _, err := tenant.Confine(ctx, req.TenantID, "generate a certificate"); err != nil {
+		return nil, err
+	}
+	if err := t.authorizeCertTenant(ctx, req.TenantID, permission.CertsGenerate); err != nil {
 		return nil, err
 	}
 	genReq := &cert.GenerateRequest{
@@ -500,6 +566,9 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 	if err := t.gate("ExportCert"); err != nil {
 		return nil, err
 	}
+	if err := t.authorize(ctx, "ExportCert"); err != nil {
+		return nil, err
+	}
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "ExportCert"}
 	}
@@ -518,10 +587,12 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 // BREAKING (go-qrdb#287): this method previously returned only error.
 //
 // A serial with an issued record is revoked only by its owning tenant
-// (tenant.Confine). A serial with none is the deny-by-serial revocation, a
-// platform act on the CA the system tenant operates, so only a system-tenant
-// caller may write it -- the rule certs:revoke and certs:revoke:cross enforce
-// on the network transports. Either refusal is *tenant.CrossTenantDeniedError.
+// (tenant.Confine -- structural, unconditional). A serial with none is the
+// deny-by-serial revocation, a platform act on the CA the system tenant
+// operates, so only a system-tenant caller may write it. Both targets are
+// then also checked for the RBAC grant through the same shared gate every
+// network transport uses (AuthMiddleware.AuthorizeCertRevoke): certs:revoke
+// or certs:revoke:cross respectively.
 func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if err := t.gate("RevokeCert"); err != nil {
 		return nil, err
@@ -536,6 +607,9 @@ func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.R
 	if _, err := tenant.Confine(ctx, target, "revoke a certificate"); err != nil {
 		return nil, err
 	}
+	if err := t.authorizeCertRevoke(ctx, serial); err != nil {
+		return nil, err
+	}
 	result, err := t.certProv.RevokeCert(ctx, serial)
 	if err != nil {
 		return nil, err
@@ -547,8 +621,9 @@ func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.R
 }
 
 // ListCerts lists issued certificates for a tenant via the embedded cert
-// provider. Only the caller's own tenant may be listed (tenant.Confine); any
-// other is refused with *tenant.CrossTenantDeniedError.
+// provider. Only the caller's own tenant may be listed (tenant.Confine,
+// unconditional), and the RBAC grant for it is checked the same way every
+// network transport checks it (AuthMiddleware.AuthorizeCertTenant).
 func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.ListCertsResponse, error) {
 	if err := t.gate("ListCerts"); err != nil {
 		return nil, err
@@ -557,6 +632,9 @@ func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.
 		return nil, &transport.NotImplementedError{Method: "ListCerts"}
 	}
 	if _, err := tenant.Confine(ctx, tenantID, "list certificates"); err != nil {
+		return nil, err
+	}
+	if err := t.authorizeCertTenant(ctx, tenantID, permission.CertsList); err != nil {
 		return nil, err
 	}
 	records, err := t.certProv.ListCerts(ctx, tenantID)

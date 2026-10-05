@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -27,6 +28,9 @@ func (t *Transport) GetRoleByName(ctx context.Context, req *transport.GetRoleByN
 	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetRoleByName"}
+	}
+	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesRead); err != nil {
+		return nil, err
 	}
 	rl, err := t.roleSvc.GetRoleByName(ctx, req.TenantID, req.Name)
 	if err != nil {
@@ -43,6 +47,9 @@ func (t *Transport) ResolvePermissions(ctx context.Context, req *transport.Resol
 	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ResolvePermissions"}
+	}
+	if err := t.authorize(ctx, "ResolvePermissions"); err != nil {
+		return nil, err
 	}
 	perms, err := t.roleSvc.ResolvePermissions(ctx, req.RoleIDs)
 	if err != nil {

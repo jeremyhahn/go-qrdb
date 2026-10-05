@@ -858,6 +858,54 @@ matrix through both the embedded transport and a REST server sharing one
 `AuthMiddleware` and one `*authtest.Tenants` service, and fails if the two
 ever disagree.
 
+**The same gap existed across the embedded transport's ENTIRE operation
+surface, not only tenant administration.** The owner's "one pluggable auth
+chain on all transports" rule means an embedded KV `Put`, a `GetUser`, a
+`DeleteRole`, a `RevokeCert` — everything `*Transport` exports — authorizes
+through the SAME call and the SAME `pkg/permission` entry the equivalent
+network route does. `sdk/go/transport/embedded/transport_authz_registry.go`
+is a transcription of `pkg/api/quic/dispatch.go`'s method→permission table
+(the one dispatcher that already states every operation's permission in
+one place) onto the embedded method names, checked with
+`AuthMiddleware.AuthorizeTarget(ctx, perm, SelfTarget())` for every
+ambient-self operation — the overwhelming majority, since QUIC's
+`identityTargets` registers a target override only for users, roles, and
+tenant barriers. `transport_identity_authz.go` carries the user/role target
+resolution (`UserTarget`/`RoleTarget`), mirroring `pkg/api/quic/targets.go`
+exactly. `transport_authz_coverage_test.go`'s
+`TestTransportClientAuthorizationSurface_CoversEveryMethod` widens the
+tenant-only buildgate above to reflect over every exported method of the
+concrete `*Transport` type (not `transport.Client`, which omits RAG,
+embedding, auth-factor, SQL, and the guarded-write KV verbs), so a method
+added without stating its authorization mechanism fails the build. Two
+sub-clients could not be reached this way (their methods live on a
+different concrete type, invisible to that reflection): `SealStore*` has no
+`pkg/permission` entry at all (no network route exposes it), so it gets a
+documented floor — `AuthMiddleware.AuthorizeTarget` with
+`permission.IdentityGated`, requiring only an authenticated caller, pending
+an owner decision on whether it earns its own permission family —
+and `FactorClient`'s four methods (`Enroll`/`List`/`Remove`/`Verify`, each
+keyed by a `userID`) remain unauthorized, a known, explicitly flagged gap
+rather than a silent one.
+`sdk/go/transport/embedded/probe_kv_users_roles_test.go` is the headline
+probe: a tenant-scoped identity cannot read, write, or delete another
+tenant's user or role, and an identity holding none of the relevant
+permissions cannot touch KV at all.
+
+**Login attempts are rate-limited the same way an authenticated caller's
+requests are, from before there is an identity to key the check against.**
+`AuthMiddleware.CheckLoginRateLimit` (`pkg/auth/middleware/ratelimit.go`) is
+the seam: it builds a synthetic `auth.Identity` from the login attempt's
+RESOLVED principal (never the caller-supplied lookup key, which is
+attacker-controlled before any proof is verified) and hands it to
+`checkRateLimit`, the exact engine and `(tenant, subject, permission)` key
+`authorize()` already uses. The embedded `LoginClient.FinishLogin`
+(`sdk/go/transport/embedded/login.go`) charges it under
+`permission.UserAuthFactorsLogin` right after resolving the principal and
+before verifying its proof, so repeated guesses against one real account
+are throttled regardless of whether each individual guess's signature
+would fail.
+
 **A body is read the way its handler reads it.** A target named in a request
 body is decoded into the handler's OWN request type with the handler's own
 decoder (`encoding/json`), never looked up in a generic map: a struct field

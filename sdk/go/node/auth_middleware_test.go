@@ -27,6 +27,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -224,4 +225,68 @@ func TestEmbeddedNode_RESTAuthMiddleware_Disabled(t *testing.T) {
 	status := restStatusRequest(t, addr, ca, nil)
 	require.Equal(t, http.StatusOK, status,
 		"auth.enabled=false must run the route unauthenticated by explicit configuration")
+}
+
+// TestEmbeddedNode_EmbeddedAuthMiddleware_WiredWheneverAuthIsEnabled is the
+// embedded-transport sibling of the three REST tests above: node.go hands
+// the embedded transport the SAME *middleware.AuthMiddleware instance
+// pkg/auth/wiring.BuildAuthMiddleware produced for the network transports
+// (embedded.WithAuthMiddleware), conditioned only on authMW != nil --
+// which BuildAuthMiddleware returns exactly when cfg.Auth.Enabled is true.
+// So whenever auth is enabled, the embedded transport must never have a
+// nil AuthMiddleware, and a caller with no identity bound to ctx must be
+// refused exactly as an unauthenticated REST request is.
+func TestEmbeddedNode_EmbeddedAuthMiddleware_WiredWheneverAuthIsEnabled(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+	// cfg.Auth.Enabled defaults to true (qrdbconfig.DefaultConfig) -- the
+	// production posture this test exercises.
+
+	n, err := NewStandaloneNode(context.Background(), cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	svcNode := n.Services()
+	require.NotNil(t, svcNode.Role)
+	require.NotNil(t, svcNode.User)
+
+	adminRole, err := svcNode.Role.CreateRole(context.Background(), &role.CreateRoleRequest{
+		Name:        "embedded-auth-mw-test-admin",
+		TenantID:    tenantid.System,
+		Permissions: []permission.Permission{permission.AdminStatus},
+	})
+	require.NoError(t, err)
+	_, err = svcNode.User.CreateUser(context.Background(), &user.CreateUserRequest{
+		WithoutEmailLoginKey: true,
+		Username:             "admin",
+		TenantID:             tenantid.System,
+		RoleIDs:              []string{adminRole.ID},
+	})
+	require.NoError(t, err)
+
+	client := n.Client()
+	require.NotNil(t, client)
+
+	// No identity bound to ctx: a caller the embedded transport cannot
+	// identify at all. Before the embedded-authorization fix this answered
+	// 200 unconditionally (the gap go-qrdb's security probe found).
+	_, err = client.Admin().Status(context.Background())
+	require.Error(t, err, "an unidentified embedded caller must be refused a permission-gated operation")
+	require.ErrorIs(t, err, auth.ErrUnauthenticated)
+
+	// The seeded admin's identity, bound the way every embedded caller
+	// binds one (auth.WithIdentity): admitted.
+	adminCtx := auth.WithIdentity(context.Background(), &auth.Identity{
+		Subject:  "admin",
+		TenantID: tenantid.System,
+		Roles:    []string{adminRole.ID},
+	})
+	_, err = client.Admin().Status(adminCtx)
+	require.NoError(t, err, "the seeded admin identity must be admitted")
 }

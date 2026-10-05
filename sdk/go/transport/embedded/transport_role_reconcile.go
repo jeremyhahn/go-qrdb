@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -33,6 +34,13 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 	tenantID := ""
 	if req != nil {
 		tenantID = req.TenantID
+	}
+	// roles:create, not a verb of its own -- a dedicated permission would be
+	// missing from every role seeded before it existed, so nobody could
+	// hold the grant needed to repair that absence. Matches the QUIC
+	// dispatcher's role.ReconcileBuiltIn registration exactly.
+	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.RolesCreate); err != nil {
+		return nil, err
 	}
 
 	report, err := t.roleSvc.ReconcileBuiltInRoles(ctx, tenantID)
