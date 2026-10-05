@@ -243,6 +243,30 @@ fsyncs the directory after the rename and does not report success until
 that succeeds. Every caller gets this, so `PersistMaterial` and `PersistCA`
 are crash-durable too.
 
+**`WriteFileAtomic` refuses a pre-existing symlink at its target
+(`*securefile.SymlinkRefusedError`), checked with `os.Lstat` before the
+temporary file is even created — a BREAKING change from the pre-move
+implementation, which called `rename(tmpFile, path)` unconditionally.**
+`rename(2)` does not dereference its destination: when `path` was already
+a symlink, the old code silently replaced the SYMLINK ITSELF with an
+ordinary file holding the new material -- it did not write through the
+symlink to whatever it pointed at, and the distinction matters for exactly
+the case this refusal protects. A **Kubernetes Secret volume mount is a
+symlink**: each file `kubectl` shows under the mount point is actually a
+symlink into a `..data/<timestamp>` directory the kubelet atomically swaps
+on rotation, not a plain file. A deployment that points `--data-dir` (or
+any path `PersistMaterial`/`PersistCA`/`clusterenroll`'s key/role writes
+land in) AT a Secret-mounted directory now gets `*SymlinkRefusedError` on
+every boot that writes cluster material — where the pre-move code would
+have silently severed the kubelet's symlink, replacing it with a plain
+file the kubelet's next rotation can no longer swap. Mount a Secret for
+material qrdb only ever READS (a bootstrap anchor bundle, a BYO-TLS CA);
+for a directory qrdb WRITES into (the data directory itself, or any parent
+of `ca.pem`/`node-cert.pem`/`node-key.pem`/`ca-key.pem`/an enrollment
+key/the role file), use an `emptyDir` or a `PersistentVolumeClaim` instead,
+or have an init container `cp` the Secret's contents into one before qrdb
+starts.
+
 **There is one local-SAN implementation, and the unspecified addresses are not
 in it.** `clustertls.LocalSANs` returns `localhost`, the machine hostname, the
 two loopbacks, and every non-loopback unicast interface address. `0.0.0.0` and

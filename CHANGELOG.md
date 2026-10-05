@@ -424,10 +424,22 @@ are not reconstructed here — their history is in the git log.
   the primary engine, so a memory-engine node continues to need no vector
   data directory exactly as before.
 - **`sdk/go` re-exports the atomic, mode-enforcing file writer (#580).**
-  `pkg/util/securefile.WriteFileAtomic` (moved out of `pkg/clustertls`, now
-  refuses a pre-existing symlink at its target with a typed
-  `*SymlinkRefusedError`) and new `CreateExclusive` (O_EXCL, create-only,
-  typed `*FileExistsError`) are re-exported from `sdk/go`.
+  `pkg/util/securefile.WriteFileAtomic` (moved out of `pkg/clustertls`) and
+  new `CreateExclusive` (O_EXCL, create-only, typed `*FileExistsError`) are
+  re-exported from `sdk/go`. **BREAKING:** `WriteFileAtomic` now refuses a
+  pre-existing symlink at its target with a typed `*SymlinkRefusedError`,
+  checked with `os.Lstat` before anything is written, instead of the
+  previous unconditional `rename(2)`, which replaced the symlink itself
+  (not whatever it pointed at) with a plain file. This reaches every
+  `pkg/clustertls`/`pkg/clusterenroll` write of cluster CA material, an
+  enrollment key, or the role file -- a deployment that points its data
+  directory at a **Kubernetes Secret volume mount** (every file under one
+  is itself a symlink the kubelet swaps on rotation) now gets the typed
+  refusal on every boot that writes, where it previously got the symlink
+  silently severed into a plain file. See
+  [docs/clustering/engineering.md](docs/clustering/engineering.md) and
+  [docs/clustering/user.md](docs/clustering/user.md)'s troubleshooting
+  entry.
 - **`sdk/go` re-exports `pkg/ratelimit`, wired into the embedded node
   (#398).** `WithRateLimitPolicies` and `WithRateLimiter` are new
   `sdk/go/node.NodeOption`s, threaded into the same

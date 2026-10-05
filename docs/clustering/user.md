@@ -401,6 +401,25 @@ certificate; a node on a new key must be removed and re-added.
 and there is no default. A mismatch looks exactly like "no peers on the
 network".
 
+**A node refuses to start, or refuses a join: `refusing to write through a
+symlink at ...`** (`*securefile.SymlinkRefusedError`, reachable with
+`errors.As` through whichever caller wraps it --
+`*clustertls.WriteError` for the CA material and role file, a
+protocol-specific error for an enrollment key). The node's data directory (or
+whichever path the cluster CA material, an enrollment key, or the role
+file would be written to) is, or contains, a symlink — most commonly a
+Kubernetes **Secret volume mount**: every file under a mounted Secret is
+actually a symlink into a `..data/<timestamp>` directory the kubelet swaps
+on rotation, not a plain file. qrdb writes `ca.pem`, `node-cert.pem`,
+`node-key.pem`, `ca-key.pem` and its enrollment/role files into the data
+directory, and now refuses rather than silently replacing the kubelet's
+symlink itself with a plain file, which severs that path from the
+Secret's rotation from then on. Point `--data-dir` at a writable volume
+(an `emptyDir` or a
+`PersistentVolumeClaim`) instead of a Secret mount, or copy the Secret's
+contents into one with an init container before qrdb starts. See
+[engineering.md](engineering.md) for the write path this affects.
+
 **Automatic removal did not happen.** Either dynamic membership is off (it is by
 default), the local node is not the leader (reconfiguration is leader-only), or
 the quorum guard refused because removing that replica would drop you below
