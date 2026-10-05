@@ -13,6 +13,27 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
+  `barrier-rekey` were non-functional on every real boot with auth enabled
+  (the default) — a 501 `Unimplemented` ("database share holders service is
+  not configured") on every transport.** `NewProvisioningAuthorizedDatabaseService`
+  wraps `databaseSvc` whenever auth is enabled, and embeds the
+  `service.DatabaseServicer` *interface*, not the concrete `*DatabaseService`.
+  Embedding an interface value only promotes that interface's own methods,
+  never an additive interface the underlying concrete value also satisfies —
+  so `s.databaseSvc.(service.DatabaseHolderServicer)` failed in production
+  even though `*DatabaseService` has always implemented it.
+  `provisioningAuthorizedDatabaseService` now declares all ten
+  `DatabaseHolderServicer` methods itself as pure passthroughs to the inner
+  service, guarded by a compile-time assertion
+  (`var _ service.DatabaseHolderServicer = (*provisioningAuthorizedDatabaseService)(nil)`)
+  and a unit test that a capability-only inner is never delegated to while a
+  holder-capable inner always is, so a wrapper that embeds an interface
+  instead of the concrete type can't silently drop methods again.
+- **`docs/databases/cli.md`** still said `--barrier-strategy shamir` was
+  refused with `UnsupportedBarrierStrategyError` "until per-database Shamir
+  share holders ship" — stale; the feature has shipped. Corrected and
+  cross-linked to the Share-holder verbs section.
 - **Integration coverage: membership, join tokens and cluster unseal.** `admin member add/remove` now adds and removes real spare nodes, since the `guarded-writes` gate correctly refuses an address that is not advertising. `admin join-token mint` is proven single-use on every transport, with the typed refusal on BYO-TLS nodes. `barrier cluster-unseal` runs a full seal, restart and unseal cycle through the CLI on every transport.
 - **MCP `qrdb_ceremony_sign_csr` returns the signed certificate.** The handler marshalled the internal result type, whose fields carry no JSON tags, instead of the wire `SignCSRInitResponse`. So `qrdb ceremony sign-csr` over MCP exited 0 with an empty certificate. The other transports were unaffected.
 - **Integration coverage: every system-scope `barrier` passphrase and Shamir verb runs on all five transports.** This covers officer register, list, claim and claim-begin/complete; quorum seal, unseal and root-token; rekey; the recovery domain; `ceremony sign-csr`; `batch import`; `audit verify`; node and database compaction. The CLI test binary is now built with the daemon's full tag set, so the SQL protocol surface is actually exercised.
@@ -81,30 +102,6 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   context contract means a context ending during the SO PIN's seal or open is
   now a real, newly-possible cause of that error, and it must classify as a
   cancellation/deadline, not a node-side fault.
-
-### Fixed
-
-- **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
-  `barrier-rekey` were non-functional on every real boot with auth enabled
-  (the default) — a 501 `Unimplemented` ("database share holders service is
-  not configured") on every transport.** `NewProvisioningAuthorizedDatabaseService`
-  wraps `databaseSvc` whenever auth is enabled, and embeds the
-  `service.DatabaseServicer` *interface*, not the concrete `*DatabaseService`.
-  Embedding an interface value only promotes that interface's own methods,
-  never an additive interface the underlying concrete value also satisfies —
-  so `s.databaseSvc.(service.DatabaseHolderServicer)` failed in production
-  even though `*DatabaseService` has always implemented it.
-  `provisioningAuthorizedDatabaseService` now declares all ten
-  `DatabaseHolderServicer` methods itself as pure passthroughs to the inner
-  service, guarded by a compile-time assertion
-  (`var _ service.DatabaseHolderServicer = (*provisioningAuthorizedDatabaseService)(nil)`)
-  and a unit test that a capability-only inner is never delegated to while a
-  holder-capable inner always is, so a wrapper that embeds an interface
-  instead of the concrete type can't silently drop methods again.
-- **`docs/databases/cli.md`** still said `--barrier-strategy shamir` was
-  refused with `UnsupportedBarrierStrategyError` "until per-database Shamir
-  share holders ship" — stale; the feature has shipped. Corrected and
-  cross-linked to the Share-holder verbs section.
 
 ## [0.40.1-alpha] - 2026-10-04
 
