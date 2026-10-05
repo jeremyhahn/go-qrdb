@@ -235,6 +235,72 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   constant. See
   [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)
   (go-qrdb#592).
+- **A 65,534- or 65,535-byte key panicked `Apply` on every replica and every
+  state machine type, and a 65,526-65,533-byte MVCC put silently stored the
+  wrong value — a focused re-review of the fix above found this in every
+  2-byte key-length decoder it touched (go-qrdb#592).** Each one computed a
+  bounds check, or the slice it then took, as `2 + keyLen` (or
+  `2 + keyLen + 8`, ahead of a fixed-width lease ID) while `keyLen` was
+  still the 2-byte field's own `uint16` — arithmetic that wraps a few bytes
+  short of 65,536 and lets the wrapped, too-small value pass a narrower
+  check or silently shift every following field's offset, instead of being
+  refused. `pkg/protocol.DecodeKeyLen` is now the one shared, bounds-checked
+  primitive every 2-byte-prefixed key decoder in the tree calls — in
+  `pkg/protocol` itself (`DecodeMVCCPut`, `DecodeMVCCDelete`, which
+  `pkg/store`'s pebble and MVCC state machines, and every state machine in
+  `pkg/statemachine`, share), in `pkg/statemachine`'s own base-KV
+  `handlePut`/`handleDelete` (`kv_statemachine.go`, `regular.go`,
+  `concurrent.go`, `fast.go`, `putifabsent.go` — now one shared
+  `decodeKeyValuePayload` instead of five copies of the defect), and in
+  `pkg/engine/mvcc_engine.go`'s own base-KV handlers — rather than each
+  computing the sum in the field's own width. The new Apply-time
+  key-length refusal this introduces in `validateClientKey` is gated behind
+  a cluster feature (`featuregate.KeyLengthCap`, following the
+  `guarded-writes` pattern): without a gate wired, or before the cluster
+  activates it, the check is enforced unconditionally (correct for a
+  deployment that is known to run one binary version everywhere); once
+  activated, every replica enforces it identically, so a rolling upgrade
+  can never have a new replica refuse a key an old peer in the same group
+  just applied.
+- **A concurrent `Set` or `Delete` to an unrelated key could abort an
+  iterator scan or `List` entirely, or make `Snapshot` return a silently
+  truncated result with a nil error, on `raft.sm_storage: file`
+  (go-qrdb#592).** Both scans used `filepath.Walk` without expecting a
+  per-entry `ENOENT` — a renamed-away `.tmp-set-*` temp file, or a record a
+  concurrent `Delete` removed, between `Walk` reading a directory and
+  stat'ing or reading an entry inside it — and `Snapshot` discarded the
+  iterator's own `Error()` instead of returning it. Both now skip a
+  per-entry `ENOENT` (never the engine's own root directory failing to
+  stat, which is a real fault) and keep walking, and `Snapshot` propagates
+  a load it could not complete rather than returning a truncated result as
+  if it were whole.
+- **The file engine's format-marker check refused to initialize a mount
+  root whose only content was `lost+found`**, the directory `mkfs`/`fsck`
+  creates at the root of a freshly formatted filesystem — never written by
+  any layout this engine has had, and never meaningful to it. `New` now
+  excludes `lost+found` when deciding whether a directory is fresh, while
+  still refusing one that also holds genuine old-layout content.
+- **`pkg/storage/file`'s `New` is also what backs `BackendFile` databases,
+  every database's barrier-metadata store regardless of that database's
+  own configured backend, partitions, and the repository `qrdbd restore
+  --backup-dir` reads from** — not only `raft.sm_storage: file`. The
+  breaking-change note below, and
+  [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking),
+  now say so explicitly, and
+  [docs/backup-restore/user.md](docs/backup-restore/user.md) documents that
+  a backup made before this change cannot be restored by a binary that
+  carries it.
+- A concurrent `Set` that found its shard directory already created by a
+  racing sibling `Set` could return before that directory's creation was
+  durably published to ITS parent: `mkdirAllDurable`'s "already exists" and
+  "lost the creation race" paths now fsync the parent unconditionally
+  rather than trust that the directory's actual creator has already done
+  so. `New` also removes any `.tmp-set-*` crash leftovers from an
+  interrupted `Set` under the engine root at Open, and the CHANGELOG and
+  `docs/storage-engines` wording that described this layout change as
+  replacing two PRIOR RELEASES is corrected: the intermediate
+  one-directory-per-key design never shipped — it existed only between
+  commits of this same unreleased change.
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled
   (the default) — a 501 `Unimplemented` ("database share holders service is

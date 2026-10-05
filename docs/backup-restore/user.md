@@ -108,6 +108,19 @@ compression (`zstd` for ratio, `snappy` for speed) and prune old ones.
 **`qrdb backup` says "requires mode: raft".** The server is standalone. Backups
 operate on shard snapshots and there are none.
 
+**Restoring a backup made before the file engine's hashed-layout change
+fails with a format-marker error.** `qrdbd restore --backup-dir` and any
+`sm_storage: file`/`BackendFile` restore target open the backup directory
+through the same `file.New` the data plane uses
+([storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)),
+so a backup written before that change is the OLD layout and is refused
+in-place (`FormatMarkerMissingError`) by a binary that carries the new one,
+by design — there is no migration, per the project's no-backward-
+compatibility policy. Restore that backup with a binary from before the
+change, or treat it as unrecoverable by this one. A backup made with
+`sm_storage: pebble`/`BackendPebble`/`BackendMemory` is unaffected: only the
+`file` engine's on-disk bytes changed.
+
 **You want to migrate data to a database with a different engine or backend.**
 Backup and restore is the usual route, but note the shard snapshot format is the
 compatibility surface — restoring onto a materially different topology is not a

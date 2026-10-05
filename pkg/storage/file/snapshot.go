@@ -31,8 +31,16 @@ type fileSnapshot struct {
 }
 
 // newSnapshot reads all entries from the engine into a point-in-time snapshot.
+//
+// it.Error() is checked and propagated: a snapshot is a promise to hold
+// every key that was durable when it was taken, so a load the underlying
+// walk could not complete must fail loudly rather than return a silently
+// truncated snapshot with a nil error (go-qrdb#592 F2).
 func newSnapshot(e *Engine) (*fileSnapshot, error) {
 	it := newIterator(e, nil)
+	if it.Error() != nil {
+		return nil, it.Error()
+	}
 	entries := make([]fileEntry, len(it.entries))
 	copy(entries, it.entries)
 	return &fileSnapshot{entries: entries}, nil

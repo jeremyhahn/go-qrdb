@@ -17,11 +17,14 @@ package file
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -307,4 +310,139 @@ func FuzzEngine_SetGetDeleteRoundTrip(f *testing.F) {
 			t.Fatalf("Get(%q) after delete = (%q, %v), want (nil, nil)", key, got, err)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#592 F2: scans must not abort, or silently truncate, on a
+// concurrent Set's rename-into-place or a concurrent Delete.
+// ---------------------------------------------------------------------------
+
+// TestConcurrentScan_StableUnderChurn keeps 2,000 keys untouched while four
+// goroutines continuously Set and Delete an UNRELATED keyspace, and asserts
+// that every iterator scan, List call and Snapshot sees all 2,000 stable
+// keys with no error, every round. Before the F2 fix, Walk's own per-entry
+// ENOENT -- a renamed-away ".tmp-set-*" file, or a record a concurrent
+// Delete removed between Walk reading its parent directory and stat'ing it
+// -- aborted the whole scan (iterator and List) or was silently absorbed
+// into a truncated Snapshot with a nil error.
+func TestConcurrentScan_StableUnderChurn(t *testing.T) {
+	const stableKeys = 2000
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	for i := 0; i < stableKeys; i++ {
+		if err := e.Set([]byte(fmt.Sprintf("stable/%05d", i)), []byte("v")); err != nil {
+			t.Fatalf("seed Set: %v", err)
+		}
+	}
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			i := 0
+			for !stop.Load() {
+				k := []byte(fmt.Sprintf("churn/%d/%d", w, i%200))
+				_ = e.Set(k, []byte("v"))
+				_ = e.Delete(k)
+				i++
+			}
+		}(w)
+	}
+	defer func() {
+		stop.Store(true)
+		wg.Wait()
+	}()
+
+	opts := &storage.IteratorOptions{LowerBound: []byte("stable/"), UpperBound: []byte("stable0")}
+	for round := 0; round < 15; round++ {
+		it := e.NewIterator(opts)
+		n := 0
+		for it.SeekToFirst(); it.Valid(); it.Next() {
+			n++
+		}
+		if err := it.Error(); err != nil {
+			t.Fatalf("round %d: iterator error: %v", round, err)
+		}
+		if n != stableKeys {
+			t.Fatalf("round %d: iterator saw %d of %d stable keys", round, n, stableKeys)
+		}
+		_ = it.Close()
+
+		keys, err := e.List([]byte("stable/"))
+		if err != nil {
+			t.Fatalf("round %d: List error: %v", round, err)
+		}
+		if len(keys) != stableKeys {
+			t.Fatalf("round %d: List returned %d of %d stable keys", round, len(keys), stableKeys)
+		}
+
+		snap, err := e.Snapshot()
+		if err != nil {
+			t.Fatalf("round %d: Snapshot error: %v", round, err)
+		}
+		sit := snap.NewIterator(opts)
+		m := 0
+		for sit.SeekToFirst(); sit.Valid(); sit.Next() {
+			m++
+		}
+		if m != stableKeys {
+			t.Fatalf("round %d: FINDING snapshot silently holds %d of %d stable keys with a nil error", round, m, stableKeys)
+		}
+		_ = snap.Close()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#592 F3: the format-marker check must ignore lost+found, the
+// directory mkfs/fsck creates at a filesystem mount root, rather than treat
+// it as legacy qrdb content and refuse to initialize.
+// ---------------------------------------------------------------------------
+
+func TestNew_IgnoresLostAndFoundWhenDecidingFreshness(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "lost+found"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := New(dir)
+	if err != nil {
+		t.Fatalf("New refused a mount root containing only lost+found: %v", err)
+	}
+	defer func() { _ = e.Close() }()
+
+	if err := e.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set after opening over lost+found: %v", err)
+	}
+	got, err := e.Get([]byte("k"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("Get after opening over lost+found = (%q, %v), want (\"v\", nil)", got, err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, formatMarkerFileName)); err != nil {
+		t.Errorf("format marker was not written: %v", err)
+	}
+}
+
+// A directory holding lost+found AND genuine old-layout content is still
+// refused: lost+found is ignored, not a license to ignore everything else.
+func TestNew_LostAndFoundDoesNotMaskOldLayoutContent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "lost+found"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "foo"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(dir)
+	var m *FormatMarkerMissingError
+	if !errors.As(err, &m) {
+		t.Fatalf("New(dir with lost+found AND old-layout content) = %v, want *FormatMarkerMissingError", err)
+	}
 }

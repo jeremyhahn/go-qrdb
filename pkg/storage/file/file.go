@@ -83,6 +83,15 @@ const (
 	// again; there is no migration between versions, by policy.
 	formatVersion = "2"
 
+	// lostAndFoundDirName is the directory mkfs/fsck creates at the root of
+	// a freshly formatted ext2/3/4 filesystem (and recreates after a repair)
+	// -- never written by any layout this engine has had, old or current,
+	// and never meaningful to it. A root that holds nothing else is a FRESH
+	// mount, not qrdb data left by an unmarked layout, so ensureFormatMarker
+	// excludes it before deciding whether the directory already holds
+	// something it must refuse to open in place (go-qrdb#592 F3).
+	lostAndFoundDirName = "lost+found"
+
 	// shardHexLen is the number of hex characters of a key's digest that
 	// name each of the two shard directory levels (two levels of two
 	// characters: 256 subdirectories per level, 65,536 leaf directories in
@@ -126,7 +135,36 @@ func New(dir string) (*Engine, error) {
 	if err := e.recoverJournal(); err != nil {
 		return nil, err
 	}
+	if err := e.cleanupTempSetFiles(); err != nil {
+		return nil, err
+	}
 	return e, nil
+}
+
+// cleanupTempSetFiles removes every ".tmp-set-*" file under the engine
+// root: Set's own crash leftovers from a process that died between
+// creating one (os.CreateTemp) and its final fsync.Rename into place
+// (go-qrdb#592 Low). None ever named a committed record -- isHashFileName
+// already excludes them from List, the iterator, and Get -- so leaving one
+// in place is disk-space hygiene debt, not a correctness problem; this runs
+// once, at Open, rather than having every later Set, List, or iterator scan
+// check for one.
+func (e *Engine) cleanupTempSetFiles() error {
+	return filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.IsDir() || !strings.HasPrefix(info.Name(), ".tmp-set-") {
+			return nil
+		}
+		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+			return rerr
+		}
+		return nil
+	})
 }
 
 // checkKey refuses an op this engine cannot store at all. Today that is only
@@ -340,6 +378,17 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 	var keys [][]byte
 	err := filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// path == e.dir means the engine's OWN root failed to stat --
+			// not a benign race with a concurrent Set or Delete but a real
+			// fault (the directory this engine owns is gone), so it is
+			// never skipped, ENOENT or not. See fileIterator.load: a
+			// concurrent Set's rename-into-place, or a concurrent Delete,
+			// CAN remove any OTHER entry between Walk reading its parent
+			// directory and stat'ing it; that race is not a scan fault and
+			// is skipped (go-qrdb#592 F2).
+			if path != e.dir && os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if info.IsDir() || !isHashFileName(info.Name()) {
@@ -347,6 +396,9 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		}
 		record, rerr := os.ReadFile(path)
 		if rerr != nil {
+			if os.IsNotExist(rerr) {
+				return nil
+			}
 			return rerr
 		}
 		storedKey, _, derr := decodeRecord(path, record)
@@ -444,7 +496,13 @@ func mkdirAllDurable(dir string) error {
 		if !info.IsDir() {
 			return &os.PathError{Op: "mkdir", Path: dir, Err: os.ErrExist}
 		}
-		return nil
+		// dir already exists: a concurrent Set targeting a sibling key in
+		// the same shard directory may have just created it and not yet
+		// reached its own fsync.Dir below (go-qrdb#592 Low). Fsync the
+		// parent here too, so every caller that reaches this point --
+		// racing the creator or simply arriving later -- returns only once
+		// the directory ENTRY is durable, never racing ahead of it.
+		return fsync.Dir(filepath.Dir(dir))
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -455,7 +513,12 @@ func mkdirAllDurable(dir string) error {
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if os.IsExist(err) {
-			return nil
+			// Lost the creation race to a concurrent Set. Its own
+			// fsync.Dir below may not have landed yet, and this call needs
+			// the identical guarantee before its caller writes into dir,
+			// so sync independently rather than trust the winner's
+			// in-flight call.
+			return fsync.Dir(filepath.Dir(dir))
 		}
 		return err
 	}
@@ -492,7 +555,10 @@ func (e *Engine) ensureFormatMarker() error {
 		if err != nil {
 			return err
 		}
-		if len(entries) > 0 {
+		for _, ent := range entries {
+			if ent.IsDir() && ent.Name() == lostAndFoundDirName {
+				continue
+			}
 			return &FormatMarkerMissingError{Dir: e.dir}
 		}
 		return e.writeFormatMarker()

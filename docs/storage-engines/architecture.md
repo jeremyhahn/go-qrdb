@@ -53,23 +53,26 @@ tenantEngine := namespace.New(base, "tenant-a")
 
 ### The file engine: a hashed, flat, content-addressed layout (BREAKING)
 
-**On-disk layout changed twice in succession; no migration either time.** A
-security and availability probe found that writing a key and then a `/`
-prefix of that key, in either order, could kill the shard. The file engine
-originally mapped each key to a single file, `/` bytes read as directory
-levels, so a key that was a `/` prefix of another resolved under the exact
-path that other key's parent directory needed. `SM.Apply` returning the
-resulting rename/mkdir failure as a genuine storage error is fatal to
-go-quicraft — `lastApplied` stops advancing on that replica and the shard
-goes dark for every later linearizable read — and because the system
-database lives on the system shard, that took authentication down with it.
-PebbleDB and in-memory storage have no such path at all: two ordinary
-byte-string keys, never a filesystem collision.
+**On-disk layout changed; no migration.** A security and availability probe
+found that writing a key and then a `/` prefix of that key, in either
+order, could kill the shard. The file engine originally mapped each key to
+a single file, `/` bytes read as directory levels, so a key that was a `/`
+prefix of another resolved under the exact path that other key's parent
+directory needed. `SM.Apply` returning the resulting rename/mkdir failure
+as a genuine storage error is fatal to go-quicraft — `lastApplied` stops
+advancing on that replica and the shard goes dark for every later
+linearizable read — and because the system database lives on the system
+shard, that took authentication down with it. PebbleDB and in-memory
+storage have no such path at all: two ordinary byte-string keys, never a
+filesystem collision.
 
-A first fix (one directory per key instead of one file per key) closed the
-exact collision reported, but a follow-up review found two more ways the
-same root cause — a path DERIVED FROM THE KEY — kept producing failure modes
-of its own:
+This is the **second** layout the file engine has ever had, and the
+**only** layout change that has shipped. An intermediate design (one
+directory per key instead of one file per key) closed the exact collision
+the probe reported, but review of it, within this same unreleased change
+and before any release carried it, found two more ways the same root
+cause — a path DERIVED FROM THE KEY — kept producing failure modes of its
+own, so it was replaced before shipping rather than fixed a third time:
 
 - **B1: an adversarially deep key exceeds `PATH_MAX`.** A key built from
   thousands of short `/`-delimited segments (e.g. `strings.Repeat("a/",
@@ -126,21 +129,50 @@ content:
 naming the current format version) into a directory it finds empty, and
 refuses to open a NON-empty directory that lacks one or names a different
 version (`FormatMarkerMissingError`, `FormatVersionMismatchError`) — a
-validity check, not migration code. A directory written by either previous
-layout, or a future one this binary predates, is refused rather than
-silently misread.
+validity check, not migration code. A directory written by the shipped
+one-file-per-key layout, the never-shipped one-directory-per-key design, or
+a future format this binary predates, is refused rather than silently
+misread. "Non-empty" ignores `lost+found`: a filesystem's own mount-root
+directory, never written by any layout this engine has had, so a mount
+root that holds nothing else is a fresh mount, not unmarked legacy data.
 
 **Durability.** Every directory `MkdirAll` creates — the engine root and
 each of a key's two shard levels — has its PARENT fsynced immediately after
 creation, publishing the new directory entry; a record's temp-file,
-fsync, atomic-rename sequence is unchanged from the previous layouts.
+fsync, atomic-rename sequence is unchanged from the previous layout. A
+concurrent `Set` that loses the race to create a shard directory a sibling
+key just created, or that simply finds it already there, fsyncs the parent
+itself before proceeding rather than trust that the creator's own fsync has
+already landed — the two are unordered with respect to each other.
 
-This is, again, a **breaking on-disk format change**. Per the project's
-no-backward-compatibility policy there is no migration code: a data
-directory written by either previous layout is not read by this one. Start
-the replica over raft's restore or backup/restore path, or reseed
-`sm_storage: file` from a backup, rather than upgrading the directory in
-place.
+This is a **breaking on-disk format change**, and it is wider than
+`raft.sm_storage: file` (`sm_type: disk`/`fast`) alone: `file.New` also
+backs
+[database's `BackendFile` data plane](../databases/architecture.md) and
+every database's barrier-metadata store regardless of that database's OWN
+configured backend (`pkg/database/manager.go`'s `openBarrierMetaBackend` —
+deliberately backend-independent, since the metadata must survive a
+restart even for an in-memory database), partitions
+(`pkg/storage/partition`'s `FileFactory`), and the repository `qrdbd
+restore --backup-dir` reads from. Every one of these opens a data
+directory through the identical `file.New`, so every one is refused
+in-place identically, and every one needs the identical remedy. Per the
+project's no-backward-compatibility policy there is no migration code: a
+data directory written by the previous (shipped) layout is not read by
+this one. Start the replica over raft's restore or backup/restore path, or
+reseed `sm_storage: file` from a backup, rather than upgrading the
+directory in place.
+
+**A backup taken before this change cannot be restored by a binary that
+carries it.** A `file`-backed backup's bytes ARE the old layout; a binary
+built with this change opens them, like any other `file.New` target, as a
+data directory in the NEW layout and refuses them
+(`FormatMarkerMissingError`) rather than silently misreading one-file-
+per-key records as hashed ones. There is no cross-version restore path for
+`sm_storage: file`/`BackendFile` backups by design (no-backward-
+compatibility policy): a backup made before this change must be restored
+by a binary from before this change, or not at all. See
+[docs/backup-restore/user.md](../backup-restore/user.md).
 
 **Operational note: keep `sm_storage` identical across a shard's
 replicas.** Raft replicates the command log, not a storage representation,

@@ -81,6 +81,20 @@ func (it *fileIterator) load(e *Engine) {
 	var entries []fileEntry
 	walkErr := filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
 		if err != nil {
+			// path == e.dir means the engine's OWN root failed to stat --
+			// a real fault, never skipped. Otherwise: the directory
+			// listing that produced path is already stale -- a concurrent
+			// Set renamed its ".tmp-set-*" file into place and away from
+			// this name, or a concurrent Delete removed a record, between
+			// Walk reading the parent directory and stat'ing this entry.
+			// Neither is a scan fault -- storage.Storage gives Set/Delete
+			// on different keys no serialization promise against a
+			// concurrent scan -- so skip the vanished entry and keep
+			// walking rather than abort the whole scan over it
+			// (go-qrdb#592 F2).
+			if path != e.dir && os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if info.IsDir() || !isHashFileName(info.Name()) {
@@ -88,6 +102,12 @@ func (it *fileIterator) load(e *Engine) {
 		}
 		record, readErr := os.ReadFile(path) // #nosec G122 -- internal storage directory
 		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				// Same race, caught one step later: Walk's own stat saw the
+				// record, but a concurrent Delete removed it before this
+				// read reached it.
+				return nil
+			}
 			return readErr
 		}
 		storedKey, value, decErr := decodeRecord(path, record)

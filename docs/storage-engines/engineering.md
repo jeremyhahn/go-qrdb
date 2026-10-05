@@ -212,8 +212,9 @@ an error value, so an unchecked call panics rather than failing cleanly.
   directory's parent fsynced too, and an all-or-nothing commit journal
   replayed at open (`pkg/storage/file/journal.go`), plus the
   `storage.Syncer` seam. That durability is why it is permitted as a hot
-  apply path. The layout — and the two it replaced in succession, and why —
-  is a breaking on-disk format change with no migration each time; see
+  apply path. The layout — replacing the one shipped layout before it, and
+  an intermediate design that never shipped, and why — is a breaking
+  on-disk format change with no migration; see
   [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
   `Delete` removes only the record, never its (fixed, bounded) shard
   directories, for the reason that doc gives: concurrent per-key workers
