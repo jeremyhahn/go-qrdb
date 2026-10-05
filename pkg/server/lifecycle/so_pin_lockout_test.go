@@ -37,6 +37,20 @@ import (
 const (
 	lockoutRightPIN = "so-pin-1234"
 	lockoutWrongPIN = "wrong-pin-0000"
+
+	// restRemoteAddr is the fixed RemoteAddr net/http/httptest.NewRequest
+	// sets on every request c.post builds (httptest.go: req.RemoteAddr =
+	// "192.0.2.1:1234") -- every REST call this file makes is, from
+	// CallerPrincipal's point of view, the identical anonymous source.
+	// rekeyWithRightPIN uses the SAME address so a direct Go-level call
+	// standing in for "the same caller reaching a different operation"
+	// (there is no second network hop here to carry a second address)
+	// shares that one source's counter, exactly as the real daemon does
+	// for two calls over one connection; a bare, address-less ctx would
+	// instead land in the SEPARATE anonymous-context bucket go-qrdb#560
+	// review C added for a caller no transport ever decorated, which is
+	// not this test's scenario.
+	restRemoteAddr = "192.0.2.1:1234"
 )
 
 // lockoutEpoch is the frozen instant the composition tests' lockouts read as
@@ -106,9 +120,11 @@ func (c *soPINComposition) guessBySeal(t *testing.T) {
 }
 
 // rekeyWithRightPIN starts a rekey with the right SO PIN through the barrier
-// service, the path every transport's rekey handler takes.
+// service, the path every transport's rekey handler takes, under the same
+// source restRemoteAddr identifies every REST call in this file by.
 func (c *soPINComposition) rekeyWithRightPIN() error {
-	_, err := c.node.Barrier.BarrierRekeyStart(context.Background(), seal.DomainUnseal, 2, "", lockoutRightPIN)
+	ctx := auth.WithRemoteAddr(context.Background(), restRemoteAddr)
+	_, err := c.node.Barrier.BarrierRekeyStart(ctx, seal.DomainUnseal, 2, "", lockoutRightPIN)
 	return err
 }
 
