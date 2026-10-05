@@ -173,74 +173,8 @@ func (v *SecretValue) Open(ctx context.Context) (*secure.Buffer, error) {
 	return v.secret.Open(ctx)
 }
 
-// Bytes materializes the plaintext into a NEW garbage-collected slice and
-// returns it. This copies the secret OUT of mlocked memory into the Go heap,
-// where it cannot be reliably wiped, so prefer WithBytes or Open for sensitive
-// handling. Returns nil for an empty value; each call decrypts afresh.
-//
-// Bytes hands the plaintext to the garbage collector, which is the plain
-// path this package is moving away from: prefer WithBytes, or Open when the
-// buffer must outlive a single callback -- both keep the plaintext in
-// mlocked memory. Bytes stays a first-class method for callers bound to an
-// API that takes a raw []byte; it is not going away, only discouraged.
-func (v *SecretValue) Bytes() []byte {
-	if v.secret == nil {
-		return nil
-	}
-	// Bytes predates context threading and keeps its established signature —
-	// it is deprecated and slated for removal in the stack's coordinated
-	// breaking release, not a request-path entry point a caller can hand a
-	// context into. The open is in-process AEAD work with no key-provider
-	// call for the strategies this package composes with.
-	buf, err := v.secret.Open(context.Background())
-	if err != nil {
-		return nil
-	}
-	defer buf.Destroy()
-	// The copy runs inside a COORDINATED borrow (go-qrdb#74): secure.CopyOut
-	// sizes and reads buf in one held borrow, rather than calling buf.Size()
-	// and buf.Bytes() as two separate operations. That two-call shape was the
-	// hazard under memguard's process-wide purge, where a purge landing in the
-	// gap between them could yield a correctly sized run of zeros that this
-	// method would return as the secret. go-enclave's per-object lock removed
-	// the process-wide purge that made the gap dangerous, but CopyOut's single
-	// borrow is also simply the right shape regardless, so it stays.
-	//
-	// Traced callees: secure.CopyOut's callback is make + copy and reaches
-	// nothing in pkg/secure.
-	out, err := secure.CopyOut(buf)
-	if err != nil {
-		return nil
-	}
-	return out
-}
-
-// String materializes the plaintext into a Go string. Like Bytes, this copies
-// the secret into the garbage-collected heap as an immutable string that cannot
-// be wiped; prefer WithBytes. Returns "" for an empty value.
-//
-// A direct String call is the only way to reach the plaintext this way.
-// Formatting a SecretValue — or a struct holding one — with %v, %s or
-// fmt.Sprint is redacted, because Format satisfies fmt.Formatter, which fmt
-// consults ahead of this Stringer.
-//
-// String copies the plaintext into an immutable heap string that can never
-// be wiped: prefer WithBytes, or Redacted when the value is only being
-// displayed. String stays a first-class method for callers bound to an API
-// that takes a raw string; it is not going away, only discouraged.
-func (v *SecretValue) String() string {
-	// The error is discarded here, and only here: String's contract predates
-	// it and returns "" for an unreadable value. Anything that WRITES the
-	// result somewhere — the config walker above all — calls readString and
-	// fails closed instead, so an unreadable secret is never recorded as a
-	// resolved empty one.
-	// String implements fmt.Stringer, whose signature is fixed — it cannot
-	// accept a context. Like Bytes, it is deprecated.
-	s, _ := v.readString(context.Background())
-	return s
-}
-
-// readString is String with the failure kept. It returns ("", nil) only for
+// readString returns a resolved value's plaintext as a Go string, with the
+// failure kept rather than discarded. It returns ("", nil) only for
 // a genuinely empty value, and an error — never "" — when the sealed value
 // exists but cannot be opened or read: a wiped process Sealer, a refused lock,
 // or a buffer destroyed out from under the copy.
@@ -251,7 +185,10 @@ func (v *SecretValue) String() string {
 // mid-conversion. CopyOut holds the borrow for the whole copy and refuses an
 // empty source, which is what lets this tell "unmapped mid-read" from "an
 // empty secret". The intermediate slice is wiped; the string it produces can
-// never be, which is the exposure String is deprecated for.
+// never be, which is why every caller of this method is itself careful: the
+// config walker (walker.go's readResolved) writes the result into a plain
+// config field and destroys the SecretValue either way, rather than handing
+// the string back out to a caller that might retain it indefinitely.
 func (v *SecretValue) readString(ctx context.Context) (string, error) {
 	if v.secret == nil {
 		return "", nil
@@ -323,17 +260,13 @@ var (
 	_ slog.LogValuer = (*SecretValue)(nil)
 )
 
-// Format implements fmt.Formatter, which fmt consults ahead of Stringer for
-// every verb. Formatting a SecretValue — or any struct that holds one — with
-// %v, %s, %+v or fmt.Print therefore yields the redacted description, so a
-// stray log line over a config struct cannot spill a resolved secret.
-//
-// String is deliberately left returning the plaintext: it is the documented way
-// to hand a secret to an API that takes a string, and silently redacting it
-// would break those callers at run time with no compile error to warn them.
-// That change belongs to the stack's coordinated breaking release; until then
-// the accidental paths are closed here and the deliberate one stays, discouraged
-// but not deprecated.
+// Format implements fmt.Formatter, which fmt consults ahead of any Stringer
+// for every verb. Formatting a SecretValue — or any struct that holds one —
+// with %v, %s, %+v or fmt.Print therefore yields the redacted description, so
+// a stray log line over a config struct cannot spill a resolved secret. There
+// is no SecretValue.String to race against: the plaintext is reached only
+// through WithBytes/Open, both of which require the caller to hold the
+// buffer deliberately.
 func (v SecretValue) Format(f fmt.State, verb rune) {
 	// A write error on a fmt.State is the caller's output problem, not this
 	// value's, and fmt itself discards it — there is nothing useful to do with

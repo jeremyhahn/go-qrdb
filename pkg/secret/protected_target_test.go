@@ -957,16 +957,6 @@ func TestSecretValue_FormattingRedactsLiterals(t *testing.T) {
 	}
 }
 
-func TestSecretValue_StringStillReturnsPlaintext(t *testing.T) {
-	// The deliberate accessor is unchanged: redacting it is a run-time behaviour
-	// break reserved for the stack's coordinated release, and this pins the
-	// current contract so the change cannot happen by accident.
-	sv := mustSecretValue(t, vaultScheme+"db-key", []byte(vaultPlaintext), secret.StrategyCredential)
-	if got := sv.String(); got != vaultPlaintext { //nolint:staticcheck // pinning the deprecated accessor's contract
-		t.Errorf("String() = %q, want %q", got, vaultPlaintext)
-	}
-}
-
 // ---------- a resolver that breaks its own contract ----------
 
 // nilResolver claims every "vault://" reference and then reports success with

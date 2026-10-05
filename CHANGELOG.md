@@ -38,6 +38,59 @@ are not reconstructed here — their history is in the git log.
 - **MCP `qrdb_ceremony_sign_csr` returns the signed certificate.** The handler marshalled the internal result type, whose fields carry no JSON tags, instead of the wire `SignCSRInitResponse`. So `qrdb ceremony sign-csr` over MCP exited 0 with an empty certificate. The other transports were unaffected.
 - **Integration coverage: every system-scope `barrier` passphrase and Shamir verb runs on all five transports.** This covers officer register, list, claim and claim-begin/complete; quorum seal, unseal and root-token; rekey; the recovery domain; `ceremony sign-csr`; `batch import`; `audit verify`; node and database compaction. The CLI test binary is now built with the daemon's full tag set, so the SQL protocol surface is actually exercised.
 
+### Changed — BREAKING
+
+- **Every backward-compatibility affordance in the tree has been removed
+  outright; nothing redirects to its replacement anymore.** Per the owner's
+  no-backward-compatibility ruling, an old command, alias or API shape is
+  deleted rather than kept as a stub. There is no migration: callers move to
+  the canonical name directly.
+  - **CLI redirect stubs deleted.** `qrdb certs` (renamed to `qrdb ca`) and
+    `qrdb ceremony init` (collapsed into the root `qrdb init`) are no longer
+    registered at all; running either now gets cobra's ordinary "unknown
+    command" error instead of a typed redirect message.
+    `CanonicalRedirectError` and the now-unused `newCertsCmd` aggregator
+    (orphaned since the `ca` command group replaced it) are gone, along with
+    the `annotationSkipClient` plumbing that existed only to let the
+    redirect stubs run without a reachable daemon.
+  - **SDK: dead Shamir split/combine aliases removed.** `sdk.ShamirSplit`,
+    `sdk.ShamirCombine` and `sdk.ShamirIntegrityError` are gone; they had no
+    remaining callers and their doc comments already pointed external users
+    at `go-quicraft/pkg/crypto/shamir`'s `SplitProtected`/`CombineProtected`
+    directly.
+  - **SDK: `seal.Barrier`/`seal.NewBarrier` and `sdk.Barrier`/`sdk.NewBarrier`
+    removed.** Use `seal.StorageBarrier`/`seal.NewStorageBarrier` (and the
+    SDK's `StorageBarrier`/`NewStorageBarrier` aliases) directly.
+  - **SDK: `sdk.ErrEmbeddingProviderInvalid` removed.** It was never produced;
+    match `*EmbeddingProviderNotFoundError` instead
+    (`pkg/embedding.ErrProviderInvalid` is also gone).
+  - **SDK: the `ErrCode*` error-code aliases removed from the Go SDK.** Use
+    the canonical `Err*` names (`dberrors.ErrNotFound`, etc.), already
+    re-exported under those names.
+  - **Time-series and vector storage: `WithBarrier`/`NewTimeSeriesStorageWithBarrier`/
+    `TimeSeriesWithBarrier`/`WithEncryptingFS` removed** from
+    `pkg/timeseries`, `pkg/storage/vector`, `pkg/store` and their SDK
+    re-exports. Use `WithEncryptor(atrest.New(barrier))` (and the SDK's
+    `TimeSeriesWithEncryptor`/`NewTimeSeriesStorageWithEncryptor`), which all
+    three packages already supported and which these shapes only wrapped.
+  - **`protocol.EncodeIndexCreate`/`DecodeIndexCreate` removed.** They could
+    not express the case-insensitive index flag; use
+    `EncodeIndexCreateOpts`/`DecodeIndexCreateOpts`, which every production
+    caller already used.
+  - Two self-test-only dead error types, `PasswordAuthDeprecatedError` and
+    `DeprecatedOperationError` (`pkg/api`), are removed: neither had a
+    production caller.
+  - **`pkg/secret.SecretValue.Bytes()` and `.String()` are removed.** They
+    were the one exception v0.41.0-alpha's context-threaded seal API left in
+    place, opening under a fixed `context.Background()` rather than a
+    caller-supplied context. Read the plaintext through the ctx-taking
+    `WithBytes(ctx, fn)` or `Open(ctx)` instead; `SecretValue` no longer
+    implements `fmt.Stringer`.
+  - A buildgate (`test/buildgates/no_deprecated_test.go`) now fails the build
+    if any non-generated, non-vendored Go source or `.proto` file declares
+    `Deprecated:`/`deprecated = true`, or if the CLI defines a cobra
+    `Deprecated` field or a redirect stub, so none of this creeps back.
+
 ## [0.41.0-alpha] - 2026-10-04
 
 Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). This release contains BREAKING API changes; see the entries below. Highlights:
@@ -102,53 +155,6 @@ Upgrades go-quicraft to v0.17.0 and go-enclave to v0.7.0-alpha (go-qrdb#590). Th
   context contract means a context ending during the SO PIN's seal or open is
   now a real, newly-possible cause of that error, and it must classify as a
   cancellation/deadline, not a node-side fault.
-
-### Changed — BREAKING
-
-- **Every backward-compatibility affordance in the tree has been removed
-  outright; nothing redirects to its replacement anymore.** Per the owner's
-  no-backward-compatibility ruling, an old command, alias or API shape is
-  deleted rather than kept as a stub. There is no migration: callers move to
-  the canonical name directly.
-  - **CLI redirect stubs deleted.** `qrdb certs` (renamed to `qrdb ca`) and
-    `qrdb ceremony init` (collapsed into the root `qrdb init`) are no longer
-    registered at all; running either now gets cobra's ordinary "unknown
-    command" error instead of a typed redirect message.
-    `CanonicalRedirectError` and the now-unused `newCertsCmd` aggregator
-    (orphaned since the `ca` command group replaced it) are gone, along with
-    the `annotationSkipClient` plumbing that existed only to let the
-    redirect stubs run without a reachable daemon.
-  - **SDK: dead Shamir split/combine aliases removed.** `sdk.ShamirSplit`,
-    `sdk.ShamirCombine` and `sdk.ShamirIntegrityError` are gone; they had no
-    remaining callers and their doc comments already pointed external users
-    at `go-quicraft/pkg/crypto/shamir`'s `SplitProtected`/`CombineProtected`
-    directly.
-  - **SDK: `seal.Barrier`/`seal.NewBarrier` and `sdk.Barrier`/`sdk.NewBarrier`
-    removed.** Use `seal.StorageBarrier`/`seal.NewStorageBarrier` (and the
-    SDK's `StorageBarrier`/`NewStorageBarrier` aliases) directly.
-  - **SDK: `sdk.ErrEmbeddingProviderInvalid` removed.** It was never produced;
-    match `*EmbeddingProviderNotFoundError` instead
-    (`pkg/embedding.ErrProviderInvalid` is also gone).
-  - **SDK: the `ErrCode*` error-code aliases removed from the Go SDK.** Use
-    the canonical `Err*` names (`dberrors.ErrNotFound`, etc.), already
-    re-exported under those names.
-  - **Time-series and vector storage: `WithBarrier`/`NewTimeSeriesStorageWithBarrier`/
-    `TimeSeriesWithBarrier`/`WithEncryptingFS` removed** from
-    `pkg/timeseries`, `pkg/storage/vector`, `pkg/store` and their SDK
-    re-exports. Use `WithEncryptor(atrest.New(barrier))` (and the SDK's
-    `TimeSeriesWithEncryptor`/`NewTimeSeriesStorageWithEncryptor`), which all
-    three packages already supported and which these shapes only wrapped.
-  - **`protocol.EncodeIndexCreate`/`DecodeIndexCreate` removed.** They could
-    not express the case-insensitive index flag; use
-    `EncodeIndexCreateOpts`/`DecodeIndexCreateOpts`, which every production
-    caller already used.
-  - Two self-test-only dead error types, `PasswordAuthDeprecatedError` and
-    `DeprecatedOperationError` (`pkg/api`), are removed: neither had a
-    production caller.
-  - A buildgate (`test/buildgates/no_deprecated_test.go`) now fails the build
-    if any non-generated, non-vendored Go source or `.proto` file declares
-    `Deprecated:`/`deprecated = true`, or if the CLI defines a cobra
-    `Deprecated` field or a redirect stub, so none of this creeps back.
 
 ## [0.40.1-alpha] - 2026-10-04
 

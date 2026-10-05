@@ -23,6 +23,31 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
+// TestReadString_TakesNoNestedBorrow pins go-qrdb#74's guarantee for
+// readString, the surviving ctx-taking reader whose conversion runs under a
+// COORDINATED borrow (secure.CopyOut sizes and reads the buffer inside one
+// held borrow rather than two separate calls). This is an internal test
+// because readString is unexported; it used to be reached externally through
+// the now-deleted SecretValue.String, which this test replaces.
+func TestReadString_TakesNoNestedBorrow(t *testing.T) {
+	defer secure.GuardBorrows(t.Fatalf)()
+
+	sv, err := NewSecretValue(context.Background(), "raw://x", []byte("s3cr3t"), ResolvedStrategy("x"))
+	if err != nil {
+		t.Fatalf("NewSecretValue: %v", err)
+	}
+	defer sv.Clear()
+
+	if got, err := sv.readString(context.Background()); err != nil || got != "s3cr3t" {
+		t.Errorf("readString = (%q, %v), want (s3cr3t, nil)", got, err)
+	}
+	// Repeated, because each call decrypts afresh and therefore takes a fresh
+	// borrow: a leak in the guard bookkeeping would only show on the second.
+	if got, err := sv.readString(context.Background()); err != nil || got != "s3cr3t" {
+		t.Errorf("second readString = (%q, %v), want (s3cr3t, nil)", got, err)
+	}
+}
+
 // unreadableScheme marks references unreadableResolver claims.
 const unreadableScheme = "unreadable://"
 

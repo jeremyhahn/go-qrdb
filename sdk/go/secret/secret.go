@@ -45,12 +45,12 @@ const (
 // ---------------------------------------------------------------------------
 
 // SecretValue holds a resolved secret sealed in a go-enclave sealed enclave
-// together with resolution metadata. Prefer WithBytes/Open (which keep the
-// plaintext in mlocked memory) over the deprecated Bytes/String (which copy it
-// into the GC heap). Every default display path is already redacted — fmt verbs go through
-// fmt.Formatter and structured logging through slog.LogValuer, both of which
-// render Redacted() — so only an explicit String/Bytes call materializes the
-// plaintext. Call Clear when done to destroy the enclave.
+// together with resolution metadata. Read the plaintext through WithBytes or
+// Open, both of which keep it in mlocked memory rather than copying it onto
+// the GC heap. Every default display path is already redacted — fmt verbs go
+// through fmt.Formatter and structured logging through slog.LogValuer, both
+// of which render Redacted() — so there is no String or Bytes accessor to
+// bypass that accidentally. Call Clear when done to destroy the enclave.
 //
 // SecretValue is also the ConfigProcessor's protected resolution target:
 // declare a config field as SecretValue instead of string and the resolved

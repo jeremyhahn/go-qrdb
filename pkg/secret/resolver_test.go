@@ -59,8 +59,8 @@ func TestResolverRegistry_DispatchOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if sv.String() != "first-value" {
-		t.Errorf("expected first-value, got %q", sv.String())
+	if plain := plaintextOf(t, sv); plain != "first-value" {
+		t.Errorf("expected first-value, got %q", plain)
 	}
 }
 
@@ -75,8 +75,8 @@ func TestResolverRegistry_LiteralFallback(t *testing.T) {
 	if sv.Strategy != secret.StrategyLiteral {
 		t.Errorf("expected StrategyLiteral, got %s", sv.Strategy)
 	}
-	if sv.String() != raw {
-		t.Errorf("expected %q, got %q", raw, sv.String())
+	if plain := plaintextOf(t, sv); plain != raw {
+		t.Errorf("expected %q, got %q", raw, plain)
 	}
 }
 

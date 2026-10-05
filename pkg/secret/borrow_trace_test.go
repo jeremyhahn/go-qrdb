@@ -21,67 +21,40 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// SecretValue.Bytes must copy under a coordinated borrow and must not reach an
-// allocation of protected memory while holding it.
-//
-// The EXECUTED half of go-qrdb#74's callee trace for this site: the callback is
-// secure.CopyOut's make + copy, and Destroy of the transient buffer is deferred
-// OUTSIDE the borrow. Without the guard a misplaced allocation here hangs every
-// caller that reads a resolved secret, which is most of configuration loading.
-func TestSecretValueBytes_TakesNoNestedBorrow(t *testing.T) {
-	defer secure.GuardBorrows(t.Fatalf)()
-
-	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyLiteral)
-	defer sv.Clear()
-
-	if got := string(sv.Bytes()); got != "s3cr3t" {
-		t.Errorf("Bytes = %q, want s3cr3t", got)
-	}
-	// Repeated, because each call decrypts afresh and therefore takes a fresh
-	// borrow: a leak in the guard bookkeeping would only show on the second.
-	if got := string(sv.Bytes()); got != "s3cr3t" {
-		t.Errorf("second Bytes = %q, want s3cr3t", got)
-	}
-}
-
-// SecretValue.String must hold the borrow across the conversion, wipe the
-// intermediate, and take no nested borrow doing it.
-func TestSecretValueString_TakesNoNestedBorrow(t *testing.T) {
-	defer secure.GuardBorrows(t.Fatalf)()
-
-	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyCredential)
-	defer sv.Clear()
-
-	if got := sv.String(); got != "s3cr3t" {
-		t.Errorf("String = %q, want s3cr3t", got)
-	}
-	if got := sv.String(); got != "s3cr3t" {
-		t.Errorf("second String = %q, want s3cr3t", got)
-	}
-}
-
 // The empty and cleared cases must answer nothing without borrowing at all.
 //
 // Checked because they are the branches that return before the borrow, and a
 // later change that moved the Open above the nil check would make every empty
-// SecretValue take a borrow it does not need.
+// SecretValue take a borrow it does not need. This now covers WithBytes and
+// Open, the two surviving ctx-taking readers; the context-less Bytes/String
+// accessors this test used to cover are gone (go-qrdb no-compat-cleanup).
 func TestSecretValue_EmptyAndClearedTakeNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
 	empty := mustSecretValue(t, "raw://y", nil, secret.StrategyLiteral)
-	if got := empty.Bytes(); got != nil {
-		t.Errorf("Bytes on an empty value = %v, want nil", got)
+	if err := empty.WithBytes(t.Context(), func(b []byte) error {
+		if b != nil {
+			t.Errorf("WithBytes on an empty value saw %v, want nil", b)
+		}
+		return nil
+	}); err != nil {
+		t.Errorf("WithBytes on an empty value: %v", err)
 	}
-	if got := empty.String(); got != "" {
-		t.Errorf("String on an empty value = %q, want empty", got)
+	if buf, err := empty.Open(t.Context()); err != nil || buf != nil {
+		t.Errorf("Open on an empty value = (%v, %v), want (nil, nil)", buf, err)
 	}
 
 	cleared := mustSecretValue(t, "raw://z", []byte("gone"), secret.StrategyLiteral)
 	cleared.Clear()
-	if got := cleared.Bytes(); got != nil {
-		t.Errorf("Bytes after Clear = %v, want nil", got)
+	if err := cleared.WithBytes(t.Context(), func(b []byte) error {
+		if b != nil {
+			t.Errorf("WithBytes after Clear saw %v, want nil", b)
+		}
+		return nil
+	}); err != nil {
+		t.Errorf("WithBytes after Clear: %v", err)
 	}
-	if got := cleared.String(); got != "" {
-		t.Errorf("String after Clear = %q, want empty", got)
+	if buf, err := cleared.Open(t.Context()); err != nil || buf != nil {
+		t.Errorf("Open after Clear = (%v, %v), want (nil, nil)", buf, err)
 	}
 }

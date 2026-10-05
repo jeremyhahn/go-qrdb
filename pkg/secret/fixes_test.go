@@ -86,8 +86,8 @@ func TestResolverRegistry_LiteralScheme(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	defer sv.Clear()
-	if sv.String() != "value" {
-		t.Errorf("literal resolve = %q, want value", sv.String())
+	if plain := plaintextOf(t, sv); plain != "value" {
+		t.Errorf("literal resolve = %q, want value", plain)
 	}
 	if sv.Strategy != secret.StrategyLiteral {
 		t.Errorf("Strategy = %q, want literal", sv.Strategy)

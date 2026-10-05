@@ -21,30 +21,30 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
 
-func TestSecretValue_BytesReturnsBacking(t *testing.T) {
+func TestSecretValue_NewSecretValue_CopiesBacking(t *testing.T) {
 	src := []byte("hunter2")
 	sv := mustSecretValue(t, "raw://x", src, secret.StrategyLiteral)
+	defer sv.Clear()
 
-	got := sv.Bytes()
-	if string(got) != "hunter2" {
-		t.Errorf("Bytes() = %q, want %q", got, "hunter2")
+	if got := plaintextOf(t, sv); got != "hunter2" {
+		t.Errorf("plaintext = %q, want %q", got, "hunter2")
 	}
 	// Mutating the original source must not affect the SecretValue.
 	src[0] = 'X'
-	if sv.Bytes()[0] == 'X' {
+	if plaintextOf(t, sv) == "Xunter2" {
 		t.Error("NewSecretValue must copy the slice; source mutation leaked into SecretValue")
 	}
 }
 
-func TestSecretValue_StringReturnsCopy(t *testing.T) {
+func TestSecretValue_WithBytes_DecryptsAfreshEachCall(t *testing.T) {
 	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyCredential)
+	defer sv.Clear()
 
-	s1 := sv.String()
-	s2 := sv.String()
+	s1 := plaintextOf(t, sv)
+	s2 := plaintextOf(t, sv)
 	if s1 != "s3cr3t" || s2 != "s3cr3t" {
-		t.Errorf("String() = %q / %q, want s3cr3t", s1, s2)
+		t.Errorf("plaintext = %q / %q, want s3cr3t", s1, s2)
 	}
-	// Each call allocates a new string; modifying nothing is the contract.
 }
 
 func TestSecretValue_Clear_DestroysSecret(t *testing.T) {
@@ -54,11 +54,16 @@ func TestSecretValue_Clear_DestroysSecret(t *testing.T) {
 
 	// After Clear the backing enclave is destroyed and the accessors report
 	// empty rather than exposing freed material.
-	if got := sv.Bytes(); got != nil {
-		t.Errorf("Bytes() = %v after Clear, want nil", got)
+	if got := plaintextOf(t, sv); got != "" {
+		t.Errorf("plaintext = %q after Clear, want empty", got)
 	}
-	if got := sv.String(); got != "" {
-		t.Errorf("String() = %q after Clear, want empty", got)
+	buf, err := sv.Open(t.Context())
+	if err != nil {
+		t.Fatalf("Open after Clear: %v", err)
+	}
+	if buf != nil {
+		t.Errorf("Open() = %v after Clear, want nil", buf)
+		buf.Destroy()
 	}
 	// Clear is idempotent.
 	sv.Clear()

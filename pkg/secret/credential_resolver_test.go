@@ -56,8 +56,8 @@ func TestCredentialResolver_Resolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if sv.String() != "super-secret" {
-		t.Errorf("got %q, want super-secret", sv.String())
+	if plain := plaintextOf(t, sv); plain != "super-secret" {
+		t.Errorf("got %q, want super-secret", plain)
 	}
 	if sv.Strategy != secret.StrategyCredential {
 		t.Errorf("strategy = %s, want credential", sv.Strategy)
@@ -154,8 +154,8 @@ func TestCredentialResolverFromServicer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if sv.String() != "val-mykey" {
-		t.Errorf("got %q, want val-mykey", sv.String())
+	if plain := plaintextOf(t, sv); plain != "val-mykey" {
+		t.Errorf("got %q, want val-mykey", plain)
 	}
 }
 
