@@ -36,6 +36,12 @@ var (
 	// ErrCeremonyAlreadyInitialized is returned when the ceremony is already complete.
 	ErrCeremonyAlreadyInitialized = ceremony.ErrAlreadyInitialized
 
+	// ErrCeremonyRestoreFailed is returned by CeremonyInitialize when the
+	// server could not determine the ceremony's actual state at startup
+	// (a barrier storage read timed out or failed). The remedy is to fix
+	// the underlying storage fault and restart, not to retry the call.
+	ErrCeremonyRestoreFailed = ceremony.ErrRestoreFailed
+
 	// ErrCeremonyInvalidSOPIN is returned when the SO PIN is invalid.
 	ErrCeremonyInvalidSOPIN = ceremony.ErrInvalidSOPIN
 

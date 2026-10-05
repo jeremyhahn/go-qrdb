@@ -36,6 +36,18 @@ const (
 	// StateOperational is the final state after the ceremony is complete
 	// and the system is ready for normal operations.
 	StateOperational CeremonyState = "operational"
+
+	// StateRestoreFailed is a fail-closed state restoreState returns when it
+	// could not read the barrier's own durable state at construction (a
+	// read timeout or a storage error), rather than guessing
+	// StateAwaitingInit on an inconclusive read. It is never set by
+	// anything other than restoreState, and Initialize refuses to run
+	// against it (ErrRestoreFailed): starting a fresh ceremony against a
+	// barrier whose actual state is unknown could double-initialize one
+	// that already completed. A process that lands here needs the failing
+	// read's underlying cause fixed and a restart, not a retry of the same
+	// call.
+	StateRestoreFailed CeremonyState = "restore_failed"
 )
 
 // OfficerConfig names one share holder enrolled by the initialization

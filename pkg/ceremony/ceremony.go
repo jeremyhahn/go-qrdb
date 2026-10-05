@@ -103,8 +103,10 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 	// the same way enrollmentOpenLocked's are: NewCeremonyService takes no
 	// ctx (it runs once, at construction, with no request to inherit a
 	// deadline from), so a storage backend that has stopped answering must
-	// cost a fail-closed StateAwaitingInit, not a constructor that never
-	// returns and a boot that never completes.
+	// cost a bounded, fail-closed StateRestoreFailed -- never StateAwaitingInit,
+	// which Initialize would run against as if this were a genuinely fresh
+	// barrier -- not a constructor that never returns and a boot that never
+	// completes.
 	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), enrollmentProbeTimeout)
 	defer cancelRestore()
 	s := &CeremonyService{
@@ -163,12 +165,29 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 //     ceremony, or a single-admin attempt crashed before completing it.
 //     StateAwaitingInit is correct either way -- Initialize's own
 //     crash-retry convergence handles the latter, as it always has.
+//   - Either read FAILS (a context deadline or a storage error, as opposed
+//     to a clean "false"): StateRestoreFailed, never StateAwaitingInit.
+//     An inconclusive read is not evidence the ceremony never ran -- it is
+//     evidence this process does not know -- so guessing AwaitingInit
+//     would let Initialize run a second time against a barrier an earlier,
+//     successful run already brought up. Initialize refuses to run at all
+//     against StateRestoreFailed (ErrRestoreFailed), and
+//     CeremonyServiceWithAdminRebind's awaiting-passthrough refuses it the
+//     same way rather than treating it as "not yet initialized".
 func restoreState(ctx context.Context, barrier *seal.StorageBarrier) CeremonyState {
-	if operational, err := barrier.CeremonyOperational(ctx); err == nil && operational {
+	operational, err := barrier.CeremonyOperational(ctx)
+	if err != nil {
+		return StateRestoreFailed
+	}
+	if operational {
 		return StateOperational
 	}
 	if status := barrier.Status(); status.ShamirThreshold >= 2 {
-		if initialized, err := barrier.Initialized(ctx); err == nil && initialized {
+		initialized, err := barrier.Initialized(ctx)
+		if err != nil {
+			return StateRestoreFailed
+		}
+		if initialized {
 			return StateEnrolling
 		}
 	}
@@ -439,6 +458,10 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	s.mu.Lock()
+	if s.state == StateRestoreFailed {
+		s.mu.Unlock()
+		return nil, ErrRestoreFailed
+	}
 	if s.state != StateAwaitingInit {
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized

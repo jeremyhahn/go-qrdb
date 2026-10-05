@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -387,4 +389,50 @@ func TestCeremonyServiceWithAdminRebind_RestartThenAwaitingRetry(t *testing.T) {
 	assert.NotEmpty(t, res.AdminCertPEM)
 	assert.Equal(t, 1, unbound.binds)
 	assert.Equal(t, 1, notifier.calls)
+}
+
+// restoreFailBackend fails every Get under rootKeyPath except the bare root
+// key path itself, so a barrier built over it answers
+// CeremonyOperational/Initialized with a real error -- the restore-state
+// read failure this package's own re-review fix (StateRestoreFailed) is for.
+type restoreFailBackend struct {
+	seal.StorageBackend
+	rootKeyPath string
+}
+
+func (b *restoreFailBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if key != b.rootKeyPath && strings.HasPrefix(key, b.rootKeyPath) {
+		return nil, errors.New("service test: injected restore-state read failure")
+	}
+	return b.StorageBackend.Get(ctx, key)
+}
+
+// TestCeremonyServiceWithAdminRebind_RefusesWhenRestoreFailed proves the
+// wrapper's awaiting-passthrough does not mistake StateRestoreFailed for
+// "not yet initialized": before this fix, only StateAwaitingInit short-
+// circuited to the wrapped Initialize, so StateRestoreFailed fell through
+// to the live-binding check below it -- a check that assumes the ceremony
+// IS already initialized, which this process cannot actually confirm.
+func TestCeremonyServiceWithAdminRebind_RefusesWhenRestoreFailed(t *testing.T) {
+	const rootKeyPath = "root-key"
+	backend := &restoreFailBackend{StorageBackend: seal.NewMemoryBackend(), rootKeyPath: rootKeyPath}
+	sw, err := seal.NewSoftwareStrategy(context.Background(), []byte("test-master-key-32bytes!abcdefgh"))
+	require.NoError(t, err)
+	barrier, err := seal.NewStorageBarrier(testLogger(), backend, seal.BarrierConfig{
+		RootKeyPath:     rootKeyPath,
+		PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase},
+	}, sw)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = barrier.Close() })
+
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	require.NoError(t, err)
+	core.SetPINBackend(pintest.NewBackend(t))
+	require.Equal(t, ceremony.StateRestoreFailed, core.State())
+
+	wrapped := NewCeremonyServiceWithAdminRebind(NewCeremonyService(core), core, &fakeAdminLookup{err: &user.UserNotFoundError{}}, nil, nil)
+	_, werr := wrapped.CeremonyInitialize(context.Background(), newTestCeremonyCA(t), &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.ErrorIs(t, werr, ceremony.ErrRestoreFailed)
 }

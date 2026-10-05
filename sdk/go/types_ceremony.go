@@ -39,6 +39,12 @@ const (
 
 	// StateOperational indicates the system is ready for service.
 	StateOperational = ceremony.StateOperational
+
+	// StateRestoreFailed indicates the server could not determine the
+	// ceremony's actual state at startup (a barrier storage read timed out
+	// or failed); it is a fail-closed state, not "not yet initialized" --
+	// CeremonyInitialize refuses to run against it.
+	StateRestoreFailed = ceremony.StateRestoreFailed
 )
 
 // ---------------------------------------------------------------------------

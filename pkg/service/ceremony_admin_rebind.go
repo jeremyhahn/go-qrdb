@@ -156,6 +156,17 @@ func (s *CeremonyServiceWithAdminRebind) CeremonyInitialize(ctx context.Context,
 	if status.State == string(ceremony.StateAwaitingInit) {
 		return s.CeremonyServicer.CeremonyInitialize(ctx, ca, opts)
 	}
+	// StateRestoreFailed means the core service could not determine the
+	// ceremony's actual state at construction (ceremony.restoreState):
+	// treating it as "not yet initialized" here would make this wrapper
+	// retry an admin-credential step whose precondition -- whether the
+	// ceremony already ran -- is exactly what failed to resolve. Refuse
+	// the same way ceremony.Initialize itself does (ErrRestoreFailed)
+	// rather than falling through to the live-binding check below, which
+	// assumes the ceremony IS already initialized.
+	if status.State == string(ceremony.StateRestoreFailed) {
+		return nil, ceremony.ErrRestoreFailed
+	}
 
 	// The SO PIN is verified FIRST, before anything else that could tell an
 	// unauthenticated caller something about ceremony state -- in

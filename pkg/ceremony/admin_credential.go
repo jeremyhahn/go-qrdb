@@ -424,6 +424,9 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.state == StateRestoreFailed {
+		return nil, ErrRestoreFailed
+	}
 	if s.state == StateAwaitingInit {
 		return nil, ErrNotInitialized
 	}

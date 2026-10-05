@@ -38,6 +38,18 @@ var (
 	// the ceremony has already completed.
 	ErrAlreadyInitialized = errors.New("ceremony: ceremony already completed")
 
+	// ErrRestoreFailed is returned by Initialize (and by
+	// CeremonyServiceWithAdminRebind's retry passthrough) when the ceremony
+	// was constructed with StateRestoreFailed: restoreState could not read
+	// the barrier's own durable state at construction, so this process does
+	// not actually know whether the ceremony already ran. Initialize
+	// refuses rather than guessing StateAwaitingInit and risking a second,
+	// conflicting Initialize against a barrier a prior, successful run
+	// already brought up. The caller's remedy is to restart once the read
+	// that failed (typically the barrier's storage backend) is healthy
+	// again, not to retry immediately.
+	ErrRestoreFailed = errors.New("ceremony: could not determine the ceremony's state at startup; refusing to guess")
+
 	// ErrInvalidSOPIN is returned when the SO PIN is empty or invalid.
 	ErrInvalidSOPIN = errors.New("ceremony: SO PIN is empty or invalid")
 
