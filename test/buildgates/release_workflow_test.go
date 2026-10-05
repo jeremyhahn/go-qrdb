@@ -67,8 +67,13 @@ type releaseWorkflow struct {
 	} `yaml:"jobs"`
 }
 
-// tagWrite matches a shell line that creates or publishes tags by hand.
-var tagWrite = regexp.MustCompile(`(^|[;&|\s])git\s+(-C\s+\S+\s+)?(tag|push)(\s|$)`)
+// tagWrite matches a shell line that creates or publishes tags by hand: a
+// "git tag" command, or a "git push" that targets tags specifically (the
+// --tags flag or a refs/tags/ refspec). A push of an ordinary branch ref,
+// such as `git push "$GIT_URL" "HEAD:refs/heads/$name"`, does not write a
+// tag and must not match -- that is the merge train landing a branch, not
+// a release.
+var tagWrite = regexp.MustCompile(`(^|[;&|\s])git\s+(-C\s+\S+\s+)?(tag(\s|$)|push\b[^;&|\n]*(--tags\b|refs/tags/))`)
 
 // releaseWorkflowDefects returns every way src fails to be the release path
 // the ruling describes. An empty result is the workflow #13 asks for.
@@ -203,11 +208,14 @@ func TestTheReleaseGateSeesEachWayTheWorkflowCanDrift(t *testing.T) {
 	}
 }
 
-// TestNoOtherWorkflowCreatesTags: the Release workflow being correct is only
-// half of "the only path"; a second workflow that tags would be a second path.
-func TestNoOtherWorkflowCreatesTags(t *testing.T) {
-	root := repoRoot(t)
-	seen := 0
+// tagWriteViolations scans every non-release workflow file under root's
+// workflowDirs and returns one message per step whose shell `run` writes a
+// tag, plus the count of files scanned. Factored out of
+// TestNoOtherWorkflowCreatesTags so a fixture tree, not just the real one,
+// can drive it: a gate that has only ever run against the tree it already
+// passes has never been shown that it can fail.
+func tagWriteViolations(t *testing.T, root string) (violations []string, seen int) {
+	t.Helper()
 	for _, dir := range workflowDirs {
 		entries, err := os.ReadDir(filepath.Join(root, dir))
 		if os.IsNotExist(err) {
@@ -236,20 +244,69 @@ func TestNoOtherWorkflowCreatesTags(t *testing.T) {
 			for job, j := range doc.Jobs {
 				for _, s := range j.Steps {
 					if strings.Contains(s.Run, "make release-alpha") {
-						t.Errorf("%s job %s runs make release-alpha; the Release workflow is the only release path", e.Name(), job)
+						violations = append(violations, e.Name()+" job "+job+" runs make release-alpha; the Release workflow is the only release path")
 					}
 					for _, line := range strings.Split(s.Run, "\n") {
 						if tagWrite.MatchString(line) {
-							t.Errorf("%s job %s step %q writes tags: %s", e.Name(), job, s.Name, strings.TrimSpace(line))
+							violations = append(violations, e.Name()+" job "+job+" step "+s.Name+" writes tags: "+strings.TrimSpace(line))
 						}
 					}
 				}
 			}
 		}
 	}
+	return violations, seen
+}
+
+// TestNoOtherWorkflowCreatesTags: the Release workflow being correct is only
+// half of "the only path"; a second workflow that tags would be a second path.
+func TestNoOtherWorkflowCreatesTags(t *testing.T) {
+	violations, seen := tagWriteViolations(t, repoRoot(t))
+	for _, v := range violations {
+		t.Error(v)
+	}
 	// Discovery floor: ci, nightly and release-lockstep at least. An empty
 	// directory walk would pass this test vacuously.
 	if seen < 3 {
 		t.Fatalf("scanned %d other workflow files; expected at least 3", seen)
+	}
+}
+
+// TestTagWriteDetectionCatchesARealTagPush is the negative control the gate
+// above needs: a fixture workflow that genuinely tags and pushes tags by
+// hand must still be flagged, proving tagWrite can go red at all rather than
+// having been narrowed into never firing. It also plants a plain branch
+// push shaped exactly like automerge.yml's merge-train landing step, to
+// prove the narrowing did not go blind in the other direction.
+func TestTagWriteDetectionCatchesARealTagPush(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".github", "workflows")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const fixture = `on:
+  push:
+jobs:
+  tag:
+    steps:
+      - name: cut a release tag by hand
+        run: |
+          git tag v9.9.9
+          git push origin --tags
+      - name: land a merge-train branch
+        run: |
+          git -C "$repo" push -q "$GIT_URL" "HEAD:refs/heads/merge-train/x" || die "cannot push"
+`
+	if err := os.WriteFile(filepath.Join(dir, "rogue.yml"), []byte(fixture), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	violations, _ := tagWriteViolations(t, root)
+	if len(violations) != 2 {
+		t.Fatalf("want exactly 2 tag-write violations (git tag, git push --tags), got %d: %v", len(violations), violations)
+	}
+	for _, v := range violations {
+		if strings.Contains(v, "refs/heads") {
+			t.Fatalf("a plain branch push was flagged as a tag write: %s", v)
+		}
 	}
 }
