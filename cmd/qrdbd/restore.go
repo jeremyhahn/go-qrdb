@@ -169,8 +169,21 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 	// DecryptBackupShard resolves and unwraps the backup's envelope (a
 	// no-op for an EncryptionNone backup) and returns this shard's
 	// plaintext -- reading shard bytes any other way here would import
-	// ciphertext directly for an encrypted backup.
-	data, err := bs.DecryptBackupShard(ctx, f.restoreBackupID, shardCfg.ShardID, f.restoreDecryptionKeyRef, f.allowPlaintextRestore)
+	// ciphertext directly for an encrypted backup. allowPlaintext here is
+	// NOT the raw operator flag: it is gated on the SAME info.Encryption
+	// read used just above to decide whether to gate/audit at all. If the
+	// backup's stored state changes between that GetBackup and this call
+	// -- e.g. a plaintext downgrade written to the artifact after this
+	// function already observed "encrypted" -- passing the raw flag
+	// unconditionally would let DecryptBackupShard's own, independent
+	// re-read of the backup accept the now-plaintext shard with
+	// allowPlaintext=true even though the gate/settle above never ran
+	// for it (that branch was skipped entirely). Passing the gated value
+	// instead means a backup that was NOT observed as plaintext here
+	// never reaches DecryptBackupShard with permission to treat one as
+	// plaintext, closing that TOCTOU window.
+	data, err := bs.DecryptBackupShard(ctx, f.restoreBackupID, shardCfg.ShardID, f.restoreDecryptionKeyRef,
+		f.allowPlaintextRestore && info.Encryption == service.EncryptionNone)
 	if err != nil {
 		// Only a shard genuinely absent from the artifact is reported as
 		// "shard not in artifact" -- every other failure (a wrong key, a
