@@ -230,6 +230,29 @@ type RestoreOptions struct {
 	// (BackupEnvelope.ProviderID); this field never selects a different
 	// provider than that.
 	DecryptionKeyRef string
+
+	// AllowPlaintext is the operator's explicit opt-in to restore a
+	// backup whose STORED state is plaintext (BackupInfo.Encryption ==
+	// EncryptionNone). Left false (the default), RestoreBackup refuses a
+	// plaintext backup outright with *BackupPlaintextRestoreNotAllowedError,
+	// before touching any shard -- it is never inferred from the backup's
+	// own metadata, exactly like CreateBackup never infers plaintext from
+	// an empty Encryption.
+	//
+	// This is the second half of the explicit-override discipline
+	// CreateBackup's own Encryption field already holds, and it closes a
+	// downgrade metadata-flipping alone cannot: an attacker who both
+	// flips BackupInfo.Encryption to "none" AND deletes the backup's
+	// envelope object (envelope/<id> in a durable sink) produces a backup
+	// that checkEncryptionConsistency reads as a perfectly consistent
+	// plaintext backup -- indistinguishable, by stored state alone, from
+	// one that was genuinely created with Encryption: "none". Requiring a
+	// caller to state AllowPlaintext explicitly on every restore of such a
+	// backup means no plaintext restore ever proceeds on the strength of
+	// stored metadata alone; a human (or an automation that has decided
+	// to trust this specific backup) must say so on every call (go-qrdb
+	// security review, backup-encrypt-default round 4).
+	AllowPlaintext bool
 }
 
 // RestoreResult describes the outcome of a restore operation.
@@ -589,13 +612,47 @@ func (s *BackupService) auditPlaintextGate(ctx context.Context, id, destination,
 // identical posture pkg/ceremony/holder_audit.go's settle holds. Called
 // only when auditPlaintextGate itself succeeded; a gate refusal already
 // returned before any work started, so there is no operation to settle.
-func (s *BackupService) auditPlaintextSettle(ctx context.Context, id, destination, action string, opErr error) {
+func (s *BackupService) auditPlaintextSettle(ctx context.Context, id, destination, action string, opErr error, partial bool) {
 	outcome := audit.OutcomeSuccess
-	if opErr != nil {
+	switch {
+	case opErr != nil:
 		outcome = audit.OutcomeFailure + ":" + plaintextAuditReason(opErr)
+	case partial:
+		// RestoreBackup returns (result, nil) even when every target
+		// shard failed to import operationally (result.Errors
+		// non-empty): resultErr alone is nil, but the restore did not
+		// fully succeed, and a record saying OutcomeSuccess for a
+		// restore that imported zero shards is exactly the gap this
+		// catches (go-qrdb security review, backup-encrypt-default
+		// round 4, B5 online).
+		outcome = audit.OutcomeFailure + ":partial-import-failure"
 	}
 	ev := plaintextAuditEvent(ctx, id, destination, action, outcome)
 	audit.EmitBestEffort(ctx, s.auditLogger(), "backup", ev)
+}
+
+// GatePlaintextRestore is auditPlaintextGate exported for action
+// "backup.restore", for a caller OUTSIDE this package whose own restore
+// sequence must bracket more than DecryptBackupShard's single decrypt
+// step. cmd/qrdbd's offline, boot-time disaster-recovery restore
+// (restoreShardFromBackup) is the one caller: its sequence is decrypt,
+// bootstrap, stop, import, restart, and the gate/settle pair must
+// bracket all of it, not only the decrypt -- see DecryptBackupShard's own
+// doc comment for why that method itself emits no audit record anymore.
+// Returns the same *audit.GateError DecryptBackupShard's own refusal
+// would have, under this node's configured audit failure policy.
+func (s *BackupService) GatePlaintextRestore(ctx context.Context, id, destination string) error {
+	return s.auditPlaintextGate(ctx, id, destination, "backup.restore")
+}
+
+// SettlePlaintextRestore is auditPlaintextSettle exported for action
+// "backup.restore", the counterpart to GatePlaintextRestore: call once,
+// after the WHOLE bracketed sequence has run, with that sequence's own
+// final error (nil on success). Post-hoc (best-effort) like every other
+// settle call in this package -- see auditPlaintextSettle's own doc
+// comment.
+func (s *BackupService) SettlePlaintextRestore(ctx context.Context, id, destination string, opErr error) {
+	s.auditPlaintextSettle(ctx, id, destination, "backup.restore", opErr, false)
 }
 
 // plaintextAuditReason renders err as a FIXED reason token for the
@@ -887,6 +944,25 @@ type envelopeSetup struct {
 	wrappedDEK []byte
 }
 
+// wrapKeyWrapLookupError renders a keywrap.Lookup failure for a caller:
+// *BackupKeyDirNotConfiguredError -- a SERVER-side capability gap (no
+// --backup-key-dir/WithKeyDir ever configured), never a caller-supplied
+// value the request could fix -- is returned AS ITSELF, not wrapped,
+// so it classifies (pkg/api/errclass) and renders as the distinct,
+// Unimplemented condition it actually is, rather than collapsing into
+// *BackupDecryptionFailedError's InvalidArgument (a wrong key or an
+// unregistered provider ID, both caller-supplied-value problems).
+// Every other Lookup failure (an unregistered provider ID, or the
+// software provider's own KeyDirectoryError) wraps in
+// *BackupDecryptionFailedError exactly as before.
+func wrapKeyWrapLookupError(err error, backupID string) error {
+	var noDir *BackupKeyDirNotConfiguredError
+	if errors.As(err, &noDir) {
+		return noDir
+	}
+	return &BackupDecryptionFailedError{BackupID: backupID, Err: err}
+}
+
 // prepareEnvelope resolves opts' key-wrap provider, generates a fresh DEK,
 // and wraps it, returning a ready envelopeSetup. Called before any shard is
 // captured, so a bad key reference or an unregistered provider is refused
@@ -899,7 +975,7 @@ func (s *BackupService) prepareEnvelope(ctx context.Context, opts BackupOptions)
 
 	provider, err := keywrap.Lookup(s.keyWrapRegistry(), providerID)
 	if err != nil {
-		return nil, &BackupDecryptionFailedError{Err: err}
+		return nil, wrapKeyWrapLookupError(err, "")
 	}
 
 	dek := make([]byte, dekLength)
@@ -979,7 +1055,7 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (r
 			return nil, err
 		}
 		defer func() {
-			s.auditPlaintextSettle(ctx, id, opts.Destination, "backup.create", resultErr)
+			s.auditPlaintextSettle(ctx, id, opts.Destination, "backup.create", resultErr, false)
 		}()
 	}
 
@@ -1258,7 +1334,7 @@ func (s *BackupService) resolveDEK(ctx context.Context, entry *backupEntry, keyR
 
 	provider, err := keywrap.Lookup(s.keyWrapRegistry(), envelope.ProviderID)
 	if err != nil {
-		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: err}
+		return nil, wrapKeyWrapLookupError(err, entry.info.ID)
 	}
 
 	keyRef := envelope.KeyRef
@@ -1405,7 +1481,7 @@ func (s *BackupService) verifyAndDecryptShard(entry *backupEntry, digests map[ui
 // an OPERATIONAL failure during the import itself (the underlying store
 // refused it, after every shard already passed verification) is reported
 // per-shard rather than aborting the shards that already succeeded.
-func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) (_ *RestoreResult, resultErr error) {
+func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) (result *RestoreResult, resultErr error) {
 	if opts.BackupID == "" {
 		return nil, &BackupEmptyIDError{}
 	}
@@ -1439,11 +1515,28 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 	claimsEncrypted := entry.info.Encryption != EncryptionNone
 
 	if !claimsEncrypted {
+		// The caller must opt in explicitly to restore a plaintext
+		// backup -- never inferred from the backup's own stored state,
+		// which an attacker who also deletes the envelope object can
+		// make internally consistent (see AllowPlaintext's own doc
+		// comment). Refused before the gate: an unrequested plaintext
+		// restore never reaches the audit trail as a "permitted"
+		// decision at all.
+		if !opts.AllowPlaintext {
+			return nil, &BackupPlaintextRestoreNotAllowedError{BackupID: opts.BackupID}
+		}
 		if err := s.auditPlaintextGate(ctx, opts.BackupID, entry.info.Destination, "backup.restore"); err != nil {
 			return nil, err
 		}
 		defer func() {
-			s.auditPlaintextSettle(ctx, opts.BackupID, entry.info.Destination, "backup.restore", resultErr)
+			// A restore whose every target shard failed to import
+			// (result.Errors non-empty) returns (result, nil) --
+			// resultErr alone would settle this as a success. Treat a
+			// non-empty Errors list as a failed settle too (go-qrdb
+			// security review, backup-encrypt-default round 4, B5
+			// online).
+			partial := result != nil && len(result.Errors) > 0
+			s.auditPlaintextSettle(ctx, opts.BackupID, entry.info.Destination, "backup.restore", resultErr, partial)
 		}()
 	}
 
@@ -1551,7 +1644,7 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 		restored.Add(1)
 	}
 
-	result := &RestoreResult{
+	result = &RestoreResult{
 		BackupID:       opts.BackupID,
 		ShardsRestored: int(restored.Load()),
 		Duration:       time.Since(start),
@@ -1605,7 +1698,10 @@ func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
 // tag must verify (verifyAndDecryptShard). decryptionKeyRef overrides the
 // envelope's own stored key reference, exactly like
 // RestoreOptions.DecryptionKeyRef; left empty, the stored reference is
-// used.
+// used. allowPlaintext is the same explicit opt-in
+// RestoreOptions.AllowPlaintext is -- a backup whose stored state is
+// plaintext is refused with *BackupPlaintextRestoreNotAllowedError unless
+// this is true.
 //
 // It exists for callers that must read and apply a single shard OUTSIDE
 // RestoreBackup's own per-shard dispatch (which prefers
@@ -1613,9 +1709,17 @@ func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
 // guards) -- currently only qrdbd's offline, boot-time disaster-recovery
 // restore (cmd/qrdbd/restore.go), which stops and restarts the shard
 // around the import in a sequence RestoreBackup's own online dispatch does
-// not perform. An EncryptionNone backup's shard is returned unchanged,
-// after the same gated plaintext-restore audit RestoreBackup emits.
-func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shardID uint64, decryptionKeyRef string) (_ []byte, resultErr error) {
+// not perform.
+//
+// Unlike RestoreBackup, this method emits NO audit record of its own: the
+// offline restore path's own plaintext gate/settle brackets its WHOLE
+// sequence (decrypt, bootstrap, stop, import, restart), not merely this
+// one decrypt step, so restoreShardFromBackup -- the only caller --
+// performs the gate before calling this and the settle after the entire
+// sequence completes, carrying the sequence's real final outcome rather
+// than this function's own (go-qrdb security review,
+// backup-encrypt-default round 4, B5 offline).
+func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shardID uint64, decryptionKeyRef string, allowPlaintext bool) ([]byte, error) {
 	if id == "" {
 		return nil, &BackupEmptyIDError{}
 	}
@@ -1630,12 +1734,9 @@ func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shard
 	}
 
 	if entry.info.Encryption == EncryptionNone {
-		if err := s.auditPlaintextGate(ctx, id, entry.info.Destination, "backup.restore"); err != nil {
-			return nil, err
+		if !allowPlaintext {
+			return nil, &BackupPlaintextRestoreNotAllowedError{BackupID: id}
 		}
-		defer func() {
-			s.auditPlaintextSettle(ctx, id, entry.info.Destination, "backup.restore", resultErr)
-		}()
 		data, ok := entry.shards[shardID]
 		if !ok {
 			return nil, &BackupShardNotFoundError{BackupID: id, ShardID: shardID}

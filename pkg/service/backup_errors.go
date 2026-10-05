@@ -77,13 +77,16 @@ func (e *BackupEncryptionRequiredError) Error() string {
 
 // BackupDecryptionFailedError is returned when a backup's envelope cannot
 // be processed: resolving its keywrap.Provider failed (an unregistered
-// KeyProviderID, at either create or restore time), wrapping or unwrapping
-// its DEK failed (a bad key reference, the wrong KEK, or a tampered
-// wrapped DEK), or a shard's own AES-256-GCM authentication failed
-// (tampered ciphertext) during restore. All of these collapse to this one
-// typed, fail-closed error -- deliberately not distinguished from each
-// other -- so a caller cannot use the difference to narrow down a correct
-// key.
+// KeyProviderID, at either create or restore time), or wrapping or
+// unwrapping its DEK failed (a bad key reference, the wrong KEK, or a
+// tampered wrapped DEK). These collapse to this one typed, fail-closed
+// error -- deliberately not distinguished from each other -- so a caller
+// cannot use the difference to narrow down a correct key. A shard's OWN
+// AES-256-GCM authentication failure (tampered ciphertext) is a
+// DIFFERENT error, *BackupVerificationFailedError wrapping
+// *BackupShardIntegrityError -- it is checked at a different layer (the
+// shard's own AEAD tag, never the KEK or the wrapped DEK) and is never
+// collapsed into this one.
 type BackupDecryptionFailedError struct {
 	BackupID string
 	Err      error
@@ -309,4 +312,25 @@ type BackupKeyDirNotConfiguredError struct{}
 func (e *BackupKeyDirNotConfiguredError) Error() string {
 	return "service: no key directory configured for the \"software\" key-wrap provider " +
 		"(set BackupServiceOption WithKeyDir, or lifecycle.Infra.KeyDir)"
+}
+
+// BackupPlaintextRestoreNotAllowedError is returned by RestoreBackup and
+// DecryptBackupShard when a backup's STORED state is plaintext
+// (BackupInfo.Encryption == EncryptionNone) and the caller did not set
+// RestoreOptions.AllowPlaintext (or, on the offline disaster-recovery
+// path, pass the equivalent allowPlaintext argument). It is never
+// inferred from the backup's own metadata: an attacker who flips
+// BackupInfo.Encryption to "none" AND deletes the backup's envelope
+// object produces a backup whose stored state is internally consistent
+// plaintext, indistinguishable from a genuine one by
+// checkEncryptionConsistency alone, so this refusal requires the
+// caller's explicit, per-call opt-in rather than trusting that
+// consistency (go-qrdb security review, backup-encrypt-default round 4).
+type BackupPlaintextRestoreNotAllowedError struct {
+	BackupID string
+}
+
+// Error returns a human-readable description.
+func (e *BackupPlaintextRestoreNotAllowedError) Error() string {
+	return "service: backup " + e.BackupID + " is stored as plaintext; restoring it requires an explicit opt-in (AllowPlaintext)"
 }

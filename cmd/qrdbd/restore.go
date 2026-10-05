@@ -73,7 +73,7 @@ import (
 //  5. Start the shard again, now recovering the imported (or, in the
 //     idempotent-skip case, already-restored) state, and hand control back to
 //     the normal boot sequence.
-func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.Host, createFn sm.CreateFunc, shardCfg quicraftconfig.Config, complianceAudit audit.AuditLogger, auditPolicy audit.FailurePolicy) error {
+func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.Host, createFn sm.CreateFunc, shardCfg quicraftconfig.Config, complianceAudit audit.AuditLogger, auditPolicy audit.FailurePolicy) (err error) {
 	if f.backupDir == "" {
 		return &RestoreBackupSourceRequiredError{}
 	}
@@ -135,11 +135,42 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 		return &RestoreBackupVerifyError{BackupID: f.restoreBackupID, Result: *verifyResult}
 	}
 
+	// The backup's own stored state decides whether this is a plaintext
+	// restore -- never the operator's flag alone, and never inferred: a
+	// plaintext restore proceeds only when BOTH the backup's own
+	// BackupInfo.Encryption says "none" AND the operator passed
+	// --allow-plaintext-restore. Fetched before DecryptBackupShard: the
+	// gate (and, on success, the settle registered below) must bracket
+	// the WHOLE remaining sequence -- decrypt, bootstrap, stop, import,
+	// restart -- not merely the decrypt step DecryptBackupShard itself
+	// performs (go-qrdb security review, backup-encrypt-default round 4,
+	// B5 offline).
+	info, err := backupSvc.GetBackup(ctx, f.restoreBackupID)
+	if err != nil {
+		return &RestoreBackupError{Phase: "metadata", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
+	}
+	if info.Encryption == service.EncryptionNone {
+		if !f.allowPlaintextRestore {
+			return &RestoreBackupError{
+				Phase:    "decrypt",
+				BackupID: f.restoreBackupID,
+				ShardID:  shardCfg.ShardID,
+				Err:      &service.BackupPlaintextRestoreNotAllowedError{BackupID: f.restoreBackupID},
+			}
+		}
+		if gateErr := bs.GatePlaintextRestore(ctx, f.restoreBackupID, info.Destination); gateErr != nil {
+			return &RestoreBackupError{Phase: "decrypt", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: gateErr}
+		}
+		defer func() {
+			bs.SettlePlaintextRestore(ctx, f.restoreBackupID, info.Destination, err)
+		}()
+	}
+
 	// DecryptBackupShard resolves and unwraps the backup's envelope (a
 	// no-op for an EncryptionNone backup) and returns this shard's
 	// plaintext -- reading shard bytes any other way here would import
 	// ciphertext directly for an encrypted backup.
-	data, err := bs.DecryptBackupShard(ctx, f.restoreBackupID, shardCfg.ShardID, f.restoreDecryptionKeyRef)
+	data, err := bs.DecryptBackupShard(ctx, f.restoreBackupID, shardCfg.ShardID, f.restoreDecryptionKeyRef, f.allowPlaintextRestore)
 	if err != nil {
 		// Only a shard genuinely absent from the artifact is reported as
 		// "shard not in artifact" -- every other failure (a wrong key, a

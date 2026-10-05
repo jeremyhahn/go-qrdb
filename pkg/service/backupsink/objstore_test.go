@@ -117,7 +117,7 @@ func TestBackupSink_DurableRoundTrip(t *testing.T) {
 	assert.True(t, vr.ChecksumMatch)
 
 	// Restore pulls payloads from the sink and applies them to the provider.
-	rr, err := restarted.RestoreBackup(ctx, service.RestoreOptions{BackupID: "backup-123"})
+	rr, err := restarted.RestoreBackup(ctx, service.RestoreOptions{BackupID: "backup-123", AllowPlaintext: true})
 	require.NoError(t, err)
 	assert.Equal(t, 2, rr.ShardsRestored)
 	assert.Empty(t, rr.Errors)

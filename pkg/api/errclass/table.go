@@ -621,6 +621,11 @@ var backupRules = []rule{
 	as(&service.BackupEmptyIDError{}, InvalidArgument),
 	as(&service.BackupEncryptionKeyRequiredError{}, InvalidArgument),
 	as(&service.BackupEncryptionRequiredError{}, InvalidArgument),
+	// The caller did not opt in (RestoreOptions.AllowPlaintext /
+	// allow_plaintext) to restore a backup whose stored state is
+	// plaintext -- the explicit-override discipline CreateBackup's own
+	// Encryption field already holds, mirrored for restore.
+	as(&service.BackupPlaintextRestoreNotAllowedError{}, InvalidArgument),
 	as(&service.BackupInvalidCompressionError{}, InvalidArgument),
 	as(&service.BackupInvalidEncryptionError{}, InvalidArgument),
 	// Covers both directions: an unregistered keywrap.Provider (create or

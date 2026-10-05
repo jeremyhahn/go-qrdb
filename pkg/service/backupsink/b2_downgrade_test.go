@@ -155,11 +155,106 @@ func TestBackupSink_B2DowngradeThroughFreshService(t *testing.T) {
 	if !ok {
 		t.Fatal("NewBackupService did not return *service.BackupService")
 	}
-	pt, err := bs.DecryptBackupShard(ctx, created.ID, 2, "")
+	// allowPlaintext: true isolates the B2 metadata/artifact check this
+	// test targets from the separate AllowPlaintext opt-in refusal.
+	pt, err := bs.DecryptBackupShard(ctx, created.ID, 2, "", true)
 	if err == nil {
 		t.Fatalf("B2 downgrade accepted via DecryptBackupShard on a fresh service: returned %q", pt)
 	}
 	if !errors.As(err, &mismatch) {
 		t.Fatalf("DecryptBackupShard err = %T, want *BackupMetadataMismatchError: %v", err, err)
+	}
+}
+
+// TestBackupSink_EnvelopeDeletionDowngradeRefusedWithoutOptIn proves the
+// round-4 downgrade the AllowPlaintext opt-in closes: unlike B2 (meta
+// flipped while the ORIGINAL envelope survives, caught by
+// checkEncryptionConsistency), this attacker deletes the envelope object
+// TOO -- so the backup's stored state is now fully self-consistent
+// plaintext (no envelope, Encryption: "none"), indistinguishable from a
+// genuine EncryptionNone backup by checkEncryptionConsistency alone. The
+// checksum still verifies: it covers the stored bytes (the original
+// ciphertext), which the attacker never touched, and a checksum has
+// never claimed anything about what encrypted them.
+//
+// The ONLY thing left that refuses this restore is the caller's
+// explicit, per-call AllowPlaintext opt-in -- proven here through a
+// FRESH service (the offline-restore shape), covering both
+// RestoreBackup and DecryptBackupShard, and that the SAME restore
+// succeeds once the caller opts in (an operator decision this test does
+// not second-guess; only the default matters for closing the downgrade).
+func TestBackupSink_EnvelopeDeletionDowngradeRefusedWithoutOptIn(t *testing.T) {
+	ctx := context.Background()
+	e := newB2Env(t)
+	e.key(t, "k1", 0x11)
+
+	shards := map[uint64][]byte{1: []byte("shard-1"), 2: []byte("shard-2"), 3: []byte("shard-3")}
+	created, err := e.svc(t, newFakeProvider(shards)).CreateBackup(ctx, service.BackupOptions{
+		Destination: "/b",
+		KeyRef:      "k1",
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+	if env, _ := e.sink.ReadEnvelope(ctx, created.ID); env == nil {
+		t.Fatal("precondition: the original envelope must exist in the sink")
+	}
+
+	// Attacker: delete the envelope object outright, and flip the meta
+	// record's Encryption to "none" to match -- the checksum is left
+	// untouched, since it already covers exactly the stored (ciphertext)
+	// bytes this attacker never alters.
+	if err := e.store.Delete([]byte("envelope/" + created.ID)); err != nil {
+		t.Fatalf("deleting the envelope object: %v", err)
+	}
+	info := *created
+	info.Encryption = service.EncryptionNone
+	info.KeyProviderID = ""
+	metaBytes, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.Set([]byte("meta/"+created.ID), metaBytes); err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: the backup's stored state really is now
+	// self-consistent -- no envelope, metadata claims "none" -- so this
+	// test is exercising the opt-in, not accidentally re-proving B2.
+	if env, _ := e.sink.ReadEnvelope(ctx, created.ID); env != nil {
+		t.Fatal("precondition: the envelope object must be gone")
+	}
+
+	fp := newFakeProvider(map[uint64][]byte{})
+	res, err := e.svc(t, fp).RestoreBackup(ctx, service.RestoreOptions{BackupID: created.ID})
+	if err == nil {
+		t.Fatalf("envelope-deletion downgrade accepted via RestoreBackup with no AllowPlaintext opt-in; imported %d shards", len(fp.restored))
+	}
+	var notAllowed *service.BackupPlaintextRestoreNotAllowedError
+	if !errors.As(err, &notAllowed) {
+		t.Fatalf("RestoreBackup err = %T, want *BackupPlaintextRestoreNotAllowedError: %v", err, err)
+	}
+	if res != nil {
+		t.Fatalf("expected a nil result alongside the refusal, got %+v", res)
+	}
+
+	bs, ok := e.svc(t, newFakeProvider(nil)).(*service.BackupService)
+	if !ok {
+		t.Fatal("NewBackupService did not return *service.BackupService")
+	}
+	pt, err := bs.DecryptBackupShard(ctx, created.ID, 2, "", false)
+	if err == nil {
+		t.Fatalf("envelope-deletion downgrade accepted via DecryptBackupShard with no AllowPlaintext opt-in: returned %q", pt)
+	}
+	if !errors.As(err, &notAllowed) {
+		t.Fatalf("DecryptBackupShard err = %T, want *BackupPlaintextRestoreNotAllowedError: %v", err, err)
+	}
+
+	// The SAME restore succeeds once the caller opts in explicitly --
+	// this is an operator decision the opt-in exists to require, not
+	// something this package second-guesses once given.
+	fp2 := newFakeProvider(map[uint64][]byte{})
+	if _, err := e.svc(t, fp2).RestoreBackup(ctx, service.RestoreOptions{BackupID: created.ID, AllowPlaintext: true}); err != nil {
+		t.Fatalf("RestoreBackup with AllowPlaintext: true: %v", err)
 	}
 }

@@ -232,14 +232,18 @@ func TestRestoreShardFromBackup_PlaintextRestoreAudited(t *testing.T) {
 
 	ring := audit.NewRingBuffer(0)
 	f := &startFlags{
-		backupDir:       backupDir,
-		restoreBackupID: "fixture-backup",
+		backupDir:             backupDir,
+		restoreBackupID:       "fixture-backup",
+		allowPlaintextRestore: true,
 	}
 
 	// restoreShardFromBackup itself fails at the bootstrap phase (a nil
-	// host), but DecryptBackupShard -- and its audit gate+settle -- runs
-	// strictly BEFORE that, so the trail already carries both records by
-	// the time this returns.
+	// host), but the gate (and, via the deferred settle, the WHOLE
+	// bracketed sequence's own outcome) now wraps decrypt THROUGH
+	// restart, not merely DecryptBackupShard's own decrypt step (go-qrdb
+	// security review, backup-encrypt-default round 4, B5 offline) --
+	// so the settle record below must carry a FAILURE outcome, not
+	// success, even though decrypt itself succeeded.
 	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID}, ring, audit.FailClosed)
 	if err == nil {
 		t.Fatal("restoreShardFromBackup: expected an error from the nil host at the bootstrap phase, got nil")
@@ -252,14 +256,78 @@ func TestRestoreShardFromBackup_PlaintextRestoreAudited(t *testing.T) {
 		t.Fatalf("restoreShardFromBackup failed at the decrypt phase (%v): expected it to get past DecryptBackupShard", restoreErr.Err)
 	}
 
-	var restoreEvents int
+	var restoreEvents []audit.AuditEvent
 	for _, ev := range ring.Snapshot() {
 		if ev.Action == "backup.restore" {
-			restoreEvents++
+			restoreEvents = append(restoreEvents, ev)
 		}
 	}
-	if restoreEvents != 2 {
-		t.Fatalf("got %d backup.restore audit events on the offline restore path, want exactly 2 (gate + settle)", restoreEvents)
+	if len(restoreEvents) != 2 {
+		t.Fatalf("got %d backup.restore audit events on the offline restore path, want exactly 2 (gate + settle)", len(restoreEvents))
+	}
+	if restoreEvents[0].Outcome != audit.OutcomePermitted {
+		t.Fatalf("gate event Outcome = %q, want %q", restoreEvents[0].Outcome, audit.OutcomePermitted)
+	}
+	// The OUTCOME, not merely the count: the bracketed sequence failed
+	// (at bootstrap, a nil host), so the settle record must say so --
+	// never OutcomeSuccess for a restore that did not complete.
+	if restoreEvents[1].Outcome == audit.OutcomeSuccess {
+		t.Fatalf("settle event Outcome = %q, want a failure outcome: the overall restore sequence failed at phase %q", restoreEvents[1].Outcome, restoreErr.Phase)
+	}
+}
+
+// TestRestoreShardFromBackup_PlaintextRefusedWithoutOptIn proves the
+// offline restore path refuses a plaintext backup with a typed error
+// when --allow-plaintext-restore is not set, before anything else runs
+// (no bootstrap, no audit gate -- nothing happened, so nothing is
+// recorded).
+func TestRestoreShardFromBackup_PlaintextRefusedWithoutOptIn(t *testing.T) {
+	backupDir := t.TempDir()
+	backupStore, err := file.New(backupDir)
+	if err != nil {
+		t.Fatalf("file.New: %v", err)
+	}
+	defer func() { _ = backupStore.Close() }()
+
+	sink := backupsink.New(backupStore)
+	const shardID = uint64(1)
+	provider := &fixtureSnapshotProvider{shardID: shardID, data: []byte("plaintext-shard")}
+	seedSvc, err := service.NewBackupService(provider,
+		service.WithBackupSink(sink),
+		service.WithIDGenerator(func() string { return "fixture-backup-no-optin" }),
+	)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
+	if _, err := seedSvc.CreateBackup(context.Background(), service.BackupOptions{
+		Destination: "test-fixture-plaintext-no-optin",
+		Encryption:  service.EncryptionNone,
+		ShardIDs:    []uint64{shardID},
+	}); err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	ring := audit.NewRingBuffer(0)
+	f := &startFlags{
+		backupDir:       backupDir,
+		restoreBackupID: "fixture-backup-no-optin",
+		// allowPlaintextRestore left false: the default.
+	}
+
+	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID}, ring, audit.FailClosed)
+	if err == nil {
+		t.Fatal("restoreShardFromBackup: expected an error for a plaintext backup with no --allow-plaintext-restore")
+	}
+	var restoreErr *RestoreBackupError
+	if !errors.As(err, &restoreErr) {
+		t.Fatalf("restoreShardFromBackup: err = %v (%T), want *RestoreBackupError", err, err)
+	}
+	var notAllowed *service.BackupPlaintextRestoreNotAllowedError
+	if !errors.As(restoreErr, &notAllowed) {
+		t.Fatalf("restoreShardFromBackup: err = %v, want it to wrap *service.BackupPlaintextRestoreNotAllowedError", err)
+	}
+	if len(ring.Snapshot()) != 0 {
+		t.Fatalf("refused before the gate ran: expected 0 audit events, got %d", len(ring.Snapshot()))
 	}
 }
 

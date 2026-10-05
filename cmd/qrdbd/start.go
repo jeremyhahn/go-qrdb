@@ -266,6 +266,17 @@ type startFlags struct {
 	// directory; go-qrdb security review, backup-encrypt-default #B4).
 	restoreDecryptionKeyRef string
 
+	// allowPlaintextRestore is the operator's explicit opt-in to restore
+	// --restore-backup-id's backup when its OWN stored state is
+	// plaintext (BackupInfo.Encryption == "none"). Left false (the
+	// default), the offline restore refuses a plaintext backup with a
+	// typed error before touching the shard -- never inferred from the
+	// backup's own metadata, which an attacker who also deletes the
+	// backup's envelope object can make internally consistent (see
+	// service.RestoreOptions.AllowPlaintext's own doc comment). See
+	// restore.go.
+	allowPlaintextRestore bool
+
 	// backupKeyDir is the directory the built-in "software" key-wrap
 	// provider's key files must live inside, confined via *os.Root. Every
 	// --encryption-key-file / --decryption-key-file /
@@ -609,6 +620,8 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
 	cmd.Flags().StringVar(&f.restoreDecryptionKeyRef, "restore-decryption-key-file", "",
 		"Name of the key file, inside --backup-key-dir, that overrides the key reference stored in the restored backup's own envelope (only needed if the backup's own key reference is not usable on this node)")
+	cmd.Flags().BoolVar(&f.allowPlaintextRestore, "allow-plaintext-restore", false,
+		"Explicit opt-in required to restore --restore-backup-id's backup when its own stored state is plaintext; refused with a typed error otherwise")
 	cmd.Flags().StringVar(&f.backupKeyDir, "backup-key-dir", "",
 		"Directory the built-in \"software\" key-wrap provider's key files must live inside; every backup/restore key reference is a bare file name inside it, never a path (required to create or restore an encrypted backup with the built-in provider)")
 

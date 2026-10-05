@@ -632,7 +632,8 @@ func TestBackupService_RestoreBackup_Success(t *testing.T) {
 	}
 
 	result, err := svc.RestoreBackup(ctx, RestoreOptions{
-		BackupID: created.ID,
+		BackupID:       created.ID,
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup returned error: %v", err)
@@ -662,8 +663,9 @@ func TestBackupService_RestoreBackup_TargetShards(t *testing.T) {
 	}
 
 	result, err := svc.RestoreBackup(ctx, RestoreOptions{
-		BackupID:     created.ID,
-		TargetShards: []uint64{1},
+		BackupID:       created.ID,
+		TargetShards:   []uint64{1},
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup returned error: %v", err)
@@ -716,8 +718,9 @@ func TestBackupService_RestoreBackup_WithValidation(t *testing.T) {
 	}
 
 	result, err := svc.RestoreBackup(ctx, RestoreOptions{
-		BackupID:      created.ID,
-		ValidateFirst: true,
+		BackupID:       created.ID,
+		ValidateFirst:  true,
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup with validation returned error: %v", err)
@@ -739,7 +742,8 @@ func TestBackupService_RestoreBackup_RestoreError(t *testing.T) {
 
 	provider.restoreErr = errors.New("restore failed")
 	result, err := svc.RestoreBackup(ctx, RestoreOptions{
-		BackupID: created.ID,
+		BackupID:       created.ID,
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup should not return error for per-shard failures: %v", err)
@@ -765,7 +769,7 @@ func TestBackupService_RestoreBackup_PrefersOnlineShardRestorer(t *testing.T) {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
 
-	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, AllowPlaintext: true})
 	if err != nil {
 		t.Fatalf("RestoreBackup returned error: %v", err)
 	}
@@ -795,7 +799,7 @@ func TestBackupService_RestoreBackup_OnlineShardRestorerError(t *testing.T) {
 		t.Fatalf("CreateBackup returned error: %v", err)
 	}
 
-	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, AllowPlaintext: true})
 	if err != nil {
 		t.Fatalf("RestoreBackup should not return a top-level error for per-shard guard failures: %v", err)
 	}
@@ -831,8 +835,9 @@ func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 	}
 
 	result, err := svc.RestoreBackup(ctx, RestoreOptions{
-		BackupID:     created.ID,
-		TargetShards: []uint64{999},
+		BackupID:       created.ID,
+		TargetShards:   []uint64{999},
+		AllowPlaintext: true,
 	})
 	if err == nil {
 		t.Fatal("RestoreBackup should return a top-level error for a target shard not in the backup")
@@ -1670,7 +1675,7 @@ func TestBackupService_DecryptBackupShard_EncryptedRoundTrips(t *testing.T) {
 
 	bs := svc.(*BackupService)
 	for shardID, plaintext := range provider.shards {
-		got, err := bs.DecryptBackupShard(ctx, created.ID, shardID, "")
+		got, err := bs.DecryptBackupShard(ctx, created.ID, shardID, "", false)
 		if err != nil {
 			t.Fatalf("DecryptBackupShard(shard %d): %v", shardID, err)
 		}
@@ -1680,9 +1685,37 @@ func TestBackupService_DecryptBackupShard_EncryptedRoundTrips(t *testing.T) {
 	}
 }
 
+// TestBackupService_DecryptBackupShard_PlaintextBackupRefusedWithoutOptIn
+// proves an EncryptionNone backup's shard is refused with
+// *BackupPlaintextRestoreNotAllowedError when allowPlaintext is false --
+// the caller's explicit opt-in, mirroring RestoreOptions.AllowPlaintext
+// (go-qrdb security review, backup-encrypt-default round 4).
+func TestBackupService_DecryptBackupShard_PlaintextBackupRefusedWithoutOptIn(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := mustNewBackupService(t, provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/offline-restore-plain-refused", Encryption: EncryptionNone})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	var anyShard uint64
+	for id := range provider.shards {
+		anyShard = id
+		break
+	}
+	_, err = bs.DecryptBackupShard(ctx, created.ID, anyShard, "", false)
+	var notAllowed *BackupPlaintextRestoreNotAllowedError
+	if !errors.As(err, &notAllowed) {
+		t.Fatalf("DecryptBackupShard without opt-in: err = %T, want *BackupPlaintextRestoreNotAllowedError: %v", err, err)
+	}
+}
+
 // TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough proves
 // an EncryptionNone backup's shard comes back unchanged -- no envelope, no
-// decryption attempted.
+// decryption attempted -- once the caller opts in with allowPlaintext.
 func TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	svc := mustNewBackupService(t, provider)
@@ -1695,7 +1728,7 @@ func TestBackupService_DecryptBackupShard_PlaintextBackupPassesThrough(t *testin
 
 	bs := svc.(*BackupService)
 	for shardID, plaintext := range provider.shards {
-		got, err := bs.DecryptBackupShard(ctx, created.ID, shardID, "")
+		got, err := bs.DecryptBackupShard(ctx, created.ID, shardID, "", true)
 		if err != nil {
 			t.Fatalf("DecryptBackupShard(shard %d): %v", shardID, err)
 		}
@@ -1725,7 +1758,7 @@ func TestBackupService_DecryptBackupShard_WrongKeyRefused(t *testing.T) {
 		break
 	}
 
-	_, err = bs.DecryptBackupShard(ctx, created.ID, shardID, writeTestKeyFile(t, 0xB0))
+	_, err = bs.DecryptBackupShard(ctx, created.ID, shardID, writeTestKeyFile(t, 0xB0), false)
 	var decFailed *BackupDecryptionFailedError
 	if !errors.As(err, &decFailed) {
 		t.Fatalf("expected BackupDecryptionFailedError, got %T: %v", err, err)
@@ -1739,7 +1772,7 @@ func TestBackupService_DecryptBackupShard_EmptyIDRefused(t *testing.T) {
 	svc := mustNewBackupService(t, provider)
 	bs := svc.(*BackupService)
 
-	_, err := bs.DecryptBackupShard(context.Background(), "", 1, "")
+	_, err := bs.DecryptBackupShard(context.Background(), "", 1, "", false)
 	var emptyID *BackupEmptyIDError
 	if !errors.As(err, &emptyID) {
 		t.Fatalf("expected BackupEmptyIDError, got %T: %v", err, err)
@@ -1760,7 +1793,7 @@ func TestBackupService_DecryptBackupShard_UnknownShardRefused(t *testing.T) {
 	}
 
 	bs := svc.(*BackupService)
-	_, err = bs.DecryptBackupShard(ctx, created.ID, 99999, "")
+	_, err = bs.DecryptBackupShard(ctx, created.ID, 99999, "", true)
 	if err == nil {
 		t.Fatal("expected error for an unknown shard ID")
 	}

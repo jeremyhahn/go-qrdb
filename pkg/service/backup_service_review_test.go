@@ -436,7 +436,7 @@ func TestBackupService_RestoreBackup_PlaintextRestoreAudited(t *testing.T) {
 		t.Fatalf("CreateBackup: %v", err)
 	}
 
-	if _, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID}); err != nil {
+	if _, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, AllowPlaintext: true}); err != nil {
 		t.Fatalf("RestoreBackup: %v", err)
 	}
 
@@ -570,6 +570,55 @@ func TestBackupService_CreateBackup_FailedPlaintextBackupAuditsAsFailure(t *test
 	}
 }
 
+// TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure
+// proves the B5-online gap: a plaintext restore where EVERY target
+// shard's import fails operationally returns (result, nil) --
+// RestoreBackup's own contract for per-shard operational failures is
+// unchanged, reported via result.Errors, never a top-level error -- but
+// the plaintext audit settle record must NOT say OutcomeSuccess for a
+// restore that imported zero shards. Before this fix, the settle closure
+// looked at resultErr alone, which is nil here, so it recorded success
+// (go-qrdb security review, backup-encrypt-default round 4, B5 online).
+func TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure(t *testing.T) {
+	ring := audit.NewRingBuffer(0)
+	provider := newMockSnapshotProvider()
+	svc := mustNewBackupService(t, provider, WithAuditLogger(ring))
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial-import", Encryption: EncryptionNone})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	provider.restoreErr = errors.New("store refused import")
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, AllowPlaintext: true})
+	if err != nil {
+		t.Fatalf("RestoreBackup should not return a top-level error for per-shard operational failures: %v", err)
+	}
+	if result.ShardsRestored != 0 {
+		t.Fatalf("expected 0 shards restored, got %d", result.ShardsRestored)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected per-shard errors in result.Errors")
+	}
+
+	var restoreEvents []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == "backup.restore" {
+			restoreEvents = append(restoreEvents, ev)
+		}
+	}
+	if len(restoreEvents) != 2 {
+		t.Fatalf("got %d backup.restore audit events, want exactly 2 (gate + settle)", len(restoreEvents))
+	}
+	if restoreEvents[0].Outcome != audit.OutcomePermitted {
+		t.Fatalf("gate event Outcome = %q, want %q", restoreEvents[0].Outcome, audit.OutcomePermitted)
+	}
+	if restoreEvents[1].Outcome == audit.OutcomeSuccess {
+		t.Fatalf("settle event Outcome = %q, want a failure outcome: the restore imported 0/%d shards", restoreEvents[1].Outcome, len(result.Errors))
+	}
+}
+
 // TestBackupService_SetAuditFailurePolicy_AppliesAfterConstruction proves
 // SetAuditFailurePolicy (the post-construction setter, mirroring
 // SetAuditLogger) takes effect on the next gated call.
@@ -612,7 +661,7 @@ func TestBackupService_DecryptBackupShard_ShardNotFoundTypedError(t *testing.T) 
 		t.Fatalf("CreateBackup: %v", err)
 	}
 
-	_, err = bs.DecryptBackupShard(ctx, created.ID, 999, "")
+	_, err = bs.DecryptBackupShard(ctx, created.ID, 999, "", true)
 	var notFound *BackupShardNotFoundError
 	if !errors.As(err, &notFound) {
 		t.Fatalf("err = %T, want *BackupShardNotFoundError", err)
