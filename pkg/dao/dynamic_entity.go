@@ -14,10 +14,8 @@
 package dao
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"strconv"
 )
 
@@ -128,20 +126,20 @@ func NewDynamicFieldHashGenerator(fieldName string) *DynamicFieldHashGenerator {
 // DynamicEntity or the field is not found.
 func (g *DynamicFieldHashGenerator) NextID(entity Entity) uint64 {
 	de, ok := entity.(*DynamicEntity)
-	if !ok {
-		return 0
-	}
-	if de.Fields == nil {
+	if !ok || de.Fields == nil {
 		return 0
 	}
 	val, exists := de.Fields[g.fieldName]
 	if !exists {
 		return 0
 	}
+	return g.IDForValue(fmt.Sprint(val))
+}
 
-	h := fnv.New64a()
-	_, _ = fmt.Fprint(h, val)
-	return h.Sum64()
+// IDForValue returns the FNV-1a 64-bit hash of value, the same hash NextID
+// derives from the named Fields entry's string form.
+func (g *DynamicFieldHashGenerator) IDForValue(value string) uint64 {
+	return fnv64aHash(value)
 }
 
 // FieldName returns the field name used for hashing.
@@ -149,13 +147,19 @@ func (g *DynamicFieldHashGenerator) FieldName() string {
 	return g.fieldName
 }
 
+// Compile-time proof that DynamicFieldHashGenerator carries the
+// FieldName/IDForValue pair DeterministicIDGenerator requires.
+var _ DeterministicIDGenerator = (*DynamicFieldHashGenerator)(nil)
+
 // CryptoDynamicFieldHashGenerator is DynamicFieldHashGenerator's
 // collision-resistant counterpart, hashing the named Fields map entry with
-// SHA-256 folded to 64 bits (foldSHA256ToUint64) instead of FNV-1a. See
-// CryptoFieldHashGenerator's doc for what this does and does not add over
-// the FNV-1a generator: the same 64-bit ID space and birthday bound, but a
-// preimage attack is required to engineer a chosen collision rather than
-// none at all. DynamicFieldHashGenerator itself is unchanged for the same
+// SHA-256 truncated to 64 bits (truncateSHA256ToUint64) instead of FNV-1a.
+// See CryptoFieldHashGenerator's doc for what this does and does not add
+// over the FNV-1a generator: the same 64-bit ID space and the same bounds
+// (roughly 2^32 attempts to find any colliding pair when the attacker
+// controls both keys, roughly 2^64 to hit one fixed victim), but a preimage
+// search is required to engineer a chosen collision rather than a direct
+// construction. DynamicFieldHashGenerator itself is unchanged for the same
 // reason FieldHashGenerator is: changing its hash in place would silently
 // orphan every entity already persisted under it (go-qrdb#589).
 type CryptoDynamicFieldHashGenerator struct {
@@ -170,8 +174,8 @@ func NewCryptoDynamicFieldHashGenerator(fieldName string) *CryptoDynamicFieldHas
 }
 
 // NextID extracts the named field from the DynamicEntity's Fields map and
-// returns the SHA-256 digest of its string form, folded to 64 bits. Returns
-// 0 if the entity is not a DynamicEntity or the field is not found,
+// returns the SHA-256 digest of its string form, truncated to 64 bits.
+// Returns 0 if the entity is not a DynamicEntity or the field is not found,
 // matching DynamicFieldHashGenerator's contract.
 func (g *CryptoDynamicFieldHashGenerator) NextID(entity Entity) uint64 {
 	de, ok := entity.(*DynamicEntity)
@@ -182,11 +186,20 @@ func (g *CryptoDynamicFieldHashGenerator) NextID(entity Entity) uint64 {
 	if !exists {
 		return 0
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprint(val)))
-	return foldSHA256ToUint64(sum)
+	return g.IDForValue(fmt.Sprint(val))
+}
+
+// IDForValue returns the SHA-256 digest of value, truncated to 64 bits, the
+// same hash NextID derives from the named Fields entry's string form.
+func (g *CryptoDynamicFieldHashGenerator) IDForValue(value string) uint64 {
+	return sha256TruncatedHash(value)
 }
 
 // FieldName returns the field name used for hashing.
 func (g *CryptoDynamicFieldHashGenerator) FieldName() string {
 	return g.fieldName
 }
+
+// Compile-time proof that CryptoDynamicFieldHashGenerator carries the
+// FieldName/IDForValue pair DeterministicIDGenerator requires.
+var _ DeterministicIDGenerator = (*CryptoDynamicFieldHashGenerator)(nil)

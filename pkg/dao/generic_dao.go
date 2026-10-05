@@ -240,9 +240,32 @@ func New[E Entity](
 }
 
 // Save persists an entity to storage.
+//
+// When EntityID() is 0 and the configured IDGenerator is a
+// DeterministicIDGenerator (FieldHashGenerator, CryptoFieldHashGenerator,
+// DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator), the generated
+// ID can already name a DIFFERENT entity -- a hash-derived ID is drawn from
+// a 64-bit space shared by every natural-key value the generator ever
+// hashes (go-qrdb#589). Save closes that gap itself: it routes this case
+// through SaveIfAbsent's atomic create-if-absent write instead of an
+// unconditional Put, and refuses with *IDCollisionError when the ID was
+// already in use rather than silently overwriting whichever entity got
+// there first.
+//
+// A caller with EntityID() already set (an update, or a non-deterministic
+// generator) takes the unconditional Put path unchanged.
 func (d *genericDAO[E]) Save(ctx context.Context, entity E) error {
-	// Auto-generate ID if not set
 	if entity.EntityID() == 0 {
+		if _, deterministic := d.idGen.(DeterministicIDGenerator); deterministic {
+			stored, err := d.SaveIfAbsent(ctx, entity)
+			if err != nil {
+				return err
+			}
+			if !stored {
+				return &IDCollisionError{EntityType: d.entityType, ID: entity.EntityID()}
+			}
+			return nil
+		}
 		entity.SetEntityID(d.idGen.NextID(entity))
 	}
 
@@ -435,6 +458,31 @@ func (d *genericDAO[E]) Get(ctx context.Context, id uint64) (E, error) {
 	entity := d.newEntity()
 	if err := d.codec.Unmarshal(data, &entity); err != nil {
 		return zero, DeserializationFailedError{EntityType: d.entityType, Cause: err}
+	}
+
+	return entity, nil
+}
+
+// GetByNaturalKey retrieves the entity whose natural-key field equals value.
+// See the GenericDAO interface for the contract: this is Get(ctx,
+// generator.IDForValue(value)) plus the VerifyNaturalKey check Get alone
+// cannot perform, in one call a caller cannot split apart and only do half
+// of (go-qrdb#589).
+func (d *genericDAO[E]) GetByNaturalKey(ctx context.Context, value string) (E, error) {
+	var zero E
+
+	namedGen, ok := d.idGen.(DeterministicIDGenerator)
+	if !ok {
+		return zero, &UnsupportedIDGeneratorError{EntityType: d.entityType}
+	}
+
+	entity, err := d.Get(ctx, namedGen.IDForValue(value))
+	if err != nil {
+		return zero, err
+	}
+
+	if err := VerifyNaturalKey(entity, d.entityType, namedGen.FieldName(), value); err != nil {
+		return zero, err
 	}
 
 	return entity, nil

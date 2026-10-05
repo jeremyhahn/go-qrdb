@@ -268,3 +268,87 @@ func TestSDK_UnitOfWorkRefusalIsTestableByConsumers(t *testing.T) {
 	var notFound sdk.DAONotFoundError
 	require.ErrorAs(t, getErr, &notFound, "a refused Commit must not reach the store")
 }
+
+// reexportInvitee is a struct entity with a natural-key field, used by the
+// go-qrdb#589 ID-collision tests below. It needs its own type because
+// reexportMember's natural key (Team) is not unique per entity.
+type reexportInvitee struct {
+	ID    uint64 `json:"id"`
+	Email string `json:"email"`
+}
+
+func (i *reexportInvitee) EntityID() uint64      { return i.ID }
+func (i *reexportInvitee) SetEntityID(id uint64) { i.ID = id }
+
+// collidingGenerator is a consumer-defined DeterministicIDGenerator that
+// maps every value to the same ID, standing in for a real hash collision so
+// the test is deterministic. Satisfying sdk.DeterministicIDGenerator from
+// OUTSIDE the module is itself part of what this test proves: an embedder's
+// own custom generator gets the same create-if-absent and GetByNaturalKey
+// protection as the built-in ones.
+type collidingGenerator struct{ id uint64 }
+
+func (g *collidingGenerator) NextID(sdk.Entity) uint64 { return g.id }
+func (g *collidingGenerator) FieldName() string        { return "Email" }
+func (g *collidingGenerator) IDForValue(string) uint64 { return g.id }
+
+var _ sdk.DeterministicIDGenerator = (*collidingGenerator)(nil)
+
+// TestSDK_IDCollisionIsTestableByConsumers covers go-qrdb#589's write-path
+// guard: Save routes a DeterministicIDGenerator's first-time ID assignment
+// through an atomic create-if-absent write, and a consumer can name the
+// collision refusal through the SDK alone.
+func TestSDK_IDCollisionIsTestableByConsumers(t *testing.T) {
+	var _ error = (*sdk.DAOIDCollisionError)(nil)
+
+	ctx := context.Background()
+	gen := &collidingGenerator{id: 55}
+	d, err := sdk.NewDAO(sdk.NewMemoryKVStore(), "invitee",
+		func() *reexportInvitee { return &reexportInvitee{} },
+		sdk.WithIDGenerator(gen))
+	require.NoError(t, err)
+
+	require.NoError(t, d.Save(ctx, &reexportInvitee{Email: "a@example.com"}))
+
+	err = d.Save(ctx, &reexportInvitee{Email: "b@example.com"})
+	var collision *sdk.DAOIDCollisionError
+	require.ErrorAs(t, err, &collision)
+	require.Equal(t, uint64(55), collision.ID)
+}
+
+// TestSDK_GetByNaturalKeyIsTestableByConsumers covers go-qrdb#589's
+// read-path guard: GetByNaturalKey derives the lookup ID and verifies it
+// against the natural-key value in one call a consumer cannot split apart
+// and only do half of.
+func TestSDK_GetByNaturalKeyIsTestableByConsumers(t *testing.T) {
+	var _ error = (*sdk.DAOUnsupportedIDGeneratorError)(nil)
+	var _ error = (*sdk.NaturalKeyMismatchError)(nil)
+
+	ctx := context.Background()
+	gen := &collidingGenerator{id: 77}
+	d, err := sdk.NewDAO(sdk.NewMemoryKVStore(), "invitee",
+		func() *reexportInvitee { return &reexportInvitee{} },
+		sdk.WithIDGenerator(gen))
+	require.NoError(t, err)
+
+	require.NoError(t, d.Save(ctx, &reexportInvitee{Email: "a@example.com"}))
+
+	got, err := d.GetByNaturalKey(ctx, "a@example.com")
+	require.NoError(t, err)
+	require.Equal(t, "a@example.com", got.Email)
+
+	// "b@example.com" forces the same ID but was never actually stored --
+	// the write-side guard refused it -- so the read must report the
+	// mismatch rather than hand back "a@example.com" unexamined.
+	_, err = d.GetByNaturalKey(ctx, "b@example.com")
+	var mismatch sdk.NaturalKeyMismatchError
+	require.ErrorAs(t, err, &mismatch)
+
+	// A DAO with no DeterministicIDGenerator configured refuses instead of
+	// guessing at an ID.
+	plain, err := sdk.NewDAO(sdk.NewMemoryKVStore(), "member", func() *reexportMember { return &reexportMember{} })
+	require.NoError(t, err)
+	_, err = plain.GetByNaturalKey(ctx, "alpha")
+	var unsupported *sdk.DAOUnsupportedIDGeneratorError
+	require.ErrorAs(t, err, &unsupported)
+}

@@ -122,6 +122,29 @@ type GenericDAO[E Entity] interface {
 	// Returns ErrNotFound if the entity doesn't exist.
 	Get(ctx context.Context, id uint64) (E, error)
 
+	// GetByNaturalKey retrieves the entity whose natural-key field equals
+	// value, deriving the lookup ID from the DAO's configured IDGenerator
+	// the same way Save does, and verifying the result against value with
+	// VerifyNaturalKey before returning it.
+	//
+	// This is the read-side half of the create-if-absent guarantee Save
+	// provides for a DeterministicIDGenerator (FieldHashGenerator,
+	// CryptoFieldHashGenerator, DynamicFieldHashGenerator,
+	// CryptoDynamicFieldHashGenerator): a hash-derived ID is drawn from a
+	// 64-bit space shared by every natural-key value the generator ever
+	// hashes, so Get(ctx, id) alone cannot tell a collision from a correct
+	// lookup -- by the time it has an ID it no longer has the value the
+	// caller meant to look up by. GetByNaturalKey cannot be called without
+	// the verification, unlike the manual Get-then-VerifyNaturalKey
+	// pattern, which a caller can forget half of (go-qrdb#589).
+	//
+	// Returns *UnsupportedIDGeneratorError when the configured IDGenerator
+	// is not a DeterministicIDGenerator, since there is then no
+	// deterministic way to derive an ID from a bare value. Returns
+	// *NaturalKeyMismatchError when the derived ID names a DIFFERENT
+	// entity. Returns NotFoundError when it names no entity at all.
+	GetByNaturalKey(ctx context.Context, value string) (E, error)
+
 	// Delete removes an entity from storage.
 	// Returns ErrInvalidEntityID if entity.EntityID() is 0.
 	// Returns nil if the entity doesn't exist (idempotent).

@@ -46,6 +46,18 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 // IDGenerator generates unique entity IDs for DAO entities.
 type IDGenerator = dao.IDGenerator
 
+// DeterministicIDGenerator is implemented by every hash-derived IDGenerator
+// below (FieldHashGenerator, CryptoFieldHashGenerator,
+// DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator): NextID's
+// result depends only on one named natural-key value, so two different
+// entities can land on the same ID through nothing worse than an unlucky
+// draw from the 64-bit output space (see CryptoFieldHashGenerator's doc for
+// the bound). GenericDAO.Save and GenericDAO.GetByNaturalKey use it to
+// close the write- and read-side halves of that gap (go-qrdb#589); an
+// embedder implementing a custom deterministic generator satisfies both by
+// implementing this interface.
+type DeterministicIDGenerator = dao.DeterministicIDGenerator
+
 // FieldHashGenerator generates deterministic entity IDs by hashing a
 // named struct field using FNV-1a.
 type FieldHashGenerator = dao.FieldHashGenerator
@@ -55,13 +67,21 @@ type FieldHashGenerator = dao.FieldHashGenerator
 var NewFieldHashGenerator = dao.NewFieldHashGenerator
 
 // CryptoFieldHashGenerator is FieldHashGenerator's collision-resistant
-// counterpart: it hashes the named struct field with SHA-256 instead of
-// FNV-1a, so engineering a second natural-key value that lands on a chosen
-// target's ID requires a preimage attack rather than none at all. It
-// shares FieldHashGenerator's 64-bit ID space and birthday bound, so a
-// caller that must DETECT a collision rather than merely resist one being
-// engineered deliberately still needs VerifyNaturalKey on every read
-// (go-qrdb#589).
+// counterpart: it hashes the named struct field with SHA-256, truncated to
+// 64 bits, instead of FNV-1a.
+//
+// The difference is resistance, not collision probability: both land in
+// the same 64-bit ID space and share its bounds. An attacker who controls
+// BOTH colliding natural-key values needs roughly 2^32 attempts to find
+// any pair that collides (the birthday bound on a 64-bit space); an
+// attacker who must hit one FIXED victim ID needs roughly 2^64 (a generic
+// preimage search), and FNV-1a offers no resistance at all to that second
+// case -- a value whose FNV-1a sum equals a chosen target's is
+// constructible directly, not merely found by brute force (go-qrdb#589).
+// SHA-256 does not change either bound; it closes the direct-construction
+// attack FNV-1a is open to. A caller that must DETECT a collision that
+// occurred despite this -- rather than merely resist one being engineered
+// -- uses GetByNaturalKey, or calls VerifyNaturalKey after Get directly.
 type CryptoFieldHashGenerator = dao.CryptoFieldHashGenerator
 
 // NewCryptoFieldHashGenerator creates a new CryptoFieldHashGenerator for
@@ -75,10 +95,14 @@ type NaturalKeyMismatchError = dao.NaturalKeyMismatchError
 
 // VerifyNaturalKey reads fieldName off entity and reports a
 // *NaturalKeyMismatchError when its string form does not equal expected.
-// Call it after Get when entity's ID came from a hash-derived generator
-// (FieldHashGenerator, CryptoFieldHashGenerator, DynamicFieldHashGenerator,
-// CryptoDynamicFieldHashGenerator) and silently accepting a DIFFERENT
-// entity that happened to hash to the same ID is not acceptable.
+//
+// GenericDAO.GetByNaturalKey calls this on every read, so a caller using it
+// gets the check with no separate step to remember. Call it directly after
+// Get only when entity's ID was computed outside the DAO from a
+// hash-derived generator (FieldHashGenerator, CryptoFieldHashGenerator,
+// DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator) and silently
+// accepting a DIFFERENT entity that happened to hash to the same ID is not
+// acceptable.
 var VerifyNaturalKey = dao.VerifyNaturalKey
 
 // WithIDGenerator configures a GenericDAO to use a custom ID generator.
@@ -186,8 +210,9 @@ type DynamicFieldHashGenerator = dao.DynamicFieldHashGenerator
 var NewDynamicFieldHashGenerator = dao.NewDynamicFieldHashGenerator
 
 // CryptoDynamicFieldHashGenerator is DynamicFieldHashGenerator's
-// collision-resistant counterpart; see CryptoFieldHashGenerator for what
-// SHA-256 adds over FNV-1a and what it does not.
+// collision-resistant counterpart; see CryptoFieldHashGenerator for the
+// resistance SHA-256 adds over FNV-1a, what it does not, and the bounds on
+// both.
 type CryptoDynamicFieldHashGenerator = dao.CryptoDynamicFieldHashGenerator
 
 // NewCryptoDynamicFieldHashGenerator creates a new
@@ -246,6 +271,19 @@ type DAODeserializationFailedError = dao.DeserializationFailedError
 
 // DAOInvalidEntityIDError is returned when an entity ID is invalid.
 type DAOInvalidEntityIDError = dao.InvalidEntityIDError
+
+// DAOIDCollisionError is Save's refusal when a DeterministicIDGenerator
+// derives an ID for a NEW entity that already names a different stored
+// record. Save routes that case through the store's atomic
+// create-if-absent write and refuses rather than silently overwrite the
+// existing record (go-qrdb#589).
+type DAOIDCollisionError = dao.IDCollisionError
+
+// DAOUnsupportedIDGeneratorError is GetByNaturalKey's refusal when the
+// DAO's configured IDGenerator does not implement DeterministicIDGenerator,
+// so there is no deterministic way to derive a lookup ID from a bare
+// natural-key value.
+type DAOUnsupportedIDGeneratorError = dao.UnsupportedIDGeneratorError
 
 // DAOCodecCreationError is returned when codec creation fails.
 type DAOCodecCreationError = dao.CodecCreationError

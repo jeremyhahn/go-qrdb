@@ -447,12 +447,26 @@ are not reconstructed here — their history is in the git log.
   outside the module, which the existing type-only re-export could not
   reach. `kvstore.CompareAndSwapWithCurrent` returns
   the current value on a failed compare. `dao.CryptoFieldHashGenerator` /
-  `CryptoDynamicFieldHashGenerator` hash a natural key with SHA-256 instead
-  of FNV-1a, and `dao.VerifyNaturalKey` detects a collision on read;
+  `CryptoDynamicFieldHashGenerator` hash a natural key with SHA-256,
+  truncated to 64 bits (the standard construction; an earlier revision of
+  this change XOR-folded the digest's four lanes instead, on the mistaken
+  belief that folding resists a chosen-collision attack truncation does
+  not), instead of FNV-1a;
   `FieldHashGenerator`/`DynamicFieldHashGenerator` are unchanged, since
   swapping their hash in place would orphan already-persisted entities. A
   move to string entity IDs (the issue's other suggested option) is an
-  architecture decision left to the owner.
+  architecture decision left to the owner. **`GenericDAO.Save` now closes
+  the write-path gap a hash-derived ID leaves open**: a NEW entity
+  (`EntityID() == 0`) whose generator implements the new
+  `dao.DeterministicIDGenerator` interface is created through the store's
+  atomic create-if-absent write, refusing with `*dao.IDCollisionError`
+  rather than silently overwriting whichever entity got there first. The
+  new `GenericDAO.GetByNaturalKey(ctx, value)` is the read-side half,
+  deriving the lookup ID and calling `dao.VerifyNaturalKey` on the result
+  before returning it, in one call that cannot be split apart and only
+  have half of it remembered; it refuses with
+  `*dao.UnsupportedIDGeneratorError` when the configured generator is not
+  deterministic.
 
 ## [0.41.0-alpha] - 2026-10-04
 

@@ -23,6 +23,40 @@ import (
 	"time"
 )
 
+// DeterministicIDGenerator is implemented by every hash-derived IDGenerator
+// in this package (FieldHashGenerator, CryptoFieldHashGenerator,
+// DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator): NextID's
+// result depends only on one named natural-key value, never on process
+// state (a counter, the clock), so two different entities can land on the
+// same ID through nothing worse than an unlucky draw from the 64-bit output
+// space (go-qrdb#589; see CryptoFieldHashGenerator's doc for how large that
+// draw has to be).
+//
+// genericDAO uses it for two things. Save routes a generator's own
+// first-time ID assignment (EntityID() == 0) through the store's atomic
+// create-if-absent write (SaveIfAbsent) instead of an unconditional Put, so
+// a collision REFUSES with *IDCollisionError rather than silently
+// overwriting whichever entity got there first. GetByNaturalKey derives the
+// lookup ID from IDForValue and verifies the result against the natural-key
+// value with VerifyNaturalKey before returning it -- the read-side half of
+// the same guarantee, not opt-in because there is no way to call
+// GetByNaturalKey without it.
+type DeterministicIDGenerator interface {
+	IDGenerator
+
+	// FieldName returns the struct field (FieldHashGenerator,
+	// CryptoFieldHashGenerator) or DynamicEntity.Fields key
+	// (DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator) this
+	// generator's NextID hashes.
+	FieldName() string
+
+	// IDForValue returns the ID NextID would derive from an entity whose
+	// FieldName() field equals value, without needing to construct one.
+	// It is what lets GetByNaturalKey compute a lookup ID from a bare
+	// value.
+	IDForValue(value string) uint64
+}
+
 // IDGenerator generates unique identifiers for entities.
 // Implementations must be safe for concurrent use.
 type IDGenerator interface {
@@ -130,26 +164,27 @@ func NewFieldHashGenerator(fieldName string) *FieldHashGenerator {
 // NextID extracts the named field from the entity struct and returns
 // its FNV-1a 64-bit hash. Returns 0 if the field is not found.
 func (g *FieldHashGenerator) NextID(entity Entity) uint64 {
-	val := reflect.ValueOf(entity)
-
-	// Dereference pointers to get the underlying struct.
-	for val.Kind() == reflect.Pointer {
-		val = val.Elem()
-	}
-
-	if val.Kind() != reflect.Struct {
+	value, ok := structFieldString(entity, g.fieldName)
+	if !ok {
 		return 0
 	}
-
-	field := val.FieldByName(g.fieldName)
-	if !field.IsValid() {
-		return 0
-	}
-
-	h := fnv.New64a()
-	_, _ = fmt.Fprint(h, field.Interface())
-	return h.Sum64()
+	return g.IDForValue(value)
 }
+
+// IDForValue returns the FNV-1a 64-bit hash of value, the same hash NextID
+// derives from the named field's string form.
+func (g *FieldHashGenerator) IDForValue(value string) uint64 {
+	return fnv64aHash(value)
+}
+
+// FieldName returns the field name used for hashing.
+func (g *FieldHashGenerator) FieldName() string {
+	return g.fieldName
+}
+
+// Compile-time proof that FieldHashGenerator carries the FieldName/
+// IDForValue pair DeterministicIDGenerator requires.
+var _ DeterministicIDGenerator = (*FieldHashGenerator)(nil)
 
 // structFieldString extracts the named field from entity via reflection and
 // renders it with fmt.Sprint, the same stringification both FieldHashGenerator
@@ -171,34 +206,62 @@ func structFieldString(entity Entity, fieldName string) (value string, ok bool) 
 	return fmt.Sprint(field.Interface()), true
 }
 
-// foldSHA256ToUint64 folds a SHA-256 digest down to a uint64 by XOR-ing each
-// of its four 8-byte lanes together, rather than truncating to the digest's
-// first 8 bytes. Truncation uses only the hash's first lane and discards the
-// rest, so two inputs engineered to share a first lane would already
-// collide before the fold does anything; XOR-folding makes every bit of the
-// 256-bit digest participate in the result.
-func foldSHA256ToUint64(sum [sha256.Size]byte) uint64 {
-	var id uint64
-	for i := 0; i < len(sum); i += 8 {
-		id ^= binary.BigEndian.Uint64(sum[i : i+8])
-	}
-	return id
+// fnv64aHash returns the FNV-1a 64-bit hash of value. It is the one place
+// FieldHashGenerator and DynamicFieldHashGenerator compute their hash, so
+// their results stay identical for the same stringified value regardless of
+// whether it came from a struct field or a DynamicEntity.Fields entry.
+func fnv64aHash(value string) uint64 {
+	h := fnv.New64a()
+	_, _ = fmt.Fprint(h, value)
+	return h.Sum64()
+}
+
+// truncateSHA256ToUint64 returns the first 8 bytes of a SHA-256 digest,
+// big-endian, as a uint64 -- the standard construction for deriving a
+// shorter fixed-width value from a cryptographic hash (e.g. RFC 9562 §5.8's
+// UUIDv8, which this codebase's own role.SystemRoleID already truncates
+// SHA-256 for).
+//
+// An earlier version of this function XOR-folded all four 8-byte lanes of
+// the digest together instead, reasoning that truncation "uses only the
+// hash's first lane and discards the rest." That reasoning does not hold:
+// SHA-256 is a pseudorandom function, not an identity map over lanes, so
+// finding a second input whose digest shares just the first 8 bytes with a
+// target's is already as hard as a generic preimage search against those 64
+// bits -- there is no cheaper attack that touches "only" one lane, and
+// XOR-folding the other three lanes in does not raise that cost. It
+// produces a differently-distributed 64-bit value, not a more resistant
+// one, which makes it home-made construction rather than the textbook one
+// (go-qrdb#589).
+func truncateSHA256ToUint64(sum [sha256.Size]byte) uint64 {
+	return binary.BigEndian.Uint64(sum[:8])
+}
+
+// sha256TruncatedHash returns the SHA-256 digest of value, truncated to 64
+// bits (truncateSHA256ToUint64). It is the one place CryptoFieldHashGenerator
+// and CryptoDynamicFieldHashGenerator compute their hash.
+func sha256TruncatedHash(value string) uint64 {
+	sum := sha256.Sum256([]byte(value))
+	return truncateSHA256ToUint64(sum)
 }
 
 // CryptoFieldHashGenerator generates deterministic entity IDs by hashing a
-// named struct field with SHA-256, folded to 64 bits (foldSHA256ToUint64),
-// rather than FieldHashGenerator's FNV-1a.
+// named struct field with SHA-256, truncated to 64 bits
+// (truncateSHA256ToUint64), rather than FieldHashGenerator's FNV-1a.
 //
 // The difference is resistance, not collision probability: both land in the
-// same 64-bit ID space and share its birthday bound (a collision becomes
-// likely somewhere around 2^32 distinct natural-key values), so a
-// CryptoFieldHashGenerator user still needs VerifyNaturalKey on every read
-// if it must DETECT a collision rather than merely resist an attacker
-// deliberately engineering one. What SHA-256 adds is that engineering a
-// second natural-key value that lands on a chosen target's ID requires a
-// preimage attack; FNV-1a has no such resistance at all -- a second value
-// colliding with a known FNV-1a sum is constructible directly, not merely
-// unlikely to occur by chance (go-qrdb#589).
+// same 64-bit ID space and share its bounds. An attacker who controls BOTH
+// colliding natural-key values needs roughly 2^32 attempts to find any pair
+// that collides (the birthday bound on a 64-bit space); an attacker who
+// must hit one FIXED victim ID needs roughly 2^64 (a generic preimage
+// search), and FNV-1a offers no resistance at all to that second case -- a
+// value whose FNV-1a sum equals a chosen target's is constructible
+// directly, by solving for it, not merely found by brute force (go-qrdb#589).
+// SHA-256 does not change either bound; it closes the direct-construction
+// attack FNV-1a is open to by requiring a real preimage search instead. A
+// CryptoFieldHashGenerator user that must DETECT a collision that occurred
+// despite this -- rather than merely resist one being engineered -- still
+// needs VerifyNaturalKey on every read.
 //
 // FieldHashGenerator itself is unchanged and keeps its own hash: swapping
 // its algorithm in place would silently orphan every entity already
@@ -216,21 +279,30 @@ func NewCryptoFieldHashGenerator(fieldName string) *CryptoFieldHashGenerator {
 }
 
 // NextID extracts the named field from the entity struct and returns the
-// SHA-256 digest of its string form, folded to 64 bits. Returns 0 if the
+// SHA-256 digest of its string form, truncated to 64 bits. Returns 0 if the
 // field is not found, matching FieldHashGenerator's contract.
 func (g *CryptoFieldHashGenerator) NextID(entity Entity) uint64 {
 	value, ok := structFieldString(entity, g.fieldName)
 	if !ok {
 		return 0
 	}
-	sum := sha256.Sum256([]byte(value))
-	return foldSHA256ToUint64(sum)
+	return g.IDForValue(value)
+}
+
+// IDForValue returns the SHA-256 digest of value, truncated to 64 bits, the
+// same hash NextID derives from the named field's string form.
+func (g *CryptoFieldHashGenerator) IDForValue(value string) uint64 {
+	return sha256TruncatedHash(value)
 }
 
 // FieldName returns the field name used for hashing.
 func (g *CryptoFieldHashGenerator) FieldName() string {
 	return g.fieldName
 }
+
+// Compile-time proof that CryptoFieldHashGenerator carries the
+// FieldName/IDForValue pair DeterministicIDGenerator requires.
+var _ DeterministicIDGenerator = (*CryptoFieldHashGenerator)(nil)
 
 // NaturalKeyMismatchError is returned by VerifyNaturalKey when an entity
 // read back by a hash-derived ID does not carry the natural-key value the
@@ -254,11 +326,14 @@ func (e NaturalKeyMismatchError) Error() string {
 // VerifyNaturalKey reads fieldName off entity and reports a
 // *NaturalKeyMismatchError when its string form does not equal expected.
 //
-// A caller that looks an entity up by a hash-derived ID (FieldHashGenerator,
-// CryptoFieldHashGenerator, DynamicFieldHashGenerator,
-// CryptoDynamicFieldHashGenerator) and must not silently accept a DIFFERENT
-// entity that happened to hash to the same ID calls this after Get, with
-// expected set to the natural-key value it looked up by:
+// GenericDAO.GetByNaturalKey calls this on every read for an entity
+// configured with a DeterministicIDGenerator, so a caller using it gets the
+// check with no separate step to remember. A caller that instead computes
+// the hash-derived ID itself (FieldHashGenerator, CryptoFieldHashGenerator,
+// DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator) and calls Get
+// directly must not silently accept a DIFFERENT entity that happened to
+// hash to the same ID, and calls this explicitly after Get, with expected
+// set to the natural-key value it looked up by:
 //
 //	user, err := userDAO.Get(ctx, dao.NewCryptoFieldHashGenerator("Email").NextID(&User{Email: email}))
 //	if err == nil {
@@ -266,12 +341,12 @@ func (e NaturalKeyMismatchError) Error() string {
 //	}
 //
 // It is a verification, not a defense: nothing here prevents a collision
-// from being written in the first place (two different emails hashing to
-// the same ID both SaveIfAbsent-ing would have the second one refused,
-// correctly, as "already exists" — for the wrong reason, aliasing a
-// different user). VerifyNaturalKey only ensures the collision is NOISY
-// rather than silent, at the one place it can still be caught: the read
-// that would otherwise hand back someone else's record.
+// from being written in the first place through a path other than Save or
+// SaveIfAbsent (a store write that bypasses GenericDAO entirely, or data
+// persisted before the create-if-absent write-path guard existed).
+// VerifyNaturalKey only ensures such a collision is NOISY rather than
+// silent, at the one place it can still be caught: the read that would
+// otherwise hand back someone else's record.
 //
 // entity not dereferencing to a struct, or fieldName not existing on it, is
 // not an error here: there is nothing to verify, and the caller gets

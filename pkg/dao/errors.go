@@ -312,3 +312,38 @@ func (e *AtomicBatchUnsupportedError) Is(target error) bool {
 
 // Unwrap returns the store's refusal, if any.
 func (e *AtomicBatchUnsupportedError) Unwrap() error { return e.Err }
+
+// IDCollisionError is Save's refusal when a DeterministicIDGenerator derives
+// an ID for a NEW entity (EntityID() == 0 at Save time) that already names a
+// different stored record.
+//
+// A hash-derived ID is drawn from a 64-bit space shared by every natural-key
+// value the generator ever hashes, so a draw landing on an already-occupied
+// ID is an expected, bounded-probability outcome, not a programming error --
+// see CryptoFieldHashGenerator's doc for the bound. Save routes this case
+// through the store's atomic create-if-absent write (the same primitive
+// SaveIfAbsent uses) and refuses with this error rather than silently
+// overwriting the existing record, since the two entities share an ID but
+// not an identity (go-qrdb#589).
+type IDCollisionError struct {
+	EntityType string
+	ID         uint64
+}
+
+// Error returns a human-readable description naming the entity type and ID.
+func (e *IDCollisionError) Error() string {
+	return fmt.Sprintf("dao: %s: ID %d is already in use by a different entity (hash-derived ID collision)", e.EntityType, e.ID)
+}
+
+// UnsupportedIDGeneratorError is GetByNaturalKey's refusal when the DAO's
+// configured IDGenerator does not implement DeterministicIDGenerator, so
+// there is no deterministic way to derive a lookup ID from a bare natural-key
+// value.
+type UnsupportedIDGeneratorError struct {
+	EntityType string
+}
+
+// Error returns a human-readable description naming the entity type.
+func (e *UnsupportedIDGeneratorError) Error() string {
+	return fmt.Sprintf("dao: %s: configured IDGenerator does not support lookup by natural key", e.EntityType)
+}

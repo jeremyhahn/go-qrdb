@@ -95,14 +95,33 @@ type DAOAtomicBatchUnsupportedError
 // FieldHashGenerator and DynamicFieldHashGenerator hash a natural key with
 // FNV-1a, which has no resistance to a deliberately engineered collision.
 // CryptoFieldHashGenerator and CryptoDynamicFieldHashGenerator hash with
-// SHA-256 instead, for a NEW entity type that needs that resistance; the
-// FNV-1a generators are unchanged, since swapping their hash function in
-// place would orphan every entity already persisted under it.
-// VerifyNaturalKey(entity, entityType, fieldName, expected) detects a
-// collision AFTER a hash-derived Get, by comparing the read-back entity's
-// natural-key field against the one the caller looked up by -- the one
-// place a collision can still be caught, since nothing prevents one from
-// being written in the first place.
+// SHA-256 instead, truncated to 64 bits (the standard construction -- not
+// XOR-folded, which an earlier version of this code did on the mistaken
+// belief that folding resists a chosen-collision attack truncation does
+// not; it does not). Both families land in the same 64-bit ID space and
+// share its bounds: roughly 2^32 attempts to find any colliding PAIR when
+// the attacker controls both natural-key values (the birthday bound), and
+// roughly 2^64 to hit one FIXED victim ID (a generic preimage search).
+// SHA-256 does not change either bound; it closes FNV-1a's direct-
+// construction attack, which needs no search at all. The FNV-1a generators
+// are unchanged, since swapping their hash function in place would orphan
+// every entity already persisted under it.
+//
+// GenericDAO closes the write- and read-side gaps a collision leaves open,
+// for every generator that implements DeterministicIDGenerator (all four):
+// Save routes a NEW entity's hash-derived ID through the store's atomic
+// create-if-absent write and refuses with *DAOIDCollisionError rather than
+// silently overwriting whichever entity got there first.
+// GetByNaturalKey(ctx, value) derives the lookup ID and calls
+// VerifyNaturalKey(entity, entityType, fieldName, value) on the result
+// before returning it -- comparing the read-back entity's natural-key
+// field against the value the caller looked up by -- so the check is not
+// opt-in the way calling VerifyNaturalKey manually after a plain Get is.
+// *DAOUnsupportedIDGeneratorError is GetByNaturalKey's refusal when the
+// configured generator is not deterministic.
+type DeterministicIDGenerator
+type DAOIDCollisionError
+type DAOUnsupportedIDGeneratorError
 var NewCryptoFieldHashGenerator, NewCryptoDynamicFieldHashGenerator
 var VerifyNaturalKey
 ```
@@ -369,6 +388,10 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |
 | Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
 | `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |
+| `Save` of a NEW entity (`EntityID() == 0`) whose `DeterministicIDGenerator`-derived ID already names a different stored record | `*dao.IDCollisionError` | **yes** — routed through the store's atomic create-if-absent write, never an unconditional `Put` |
+| `Save` of a NEW entity with a `DeterministicIDGenerator` configured, over a store with no atomic write | `*dao.AtomicWriteUnsupportedError` | **yes** — the same refusal `SaveIfAbsent` gives; `Save` does not silently fall back to an unconditional `Put` for this case |
+| `GetByNaturalKey` where the configured `IDGenerator` is not a `DeterministicIDGenerator` | `*dao.UnsupportedIDGeneratorError` | **yes** — there is no deterministic way to derive an ID from a bare value |
+| `GetByNaturalKey` where the derived ID names a DIFFERENT entity | `dao.NaturalKeyMismatchError` | **yes** — the mismatched record is never returned |
 
 **There is one atomic-refusal marker: `kvstore.ErrAtomicWriteUnsupported`.**
 Every layer that refuses a guarded write for want of the capability — the
