@@ -764,7 +764,6 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	workDir := t.TempDir()
 
 	const threshold, total = 2, 3
-	const soPIN, userPIN = "shamir-test-so-pin-1", "shamir-test-user-pin-1"
 	configPath := writeSealConfig(t, "shamir", threshold, total)
 	dataDir := t.TempDir()
 	raftPorts := allocatePorts(t, 1)
@@ -1043,11 +1042,9 @@ func startSealNodeAllTransports(t *testing.T, binary, dataDir, configPath string
 	cmd := startNode(t, binary, args, "[barrier-mt] ")
 
 	caPath := filepath.Join(dataDir, "ca.pem")
-	adminCertPath := filepath.Join(dataDir, "admin-cert.pem")
-	adminKeyPath := filepath.Join(dataDir, "admin-key.pem")
 	waitForNonEmptyFile(t, caPath, 30*time.Second)
-	waitForNonEmptyFile(t, adminCertPath, 30*time.Second)
-	waitForNonEmptyFile(t, adminKeyPath, 30*time.Second)
+	ca := loadDaemonCA(t, dataDir)
+	adminCert, adminKey := ca.boundAdminCert(t, t.TempDir())
 
 	return &sealNodeAllTransports{
 		cmd:        cmd,
@@ -1058,9 +1055,9 @@ func startSealNodeAllTransports(t *testing.T, binary, dataDir, configPath string
 		mcpPort:    mcpPort,
 		unixSocket: unixSocket,
 		caFile:     caPath,
-		adminCert:  adminCertPath,
-		adminKey:   adminKeyPath,
-		ca:         loadDaemonCA(t, dataDir),
+		adminCert:  adminCert,
+		adminKey:   adminKey,
+		ca:         ca,
 	}
 }
 
@@ -1107,6 +1104,37 @@ func (n *sealNodeAllTransports) adminFlagsFor(proto multiProtocol) []string {
 		"--timeout", "30s",
 	}
 }
+
+// noAuthFlagsFor returns the qrdb CLI global flags reaching this node over
+// proto with no client certificate -- the only flags that work before
+// `qrdb init` has issued the admin credential. Mirrors sealNode.noAuthFlags.
+func (n *sealNodeAllTransports) noAuthFlagsFor(proto multiProtocol) []string {
+	return []string{
+		"--server", n.serverURLFor(proto),
+		"--ca-file", n.caFile,
+		"--timeout", "30s",
+	}
+}
+
+// initSystem bootstraps the node with `qrdb init` over proto, binding
+// n.adminCert as the bootstrap admin (--admin-cert, the bring-your-own-
+// certificate path: the node's own CA issued it, so no trust pool is
+// needed). Mirrors sealNode.initSystem for the multi-transport harness.
+func (n *sealNodeAllTransports) initSystem(t *testing.T, cli string, proto multiProtocol, extraArgs ...string) string {
+	t.Helper()
+	return bootAdminIdentityVia(t, cli, n.noAuthFlagsFor(proto), sealNodeSOPIN, sealNodeUserPIN, n.adminCert, n.adminKey, "",
+		append([]string{"--admin-cert", n.adminCert}, extraArgs...)...)
+}
+
+// waitForFullBoot mirrors sealNode.waitForFullBoot for the multi-transport
+// harness.
+func (n *sealNodeAllTransports) waitForFullBoot(t *testing.T) {
+	t.Helper()
+	waitForHealthy(t, n.dataDir, 60*time.Second)
+	waitForAdmin(t, n.ca.Pool, n.adminPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, n.ca, []int{n.adminPort}, 60*time.Second)
+}
+
 func (n *sealNodeAllTransports) endpointFor(proto multiProtocol) endpoint {
 	return endpoint{serverURL: n.serverURLFor(proto), caFile: n.caFile}
 }
@@ -1125,7 +1153,6 @@ func testBarrierOfficerRevokeOverProtocol(t *testing.T, proto multiProtocol) {
 	cli := buildCLIBinary(t)
 	workDir := t.TempDir()
 	const threshold, total = 2, 3
-	const soPIN, userPIN = "shamir-test-so-pin-2", "shamir-test-user-pin-2"
 	configPath := writeSealConfig(t, "shamir", threshold, total)
 	dataDir := t.TempDir()
 	// Unix socket paths are limited to ~108 bytes by the kernel and
@@ -1144,32 +1171,28 @@ func testBarrierOfficerRevokeOverProtocol(t *testing.T, proto multiProtocol) {
 
 	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
 		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
-	flags := node.adminFlagsFor(proto)
 	ep := node.endpointFor(proto)
 
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(proto), 60*time.Second)
 	scope := systemScope(transport.DomainUnseal)
 
-	alice := registerOfficer(t, cli, workDir, flags, scope, "alice")
-	bob := registerOfficer(t, cli, workDir, flags, scope, "bob")
-	carol := registerOfficer(t, cli, workDir, flags, scope, "carol")
+	// `qrdb init` enrols the holders from their CSRs and splits the unseal
+	// key to them in the same call that issues the admin credential.
+	holders, holderFlags := initHolders(t, workDir, "alice", "bob", "carol")
+	initOut := node.initSystem(t, cli, proto, append([]string{"--barrier-strategy", "shamir",
+		"--threshold", strconv.Itoa(threshold), "--shares", strconv.Itoa(total)}, holderFlags...)...)
+	adoptInitHolders(t, workDir, initOut, holders)
+	alice, bob, carol := holders[0], holders[1], holders[2]
+	flags := node.adminFlagsFor(proto)
 
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init-shamir",
-		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total), "--so-pin", soPIN, "--user-pin", userPIN)...); err != nil {
-		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
-	}
-
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+	node.waitForFullBoot(t)
 	claimEnvelope(t, cli, workDir, ep, scope, alice)
 	claimEnvelope(t, cli, workDir, ep, scope, bob)
 	claimEnvelope(t, cli, workDir, ep, scope, carol)
 	preRevokeCarol := *carol
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "officer", "revoke", "--username", "carol", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
+		"barrier", "officer", "revoke", "--username", "carol", "--threshold", strconv.Itoa(threshold), "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("barrier officer revoke carol: %v\nstderr: %s", err, stderr)
 	}
 	if out := quorumAll(t, cli, ep, scope, "rekey", alice, bob); !out.Complete {
@@ -1191,7 +1214,7 @@ func testBarrierOfficerRevokeOverProtocol(t *testing.T, proto multiProtocol) {
 	}
 
 	if _, _, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "officer", "revoke", "--username", "never-enrolled", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err == nil {
+		"barrier", "officer", "revoke", "--username", "never-enrolled", "--threshold", strconv.Itoa(threshold), "--so-pin", sealNodeSOPIN)...); err == nil {
 		t.Fatal("revoking a never-enrolled holder succeeded, want error")
 	}
 }
@@ -1229,23 +1252,21 @@ func testBarrierQuorumBeginOverProtocol(t *testing.T, proto multiProtocol) {
 
 	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
 		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
-	flags := node.adminFlagsFor(proto)
 	ep := node.endpointFor(proto)
 
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(proto), 60*time.Second)
 	scope := systemScope(transport.DomainUnseal)
 
-	alice := registerOfficer(t, cli, workDir, flags, scope, "alice")
-	bob := registerOfficer(t, cli, workDir, flags, scope, "bob")
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init-shamir",
-		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
-		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
-	}
+	// `qrdb init` enrols the holders from their CSRs and splits the unseal
+	// key to them in the same call that issues the admin credential.
+	holders, holderFlags := initHolders(t, workDir, "alice", "bob")
+	initOut := node.initSystem(t, cli, proto, append([]string{"--barrier-strategy", "shamir",
+		"--threshold", strconv.Itoa(threshold), "--shares", strconv.Itoa(total)}, holderFlags...)...)
+	adoptInitHolders(t, workDir, initOut, holders)
+	alice, bob := holders[0], holders[1]
+	flags := node.adminFlagsFor(proto)
 
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+	node.waitForFullBoot(t)
 	claimEnvelope(t, cli, workDir, ep, scope, alice)
 
 	claimEnvelope(t, cli, workDir, ep, scope, bob)
@@ -1387,20 +1408,22 @@ func testBarrierPassphraseLifecycleOverProtocol(t *testing.T, proto multiProtoco
 
 	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
 		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
-	flags := node.adminFlagsFor(proto)
 
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(proto), 60*time.Second)
 
-	status := barrierStatus(t, cli, flags)
+	status := barrierStatus(t, cli, node.noAuthFlagsFor(proto))
 	if !status.Sealed {
 		t.Fatalf("[%s] expected fresh passphrase barrier to be sealed pre-init, got: %+v", proto.name, status)
 	}
 
 	const passphrase = "correct-horse-battery-staple-1"
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init", "--barrier-strategy", "passphrase", "--passphrase", passphrase)...); err != nil {
-		t.Fatalf("[%s] barrier init: %v\nstderr: %s", proto.name, err, stderr)
-	}
+	node.initSystem(t, cli, proto, "--barrier-strategy", "passphrase", "--passphrase", passphrase)
+
+	// Wait for the full host + RBAC-backed server to replace the pre-host
+	// sealed-window listener; the admin credential `qrdb init` issued
+	// authenticates from here on.
+	node.waitForFullBoot(t)
+	flags := node.adminFlagsFor(proto)
 
 	status = barrierStatus(t, cli, flags)
 	if status.Sealed {
@@ -1409,10 +1432,6 @@ func testBarrierPassphraseLifecycleOverProtocol(t *testing.T, proto multiProtoco
 	if status.Strategy != "passphrase" {
 		t.Errorf("[%s] expected strategy 'passphrase', got %q", proto.name, status.Strategy)
 	}
-
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"kv", "put", "barrier-cli-key", "barrier-cli-value")...); err != nil {
@@ -1485,7 +1504,6 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 	workDir := t.TempDir()
 
 	const threshold, total = 2, 3
-	const soPIN, userPIN = "shamir-pp-so-pin", "shamir-pp-user-pin"
 	configPath := writeSealConfig(t, "shamir", threshold, total)
 	dataDir := t.TempDir()
 	sockDir, err := os.MkdirTemp("", "qrdb-mp-")
@@ -1501,12 +1519,11 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 
 	node := startSealNodeAllTransports(t, binary, dataDir, configPath,
 		raftPorts[0], tcpPorts[0], tcpPorts[1], quicPorts[0], tcpPorts[2], unixSocket)
-	flags := node.adminFlagsFor(proto)
 	ep := node.endpointFor(proto)
 
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlagsFor(proto), 60*time.Second)
 
-	status := barrierStatus(t, cli, flags)
+	status := barrierStatus(t, cli, node.noAuthFlagsFor(proto))
 	if !status.Sealed {
 		t.Fatalf("[%s] expected fresh shamir barrier to be sealed pre-init, got: %+v", proto.name, status)
 	}
@@ -1514,27 +1531,24 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 	unsealScope := systemScope(transport.DomainUnseal)
 	recoveryScope := systemScope(transport.DomainRecovery)
 
-	alice := registerOfficer(t, cli, workDir, flags, unsealScope, "alice")
-	bob := registerOfficer(t, cli, workDir, flags, unsealScope, "bob")
-	registerOfficer(t, cli, workDir, flags, unsealScope, "carol")
-
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init-shamir",
-		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total), "--so-pin", soPIN, "--user-pin", userPIN)...); err != nil {
-		t.Fatalf("[%s] barrier init-shamir: %v\nstderr: %s", proto.name, err, stderr)
-	}
+	// `qrdb init` enrols the holders from their CSRs and splits the unseal
+	// key to them in the same call that issues the admin credential.
+	holders, holderFlags := initHolders(t, workDir, "alice", "bob", "carol")
+	initOut := node.initSystem(t, cli, proto, append([]string{"--barrier-strategy", "shamir",
+		"--threshold", strconv.Itoa(threshold), "--shares", strconv.Itoa(total)}, holderFlags...)...)
+	adoptInitHolders(t, workDir, initOut, holders)
+	alice, bob := holders[0], holders[1]
+	flags := node.adminFlagsFor(proto)
 
 	status = barrierStatus(t, cli, flags)
 	if status.Sealed {
-		t.Fatalf("[%s] expected barrier to be unsealed immediately after init-shamir", proto.name)
+		t.Fatalf("[%s] expected barrier to be unsealed immediately after qrdb init", proto.name)
 	}
 	if status.Strategy != "shamir" {
 		t.Errorf("[%s] expected strategy %q, got %q", proto.name, "shamir", status.Strategy)
 	}
 
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+	node.waitForFullBoot(t)
 
 	if names := officerListUsernames(t, cli, flags, "unseal"); !contains(names, "alice") || !contains(names, "bob") || !contains(names, "carol") {
 		t.Fatalf("[%s] barrier officer list --domain unseal = %v, want alice/bob/carol", proto.name, names)
@@ -1573,7 +1587,7 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
+		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("[%s] barrier rekey: %v\nstderr: %s", proto.name, err, stderr)
 	}
 	if out = quorumAll(t, cli, ep, unsealScope, "rekey", alice, bob); !out.Complete {
@@ -1613,7 +1627,7 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", soPIN)...); err != nil {
+		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("[%s] barrier recovery generate: %v\nstderr: %s", proto.name, err, stderr)
 	}
 	if !barrierHasRecoveryKeys(t, cli, flags) {
