@@ -232,14 +232,26 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 			c.creator = i
 		}
 	}
+	// The tenant is created through a qrdbd node: an embedded node takes its
+	// tenant defaults from its node options, not the configuration file the
+	// qrdbd nodes read, and the suite proves an embedded node receives a
+	// tenant's key rather than creates it. A non-leader forwards the write.
+	if _, embeddedCreator := embedded[c.creator]; embeddedCreator {
+		for i := range n {
+			if _, ok := embedded[i]; !ok {
+				c.creator = i
+				break
+			}
+		}
+	}
 
 	c.sys = mtlsHTTPClient(t, ca, 15*time.Second)
-	base := fmt.Sprintf("https://127.0.0.1:%d", leaderPort)
-	if _, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
+	base := fmt.Sprintf("https://127.0.0.1:%d", adminPorts[c.creator])
+	if body, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
 		"id": fwdTenantID, "name": "Replica Forwarding Tenant",
 		"isolation_type": "raft", "barrier_auto_unseal": true,
 	}); st != http.StatusCreated && st != http.StatusOK {
-		t.Fatalf("create tenant: status %d", st)
+		t.Fatalf("create tenant through node %d: status %d, body %s", c.creator+1, st, body)
 	}
 	writerRole := c.createRole(t, base, "kv-writer", "databases:create", "databases:create_raft", "databases:read",
 		"databases:list", "databases:delete", "kv:put", "kv:get", "kv:delete", "watch:watch")
