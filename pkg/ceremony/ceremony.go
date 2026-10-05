@@ -99,11 +99,19 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 	if err != nil {
 		return nil, err
 	}
+	// restoreState's reads of the barrier's plaintext store must be bounded
+	// the same way enrollmentOpenLocked's are: NewCeremonyService takes no
+	// ctx (it runs once, at construction, with no request to inherit a
+	// deadline from), so a storage backend that has stopped answering must
+	// cost a fail-closed StateAwaitingInit, not a constructor that never
+	// returns and a boot that never completes.
+	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), enrollmentProbeTimeout)
+	defer cancelRestore()
 	s := &CeremonyService{
 		config:            config,
 		barrier:           barrier,
 		logger:            logger,
-		state:             restoreState(context.Background(), barrier),
+		state:             restoreState(restoreCtx, barrier),
 		system:            system,
 		recovery:          recovery,
 		thresholdRegistry: NewThresholdRegistry(),
@@ -1068,10 +1076,13 @@ func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	return s.enrollmentOpenLocked(ctx)
 }
 
-// enrollmentProbeTimeout bounds EnrollmentOpen's reads of the barrier's
-// plaintext store. The answer gates an anonymous request, and the boot-time
-// listener holds its admission while it waits, so a store that stops
-// answering must cost a refusal, not a request that never ends.
+// enrollmentProbeTimeout bounds every boot-time read of the barrier's
+// plaintext store that has no request to inherit a deadline from:
+// EnrollmentOpen's reads (the answer gates an anonymous request, and the
+// boot-time listener holds its admission while it waits) and
+// NewCeremonyService's one-time restoreState read (the answer gates the
+// constructor returning at all). Either way, a store that stops answering
+// must cost a fail-closed refusal, not a wait that never ends.
 const enrollmentProbeTimeout = 2 * time.Second
 
 // enrollmentOpenLocked is EnrollmentOpen with s.mu already held. Its reads
