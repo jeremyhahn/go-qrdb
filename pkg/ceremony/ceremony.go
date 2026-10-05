@@ -466,6 +466,16 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
 	}
+	// Sampled BEFORE Provision, so rollbackOfficerInit can tell whether
+	// THIS call freshly set the SO PIN or merely verified one that already
+	// existed (go-qrdb#591 re-review, non-blocking: rollbackOfficerInit
+	// must not wipe a PIN it did not create). A PIN backend shared with
+	// barrier initialization can already have the SO PIN set by the time
+	// this call reaches Provision -- its own doc comment: "whichever runs
+	// first sets the PINs and the other ... verifies them" -- and rolling
+	// that PIN back on a LATER failure in this same call would destroy a
+	// record this call never provisioned and does not own.
+	pinsProvisionedByThisCall := s.pins != nil && !s.pins.SOPINSet()
 	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -627,7 +637,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// there is no second registration path for the rich holder data.
 		reg, rerr := s.system.register(ctx, &s.deps, req)
 		if rerr != nil {
-			s.rollbackOfficerInit(ctx, registered)
+			s.rollbackOfficerInit(ctx, registered, pinsProvisionedByThisCall)
 			s.mu.Unlock()
 			return nil, rerr
 		}
@@ -652,7 +662,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// re-enroll any of them (their usernames would stay permanently
 		// claimed by a ceremony that never became operational).
 		s.mu.Lock()
-		s.rollbackOfficerInit(ctx, registered)
+		s.rollbackOfficerInit(ctx, registered, pinsProvisionedByThisCall)
 		s.mu.Unlock()
 		return nil, err
 	}
@@ -695,7 +705,19 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 // (go-qrdb#560 review B3): it removes every officer in registered, in
 // reverse enrollment order, from the (still not-yet-initialized) system
 // scope, and best-effort un-provisions the SO/User PINs via
-// pin.ProvisionRollback when the backend supports it.
+// pin.ProvisionRollback when the backend supports it AND this call is the
+// one that provisioned them.
+//
+// pinsProvisionedByThisCall must be the value sampled immediately before
+// Initialize's own pin.Provision call (false means the backend already had
+// the SO PIN set, so Provision only VERIFIED it rather than setting it
+// fresh). When false, RollbackProvision is never called: the PIN record
+// belongs to whatever set it before this Initialize call ever ran -- a
+// concurrent barrier initialization sharing the same backend, most
+// plausibly (pin.Provision's own doc comment: "whichever runs first sets
+// the PINs and the other ... verifies them") -- and this call never owned
+// it, so rolling it back on a failure elsewhere in this call would destroy
+// a PIN this call did not create (go-qrdb#591 re-review, non-blocking).
 //
 // It never masks the caller's own failure: every error here is LOGGED, not
 // returned -- the caller already has the real error (the officer
@@ -711,7 +733,7 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 //
 // Must be called with s.mu held, matching every other call site inside
 // Initialize's critical section; it does not unlock.
-func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []string) {
+func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []string, pinsProvisionedByThisCall bool) {
 	for i := len(registered) - 1; i >= 0; i-- {
 		username := registered[i]
 		if err := s.system.removeEnrolled(ctx, username, func() error { return nil }); err != nil {
@@ -719,7 +741,7 @@ func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []
 				slog.String("username", username), slog.Any("error", err))
 		}
 	}
-	if s.pins == nil {
+	if s.pins == nil || !pinsProvisionedByThisCall {
 		return
 	}
 	if r, ok := s.pins.(pin.ProvisionRollback); ok {

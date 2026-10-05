@@ -565,6 +565,74 @@ func TestInitialize_InitializeShamirFailureRollsBackEveryOfficerAndPIN(t *testin
 	require.Len(t, res.Holders, 3)
 }
 
+// TestInitialize_RollbackNeverWipesAPINThatPredatesThisCall is the
+// go-qrdb#591 re-review's non-blocking companion to the sibling test above:
+// when the PIN backend ALREADY has the SO/User PIN set before this
+// Initialize call ever reaches pin.Provision -- exactly the shape
+// Provision's own doc comment describes ("barrier initialization and the
+// initialization ceremony both call it, so whichever runs first sets the
+// PINs and the other ... verifies them") -- a LATER failure in this same
+// call (InitializeShamir's own fault, identical to the sibling test) must
+// NOT roll back the PIN: this call never provisioned it, so it does not
+// own it, and wiping it would destroy a record whatever set it first is
+// still relying on. Unlike the sibling test, the PIN record must survive
+// the rollback unchanged, not be deleted.
+func TestInitialize_RollbackNeverWipesAPINThatPredatesThisCall(t *testing.T) {
+	ctx := context.Background()
+	wantErr := errors.New("shamir distribute: disk full")
+	backend := &toggleFailBackend{StorageBackend: seal.NewMemoryBackend(), writeErr: wantErr}
+	backend.failWrites.Store(true)
+	barrier := shamirBarrier(t, backend, 2, 3)
+
+	dataDir := t.TempDir()
+	pinStorage := pintest.NewStorage()
+	pins, err := pin.NewSoftwareBackend(pinStorage, pintest.HashConfig())
+	require.NoError(t, err)
+
+	// Simulate "barrier initialization already ran first" (Provision's own
+	// documented race): the PIN backend has the SO/User PIN set BEFORE this
+	// Initialize call is ever made, by something other than this call.
+	require.NoError(t, pins.SetSOPIN("", "pre-existing-so-pin"))
+	require.NoError(t, pins.SetUserPIN("pre-existing-so-pin", "pre-existing-user-pin"))
+
+	e := &holderEnv{t: t, backend: backend, ca: testCA(t), pins: pins, factors: testFactors(t)}
+	e.barrier = barrier
+	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: dataDir}, barrier, testLogger())
+	require.NoError(t, err)
+	svc.SetCA(e.ca)
+	svc.SetFactorRegistry(e.factors)
+	svc.SetPINBackend(e.pins)
+	e.svc = svc
+
+	holders := []*testHolder{
+		newHolder(t, "alice", seal.RoleSecurityOfficer),
+		newHolder(t, "bob", seal.RoleSecurityOfficer),
+		newHolder(t, "carol", seal.RoleCustodian),
+	}
+	// Initialize's own pin.Provision call presents the SAME PIN already
+	// set, so it takes the verify branch, not the set branch.
+	opts := initOpts(2, holders...)
+	opts.SOPin = "pre-existing-so-pin"
+	opts.UserPin = "pre-existing-user-pin"
+	_, err = e.svc.Initialize(ctx, e.ca, opts)
+	require.ErrorIs(t, err, wantErr, "InitializeShamir's own failure must propagate unchanged")
+
+	assert.True(t, e.pins.SOPINSet(),
+		"a PIN that existed before this Initialize call must survive rollback: this call only verified it, never provisioned it")
+	assert.True(t, e.pins.UserPINSet())
+
+	// The persisted record must also be untouched -- not merely the
+	// in-memory flag.
+	_, getErr := pinStorage.Get(ctx, "so-pin")
+	assert.NoError(t, getErr, "the pre-existing persisted SO PIN record must not be deleted by this call's rollback")
+	_, getErr = pinStorage.Get(ctx, "user-pin")
+	assert.NoError(t, getErr, "the pre-existing persisted User PIN record must not be deleted by this call's rollback")
+
+	// The ORIGINAL PIN must still verify: it must not have been rotated or
+	// cleared by the aborted call.
+	require.NoError(t, e.pins.VerifySOPIN("pre-existing-so-pin"))
+}
+
 // TestSignCSRInit_CAAssignsTheHolderIdentity pins the §6 fix: the CA assigns
 // the certificate's identity from the request, never the CSR, and the SO PIN
 // is verified by the PIN backend. go-qrdb#548: sign-csr issues HOLDER
