@@ -277,6 +277,17 @@ func (s *kvRoleStore) reconcileRole(ctx context.Context, tenantID string, canoni
 // claim are all written by the code that owns them.
 //
 // Owner is deliberately not seeded — see reconcilableRoles.
+//
+// A create collision (RoleNameExistsError or RoleIDExistsError) is treated
+// as idempotent success when awaitMatchingRole confirms the now-persisted
+// record is this exact canonical definition: ReconcileBuiltInRoles can run
+// concurrently with another seeder of the SAME tenant's SAME built-ins --
+// another node's own first-boot (pkg/firstboot's registerBuiltInRoles), or
+// a second, racing ReconcileBuiltInRoles call -- and the read that found
+// the role missing, moments ago, is exactly the window a concurrent
+// winner's write can land in. Without this, the ONE caller sanctioned to
+// repair a cluster's built-in roles (ReconcileBuiltInRoles's own doc) would
+// itself fail non-idempotently under the condition it exists to converge.
 func (s *kvRoleStore) seedMissingRole(ctx context.Context, tenantID string, canonical *Role) (*RoleReconcileResult, error) {
 	if canonical.Name == RoleNameOwner {
 		return nil, nil
@@ -289,6 +300,15 @@ func (s *kvRoleStore) seedMissingRole(ctx context.Context, tenantID string, cano
 		Permissions: canonical.Permissions,
 	})
 	if err != nil {
+		var nameExists *RoleNameExistsError
+		var idExists *RoleIDExistsError
+		if errors.As(err, &nameExists) || errors.As(err, &idExists) {
+			if s.awaitMatchingRole(ctx, tenantID, canonical) {
+				// A concurrent seeder already created this exact canonical
+				// role: nothing for THIS call to report as changed.
+				return nil, nil
+			}
+		}
 		return nil, err
 	}
 
@@ -301,6 +321,38 @@ func (s *kvRoleStore) seedMissingRole(ctx context.Context, tenantID string, cano
 		Created: true,
 		Added:   added,
 	}, nil
+}
+
+// awaitMatchingRole polls, within s.reconcileWindow, for a role named
+// want.Name whose persisted id, tenant, name, System flag and permission
+// set ALL match want exactly — the same verification pkg/firstboot's
+// builtInRoleAlreadySeeded performs over a CreateRole collision, needed
+// here for the identical reason: a collision proves SOME write already
+// claimed the id or the name, not that the write has become visible to
+// THIS read yet. A record that resolves but disagrees with want is a
+// different thing entirely — a genuine, unexplained conflict — and reports
+// false at once rather than waiting out the rest of the window for a match
+// that cannot occur.
+func (s *kvRoleStore) awaitMatchingRole(ctx context.Context, tenantID string, want *Role) bool {
+	deadline := time.Now().Add(s.reconcileWindow)
+	for {
+		existing, err := s.GetRoleByName(ctx, tenantID, want.Name)
+		if err == nil && existing != nil {
+			return existing.ID == want.ID &&
+				existing.TenantID == want.TenantID &&
+				existing.Name == want.Name &&
+				existing.System == want.System &&
+				permissionSetsEqual(existing.Permissions, want.Permissions)
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(s.reconcilePollInterval):
+		}
+	}
 }
 
 // putRole writes a role's primary record. It is the reconcile path's write:

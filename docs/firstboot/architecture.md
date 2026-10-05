@@ -279,6 +279,27 @@ An `admin` user for the system tenant is created alongside, bound to the
   accepting "same name and a guessed id means treat it as mine" would let
   any caller holding `roles:create` adopt another actor's in-flight or
   malformed role.
+- **That verification read is itself retried within a bounded window
+  (`builtInRoleAlreadySeededWithin`), not a single un-retried read.** A
+  refused guard proves SOME write already claimed the id or the name; it
+  does not prove that write is visible to THIS node's read yet, which is
+  exactly the gap between the typed-error diagnosis's own re-reads (above)
+  and firstboot's SEPARATE verification read that follows it. A node that
+  loses the race and checks before the winner's entry has locally replicated
+  used to fail the whole run with a false "unexplained conflict"
+  (`register role <name> failed: role: id already exists`, reproduced at
+  61d7cb049). A record that DOES resolve but disagrees with the canonical
+  definition is still refused at once — no amount of waiting makes a
+  mismatched record match. `role.ReconcileBuiltInRoles`'s own
+  `seedMissingRole` (the tenant-scoped seeder `CreateTenant` triggers, which
+  races first-boot's loop for the SAME tenant's SAME built-ins) resolves its
+  own create collisions the identical way, via `awaitMatchingRole`. Both
+  seeders are wired `WithIdentityIndex`/`WithAtomicIdentity` for the same
+  reason cmd/qrdbd's boot-time stores are: the tenant seeder
+  (`pkg/server/lifecycle`'s `roleSeederAdapter`) used to build its role
+  store without either, falling back to CreateRole's non-atomic,
+  three-proposal path, whose primary-record-before-name-index window a
+  concurrent racer could observe mid-write.
 - **The admin is verified the same way, and an id collision with anyone else
   is retried.** A losing admin create reports `UsernameExistsError` or
   `UserIDExistsError`; either is accepted as idempotent only when the record

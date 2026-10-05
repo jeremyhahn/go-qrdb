@@ -532,7 +532,7 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 			// permission set, or a System flag that does not match the
 			// canonical definition is refused rather than silently accepted
 			// as this run's own seed.
-			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r) {
+			if !builtInRoleAlreadySeededWithin(ctx, resolver, tenantID, r) {
 				return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
 			}
 			deps.Logger.Debug("first-boot: role already exists (verified identical)",
@@ -544,7 +544,7 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 		}
 		var idExists *role.RoleIDExistsError
 		if errors.As(createErr, &idExists) {
-			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r) {
+			if !builtInRoleAlreadySeededWithin(ctx, resolver, tenantID, r) {
 				return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
 			}
 			deps.Logger.Debug("first-boot: role already exists (verified identical)",
@@ -613,6 +613,13 @@ func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, t
 	if err != nil || existing == nil {
 		return false
 	}
+	return roleMatchesSeed(existing, want)
+}
+
+// roleMatchesSeed is builtInRoleAlreadySeeded's comparison, factored out so
+// builtInRoleAlreadySeededWithin can retry the LOOKUP without retrying — or
+// duplicating — the field-by-field verdict once a record is found.
+func roleMatchesSeed(existing, want *role.Role) bool {
 	if existing.ID != want.ID {
 		return false
 	}
@@ -623,6 +630,66 @@ func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, t
 		return false
 	}
 	return permissionSetsEqual(existing.Permissions, want.Permissions)
+}
+
+// builtInRoleSeedRetryInterval and builtInRoleSeedRetryWindow bound
+// builtInRoleAlreadySeededWithin's retry. Package-level variables, not
+// constants, so a test can shrink them rather than waiting out the
+// production window; see TestRegisterBuiltInRoles_ConcurrentSeedersConverge.
+var (
+	builtInRoleSeedRetryInterval = 10 * time.Millisecond
+	builtInRoleSeedRetryWindow   = 5 * time.Second
+)
+
+// builtInRoleAlreadySeededWithin is builtInRoleAlreadySeeded, retried with a
+// bounded backoff while the verification lookup itself comes back not-found
+// or erroring.
+//
+// A create collision proves SOME write already claimed the id or the name;
+// it does not by itself prove that write has become visible to THIS read
+// yet. Two concurrent seeders can legitimately produce exactly that lag:
+//
+//   - Two nodes' own first-boot runs, racing to seed the SAME built-in role
+//     under the SAME deterministic id (role.SystemRoleID). Whichever loses
+//     the create is told so by the LEADER, authoritatively, but its own
+//     local StaleRead may not yet have applied the winner's entry — the
+//     identical replication-visibility window role.Store's own
+//     diagnoseAtomicGuardFailure already tolerates on the CREATE side of
+//     this exact collision (see that function's doc).
+//   - A tenant's CreateTenant-triggered RoleSeeder (pkg/server/lifecycle's
+//     roleSeederAdapter) seeding the SAME tenant's built-ins concurrently
+//     with first-boot's own registerBuiltInRoles loop. Even with both sides
+//     writing atomically, the SAME replication lag applies across the two
+//     callers' stores.
+//
+// A role that DOES resolve but disagrees with want is a different thing
+// entirely — a definitive, unexplained conflict — and returns false at
+// once: no amount of waiting makes a mismatched record match, and retrying
+// that case would only turn a correct, immediate refusal into a slow one.
+//
+// The whole wait is bounded by builtInRoleSeedRetryWindow so a GENUINE
+// conflict (the id or name claimed by something that will never resolve to
+// this canonical definition) still fails, just not before giving a
+// legitimate concurrent winner a chance to replicate.
+func builtInRoleAlreadySeededWithin(ctx context.Context, resolver role.NameResolver, tenantID string, want *role.Role) bool {
+	if resolver == nil {
+		return false
+	}
+	deadline := time.Now().Add(builtInRoleSeedRetryWindow)
+	for {
+		existing, err := resolver.GetRoleByName(ctx, tenantID, want.Name)
+		if err == nil && existing != nil {
+			return roleMatchesSeed(existing, want)
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(builtInRoleSeedRetryInterval):
+		}
+	}
 }
 
 // permissionSetsEqual compares two permission lists as SETS: a grant's

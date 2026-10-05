@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -256,6 +257,62 @@ func TestReconcileBuiltInRoles_SeedsMissingBuiltIns(t *testing.T) {
 		}
 		if !permissionSetsEqual(stored.Permissions, want.Permissions) {
 			t.Errorf("%s: seeded permissions do not match the canonical set", want.Name)
+		}
+	}
+}
+
+// TestReconcileBuiltInRoles_ConcurrentCallersConverge covers seedMissingRole's
+// idempotent-collision handling directly: two goroutines calling
+// ReconcileBuiltInRoles for the SAME fresh tenant concurrently both read the
+// tenant as missing its built-ins (reconcileRole's own GetRoleByName finds
+// nothing yet) and race into seedMissingRole's CreateRole. Exactly one wins
+// each role; the other must see its own CreateRole collision, verify the
+// now-persisted record against the canonical definition via
+// awaitMatchingRole, and report success rather than propagating the raw
+// RoleNameExistsError/RoleIDExistsError.
+//
+// Uses newAtomicTestStore (WithIdentityIndex/WithAtomicIdentity), the same
+// construction production composes for both callers that can run this
+// concurrently: a node's own first-boot and pkg/server/lifecycle's
+// roleSeederAdapter. See the firstboot package's own
+// TestRegisterBuiltInRoles_ConcurrentSeedersConverge for the real-Raft,
+// cross-process version of this same race.
+func TestReconcileBuiltInRoles_ConcurrentCallersConverge(t *testing.T) {
+	kv := newMemKVStore()
+	svc := newAtomicTestStore(t, kv)
+	const tenantID = "fresh-concurrent"
+
+	const callers = 4
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := svc.ReconcileBuiltInRoles(context.Background(), tenantID)
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("caller %d: ReconcileBuiltInRoles: %v", i, err)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+
+	ctx := context.Background()
+	for _, want := range BuiltInRoles(tenantID) {
+		got, err := svc.GetRoleByName(ctx, tenantID, want.Name)
+		if err != nil {
+			t.Fatalf("GetRoleByName(%s): %v", want.Name, err)
+		}
+		if got.ID != want.ID || got.TenantID != want.TenantID || got.System != want.System ||
+			!permissionSetsEqual(got.Permissions, want.Permissions) {
+			t.Errorf("%s: got %+v, want canonical %+v", want.Name, got, want)
 		}
 	}
 }
