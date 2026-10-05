@@ -730,23 +730,54 @@ func TestRunFirstBoot_RoleAlreadyExists(t *testing.T) {
 		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
 		},
-		// The record read back must be field-for-field the canonical built-in
-		// definition (go-qrdb#555's provenance check), except its id — a
-		// name collision tolerates a differing id, modelling a cluster
-		// seeded under role.SystemRoleID's retired hash algorithm. Getting
-		// this wrong (as a plain {ID, Name, TenantID} literal with no
-		// Permissions or System) would make registerBuiltInRoles correctly
-		// refuse the collision as unverifiable.
+		// The record read back must be field-for-field the canonical
+		// built-in definition (go-qrdb#555's provenance check), id
+		// included: pkg/role's requireCanonicalSystemRole refuses to let a
+		// reserved name be created under any other id, so this models the
+		// realistic case a name collision means -- a concurrent first-boot
+		// attempt that won the create race -- not a cluster seeded under a
+		// retired id scheme, which this build has no tolerance for at all
+		// (see TestRunFirstBoot_RoleExistsUnexplainedIDRefused).
 		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
-			canonical := canonicalRoleForTest(tenantID, name)
-			canonical.ID = "r-existing-" + name
-			return canonical, nil
+			return canonicalRoleForTest(tenantID, name), nil
 		},
 	}
 
 	node := &mockRaftNode{} // default: leader ready
 	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.NoError(t, err)
+}
+
+// TestRunFirstBoot_RoleExistsUnexplainedIDRefused is the regression test for
+// go-qrdb's no-compat-cleanup lane: a name collision whose persisted record
+// does NOT carry the canonical id is never a legitimate idempotent
+// re-attempt -- pkg/role's requireCanonicalSystemRole refuses to let a
+// reserved name be created under any other id, so no supported code path
+// produces one -- and first boot must refuse it rather than silently
+// granting the admin a role id that denotes no record at all.
+func TestRunFirstBoot_RoleExistsUnexplainedIDRefused(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+	}
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+		},
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			canonical := canonicalRoleForTest(tenantID, name)
+			canonical.ID = "an-unexplained-id-" + name
+			return canonical, nil
+		},
+	}
+
+	node := &mockRaftNode{} // default: leader ready
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "register role")
 }
 
 // canonicalRoleForTest returns the canonical built-in role definition for
@@ -843,13 +874,16 @@ func TestRunFirstBoot_AdminUsernameExists(t *testing.T) {
 		// CreateUser (not-found here, already-exists there) models a store
 		// no real implementation is.
 		// The record is the admin first boot itself would have made (its
-		// Admin role, a live lifecycle), created before the System flag
-		// existed: the fast path must not skip it, and the idempotent path
-		// must accept it as the admin rather than a squatter.
+		// Admin role, under the one id that role can ever be persisted
+		// under -- role.SystemRoleID, per pkg/role's
+		// requireCanonicalSystemRole -- and a live lifecycle), created
+		// before the System flag existed: the fast path must not skip it,
+		// and the idempotent path must accept it as the admin rather than a
+		// squatter.
 		getUserByUsernameFn: func(_ context.Context, tenantID, username string) (*user.User, error) {
 			return &user.User{
 				ID: 1, Username: username, TenantID: tenantID,
-				RoleIDs:   []string{"r-" + role.RoleNameAdmin}, // mockRoleServicer.GetRoleByName's id
+				RoleIDs:   []string{role.SystemRoleID(tenantID, role.RoleNameAdmin)},
 				Lifecycle: user.LifecycleActive,
 			}, nil
 		},
@@ -960,10 +994,19 @@ func TestRunFirstBoot_UnexpectedStoreError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runFirstBoot: RoleNameExistsError uses deterministic IDs
+// runFirstBoot: RoleNameExistsError still binds the admin to canonical IDs
 // ---------------------------------------------------------------------------
 
-func TestRunFirstBoot_RoleExistsUsesPersistedIDs(t *testing.T) {
+// TestRunFirstBoot_RoleExistsUsesCanonicalIDs covers the RoleNameExistsError
+// path specifically (as opposed to TestRunFirstBoot_UnseededRolesUseDerivedIDs'
+// fresh-create path): every built-in role already exists -- a concurrent
+// first-boot attempt won the create race -- and the admin grant must still
+// bind to the canonical role.SystemRoleID derivation, because that is the
+// ONLY id a role under a reserved name can ever be persisted under
+// (pkg/role's requireCanonicalSystemRole). There is no alternate
+// "persisted" id to prefer; see TestRunFirstBoot_RoleExistsUnexplainedIDRefused
+// for what happens when the persisted record's id does not match.
+func TestRunFirstBoot_RoleExistsUsesCanonicalIDs(t *testing.T) {
 	var capturedRoleIDs []string
 	userSvc := &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
@@ -979,32 +1022,20 @@ func TestRunFirstBoot_RoleExistsUsesPersistedIDs(t *testing.T) {
 		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
 		},
-		// Persisted under "r-"+name, matching the assertions below, but
-		// otherwise the canonical definition: go-qrdb#555's provenance check
-		// requires the resolver's answer to carry the exact TenantID,
-		// System, and permission set the built-in role does, even though its
-		// id is deliberately NOT the freshly derived one.
 		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
-			canonical := canonicalRoleForTest(tenantID, name)
-			canonical.ID = "r-" + name
-			return canonical, nil
+			return canonicalRoleForTest(tenantID, name), nil
 		},
 	}
 	node := &mockRaftNode{} // default: leader ready
 
-	// Every role already exists, so bootstrap must bind the admin to the
-	// identifiers the STORE reports for them rather than re-deriving. On a
-	// cluster seeded before system role IDs moved off UUIDv5/SHA-1 the two
-	// differ, and a derived grant would name no role at all.
 	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.NoError(t, err)
 
 	// Under the standard posture (strictSoD=false) that is the Admin@system
-	// grant plus the Owner@system convenience grant, both as GetRoleByName
-	// reports them.
+	// grant plus the Owner@system convenience grant.
 	require.Len(t, capturedRoleIDs, 2)
-	assert.Equal(t, "r-"+role.RoleNameAdmin, capturedRoleIDs[0])
-	assert.Equal(t, "r-"+role.RoleNameOwner, capturedRoleIDs[1])
+	assert.Equal(t, role.SystemRoleID(tenantid.System, role.RoleNameAdmin), capturedRoleIDs[0])
+	assert.Equal(t, role.SystemRoleID(tenantid.System, role.RoleNameOwner), capturedRoleIDs[1])
 }
 
 // TestRunFirstBoot_UnseededRolesUseDerivedIDs is the companion case: when the

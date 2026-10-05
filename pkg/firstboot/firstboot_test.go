@@ -901,14 +901,14 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 	}
 
 	t.Run("nil resolver", func(t *testing.T) {
-		if builtInRoleAlreadySeeded(context.Background(), nil, tenantid.System, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), nil, tenantid.System, want) {
 			t.Error("expected false with a nil resolver")
 		}
 	})
 
 	t.Run("resolver cannot find the role", func(t *testing.T) {
 		roles := &fakeRoles{}
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want) {
 			t.Error("expected false when GetRoleByName reports not-found")
 		}
 	})
@@ -917,29 +917,22 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		// A resolver that violates the (record, nil) / (nil, typed-error)
 		// contract must not crash this function: it fails closed instead of
 		// dereferencing a nil *role.Role.
-		if builtInRoleAlreadySeeded(context.Background(), nilResultResolver{}, tenantid.System, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), nilResultResolver{}, tenantid.System, want) {
 			t.Error("expected false when the resolver returns (nil, nil)")
 		}
 	})
 
-	t.Run("persisted id differs, checkID=true", func(t *testing.T) {
+	t.Run("persisted id differs", func(t *testing.T) {
+		// requireCanonicalSystemRole (pkg/role) refuses to let a reserved
+		// name be created under any id but its canonical one, so a
+		// persisted record under a different id is never a legitimate
+		// idempotent re-attempt by this build — it is always the genuine,
+		// unexplained conflict this function exists to catch, on EITHER
+		// collision kind.
 		roles := &fakeRoles{}
 		roles.remember(role.Role{ID: "a-different-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
-			t.Error("expected false when the persisted id differs from the canonical one and checkID is true")
-		}
-	})
-
-	t.Run("persisted id differs, checkID=false", func(t *testing.T) {
-		// The RoleNameExistsError path's tolerance: a name collision alone
-		// already proves this record is the one blocking the create, so
-		// builtInRoleAlreadySeeded does not additionally require the id to
-		// match before treating tenant/name/System/permissions agreement as
-		// an idempotent re-attempt.
-		roles := &fakeRoles{}
-		roles.remember(role.Role{ID: "an-unrelated-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
-		if !builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, false) {
-			t.Error("expected true when only the id differs and checkID is false")
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want) {
+			t.Error("expected false when the persisted id differs from the canonical one")
 		}
 	})
 
@@ -950,7 +943,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		// Looked up under otherTenant so the resolver finds it — the check
 		// under test is the comparison against want.TenantID afterward, not
 		// GetRoleByName's own tenant-scoped lookup.
-		if builtInRoleAlreadySeeded(context.Background(), roles, otherTenant, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), roles, otherTenant, want) {
 			t.Error("expected false when the persisted tenant differs from the canonical one")
 		}
 	})
@@ -964,7 +957,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		resolver := mismatchedRoleResolver{role: &role.Role{
 			ID: want.ID, Name: "a-different-name", TenantID: want.TenantID, Permissions: want.Permissions, System: want.System,
 		}}
-		if builtInRoleAlreadySeeded(context.Background(), resolver, tenantid.System, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), resolver, tenantid.System, want) {
 			t.Error("expected false when the persisted name differs from the canonical one")
 		}
 	})
@@ -973,22 +966,18 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		// Same id, tenant, and permissions, but NOT marked System: true — a
 		// record like this passes every other check while remaining
 		// mutable and deletable through the ordinary role APIs, which
-		// defeats a built-in role's immutability. Must be refused,
-		// regardless of checkID.
+		// defeats a built-in role's immutability. Must be refused.
 		roles := &fakeRoles{}
 		roles.remember(role.Role{ID: want.ID, Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: false})
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
-			t.Error("expected false when the persisted System flag differs from the canonical one (checkID=true)")
-		}
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, false) {
-			t.Error("expected false when the persisted System flag differs from the canonical one (checkID=false)")
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want) {
+			t.Error("expected false when the persisted System flag differs from the canonical one")
 		}
 	})
 
 	t.Run("identical", func(t *testing.T) {
 		roles := &fakeRoles{}
 		roles.remember(*want)
-		if !builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
+		if !builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want) {
 			t.Error("expected true when every field matches")
 		}
 	})

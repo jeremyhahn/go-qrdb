@@ -462,36 +462,40 @@ func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID
 //
 // It reports whether any role was found to already exist.
 //
-// Two DIFFERENT "already exists" outcomes are tolerated, and BOTH are
-// verified by reading the persisted record back — see
-// builtInRoleAlreadySeeded, which every branch below calls with the checkID
-// value matching its collision kind:
+// Both "already exists" outcomes (a RoleNameExistsError and a
+// RoleIDExistsError) are verified the SAME way, by reading the persisted
+// record back and requiring an EXACT match — id included — against the
+// built-in definition this run would have created; see
+// builtInRoleAlreadySeeded. Neither collision is answered from the error
+// type alone:
 //
-//   - A name collision (RoleNameExistsError) does not need the persisted id
-//     to equal the freshly derived one: role.SystemRoleID is a pure function
-//     of tenant and name, so an idempotent re-attempt derives the identical
-//     id anyway, and this tolerance lets a genuinely matching record through
-//     on tenant/name/System/permissions alone. Every OTHER field — tenant,
-//     name, System, and the permission set — must still match exactly: an
-//     earlier release persisted every built-in role with System: false
-//     (CreateRoleRequest had no such field then), and accepting a record
-//     like that here would leave a reserved-name role mutable and deletable
-//     through the ordinary role APIs.
+//   - A name collision only proves SOME record already claims the reserved
+//     name; it does not by itself prove that record IS this run's own
+//     built-in. requireCanonicalSystemRole (pkg/role) refuses to let
+//     anything else be created under that name with a non-canonical id, so
+//     an id mismatch here is never a false refusal of a legitimate
+//     idempotent re-attempt — it is always the genuine conflict this
+//     function exists to catch. Every OTHER field — tenant, name, System,
+//     and the permission set — is checked too: an earlier release persisted
+//     every built-in role with System: false (CreateRoleRequest had no such
+//     field then), and accepting a record like that here would leave a
+//     reserved-name role mutable and deletable through the ordinary role
+//     APIs.
 //   - An id collision (RoleIDExistsError) does not answer "is this already
-//     seeded" from the error alone — see go-qrdb#555. CreateRole's atomic
-//     path guards the id claim and the name together and diagnoses the id
-//     first, so two concurrent first-boot attempts for the SAME built-in
-//     role (the common case an id collision means here) are
+//     seeded" from the error alone either — see go-qrdb#555. CreateRole's
+//     atomic path guards the id claim and the name together and diagnoses
+//     the id first, so two concurrent first-boot attempts for the SAME
+//     built-in role (the common case an id collision means here) are
 //     indistinguishable, by error type alone, from an id chosen by an
-//     unrelated caller that happens to collide.
-//     This function is the one place trusted to tell them apart, because it
-//     — and only it — knows the FULL canonical definition an id collision
-//     might legitimately mean: it reads the persisted record back by name
-//     and refuses unless every field, id included, matches exactly.
-//     CreateRole itself is never asked to make this judgment, on purpose: a
-//     general create endpoint accepting "same name and a guessed id means
-//     treat it as mine" would let any caller holding roles:create adopt
-//     another actor's in-flight or malformed role.
+//     unrelated caller that happens to collide. This function is the one
+//     place trusted to tell them apart, because it — and only it — knows
+//     the FULL canonical definition an id collision might legitimately
+//     mean: it reads the persisted record back by name and refuses unless
+//     every field, id included, matches exactly. CreateRole itself is never
+//     asked to make this judgment, on purpose: a general create endpoint
+//     accepting "same name and a guessed id means treat it as mine" would
+//     let any caller holding roles:create adopt another actor's in-flight
+//     or malformed role.
 func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID string, result *Result) (preexisting bool, err error) {
 	roles := role.BuiltInRoles(tenantID)
 	// Under the standard (non-strict) posture also seed the Owner
@@ -523,13 +527,12 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 			// A reserved built-in name can only ever denote its one
 			// canonical role (pkg/role's requireCanonicalSystemRole pins the
 			// id a canonical name may be created with), but this function
-			// verifies anyway rather than trusting the error alone: the same
-			// provenance check the id-collision branch below performs is run
-			// here too, so a record reached by name with an unexpected id,
-			// tenant, permission set, or a System flag that does not match
-			// the canonical definition is refused rather than silently
-			// accepted as this run's own seed.
-			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r, false) {
+			// verifies anyway rather than trusting the error alone: a
+			// record reached by name with an unexpected id, tenant,
+			// permission set, or a System flag that does not match the
+			// canonical definition is refused rather than silently accepted
+			// as this run's own seed.
+			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r) {
 				return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
 			}
 			deps.Logger.Debug("first-boot: role already exists (verified identical)",
@@ -541,7 +544,7 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 		}
 		var idExists *role.RoleIDExistsError
 		if errors.As(createErr, &idExists) {
-			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r, true) {
+			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r) {
 				return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
 			}
 			deps.Logger.Debug("first-boot: role already exists (verified identical)",
@@ -558,50 +561,51 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 }
 
 // builtInRoleAlreadySeeded reports whether the tenant already holds a role
-// named want.Name whose persisted tenant, name, System flag, and permission
-// set are EXACTLY want's — the only condition under which a collision on a
-// built-in role's create is safe to treat as "this run's own idempotent
-// re-attempt" rather than a genuine, unexplained conflict. checkID selects
-// whether the persisted id must ALSO equal want.ID exactly.
+// named want.Name whose persisted id, tenant, name, System flag, and
+// permission set are ALL exactly want's — the only condition under which a
+// collision on a built-in role's create is safe to treat as "this run's own
+// idempotent re-attempt" rather than a genuine, unexplained conflict.
+// registerBuiltInRoles' two call sites (a RoleNameExistsError and a
+// RoleIDExistsError) both call this the same way.
 //
-// checkID must be false for a RoleNameExistsError and true for a
-// RoleIDExistsError; registerBuiltInRoles' two call sites pass the matching
-// value and this is not a caller-tunable safety knob.
+// The id is checked unconditionally, on BOTH collision kinds. For a reserved
+// built-in name this is never a false refusal of a legitimate re-attempt:
+// pkg/role's requireCanonicalSystemRole refuses any CreateRole for a reserved
+// name whose requested id is not that name's one canonical
+// role.SystemRoleID, so the only way a persisted "admin" record (for example)
+// could carry a different id is a record written by a release that predates
+// that guard, or under an identifier scheme this build no longer derives —
+// both out of scope; there is no supported path by which two first-boot
+// attempts for the SAME built-in role, run by this build, could ever
+// disagree on its id. An id mismatch is therefore always the genuine,
+// unexplained conflict this function exists to catch, never an idempotent
+// re-attempt it would otherwise wrongly refuse.
 //
-//   - On a NAME collision the store's own name-uniqueness rule already
-//     proves the record this function reads back IS the one blocking the
-//     create — there is exactly one way to be blocked on a canonical name.
-//     Its id is NOT required to equal want.ID: role.SystemRoleID is a pure
-//     function of tenant and name, so an idempotent re-attempt derives the
-//     identical id anyway, and this check exists to let a genuinely matching
-//     record through on tenant/name/System/permissions alone rather than
-//     fail a safe idempotent re-attempt on an id comparison that already
-//     cannot differ for one.
-//   - On an ID collision, want.ID already names SOME record, but the record
-//     found by NAME could be a different one entirely — an unrelated custom
-//     role might coincidentally claim the canonical name while a wholly
-//     separate record blocks the id. checkID=true confirms the record this
-//     function reads back is the SAME one causing the id collision before
-//     trusting it, closing the provenance gap go-qrdb#555's review raised:
-//     a general CreateRole caller must not be able to adopt another actor's
-//     role by supplying its name and a guessed id.
+// On an ID collision specifically, want.ID already names SOME record, but
+// the record found by NAME could be a different one entirely — an unrelated
+// custom role might coincidentally claim the canonical name while a wholly
+// separate record blocks the id. Checking the id here confirms the record
+// this function reads back is the SAME one causing the id collision before
+// trusting it, closing the provenance gap go-qrdb#555's review raised: a
+// general CreateRole caller must not be able to adopt another actor's role
+// by supplying its name and a guessed id.
 //
-// Every field want.System distinguishes is checked independently in BOTH
-// cases, not inferred from the others matching: a persisted record whose id,
-// tenant, and permissions all match while System is false was possible under
-// an older release that predates deriving System from the canonical name
-// (rather than accepting it on the request), and accepting such a record here
-// would leave a role with a reserved name mutable and deletable through the
-// ordinary role APIs — silently defeating the immutability a built-in role
-// is supposed to have. Name is checked for the same reason on the
-// id-collision path, where the record was reached by id rather than by the
-// name this comparison assumes.
+// Every field want.System distinguishes is checked independently, not
+// inferred from the others matching: a persisted record whose id, tenant,
+// and permissions all match while System is false was possible under an
+// older release that predates deriving System from the canonical name
+// (rather than accepting it on the request), and accepting such a record
+// here would leave a role with a reserved name mutable and deletable
+// through the ordinary role APIs — silently defeating the immutability a
+// built-in role is supposed to have. Name is checked for the same reason on
+// the id-collision path, where the record was reached by id rather than by
+// the name this comparison assumes.
 //
 // A nil resolver, a lookup error, a nil result, or any field that does not
 // match all report false: this function fails closed, since the caller's
 // only alternative on a false is to refuse the whole first-boot run rather
 // than silently accept a role it cannot verify.
-func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, tenantID string, want *role.Role, checkID bool) bool {
+func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, tenantID string, want *role.Role) bool {
 	if resolver == nil {
 		return false
 	}
@@ -609,7 +613,7 @@ func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, t
 	if err != nil || existing == nil {
 		return false
 	}
-	if checkID && existing.ID != want.ID {
+	if existing.ID != want.ID {
 		return false
 	}
 	if existing.TenantID != want.TenantID {
