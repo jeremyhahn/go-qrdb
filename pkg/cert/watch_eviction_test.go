@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,6 +82,15 @@ func (w *fakeWatcher) deliver(t *testing.T, evType watch.EventType, key string) 
 type fakeWatchService struct {
 	mu       sync.Mutex
 	watchers map[string]*fakeWatcher
+
+	// failNext, when > 0, makes WatchPrefix return an error instead of a
+	// watcher, decrementing by one on every call -- so a test can force
+	// reestablishWatch through a chosen number of failed retries before
+	// it finally succeeds.
+	failNext int
+	// calls records the time of every WatchPrefix call (successful or
+	// not), for a test asserting on the backoff between them.
+	calls []time.Time
 }
 
 func newFakeWatchService() *fakeWatchService {
@@ -88,11 +98,23 @@ func newFakeWatchService() *fakeWatchService {
 }
 
 func (s *fakeWatchService) WatchPrefix(_ context.Context, prefix string, _ ...watch.WatchOption) (watch.Watcher, error) {
-	w := newFakeWatcher()
 	s.mu.Lock()
+	s.calls = append(s.calls, time.Now())
+	if s.failNext > 0 {
+		s.failNext--
+		s.mu.Unlock()
+		return nil, errors.New("fakeWatchService: forced WatchPrefix failure")
+	}
+	w := newFakeWatcher()
 	s.watchers[prefix] = w
 	s.mu.Unlock()
 	return w, nil
+}
+
+func (s *fakeWatchService) callTimes() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.calls...)
 }
 
 func (s *fakeWatchService) Watch(context.Context, string, ...watch.WatchOption) (watch.Watcher, error) {
@@ -376,4 +398,122 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishesClosedWatch(t *testi
 		_, stillCached := p.perTenant["acme"]
 		return !stillCached
 	})
+}
+
+// TestDefaultCertProvider_WatchForDeletions_ReestablishBackoffGrowsAndCaps
+// is the red/green proof for go-qrdb#591's final delta review (non-blocking
+// 1): reestablishWatch must not retry a failing WatchPrefix at the SAME
+// fixed interval forever -- each failed attempt must wait LONGER than the
+// last, up to watchReestablishBackoffCap.
+func TestDefaultCertProvider_WatchForDeletions_ReestablishBackoffGrowsAndCaps(t *testing.T) {
+	oldBackoff, oldCap := watchReestablishBackoff, watchReestablishBackoffCap
+	watchReestablishBackoff = 20 * time.Millisecond
+	watchReestablishBackoffCap = 60 * time.Millisecond
+	t.Cleanup(func() { watchReestablishBackoff, watchReestablishBackoffCap = oldBackoff, oldCap })
+
+	ws := newFakeWatchService()
+	// WatchForDeletions' own two initial calls (one per watcher) succeed;
+	// account for both before forcing the reestablish attempts to fail.
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	firstWatcher := ws.watcherFor(t, prefixCertCA)
+
+	ws.mu.Lock()
+	ws.failNext = 3 // three failed retries, then the fourth call succeeds
+	ws.mu.Unlock()
+	firstWatcher.closeEvents()
+
+	pollUntil(t, func() bool {
+		return len(ws.callTimes()) >= 6 // 2 initial + 3 failed + 1 successful retry
+	})
+	calls := ws.callTimes()
+	// calls[0]/[1] are WatchForDeletions' own two initial WatchPrefix
+	// calls (cert_ca, then tombstone), both well before the close; the
+	// cert_ca retries start at calls[2].
+	retryGaps := make([]time.Duration, 0, 4)
+	for i := 2; i < len(calls)-1; i++ {
+		retryGaps = append(retryGaps, calls[i+1].Sub(calls[i]))
+	}
+	if len(retryGaps) < 3 {
+		t.Fatalf("expected at least 3 retry gaps, got %d (%v)", len(retryGaps), retryGaps)
+	}
+	// A capped backoff plateaus (two consecutive gaps both near the cap),
+	// and real goroutine scheduling jitter can make a later plateaued gap
+	// measure a few milliseconds BELOW an earlier one despite both being
+	// the same nominal backoff -- so shrinkage is only a real violation
+	// past a small tolerance, not any decrease at all.
+	const jitterTolerance = 15 * time.Millisecond
+	for i := 1; i < len(retryGaps); i++ {
+		if retryGaps[i]+jitterTolerance < retryGaps[i-1] {
+			t.Errorf("retry gap %d (%v) is well below retry gap %d (%v): backoff shrank",
+				i, retryGaps[i], i-1, retryGaps[i-1])
+		}
+	}
+	// Growth actually happened at all (not merely "never shrank" from a
+	// flat sequence): the first retry gap must be meaningfully shorter
+	// than the last, which only reaching the cap explains.
+	if first, last := retryGaps[0], retryGaps[len(retryGaps)-1]; first+jitterTolerance >= last {
+		t.Errorf("no growth observed across retries: first gap %v, last gap %v", first, last)
+	}
+	for i, g := range retryGaps {
+		if g > watchReestablishBackoffCap+jitterTolerance {
+			t.Errorf("retry gap %d = %v, exceeds the cap %v by more than scheduling slack", i, g, watchReestablishBackoffCap)
+		}
+	}
+}
+
+// TestDefaultCertProvider_WatchForDeletions_ReestablishmentInvalidatesEverything
+// is the red/green proof for go-qrdb#591's final delta review (non-blocking
+// 1's second half): a DELETE that lands exactly during the gap between the
+// old watcher's channel closing and the new one taking over is invisible
+// to this node's watcher either way, so superviseWatch must not assume
+// nothing relevant happened during that gap -- it invalidates every
+// cached tenant and fires every OnInvalidate subscriber once the watch is
+// re-established, with no delete event needing to be delivered at all.
+func TestDefaultCertProvider_WatchForDeletions_ReestablishmentInvalidatesEverything(t *testing.T) {
+	old := watchReestablishBackoff
+	watchReestablishBackoff = time.Millisecond
+	t.Cleanup(func() { watchReestablishBackoff = old })
+
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	var invalidated int32
+	p.OnInvalidate(func() { atomic.AddInt32(&invalidated, 1) })
+
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "erin", TenantID: "initech"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	p.mu.RLock()
+	_, cachedBefore := p.perTenant["initech"]
+	p.mu.RUnlock()
+	if !cachedBefore {
+		t.Fatal("expected initech's SoftwareProvider to be cached in perTenant before the gap")
+	}
+
+	firstWatcher := ws.watcherFor(t, prefixCertCA)
+	firstWatcher.closeEvents()
+
+	// No delete is ever delivered on the new watcher: reconciliation must
+	// come from reestablishment itself, not from an event this test never
+	// sends.
+	pollUntil(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		_, stillCached := p.perTenant["initech"]
+		return !stillCached
+	})
+	if got := atomic.LoadInt32(&invalidated); got == 0 {
+		t.Error("expected OnInvalidate to fire on watch reestablishment, even with no delete event delivered")
+	}
 }

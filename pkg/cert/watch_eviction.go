@@ -24,15 +24,23 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
-// watchReestablishBackoff bounds how long WatchForDeletions' supervisors
-// wait before asking the hub for a fresh watcher, after one of its two
-// watched channels closes for a reason other than ctx being canceled
-// (go-qrdb#591's review, non-blocking): the hub closing a watcher's
-// channel is not necessarily terminal for the whole process (a
+// watchReestablishBackoff is the STARTING delay WatchForDeletions'
+// supervisors wait before asking the hub for a fresh watcher, after one of
+// its two watched channels closes for a reason other than ctx being
+// canceled (go-qrdb#591's review, non-blocking): the hub closing a
+// watcher's channel is not necessarily terminal for the whole process (a
 // mid-reconnect window, a leader transfer), and a consumer goroutine that
 // simply exits on that leaves eviction permanently dark for the rest of
-// this node's life, with nothing visible to say so.
+// this node's life, with nothing visible to say so. reestablishWatch
+// doubles this on every failed WatchPrefix retry, capped at
+// watchReestablishBackoffCap, so a hub that stays unavailable for a long
+// time is retried at a bounded interval rather than hammered at a fixed
+// 2-second rate for as long as it is down.
 var watchReestablishBackoff = 2 * time.Second
+
+// watchReestablishBackoffCap bounds how large reestablishWatch's
+// exponential backoff may grow.
+var watchReestablishBackoffCap = 1 * time.Minute
 
 // WatchForDeletions starts two background watchers -- over __sys:cert_ca/
 // for DELETE events and over the tenant tombstone prefix
@@ -96,7 +104,14 @@ func (p *DefaultCertProvider) WatchForDeletions(ctx context.Context) error {
 // naming label and prefix, and the watch is re-established against
 // p.watchSvc, backing off between attempts -- bounded by ctx throughout,
 // so a canceled context during a backoff wait stops retrying rather than
-// looping forever on a hub that is gone for good (process shutdown).
+// looping forever on a hub that is gone for good (process shutdown). Once
+// the watch comes back, invalidateAll() reconciles any delete the gap
+// between the close and the new watcher may have missed -- a DELETE this
+// node's watcher never saw because it landed exactly during the gap would
+// otherwise leave a stale perTenant entry (or the widened trust pool's own
+// cache) cached forever, never evicted by anything -- rather than trusting
+// that nothing relevant happened while this node could not have known
+// either way.
 // Both of WatchForDeletions' watchers run through this so eviction never
 // goes permanently dark for the rest of this node's life on one closed
 // channel.
@@ -114,22 +129,25 @@ func (p *DefaultCertProvider) superviseWatch(ctx context.Context, label, prefix 
 			// Only reachable when ctx itself ended during the retry loop.
 			return
 		}
+		p.invalidateAll()
 		w = next
 	}
 }
 
 // reestablishWatch retries p.watchSvc.WatchPrefix, backing off
-// watchReestablishBackoff between attempts, until it succeeds or ctx ends.
+// EXPONENTIALLY between attempts starting from watchReestablishBackoff and
+// capped at watchReestablishBackoffCap, until it succeeds or ctx ends.
 // Returns an error only when ctx itself is done -- a WatchPrefix failure
 // is logged at WARN and retried, never given up on while ctx is still
 // live, since the hub being briefly unavailable (not yet ready, a
 // mid-reconnect window) is exactly the condition this exists to ride out.
 func (p *DefaultCertProvider) reestablishWatch(ctx context.Context, label, prefix string, opts []watch.WatchOption) (watch.Watcher, error) {
+	backoff := watchReestablishBackoff
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(watchReestablishBackoff):
+		case <-time.After(backoff):
 		}
 		w, err := p.watchSvc.WatchPrefix(ctx, prefix, opts...)
 		if err == nil {
@@ -139,7 +157,10 @@ func (p *DefaultCertProvider) reestablishWatch(ctx context.Context, label, prefi
 			return nil, ctx.Err()
 		}
 		slog.Warn("qrdb/cert: re-establishing watch failed; will retry",
-			slog.String("watch", label), slog.String("prefix", prefix), slog.Any("error", err))
+			slog.String("watch", label), slog.String("prefix", prefix), slog.Any("error", err), slog.Duration("backoff", backoff))
+		if backoff *= 2; backoff > watchReestablishBackoffCap {
+			backoff = watchReestablishBackoffCap
+		}
 	}
 }
 
@@ -157,6 +178,26 @@ func (p *DefaultCertProvider) OnInvalidate(fn func()) {
 	p.mu.Lock()
 	p.invalidateHooks = append(p.invalidateHooks, fn)
 	p.mu.Unlock()
+}
+
+// invalidateAll drops EVERY tenant's cached built-in cakey.SoftwareProvider
+// and notifies every OnInvalidate subscriber, exactly as if every tenant
+// had just been individually evicted. Called once a watch superviseWatch
+// re-established came back up, so a DELETE that landed during the gap
+// between the old watcher's channel closing and the new one taking over --
+// invisible to this node either way, since no watcher was listening -- is
+// still reconciled: the stale entry (or the widened trust pool's cache
+// subscribed via OnInvalidate) is not trusted to still be correct merely
+// because nothing was observed, since nothing being observed is exactly
+// the gap's own failure mode, not evidence that nothing changed.
+func (p *DefaultCertProvider) invalidateAll() {
+	p.mu.Lock()
+	p.perTenant = make(map[string]*perTenantEntry)
+	hooks := p.invalidateHooks
+	p.mu.Unlock()
+	for _, fn := range hooks {
+		fn()
+	}
 }
 
 // evictTenant drops tenantID's cached built-in cakey.SoftwareProvider, if
