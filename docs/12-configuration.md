@@ -764,7 +764,7 @@ brings the barrier up.
 | Field | Type | Default | Required | CLI Flag | Description |
 |---|---|---|---|---|---|
 | `enabled` | bool | `true` | no | N/A | Enable the storage barrier. **Required when `auth.enabled` is `true`** — see Validation rules. |
-| `strategy` | string | `"none"` | no | `--barrier-strategy` (`qrdb init`, `qrdb barrier init-shamir`) | `"none"` \| `"passphrase"` \| `"shamir"` \| a hardware strategy ID registered by a go-xkms composition. `"software"` is accepted as a deprecated alias for `"passphrase"`. |
+| `strategy` | string | `"none"` | no | `--barrier-strategy` (`qrdb init`, `qrdb barrier init-shamir`) | `"none"` \| `"passphrase"` \| `"shamir"` \| a hardware strategy ID registered by a go-xkms composition. Any other value, including `"software"`, is refused. |
 | `root_key_path` | string | `"__sys:seal/root_key"` | no | N/A | Storage key the sealed root-key blob is persisted under. |
 | `shamir_threshold` | int | — | when `strategy: shamir` | `--threshold` | Minimum shares required to unseal; `>= 2` and `<= shamir_total`. |
 | `shamir_total` | int | — | when `strategy: shamir` | `--shares` / `--total` | Total Shamir shares to generate. |
