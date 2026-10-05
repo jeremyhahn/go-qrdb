@@ -55,9 +55,9 @@ type AuthMiddlewareConfig struct {
 }
 ```
 
-`sdk/go` (go-qrdb#398 -- an embedder consumes go-qrdb exclusively through
-`sdk/go`, so every type and constructor above is re-exported, under the
-`RateLimit*` prefix for the two ambiguous names):
+`sdk/go` (an embedder consumes go-qrdb exclusively through `sdk/go`, so
+every type and constructor above is re-exported, under the `RateLimit*`
+prefix for the two ambiguous names):
 
 ```go
 type RateLimitPolicy   = ratelimit.Policy

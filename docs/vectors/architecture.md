@@ -71,7 +71,7 @@ barrier-encrypted, tenant-safe storage. The code does this instead:
   entirely in-memory store (`vectorstorage.MemoryVectorStorage`) when it does
   not (`pkg/server/lifecycle`) -- the vector subsystem follows the node's
   primary engine rather than requiring a directory a memory-engine node has
-  no other reason to have (go-qrdb#578).
+  no other reason to have.
 - **Isolation is a name prefix.** A database's namespaces are distinguished by
   the `<tenant>/<db>/` prefix the request resolver adds to the namespace name,
   plus a tenant scope the service adds itself.

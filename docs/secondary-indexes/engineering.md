@@ -19,10 +19,10 @@ type AtomicKVStore = kvstore.AtomicKVStore
 var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
 var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 
-// The store Client.KVStore() returns now satisfies AtomicKVStore for real
-// (go-qrdb#589): it forwards PutIfAbsent/CompareAndSwap/CompareAndDelete to
-// the transport's GuardedKVClient capability, which every production
-// transport (REST, gRPC, QUIC, Unix, MCP, embedded) has carried since #119.
+// The store Client.KVStore() returns now satisfies AtomicKVStore for real:
+// it forwards PutIfAbsent/CompareAndSwap/CompareAndDelete to the
+// transport's GuardedKVClient capability, which every production
+// transport (REST, gRPC, QUIC, Unix, MCP, embedded) already carries.
 // Before this the adapter implemented only the base KVStore, so
 // DAO.SaveIfAbsent always refused with AtomicWriteUnsupportedError
 // regardless of transport.
@@ -79,7 +79,7 @@ type DAOUnitOfWork, DAOTransactional[E], DAOVersioned, DAOTimestamped
 // instead of the sequential apply-and-compensate path, which is NOT atomic
 // against a concurrent reader. This closes the move/rename case: a delete
 // and a put in the same UnitOfWork now commit together or not at all over
-// a store that supports it (go-qrdb#589).
+// a store that supports it.
 //
 // FieldHashGenerator and DynamicFieldHashGenerator hash a natural key with
 // FNV-1a, which has no resistance to a deliberately engineered collision.

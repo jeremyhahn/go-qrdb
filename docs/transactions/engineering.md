@@ -148,7 +148,7 @@ the JSON wire form carries **integers**, not names. A client that hardcodes
   incoming message up to the server's configured receive bound before any
   interceptor runs, so leaving every RPC able to accept 100+ MB by default
   would let an unauthenticated peer force that allocation with no rate limit
-  of its own (go-qrdb#576). `cmd/qrdbd` opts in, since BatchImport over every
+  of its own. `cmd/qrdbd` opts in, since BatchImport over every
   transport is one of its shipped capabilities; an embedder that builds
   `pkg/api/grpc` or `pkg/api/unix` (or `pkg/server`) directly without opting in
   gets a 4 MiB default on EVERY RPC those servers expose, not just import.

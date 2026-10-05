@@ -238,10 +238,10 @@ material, written later, surviving while the role entry it was supposed to
 follow is gone. The node then reads as a directory written before the role
 existed and comes up with no enrollment listener, which is exactly what the
 ordering exists to prevent. `securefile.WriteFileAtomic` (moved out of this
-package to `pkg/util/securefile` and re-exported from `sdk/go`, go-qrdb#580)
-therefore fsyncs the directory after the rename and does not report success
-until that succeeds. Every caller gets this, so `PersistMaterial` and
-`PersistCA` are crash-durable too.
+package to `pkg/util/securefile` and re-exported from `sdk/go`) therefore
+fsyncs the directory after the rename and does not report success until
+that succeeds. Every caller gets this, so `PersistMaterial` and `PersistCA`
+are crash-durable too.
 
 **There is one local-SAN implementation, and the unspecified addresses are not
 in it.** `clustertls.LocalSANs` returns `localhost`, the machine hostname, the
