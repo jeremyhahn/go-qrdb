@@ -2050,11 +2050,19 @@ func runStart(f *startFlags) (err error) {
 				// Waited on before auditLogger closes (LIFO: deferred after
 				// it, so it runs first) -- the watch goroutine, when one was
 				// started, logs through resources this shutdown path is
-				// about to tear down, and ctx (sigCtx) already cancels it,
-				// so this only waits for the exit it was already told to
-				// make.
+				// about to tear down. adminWatchCancel is deferred AFTER
+				// Wait() (go-qrdb#591 re-review, item A), so it runs BEFORE
+				// it: sigCtx only cancels on a shutdown signal, so a
+				// NON-signal error return from a later step in runStart
+				// would otherwise leave nothing to stop the goroutine and
+				// Wait() would block forever. Calling adminWatchCancel on
+				// a clean signal shutdown too is harmless -- sigCtx is
+				// already cancelled by then, so this is a no-op race with
+				// an already-stopping goroutine, never a double-cancel of
+				// anything live.
 				if authResult.adminWatchWG != nil {
 					defer authResult.adminWatchWG.Wait()
+					defer authResult.adminWatchCancel()
 				}
 				authMethods.Bind(authResult.authMW)
 			} else {
@@ -3639,6 +3647,17 @@ type authBootstrapResult struct {
 	// actually exit instead of leaving it to be reaped by process exit
 	// alone.
 	adminWatchWG *sync.WaitGroup
+
+	// adminWatchCancel ends the watch goroutine's own context. It must be
+	// called BEFORE adminWatchWG.Wait() (go-qrdb#591 re-review, item A):
+	// the goroutine runs on a context bootstrapAuthEnforcement derives for
+	// it, not on sigCtx directly, because sigCtx is cancelled ONLY by a
+	// shutdown signal -- a non-signal error return elsewhere in runStart
+	// would otherwise make the deferred Wait() block forever on a watch
+	// nothing had told to stop. Always non-nil, even when no watch
+	// goroutine was actually started, so the caller can defer it
+	// unconditionally.
+	adminWatchCancel context.CancelFunc
 }
 
 // bootstrapUserRoleStores initializes the user and role stores unconditionally.
@@ -3935,6 +3954,26 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
+	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
+	// (go-qrdb#591 re-review, item A), created unconditionally -- whether
+	// or not a watch goroutine ends up starting below -- so this is the
+	// single, vet-recognizable "context.WithCancel immediately followed
+	// by a deferred cancel" site the lostcancel analyzer expects. It is
+	// released by this deferred cleanup on every return from this
+	// function EXCEPT the final, successful one: that one hands
+	// adminWatchCancel to the caller as part of *authBootstrapResult
+	// (keepWatchCtx set just before it), since sigCtx is cancelled ONLY
+	// by a shutdown signal and a non-signal error return elsewhere in
+	// runStart must still be able to stop the watch goroutine, when one
+	// was started, before runStart's own deferred adminWatchWG.Wait()
+	// would otherwise block on it forever.
+	watchCtx, adminWatchCancel := context.WithCancel(ctx)
+	keepWatchCtx := false
+	defer func() {
+		if !keepWatchCtx {
+			adminWatchCancel()
+		}
+	}()
 
 	// The custodian service store, reused from mgmt.legacyFactorStore rather
 	// than built again here: bootstrapUserRoleStores already constructed it
@@ -4067,7 +4106,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 			adminWatchWG.Add(1)
 			go func() {
 				defer adminWatchWG.Done()
-				if werr := firstboot.WatchForAdminBound(ctx, mgmt.userSvc, watchSvc, awaitingAdminCredentialProbe); werr != nil && ctx.Err() == nil {
+				if werr := firstboot.WatchForAdminBound(watchCtx, mgmt.userSvc, watchSvc, awaitingAdminCredentialProbe); werr != nil && watchCtx.Err() == nil {
 					slog.Warn("watch for the bootstrap admin's certificate binding ended unexpectedly; "+
 						"this node stays in \"awaiting admin credential\" until a restart or a local reissue",
 						slog.String("error", werr.Error()))
@@ -4123,12 +4162,14 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		return nil, &AuthBootstrapError{Step: "SO authenticator", Err: err}
 	}
 
+	keepWatchCtx = true
 	return &authBootstrapResult{
 		auditLogger:                  auditLogger,
 		authMW:                       authMW,
 		soAuthenticator:              soAuthenticator,
 		awaitingAdminCredentialProbe: awaitingAdminCredentialProbe,
 		adminWatchWG:                 &adminWatchWG,
+		adminWatchCancel:             adminWatchCancel,
 	}, nil
 }
 
