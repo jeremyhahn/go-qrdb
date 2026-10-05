@@ -72,6 +72,28 @@ func (e *LockServiceError) Unwrap() error {
 	return e.Err
 }
 
+// EmptyVectorDataDirError is returned by BuildServices when infra.Backend
+// is a persistent engine (anything other than database.BackendMemory) and
+// infra.DataDir is empty.
+//
+// A persistent primary engine with no data directory is a configuration
+// mistake, not a request for an ephemeral vector store: the Pebble-backed
+// path (PebbleVectorStorage) needs a real directory to open, and silently
+// substituting MemoryVectorStorage would make vector data vanish on every
+// restart for a node whose OTHER data the operator very much intends to
+// keep. The caller requests the in-memory path explicitly, by setting
+// infra.Backend to database.BackendMemory (go-qrdb#578); nothing else does.
+type EmptyVectorDataDirError struct {
+	// Backend is the primary engine's declared backend type.
+	Backend database.BackendType
+}
+
+// Error returns a human-readable description naming the backend.
+func (e *EmptyVectorDataDirError) Error() string {
+	return "lifecycle: vector storage requires a non-empty data directory for backend " +
+		string(e.Backend) + "; set Infra.Backend to database.BackendMemory to opt into an in-memory vector store instead"
+}
+
 // VectorStorageError is returned when the vector storage backend fails
 // to initialize.
 type VectorStorageError struct {

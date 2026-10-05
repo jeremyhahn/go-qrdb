@@ -1483,8 +1483,15 @@ func runStart(f *startFlags) (err error) {
 			// guarded writes; nil for a host with no transport, whose groups
 			// hold only this binary (see raftbackend.NewFeatureGate).
 			var featureGate *featuregate.Gate
+			// localBackend is this node's primary engine backend type,
+			// threaded into lifecycle.Infra.Backend below so BuildServices
+			// decides vector storage's placement by the engine's declared
+			// type (go-qrdb#578), not by f.dataDir's emptiness. Raft mode
+			// (the else branch) never reassigns it: a replicated node
+			// always persists, so the declared default -- Pebble -- is
+			// already correct there.
+			localBackend := database.BackendPebble
 			if standalone {
-				localBackend := database.BackendPebble
 				if len(f.databases) > 0 && f.databases[0].Backend != "" {
 					localBackend = database.BackendType(f.databases[0].Backend)
 				}
@@ -1663,6 +1670,7 @@ func runStart(f *startFlags) (err error) {
 				WatchHub:                  watchHub,
 				BackupSink:                backupSink,
 				DataDir:                   f.dataDir,
+				Backend:                   localBackend,
 				DatabaseManager:           dbManager,
 				KVOptions:                 nil,
 				SealBarrier:               sealBarrier,

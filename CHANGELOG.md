@@ -410,9 +410,19 @@ are not reconstructed here — their history is in the git log.
   persisted last.
 - **A memory-engine node no longer needs a vector data directory
   (#578).** `pkg/storage/vector.MemoryVectorStorage` implements
-  `vector.Storage` entirely in process memory; `BuildServices` selects it
-  when `infra.DataDir` is empty instead of returning
-  `EmptyVectorDataDirError` (removed).
+  `vector.Storage` entirely in process memory. `lifecycle.Infra` gains a
+  `Backend database.BackendType` field; `BuildServices` selects
+  `MemoryVectorStorage` when it is explicitly `database.BackendMemory`,
+  never from `DataDir` being empty on its own -- `DataDir` is a fact about
+  configuration, and only `Backend` is the caller's actual decision to run
+  ephemeral. A persistent backend (the zero value, or any explicit
+  non-memory value) with an empty `DataDir` is refused with the typed
+  `*lifecycle.EmptyVectorDataDirError` rather than silently handed an
+  in-memory vector store that would lose data on every restart.
+  `sdk/go/node` and `cmd/qrdbd` both set `Backend` from the same
+  configuration value (`databases[0].backend`) they already use to choose
+  the primary engine, so a memory-engine node continues to need no vector
+  data directory exactly as before.
 - **`sdk/go` re-exports the atomic, mode-enforcing file writer (#580).**
   `pkg/util/securefile.WriteFileAtomic` (moved out of `pkg/clustertls`, now
   refuses a pre-existing symlink at its target with a typed

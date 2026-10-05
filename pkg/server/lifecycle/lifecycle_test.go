@@ -988,13 +988,13 @@ func TestBuildSealServicesOnly_WithStrategyRegistry(t *testing.T) {
 	}
 }
 
-// TestBuildServices_EmptyDataDir_VectorStorageIsInMemory verifies that
-// BuildServices no longer requires a data directory for the vector
-// subsystem (go-qrdb#578): a node with an empty DataDir -- a memory-engine
-// node, by sdk/go/node's own convention -- opens successfully with a
-// populated Vector service backed by an in-memory store, and never touches
-// the filesystem for it.
-func TestBuildServices_EmptyDataDir_VectorStorageIsInMemory(t *testing.T) {
+// TestBuildServices_MemoryBackend_VectorStorageIsInMemory verifies that
+// BuildServices routes vector storage to the in-memory implementation for
+// a node whose primary engine is explicitly database.BackendMemory
+// (go-qrdb#578): it opens successfully with a populated Vector service
+// backed by an in-memory store, and never touches the filesystem for it,
+// even with an empty DataDir.
+func TestBuildServices_MemoryBackend_VectorStorageIsInMemory(t *testing.T) {
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()
 
@@ -1013,7 +1013,8 @@ func TestBuildServices_EmptyDataDir_VectorStorageIsInMemory(t *testing.T) {
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
 		Host:     host,
 		WatchHub: hub,
-		DataDir:  "", // intentionally empty: a memory-engine node
+		DataDir:  "", // intentionally empty: declared as a memory-engine node below
+		Backend:  database.BackendMemory,
 	})
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)
@@ -1029,8 +1030,36 @@ func TestBuildServices_EmptyDataDir_VectorStorageIsInMemory(t *testing.T) {
 		t.Fatalf("ReadDir(%s): %v", wd, err)
 	}
 	if len(after) != len(before) {
-		t.Errorf("working directory grew from %d entries to %d; an empty-DataDir node must create nothing on disk",
+		t.Errorf("working directory grew from %d entries to %d; a memory-backend node must create nothing on disk",
 			len(before), len(after))
+	}
+}
+
+// TestBuildServices_PersistentBackend_EmptyDataDirRefuses proves the other
+// half of go-qrdb#578's non-blocking fix: a PERSISTENT backend (the zero
+// value, Pebble's implicit default, and every explicit non-memory value)
+// with an empty DataDir is refused with *lifecycle.EmptyVectorDataDirError
+// rather than silently handed an in-memory vector store that would lose
+// data on every restart. DataDir's emptiness alone is never, on its own, a
+// declaration of intent to run ephemeral.
+func TestBuildServices_PersistentBackend_EmptyDataDirRefuses(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	for _, backend := range []database.BackendType{"", database.BackendPebble, database.BackendFile} {
+		_, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+			Host:     host,
+			WatchHub: hub,
+			DataDir:  "",
+			Backend:  backend,
+		})
+		var refusal *lifecycle.EmptyVectorDataDirError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("backend %q: err = %v (%T), want *lifecycle.EmptyVectorDataDirError", backend, err, err)
+		}
 	}
 }
 

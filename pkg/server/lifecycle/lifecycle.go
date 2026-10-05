@@ -84,8 +84,22 @@ type Infra struct {
 
 	// DataDir is the base data directory used for vector storage, database
 	// metadata, and (when SealBarrier is non-nil) the certificate store.
-	// Required.
+	// Required unless Backend is database.BackendMemory.
 	DataDir string
+
+	// Backend is this node's primary KV engine's backend type
+	// (database.BackendMemory, BackendPebble, BackendFile, BackendObjstore,
+	// BackendRaft). BuildServices uses it, not DataDir's emptiness, to
+	// decide whether vector storage follows the primary engine into
+	// memory (go-qrdb#578): the zero value is NOT database.BackendMemory,
+	// so a caller that leaves this unset gets the persistent (Pebble) path
+	// and, with it, DataDir's existing "required" contract enforced -- a
+	// caller requesting a persistent backend with no DataDir is refused
+	// with EmptyVectorDataDirError rather than silently handed an
+	// in-memory vector store a restart or a failover would lose. Only an
+	// EXPLICIT database.BackendMemory opts into the in-memory vector path;
+	// leaving DataDir empty is not, on its own, a declaration of intent.
+	Backend database.BackendType
 
 	// DatabaseManager is an already-open database manager. When non-nil it
 	// is used directly; when nil BuildServices creates a new manager rooted
@@ -665,21 +679,28 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
 
-	// Vector storage follows the primary engine (go-qrdb#578): a node with no
-	// data directory is a memory-engine node (see resolveBackend in
-	// sdk/go/node, which leaves DataDir empty exactly for
-	// database.BackendMemory), and the vector subsystem must not be the one
-	// thing that still requires a directory. MemoryVectorStorage satisfies
-	// the identical vectorstorage.Storage interface with no on-disk
-	// footprint, the same relationship pkg/storage/memory already has to
-	// PebbleDB for the primary KV engine (see NewLocalStorage).
+	// Vector storage follows the primary engine (go-qrdb#578), decided by
+	// infra.Backend -- the engine's own declared type -- not by DataDir's
+	// emptiness. DataDir being empty is a FACT about configuration;
+	// Backend == database.BackendMemory is the caller's actual DECISION to
+	// run ephemeral, and only the decision should route storage away from
+	// disk. Checking DataDir alone would hand a Pebble-backed node an
+	// in-memory vector store -- silently, successfully, and durably wrong
+	// -- the moment its DataDir happened to be misconfigured as empty,
+	// instead of refusing. MemoryVectorStorage satisfies the identical
+	// vectorstorage.Storage interface with no on-disk footprint, the same
+	// relationship pkg/storage/memory already has to PebbleDB for the
+	// primary KV engine (see NewLocalStorage).
 	//
 	// Encryption-at-rest applies only to the Pebble-backed path: there is no
 	// file for atrest to wrap when nothing is written to disk.
 	var vectorStorage vectorstorage.Storage
-	if infra.DataDir == "" {
+	if infra.Backend == database.BackendMemory {
 		vectorStorage = vectorstorage.NewMemoryVectorStorage()
 	} else {
+		if infra.DataDir == "" {
+			return nil, &EmptyVectorDataDirError{Backend: infra.Backend}
+		}
 		// Route encryption through the shared Encryptor so vector storage and
 		// the MVCC state machine use one code path and one instance. When
 		// Infra.Encryptor is nil, derive a no-op Encryptor from SealBarrier
