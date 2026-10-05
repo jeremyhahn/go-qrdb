@@ -17,10 +17,16 @@ package conformance
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+
+	mcpwire "github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	quicwire "github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -184,10 +190,13 @@ func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 			// Restoring it is refused on EVERY transport without the
 			// caller's explicit opt-in (go-qrdb security review,
 			// backup-encrypt-default round 4) -- never inferred from
-			// the backup's own stored metadata.
-			if _, err := bc.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: plain.ID}); err == nil {
-				t.Fatalf("%s: RestoreBackup of the explicit-plaintext backup succeeded with no AllowPlaintext opt-in", tk)
-			}
+			// the backup's own stored metadata. err == nil alone would
+			// also pass for a cell that refused for the wrong reason
+			// (a timeout, a lost connection, an unrelated validation
+			// failure); wantPlaintextRestoreRefusal pins the SPECIFIC
+			// refusal this scenario is about.
+			_, err = bc.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: plain.ID})
+			wantPlaintextRestoreRefusal(t, tk, err)
 			// An explicit plaintext backup still restores -- with no
 			// decryption key, since it was never encrypted -- once the
 			// caller opts in with AllowPlaintext.
@@ -196,4 +205,79 @@ func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 			}
 		})
 	}
+}
+
+// wantPlaintextRestoreRefusal asserts err is SPECIFICALLY the
+// plaintext-restore-without-opt-in refusal (*service.BackupPlaintextRestoreNotAllowedError,
+// errclass.InvalidArgument), not merely non-nil -- a bare err != nil check
+// would also pass for a cell that failed for an unrelated reason (a
+// timeout, a lost connection, a validation error on a field this scenario
+// never touches), which would make the cell pass while proving nothing
+// about the opt-in this scenario exists to pin.
+//
+// Only the embedded transport reconstructs the typed
+// *transport.BackupPlaintextRestoreNotAllowedError in-process; the other
+// five collapse everything but a fixed set of named errors into
+// *transport.RequestError, each carrying ITS OWN numeric encoding of
+// InvalidArgument -- there is no single shared scheme to compare against
+// across transports:
+//
+//   - REST: the raw HTTP status, http.StatusBadRequest (400).
+//   - gRPC and the Unix socket (gRPC underneath): the raw gRPC code,
+//     codes.InvalidArgument (3).
+//   - QUIC: its own wire status vocabulary, wire.StatusInvalidArgument
+//     (7) -- one entry per gRPC status code (go-qrdb#437), but not at
+//     the SAME numeric value as the gRPC code it mirrors.
+//   - MCP: its own JSON-RPC code vocabulary, wire.CodeInvalidArgument
+//     (-32012) -- likewise one entry per gRPC status code (go-qrdb#438),
+//     in the negative -32000..-32099 band JSON-RPC reserves for
+//     implementation-defined server errors, again not sharing gRPC's
+//     numbering.
+func wantPlaintextRestoreRefusal(t *testing.T, tk transportKind, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: RestoreBackup of the explicit-plaintext backup succeeded with no AllowPlaintext opt-in", tk)
+	}
+
+	if !tk.remote() {
+		var notAllowed *transport.BackupPlaintextRestoreNotAllowedError
+		if !errors.As(err, &notAllowed) {
+			t.Fatalf("%s: RestoreBackup err = %T, want *transport.BackupPlaintextRestoreNotAllowedError: %v", tk, err, err)
+		}
+		return
+	}
+
+	wantByTransport := map[transportKind]int{
+		restTransport: http.StatusBadRequest,
+		grpcTransport: int(codes.InvalidArgument),
+		unixTransport: int(codes.InvalidArgument),
+		quicTransport: int(quicwire.StatusInvalidArgument),
+		mcpTransport:  int(mcpwire.CodeInvalidArgument),
+	}
+	want, ok := wantByTransport[tk]
+	if !ok {
+		t.Fatalf("%s: no expected InvalidArgument status registered for this transport", tk)
+	}
+	// Some transports (QUIC, at least) wrap the request-level
+	// *transport.RequestError -- the one that actually carries the
+	// server's status code -- in an OUTER *transport.RequestError of
+	// their own, whose own StatusCode is left unset. errors.As stops at
+	// the FIRST *RequestError it finds while unwrapping, which would be
+	// that outer, status-less one; walk the whole chain by hand instead
+	// so an inner match is not missed.
+	found := false
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		reqErr, ok := e.(*transport.RequestError)
+		if !ok {
+			continue
+		}
+		found = true
+		if reqErr.StatusCode == want {
+			return
+		}
+	}
+	if !found {
+		t.Fatalf("%s: RestoreBackup err = %T, want *transport.RequestError somewhere in its chain: %v", tk, err, err)
+	}
+	t.Fatalf("%s: RestoreBackup: no *transport.RequestError in err's chain carried StatusCode %d (InvalidArgument): %v", tk, want, err)
 }
