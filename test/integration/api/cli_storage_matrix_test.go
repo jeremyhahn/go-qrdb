@@ -117,8 +117,20 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 
 	backends := []string{"memory", "file", "pebble"}
 
+	// etcdPortBase/etcdPort give each (backend, protocol) combination its own
+	// listen port. A port shared across the matrix's 15 combinations raced
+	// the previous subtest's etcd listener teardown (database drop) against
+	// this one's bind, which does not always lose: "address already in use"
+	// on update-etcd --listen-addr localhost:2379 is exactly that race, not
+	// a per-subtest defect. A distinct port per combination removes the
+	// shared resource instead of trying to win the race.
+	const etcdPortBase = 23790
+	etcdPort := etcdPortBase
+
 	for _, backend := range backends {
 		for _, proto := range AllProtocols() {
+			etcdPort++
+			listenAddr := fmt.Sprintf("localhost:%d", etcdPort)
 			t.Run(fmt.Sprintf("%s/%s", backend, proto), func(t *testing.T) {
 				if !cfg.IsProtocolAvailable(t, proto) {
 					t.Fatalf("server not available for protocol %s", proto)
@@ -167,11 +179,12 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 				assertNotEmpty(t, stdout+stderr,
 					fmt.Sprintf("[%s] database info after update-protocol produced no output", proto))
 
-				// Update 2: update-etcd --enabled --listen-addr localhost:2379
+				// Update 2: update-etcd --enabled --listen-addr, on this
+				// combination's own port (see listenAddr's doc comment above).
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 					"database", "update-etcd", dbName,
 					"--enabled",
-					"--listen-addr", "localhost:2379")
+					"--listen-addr", listenAddr)
 				if err != nil {
 					t.Logf("stdout: %s", stdout)
 					t.Logf("stderr: %s", stderr)
@@ -192,11 +205,13 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 				assertContains(t, stdout, "Etcd:",
 					fmt.Sprintf("[%s] database info should contain 'Etcd:' after update-etcd", proto))
 
-				// Update 3: update-raft --cluster-mode local --shard-id 100 --replica-id 1
+				// Update 3: update-raft --cluster-mode local --replica-id 1.
+				// No --shard-id: the cluster issues a database's shard ID
+				// once at create and it is never caller-settable
+				// (docs/databases/api.md "There is no shardId").
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 					"database", "update-raft", dbName,
 					"--cluster-mode", "local",
-					"--shard-id", "100",
 					"--replica-id", "1")
 				if err != nil {
 					t.Logf("stdout: %s", stdout)
