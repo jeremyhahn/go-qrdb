@@ -68,8 +68,8 @@ type TokenBucketOption  = ratelimit.TokenBucketOption
 
 func NewRateLimitRegistry() *RateLimitRegistry
 func NewTokenBucketLimiter(opts ...TokenBucketOption) *TokenBucketLimiter
-func WithIdleTTL(ttl time.Duration) TokenBucketOption
-func WithSweepInterval(interval time.Duration) TokenBucketOption
+func WithRateLimitIdleTTL(ttl time.Duration) TokenBucketOption
+func WithRateLimitSweepInterval(interval time.Duration) TokenBucketOption
 ```
 
 `sdk/go/node`:

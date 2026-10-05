@@ -443,7 +443,13 @@ are not reconstructed here — their history is in the git log.
 - **`sdk/go` re-exports `pkg/ratelimit`, wired into the embedded node
   (#398).** `WithRateLimitPolicies` and `WithRateLimiter` are new
   `sdk/go/node.NodeOption`s, threaded into the same
-  `wiring.AuthMiddlewareConfig` the daemon builds.
+  `wiring.AuthMiddlewareConfig` the daemon builds. `sdk.TokenBucketLimiter`'s
+  two construction options are re-exported as `WithRateLimitIdleTTL` and
+  `WithRateLimitSweepInterval`, not the upstream `pkg/ratelimit.WithIdleTTL`/
+  `WithSweepInterval` names: "idle TTL" and "sweep interval" name no
+  rate-limiting concept on their own at the SDK root, matching every other
+  identifier in this surface's `RateLimit*` prefix. No alias is kept under
+  the unprefixed names.
 - **DAO atomic primitives reach every SDK transport (#589).**
   `sdk.KVStoreAdapter` now forwards `PutIfAbsent`/`CompareAndSwap`/
   `CompareAndDelete` to the transport's `GuardedKVClient` capability, so

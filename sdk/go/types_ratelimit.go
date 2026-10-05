@@ -58,9 +58,16 @@ var NewTokenBucketLimiter = ratelimit.NewTokenBucketLimiter
 // TokenBucketOption configures a TokenBucketLimiter at construction.
 type TokenBucketOption = ratelimit.TokenBucketOption
 
-// WithIdleTTL overrides how long an idle key's bucket is retained before the
-// limiter's sweep reclaims it.
-var WithIdleTTL = ratelimit.WithIdleTTL
+// WithRateLimitIdleTTL overrides how long an idle key's bucket is retained
+// before the limiter's sweep reclaims it.
+//
+// Re-exported under the RateLimit prefix, not the upstream WithIdleTTL name:
+// "idle TTL" names no rate-limiting concept on its own, and a bare
+// WithIdleTTL at the SDK root reads as belonging to whichever OTHER
+// subsystem's idle-eviction option gets added next.
+var WithRateLimitIdleTTL = ratelimit.WithIdleTTL
 
-// WithSweepInterval overrides how often the limiter sweeps idle buckets.
-var WithSweepInterval = ratelimit.WithSweepInterval
+// WithRateLimitSweepInterval overrides how often the limiter sweeps idle
+// buckets. Re-exported under the RateLimit prefix for the same reason as
+// WithRateLimitIdleTTL.
+var WithRateLimitSweepInterval = ratelimit.WithSweepInterval
