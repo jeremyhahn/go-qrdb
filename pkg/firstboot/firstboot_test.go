@@ -1010,6 +1010,110 @@ func (m mismatchedRoleResolver) GetRoleByName(_ context.Context, _, _ string) (*
 	return m.role, nil
 }
 
+// shrinkBuiltInRoleSeedRetry replaces the package's retry bound and interval
+// with test-sized ones for the duration of the calling test, restoring the
+// production values on cleanup. BuiltInRoleSeedRetryWindow and
+// BuiltInRoleSeedRetryInterval are package-level variables rather than
+// constants for exactly this: a test that needs to observe the retry loop's
+// deadline or its sleep must not wait out the production 5-second window to
+// do it.
+func shrinkBuiltInRoleSeedRetry(t *testing.T, window, interval time.Duration) {
+	t.Helper()
+	origWindow, origInterval := BuiltInRoleSeedRetryWindow, BuiltInRoleSeedRetryInterval
+	BuiltInRoleSeedRetryWindow, BuiltInRoleSeedRetryInterval = window, interval
+	t.Cleanup(func() {
+		BuiltInRoleSeedRetryWindow, BuiltInRoleSeedRetryInterval = origWindow, origInterval
+	})
+}
+
+// countingNotFoundResolver implements role.NameResolver by reporting
+// not-found a fixed number of times before answering with a persisted
+// record, modelling the legitimate concurrent-seeder lag
+// BuiltInRoleAlreadySeededWithin exists to ride out: a create collision is
+// reported before the winner's own write has become visible to this read.
+type countingNotFoundResolver struct {
+	misses atomic.Int32
+	role   *role.Role
+}
+
+func (c *countingNotFoundResolver) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {
+	if c.misses.Add(-1) >= 0 {
+		return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
+	}
+	return c.role, nil
+}
+
+// TestBuiltInRoleAlreadySeededWithin covers the exported retry wrapper's own
+// branches, over and above builtInRoleAlreadySeeded's single-lookup
+// comparisons (TestBuiltInRoleAlreadySeeded): the nil-resolver short circuit,
+// a genuine mismatch answered at once without waiting out the window, a
+// lookup that keeps missing until a legitimate concurrent winner's write
+// becomes visible, retry exhaustion when it never does, and the ctx.Done
+// path a caller's own cancellation takes.
+func TestBuiltInRoleAlreadySeededWithin(t *testing.T) {
+	want := &role.Role{
+		ID:          role.SystemRoleID(tenantid.System, role.RoleNameSO),
+		Name:        role.RoleNameSO,
+		TenantID:    tenantid.System,
+		Permissions: role.BuiltInRoles(tenantid.System)[0].Permissions,
+		System:      true,
+	}
+
+	t.Run("nil resolver", func(t *testing.T) {
+		if BuiltInRoleAlreadySeededWithin(context.Background(), nil, tenantid.System, want) {
+			t.Error("expected false with a nil resolver")
+		}
+	})
+
+	t.Run("a definitive mismatch is refused without retrying", func(t *testing.T) {
+		shrinkBuiltInRoleSeedRetry(t, time.Hour, time.Hour)
+		roles := &fakeRoles{}
+		roles.remember(role.Role{ID: "a-different-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
+		start := time.Now()
+		if BuiltInRoleAlreadySeededWithin(context.Background(), roles, tenantid.System, want) {
+			t.Error("expected false when the persisted id differs from the canonical one")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("a definitive mismatch waited %s; it must return at once, not retry out the window", elapsed)
+		}
+	})
+
+	t.Run("a late-arriving winner is found before the window closes", func(t *testing.T) {
+		shrinkBuiltInRoleSeedRetry(t, time.Second, time.Millisecond)
+		resolver := &countingNotFoundResolver{role: want}
+		resolver.misses.Store(3)
+		if !BuiltInRoleAlreadySeededWithin(context.Background(), resolver, tenantid.System, want) {
+			t.Error("expected true once the winner's write becomes visible within the window")
+		}
+	})
+
+	t.Run("retry exhaustion when the record never resolves", func(t *testing.T) {
+		shrinkBuiltInRoleSeedRetry(t, 30*time.Millisecond, 5*time.Millisecond)
+		roles := &fakeRoles{}
+		start := time.Now()
+		if BuiltInRoleAlreadySeededWithin(context.Background(), roles, tenantid.System, want) {
+			t.Error("expected false when the role never resolves before the window closes")
+		}
+		if elapsed := time.Since(start); elapsed < 25*time.Millisecond {
+			t.Errorf("returned after %s; expected to wait out close to the whole %s window", elapsed, 30*time.Millisecond)
+		}
+	})
+
+	t.Run("ctx cancellation stops the wait early", func(t *testing.T) {
+		shrinkBuiltInRoleSeedRetry(t, time.Hour, time.Hour)
+		roles := &fakeRoles{}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		if BuiltInRoleAlreadySeededWithin(ctx, roles, tenantid.System, want) {
+			t.Error("expected false when the context is already cancelled")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("a cancelled context waited %s; it must stop the retry loop immediately", elapsed)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Missing dependencies
 // ---------------------------------------------------------------------------
