@@ -839,6 +839,10 @@ type Node struct {
 	// nothing.
 	embeddedCaller []*x509.Certificate
 
+	// clusterJoin is the node's member-side CSR join (startClusterJoin); nil
+	// on a standalone node.
+	clusterJoin *lifecycle.ClusterJoin
+
 	// clusterIdentity is a clustered node's certificate, key and cluster CA
 	// (WithRaftMTLS): its mTLS identity to peers and the key its tenant keys
 	// are delivered to. Nil on a standalone node.
@@ -1231,8 +1235,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		// Forward an injected (xkms) Key B provider the same way: the
 		// CertProvider is also constructed inside BuildServices.
-		CertKeyProviderFactory:    server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
-		DefaultTenantEntitlements: n.defaultTenantEntitlements,
+		CertKeyProviderFactory: server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
+		// The tenant defaults qrdbd applies, read from the same configuration
+		// (tenant.default_quotas, tenant.default_entitlements); an explicit
+		// WithDefaultTenantEntitlements overrides the configured entitlements.
+		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
+		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
 		_ = localHost.Close()
@@ -1727,8 +1735,12 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// hardware/cloud seal strategies resolve in clustered mode too.
 		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		// Forward an injected (xkms) Key B provider the same way.
-		CertKeyProviderFactory:    server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
-		DefaultTenantEntitlements: n.defaultTenantEntitlements,
+		CertKeyProviderFactory: server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProviderFactory,
+		// The tenant defaults qrdbd applies, read from the same configuration
+		// (tenant.default_quotas, tenant.default_entitlements); an explicit
+		// WithDefaultTenantEntitlements overrides the configured entitlements.
+		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
+		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
 		_ = host.Close()
@@ -2005,6 +2017,9 @@ func (n *Node) Close() error {
 			firstErr = err
 		}
 	}
+
+	// The join listener takes no new joiner once the node is closing.
+	n.clusterJoin.Stop()
 
 	// Cancel the node-lifetime background context before stopping any service
 	// so long-running goroutines (the lease-expiry sweeper, the reclaim
@@ -2326,8 +2341,12 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// than silently dropped.
 		StrategyRegistry: server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
 		// Forward an injected (xkms) Key B provider the same way.
-		CertKeyProviderFactory:    server.ResolveCryptoOptions(serverOpts...).CertKeyProviderFactory,
-		DefaultTenantEntitlements: n.defaultTenantEntitlements,
+		CertKeyProviderFactory: server.ResolveCryptoOptions(serverOpts...).CertKeyProviderFactory,
+		// The tenant defaults qrdbd applies, read from the same configuration
+		// (tenant.default_quotas, tenant.default_entitlements); an explicit
+		// WithDefaultTenantEntitlements overrides the configured entitlements.
+		DefaultTenantQuotas:       cfg.Tenant.DefaultQuotas.ToQuotas(),
+		DefaultTenantEntitlements: n.tenantEntitlements(cfg),
 	})
 	if err != nil {
 		_ = localHost.Close()
@@ -2969,6 +2988,14 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		n.logger.Warn("node: cluster CA establishment failed; Key A is not yet available",
 			slog.Any("error", err))
 	}
+	// Member-side CSR join, composed exactly as qrdbd composes it: this
+	// node's identity recorded as admitted whenever it holds a cluster CA
+	// key (its own Key A, or a WithClusterCAKeyProvider provider), and, with
+	// cluster_join.enabled, the join listener and the join-token verb bound
+	// to one store. Started once for the node's life.
+	if err := n.startClusterJoin(ctx, svcNode, cfg, standalone); err != nil {
+		return err
+	}
 
 	// Key B cache eviction (go-qrdb#591's review): watches for a deleted
 	// tenant's CA material/certificate, or the tenant's own tombstone, so a
@@ -3149,6 +3176,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}
 	allOpts = append(allOpts, n.raftTenantClusterOptions(svcNode, cfg, authMW, standalone)...)
+	allOpts = append(allOpts, n.clusterJoin.ServerOptions()...)
 	if barrier != nil {
 		allOpts = append(allOpts, server.WithSealedWindowProbe(barrier))
 	}

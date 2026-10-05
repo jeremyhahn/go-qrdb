@@ -15,6 +15,7 @@
 package node
 
 import (
+	"context"
 	"crypto/x509"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -52,11 +53,8 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 			Peers:         lifecycle.PeerAdminURLMap(cfg.Auth.PeerAdminURLs),
 			Logger:        n.logger,
 		}),
-		TrustDomain: cfg.Auth.ClusterTrustDomain,
+		TrustDomain: clusterTrustDomain(cfg),
 		Logger:      n.logger,
-	}
-	if c.TrustDomain == "" {
-		c.TrustDomain = qrdbconfig.DefaultClusterTrustDomain
 	}
 	if id := n.clusterIdentity; id != nil {
 		c.CertPEM, c.KeyPEM = id.Cert, id.Key
@@ -79,3 +77,52 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 func (n *Node) byoTLS() bool {
 	return n.clusterIdentity != nil && n.clusterCAKeyProvider == nil && len(n.clusterCACertPEM) == 0
 }
+
+// clusterTrustDomain is the configured cluster trust domain, or the default.
+func clusterTrustDomain(cfg *qrdbconfig.Config) string {
+	if cfg.Auth.ClusterTrustDomain != "" {
+		return cfg.Auth.ClusterTrustDomain
+	}
+	return qrdbconfig.DefaultClusterTrustDomain
+}
+
+// startClusterJoin composes the node's member-side CSR join through
+// lifecycle.StartClusterJoin, once, on a clustered node.
+func (n *Node) startClusterJoin(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, standalone bool) error {
+	if standalone || cfg == nil || n.clusterJoin != nil {
+		return nil
+	}
+	var certPEM []byte
+	if n.clusterIdentity != nil {
+		certPEM = n.clusterIdentity.Cert
+	}
+	cj, err := lifecycle.StartClusterJoin(ctx, svcNode, lifecycle.ClusterJoinConfig{
+		Enabled:     cfg.ClusterJoin.Enabled,
+		ListenHost:  cfg.ClusterJoin.ListenHost,
+		ListenPort:  cfg.ClusterJoin.ListenPort,
+		AdminPort:   cfg.Server.AdminPort,
+		TrustDomain: clusterTrustDomain(cfg),
+		DataDir:     cfg.Raft.DataDir,
+		NodeCertPEM: certPEM,
+		Logger:      n.logger,
+	})
+	if err != nil {
+		return &ClusterJoinError{Err: err}
+	}
+	n.clusterJoin = cj
+	return nil
+}
+
+// ClusterJoinError reports that a clustered node's member-side CSR join
+// could not be composed.
+type ClusterJoinError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ClusterJoinError) Error() string {
+	return "node: cluster join: " + e.Err.Error()
+}
+
+// Unwrap returns the cause.
+func (e *ClusterJoinError) Unwrap() error { return e.Err }
