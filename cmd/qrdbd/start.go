@@ -16,19 +16,15 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/binary"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,7 +40,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/spf13/cobra"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -64,7 +59,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
-	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -72,7 +66,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
-	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -729,16 +722,8 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if !cmd.Flags().Changed("cluster-trust-domain") && cfg.Auth.ClusterTrustDomain != "" {
 		f.clusterTrustDomain = cfg.Auth.ClusterTrustDomain
 	}
-	if len(cfg.Auth.PeerAdminURLs) > 0 {
-		m := make(map[string]string, len(cfg.Auth.PeerAdminURLs))
-		for _, e := range cfg.Auth.PeerAdminURLs {
-			if e.RaftAddr != "" && e.AdminURL != "" {
-				m[e.RaftAddr] = e.AdminURL
-			}
-		}
-		if len(m) > 0 {
-			f.peerAdminURLs = m
-		}
+	if m := lifecycle.PeerAdminURLMap(cfg.Auth.PeerAdminURLs); m != nil {
+		f.peerAdminURLs = m
 	}
 	// Tenant isolation posture mirrors RBAC: config can raise strictness;
 	// FIPS-140 always enforces it.
@@ -2126,202 +2111,45 @@ func runStart(f *startFlags) (err error) {
 			// with a positive limit, so unlimited/system workloads are unaffected.
 			quotaAccountant := buildQuotaAccountant(tenantSvcInst)
 
-			// Build leader forwarding resolver so writes on non-leader nodes
-			// are transparently proxied to the current leader. Uses HTTPS scheme
-			// since the admin server now runs TLS.
-			adminPortStr := strconv.Itoa(f.adminPort)
-			registry := rest.NewPeerAdminRegistryTLS(adminPortStr)
+			// The peer admin registry resolves a peer's admin URL from its Raft
+			// address: REST's leader forwarding proxies writes on a non-leader
+			// to the current leader through it, and the cluster key plane
+			// delivers tenant keys through it. Configured peer admin URLs
+			// cover nodes sharing a host on distinct admin ports.
+			registry := lifecycle.NewPeerAdminRegistry(lifecycle.PeerAdminConfig{
+				RaftAddr:      f.raftAddress,
+				AdvertiseHost: f.advertiseHost,
+				AdminPort:     f.adminPort,
+				Peers:         f.peerAdminURLs,
+				Logger:        slog.Default(),
+			})
 
-			// Register the local node so other nodes forwarding back to us can
-			// be detected as a loop (and for symmetry with peer registrations).
-			//
-			// The entry is keyed by f.raftAddress -- the identity peers use --
-			// so its value must be the URL a PEER would reach us on, which is
-			// the advertise host. A loopback literal here published "reach me
-			// at 127.0.0.1" into the shared registry (go-qrdb#167), which is
-			// also strictly worse than the registry's own derivation from the
-			// Raft address host. A node whose advertise host is a wildcard has
-			// no such URL, so it registers nothing rather than a wrong one.
-			if selfAdminURL, ok := selfAdminURL(f); ok {
-				registry.Register(f.raftAddress, selfAdminURL)
-			} else {
-				slog.Warn("no advertisable host for this node's admin URL; skipping self-registration in the peer registry",
-					"raft_address", f.raftAddress,
-					"advertise_host", f.advertiseHost)
-			}
-
-			// Pre-register peer admin URLs from config (Phase 4c-1c). This is required
-			// when cluster nodes share a host but use distinct admin ports (e.g.
-			// integration tests). In production clusters where every node uses the
-			// same admin port on a distinct host, the fallback derivation inside
-			// peerAdminRegistry.ResolveAdminURL is sufficient and this map is empty.
-			for peerRaftAddr, peerAdminURL := range f.peerAdminURLs {
-				if peerRaftAddr == f.raftAddress {
-					continue // local node already registered above
-				}
-				registry.Register(peerRaftAddr, peerAdminURL)
-			}
-
-			// Phase 4c-1c: Cluster peer key-transport (clusterkeys). Build the HPKE
-			// receiver and sender only when the seal subsystem and placement table are
-			// both present (clustered, IsolationRaft-capable deployment). Single-node or
-			// non-clustered nodes skip this and leave the routes un-mounted.
-			//
-			// clusterTrustDomain is the single invariant that ties the node cert SPIFFE
-			// SAN (stamped into auto-generated certs by resolveTLS), the receiver's
-			// peer-cert verification, and the sender's recipient-cert authentication.
-			// All three MUST use the same value; it is sourced from f.clusterTrustDomain
-			// which defaults to "qrdb.cluster" and can be overridden via the
-			// --cluster-trust-domain flag or YAML auth.cluster_trust_domain.
-			var ckReceiver *clusterkeys.Receiver
-			var ckSender *clusterkeys.Sender
-			// nodePriv is the node's HPKE key for the cluster key plane. Cluster
-			// enable-encryption does not use it: no migration credential is
-			// sealed to a node or sent to one.
-			var nodePriv *ecdsa.PrivateKey
-
-			// The cluster key plane is a THIRD certificate-authorization site,
-			// alongside the mTLS authenticator and REST's on-behalf forwarding
-			// path. Its routes are on the REST public allowlist by design — they
-			// authorize by node identity plus the placement table, not user RBAC —
-			// so they never reach the middleware and inherit none of its checks.
-			// Reuse the middleware's own checker rather than building a second
-			// cache over the same provider: one cache means
-			// auth.revocation_cache_ttl is one window for this node rather than
-			// one per plane.
-			//
-			// Nil when --auth-enabled=false, because no middleware is built then.
-			// That leaves the key plane exactly as unenforced as every other plane
-			// on such a node.
+			// The multi-node half of raft tenant isolation -- the cluster key
+			// plane, the key distributor, the rebalance dependencies and the
+			// replica host -- composed exactly as an embedded clustered node
+			// composes it. The key plane reuses the auth middleware's
+			// revocation checker, so auth.revocation_cache_ttl is one window
+			// for this node rather than one per plane; nil with auth off,
+			// which leaves the key plane as unenforced as every other plane.
 			var ckRevocation auth.RevocationChecker
 			if authResult != nil {
 				ckRevocation = authResult.authMW.RevocationChecker()
 			}
-			if host != nil && barrierRegistry != nil && svcNode.PlacementStore != nil {
-				// Parse the node's ECDSA P-256 private key from the TLS bundle. This is
-				// the same key that the node certificate was issued for, making it the
-				// HPKE recipient key (DHKEM-P-256). A parse failure disables key transport
-				// rather than aborting the daemon — single-node and passphrase-sealed
-				// deployments do not strictly need this.
-				if block, _ := pem.Decode(bundle.KeyPEM); block != nil {
-					if p, parseErr := x509.ParseECPrivateKey(block.Bytes); parseErr == nil {
-						nodePriv = p
-					} else {
-						slog.Warn("clusterkeys: failed to parse node private key, peer key transport disabled",
-							slog.Any("error", parseErr))
-					}
-				}
-				if nodePriv != nil {
-					kdReceiver, kdErr := keydelivery.NewReceiver(nodePriv, f.raftAddress)
-					if kdErr != nil {
-						slog.Warn("clusterkeys: key delivery receiver init failed, peer key transport disabled",
-							slog.Any("error", kdErr))
-					} else {
-						var ckrErr error
-						ckReceiver, ckrErr = clusterkeys.NewReceiver(
-							kdReceiver,
-							barrierRegistry,
-							svcNode.PlacementStore,
-							f.clusterTrustDomain,
-							f.raftAddress,
-							bundle.CACertPool,
-							ckRevocation,
-							bundle.CertPEM,
-							slog.Default(),
-						)
-						if ckrErr != nil {
-							slog.Warn("clusterkeys: cluster key receiver init failed, peer key transport disabled",
-								slog.Any("error", ckrErr))
-						}
-					}
-				}
-			}
-			if ckReceiver != nil {
-				// Build an mTLS *http.Client presenting the node cert and trusting the
-				// cluster CA pool. TLS 1.3 is pinned; the cert is loaded from the bundle
-				// to avoid touching the file system after hot-reload may have swapped it.
-				nodeCert, certErr := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM)
-				if certErr != nil {
-					slog.Warn("clusterkeys: failed to build mTLS client cert, sender disabled",
-						slog.Any("error", certErr))
-				} else {
-					mtlsTransport := &http.Transport{
-						TLSClientConfig: &tls.Config{
-							Certificates: []tls.Certificate{nodeCert},
-							RootCAs:      bundle.CACertPool,
-							MinVersion:   tls.VersionTLS13,
-						},
-						ForceAttemptHTTP2: true,
-					}
-					mtlsClient := &http.Client{
-						Timeout:   15 * time.Second,
-						Transport: mtlsTransport,
-					}
-					var senderErr error
-					ckSender, senderErr = clusterkeys.NewSender(
-						registry,
-						mtlsClient,
-						bundle.CACertPool,
-						f.clusterTrustDomain,
-						ckRevocation,
-						slog.Default(),
-					)
-					if senderErr != nil {
-						slog.Warn("clusterkeys: sender init failed, peer key distribution disabled",
-							slog.Any("error", senderErr))
-					}
-				}
-			}
-			// Post-construction injection: wire the sender into the DatabaseService.
-			// lifecycle.BuildServices constructs DatabaseService before the sender is
-			// available (the sender needs the LeaderAdminResolver which is created
-			// here), so SetDistributor is used instead of a construction-time option.
-			if ckSender != nil {
-				if concrete, ok := dbSvc.(*service.DatabaseService); ok {
-					concrete.SetDistributor(ckSender, barrierRegistry, f.raftAddress)
-				}
-			}
-
-			// Phase 4c-2: post-construction injection into RebalanceService.
-			// lifecycle.BuildServices constructs RebalanceService before the
-			// clusterkeys.Sender (and the placement store) are available, so
-			// SetRebalanceDeps mirrors the SetDistributor pattern used above.
-			// All three dependencies are nil-guarded: when any is absent (single-node
-			// or non-IsolationRaft deployment) SetRebalanceDeps disables the
-			// dedicated-tenant MOVE path and the generic system-shard path is used.
-			if svcNode.Rebalance != nil {
-				if concrete, ok := svcNode.Rebalance.(*service.RebalanceService); ok {
-					concrete.SetRebalanceDeps(
-						svcNode.PlacementStore,
-						ckSender,
-						barrierRegistry,
-						f.raftAddress,
-					)
-				}
-			}
-
-			// Phase 4c-1d: wire the Raft host into DatabaseService so CreateForTenant
-			// can call AddFollowerNode for each follower replica immediately after the
-			// placement is persisted, and into RebalanceService so a dedicated-tenant
-			// shard MOVE can admit its destination replica observer-first
-			// (RaftHost.AddObserver) and evict its source replica
-			// (RaftHost.RemoveFollowerNode) -- see RebalanceService.moveTenantGroupShard.
-			// raftBackendReg being non-nil implies the shared host is configured for
-			// IsolationRaft tenants. The raftFollowerAdder adapter wraps
-			// host.RequestAddNodeWithIdentity/RequestAddObserverWithIdentity/RequestRemoveNode + rs.Result()
-			// into the narrow service.RaftHost interface; the SAME instance is shared
-			// by both services since it is stateless beyond the host reference.
-			if raftBackendReg != nil {
-				raftHostAdapter := &raftFollowerAdder{host: host, gate: featureGate}
-				if concrete, ok := dbSvc.(*service.DatabaseService); ok {
-					concrete.SetRaftHost(raftHostAdapter)
-				}
-				if svcNode.Rebalance != nil {
-					if concrete, ok := svcNode.Rebalance.(*service.RebalanceService); ok {
-						concrete.SetRaftHost(raftHostAdapter)
-					}
-				}
-			}
+			raftTenants := lifecycle.ComposeRaftTenantCluster(lifecycle.RaftTenantClusterConfig{
+				Services:      svcNode,
+				Host:          host,
+				FeatureGate:   featureGate,
+				Barriers:      barrierRegistry,
+				DedicatedRaft: raftBackendReg != nil,
+				RaftAddr:      f.raftAddress,
+				PeerAdmin:     registry,
+				TrustDomain:   f.clusterTrustDomain,
+				CACertPool:    bundle.CACertPool,
+				CertPEM:       bundle.CertPEM,
+				KeyPEM:        bundle.KeyPEM,
+				Revocation:    ckRevocation,
+				Logger:        slog.Default(),
+			})
 
 			// Phase D: cluster-wide enable-encryption coordination. Wired only when
 			// the replicated coordination store is available (a KV-backed cluster).
@@ -2606,9 +2434,7 @@ func runStart(f *startFlags) (err error) {
 			if quotaAccountant != nil {
 				serverOpts = append(serverOpts, server.WithQuotaAccountant(quotaAccountant))
 			}
-			if ckReceiver != nil {
-				serverOpts = append(serverOpts, server.WithClusterKeyReceiver(ckReceiver))
-			}
+			serverOpts = append(serverOpts, raftTenants.ServerOptions()...)
 			if tenantSvcInst != nil {
 				serverOpts = append(serverOpts, server.WithTenantService(tenantSvcInst))
 				// The structurally-privileged system tenant is created earlier in
@@ -3212,21 +3038,6 @@ func resolveAdvertiseHost(f *startFlags) string {
 		return f.advertiseHost
 	}
 	return cluster.HostFromAddress(f.raftAddress)
-}
-
-// selfAdminURL builds the admin HTTPS base URL this node publishes for itself
-// in the leader-forward peer registry. The entry is keyed by the node's Raft
-// address -- the identity peers use -- so the value has to be a URL a PEER can
-// dial, which is the advertise host and the admin port. A node with no
-// advertisable host (wildcard Raft address, no advertise host) has no such URL
-// and reports false so the caller registers nothing: the registry's own
-// derivation from the Raft address host is a better answer than a wrong one.
-func selfAdminURL(f *startFlags) (string, bool) {
-	host := resolveAdvertiseHost(f)
-	if !cluster.AdvertisableHost(host) {
-		return "", false
-	}
-	return "https://" + net.JoinHostPort(host, strconv.Itoa(f.adminPort)), true
 }
 
 // advertisedAPIEndpoints builds the client-facing API endpoint map this node
@@ -4495,122 +4306,6 @@ func handleSIGHUP(reloader *CertReloader, logger *slog.Logger) {
 	} else {
 		logger.Info("TLS certificate reloaded via SIGHUP")
 	}
-}
-
-// raftFollowerAdder adapts *quicraft.Host to the service.RaftHost interface.
-// It wraps RequestAddNodeWithIdentity + rs.Result() into a single blocking call that
-// returns only an error, shielding DatabaseService from the quicraft import
-// and from RequestState lifecycle management.
-type raftFollowerAdder struct {
-	host *quicraft.Host
-	gate *featuregate.Gate
-}
-
-var _ service.ReplicaAdmitter = (*raftFollowerAdder)(nil)
-
-// AdmitReplica refuses to add a replica of shardID on raftAddr when the node
-// does not advertise every feature the group uses (see
-// featuregate.Gate.AdmitReplica). DatabaseService and RebalanceService ask it
-// before they persist a placement change; AddFollowerNode and AddObserver ask
-// again before the config change, so no caller can add around it.
-func (a *raftFollowerAdder) AdmitReplica(shardID uint64, raftAddr string) error {
-	if a.gate == nil {
-		return nil
-	}
-	return a.gate.AdmitReplica(shardID, raftAddr)
-}
-
-// AddFollowerNode calls RequestAddNodeWithIdentity on the shared Raft host and blocks
-// until the config change commits or ctx is cancelled. Used ONLY for
-// founding members at create time (service.DatabaseService.CreateForTenant);
-// see AddObserver for scale-up.
-//
-// The replica's host is an existing cluster node, so the identity committed
-// with it is the one go-quicraft already committed for that host.
-func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	if err := a.AdmitReplica(shardID, raftAddr); err != nil {
-		return err
-	}
-	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
-	if err != nil {
-		return err
-	}
-	rs, err := a.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
-	if err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		rs.Release()
-		return ctx.Err()
-	case result := <-rs.ResultC():
-		return result.Err
-	}
-}
-
-// AddObserver calls RequestAddObserverWithIdentity on the shared Raft host and blocks
-// until the config change commits or ctx is cancelled. Used exclusively by
-// DatabaseService.ScaleForTenant's scale-up path (scaleUp) to admit a
-// dynamically added replica as a NON-VOTING observer, so scale-up never
-// transiently changes -- and therefore never breaks -- the group's existing
-// voting quorum (see the elastic-scaling design doc §B.2/§D.4). The
-// observer is later promoted to a full voting member asynchronously by
-// server.TenantShardReconciler's Promoter (see raftPromoter), which reuses
-// RequestAddNodeWithIdentity against this same, already-admitted replica ID -- go-quicraft
-// treats that as an observer -> voter promotion rather than a fresh add.
-func (a *raftFollowerAdder) AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	if err := a.AdmitReplica(shardID, raftAddr); err != nil {
-		return err
-	}
-	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
-	if err != nil {
-		return err
-	}
-	rs, err := a.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
-	if err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		rs.Release()
-		return ctx.Err()
-	case result := <-rs.ResultC():
-		return result.Err
-	}
-}
-
-// RemoveFollowerNode calls RequestRemoveNode on the shared Raft host and
-// blocks until the config change commits or ctx is cancelled. Used by
-// DatabaseService.ScaleForTenant's scale-down path.
-func (a *raftFollowerAdder) RemoveFollowerNode(ctx context.Context, shardID, replicaID uint64) error {
-	rs, err := a.host.RequestRemoveNode(ctx, shardID, replicaID, 0)
-	if err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		rs.Release()
-		return ctx.Err()
-	case result := <-rs.ResultC():
-		return result.Err
-	}
-}
-
-// LeaderReplicaID returns the shard's current leader replica ID via the
-// shared Raft host. Used by DatabaseService.ScaleForTenant's scale-down
-// replica-selection policy so the current leader is removed last.
-func (a *raftFollowerAdder) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
-	return a.host.GetLeaderID(shardID)
-}
-
-// RequestLeaderTransfer calls RequestLeaderTransfer on the shared Raft host.
-// Used by service.RemoveFollowerNode's caller (removeReplicaFromGroup, see
-// database_service.go's transferLeadershipAwayFromRemoved) to move
-// leadership away from a replica before evicting it, so the config change
-// removing it is driven to full replication by a leader that survives the
-// removal rather than the replica being removed.
-func (a *raftFollowerAdder) RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error {
-	return a.host.RequestLeaderTransfer(ctx, shardID, targetReplicaID)
 }
 
 // databaseSQLConfig converts a configuration file's database SQL settings to

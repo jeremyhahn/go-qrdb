@@ -14,7 +14,7 @@
 
 //go:build !integration
 
-package main
+package lifecycle
 
 import (
 	"context"
@@ -34,7 +34,7 @@ const dedicatedAdderShard = uint64(1000)
 // newAdderCluster forms a two-host system shard and founds a one-replica
 // dedicated shard on host 0, so replicas can be added to it on host 1 — a
 // host whose identity only the system shard has committed.
-func newAdderCluster(t *testing.T) (*raftharness.Cluster, *raftFollowerAdder) {
+func newAdderCluster(t *testing.T) (*raftharness.Cluster, *replicaHost) {
 	t.Helper()
 	c := raftharness.NewCluster(t, 2)
 	if err := c.Hosts[0].StartShard(map[uint64]string{1: c.Addrs[0]}, false, c.CreateFn(), quicraftconfig.Config{
@@ -43,22 +43,22 @@ func newAdderCluster(t *testing.T) (*raftharness.Cluster, *raftFollowerAdder) {
 		t.Fatalf("StartShard(dedicated): %v", err)
 	}
 	c.WaitReadable(t, dedicatedAdderShard, c.Hosts[0])
-	return c, &raftFollowerAdder{host: c.Hosts[0]}
+	return c, &replicaHost{host: c.Hosts[0]}
 }
 
-// TestRaftFollowerAdder_AddsCommitTheHostIdentity pins both add paths on a
+// TestReplicaHost_AddsCommitTheHostIdentity pins both add paths on a
 // host with a transport: the replica placed on host 1 is committed with the
 // identity the system shard committed for host 1, found by its address.
-func TestRaftFollowerAdder_AddsCommitTheHostIdentity(t *testing.T) {
+func TestReplicaHost_AddsCommitTheHostIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		add      func(a *raftFollowerAdder, ctx context.Context, addr string) error
+		add      func(a *replicaHost, ctx context.Context, addr string) error
 		observer bool
 	}{
-		{name: "AddFollowerNode", add: func(a *raftFollowerAdder, ctx context.Context, addr string) error {
+		{name: "AddFollowerNode", add: func(a *replicaHost, ctx context.Context, addr string) error {
 			return a.AddFollowerNode(ctx, dedicatedAdderShard, 2, addr)
 		}},
-		{name: "AddObserver", observer: true, add: func(a *raftFollowerAdder, ctx context.Context, addr string) error {
+		{name: "AddObserver", observer: true, add: func(a *replicaHost, ctx context.Context, addr string) error {
 			return a.AddObserver(ctx, dedicatedAdderShard, 2, addr)
 		}},
 	} {
@@ -90,10 +90,10 @@ func TestRaftFollowerAdder_AddsCommitTheHostIdentity(t *testing.T) {
 	}
 }
 
-// TestRaftFollowerAdder_RefusesAnUnknownHost pins the refusal branch of both
+// TestReplicaHost_RefusesAnUnknownHost pins the refusal branch of both
 // add paths: an address no committed membership names has no identity the
 // cluster can vouch for, so nothing is proposed.
-func TestRaftFollowerAdder_RefusesAnUnknownHost(t *testing.T) {
+func TestReplicaHost_RefusesAnUnknownHost(t *testing.T) {
 	c, adder := newAdderCluster(t)
 	ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
 	defer cancel()

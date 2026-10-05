@@ -653,6 +653,7 @@ restarts through the persistent placement table and per-node replica re-attach.
 | Quotas, entitlements, usage counters, reconciler | `pkg/quota` | go-qrdb |
 | Per-tenant barriers, `BarrierRegistry`, `TenantBarrier` | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
 | Tenant root-key transport (HPKE over mTLS) | `pkg/keydelivery`, `pkg/clusterkeys` | go-qrdb |
+| The multi-node composition of `raft` isolation: the key plane, the key distributor, the rebalance dependencies, the replica host, the peer admin registry | `pkg/server/lifecycle` (`ComposeRaftTenantCluster`, `NewPeerAdminRegistry`), composed identically by `qrdbd` and a clustered `sdk/go/node` node | go-qrdb |
 | Replica placement and reconciliation | `pkg/placement` | go-qrdb |
 | Volume allocation | `pkg/storage/pool` — see [../storage-engines/](../storage-engines/) | go-qrdb over **go-objstore** |
 | Raft groups | — | **go-quicraft** |

@@ -218,32 +218,3 @@ func TestResolveAdvertiseHost_FallsBackToRaftAddressHost(t *testing.T) {
 	f := &startFlags{raftAddress: "10.0.0.2:63001"}
 	assert.Equal(t, "10.0.0.2", resolveAdvertiseHost(f))
 }
-
-// TestSelfAdminURL_UsesAdvertiseHost: the node publishes the URL a PEER can
-// reach it on. A loopback literal here (the pre-#167 behaviour) told every
-// node resolving this one through the shared registry to dial 127.0.0.1, and
-// was strictly worse than the registry's own derivation from the Raft address.
-func TestSelfAdminURL_UsesAdvertiseHost(t *testing.T) {
-	f := &startFlags{advertiseHost: "10.0.0.9", raftAddress: "10.0.0.2:63001", adminPort: 63002}
-	got, ok := selfAdminURL(f)
-	require.True(t, ok)
-	assert.Equal(t, "https://10.0.0.9:63002", got)
-}
-
-// TestSelfAdminURL_FallsBackToRaftAddressHost: with no explicit advertise
-// host, the Raft address host is by definition an address peers already dial.
-func TestSelfAdminURL_FallsBackToRaftAddressHost(t *testing.T) {
-	f := &startFlags{raftAddress: "10.0.0.2:63001", adminPort: 63002}
-	got, ok := selfAdminURL(f)
-	require.True(t, ok)
-	assert.Equal(t, "https://10.0.0.2:63002", got)
-}
-
-// TestSelfAdminURL_NoAdvertisableHost: a wildcard Raft address with no
-// advertise host yields no URL at all rather than a guessed one.
-func TestSelfAdminURL_NoAdvertisableHost(t *testing.T) {
-	f := &startFlags{raftAddress: "0.0.0.0:63001", adminPort: 63002}
-	got, ok := selfAdminURL(f)
-	assert.False(t, ok)
-	assert.Empty(t, got)
-}

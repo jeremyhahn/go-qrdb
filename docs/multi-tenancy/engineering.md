@@ -809,6 +809,20 @@ That mode is intended only for trusted single-tenant or embedded use. A
 production multi-tenant deployment that omits the tenant service has a real
 isolation gap.
 
+**A clustered node composes `raft` isolation across nodes through one
+helper.** `lifecycle.ComposeRaftTenantCluster` builds the cluster key plane (a
+receiver for the tenant keys peers deliver, served on the REST listener, and a
+sender delivering this node's), hands `DatabaseService` its key distributor
+and `RebalanceService` its placement table, key deliverer and barrier lookup,
+and gives both the replica host they add and remove replicas through.
+`qrdbd` and a clustered embedded node (`sdk/go/node`) both call it, so an
+embedded node is a full member: placed as a replica it receives the tenant's
+key and serves the database. It needs what a `qrdbd` node needs -- a REST
+listener (the key routes), its node certificate and key (`WithRaftMTLS`, the
+SPIFFE SAN naming its Raft address), and `auth.peer_admin_urls` when nodes
+share a host on distinct admin ports. A missing piece disables what needs it,
+with a warning, rather than failing the boot.
+
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |
