@@ -21,9 +21,13 @@ are not reconstructed here — their history is in the git log.
   service. The embedded transport runs no `AuthMiddleware` and had no
   equivalent check at all: `Transport.CreateTenant`, `UpdateTenantQuotas`
   and `UpdateTenantEntitlements` called straight into the `TenantServicer`,
-  so an embedder presenting a tenant-scoped `auth.Identity` on the context
-  (as `sdk/go/node` does under request authentication) could create tenants
-  or raise its own plan's quotas and entitlements. New
+  so an embedder that itself binds a tenant-scoped `auth.Identity` onto the
+  context before calling (`auth.WithIdentity`, the same exported function
+  `AuthMiddleware` uses to bind an authenticated REQUEST's identity for the
+  network transports -- a DIFFERENT, unrelated call, since the embedded
+  transport's methods read whatever the caller already put on `ctx` and run
+  no middleware pipeline of their own) could create tenants or raise its
+  own plan's quotas and entitlements. New
   `tenant.RequirePlatformOperator` enforces the identical rule directly
   (typed `*tenant.PlatformOperatorRequiredError`, mapped to
   `PermissionDenied`); `Transport.UpdateTenant` calls it only when the
