@@ -35,7 +35,7 @@ projects share a shape without either importing the other's declaration.
 
 | Engine | Package | What it is |
 |---|---|---|
-| File | `pkg/storage/file/` | key-to-path filesystem mapping; shard configs, metadata |
+| File | `pkg/storage/file/` | hashed, flat, content-addressed filesystem mapping; shard configs, metadata |
 | Memory | `pkg/storage/memory/` | in-memory, for tests and ephemeral data |
 | PebbleDB | `pkg/storage/pebble/` | production-grade, extracted from the Raft state machine |
 | ObjStore | `pkg/storage/objstore/` | object-storage-backed, via go-objstore |
@@ -51,62 +51,105 @@ tenantEngine := namespace.New(base, "tenant-a")
 // List(nil)         →  filtered to the "tenant-a/" prefix
 ```
 
-### The file engine: one directory per key, not one file per key (BREAKING)
+### The file engine: a hashed, flat, content-addressed layout (BREAKING)
 
-**On-disk layout changed; no migration.** A security and availability probe
-found that writing a key and then a `/` prefix of that key, in either order,
-could kill the shard. The file engine used
-to map each key to a single file: '/' bytes delimited directory levels, so a
-key that was a '/' prefix of another key resolved under the SAME path as that
-other key's parent directory. Writing `dir/child` and then `dir` is Set
-colliding with a directory it had itself just created, and PebbleDB and
-in-memory storage have no such path at all — two ordinary byte-string keys,
-never a filesystem collision. The failure mode this produced was `SM.Apply`
-returning a genuine (if misleading) error from the storage layer: go-quicraft
-treats any non-nil `Update` error as fatal and halts `lastApplied` on that
-replica, so an ordinary pair of client writes could take the whole shard down
-with it. Because the system database lives on the system shard, that included
-authentication.
+**On-disk layout changed twice in succession; no migration either time.** A
+security and availability probe found that writing a key and then a `/`
+prefix of that key, in either order, could kill the shard. The file engine
+originally mapped each key to a single file, `/` bytes read as directory
+levels, so a key that was a `/` prefix of another resolved under the exact
+path that other key's parent directory needed. `SM.Apply` returning the
+resulting rename/mkdir failure as a genuine storage error is fatal to
+go-quicraft — `lastApplied` stops advancing on that replica and the shard
+goes dark for every later linearizable read — and because the system
+database lives on the system shard, that took authentication down with it.
+PebbleDB and in-memory storage have no such path at all: two ordinary
+byte-string keys, never a filesystem collision.
 
-The fix changes WHAT a key maps to, not whether '/' is read as a hierarchy:
-every key maps to a **directory**, and its value lives in a sentinel file
-(`.kv`) inside that directory. A key and every key for which it is a '/'
-prefix each get their own directory and their own `.kv`; one directory
-holding both its own sentinel file and a subdirectory for a longer key is
-ordinary filesystem structure, not a collision. `pkg/storage/file/keyenc.go`
-also closes a second, narrower gap in the same codec: a leading, trailing, or
-doubled '/' in a key used to produce an empty path segment that
-`filepath.Clean` silently collapsed into its neighbour (`"a/"` and `"a"` named
-the same directory); those three cases are now escaped rather than read as
-separators, so the key-to-path mapping is a true bijection over every byte
-string, not only over "ordinarily shaped" ones.
+A first fix (one directory per key instead of one file per key) closed the
+exact collision reported, but a follow-up review found two more ways the
+same root cause — a path DERIVED FROM THE KEY — kept producing failure modes
+of its own:
 
-This is a **breaking on-disk format change**. Per the project's
-no-backward-compatibility policy there is no migration code: a data directory
-written by the old layout is not read by the new one. Start the replica over
-raft's restore or backup/restore path, or reseed `sm_storage: file` from a
-backup, rather than upgrading the directory in place.
+- **B1: an adversarially deep key exceeds `PATH_MAX`.** A key built from
+  thousands of short `/`-delimited segments (e.g. `strings.Repeat("a/",
+  2100)+"a"`) produced an absolute path longer than the kernel's path-length
+  limit, so `os.MkdirAll` returned `ENAMETOOLONG` — the identical fatal-Apply
+  shape as the original bug, from a different cause.
+- **B2/B3: a refused op inside a batch left the commit journal published
+  before the refusal was discovered,** so recovery replayed the SAME refusal
+  on every future `Open` and failed it permanently, and a refused batch or
+  transaction could partially apply before the refusal was found partway
+  through.
 
-A key whose encoded path would contain a '/'-delimited segment this
-filesystem cannot name as one path component (NAME_MAX, 255 bytes on every
-filesystem this engine targets) is refused with
-`file.KeySegmentTooLongError` — a declared refusal (see
-[key-value/engineering.md](../key-value/engineering.md#refusal-and-fault-at-the-apply-seam)),
-never a storage fault, so it cannot halt Apply either. This is scoped to the
-file backend alone: PebbleDB and in-memory storage have no path-component
-limit, so the same key that is refused under `sm_storage: file` is accepted
-under the `pebble` default.
+The current layout removes the dependency on the key's SHAPE entirely rather
+than patching a third edge case into it. Each key's record is named by the
+**hex SHA-256 digest of the key** (stdlib `crypto/sha256`; no hand-rolled
+hashing), sharded two levels deep by the first four hex characters (two
+characters per level: 256 subdirectories per level, 65,536 leaf directories
+in total — a small, FIXED number regardless of keyspace size). The record
+file holds `[keyLen:4 BE][key][value]`: the real key travels with its value,
+so a read can verify the stored key matches the one asked for, and a listing
+can recover every key without a separate index.
 
-Deleting a key removes only its `.kv` sentinel; the directory itself is left
-in place even when nothing else remains in it. This is deliberate, not an
-oversight: `storage.Storage` carries no promise that `Set` and `Delete` on
-DIFFERENT keys are serialized against each other, and the `fast` state
-machine's write-through issues them from concurrent per-shard workers,
-ordered only per key. Removing a directory on the strength of one
-point-in-time "is it empty" check would race a concurrent `Set` of a key for
-which the deleted one is a '/' prefix, between that check and the `Set`'s own
-`MkdirAll`. A harmless leftover empty directory is the tradeoff for not
-having that race at all.
+This gives every key the same properties, independent of its length or
+content:
+
+- **Constant path length and depth.** No key, however deep or long, can
+  produce `ENAMETOOLONG` or exceed a single filesystem's `NAME_MAX` — there
+  is no segment derived from the key's bytes at all, which is also why
+  `KeySegmentTooLongError` (an interim measure from the one-directory-per-key
+  layout) no longer exists; there is nothing left for it to refuse.
+- **No collisions, no prefix relationships, no case or Unicode
+  ambiguity.** SHA-256 collisions are not a practical concern, and a key is
+  never a filesystem-meaningful prefix of another the way `/` bytes used to
+  make one, because `/` is not read as a path separator at all anymore.
+- **A fixed, bounded set of shard directories.** `Delete` removes a key's
+  record file but never prunes the (at most 65,536) shard directories that
+  can ever exist: `storage.Storage` carries no promise that `Set` and
+  `Delete` on DIFFERENT keys are serialized against each other, and the
+  `fast` state machine's write-through issues them from concurrent per-shard
+  workers, ordered only per key, so two keys that happen to hash into the
+  same shard directory can have their `Set` and `Delete` in flight at once.
+  Pruning on a point-in-time "is it empty" check would race a concurrent
+  `Set` hashing into that shard between the check and its own `MkdirAll`.
+  Keeping the fixed, small set of shard directories forever costs nothing
+  measurable and removes that race entirely.
+- **List and the iterator pay for it in I/O, not correctness.** A key's
+  filename carries no information about the key (it is a hash), so a
+  prefix scan or full iteration must open and decode every candidate record
+  to recover its key — unlike the previous layouts, where a keys-only scan
+  never opened a file at all. That is the deliberate tradeoff of a flat,
+  content-addressed layout.
+
+**Format version marker.** `New` writes a marker (`.qrdb-file-format`,
+naming the current format version) into a directory it finds empty, and
+refuses to open a NON-empty directory that lacks one or names a different
+version (`FormatMarkerMissingError`, `FormatVersionMismatchError`) — a
+validity check, not migration code. A directory written by either previous
+layout, or a future one this binary predates, is refused rather than
+silently misread.
+
+**Durability.** Every directory `MkdirAll` creates — the engine root and
+each of a key's two shard levels — has its PARENT fsynced immediately after
+creation, publishing the new directory entry; a record's temp-file,
+fsync, atomic-rename sequence is unchanged from the previous layouts.
+
+This is, again, a **breaking on-disk format change**. Per the project's
+no-backward-compatibility policy there is no migration code: a data
+directory written by either previous layout is not read by this one. Start
+the replica over raft's restore or backup/restore path, or reseed
+`sm_storage: file` from a backup, rather than upgrading the directory in
+place.
+
+**Operational note: keep `sm_storage` identical across a shard's
+replicas.** Raft replicates the command log, not a storage representation,
+so replicas composing different backends still apply the identical command
+sequence and are not unsafe by construction — but nothing today verifies
+this at cluster join, and a backend-specific defect (the exact shape this
+section is about) is the kind of thing a mismatch would surface only
+indirectly, through a `StateMachineHash` divergence. There is no
+operational reason to mix it.
 
 ### Alternatives rejected
 

@@ -203,6 +203,78 @@ func TestRaftSMOverFileStorage_PrefixKeyPairSurvivesEitherOrder(t *testing.T) {
 	get("after-the-pairs", "still-alive")
 }
 
+// TestRaftSMOverFileStorage_DeepKeyNeverHaltsTheShard is the end-to-end
+// acceptance for review probe finding B1 against go-qrdb#592's FIRST fix
+// attempt: a key built from thousands of short '/'-delimited segments
+// produced an absolute path longer than PATH_MAX, so os.MkdirAll returned
+// ENAMETOOLONG from inside SM.Apply — a genuine storage fault from the
+// state machine's point of view, which halts the shard on every replica
+// exactly as the original prefix-collision bug did. The hashed,
+// content-addressed layout that replaced the per-segment one has no
+// path-length dependency on the key at all, so a key this deep must apply
+// cleanly, and the shard must still serve ordinary requests afterward.
+func TestRaftSMOverFileStorage_DeepKeyNeverHaltsTheShard(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+	ca := generateTestCA(t)
+	dataDir := t.TempDir()
+
+	raftPort := allocatePorts(t, 1)[0]
+	tcpPorts := allocateTCPPorts(t, 2)
+	restPort, grpcPort := tcpPorts[0], tcpPorts[1]
+
+	startSMFileNode(t, bin, dataDir, raftPort, restPort, grpcPort, ca)
+
+	cliArgs := func(args ...string) []string {
+		base := []string{
+			"--server", fmt.Sprintf("https://127.0.0.1:%d", restPort),
+			"--ca-file", ca.CertPath,
+			"--timeout", "20s",
+		}
+		return append(base, args...)
+	}
+
+	put := func(key, value string) {
+		t.Helper()
+		deadline := time.Now().Add(60 * time.Second)
+		var out string
+		var err error
+		for time.Now().Before(deadline) {
+			out, err = runCLI(t, cli, cliArgs("kv", "put", key, value)...)
+			if err == nil {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		t.Fatalf("kv put (key len %d) never succeeded (this is the circuit-breaker trip "+
+			"a storage-layer fault would cause if the shard halted): %v\n%s", len(key), err, out)
+	}
+	get := func(key, want string) {
+		t.Helper()
+		deadline := time.Now().Add(60 * time.Second)
+		var out string
+		var err error
+		for time.Now().Before(deadline) {
+			out, err = runCLI(t, cli, cliArgs("kv", "get", key)...)
+			if err == nil && strings.Contains(out, want) {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		t.Fatalf("kv get (key len %d) never returned %q (shard may be stalled): err=%v out=%s", len(key), want, err, out)
+	}
+
+	deepKey := strings.Repeat("a/", 2100) + "a"
+	put(deepKey, "deep-value")
+	get(deepKey, "deep-value")
+
+	// The shard must still apply and serve an ordinary request afterward --
+	// the property an actual ENAMETOOLONG-triggered halt would have cost
+	// every later proposal on the shard.
+	put("after-the-deep-key", "still-alive")
+	get("after-the-deep-key", "still-alive")
+}
+
 // TestRaftSMOverFileStorage_ThreeNodeCluster is the clustered half of the
 // phase-5 acceptance: a 3-node raft group whose replicas all apply
 // through file-backed SM storage reaches quorum, accepts a write on one

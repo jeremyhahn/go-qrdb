@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -228,13 +229,24 @@ func (b *FastBackend) persistAsync(s *kvFastShard, ticket uint64, m Mutation) {
 			}
 			if err != nil {
 				b.logger.Error("async storage "+op+" failed",
-					"key", string(m.Key),
+					"key_fingerprint", keyFingerprint(m.Key),
 					"error", err,
 					"shard_id", b.shardID,
 					"replica_id", b.replicaID)
 			}
 		})
 	}()
+}
+
+// keyFingerprint returns a short, non-reversible identifier for key, safe to
+// place in a log line. A key is caller-supplied content and can carry a
+// secret or other sensitive data a client embedded in it; a log line that
+// named it verbatim leaked that content to every log sink the process
+// writes to. The fingerprint is stable for a given key (so repeated
+// failures of the same key are visibly the same key to an operator
+// correlating log lines) without making the key itself recoverable.
+func keyFingerprint(key []byte) string {
+	return strconv.FormatUint(xxhash.Sum64(key), 16)
 }
 
 // PutDurable writes the cache shard and then persists SYNCHRONOUSLY, on the
@@ -304,7 +316,7 @@ func (b *FastBackend) persistDurable(
 	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, write, op, claimed, key, value)
 	if err != nil {
 		b.logger.Error("durable storage write failed; cache entry withdrawn",
-			"key", key,
+			"key_fingerprint", keyFingerprint([]byte(key)),
 			"op", op,
 			"error", err,
 			"shard_id", b.shardID,

@@ -95,9 +95,12 @@ func TestServices_AnUnencodableRequestIsAClientErrorAndNeverProposes(t *testing.
 		{"IndexService.DropIndex", true, func(_ *testing.T, h Host) error {
 			return NewIndexService(h, 1).DropIndex(ctx, long)
 		}},
-		// The time-series plane frames its metric in a TWO-byte field, so this
-		// is reachable there where it is not on the transaction and batch
-		// planes — see TestFramedPlanes_AcceptAKeyTheTwoBytePlanesRefuse.
+		// The time-series plane frames its metric in a TWO-byte field of its
+		// own, unrelated to protocol.MaxClientKeyLength (a metric name is not
+		// a KV key) — see
+		// TestFramedPlanes_RefuseAKeyThePolicyRefusesEvenThoughTheFrameCouldHoldIt
+		// for the key-length policy's own refusal on the transaction and
+		// batch planes.
 		{"TimeSeriesService.Write/metric", true, func(_ *testing.T, h Host) error {
 			return NewTimeSeriesService(h, 1).Write(ctx, long, 1, time.Unix(0, 0), nil)
 		}},
@@ -160,42 +163,53 @@ func TestServices_AGenuineProposalFailureIsStillAProposeError(t *testing.T) {
 	}
 }
 
-// Why there is no client-error subtest for the transaction and batch planes,
-// recorded as a measurement rather than left as an absence someone reads as an
-// oversight.
-//
-// Those encoders frame keys, values and elements in FOUR-byte length fields
-// (EncodeCompare, EncodeOp, EncodeTransaction, EncodeBatch), so the smallest
-// input that trips a guard there is 4 GiB — not constructible in a test, and
-// not reachable by any caller that can hold its own request in memory. The
-// encode-error wrapping on those paths is therefore consistency, not a fix for
-// something a client can reach today, and a subtest asserting a client error
-// there would be asserting a branch it cannot enter.
-//
-// What IS true and worth pinning: the same 65,537-byte key that the two-byte
-// planes refuse is perfectly legal on the four-byte planes, and proposes.
-func TestFramedPlanes_AcceptAKeyTheTwoBytePlanesRefuse(t *testing.T) {
+// TestFramedPlanes_RefuseAKeyThePolicyRefusesEvenThoughTheFrameCouldHoldIt
+// pins the inverse of what this file used to assert. The transaction and
+// batch planes frame a key in a FOUR-byte length field (EncodeCompare,
+// EncodeOp), wide enough on its own to hold a 65,537-byte key the two-byte
+// planes (go-quicraft's kv encoders, EncodeCompareAndSwap/
+// EncodeCompareAndDelete) refuse outright. That used to mean the four-byte
+// planes accepted it (go-qrdb#52). The owner's global key-length policy
+// (protocol.MaxClientKeyLength, go-qrdb#592) now refuses any key over
+// 65,535 bytes identically everywhere a client names a point key, whichever
+// plane frames it and however wide that plane's own field is — a key's
+// validity must not depend on which encoder happens to carry it. EncodeOp's
+// one exemption, OpMVCCRange, is not reachable from Compare or a plain Put
+// op, so it does not apply here.
+func TestFramedPlanes_RefuseAKeyThePolicyRefusesEvenThoughTheFrameCouldHoldIt(t *testing.T) {
 	long := oversizedKey()
-	proposed := 0
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			proposed++
-			return sm.Result{Data: []byte{1}}, nil
-		},
-	}
+	host := refusingHost(t)
 
-	if _, err := NewTransactionService(host, 1).Execute(context.Background(),
+	_, err := NewTransactionService(host, 1).Execute(context.Background(),
 		[]Compare{{Key: []byte(long), Target: CompareValue, Result: CompareEqual, Value: []byte("v")}},
-		nil, nil); err != nil {
-		t.Fatalf("a %d-byte key on the four-byte-framed transaction plane: %v", len(long), err)
-	}
-	if _, err := NewBatchService(host, 1).Execute(context.Background(),
-		[]Op{{Type: OpPut, Key: []byte(long), Value: []byte("v")}}); err != nil {
-		t.Fatalf("a %d-byte key on the four-byte-framed batch plane: %v", len(long), err)
-	}
+		nil, nil)
+	assertKeyTooLongClientError(t, "transaction plane", err)
 
-	if proposed != 2 {
-		t.Fatalf("proposed %d times, want 2 — both planes must encode and propose "+
-			"a key their length fields can describe", proposed)
+	_, err = NewBatchService(host, 1).Execute(context.Background(),
+		[]Op{{Type: OpPut, Key: []byte(long), Value: []byte("v")}})
+	assertKeyTooLongClientError(t, "batch plane", err)
+}
+
+// assertKeyTooLongClientError is TestServices_AnUnencodableRequestIsAClientErrorAndNeverProposes's
+// assertion block, factored out so the transaction/batch key-length refusal
+// can share it: a client error (never a ProposeError, since refusingHost
+// fails the test if a proposal is attempted at all), wrapping a
+// *protocol.KeyTooLongError a caller can match without parsing a message.
+func assertKeyTooLongClientError(t *testing.T, label string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: an over-long key returned no error", label)
+	}
+	var encodeErr *EncodeRequestError
+	if !errors.As(err, &encodeErr) {
+		t.Fatalf("%s: error = %T (%v), want *EncodeRequestError", label, err, err)
+	}
+	var proposeErr *ProposeError
+	if errors.As(err, &proposeErr) {
+		t.Fatalf("%s: the error is still a ProposeError; no proposal was made", label)
+	}
+	var tooLong *protocol.KeyTooLongError
+	if !errors.As(err, &tooLong) {
+		t.Fatalf("%s: cause = %v, want a *protocol.KeyTooLongError", label, err)
 	}
 }

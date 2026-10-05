@@ -206,15 +206,12 @@ func TestFileEngine_ListAllKeys(t *testing.T) {
 	}
 }
 
-// TestFileEngine_List_DecodesEscapedKeys pins List against the same binary
-// keys Get/Set/Delete already handle via encodeKeyToPath/decodePathToKey
-// (keyenc.go). List walked the on-disk tree and returned the PERCENT-ENCODED
-// path string as the key, never calling decodePathToKey — the one place in
-// this engine that didn't. A key requiring escaping (anything outside
-// printable ASCII, here a NUL byte matching pkg/lease.TablePrefix's shape)
-// therefore came back from List as literal "%00..." bytes rather than the
-// raw key that was Set, and a prefix search for the raw (unescaped) prefix
-// matched nothing even though the key existed.
+// TestFileEngine_List_DecodesEscapedKeys pins List against binary keys
+// (here a NUL byte matching pkg/lease.TablePrefix's shape) round-tripping
+// through the hashed, content-addressed layout: the record stores the raw
+// key bytes alongside the value, and List decodes them back verbatim rather
+// than returning anything derived from the (hash-named, content-free)
+// filename.
 func TestFileEngine_List_DecodesEscapedKeys(t *testing.T) {
 	dir := t.TempDir()
 	eng, err := New(dir)
@@ -430,29 +427,30 @@ func TestGet_OSError(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	// Store a key so its value sentinel and directory exist.
-	if err := eng.Set([]byte("secret/data"), []byte("value")); err != nil {
+	key := []byte("secret/data")
+	if err := eng.Set(key, []byte("value")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	// Replace the value sentinel with a directory of the same name.
+	// Replace the record file with a directory of the same name.
 	// os.ReadFile on a directory always fails, regardless of user.
-	valueFile := filepath.Join(base, "secret", "data", valueFileName)
-	if err := os.Remove(valueFile); err != nil {
+	_, recordPath := eng.recordPaths(key)
+	if err := os.Remove(recordPath); err != nil {
 		t.Fatalf("setup: Remove: %v", err)
 	}
-	if err := os.Mkdir(valueFile, 0o700); err != nil {
+	if err := os.Mkdir(recordPath, 0o700); err != nil {
 		t.Fatalf("setup: Mkdir: %v", err)
 	}
 
-	_, getErr := eng.Get([]byte("secret/data"))
+	_, getErr := eng.Get(key)
 	if getErr == nil {
 		t.Fatal("Get: expected error when path is a directory, got nil")
 	}
 }
 
-// TestSet_MkdirAllError verifies that Set returns an OS error when the parent directory
-// cannot be created because a regular file occupies a path component.
+// TestSet_MkdirAllError verifies that Set returns an OS error when its
+// key's shard directory cannot be created because a regular file occupies
+// one of the two shard path components.
 func TestSet_MkdirAllError(t *testing.T) {
 	base := t.TempDir()
 	eng, err := New(base)
@@ -461,14 +459,19 @@ func TestSet_MkdirAllError(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	// Write a regular file at "namespace" inside the base dir.
-	obstacle := filepath.Join(base, "namespace")
+	key := []byte("blocked-key")
+	shardDir, _ := eng.recordPaths(key)
+	// Occupy the FIRST shard level (shardDir's parent) with a regular file,
+	// so MkdirAll cannot create shardDir under it.
+	obstacle := filepath.Dir(shardDir)
+	if err := os.RemoveAll(obstacle); err != nil {
+		t.Fatalf("setup: RemoveAll: %v", err)
+	}
 	if err := os.WriteFile(obstacle, []byte("blocker"), 0o600); err != nil {
 		t.Fatalf("setup: WriteFile: %v", err)
 	}
 
-	// Attempt to Set a key whose parent directory would require "namespace" to be a dir.
-	setErr := eng.Set([]byte("namespace/key"), []byte("value"))
+	setErr := eng.Set(key, []byte("value"))
 	if setErr == nil {
 		t.Fatal("Set: expected error when MkdirAll cannot mkdir over a file, got nil")
 	}
@@ -488,23 +491,18 @@ func TestDelete_OSError(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	// Place a non-empty directory at the key's value-sentinel path, instead
-	// of the ordinary file Set would have written there.
-	// os.Remove on a non-empty directory returns ENOTEMPTY, which is not os.IsNotExist.
-	dirKey := filepath.Join(base, "nonemptydir")
-	if err := os.Mkdir(dirKey, 0o700); err != nil {
-		t.Fatalf("setup: Mkdir: %v", err)
+	key := []byte("nonemptydir-key")
+	_, recordPath := eng.recordPaths(key)
+	if err := os.MkdirAll(recordPath, 0o700); err != nil {
+		t.Fatalf("setup: MkdirAll: %v", err)
 	}
-	valueFile := filepath.Join(dirKey, valueFileName)
-	if err := os.Mkdir(valueFile, 0o700); err != nil {
-		t.Fatalf("setup: Mkdir value sentinel: %v", err)
-	}
-	childFile := filepath.Join(valueFile, "child")
+	childFile := filepath.Join(recordPath, "child")
 	if err := os.WriteFile(childFile, []byte("data"), 0o600); err != nil {
 		t.Fatalf("setup: WriteFile child: %v", err)
 	}
 
-	deleteErr := eng.Delete([]byte("nonemptydir"))
+	// os.Remove on a non-empty directory returns ENOTEMPTY, which is not os.IsNotExist.
+	deleteErr := eng.Delete(key)
 	if deleteErr == nil {
 		t.Fatal("Delete: expected error when removing non-empty directory, got nil")
 	}
@@ -556,24 +554,25 @@ func TestExists_OSError(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	// Store a key inside a subdirectory.
-	if err := eng.Set([]byte("private/record"), []byte("value")); err != nil {
+	key := []byte("private-record")
+	if err := eng.Set(key, []byte("value")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	// Replace the "private" subdirectory with a regular file. os.Stat on
-	// "private/record" will fail with ENOTDIR because "private" is now a
-	// file, not a directory. This error is not os.IsNotExist, so Exists
-	// must return it. Works regardless of whether we run as root.
-	subdir := filepath.Join(base, "private")
-	if err := os.RemoveAll(subdir); err != nil {
+	// Replace the key's second-level shard directory with a regular file.
+	// os.Stat on the record path will then fail with ENOTDIR, because an
+	// ancestor is now a file, not a directory. This error is not
+	// os.IsNotExist, so Exists must return it. Works regardless of whether
+	// we run as root.
+	shardDir, _ := eng.recordPaths(key)
+	if err := os.RemoveAll(shardDir); err != nil {
 		t.Fatalf("setup: RemoveAll: %v", err)
 	}
-	if err := os.WriteFile(subdir, []byte("blocker"), 0o600); err != nil {
+	if err := os.WriteFile(shardDir, []byte("blocker"), 0o600); err != nil {
 		t.Fatalf("setup: WriteFile: %v", err)
 	}
 
-	exists, existsErr := eng.Exists([]byte("private/record"))
+	exists, existsErr := eng.Exists(key)
 	if existsErr == nil {
 		t.Fatal("Exists: expected error when path component is not a directory, got nil")
 	}

@@ -78,20 +78,20 @@ const (
 	// maxImportKeySize and maxImportValueSize bound the size of any single
 	// imported key/value.
 	//
-	// These are no longer wire-format ceilings: protocol.EncodeOp frames
-	// lengths in protocol.FrameSize-byte fields, which is wide enough that
-	// truncation is not a concern. They are deliberate operational bounds,
-	// and they must stay comfortably below maxImportProposalBytes so that a
-	// single operation always fits in one Raft log entry — the invariant
-	// buildImportProposalChunks relies on to guarantee every chunk contains
-	// at least one op.
-	//
-	// The key bound stays small: keys are identifiers, and 64 KiB is already
-	// far beyond any legitimate use (MySQL, for comparison, caps an index key
-	// at 3072 bytes). The value bound is sized for real payloads such as BLOB
-	// columns, leaving ample headroom under the 8 MiB proposal ceiling for the
-	// key, the op framing, and the batch header.
-	maxImportKeySize   = 65535
+	// maxImportKeySize is protocol.MaxClientKeyLength, not a separate
+	// literal: it is the same global key-length policy every write path
+	// enforces (go-qrdb#592), and a second definition of one bound is
+	// exactly the drift that family of defects comes from. It is no longer a
+	// wire-format ceiling here either way — protocol.EncodeOp frames lengths
+	// in protocol.FrameSize-byte fields, wide enough that truncation is not
+	// a concern on its own — but it must still stay comfortably below
+	// maxImportProposalBytes so that a single operation always fits in one
+	// Raft log entry, the invariant buildImportProposalChunks relies on to
+	// guarantee every chunk contains at least one op. The value bound is
+	// sized for real payloads such as BLOB columns, leaving ample headroom
+	// under the 8 MiB proposal ceiling for the key, the op framing, and the
+	// batch header.
+	maxImportKeySize   = protocol.MaxClientKeyLength
 	maxImportValueSize = 4 << 20 // 4 MB
 
 	// maxImportProposalBytes bounds the size of a single encoded batch

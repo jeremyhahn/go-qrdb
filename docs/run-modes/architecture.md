@@ -150,10 +150,11 @@ machines (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`,
 or `memory`. The file backend earned the hot-apply role with real
 durability: atomic temp-file+rename+fsync writes and an all-or-nothing
 commit journal replayed at open (`pkg/storage/file/journal.go`), plus the
-`storage.Syncer` seam. Its key-to-path mapping is one directory per key
-(a breaking on-disk format change; no migration) — see
-[storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-one-directory-per-key-not-one-file-per-key-breaking).
-Objstore is a snapshot/backup tier and is refused
+`storage.Syncer` seam. Its layout maps each key to a record named by a hash
+of the key (a breaking on-disk format change; no migration) — see
+[storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
+Keep `sm_storage` identical across a shard's replicas. Objstore is a
+snapshot/backup tier and is refused
 as a hot apply path with a pointed validation error. Every other state
 machine carries its own storage and rejects a non-pebble `sm_storage`.
 

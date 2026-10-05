@@ -187,29 +187,53 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
 
 - **A `Put` of a key followed by a `Put` of a `/` prefix of that key (either
   order) could kill the shard on `raft.sm_storage: file`, including
-  `sm_type: disk` — a security and availability bug a probe found.** The file
-  backend mapped each key to a single file, with `/` bytes read as directory
-  levels, so a key that is a `/` prefix of another resolved under the exact
-  path that other key's parent directory needed. Writing both collided —
-  `SM.Apply` returned a genuine storage-layer error, which go-quicraft treats
-  as fatal: `lastApplied` stops advancing on that replica, and the shard goes
-  dark for every subsequent linearizable read. Because the system database
-  lives on the system shard, that took authentication down with it. An
-  empty-key batch tripped the identical failure mode before go-qrdb#136's
-  classification fix landed; this closes the other half the same probe
-  surfaced. The file backend's key-to-path mapping now maps every key to its
-  own **directory**, holding a `.kv` sentinel file for its value — a key and
-  any key for which it is a `/` prefix each get their own directory, and one
-  holding both its own sentinel and a subdirectory for a longer key is
-  ordinary filesystem structure, never a collision. The codec also now
-  escapes a leading, trailing, or doubled `/` — which `filepath.Clean` used
-  to collapse into an empty segment, silently merging `"a/"` into the same
-  directory as `"a"` — so the mapping is a true bijection over every byte
-  string. A key whose encoded path would need a `/`-delimited segment longer
-  than this filesystem's path-component limit is now refused with the typed,
-  declared `file.KeySegmentTooLongError` before any path is opened, so it is
-  classified as a refusal and can never halt Apply either. See
-  [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-one-directory-per-key-not-one-file-per-key-breaking)
+  `sm_type: disk` — a security and availability bug a probe found, with two
+  more ways discovered in review of the first fix.** The file backend
+  originally mapped each key to a single file, with `/` bytes read as
+  directory levels, so a key that is a `/` prefix of another resolved under
+  the exact path that other key's parent directory needed. `SM.Apply`
+  returning the resulting error is fatal to go-quicraft: `lastApplied` stops
+  advancing on that replica and the shard goes dark for every subsequent
+  linearizable read. Because the system database lives on the system shard,
+  that took authentication down with it. An empty-key batch tripped the
+  identical failure mode before go-qrdb#136's classification fix landed;
+  this closes the other half the same probe surfaced. Review of a first fix
+  (one directory per key) then found: **(B1)** an adversarially deep key
+  (thousands of short `/`-delimited segments) produced a path longer than
+  `PATH_MAX`, so `os.MkdirAll` returned `ENAMETOOLONG` — the identical fatal
+  shape, from a different cause; **(B2/B3)** a refused op inside a batch left
+  the commit journal published before the refusal was discovered, so
+  recovery replayed the same refusal on every future `Open` and failed it
+  permanently, and a refused batch or transaction could partially apply.
+  The file backend's key-to-path mapping is now a **hashed, flat,
+  content-addressed layout**: each key's record is named by the hex SHA-256
+  digest of the key (no hand-rolled hashing), sharded two directory levels
+  deep, holding `[keyLen:4 BE][key][value]` so a read can verify the stored
+  key matches the one asked for. The path has constant length and depth
+  whatever the key, closing B1 and the original collision at once, since
+  there is no path derived from the key's content or length at all —
+  `file.KeySegmentTooLongError`, an interim measure from the one-directory
+  layout, no longer exists. `commitBufferedOps` now validates every op in a
+  batch BEFORE writing the commit journal, closing B2/B3: a refused batch
+  leaves neither a journal nor a partial write, and the node reopens
+  cleanly. `New` writes a format-version marker into a fresh data directory
+  and refuses to open a non-empty one that lacks a matching marker
+  (`FormatMarkerMissingError`, `FormatVersionMismatchError`) — a validity
+  check, not migration code, that also refuses the superseded
+  one-directory-per-key layout in place. Every directory `MkdirAll` creates
+  now has its parent fsynced immediately, and `FastBackend`'s async-write
+  failure logs no longer include the raw key. A global maximum key length
+  of 65,535 bytes is now enforced identically on every replica regardless of
+  its `sm_storage`, in `pkg/statemachine`'s `validateClientKey` and in every
+  wire encoder whose key field could otherwise describe a longer one
+  (`protocol.EncodeOp`, `protocol.EncodeCompare`); the ones already bounded
+  to the identical value by their own two-byte key frame
+  (`protocol.EncodeCompareAndSwap`/`EncodeCompareAndDelete`,
+  go-quicraft's `kv.EncodePut`/`EncodePutIfAbsent`/`EncodeDelete`) were left
+  as is, and a pre-existing, independently-defined duplicate of the same
+  65,535-byte cap in the batch-import path now references the one canonical
+  constant. See
+  [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)
   (go-qrdb#592).
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled

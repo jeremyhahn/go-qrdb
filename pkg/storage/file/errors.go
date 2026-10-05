@@ -42,33 +42,75 @@ func (e *JournalWriteError) Unwrap() error {
 	return e.Err
 }
 
-// KeySegmentTooLongError refuses a key whose encoded form contains a
-// '/'-delimited segment too long for this filesystem to name as a single
-// path component (NAME_MAX is 255 bytes on every filesystem this engine
-// targets; see maxEncodedSegmentLen). It is a property of the KEY, detected
-// before any path is opened, never a fault from the filesystem itself — the
-// distinction a storage fault and a refused request need (see
-// protocol.RefusalError, which this satisfies by having the same method
-// shape without importing that package: pkg/storage is a cross-repo,
-// protocol-agnostic contract, and must stay one).
-type KeySegmentTooLongError struct {
-	// Segment is the oversized encoded segment, truncated for the message so
-	// a pathological key cannot make the error itself unbounded.
-	Segment string
+// FormatMarkerMissingError refuses to open a NON-EMPTY data directory that
+// carries no format marker (formatMarkerFileName). The only way a directory
+// this engine itself created lacks one is that it was written by a prior,
+// incompatible on-disk layout — most concretely, the one-file/one-directory
+// per key layouts this hashed, content-addressed one replaced (go-qrdb#592)
+// — so opening it as this format would silently misread or overwrite
+// whatever is there rather than refusing an upgrade this project does not
+// support in place. An EMPTY directory is not refused: there is nothing in
+// it this format could misread, so New writes the marker and proceeds.
+type FormatMarkerMissingError struct {
+	// Dir is the data directory that was refused.
+	Dir string
 }
 
-// Error returns a human-readable description of the refused key.
-func (e *KeySegmentTooLongError) Error() string {
-	seg := e.Segment
-	if len(seg) > 64 {
-		seg = seg[:64] + "..."
-	}
-	return "file storage: key segment too long for this filesystem (encoded: " + seg + ")"
+// Error returns a human-readable description naming the expected format.
+func (e *FormatMarkerMissingError) Error() string {
+	return "file storage: " + e.Dir + " is not empty and carries no " + formatMarkerFileName +
+		" marker for format version " + formatVersion + " — a data directory written by a" +
+		" different on-disk layout cannot be opened in place; there is no migration"
 }
 
-// Refusal declares this a refusal of the request on its merits, not a
-// storage fault — see protocol.RefusalError. A caller one layer up classifies
-// through the method shape alone; pkg/storage does not import pkg/protocol.
-func (e *KeySegmentTooLongError) Refusal() string {
-	return "key segment exceeds this filesystem's path component limit"
+// FormatVersionMismatchError refuses to open a data directory whose format
+// marker names a version other than the one this build writes and reads —
+// an older or newer on-disk layout than this binary speaks.
+type FormatVersionMismatchError struct {
+	// Found is the version recorded in the directory's marker.
+	Found string
+	// Want is the version this build requires.
+	Want string
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *FormatVersionMismatchError) Error() string {
+	return "file storage: data directory format version " + e.Found + " does not match this build's " + e.Want +
+		" — there is no migration between on-disk formats"
+}
+
+// RecordCorruptError reports that a stored record could not be parsed back
+// into its key and value: the on-disk content is shorter than its own
+// declared key-length header, or the header names a length the record
+// cannot hold. This is always a genuine fault — bit rot, a truncated write
+// with no crash to explain it, or a hand-edited file — never a refusal on a
+// client's input, which is validated and encoded before it ever reaches
+// disk.
+type RecordCorruptError struct {
+	// Path is the file the corrupt record was read from.
+	Path string
+	// Reason describes what about the record was invalid.
+	Reason string
+}
+
+// Error returns a human-readable description of the corruption.
+func (e *RecordCorruptError) Error() string {
+	return "file storage: corrupt record at " + e.Path + ": " + e.Reason
+}
+
+// KeyMismatchError reports that the key stored in a record does not match
+// the key whose hash named the file it was read from. With a cryptographic
+// hash (SHA-256) naming the file, this is not a realistic collision; it is
+// the signature of disk corruption that happened to leave both headers
+// internally consistent, or of a file placed there by something other than
+// this engine. Get refuses rather than returning a value that provably
+// belongs to a different key than the one asked for.
+type KeyMismatchError struct {
+	// Path is the file the mismatched record was read from.
+	Path string
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *KeyMismatchError) Error() string {
+	return "file storage: stored key does not match the requested key at " + e.Path
 }

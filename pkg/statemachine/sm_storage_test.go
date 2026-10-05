@@ -44,8 +44,22 @@ func TestNewStorageFactory_SelectsBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = stg.Close()
-	if _, err := os.Stat(filepath.Join(root, "sm", "shard-2-replica-3", "k")); err != nil {
+	// The file engine's on-disk layout names each record by a hash of its
+	// key, not by the key itself (go-qrdb#592), so what pins "rooted at the
+	// anchored per-replica path" is the engine's own format marker rather
+	// than a path derived from the key "k".
+	replicaDir := filepath.Join(root, "sm", "shard-2-replica-3")
+	if _, err := os.Stat(filepath.Join(replicaDir, ".qrdb-file-format")); err != nil {
 		t.Fatalf("file SM storage not rooted at the anchored per-replica path: %v", err)
+	}
+	reopened, err := filestore.New(replicaDir)
+	if err != nil {
+		t.Fatalf("reopen at the anchored per-replica path: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	got, err := reopened.Get([]byte("k"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("Get(k) at the anchored per-replica path = (%q, %v), want (v, nil)", got, err)
 	}
 }
 

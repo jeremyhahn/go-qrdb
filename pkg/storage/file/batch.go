@@ -30,10 +30,32 @@ func newBatch(e *Engine) storage.Batch {
 }
 
 // commitBufferedOps runs the journaled commit protocol for one batch.
+//
+// Every op is checked with checkKey BEFORE the journal is written — not
+// folded into the loop inside applyBufferedOps, which runs AFTER the journal
+// is already durable. A refusal is a DETERMINISTIC property of the op
+// itself: every replica refuses the identical op the identical way, and
+// retrying it after a crash can never make it succeed. Writing the journal
+// first and finding the refusal only inside applyBufferedOps left a
+// committed journal recovery could never get past: recoverJournal replays
+// it at the next Open by calling this same apply path, hits the identical
+// refusal again, and fails the open — permanently, since nothing about a
+// deterministic refusal changes between restarts (go-qrdb#592 B2/B3). A
+// transient fault (disk full, a permissions change) is different: it can
+// only be discovered by actually attempting the write, which is why
+// applyBufferedOps's own errors still leave the journal in place for
+// recovery to retry — retrying is exactly right for a fault that might not
+// recur.
 func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
 	if len(ops) == 0 {
 		return nil
 	}
+	for _, op := range ops {
+		if err := checkKey(op.Key); err != nil {
+			return err
+		}
+	}
+
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()
 

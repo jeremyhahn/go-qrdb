@@ -67,35 +67,50 @@ func newIteratorFromEntries(entries []fileEntry, opts *storage.IteratorOptions) 
 	}
 }
 
-// load reads all files from the engine directory that match the iterator
-// bounds, loading their keys and optionally values.
+// load reads every record under the engine root that matches the iterator
+// bounds, loading its key and optionally its value.
+//
+// Every record's key lives inside its file, not in its path (the filename is
+// a hash — see Engine), so unlike the previous layout this must open and
+// decode every candidate file to learn its key, whether or not OnlyKeys asks
+// for the value too. A read or decode failure aborts the load and is
+// reported through Error() rather than silently dropping that entry: a
+// corrupt record is a genuine fault (see RecordCorruptError), and a scan
+// that silently skipped a key would be a wrong answer instead of a loud one.
 func (it *fileIterator) load(e *Engine) {
 	var entries []fileEntry
-	_ = filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
+	walkErr := filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
 		if err != nil {
+			return err
+		}
+		if info.IsDir() || !isHashFileName(info.Name()) {
 			return nil
 		}
-		key, isValue := decodeValueFilePath(e.dir, path, info)
-		if !isValue {
-			return nil
+		record, readErr := os.ReadFile(path) // #nosec G122 -- internal storage directory
+		if readErr != nil {
+			return readErr
 		}
+		storedKey, value, decErr := decodeRecord(path, record)
+		if decErr != nil {
+			return decErr
+		}
+		key := append([]byte(nil), storedKey...)
 		if len(it.opts.LowerBound) > 0 && bytes.Compare(key, it.opts.LowerBound) < 0 {
 			return nil
 		}
 		if len(it.opts.UpperBound) > 0 && bytes.Compare(key, it.opts.UpperBound) >= 0 {
 			return nil
 		}
-		e := fileEntry{key: key}
+		fe := fileEntry{key: key}
 		if !it.opts.OnlyKeys {
-			data, readErr := os.ReadFile(path) // #nosec G122 -- internal storage directory
-			if readErr != nil {
-				return nil
-			}
-			e.value = data
+			fe.value = append([]byte(nil), value...)
 		}
-		entries = append(entries, e)
+		entries = append(entries, fe)
 		return nil
 	})
+	if walkErr != nil {
+		it.err = walkErr
+	}
 
 	sort.Slice(entries, func(i, j int) bool {
 		return bytes.Compare(entries[i].key, entries[j].key) < 0

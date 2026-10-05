@@ -205,21 +205,27 @@ an error value, so an unchecked call panics rather than failing cleanly.
 
 ## Persistence
 
-- **File engine**: one directory per key — holding a `.kv` sentinel file for
-  the key's own value, and room for a subdirectory per key for which this one
-  is a `/` prefix — with atomic temp-file + rename + fsync writes and an
-  all-or-nothing commit journal replayed at open
-  (`pkg/storage/file/journal.go`), plus the `storage.Syncer` seam. That
-  durability is why it is permitted as a hot apply path. The directory-per-key
-  layout, and why it replaced one-file-per-key, is a breaking on-disk format
-  change with no migration — see
-  [architecture.md](architecture.md#the-file-engine-one-directory-per-key-not-one-file-per-key-breaking).
-  `Delete` removes only the sentinel, never the directory, for
-  a reason that doc also gives: concurrent per-key workers (the `fast` state
-  machine's write-through) make removing it on a point-in-time emptiness
-  check a race. A key whose encoded `/`-delimited segment exceeds this
-  filesystem's NAME_MAX is refused with `file.KeySegmentTooLongError` — a
-  declared refusal, not a storage fault, so it cannot halt Apply.
+- **File engine**: a hashed, flat, content-addressed layout — each key's
+  record is named by the hex SHA-256 digest of the key, sharded two levels
+  deep (two hex characters per level), holding `[keyLen:4 BE][key][value]` —
+  with atomic temp-file + rename + fsync writes, every `MkdirAll`-created
+  directory's parent fsynced too, and an all-or-nothing commit journal
+  replayed at open (`pkg/storage/file/journal.go`), plus the
+  `storage.Syncer` seam. That durability is why it is permitted as a hot
+  apply path. The layout — and the two it replaced in succession, and why —
+  is a breaking on-disk format change with no migration each time; see
+  [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
+  `Delete` removes only the record, never its (fixed, bounded) shard
+  directories, for the reason that doc gives: concurrent per-key workers
+  (the `fast` state machine's write-through) make pruning them on a
+  point-in-time emptiness check a race. `New` refuses a non-empty data
+  directory lacking a matching format-version marker
+  (`FormatMarkerMissingError`, `FormatVersionMismatchError`). The layout has
+  no key-length or path-depth dependency at all, so `KeySegmentTooLongError`
+  — a refusal the previous, one-directory-per-key layout needed — no longer
+  exists; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
+  bytes) is a client-input policy enforced before and at Apply, independent
+  of any particular backend's constraints.
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.
 - **Namespace engine**: no storage of its own; it rewrites keys.
@@ -231,18 +237,23 @@ an error value, so an unchecked call panics rather than failing cleanly.
 - **Namespace wrapper**: prefixing on write, prefix filtering on `List`, and
   that a second tenant's keys are invisible.
 - **File engine journal**: crash-mid-write replay at open.
-- **File engine prefix collisions**: both write orders of a key
-  and a key for which it is a `/` prefix, both orders of delete, trailing /
-  leading / doubled `/` keys staying distinct, and a fuzz test
-  (`FuzzFileEngine_PrefixKeysNeverCollide`) over arbitrary byte strings split
-  into such a pair — all at the storage level
-  (`pkg/storage/file/prefix_collision_test.go`). The same property is pinned
-  one layer up, through `Update`, on every storage-generic state machine over
-  both `file` and `pebble` `sm_storage`
-  (`pkg/statemachine/prefix_property_test.go`) and on `pebble`/`mvcc`
-  (`pkg/store/prefix_property_test.go`), and at the disk state machine level
-  specifically for the two cases the original report named
-  (`pkg/statemachine/disk_prefix_collision_test.go`).
+- **File engine hashed layout** (`pkg/storage/file/hashed_layout_test.go`):
+  the format marker refusing an old-layout or mismatched-version directory
+  and accepting a fresh or empty one; a key nested thousands of segments
+  deep (the shape that exceeded `PATH_MAX` under the previous layout)
+  applying cleanly; `commitBufferedOps` refusing a batch's invalid op BEFORE
+  writing the commit journal, so the batch leaves neither a journal nor a
+  partial write and the engine reopens cleanly afterward; a seeded property
+  test over random Put/Delete sequences with arbitrary `/` nesting; and a
+  fuzz test (`FuzzEngine_SetGetDeleteRoundTrip`) over arbitrary key/value
+  byte strings through Set/Get/Delete. The property is pinned one layer up,
+  through `Update`, on every storage-generic state machine over both `file`
+  and `pebble` `sm_storage` (`pkg/statemachine/prefix_property_test.go`) and
+  on `pebble`/`mvcc` (`pkg/store/prefix_property_test.go`), at the disk
+  state machine level for the original two-key-pair report
+  (`pkg/statemachine/disk_prefix_collision_test.go`), and end to end through
+  a real daemon and the CLI, including the deep-key case, in
+  `test/integration/sm_storage_file_test.go`.
 - **Volume pool**: `LocalOnly` refusing a non-local backend, and `Pick`
   returning a usable local path.
 - **Error tests** per function, happy path plus error path.

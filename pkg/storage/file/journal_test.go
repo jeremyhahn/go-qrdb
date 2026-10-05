@@ -80,6 +80,13 @@ func TestBatchCommit_AppliesAllAndClearsJournal(t *testing.T) {
 func TestOpen_RecoversPublishedJournal(t *testing.T) {
 	dir := t.TempDir()
 
+	// Simulate a crash on an already-initialised data directory: the format
+	// marker was committed in an earlier (crash-free) Open, and a batch
+	// commit got as far as publishing its journal before the process died.
+	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatVersion), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	ops := []storage.BufferedOp{
 		{Key: []byte("r1"), Value: []byte("v1")},
 		{Key: []byte("dir/r2"), Value: []byte("v2")},
@@ -118,6 +125,11 @@ func TestOpen_RecoversPublishedJournal(t *testing.T) {
 // and the open must refuse rather than serve it.
 func TestOpen_CorruptJournalFailsClosed(t *testing.T) {
 	dir := t.TempDir()
+	// As in TestOpen_RecoversPublishedJournal: the directory was already
+	// initialised before the crash that left this corrupt journal behind.
+	if err := os.WriteFile(filepath.Join(dir, formatMarkerFileName), []byte(formatVersion), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	image := encodeJournal([]storage.BufferedOp{{Key: []byte("k"), Value: []byte("v")}})
 	image[len(image)-1] ^= 0xff // break the CRC
 	if err := os.WriteFile(filepath.Join(dir, journalFileName), image, 0o600); err != nil {
@@ -172,8 +184,12 @@ func TestDecodeJournal_RejectsGarbage(t *testing.T) {
 	}
 }
 
-// TestSet_LeavesNoTempFiles verifies the atomic-rename write path cleans
-// up after itself and Sync succeeds.
+// TestSet_LeavesNoTempFiles verifies the atomic-rename write path cleans up
+// after itself and Sync succeeds. The format marker (a permanent,
+// legitimate dot-prefixed file, not a leftover) and the record itself
+// (named by its key's hash, not dot-prefixed) are the only two files this
+// should find; anything else dot-prefixed is a stray ".tmp-set-*" or
+// ".tmp-journal-*" artifact.
 func TestSet_LeavesNoTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	e, err := New(dir)
@@ -189,13 +205,18 @@ func TestSet_LeavesNoTempFiles(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ent := range entries {
-		if ent.Name()[0] == '.' {
-			t.Fatalf("temp artifact %q left behind", ent.Name())
+	walkErr := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
 		}
+		name := info.Name()
+		if name == formatMarkerFileName || isHashFileName(name) {
+			return nil
+		}
+		t.Errorf("temp artifact %q left behind", path)
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
 	}
 }

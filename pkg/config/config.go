@@ -444,6 +444,16 @@ type RaftConfig struct {
 	// tier, never the hot apply path. The pebble-native state machines
 	// ("pebble", "mvcc") ignore this knob and validation rejects a
 	// non-pebble value combined with them.
+	//
+	// Every replica of a given shard SHOULD run the identical sm_storage.
+	// Raft replicates the command log, not a storage representation, so a
+	// shard whose replicas compose different backends still applies the
+	// identical sequence of commands to each and is not unsafe by
+	// construction — but nothing today verifies this at cluster join, so a
+	// mismatch is caught only indirectly (for instance, a StateMachineHash
+	// comparison that happens to diverge because of a backend-specific
+	// defect, the way go-qrdb#592 did before it was fixed). Keep it uniform
+	// across a shard's replicas; there is no operational reason to mix it.
 	SMStorage string `yaml:"sm_storage"`
 
 	// LeaseRead enables lease-based linearizable reads. When true, the Raft

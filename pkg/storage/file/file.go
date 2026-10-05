@@ -12,13 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package file provides a file-backed storage engine that maps keys to filesystem paths.
+// Package file provides a file-backed storage engine with a flat,
+// content-addressed on-disk layout: each key's file is named by a
+// cryptographic hash of the key, sharded into a small, fixed depth of
+// directories. See Engine for why (go-qrdb#592).
 package file
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,13 +40,28 @@ var (
 	_ storage.Syncer  = (*Engine)(nil)
 )
 
-// Engine is a file-based storage engine that maps each key to a directory
-// under a base directory, holding the key's value in a sentinel file
-// (valueFileName) inside it. Keys containing "/" are mapped to nested
-// subdirectories, so a key and every key for which it is a '/' prefix share a
-// directory tree without colliding — see keyenc.go for why that mapping is
-// collision-free for ANY two distinct keys, regardless of their '/'
-// structure or the order they are written in (go-qrdb#592).
+// Engine is a file-based storage engine with a hashed, flat on-disk layout.
+//
+// Each key's file is named by the hex SHA-256 digest of the key (stdlib
+// crypto/sha256; no hand-rolled hashing), sharded two levels deep by the
+// first four hex characters of that digest (two characters per level, 256
+// subdirectories per level) so no single directory ever holds more than a
+// bounded fraction of the keyspace's files. The path a key maps to therefore
+// has CONSTANT length and depth whatever the key's own length or content:
+// no two keys can collide on it (SHA-256 collisions are not a practical
+// concern), no key's structure can produce an invalid or oversized path
+// component, and no key is a filesystem-meaningful prefix of another the way
+// '/' bytes used to make one.
+//
+// Each file stores the record [keyLen:4 BE][key][value]: the real key
+// travels with its value, so Get and the iterator can verify the stored key
+// equals the one that was asked for rather than trusting the hash alone, and
+// List/the iterator can recover every key without a separate index.
+//
+// This is the second on-disk layout this engine has had (go-qrdb#592
+// replaced one-file/one-directory per key with this one) and the two are
+// incompatible: New refuses to open a non-empty data directory that was not
+// written by this exact format (see formatMarkerFileName).
 type Engine struct {
 	dir    string
 	closed atomic.Bool
@@ -50,114 +72,195 @@ type Engine struct {
 	journalMu sync.Mutex
 }
 
-// valueFileName is the sentinel file holding a key's value, inside the
-// directory encodeKeyToPath maps the key to. No encoded key segment can ever
-// be named this: encodeKeyToPath escapes a leading '.' in every segment it
-// emits (see keyenc.go), so a real key segment never starts with '.' and
-// this name can never collide with one.
-const valueFileName = ".kv"
+const (
+	// formatMarkerFileName names the marker New checks before opening a
+	// non-empty data directory, and writes when creating a fresh one. See
+	// FormatMarkerMissingError and FormatVersionMismatchError.
+	formatMarkerFileName = ".qrdb-file-format"
 
-// maxEncodedSegmentLen bounds a single '/'-delimited segment of an encoded
-// key to this filesystem's path-component limit. 255 bytes (NAME_MAX) is the
-// floor across ext4, xfs, btrfs and APFS; 200 leaves margin without
-// depending on exactly which filesystem backs raft.data_dir.
-const maxEncodedSegmentLen = 200
+	// formatVersion is this build's on-disk format. Bump it, and the error
+	// messages that name it, whenever the layout or record format changes
+	// again; there is no migration between versions, by policy.
+	formatVersion = "2"
 
-// New creates a new file-based storage engine rooted at dir. The
-// directory is created if it does not exist. An interrupted batch commit
-// from a previous process is completed here (see recoverJournal); a
-// corrupt journal fails the open rather than silently serving a
-// half-applied batch.
+	// shardHexLen is the number of hex characters of a key's digest that
+	// name each of the two shard directory levels (two levels of two
+	// characters: 256 subdirectories per level, 65,536 leaf directories in
+	// total, a fixed and bounded number regardless of keyspace size).
+	shardHexLen = 2
+
+	// keyHeaderLen is the width, in bytes, of the big-endian key-length
+	// prefix at the start of every stored record.
+	keyHeaderLen = 4
+
+	// hashHexLen is the length of a hex-encoded SHA-256 digest, and so the
+	// exact length of every record's filename. Used to recognise a record
+	// file during a directory walk without reading it.
+	hashHexLen = sha256.Size * 2
+)
+
+// New creates a new file-based storage engine rooted at dir. The directory
+// is created if it does not exist, with every directory entry created along
+// the way fsynced into its parent so the creation itself is crash-durable
+// (mkdirAllDurable).
+//
+// A FRESH (non-existent or empty) directory is initialised with this
+// build's format marker. A directory that already holds data is opened only
+// if that marker is present and names this exact format version; see
+// FormatMarkerMissingError and FormatVersionMismatchError.
+//
+// An interrupted batch commit from a previous process is completed here (see
+// recoverJournal); a corrupt journal fails the open rather than silently
+// serving a half-applied batch.
 func New(dir string) (*Engine, error) {
 	if dir == "" {
 		return nil, storage.ErrInvalidPath
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := mkdirAllDurable(dir); err != nil {
 		return nil, err
 	}
 	e := &Engine{dir: dir}
+	if err := e.ensureFormatMarker(); err != nil {
+		return nil, err
+	}
 	if err := e.recoverJournal(); err != nil {
 		return nil, err
 	}
 	return e, nil
 }
 
-// keyDir returns the directory key maps to: key's own value lives in
-// valueFileName inside it, and any key for which this one is a '/' prefix
-// lives in a subdirectory beside that file. The two never collide — see the
-// keyenc.go package doc.
-//
-// Every encoded segment is checked against this filesystem's path-component
-// limit here, before any path derived from it is opened, so an oversized
-// segment is refused as KeySegmentTooLongError (a declared refusal, not a
-// storage fault) rather than reaching the OS as ENAMETOOLONG.
-func (e *Engine) keyDir(key []byte) (string, error) {
-	encoded := encodeKeyToPath(key)
-	for _, seg := range strings.Split(encoded, "/") {
-		if len(seg) > maxEncodedSegmentLen {
-			return "", &KeySegmentTooLongError{Segment: seg}
+// checkKey refuses an op this engine cannot store at all. Today that is only
+// the empty key — no storage.Storage backend holds one — but the point of
+// having ONE function is that every caller who must refuse the same things
+// Set and Delete do calls this one: commitBufferedOps (batch.go) checks
+// every buffered op against it BEFORE writing the commit journal, so a
+// refused op leaves neither a journal nor a partial write (go-qrdb#592 B2/B3)
+// — the same guarantee Set and Delete give when called directly.
+func checkKey(key []byte) error {
+	if len(key) == 0 {
+		return storage.ErrEmptyKey
+	}
+	return nil
+}
+
+// hashHex returns the hex-encoded SHA-256 digest of key.
+func hashHex(key []byte) string {
+	sum := sha256.Sum256(key)
+	return hex.EncodeToString(sum[:])
+}
+
+// shardDir returns the two-level shard directory a digest's record lives
+// under.
+func (e *Engine) shardDir(digest string) string {
+	return filepath.Join(e.dir, digest[:shardHexLen], digest[shardHexLen:2*shardHexLen])
+}
+
+// recordPaths returns key's shard directory and the full path of its record
+// file within it, computing the digest once for both.
+func (e *Engine) recordPaths(key []byte) (dir, path string) {
+	digest := hashHex(key)
+	dir = e.shardDir(digest)
+	return dir, filepath.Join(dir, digest)
+}
+
+// encodeRecord renders key and value as the on-disk record format:
+// [keyLen:4 BE][key][value]. value is the remainder of the record and
+// carries no length of its own — its size is exactly len(record) minus the
+// header and the key.
+func encodeRecord(key, value []byte) []byte {
+	buf := make([]byte, keyHeaderLen+len(key)+len(value))
+	binary.BigEndian.PutUint32(buf[0:keyHeaderLen], uint32(len(key))) // #nosec G115 -- bounded by protocol.MaxClientKeyLength (65535) before a key ever reaches storage
+	copy(buf[keyHeaderLen:], key)
+	copy(buf[keyHeaderLen+len(key):], value)
+	return buf
+}
+
+// decodeRecord parses record's stored key and value. The returned slices
+// alias record; callers that retain them past the buffer's lifetime must
+// copy. path is used only to attribute a RecordCorruptError.
+func decodeRecord(path string, record []byte) (key, value []byte, err error) {
+	if len(record) < keyHeaderLen {
+		return nil, nil, &RecordCorruptError{Path: path, Reason: "shorter than the key-length header"}
+	}
+	keyLen := binary.BigEndian.Uint32(record[0:keyHeaderLen])
+	if uint64(keyHeaderLen)+uint64(keyLen) > uint64(len(record)) {
+		return nil, nil, &RecordCorruptError{Path: path, Reason: "declared key length exceeds the record's size"}
+	}
+	key = record[keyHeaderLen : keyHeaderLen+keyLen]
+	value = record[keyHeaderLen+keyLen:]
+	return key, value, nil
+}
+
+// isHashFileName reports whether name has the exact shape of a record
+// filename: a lowercase hex SHA-256 digest. Every other file this engine
+// places under its root or a shard directory — the format marker, the
+// commit journal, and either one's in-flight temp files — has a different
+// shape, so this single check is what separates "a key's record" from
+// "engine bookkeeping" during a directory walk, without needing to name
+// every bookkeeping file here.
+func isHashFileName(name string) bool {
+	if len(name) != hashHexLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
 		}
 	}
-	return filepath.Join(e.dir, filepath.FromSlash(encoded)), nil
+	return true
 }
 
-// valuePath returns the path of the sentinel file holding key's value.
-func (e *Engine) valuePath(key []byte) (string, error) {
-	dir, err := e.keyDir(key)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, valueFileName), nil
-}
-
-// Get retrieves the value for the given key. Returns nil, nil when the
-// key does not exist per the storage.Storage contract.
+// Get retrieves the value for the given key. Returns nil, nil when the key
+// does not exist per the storage.Storage contract.
+//
+// The record's stored key is checked against key before its value is
+// returned: with a cryptographic hash naming the file, a mismatch is not a
+// realistic collision — it is the signature of corruption, and Get refuses
+// rather than silently returning a value that provably belongs to a
+// different key (KeyMismatchError).
 func (e *Engine) Get(key []byte) ([]byte, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
-	if len(key) == 0 {
-		return nil, storage.ErrEmptyKey
-	}
-	path, err := e.valuePath(key)
-	if err != nil {
+	if err := checkKey(key); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	_, path := e.recordPaths(key)
+	record, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return data, nil
+	storedKey, value, err := decodeRecord(path, record)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(storedKey, key) {
+		return nil, &KeyMismatchError{Path: path}
+	}
+	out := make([]byte, len(value))
+	copy(out, value)
+	return out, nil
 }
 
-// Set durably stores a key-value pair as a file on disk: the value is
-// written to a temp file in the key's own directory (created if absent),
-// fsynced, and atomically renamed into place as valueFileName, then that
-// directory is fsynced. A crash therefore leaves either the old value or the
-// new value, never a torn file — the durability contract the raft
-// state-machine storage seam (raft.sm_storage: file) relies on.
-//
-// The directory MkdirAll creates here is exactly the one keyDir names: it
-// may already exist, either because this key was set before or because an
-// unrelated key for which this one is a '/' prefix created it first. Either
-// way the directory is only ever a container for this key's value file and
-// its children's subdirectories, never a file itself, so the two kinds of
-// key can never contend for the same path (go-qrdb#592).
+// Set durably stores a key-value pair: the record is written to a temp file
+// in the key's shard directory (created if absent), fsynced, and atomically
+// renamed into place, then that directory is fsynced. A crash therefore
+// leaves either the old record or the new one, never a torn file — the
+// durability contract the raft state-machine storage seam (raft.sm_storage:
+// file) relies on.
 func (e *Engine) Set(key, value []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
-	if len(key) == 0 {
-		return storage.ErrEmptyKey
-	}
-	dir, err := e.keyDir(key)
-	if err != nil {
+	if err := checkKey(key); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir, path := e.recordPaths(key)
+	if err := mkdirAllDurable(dir); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-set-*")
@@ -165,7 +268,8 @@ func (e *Engine) Set(key, value []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(value); err != nil {
+	record := encodeRecord(key, value)
+	if _, err := tmp.Write(record); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
@@ -187,7 +291,6 @@ func (e *Engine) Set(key, value []byte) error {
 	// temp file and the target share dir, so it is synced exactly once -- the
 	// same work the separate os.Rename + directory-fsync pair did, with no second
 	// place for the pairing to be got wrong (go-qrdb#268).
-	path := filepath.Join(dir, valueFileName)
 	if err := fsync.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
@@ -195,36 +298,21 @@ func (e *Engine) Set(key, value []byte) error {
 	return nil
 }
 
-// Delete removes a key from storage.
-//
-// Only the value sentinel is removed; the key's directory is left in place,
-// deliberately, even when nothing else is left in it. Two things depend on
-// that:
-//
-//   - A key for which this one is a '/' prefix may have its own subdirectory
-//     there, and removing the directory would delete that key's data too.
-//   - storage.Storage carries no promise that Set and Delete on DIFFERENT
-//     keys are serialized against each other — FastBackend's write-through
-//     deliberately issues them from concurrent per-shard workers, ordered
-//     only per key — so two keys that share a directory because one is a
-//     '/' prefix of the other can have their Set and Delete in flight at
-//     once. Removing a directory on the strength of a single point-in-time
-//     "is it empty" check would race a concurrent Set for the other key
-//     between that check and its own MkdirAll, which depends on the
-//     directory continuing to exist. Never removing it trades a harmless
-//     leftover empty directory for not having that race at all.
+// Delete removes a key from storage. The key's shard directories are left in
+// place even when nothing else is left in them: they are a small, FIXED set
+// (65,536 possible leaf directories at most, see shardHexLen) shared by
+// every key that happens to hash into them, so pruning would race a
+// concurrent Set of an unrelated key hashing into the same shard — and
+// unlike the previous per-key directory layout, there is no unbounded growth
+// to prune in the first place.
 func (e *Engine) Delete(key []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
-	if len(key) == 0 {
-		return storage.ErrEmptyKey
-	}
-	dir, err := e.keyDir(key)
-	if err != nil {
+	if err := checkKey(key); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, valueFileName)
+	dir, path := e.recordPaths(key)
 	if rmErr := os.Remove(path); rmErr != nil {
 		if os.IsNotExist(rmErr) {
 			return nil
@@ -232,11 +320,19 @@ func (e *Engine) Delete(key []byte) error {
 		return rmErr
 	}
 	// Make the removal durable: fsync the directory so a crash cannot
-	// resurrect the deleted value.
+	// resurrect the deleted record.
 	return fsync.Dir(dir)
 }
 
-// List returns all keys matching the given prefix.
+// List returns all keys matching the given prefix, in ascending byte order.
+//
+// Because a key's filename carries no information about the key itself
+// (it is a hash), every candidate record under the engine root must be
+// opened and decoded to recover its key — unlike the previous, path-derived
+// layout, where a keys-only scan never opened a file at all. That cost is
+// the deliberate tradeoff of a flat, content-addressed layout: constant,
+// bounded path shape for every key, in exchange for List and the iterator
+// needing to read every record once per call.
 func (e *Engine) List(prefix []byte) ([][]byte, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
@@ -246,34 +342,45 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		if err != nil {
 			return err
 		}
-		key, isValue := decodeValueFilePath(e.dir, path, info)
-		if !isValue {
+		if info.IsDir() || !isHashFileName(info.Name()) {
 			return nil
 		}
-		if bytes.HasPrefix(key, prefix) {
-			keys = append(keys, key)
+		record, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		storedKey, _, derr := decodeRecord(path, record)
+		if derr != nil {
+			return derr
+		}
+		if bytes.HasPrefix(storedKey, prefix) {
+			k := make([]byte, len(storedKey))
+			copy(k, storedKey)
+			keys = append(keys, k)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i], keys[j]) < 0 })
 	return keys, nil
 }
 
-// Exists reports whether the key exists in storage.
+// Exists reports whether the key exists in storage. Unlike Get, this does
+// not open the record to verify the stored key: a presence check is exactly
+// what callers of Exists want, and a mismatched record is vanishingly
+// unlikely (see Get) and, if it ever happened, would still be caught the
+// moment that key is actually read.
 func (e *Engine) Exists(key []byte) (bool, error) {
 	if e.closed.Load() {
 		return false, &storage.ClosedError{}
 	}
-	if len(key) == 0 {
-		return false, storage.ErrEmptyKey
-	}
-	path, err := e.valuePath(key)
-	if err != nil {
+	if err := checkKey(key); err != nil {
 		return false, err
 	}
-	_, err = os.Stat(path)
+	_, path := e.recordPaths(key)
+	_, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -281,30 +388,6 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// decodeValueFilePath reports whether path (walked under root, described by
-// info) is a key's value sentinel, and when it is, the key it decodes to.
-//
-// Every other file under root -- the commit journal, its temp files, and any
-// in-flight ".tmp-set-*" write -- is dot-prefixed and is not named
-// valueFileName, so excluding everything but an exact valueFileName match
-// also excludes all of them without needing to enumerate them here. A
-// directory is never a key by itself; only the sentinel inside it is.
-func decodeValueFilePath(root, path string, info os.FileInfo) ([]byte, bool) {
-	if info.IsDir() || info.Name() != valueFileName {
-		return nil, false
-	}
-	rel, err := filepath.Rel(root, filepath.Dir(path))
-	if err != nil || rel == "." {
-		// rel == "." means the sentinel sits directly in the engine root,
-		// which only an empty-key Set could produce -- refused before it
-		// reaches here (see Engine.Set) -- so this is unreachable from this
-		// engine's own writes. Treated as "not a key" rather than panicking
-		// on a hand-placed file.
-		return nil, false
-	}
-	return decodePathToKey(filepath.ToSlash(rel)), true
 }
 
 // Batch creates a new write batch for atomic multi-key operations. A closed
@@ -346,5 +429,104 @@ func (e *Engine) Sync() error {
 // Close marks the engine as closed. Subsequent operations return ClosedError.
 func (e *Engine) Close() error {
 	e.closed.Store(true)
+	return nil
+}
+
+// mkdirAllDurable creates every directory component of dir that does not
+// already exist, like os.MkdirAll, and fsyncs each newly created
+// directory's PARENT immediately after creating it — publishing that new
+// directory ENTRY, which a crash can otherwise lose even though the files
+// written inside it later are made durable on their own (Set, the commit
+// journal). It stops at the first ancestor that already exists: nothing
+// changed there, so there is nothing to make durable.
+func mkdirAllDurable(dir string) error {
+	if info, err := os.Stat(dir); err == nil {
+		if !info.IsDir() {
+			return &os.PathError{Op: "mkdir", Path: dir, Err: os.ErrExist}
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if parent := filepath.Dir(dir); parent != dir {
+		if err := mkdirAllDurable(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	return fsync.Dir(filepath.Dir(dir))
+}
+
+// ensureFormatMarker refuses to open a non-empty data directory that was
+// not written by this exact on-disk format (see FormatMarkerMissingError,
+// FormatVersionMismatchError), and writes the marker into a fresh one.
+func (e *Engine) ensureFormatMarker() error {
+	// A crash between creating the marker's temp file and renaming it leaves
+	// a stray temp file with no committed marker; clean it up first so it
+	// cannot be mistaken for "this directory already holds data".
+	entries, err := os.ReadDir(e.dir)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() && strings.HasPrefix(ent.Name(), ".tmp-format-") {
+			_ = os.Remove(filepath.Join(e.dir, ent.Name()))
+		}
+	}
+
+	markerPath := filepath.Join(e.dir, formatMarkerFileName)
+	data, err := os.ReadFile(markerPath)
+	switch {
+	case err == nil:
+		if string(data) != formatVersion {
+			return &FormatVersionMismatchError{Found: string(data), Want: formatVersion}
+		}
+		return nil
+	case os.IsNotExist(err):
+		entries, err = os.ReadDir(e.dir)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return &FormatMarkerMissingError{Dir: e.dir}
+		}
+		return e.writeFormatMarker()
+	default:
+		return err
+	}
+}
+
+// writeFormatMarker durably publishes formatMarkerFileName naming
+// formatVersion, via the same temp-file-plus-rename pattern Set uses for a
+// record.
+func (e *Engine) writeFormatMarker() error {
+	tmp, err := os.CreateTemp(e.dir, ".tmp-format-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(formatVersion); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := fsync.Rename(tmpName, filepath.Join(e.dir, formatMarkerFileName)); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
 	return nil
 }

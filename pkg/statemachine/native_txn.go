@@ -370,11 +370,20 @@ var reservedKeys = map[string]struct{}{
 
 // validateClientKey refuses a key no client may name: an empty key, which no
 // storage backend can hold and which used to reach storage and halt Apply on
-// every replica, and a reserved key. It is refused on every state machine
-// alike, so a request is valid or invalid regardless of sm_type.
+// every replica; a key over protocol.MaxClientKeyLength, the same global
+// cap every encoder that frames a key wider than that checks before
+// proposing (go-qrdb#592) — checked again here, at Apply, so a key's
+// validity never depends on which replica's raft.sm_storage happens to see
+// it first, nor on a caller that reached this state machine some other way
+// than those encoders; and a reserved key. It is refused on every state
+// machine alike, so a request is valid or invalid regardless of sm_type.
 func validateClientKey(op string, key []byte) error {
 	if len(key) == 0 {
 		return &InvalidKeyError{Op: op, Reason: "empty key"}
+	}
+	if len(key) > protocol.MaxClientKeyLength {
+		return &InvalidKeyError{Op: op, Reason: "key length " + strconv.Itoa(len(key)) +
+			" exceeds the maximum of " + strconv.Itoa(protocol.MaxClientKeyLength) + " bytes"}
 	}
 	if isStateMachineKey(key) {
 		return &InvalidKeyError{Op: op, Reason: "key is reserved for the state machine's own bookkeeping"}

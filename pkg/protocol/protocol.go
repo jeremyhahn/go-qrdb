@@ -989,6 +989,20 @@ func DecodeTSWriteBatch(payload []byte) ([]TSWriteParams, error) {
 // EncodeOp encodes a single operation for use in transaction and batch payloads.
 // Format: [opType:1][keyLen:4 LE][key][valLen:4 LE][value][rangeEndLen:4 LE][rangeEnd][leaseID:8 LE].
 func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) ([]byte, error) {
+	// The key's four-byte frame can describe far more than MaxClientKeyLength
+	// permits, so the global policy is checked explicitly — see
+	// MaxClientKeyLength for why this encoder needs its own check where the
+	// two-byte-framed ones get it for free from their frame width.
+	//
+	// OpMVCCRange is exempted: for that opcode "key" names the START of a
+	// scan range (rangeEnd is the other bound), not a client key naming a
+	// single stored record, and the global key-length policy is about the
+	// latter.
+	if opType != OpMVCCRange {
+		if err := CheckKeyLen(key); err != nil {
+			return nil, err
+		}
+	}
 	// Validate each field, then accumulate through addSize. Summing first and
 	// checking after is not equivalent: nothing stops a caller passing the SAME
 	// large slice as key, value and rangeEnd, and where int is 32 bits three
@@ -1043,6 +1057,11 @@ func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) ([]byte, 
 // EncodeCompare encodes a single compare for transaction payloads.
 // Format: [keyLen:4 LE][key][target:1][result:1][valLen:4 LE][value][version:8 LE][createRev:8 LE][modRev:8 LE].
 func EncodeCompare(key []byte, target, result byte, value []byte, version, createRevision, modRevision int64) ([]byte, error) {
+	// See EncodeOp: this key is also framed wider than MaxClientKeyLength
+	// permits, so the global policy needs its own check here too.
+	if err := CheckKeyLen(key); err != nil {
+		return nil, err
+	}
 	// Validate then accumulate, for the reason given in EncodeOp: key and value
 	// may share one backing slice, and a checked sum is what makes the total
 	// honest rather than the individual lengths.
