@@ -223,10 +223,19 @@ durable, replicated state.
     Security Officer's rekey or revocation is still admitted. An officer's own
     wrong PINs lock only the officer.
   - **An aggregate cap.** All principals of one key with a recorded
-    identity, certificate OR remote address together -- anything other than
-    the bare anonymous counter above -- may present at most 64 wrong PINs
-    in a 15-minute window; past that, every such check of the key -- the
-    officer's included -- is refused until the window ends. One principal's
+    identity or certificate together -- an authenticated caller or one
+    presenting a TLS-verified client certificate -- may present at most 64
+    wrong PINs in a 15-minute window; past that, every such check of the
+    key -- the officer's included -- is refused until the window ends.
+    **Address-keyed (`"addr:<host>"`) and the single bare anonymous (`""`)
+    principals never count toward, and are never refused by, this cap** --
+    only an authenticated identity or a certificate principal does. An
+    unauthenticated caller is reachable with no proof of who it is at all,
+    so letting enough distinct hosts guess together lock out a DIFFERENT
+    host, or an authenticated officer sharing the aggregate pool, would let
+    anonymous noise deny service to a caller the cap is meant to protect;
+    each address keeps only its own per-principal backoff instead, with no
+    shared ceiling across addresses. One principal's
     own backoff holds it to about 15 failures in a window, so the cap is
     reached only by several principals guessing together, and it never
     refuses a **known-good** principal: one
