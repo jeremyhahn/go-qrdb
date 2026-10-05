@@ -13,6 +13,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Integration coverage: membership, join tokens and cluster unseal.** `admin member add/remove` now adds and removes real spare nodes, since the `guarded-writes` gate correctly refuses an address that is not advertising. `admin join-token mint` is proven single-use on every transport, with the typed refusal on BYO-TLS nodes. `barrier cluster-unseal` runs a full seal, restart and unseal cycle through the CLI on every transport.
 - **MCP `qrdb_ceremony_sign_csr` returns the signed certificate.** The handler marshalled the internal result type, whose fields carry no JSON tags, instead of the wire `SignCSRInitResponse`. So `qrdb ceremony sign-csr` over MCP exited 0 with an empty certificate. The other transports were unaffected.
 - **Integration coverage: every system-scope `barrier` passphrase and Shamir verb runs on all five transports.** This covers officer register, list, claim and claim-begin/complete; quorum seal, unseal and root-token; rekey; the recovery domain; `ceremony sign-csr`; `batch import`; `audit verify`; node and database compaction. The CLI test binary is now built with the daemon's full tag set, so the SQL protocol surface is actually exercised.
 
