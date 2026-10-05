@@ -974,29 +974,41 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 }
 
 // TestCluster_ForwardedWriteSurvivesRestart is go-qrdb#591's B4 regression
-// proof: a self-issued cluster's cluster CA (Key A) resolves through
-// ceremonyCAFromBundle ONLY on the first boot after a fresh bootstrap --
-// cmd/qrdbd deletes the local ca-key.pem cache from disk once Key A is
-// confirmed durable in the replicated store, on every boot after that
-// (confirmClusterCAPersisted), so ceremonyCA is nil on every subsequent
-// restart. Before the fix, bundle.SetClusterCA was called ONLY inside
-// `if ceremonyCA != nil`, so a restarted node's dynamic trust pool
-// (pkg/clienttrust.Pool) never learned the cluster CA at all:
-// Pool.IsClusterCA always answered false, and
-// AuthMiddleware.authenticateOnBehalf -- which requires the forwarding
-// peer's certificate to chain to the cluster CA before honoring an
-// on-behalf assertion -- refused every forwarded write with 401, on
-// every node, forever, after the first restart of any self-issued
-// cluster.
+// proof for a BYO-TLS cluster, NOT a self-issued one (go-qrdb#591's
+// review corrected this comment, which previously claimed the opposite):
+// nodeArgs below passes --tls-ca-file/--tls-cert-file/--tls-key-file for
+// every node, generateTestCA's own operator-supplied CA, the documented
+// shape of a deployment with no cluster CA KEY at all
+// (lifecycle.Infra.NoClusterCAKey). For THAT shape,
+// resolveTrustPoolClusterCA wraps the operator's own CA certificate in a
+// clienttrust.StaticClusterCA, which has no ceremonyCA-style "resolves
+// once, then goes nil after the first boot persists it" lifecycle to
+// begin with -- the certificate is reloaded from the same file on every
+// restart, identically.
 //
-// This boots a 3-node SPIFFE cluster (on-behalf forwarding requires a
-// node-scoped SPIFFE SAN, which forward.ClusterPeer checks the
-// certificate for), writes through the leader, restarts EVERY node
-// (crossing the ceremonyCA-goes-nil boundary on all three at once, the
-// worst case), and then writes NEW data through a FOLLOWER -- which must
-// forward the request to the leader via authenticateOnBehalf -- and
-// expects success, exactly as TestCluster_MembershipAdd_ForwardsToLeader
-// does for a membership change rather than an ordinary KV write.
+// A genuinely self-issued-cluster counterpart (ClusterCAProv resolved
+// through ceremony.NewProviderCA against the replicated store, crossing
+// the ceremonyCA-goes-nil boundary B4 actually describes) needs a
+// sequential join-token bootstrap -- the first node self-establishes Key
+// A, then an admin mints a single-use join token per
+// docs/clustering/cli.md for each remaining node, which joins via
+// --bootstrap-join-url/--bootstrap-join-token-file -- rather than this
+// test's "generate every cert up front, start all three at once" shape,
+// and remains unwritten (go-qrdb#591's review, non-blocking, flagged
+// rather than rushed). The self-issued branch's wiring fix itself is
+// still covered precisely, at the unit level, by
+// TestResolveTrustPoolClusterCA_* in cmd/qrdbd.
+//
+// This still boots a 3-node SPIFFE cluster (on-behalf forwarding requires
+// a node-scoped SPIFFE SAN, which forward.ClusterPeer checks the
+// certificate for), writes through the leader, restarts EVERY node, and
+// then writes NEW data through a FOLLOWER -- which must forward the
+// request to the leader via authenticateOnBehalf -- and expects success,
+// exactly as TestCluster_MembershipAdd_ForwardsToLeader does for a
+// membership change rather than an ordinary KV write: a regression guard
+// that BYO-TLS forwarding keeps working across a restart, even though the
+// specific B4 defect this was written against could not have manifested
+// on this deployment shape.
 func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
