@@ -615,6 +615,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		return nil, &BackupServiceError{Err: err}
 	}
 	n.Backup = backupSvc
+	// Releases the cached "software" key-wrap provider's *os.Root, if the
+	// default registry ever resolved one (service.BackupService.Close).
+	// NewBackupService always returns *service.BackupService; the
+	// assertion only guards a future BackupServicer implementation this
+	// constructor might be changed to return.
+	if closer, ok := backupSvc.(*service.BackupService); ok {
+		n.addCloser(closer.Close)
+	}
 
 	// Auth services (user, role) backed by KV storage.
 	//

@@ -391,6 +391,24 @@ type BackupService struct {
 	// "software" is resolved through the default registry -- never used
 	// when a caller supplies its own registry via WithKeyWrapRegistry.
 	keyDir string
+
+	// softwareProviderMu guards softwareProvider/softwareProviderErr, the
+	// default "software" provider's own lazily-constructed, CACHED
+	// instance (and the *os.Root NewSoftwareProvider opens on it).
+	// Without this cache, the default registry's factory
+	// (registered in NewBackupService) called keywrap.NewSoftwareProvider
+	// -- and therefore os.OpenRoot(s.keyDir) -- freshly on EVERY
+	// CreateBackup/RestoreBackup/VerifyBackup/DecryptBackupShard that
+	// resolves "software", leaking one open directory file descriptor
+	// per call for the life of the process (confirmed by a probe: fd
+	// count under /proc/self/fd grows linearly with backup count). The
+	// *os.Root itself is safe for concurrent Open calls, so one instance
+	// shared across every resolution -- exactly how NewDefaultRegistry's
+	// own single construction already behaves -- is correct, not merely
+	// faster.
+	softwareProviderMu  sync.Mutex
+	softwareProvider    *keywrap.SoftwareProvider
+	softwareProviderErr error
 }
 
 // Compile-time interface assertion.
@@ -626,10 +644,7 @@ func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOptio
 		// work.
 		s.keyWrap = keywrap.NewRegistry()
 		_ = s.keyWrap.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
-			if s.keyDir == "" {
-				return nil, &BackupKeyDirNotConfiguredError{}
-			}
-			return keywrap.NewSoftwareProvider(s.keyDir)
+			return s.resolveSoftwareProvider()
 		})
 	}
 	if s.keyWrapExtra != nil {
@@ -671,6 +686,55 @@ const shardNonceLength = 12
 // keyWrapRegistry returns the configured keywrap.Registry.
 func (s *BackupService) keyWrapRegistry() keywrap.Registry {
 	return s.keyWrap
+}
+
+// resolveSoftwareProvider returns this service's single, cached
+// keywrap.SoftwareProvider, constructing it (and the *os.Root it opens on
+// s.keyDir) on first use and reusing it for every subsequent resolution of
+// "software" through the default registry -- see softwareProvider's own
+// doc comment for why a fresh construction per call was a file-descriptor
+// leak. The error from that first, one-time construction is cached and
+// replayed too: a missing/unopenable key directory does not become
+// openable between calls within the same process, so there is nothing to
+// gain by retrying os.OpenRoot on every subsequent CreateBackup/
+// RestoreBackup, and caching the error keeps this function's behavior
+// (and its cost) identical on every call, success or failure.
+func (s *BackupService) resolveSoftwareProvider() (keywrap.Provider, error) {
+	s.softwareProviderMu.Lock()
+	defer s.softwareProviderMu.Unlock()
+	if s.softwareProvider != nil || s.softwareProviderErr != nil {
+		return s.softwareProvider, s.softwareProviderErr
+	}
+	if s.keyDir == "" {
+		s.softwareProviderErr = &BackupKeyDirNotConfiguredError{}
+		return nil, s.softwareProviderErr
+	}
+	provider, err := keywrap.NewSoftwareProvider(s.keyDir)
+	if err != nil {
+		s.softwareProviderErr = err
+		return nil, err
+	}
+	s.softwareProvider = provider
+	return provider, nil
+}
+
+// Close releases this service's cached "software" key-wrap provider (and
+// the *os.Root resolveSoftwareProvider opened on s.keyDir), when one was
+// ever constructed. Safe to call on a service that never resolved
+// "software" (a no-op) and safe to call more than once. Callers that
+// construct a BackupService and later discard it -- cmd/qrdbd's offline
+// restore path, and any composer whose Node.Stop runs registered closers
+// -- should call this during shutdown so the confined key directory's
+// *os.Root does not outlive the service holding it.
+func (s *BackupService) Close() error {
+	s.softwareProviderMu.Lock()
+	provider := s.softwareProvider
+	s.softwareProvider = nil
+	s.softwareProviderMu.Unlock()
+	if provider == nil {
+		return nil
+	}
+	return provider.Close()
 }
 
 // buildShardAAD derives the additional authenticated data AES-256-GCM

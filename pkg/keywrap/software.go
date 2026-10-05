@@ -120,6 +120,16 @@ func (p *SoftwareProvider) ProviderID() string {
 	return SoftwareProviderID
 }
 
+// Close releases the *os.Root this provider opened on its configured key
+// directory. A caller that caches one SoftwareProvider instance across
+// many Wrap/Unwrap calls (service.BackupService.resolveSoftwareProvider,
+// rather than constructing a fresh instance -- and a fresh *os.Root --
+// per call) should call this once, during its own shutdown, so the
+// directory handle does not outlive the provider holding it.
+func (p *SoftwareProvider) Close() error {
+	return p.root.Close()
+}
+
 // Wrap encrypts dek with AES-256-GCM under the 32-byte key named by keyRef
 // (a bare file name inside this provider's configured key directory),
 // returning a fresh 12-byte nonce prepended to the ciphertext.
