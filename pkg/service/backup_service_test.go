@@ -1188,31 +1188,42 @@ func TestBackupService_CreateBackup_ExplicitNoneAudits(t *testing.T) {
 		t.Fatalf("CreateBackup with explicit EncryptionNone: %v", err)
 	}
 
+	// Two records, in order: a GATING "permitted" record BEFORE the backup
+	// ran, then a post-hoc "success" record carrying the real outcome
+	// (go-qrdb security review, backup-encrypt-default #B5) -- never a
+	// single "success" record emitted before the backup had actually
+	// happened.
 	events := ring.Snapshot()
-	if len(events) != 1 {
-		t.Fatalf("audit log has %d events, want exactly 1 for the one explicit-plaintext backup", len(events))
+	if len(events) != 2 {
+		t.Fatalf("audit log has %d events, want exactly 2 (gate + settle) for the one explicit-plaintext backup", len(events))
 	}
-	ev := events[0]
-	if ev.Action != "backup.create" {
-		t.Fatalf("audit event Action = %q, want %q", ev.Action, "backup.create")
+	gate, settle := events[0], events[1]
+	for _, ev := range []audit.AuditEvent{gate, settle} {
+		if ev.Action != "backup.create" {
+			t.Fatalf("audit event Action = %q, want %q", ev.Action, "backup.create")
+		}
+		// The audit record is emitted AFTER the backup has its ID and
+		// carries it (go-qrdb security review, backup-encrypt-default
+		// #B5) -- the resource names the backup, not merely its
+		// destination.
+		if ev.Resource != "backup:"+info.ID {
+			t.Fatalf("audit event Resource = %q, want %q", ev.Resource, "backup:"+info.ID)
+		}
+		if plaintext, _ := ev.Attributes["plaintext"].(bool); !plaintext {
+			t.Fatalf("audit event Attributes[plaintext] = %v, want true", ev.Attributes["plaintext"])
+		}
+		if encAttr, _ := ev.Attributes["encryption"].(string); encAttr != string(EncryptionNone) {
+			t.Fatalf("audit event Attributes[encryption] = %v, want %q", ev.Attributes["encryption"], EncryptionNone)
+		}
+		if dest, _ := ev.Attributes["destination"].(string); dest != info.Destination {
+			t.Fatalf("audit event Attributes[destination] = %v, want %q", ev.Attributes["destination"], info.Destination)
+		}
 	}
-	if ev.Outcome != audit.OutcomeSuccess {
-		t.Fatalf("audit event Outcome = %q, want %q", ev.Outcome, audit.OutcomeSuccess)
+	if gate.Outcome != audit.OutcomePermitted {
+		t.Fatalf("gate event Outcome = %q, want %q", gate.Outcome, audit.OutcomePermitted)
 	}
-	// The audit record is emitted AFTER the backup has its ID and carries
-	// it (go-qrdb security review, backup-encrypt-default #B5) -- the
-	// resource names the backup, not merely its destination.
-	if ev.Resource != "backup:"+info.ID {
-		t.Fatalf("audit event Resource = %q, want %q", ev.Resource, "backup:"+info.ID)
-	}
-	if plaintext, _ := ev.Attributes["plaintext"].(bool); !plaintext {
-		t.Fatalf("audit event Attributes[plaintext] = %v, want true", ev.Attributes["plaintext"])
-	}
-	if encAttr, _ := ev.Attributes["encryption"].(string); encAttr != string(EncryptionNone) {
-		t.Fatalf("audit event Attributes[encryption] = %v, want %q", ev.Attributes["encryption"], EncryptionNone)
-	}
-	if dest, _ := ev.Attributes["destination"].(string); dest != info.Destination {
-		t.Fatalf("audit event Attributes[destination] = %v, want %q", ev.Attributes["destination"], info.Destination)
+	if settle.Outcome != audit.OutcomeSuccess {
+		t.Fatalf("settle event Outcome = %q, want %q", settle.Outcome, audit.OutcomeSuccess)
 	}
 }
 

@@ -296,17 +296,26 @@ func TestBackupService_RestoreBackup_PlaintextRestoreAudited(t *testing.T) {
 		t.Fatalf("RestoreBackup: %v", err)
 	}
 
-	var restoreEvents int
+	// Two records: a GATING "permitted" record before the restore ran,
+	// then a post-hoc record carrying the real outcome (go-qrdb security
+	// review, backup-encrypt-default #B5).
+	var restoreEvents []audit.AuditEvent
 	for _, ev := range ring.Snapshot() {
 		if ev.Action == "backup.restore" {
-			restoreEvents++
+			restoreEvents = append(restoreEvents, ev)
 			if ev.Resource != "backup:"+created.ID {
 				t.Fatalf("restore audit Resource = %q, want %q", ev.Resource, "backup:"+created.ID)
 			}
 		}
 	}
-	if restoreEvents != 1 {
-		t.Fatalf("got %d backup.restore audit events, want exactly 1", restoreEvents)
+	if len(restoreEvents) != 2 {
+		t.Fatalf("got %d backup.restore audit events, want exactly 2 (gate + settle)", len(restoreEvents))
+	}
+	if restoreEvents[0].Outcome != audit.OutcomePermitted {
+		t.Fatalf("restore gate event Outcome = %q, want %q", restoreEvents[0].Outcome, audit.OutcomePermitted)
+	}
+	if restoreEvents[1].Outcome != audit.OutcomeSuccess {
+		t.Fatalf("restore settle event Outcome = %q, want %q", restoreEvents[1].Outcome, audit.OutcomeSuccess)
 	}
 }
 
@@ -363,8 +372,57 @@ func TestBackupService_CreateBackup_AuditWriteFailureFailOpenProceeds(t *testing
 	if info.Status != BackupStatusComplete {
 		t.Fatalf("status = %s, want complete", info.Status)
 	}
-	if logger.calls != 1 {
-		t.Fatalf("audit logger called %d times, want exactly 1", logger.calls)
+	// Two Emit calls: the GATING record (FailOpen swallows its own
+	// refusal and proceeds) and the post-hoc settle record carrying the
+	// real (success) outcome, each independently refused by this logger
+	// and each counted.
+	if logger.calls != 2 {
+		t.Fatalf("audit logger called %d times, want exactly 2 (gate + settle)", logger.calls)
+	}
+}
+
+// TestBackupService_CreateBackup_FailedPlaintextBackupAuditsAsFailure
+// proves the real outcome -- not a success recorded before the backup ran
+// at all -- is what lands on the compliance trail: a plaintext backup
+// whose shard capture fails emits a GATING "permitted" record followed by
+// a "failure" settle record, never "success" (go-qrdb security review,
+// backup-encrypt-default #B5). Before the gate/settle split, the single
+// audit record this function emitted was written BEFORE CreateBackup ever
+// touched a shard and unconditionally said OutcomeSuccess, so a backup
+// that failed immediately afterward still left a trail saying it
+// succeeded.
+func TestBackupService_CreateBackup_FailedPlaintextBackupAuditsAsFailure(t *testing.T) {
+	ring := audit.NewRingBuffer(0)
+	provider := newMockSnapshotProvider()
+	provider.snapshotErr = errors.New("simulated shard snapshot failure")
+	svc := mustNewBackupService(t, provider, WithAuditLogger(ring))
+
+	_, err := svc.CreateBackup(context.Background(), BackupOptions{
+		Destination: "/backups/plaintext-fails",
+		Encryption:  EncryptionNone,
+	})
+	if err == nil {
+		t.Fatal("CreateBackup succeeded despite a forced SnapshotShard failure")
+	}
+	var createErr *BackupCreateError
+	if !errors.As(err, &createErr) {
+		t.Fatalf("err = %T, want *BackupCreateError", err)
+	}
+
+	events := ring.Snapshot()
+	if len(events) != 2 {
+		t.Fatalf("audit log has %d events, want exactly 2 (gate + settle)", len(events))
+	}
+	gate, settle := events[0], events[1]
+	if gate.Outcome != audit.OutcomePermitted {
+		t.Fatalf("gate event Outcome = %q, want %q", gate.Outcome, audit.OutcomePermitted)
+	}
+	if settle.Outcome == audit.OutcomeSuccess {
+		t.Fatalf("settle event Outcome = %q, want a failure outcome: the backup did not succeed", settle.Outcome)
+	}
+	wantPrefix := audit.OutcomeFailure + ":"
+	if len(settle.Outcome) < len(wantPrefix) || settle.Outcome[:len(wantPrefix)] != wantPrefix {
+		t.Fatalf("settle event Outcome = %q, want prefix %q", settle.Outcome, wantPrefix)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"sort"
@@ -501,41 +502,103 @@ func (s *BackupService) auditFailurePolicyValue() audit.FailurePolicy {
 	return p
 }
 
-// auditPlaintextOverride logs, at WARN, that a backup with id is being
-// created or restored with encryption explicitly disabled, and records the
-// same fact in the compliance audit trail -- GATING, not best-effort: it is
-// called only for an EXPLICIT EncryptionNone (the default BackupOptions.
-// Encryption, left empty, never reaches here, because CreateBackup refuses
-// it before any backup starts -- BackupEncryptionRequiredError -- unless a
-// key was also supplied, in which case it is encrypted, not plaintext), and
-// it runs AFTER the backup/restore has its id (so the audit record names
-// it) but BEFORE any shard data is captured or imported. Under this node's
-// configured audit failure policy (the zero value, FailClosed, refuses),
-// an audit record that cannot be written fails the backup/restore closed
-// rather than let an unrecorded plaintext override through, matching every
-// other gated audit site in this repository (go-qrdb#445). action is
-// "backup.create" or "backup.restore".
-func (s *BackupService) auditPlaintextOverride(ctx context.Context, id, destination, action string) error {
-	slog.WarnContext(ctx, "service: backup "+action+" with encryption explicitly disabled; the backup is plaintext, and one covering the system shard carries the cluster CA and every tenant's login CA key material in the clear",
-		"backup_id", id, "destination", destination)
-
+// plaintextAuditEvent builds the AuditEvent shape both
+// auditPlaintextGate and auditPlaintextSettle emit for a plaintext
+// backup/restore of id, differing only in Outcome.
+func plaintextAuditEvent(ctx context.Context, id, destination, action, outcome string) audit.AuditEvent {
 	var actor, tenantID string
 	if identity := auth.IdentityFromContext(ctx); identity != nil {
 		actor = identity.Subject
 		tenantID = identity.TenantID
 	}
-	return audit.EmitGated(ctx, s.auditLogger(), "backup", s.auditFailurePolicyValue(), audit.AuditEvent{
+	return audit.AuditEvent{
 		Actor:    actor,
 		TenantID: tenantID,
 		Resource: "backup:" + id,
 		Action:   action,
-		Outcome:  audit.OutcomeSuccess,
+		Outcome:  outcome,
 		Attributes: map[string]any{
 			"encryption":  string(EncryptionNone),
 			"plaintext":   true,
 			"destination": destination,
 		},
-	})
+	}
+}
+
+// auditPlaintextGate logs, at WARN, that a backup with id is ABOUT to be
+// created or restored with encryption explicitly disabled, and records a
+// GATING record (audit.OutcomePermitted) on the compliance audit trail --
+// it is called only for an EXPLICIT EncryptionNone (the default
+// BackupOptions.Encryption, left empty, never reaches here, because
+// CreateBackup refuses it before any backup starts --
+// BackupEncryptionRequiredError -- unless a key was also supplied, in
+// which case it is encrypted, not plaintext), and it runs AFTER the
+// backup/restore has its id (so the audit record names it) but BEFORE any
+// shard data is captured or imported. Under this node's configured audit
+// failure policy (the zero value, FailClosed, refuses), a record that
+// cannot be written fails the backup/restore closed rather than let an
+// unrecorded plaintext override through, matching every other gated audit
+// site in this repository (go-qrdb#445).
+//
+// It names the operation's PERMISSION, not its result: the record's own
+// Outcome is OutcomePermitted, never OutcomeSuccess, because at the point
+// this runs the backup/restore has not happened yet and may still fail.
+// The actual outcome -- success or failure -- is recorded afterward by
+// auditPlaintextSettle, the same gate/settle shape
+// pkg/ceremony/holder_audit.go's gate/settle holds for the identical reason
+// (go-qrdb security review, backup-encrypt-default #B5: a prior version of
+// this function recorded OutcomeSuccess here, before the backup ran at
+// all). action is "backup.create" or "backup.restore".
+func (s *BackupService) auditPlaintextGate(ctx context.Context, id, destination, action string) error {
+	slog.WarnContext(ctx, "service: backup "+action+" with encryption explicitly disabled; the backup is plaintext, and one covering the system shard carries the cluster CA and every tenant's login CA key material in the clear",
+		"backup_id", id, "destination", destination)
+
+	ev := plaintextAuditEvent(ctx, id, destination, action, audit.OutcomePermitted)
+	return audit.EmitGated(ctx, s.auditLogger(), "backup", s.auditFailurePolicyValue(), ev)
+}
+
+// auditPlaintextSettle records the REAL outcome of a plaintext backup or
+// restore previously admitted by auditPlaintextGate: audit.OutcomeSuccess
+// when opErr is nil, else a failure outcome carrying a fixed reason token
+// (plaintextAuditReason) -- never opErr's own free text, which may
+// originate outside this package. It is POST-HOC (audit.EmitBestEffort):
+// the operation has already happened by the time this runs, so there is
+// nothing left to refuse, and a sink that refuses this record is counted
+// and logged, never returned as the operation's own failure -- the
+// identical posture pkg/ceremony/holder_audit.go's settle holds. Called
+// only when auditPlaintextGate itself succeeded; a gate refusal already
+// returned before any work started, so there is no operation to settle.
+func (s *BackupService) auditPlaintextSettle(ctx context.Context, id, destination, action string, opErr error) {
+	outcome := audit.OutcomeSuccess
+	if opErr != nil {
+		outcome = audit.OutcomeFailure + ":" + plaintextAuditReason(opErr)
+	}
+	ev := plaintextAuditEvent(ctx, id, destination, action, outcome)
+	audit.EmitBestEffort(ctx, s.auditLogger(), "backup", ev)
+}
+
+// plaintextAuditReason renders err as a FIXED reason token for the
+// compliance trail -- never err's own Error() text, which may originate
+// outside this package (a storage backend, the underlying Raft host) and
+// must not ride into a hash-chained, tenant-readable trail verbatim, the
+// same discipline pkg/ceremony/holder_audit.go's holderReason holds.
+func plaintextAuditReason(err error) string {
+	switch {
+	case errors.As(err, new(*BackupCreateError)):
+		return "create-failed"
+	case errors.As(err, new(*BackupRestoreError)):
+		return "restore-failed"
+	case errors.As(err, new(*BackupVerificationFailedError)):
+		return "verification-failed"
+	case errors.As(err, new(*BackupShardNotFoundError)):
+		return "shard-not-found"
+	case errors.As(err, new(*BackupChecksumMismatchError)):
+		return "checksum-mismatch"
+	case errors.As(err, new(*BackupMetadataMismatchError)):
+		return "metadata-mismatch"
+	default:
+		return "operation-failed"
+	}
 }
 
 // NewBackupService creates a new BackupService backed by the given
@@ -797,7 +860,7 @@ func (s *BackupService) prepareEnvelope(ctx context.Context, opts BackupOptions)
 }
 
 // CreateBackup creates a new backup by iterating shard snapshots.
-func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*BackupInfo, error) {
+func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (result *BackupInfo, resultErr error) {
 	if opts.Destination == "" {
 		return nil, &BackupEmptyDestinationError{}
 	}
@@ -836,16 +899,21 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 	start := time.Now()
 	id := s.idGen()
 
-	// The plaintext-override audit record is GATING, not best-effort: it
-	// runs with the backup's own id, after validation but strictly before
-	// any shard is touched, and -- under this node's configured audit
-	// failure policy -- a record that cannot be written refuses the
-	// backup rather than let an unrecorded plaintext override through
-	// (go-qrdb security review, backup-encrypt-default #B5).
+	// The plaintext-override audit record is a GATING record, emitted
+	// with the backup's own id, after validation but strictly before any
+	// shard is touched -- under this node's configured audit failure
+	// policy, a record that cannot be written refuses the backup rather
+	// than let an unrecorded plaintext override through. The REAL
+	// outcome (success or failure) is recorded separately, by the
+	// deferred auditPlaintextSettle below, once the backup has actually
+	// run (go-qrdb security review, backup-encrypt-default #B5).
 	if encryption == EncryptionNone {
-		if err := s.auditPlaintextOverride(ctx, id, opts.Destination, "backup.create"); err != nil {
+		if err := s.auditPlaintextGate(ctx, id, opts.Destination, "backup.create"); err != nil {
 			return nil, err
 		}
+		defer func() {
+			s.auditPlaintextSettle(ctx, id, opts.Destination, "backup.create", resultErr)
+		}()
 	}
 
 	// Resolve the key-wrap provider and wrap a fresh DEK BEFORE touching
@@ -1226,7 +1294,7 @@ func (s *BackupService) verifyAndDecryptShard(entry *backupEntry, digests map[ui
 // an OPERATIONAL failure during the import itself (the underlying store
 // refused it, after every shard already passed verification) is reported
 // per-shard rather than aborting the shards that already succeeded.
-func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) (*RestoreResult, error) {
+func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) (_ *RestoreResult, resultErr error) {
 	if opts.BackupID == "" {
 		return nil, &BackupEmptyIDError{}
 	}
@@ -1260,9 +1328,12 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 	claimsEncrypted := entry.info.Encryption != EncryptionNone
 
 	if !claimsEncrypted {
-		if err := s.auditPlaintextOverride(ctx, opts.BackupID, entry.info.Destination, "backup.restore"); err != nil {
+		if err := s.auditPlaintextGate(ctx, opts.BackupID, entry.info.Destination, "backup.restore"); err != nil {
 			return nil, err
 		}
+		defer func() {
+			s.auditPlaintextSettle(ctx, opts.BackupID, entry.info.Destination, "backup.restore", resultErr)
+		}()
 	}
 
 	// Resolve and unwrap the backup's DEK, and authenticate its manifest,
@@ -1433,7 +1504,7 @@ func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
 // around the import in a sequence RestoreBackup's own online dispatch does
 // not perform. An EncryptionNone backup's shard is returned unchanged,
 // after the same gated plaintext-restore audit RestoreBackup emits.
-func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shardID uint64, decryptionKeyRef string) ([]byte, error) {
+func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shardID uint64, decryptionKeyRef string) (_ []byte, resultErr error) {
 	if id == "" {
 		return nil, &BackupEmptyIDError{}
 	}
@@ -1448,9 +1519,12 @@ func (s *BackupService) DecryptBackupShard(ctx context.Context, id string, shard
 	}
 
 	if entry.info.Encryption == EncryptionNone {
-		if err := s.auditPlaintextOverride(ctx, id, entry.info.Destination, "backup.restore"); err != nil {
+		if err := s.auditPlaintextGate(ctx, id, entry.info.Destination, "backup.restore"); err != nil {
 			return nil, err
 		}
+		defer func() {
+			s.auditPlaintextSettle(ctx, id, entry.info.Destination, "backup.restore", resultErr)
+		}()
 		data, ok := entry.shards[shardID]
 		if !ok {
 			return nil, &BackupShardNotFoundError{BackupID: id, ShardID: shardID}
