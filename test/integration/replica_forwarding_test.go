@@ -89,6 +89,12 @@ var fwdTransports = []fwdTransport{grpcFwdTransport{}, restFwdTransport{}, quicF
 
 // TestReplicaForwarding: three nodes and a single-replica database, so two
 // nodes hold no replica of it; the same command set over every transport.
+//
+// The cluster is BYO-TLS (ruling 5): every node runs on the operator's CA,
+// certificate and key, so it has no cluster CA key and its cluster CA is the
+// operator's peer CA. Every forward here passes the on-behalf gate's
+// IsClusterCA check against that CA; the refusal of a leaf another CA issued
+// is TestOnBehalf_OnlyTheClusterCAsNodeMayForward (pkg/auth/middleware).
 func TestReplicaForwarding(t *testing.T) {
 	c := startFwdCluster(t, 3)
 	const db = "fwd-one"

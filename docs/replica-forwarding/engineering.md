@@ -306,7 +306,14 @@ set over every network transport -- REST, gRPC, QUIC, MCP and the Unix socket:**
   request forwarded through the non-replica is served by a surviving replica
   and the new leader holds it.
 
-The same suite on a BYO-TLS cluster lands with the Key B lane (decision D2).
+The network-transport suite runs on a BYO-TLS cluster: every node is given
+the operator's CA, certificate and key (`--tls-ca-file`, `--tls-cert-file`,
+`--tls-key-file`), so its cluster CA is the operator's peer CA and every
+forward it makes passes `IsClusterCA` (ruling 5). `pkg/auth/middleware`'s
+`TestOnBehalf_OnlyTheClusterCAsNodeMayForward` proves the other half on REST,
+gRPC and QUIC: a node certificate the cluster CA issued forwards, and a leaf a
+tenant CA issued with a forged node SAN is refused before the request is
+read.
 
 - four embedded nodes (`replica_forwarding_embedded_test.go`), a raft tenant
   whose key the cluster key plane delivered to every node: an embedded node

@@ -22,6 +22,11 @@ are not reconstructed here — their history is in the git log.
     the request on every transport. The target re-authorizes the caller with
     roles it resolves itself. A request with no authenticated caller is not
     forwarded.
+  - Only a node certificate the cluster CA issued may forward: REST, gRPC,
+    the Unix socket and QUIC share one on-behalf gate that, with an issuer
+    verifier wired, requires `IsClusterCA`. On a BYO-TLS node the operator's
+    peer CA is the cluster CA; a tenant CA's leaf with a forged node SAN is
+    refused.
   - Hop limit 1. At most two targets answer: a follower refusing a write
     names the leader, and the one retry goes there. An unreachable replica
     is skipped. A forward that failed after it may have reached a target is

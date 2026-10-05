@@ -177,9 +177,13 @@ holds no data for it.
 
 - **Only a cluster node may assert on a caller's behalf.** The assertion is
   honored only when the mTLS peer presents a node-scoped SPIFFE certificate
-  that chains to the cluster CA. On a node with operator-supplied TLS
-  (BYO-TLS), the operator's peer CA counts as the cluster CA for this check
-  (owner ruling). The Key B lane provides that through `IsClusterCA`.
+  issued by the cluster CA: every transport's on-behalf path passes one gate
+  (`onBehalfPeerGate`) that refuses a revoked leaf, a leaf without a node
+  SAN, and -- with an issuer verifier wired -- a chain the cluster CA did not
+  issue (`IssuerVerifier.IsClusterCA`). On a node with operator-supplied TLS
+  (BYO-TLS), the operator's peer CA is the cluster CA for this check (owner
+  ruling 5). A tenant's per-tenant CA is trusted on the same listener, so a
+  leaf it issued with a forged node SAN would otherwise speak as the cluster.
 - **The assertion carries identity, never authority.** The target re-resolves
   the caller's roles and scope from its own replicated data and authorizes
   independently. A forwarded request can do exactly what the caller could do
@@ -271,7 +275,7 @@ From the owner, recorded verbatim in substance:
 4. Streams are refused with the typed `NotAReplicaError`, carrying the replica
    set; the client redials.
 5. On BYO-TLS nodes the operator's peer CA counts as the cluster CA for
-   on-behalf verification (Key B lane, `IsClusterCA`).
+   on-behalf verification (`IsClusterCA`), on every transport.
 6. (D1, option a) Every raft-mode node always publishes its lease-backed member
    record -- API endpoints and liveness -- through the existing
    `cluster.Advertiser`, without the dynamic-membership reconfiguration loop.
@@ -297,9 +301,10 @@ From the owner, recorded verbatim in substance:
 - **D1 → ruling 6.** Option (a): every raft-mode node publishes its member
   record. The alternatives (endpoints in the feature-gate advertisement;
   forwarding only under dynamic membership) were rejected.
-- **D2.** Build against the existing cluster-CA check. The Key B lane wires
-  `IsClusterCA` for BYO-TLS nodes, and the BYO-TLS integration case turns green
-  with it.
+- **D2.** Build against the existing cluster-CA check, then gate every
+  transport's on-behalf path on `IsClusterCA` once the issuer verifier
+  existed; the BYO-TLS suite is the network-transport suite, whose nodes run
+  on operator-supplied TLS.
 - **D3 → ruling 8.** Option (b) for the embedded caller: embedder-configured.
   The alternatives -- forwarding only calls whose context carries an identity,
   or signing as the node -- were rejected; the second contradicts ruling 2.
