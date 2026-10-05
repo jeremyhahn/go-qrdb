@@ -508,6 +508,38 @@ are not reconstructed here — their history is in the git log.
   is validated through the same `config.Validate`, so a bare `qrdbd start`
   boots rather than refusing its own defaults.
 
+- **BREAKING: the embedded transport authorizes the tenant-administration
+  surface exactly like the network transports.** A security probe found that
+  `GetTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`,
+  `ReconcileDeletedTenants` and every `TenantBarrier*` operation ran no
+  tenancy or permission check at all on the embedded transport: a caller
+  bound to tenant `acme` could delete `globex` or the system tenant. Each
+  operation now authorizes through the same `pkg/auth/middleware` decision
+  (`AuthMiddleware.AuthorizeTarget`, `AuthorizeTenantUpdate`,
+  `AuthorizeTenantBarrierInit`, `AuthorizeTenantBarrierSealedOp`) and the same
+  `pkg/permission` table every network transport authorizes it through —
+  there is no second, embedded-only permission table — so a tenant-scoped
+  identity acting outside its own tenant is refused, rate limits apply, and
+  the decision is audited with the caller's tenant. The per-tenant share-claim
+  and quorum handshakes (`TenantBarrierShareClaimBegin/Complete`,
+  `TenantBarrierQuorumBegin/Submit`) carry no RBAC permission of their own,
+  matching `permission.IdentityGated` on every network transport; the quorum
+  pair now also marks its context with the same holder provenance
+  (`claimContext`) the share-claim handshake already used, so a Security
+  Officer or custodian without an RBAC role is still authenticated through
+  the factor it presents.
+  **BREAKING** for an embedder that composed the embedded transport with an
+  `AuthMiddleware` and relied on this gap: a caller that previously reached
+  another tenant's record or barrier now needs the system tenant (for the
+  tenant-record and plan operations) or that tenant's own identity (for its
+  barrier). An embedder that installs no `AuthMiddleware` is unaffected — RBAC
+  stays opt-in, exactly as on every network transport run with
+  `--auth-enabled=false`.
+  `sdk/go/transport/embedded/tenant_authz_test.go`'s
+  `TestTenantClientAuthorizationSurface_CoversEveryMethod` fails the build if
+  a future `transport.TenantClient` method ships with no entry declaring how
+  it is authorized.
+
 ### Added
 
 - **`TestMultiNode_ExactlyOneCredentialWinsAndIsBound` (go-qrdb#548

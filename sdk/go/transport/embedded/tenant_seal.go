@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -37,6 +38,9 @@ func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.Tenant
 	if req == nil {
 		return &NilRequestError{Method: "TenantBarrierSeal"}
 	}
+	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantBarrierSeal); err != nil {
+		return err
+	}
 	return t.tenantSvc.TenantBarrierSeal(ctx, req.TenantID)
 }
 
@@ -54,6 +58,9 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 	}
 	if req == nil {
 		return nil, &NilRequestError{Method: "TenantBarrierStatus"}
+	}
+	if err := t.authorizeTenantBarrierSealedOp(ctx, req.TenantID, permission.TenantBarrierStatus); err != nil {
+		return nil, err
 	}
 	status, err := t.tenantSvc.TenantBarrierStatus(ctx, req.TenantID)
 	if err != nil {

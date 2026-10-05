@@ -832,6 +832,32 @@ transport extracts from its own request shape:
 | MCP | `identityTargets` in `pkg/api/mcp/targets.go`, attached to the tool registry |
 | embedded | no route-level check of its own; its role-assignment gate authorizes against the record's tenant, and `AuthMiddleware.AuthorizeTarget` is the entry point for a typed call's target |
 
+**The tenant-administration surface is the other place embedded had no
+check of its own, and did not even call `AuthorizeTarget`.** A security probe
+found `GetTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`,
+`ReconcileDeletedTenants` and every `TenantBarrier*` operation on the
+embedded transport (`sdk/go/transport/embedded/tenant.go`,
+`tenant_seal.go`) performing no tenancy or permission check at all — a
+caller bound to one tenant could delete another's record, or the system
+tenant's. Each now calls the same helper the network transports resolve to:
+`AuthorizeTarget` with a `TenantTarget` for the record and
+`ScopeTenantOnly` barrier operations, `AuthorizeTenantUpdate` for a rename
+that may also change the isolation tier, `AuthorizeTenantBarrierInit` and
+`AuthorizeTenantBarrierSealedOp` for the two bootstrap/sealed-window
+fallbacks, and `FilterTenantList` to narrow `ListTenants` the same way REST's
+`handleListTenants` does. The per-tenant share-claim and quorum handshakes
+carry no RBAC permission on any transport (`permission.IdentityGated`); they
+are unchanged except that the quorum pair now marks its context with the
+same holder-provenance check (`claimContext`) the share-claim handshake
+already used. `tenant_authz_test.go`'s
+`TestTenantClientAuthorizationSurface_CoversEveryMethod` enumerates every
+`transport.TenantClient` method via reflection and fails the build if a new
+one ships with no declared authorization mechanism;
+`tenant_authz_restparity_test.go` runs the same (identity, operation, target)
+matrix through both the embedded transport and a REST server sharing one
+`AuthMiddleware` and one `*authtest.Tenants` service, and fails if the two
+ever disagree.
+
 **A body is read the way its handler reads it.** A target named in a request
 body is decoded into the handler's OWN request type with the handler's own
 decoder (`encoding/json`), never looked up in a generic map: a struct field

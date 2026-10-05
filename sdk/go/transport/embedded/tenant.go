@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -87,7 +88,7 @@ func WithTenantService(svc tenant.TenantServicer) Option {
 }
 
 // CreateTenant creates a new tenant by delegating to the TenantServicer.
-// Minting a tenant is platform-operator-only (tenant.RequirePlatformOperator)
+// Minting a tenant is platform-operator-only (AuthMiddleware.AuthorizeTarget/ScopeCross)
 // exactly as on every network transport, where tenants:create is ScopeCross.
 func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenantRequest) (*transport.CreateTenantResponse, error) {
 	if err := t.gate("CreateTenant"); err != nil {
@@ -99,7 +100,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
-	if err := tenant.RequirePlatformOperator(ctx, "create a tenant"); err != nil {
+	if err := t.authorizeTenantSelf(ctx, permission.TenantsCreate); err != nil {
 		return nil, err
 	}
 
@@ -129,6 +130,9 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
+	if err := t.authorizeTenantTarget(ctx, tenantID, permission.TenantsRead); err != nil {
+		return nil, err
+	}
 
 	info, err := t.tenantSvc.GetTenant(ctx, tenantID)
 	if err != nil {
@@ -151,9 +155,21 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
+	if err := t.authorizeTenantSelf(ctx, permission.TenantsList); err != nil {
+		return nil, err
+	}
 
 	tenants, err := t.tenantSvc.ListTenants(ctx)
 	if err != nil {
+		return nil, err
+	}
+	// Narrow to what the caller may enumerate: every tenant for a caller
+	// holding tenants:list:cross, and only the caller's own tenant for
+	// anyone else -- the same rule FilterTenantList applies on every
+	// network transport, because the full list discloses every tenant's
+	// configuration (data_root included) to a principal with no authority
+	// over them.
+	if tenants, err = t.filterTenantList(ctx, tenants); err != nil {
 		return nil, err
 	}
 
@@ -178,6 +194,9 @@ func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListD
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := t.authorizeTenantSelf(ctx, permission.TenantsListDeleted); err != nil {
+		return nil, err
 	}
 	if req == nil {
 		req = &transport.ListDeletedTenantsRequest{}
@@ -215,6 +234,9 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
+	if err := t.authorizeTenantSelf(ctx, permission.TenantsReconcileDeleted); err != nil {
+		return nil, err
+	}
 	report, err := t.tenantSvc.ReconcileDeletedTenants(ctx)
 	if rerr := tenant.ReconcileResponseError(report, err); rerr != nil {
 		return nil, rerr
@@ -237,10 +259,10 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 // UpdateTenant applies a partial update to an existing tenant by delegating
 // to the TenantServicer. Non-empty patch fields replace the stored value.
 // Renaming a tenant is self-service, but a patch that also changes the
-// isolation tier is platform-operator-only
-// (tenant.RequirePlatformOperator), exactly as AuthMiddleware.
-// AuthorizeTenantUpdate re-checks tenants:set_isolation on every network
-// transport.
+// isolation tier is platform-operator-only, exactly as
+// AuthMiddleware.AuthorizeTenantUpdate checks tenants:set_isolation
+// (ScopeCross) on every network transport -- the SAME decision below, and
+// the only one: there is no separate structural check here.
 func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
 	if err := t.gate("UpdateTenant"); err != nil {
 		return nil, err
@@ -251,15 +273,17 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
-	if req.IsolationType != "" {
-		if err := tenant.RequirePlatformOperator(ctx, "set a tenant's isolation tier"); err != nil {
-			return nil, err
-		}
-	}
 
 	patch := tenant.TenantPatch{
 		Name:          req.Name,
 		IsolationType: tenant.IsolationType(req.IsolationType),
+	}
+	// tenants:update against the named tenant, plus tenants:set_isolation
+	// (platform-operator only) when the patch also changes the isolation
+	// tier -- the same two-permission rule AuthorizeTenantUpdate enforces on
+	// every network transport.
+	if err := t.authorizeTenantUpdate(ctx, req.TenantID, patch); err != nil {
+		return nil, err
 	}
 	info, err := t.tenantSvc.UpdateTenant(ctx, req.TenantID, patch)
 	if err != nil {
@@ -273,7 +297,7 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 
 // UpdateTenantQuotas updates the resource quotas for a tenant by
 // delegating to the TenantServicer. A tenant's quotas are its plan, set by
-// the platform operator only (tenant.RequirePlatformOperator), exactly as
+// the platform operator only (AuthMiddleware/ScopeCross), exactly as
 // tenants:set_quotas is ScopeCross on every network transport: a tenant
 // Admin cannot raise its own limits.
 func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.UpdateTenantQuotasRequest) (*transport.UpdateTenantQuotasResponse, error) {
@@ -286,7 +310,7 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
-	if err := tenant.RequirePlatformOperator(ctx, "set a tenant's quotas"); err != nil {
+	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantsSetQuotas); err != nil {
 		return nil, err
 	}
 
@@ -321,7 +345,7 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 
 // UpdateTenantEntitlements updates the feature entitlements for a tenant by
 // delegating to the TenantServicer. A tenant's entitlements are its plan,
-// set by the platform operator only (tenant.RequirePlatformOperator),
+// set by the platform operator only (AuthMiddleware/ScopeCross),
 // exactly as tenants:set_entitlements is ScopeCross on every network
 // transport: a tenant Admin cannot grant itself entitlements.
 func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
@@ -334,7 +358,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
-	if err := tenant.RequirePlatformOperator(ctx, "set a tenant's entitlements"); err != nil {
+	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantsSetEntitlements); err != nil {
 		return nil, err
 	}
 
@@ -368,6 +392,9 @@ func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 	if t.tenantSvc == nil {
 		return &NilServiceError{Service: "TenantServicer"}
 	}
+	if err := t.authorizeTenantTarget(ctx, tenantID, permission.TenantsDelete); err != nil {
+		return err
+	}
 
 	return t.tenantSvc.DeleteTenant(ctx, tenantID)
 }
@@ -386,6 +413,9 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := t.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
+		return nil, err
 	}
 
 	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
@@ -416,6 +446,9 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 	if t.tenantSvc == nil {
 		return &NilServiceError{Service: "TenantServicer"}
 	}
+	if err := t.authorizeTenantBarrierSealedOp(ctx, req.TenantID, permission.TenantBarrierUnseal); err != nil {
+		return err
+	}
 
 	return t.tenantSvc.TenantBarrierUnseal(ctx, req.TenantID, req.Key)
 }
@@ -441,6 +474,9 @@ func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *trans
 	if err != nil {
 		return nil, err
 	}
+	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantBarrierOfficerRegister); err != nil {
+		return nil, err
+	}
 	reg := service.HolderRegistration(ctx, holderwire.TenantRegisterFrom(req))
 	result, err := svc.TenantBarrierOfficerRegister(ctx, req.TenantID, &reg)
 	if err != nil {
@@ -456,6 +492,9 @@ func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID strin
 	}
 	svc, err := t.tenantService()
 	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeTenantTarget(ctx, tenantID, permission.TenantBarrierOfficerList); err != nil {
 		return nil, err
 	}
 	officers, err := svc.TenantBarrierOfficerList(ctx, tenantID)
@@ -510,6 +549,13 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 	if err != nil {
 		return nil, err
 	}
+	// No RBAC permission gates a quorum challenge -- a holder authenticates
+	// through the factor it presents, not an RBAC role, exactly as the
+	// share-claim handshake does. ctx is still marked with the same
+	// claimContext provenance (a presented certificate, or the in-process
+	// marker) so the seal/ceremony layer underneath sees it exactly as it
+	// would for a claim.
+	ctx, _ = claimContext(ctx)
 	challenge, err := svc.TenantBarrierQuorumBegin(ctx, req.TenantID, seal.QuorumOp(req.Op), req.Username, req.Factor)
 	if err != nil {
 		return nil, err
@@ -526,7 +572,10 @@ func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transpor
 	if err != nil {
 		return nil, err
 	}
-	out, err := svc.TenantBarrierQuorumSubmit(ctx, req.TenantID, holderwire.TenantSubmitFrom(req, contextOptionalThumbprint(ctx)))
+	// Same provenance marking as TenantBarrierQuorumBegin, and for the same
+	// reason: no RBAC permission gates a quorum submission either.
+	ctx, thumbprint := claimContext(ctx)
+	out, err := svc.TenantBarrierQuorumSubmit(ctx, req.TenantID, holderwire.TenantSubmitFrom(req, thumbprint))
 	if err != nil {
 		return nil, err
 	}
@@ -540,6 +589,9 @@ func (t *Transport) TenantBarrierRekeyStart(ctx context.Context, req *transport.
 	}
 	svc, err := t.tenantService()
 	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantBarrierRekey); err != nil {
 		return nil, err
 	}
 	round, err := svc.TenantBarrierRekeyStart(ctx, req.TenantID, req.Threshold, seal.FactorPolicy(req.Policy))
@@ -557,6 +609,9 @@ func (t *Transport) TenantBarrierOfficerRevoke(ctx context.Context, req *transpo
 	}
 	svc, err := t.tenantService()
 	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantBarrierOfficerRevoke); err != nil {
 		return nil, err
 	}
 	round, err := svc.TenantBarrierOfficerRevoke(ctx, req.TenantID, req.Username, req.Threshold)
