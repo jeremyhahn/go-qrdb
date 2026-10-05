@@ -628,6 +628,27 @@ var backupRules = []rule{
 	// a caller-supplied credential or reference that does not work, not a
 	// server-side failure.
 	as(&service.BackupDecryptionFailedError{}, InvalidArgument),
+	// RestoreBackup's top-level, pre-import verification failure for a
+	// specific target shard (wraps *BackupShardIntegrityError or
+	// *BackupShardNotFoundError) -- see docs/key-wrapping/api.md.
+	as(&service.BackupVerificationFailedError{}, InvalidArgument),
+	// The backup's stored metadata and its artifact disagree about
+	// encryption -- a downgrade attempt (go-qrdb security review,
+	// backup-encrypt-default #B2) -- or the authenticated manifest's own
+	// backup ID/destination/provider does not match the metadata it was
+	// read alongside.
+	as(&service.BackupMetadataMismatchError{}, InvalidArgument),
+	// The authenticated manifest itself (the sealed header, not a shard)
+	// failed to authenticate or decode -- a tampered manifest, or the
+	// wrong KEK. Returned directly, never wrapped in
+	// *BackupVerificationFailedError: the manifest is checked once, up
+	// front, before PASS 1's per-shard verification loop even starts.
+	as(&service.BackupManifestInvalidError{}, InvalidArgument),
+	// The envelope or the (authenticated) manifest names a format
+	// version/algorithm this build does not implement -- a format this
+	// build cannot read, never a tamper this build could safely decode.
+	as(&service.BackupEnvelopeVersionError{}, InvalidArgument),
+	as(&service.BackupManifestAlgorithmError{}, InvalidArgument),
 	// The artifact is not in a restorable state; retrying the same restore
 	// will not change that.
 	as(&service.BackupChecksumMismatchError{}, FailedPrecondition),
@@ -635,6 +656,11 @@ var backupRules = []rule{
 	as(&service.OnlineRestoreReplicatedShardError{}, FailedPrecondition),
 	as(&service.BackupUnsupportedError{}, Unimplemented),
 	as(&service.OnlineRestoreUnsupportedError{}, Unimplemented),
+	// The built-in "software" provider was resolved with no key directory
+	// ever configured (WithKeyDir / lifecycle.Infra.KeyDir /
+	// --backup-key-dir) -- a server-side capability gap, not a
+	// caller-supplied value the request could fix by retrying.
+	as(&service.BackupKeyDirNotConfiguredError{}, Unimplemented),
 }
 
 // clusterJoinTokenRules are the member-side CSR join-token minting

@@ -65,7 +65,8 @@ type Provider interface {
 
 	// Wrap encrypts dek under the KEK keyRef names, returning the bytes to
 	// persist. keyRef is opaque to this package and entirely
-	// provider-specific: a file path for the software provider, an
+	// provider-specific: the bare NAME of a key file inside the server's
+	// own configured key directory for the software provider, an
 	// HSM slot/handle, a KMS key ARN. This package never inspects it.
 	Wrap(ctx context.Context, keyRef string, dek []byte) (wrapped []byte, err error)
 
@@ -361,8 +362,9 @@ type BackupOptions struct {
 	// this is left empty.
 	KeyProviderID string
 
-	// KeyRef is the key reference the named provider resolves -- a
-	// key-file path for "software". Required whenever Encryption
+	// KeyRef is the key reference the named provider resolves -- the
+	// bare NAME of a key file inside the server's configured key
+	// directory for "software". Required whenever Encryption
 	// resolves to "aes256" (whether defaulted or named explicitly).
 	KeyRef string
 
@@ -387,7 +389,8 @@ below originally proposed only warning about. `--encryption-key` and
 `--decryption-key` are removed from the CLI alongside them; only
 `--encryption-key-file` / `--decryption-key-file` (and `--key-provider`)
 remain. `KeyRef` is always a reference the server resolves on its own
-node — a key-file path for `"software"` — never bytes a client transmits;
+node — the bare NAME of a key file inside its configured key directory for
+`"software"`, never a path and never bytes a client transmits;
 this is also why `--encryption-key-file` has no stdin form (`-`): there is
 no client-to-server channel for raw key bytes to travel over any more, so
 there is nothing for stdin to feed.
@@ -400,20 +403,25 @@ surfaced on `BackupInfo` — they live in the backup's own persisted manifest
 configured `BackupSink`), read back only by `RestoreBackup` and `VerifyBackup`
 internally.
 
-A GCM authentication failure on `Unwrap` (wrong KEK) or on a shard's own
-`Open` (tampered ciphertext) both surface as `*BackupDecryptionFailedError`
-(`InvalidArgument`) on every transport — one typed error for both causes,
-deliberately: a caller given "wrong key" versus "tampered" as distinguishable
-outcomes could use that distinction to probe for the correct key one shard
-at a time.
+A GCM authentication failure on `Unwrap` (wrong KEK, or a tampered wrapped
+DEK) surfaces as `*BackupDecryptionFailedError` (`InvalidArgument`) on every
+transport. A shard's own `Open` failing (tampered shard ciphertext) is a
+DIFFERENT typed error, `*BackupShardIntegrityError` -- see
+[Envelope format](#envelope-format) above -- deliberately not the same
+type: the two causes are checked at different layers (the KEK/wrapped-DEK
+once per backup, each shard's own ciphertext per shard) and conflating them
+previously reported plain ciphertext tampering as "wrong key-encrypting
+key", which is misleading. Neither case distinguishes "wrong key" from
+"tampered" WITHIN its own layer, so a caller cannot use that finer
+distinction to probe for the correct key one shard at a time.
 
 ## Key hygiene: the key never rides in a flag value, by default
 
-**`--encryption-key-file <path>` is the only way** to supply the software
-provider's 32-byte key: the CLI passes the path straight through as `KeyRef`,
-and the server's own `SoftwareProvider` reads and validates it on its own
-node when it actually wraps or unwraps the DEK. The CLI itself never opens
-the file.
+**`--encryption-key-file <name>` is the only way** to supply the software
+provider's 32-byte key: the CLI passes the bare file NAME straight through
+as `KeyRef`, and the server's own `SoftwareProvider` resolves it inside its
+one confined key directory and validates it on its own node when it
+actually wraps or unwraps the DEK. The CLI itself never opens the file.
 
 **`--encryption-key <base64>` is retired, not merely deprecated** — see
 [Owner ruling: the inline key is retired](#owner-ruling-the-inline-key-is-retired)
@@ -424,8 +432,8 @@ any more) is strictly better than warning about it on use, which is what an
 earlier draft of this document proposed.
 
 The desktop/web UI's key-reference field is a plain text input (it carries a
-path, not a secret): the key file's bytes never pass through the browser or
-the Wails bridge in either direction.
+key file name, not a secret): the key file's bytes never pass through the
+browser or the Wails bridge in either direction.
 
 ## Target: KMS references are not re-added here
 

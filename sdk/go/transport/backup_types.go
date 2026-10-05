@@ -49,8 +49,9 @@ const (
 
 	// EncryptionAES256 uses AES-256-GCM encryption. It is the server's
 	// default when BackupRequest.Encryption is left empty, which then
-	// requires BackupRequest.KeyRef (a key-file path for the built-in
-	// "software" keywrap provider, or a hardware/cloud-KMS reference a
+	// requires BackupRequest.KeyRef (the bare NAME of a key file inside
+	// the server's configured key directory for the built-in "software"
+	// keywrap provider, never a path, or a hardware/cloud-KMS reference a
 	// go-xkms-registered provider resolves).
 	EncryptionAES256 EncryptionType = "aes256"
 )
@@ -96,9 +97,10 @@ type BackupRequest struct {
 	// this is left empty.
 	KeyProviderID string `json:"key_provider_id,omitempty"`
 
-	// KeyRef is the key reference the named provider resolves -- a
-	// key-file path for the "software" provider. Required whenever
-	// Encryption resolves to EncryptionAES256 (whether defaulted or named
+	// KeyRef is the key reference the named provider resolves -- the bare
+	// NAME of a key file inside the server's configured key directory for
+	// the "software" provider, never a path. Required whenever Encryption
+	// resolves to EncryptionAES256 (whether defaulted or named
 	// explicitly): every KEK is referenced through a provider, never
 	// passed as raw bytes through this struct.
 	KeyRef string `json:"key_ref,omitempty"`

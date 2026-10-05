@@ -44,8 +44,9 @@ empty means **all shards**. `encryption` left unset (or empty string on the
 wire) defaults to `aes256` -- it is **not** plaintext by omission. In either
 case (unset or explicitly `aes256`) `key_ref` is **required**; a caller that
 wants plaintext must send `encryption: "none"` outright. `key_ref` is a
-key-wrap provider reference (a key-file path for the built-in `"software"`
-provider), never raw key bytes — see
+key-wrap provider reference (the bare NAME of a key file inside the
+server's configured key directory for the built-in `"software"` provider,
+never a path), never raw key bytes — see
 [../key-wrapping/api.md](../key-wrapping/api.md) for the full schema this
 feature adds.
 

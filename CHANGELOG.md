@@ -1557,10 +1557,12 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   reference, and provider ID are persisted in the backup's own envelope
   (`BackupInfo.KeyProviderID` is the only piece exposed on the wire);
   restore resolves and unwraps it automatically, needing no key material
-  supplied at all in the common case. A wrong key, an unregistered
-  provider, or tampered ciphertext all refuse with the same typed
-  `BackupDecryptionFailedError` (`InvalidArgument`), deliberately not
-  distinguished from each other.
+  supplied at all in the common case. A wrong key or an unregistered
+  provider refuses with the same typed `BackupDecryptionFailedError`
+  (`InvalidArgument`), deliberately not distinguished from each other; a
+  tampered SHARD's own ciphertext is a different typed error,
+  `*BackupShardIntegrityError`, checked at a different layer (see the
+  Fixed entry above) -- the two are never conflated.
   **BREAKING: the inline raw-key path is retired, not merely
   deprecated — `BackupOptions.EncryptionKey`/`RestoreOptions.DecryptionKey`
   (Go SDK), `encryption_key`/`decryption_key` (REST/gRPC/QUIC/MCP wire
@@ -1571,15 +1573,15 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   `--decryption-key-file` on the CLI — never passed as bytes over the wire
   or in a flag value. **Any script or CI job that relied on the old
   plaintext default, or on `--encryption-key`, must now pass
-  `--encryption-key-file <path>` or `--encryption none`** (CLI), or the
+  `--encryption-key-file <name>` or `--encryption none`** (CLI), or the
   equivalent field on the REST, gRPC, QUIC, MCP, Unix and embedded
   transports, the Go and TypeScript SDKs, and the desktop/web Backup
   Manager. The desktop/web UI's encryption selector defaulted to `"none"`
   and used the wrong wire value (`"aes256gcm"` instead of the server's
   `"aes256"`) -- both are fixed, and the UI now always sends the field
   explicitly rather than omitting it on a plaintext choice, with an inline
-  warning when plaintext is selected; its key field is now a key-file-path
-  reference, not a secret-bytes input. See
+  warning when plaintext is selected; its key field now names a key file,
+  not a path and not a secret-bytes input. See
   [docs/key-wrapping/](docs/key-wrapping/architecture.md) and
   [docs/backup-restore/](docs/backup-restore/architecture.md).
 

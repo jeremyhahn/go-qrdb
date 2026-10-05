@@ -224,6 +224,150 @@ func TestBackupService_RestoreBackup_TamperedManifestRefused(t *testing.T) {
 	}
 }
 
+// TestBackupService_RestoreBackup_UnsupportedEnvelopeVersionRefused proves
+// an envelope naming a FormatVersion this build does not implement is a
+// typed refusal (*BackupEnvelopeVersionError), not this build's current
+// AAD shape silently applied against bytes a different, unrecognized
+// format produced.
+func TestBackupService_RestoreBackup_UnsupportedEnvelopeVersionRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := mustNewBackupService(t, provider)
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/envelope-version",
+		KeyRef:      writeTestKeyFile(t, 0xC3),
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	bs.mu.Lock()
+	entry := bs.backups[created.ID]
+	entry.envelope.FormatVersion = envelopeFormatVersion + 1
+	bs.mu.Unlock()
+
+	_, err = svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	var versionErr *BackupEnvelopeVersionError
+	if !errors.As(err, &versionErr) {
+		t.Fatalf("err = %T, want *BackupEnvelopeVersionError: %v", err, err)
+	}
+	if provider.restoreCalls.Load() != 0 {
+		t.Fatal("an unsupported envelope version must leave nothing imported")
+	}
+}
+
+// TestBackupService_RestoreBackup_UnsupportedManifestAlgorithmRefused
+// proves a manifest whose own (authenticated) Algorithm field names
+// something other than this build's one supported algorithm is a typed
+// refusal (*BackupManifestAlgorithmError) -- the manifest is sealed under
+// the backup's own DEK, so this is a format this build cannot read, never
+// a tamper it could still safely decode.
+func TestBackupService_RestoreBackup_UnsupportedManifestAlgorithmRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := mustNewBackupService(t, provider)
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination: "/backups/manifest-algorithm",
+		KeyRef:      writeTestKeyFile(t, 0xC4),
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	bs := svc.(*BackupService)
+	bs.mu.Lock()
+	entry := bs.backups[created.ID]
+	envelope := entry.envelope
+	gcm, derr := bs.resolveDEK(ctx, entry, "")
+	if derr != nil {
+		bs.mu.Unlock()
+		t.Fatalf("resolveDEK: %v", derr)
+	}
+	shardIDs := make([]uint64, 0, len(entry.shards))
+	for id := range entry.shards {
+		shardIDs = append(shardIDs, id)
+	}
+	manifest := &backupManifest{
+		FormatVersion: envelope.FormatVersion,
+		Algorithm:     "aes-128-gcm-FAKE",
+		ProviderID:    envelope.ProviderID,
+		KeyRef:        envelope.KeyRef,
+		BackupID:      entry.info.ID,
+		Destination:   entry.info.Destination,
+		Shards:        buildManifestShards(shardIDs, entry.shards),
+	}
+	aad := buildManifestAAD(entry.info.ID, entry.info.Destination, envelope.FormatVersion)
+	sealed, serr := sealManifest(gcm, manifest, aad)
+	if serr != nil {
+		bs.mu.Unlock()
+		t.Fatalf("sealManifest: %v", serr)
+	}
+	envelope.SealedManifest = sealed
+	bs.mu.Unlock()
+
+	_, err = svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	var algErr *BackupManifestAlgorithmError
+	if !errors.As(err, &algErr) {
+		t.Fatalf("err = %T, want *BackupManifestAlgorithmError: %v", err, err)
+	}
+	if algErr.Algorithm != "aes-128-gcm-FAKE" {
+		t.Fatalf("algErr.Algorithm = %q, want %q", algErr.Algorithm, "aes-128-gcm-FAKE")
+	}
+	if provider.restoreCalls.Load() != 0 {
+		t.Fatal("an unsupported manifest algorithm must leave nothing imported")
+	}
+}
+
+// shortDEKProvider is a same-shaped keywrap.Provider test double whose
+// Unwrap always returns a 16-byte DEK regardless of what Wrap produced --
+// standing in for a buggy or malicious go-xkms-registered provider,
+// proving resolveDEK itself refuses a wrong-length DEK rather than handing
+// it to aes.NewCipher, which accepts 16/24/32-byte keys unconditionally
+// and would otherwise silently construct a weaker AES-128-GCM cipher.
+type shortDEKProvider struct{}
+
+func (shortDEKProvider) ProviderID() string { return "short-dek" }
+
+func (shortDEKProvider) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	return append([]byte{}, dek...), nil
+}
+
+func (shortDEKProvider) Unwrap(context.Context, string, []byte) ([]byte, error) {
+	return make([]byte, 16), nil
+}
+
+// TestBackupService_RestoreBackup_ShortUnwrappedDEKRefused proves
+// resolveDEK refuses an unwrapped DEK that is not exactly dekLength (32)
+// bytes, rather than constructing a cipher over it (go-qrdb security
+// review, backup-encrypt-default).
+func TestBackupService_RestoreBackup_ShortUnwrappedDEKRefused(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	svc := mustNewBackupService(t, provider, WithKeyWrapProvider(shortDEKProvider{}))
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{
+		Destination:   "/backups/short-dek",
+		KeyProviderID: "short-dek",
+		KeyRef:        "irrelevant-to-the-fake",
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	_, err = svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	var decFailed *BackupDecryptionFailedError
+	if !errors.As(err, &decFailed) {
+		t.Fatalf("err = %T, want *BackupDecryptionFailedError: %v", err, err)
+	}
+	var unwrapFailed *keywrap.UnwrapFailedError
+	if !errors.As(decFailed, &unwrapFailed) {
+		t.Fatalf("err does not wrap *keywrap.UnwrapFailedError: %v", err)
+	}
+}
+
 // TestBackupService_RestoreBackup_DroppedShardDetected proves a shard
 // recorded in the manifest but absent from the artifact (e.g. deleted from
 // a durable sink by an attacker, or lost to corruption) aborts the default

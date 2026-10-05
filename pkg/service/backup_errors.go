@@ -262,6 +262,40 @@ func (e *BackupVerificationFailedError) Unwrap() error {
 	return e.Err
 }
 
+// BackupEnvelopeVersionError is returned when a backup's envelope names a
+// FormatVersion this build does not implement. FormatVersion is recorded
+// in the envelope itself (never inferred) precisely so a future format
+// change can be detected rather than misapplied: this build's manifest/
+// shard AAD shape is tied to envelopeFormatVersion, and silently reusing
+// it against bytes a different, unrecognized format produced would be a
+// decode, not a refusal.
+type BackupEnvelopeVersionError struct {
+	BackupID      string
+	FormatVersion uint32
+}
+
+// Error returns a human-readable description.
+func (e *BackupEnvelopeVersionError) Error() string {
+	return "service: backup " + e.BackupID + "'s envelope format version " +
+		strconv.FormatUint(uint64(e.FormatVersion), 10) + " is not supported by this build"
+}
+
+// BackupManifestAlgorithmError is returned when a backup's authenticated
+// manifest names an Algorithm this build does not implement. The manifest
+// is sealed under the backup's own DEK, so a value other than this
+// build's one supported algorithm cannot be explained as tampering this
+// build could still safely decrypt under -- it names a format this build
+// does not know how to read.
+type BackupManifestAlgorithmError struct {
+	BackupID  string
+	Algorithm string
+}
+
+// Error returns a human-readable description.
+func (e *BackupManifestAlgorithmError) Error() string {
+	return "service: backup " + e.BackupID + "'s manifest names unsupported algorithm " + e.Algorithm
+}
+
 // BackupKeyDirNotConfiguredError is returned when the built-in "software"
 // key-wrap provider is resolved but no key directory was ever configured
 // for it (BackupServiceOption WithKeyDir, or lifecycle.Infra.KeyDir).

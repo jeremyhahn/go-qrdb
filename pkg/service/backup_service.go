@@ -103,8 +103,9 @@ type BackupOptions struct {
 	// when KeyRef is set and this is left empty.
 	KeyProviderID string
 
-	// KeyRef is the key reference the named provider resolves -- a
-	// key-file path for the "software" provider, an HSM slot/handle or a
+	// KeyRef is the key reference the named provider resolves -- the bare
+	// NAME of a key file inside the server's configured key directory
+	// for the "software" provider, never a path, an HSM slot/handle or a
 	// KMS key ARN for a hardware or cloud-KMS provider go-xkms registers.
 	// Required whenever Encryption resolves to EncryptionAES256 (whether
 	// defaulted or named explicitly): there is no inline raw-key escape
@@ -160,7 +161,9 @@ type BackupEnvelope struct {
 	ProviderID string
 
 	// KeyRef is the key reference ProviderID was asked to Wrap/Unwrap
-	// under -- a key-file path for the software provider. Restore may
+	// under -- the bare NAME of a key file inside the server's
+	// configured key directory for the software provider, never a
+	// path. Restore may
 	// override this with RestoreOptions.DecryptionKeyRef (e.g. the key
 	// file moved, or restore runs on a different node), but defaults to
 	// this stored value.
@@ -354,8 +357,8 @@ type BackupService struct {
 	// keyWrap resolves the keywrap.Provider a backup's KeyProviderID names.
 	// Defaults to keywrap.NewDefaultRegistry() (pre-populated with
 	// "software") when no WithKeyWrapRegistry/WithKeyWrapProvider option is
-	// applied, so the common case -- a key-file path and nothing else --
-	// works with no composition required.
+	// applied, so the common case -- a bare key file name and nothing
+	// else -- works with no composition required.
 	keyWrap keywrap.Registry
 
 	// keyWrapExtra is a single additional provider WithKeyWrapProvider
@@ -1269,6 +1272,18 @@ func (s *BackupService) resolveDEK(ctx context.Context, entry *backupEntry, keyR
 	}
 	defer secure.Wipe(dek)
 
+	// Every DEK this package ever mints is exactly dekLength (32) bytes
+	// (prepareEnvelope). aes.NewCipher accepts 16/24/32-byte keys
+	// unconditionally, so a Provider.Unwrap that returns anything other
+	// than 32 bytes -- a buggy or malicious go-xkms-registered hardware
+	// or cloud-KMS provider, since this package never controls what a
+	// REGISTERED provider actually returns -- would otherwise construct
+	// a silently weaker AES-128/192-GCM cipher (or simply the wrong key
+	// material) instead of refusing outright.
+	if len(dek) != dekLength {
+		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: &keywrap.UnwrapFailedError{}}
+	}
+
 	gcm, err := newShardGCM(dek)
 	if err != nil {
 		return nil, &BackupDecryptionFailedError{BackupID: entry.info.ID, Err: err}
@@ -1307,10 +1322,27 @@ func (s *BackupService) resolveManifest(ctx context.Context, entry *backupEntry,
 		return nil, nil, err
 	}
 	envelope := entry.envelope
+	// The envelope names the format version it was written under
+	// (BackupEnvelope.FormatVersion's own doc comment); refusing an
+	// unrecognized one here, before it is used to derive the manifest
+	// AAD, means a future format this build does not understand is a
+	// typed refusal rather than this build's current AAD shape silently
+	// misapplied to bytes a different format produced.
+	if envelope.FormatVersion != envelopeFormatVersion {
+		return nil, nil, &BackupEnvelopeVersionError{BackupID: entry.info.ID, FormatVersion: envelope.FormatVersion}
+	}
 	aad := buildManifestAAD(entry.info.ID, entry.info.Destination, envelope.FormatVersion)
 	manifest, err := openManifest(gcm, envelope.SealedManifest, aad, entry.info.ID)
 	if err != nil {
 		return nil, nil, err
+	}
+	// Likewise the manifest's own recorded algorithm: it is authenticated
+	// (sealed under the backup's DEK), so a value other than this
+	// build's one supported algorithm cannot be a tamper this build
+	// could still safely decrypt under -- it is a format this build does
+	// not implement.
+	if manifest.Algorithm != manifestAlgorithm {
+		return nil, nil, &BackupManifestAlgorithmError{BackupID: entry.info.ID, Algorithm: manifest.Algorithm}
 	}
 	if manifest.BackupID != entry.info.ID || manifest.Destination != entry.info.Destination || manifest.ProviderID != envelope.ProviderID {
 		return nil, nil, &BackupMetadataMismatchError{BackupID: entry.info.ID}

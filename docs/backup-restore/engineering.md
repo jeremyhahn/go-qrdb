@@ -107,8 +107,9 @@ type VerifyResult struct {
   request with `Encryption` empty or `aes256` and no `KeyRef` is refused
   (`BackupEncryptionRequiredError` when empty, `BackupEncryptionKeyRequiredError`
   when `aes256` was named explicitly). No path silently writes plaintext.
-  `KeyRef` is a provider-resolved reference (a key-file path for the
-  built-in `"software"` provider), never raw key bytes — see
+  `KeyRef` is a provider-resolved reference (the bare NAME of a key file
+  inside the server's configured key directory for the built-in
+  `"software"` provider, never a path), never raw key bytes — see
   [../key-wrapping/](../key-wrapping/architecture.md) for the full envelope
   design and the owner ruling that retired the inline-bytes path this
   document originally shipped with.
@@ -193,8 +194,9 @@ Cloud destinations require the corresponding go-objstore build tag
 (`WITH_AWS_S3`, `WITH_MINIO`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
 `WITH_GLACIER`, `WITH_AZURE_ARCHIVE`).
 
-`KeyRef`/`DecryptionKeyRef` name key material by reference (a key-file path
-for the built-in `"software"` keywrap provider); they are never raw key
+`KeyRef`/`DecryptionKeyRef` name key material by reference (the bare NAME of
+a key file inside the server's configured key directory for the built-in
+`"software"` keywrap provider, never a path); they are never raw key
 bytes — see [../key-wrapping/](../key-wrapping/architecture.md).
 
 ## Persistence

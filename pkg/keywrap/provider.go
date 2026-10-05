@@ -51,7 +51,8 @@ type Provider interface {
 
 	// Wrap encrypts dek under the KEK keyRef names, returning the bytes to
 	// persist. keyRef is opaque to this package and entirely
-	// provider-specific: a file path for the software provider, an HSM
+	// provider-specific: the bare NAME of a key file inside the server's
+	// own configured key directory for the software provider, an HSM
 	// slot/handle, a KMS key ARN. This package never inspects it.
 	Wrap(ctx context.Context, keyRef string, dek []byte) (wrapped []byte, err error)
 

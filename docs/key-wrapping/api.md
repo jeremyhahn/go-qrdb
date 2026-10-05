@@ -82,7 +82,8 @@ the matrix in [backup-restore/api.md](../backup-restore/api.md#capability-matrix
 |---|---|---|
 | `key_provider_id` names an unregistered provider (create or restore) | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
 | Wrong key file on restore (an explicit `decryption_key_ref` override, or the stored reference, that does not match) | 400 | `INVALID_ARGUMENT` — `*BackupDecryptionFailedError` |
-| Tampered shard ciphertext, or a tampered manifest, on restore — aborts the WHOLE restore, before any shard is imported | 400 | `INVALID_ARGUMENT` — `*BackupVerificationFailedError` (wrapping `*BackupShardIntegrityError` or `*BackupManifestInvalidError`) |
+| Tampered shard ciphertext on restore — aborts the WHOLE restore, before any shard is imported | 400 | `INVALID_ARGUMENT` — `*BackupVerificationFailedError` (wrapping `*BackupShardIntegrityError`) |
+| Tampered manifest on restore (the sealed header, not a shard) — aborts before any shard is touched | 400 | `INVALID_ARGUMENT` — `*BackupManifestInvalidError`, returned directly (not wrapped in `*BackupVerificationFailedError`: the manifest is authenticated once, up front, before PASS 1's per-shard verification loop even starts) |
 | Stored metadata and the artifact disagree about encryption (a downgrade attempt) | 400 | `INVALID_ARGUMENT` — `*BackupMetadataMismatchError` |
 
 These join, not replace, the existing mapping table in

@@ -31,7 +31,8 @@ Selective at both ends: back up specific shards, restore specific shards.
 - **A silently-minted encryption key.** Rejected: a caller that asks for the
   default (leaves `Encryption` unset) and supplies no key reference is
   refused outright (`BackupEncryptionRequiredError`), naming both ways out --
-  supply a `KeyRef` (a key-file path for the built-in provider, or a
+  supply a `KeyRef` (the bare NAME of a key file inside the server's
+  configured key directory for the built-in provider, never a path, or a
   hardware/cloud-KMS reference a go-xkms-registered provider resolves; see
   [../key-wrapping/](../key-wrapping/architecture.md)), or choose `none`
   explicitly. This package never invents key material on a caller's behalf.

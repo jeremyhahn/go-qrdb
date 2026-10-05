@@ -94,7 +94,8 @@ deprecated** — owner ruling, see
 [architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired).
 There is no inline-bytes path on `BackupOptions` or `RestoreOptions`; `KeyRef`
 is the only way to name a key, and it is always a provider-resolved
-reference (a key-file path for `"software"`), never raw bytes.
+reference (the bare NAME of a key file inside the server's configured key
+directory for `"software"`, never a path), never raw bytes.
 
 ## Invariants
 
