@@ -48,8 +48,20 @@ Selective at both ends: back up specific shards, restore specific shards.
   backup you do not have, and separating them is what makes routine
   verification possible.
 - **Restore as an atomic whole-cluster operation.** Rejected: `RestoreResult`
-  carries **per-shard errors**, so a partial restore is reported precisely
-  rather than collapsing into one failure.
+  carries **per-shard errors** for an OPERATIONAL import failure (the
+  underlying store refused a particular shard) once every shard has
+  already passed verification, so a partial import at that layer is
+  reported precisely rather than collapsing into one failure. This is
+  narrower than it first reads, and deliberately so: the VERIFICATION
+  phase -- authenticating and decrypting every target shard against the
+  backup's manifest -- is atomic across the whole restore (see
+  [../key-wrapping/architecture.md](../key-wrapping/architecture.md#envelope-format)).
+  A security review of this feature found the earlier design decrypted and
+  imported shard by shard, so a single tampered shard aborted only that
+  shard while every shard already imported before it stayed imported with
+  no top-level error; restore now verifies every target shard BEFORE
+  importing any of them, and a verification failure anywhere is one typed,
+  top-level `*BackupVerificationFailedError` with nothing imported.
 
 ## Component boundaries
 
