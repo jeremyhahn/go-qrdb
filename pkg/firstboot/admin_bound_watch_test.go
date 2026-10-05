@@ -602,3 +602,78 @@ func TestWatchForAdminBound_TransientLookupFailureRetries(t *testing.T) {
 		t.Fatalf("lookup called %d times, want at least 4 (3 failures + 1 success)", lookup.calls.Load())
 	}
 }
+
+// failsReCheckNTimesThenSucceeds is an AdminLookup whose FIRST call --
+// WatchForAdminBound's initial ID resolution -- always succeeds, and whose
+// NEXT `remain` calls -- the post-registration re-check's own retries --
+// fail with a transient fault before delegating to real. It isolates a
+// transient failure to the re-check specifically, distinct from
+// failsNTimesThenSucceeds above, which fails the initial lookup instead.
+type failsReCheckNTimesThenSucceeds struct {
+	real   AdminLookup
+	remain atomic.Int32
+	fail   error
+	calls  atomic.Int32
+}
+
+func (l *failsReCheckNTimesThenSucceeds) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
+	if n := l.calls.Add(1); n > 1 && l.remain.Add(-1) >= 0 {
+		return nil, l.fail
+	}
+	return l.real.GetUserByUsername(ctx, tenantID, username)
+}
+
+// TestWatchForAdminBound_TransientRecheckFailureRetries is the go-qrdb#591
+// re-review item B regression test: admin_bound_watch.go's post-
+// registration re-check used to swallow any error from its own lookup,
+// treating a transient read failure identically to "no bind landed in the
+// gap." The admin is already bound BEFORE WatchForAdminBound is even
+// called here, and the watcher double never delivers a single event, so
+// the ONLY way this test can pass is the re-check itself recovering from
+// the transient failure via the same retry lookupAdminRetrying already
+// gives the initial lookup -- never by falling through to an event that
+// will never arrive.
+func TestWatchForAdminBound_TransientRecheckFailureRetries(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	created, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Bind BEFORE the watch starts at all: WatchForAdminBound's own
+	// Watch() registration happens strictly after this, so an event can
+	// never deliver it -- only the re-check can.
+	if _, err := userSvc.AddCertBinding(ctx, created.ID, validSPKIThumbprintForTest(), 0); err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+
+	lookup := &failsReCheckNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup.remain.Store(3)
+	notifier := &capturingAdminBoundNotifier{}
+	done := make(chan error, 1)
+	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WatchForAdminBound returned an error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchForAdminBound never returned; a transient re-check failure must retry, " +
+			"not be silently read as \"no bind landed in the gap\"")
+	}
+	if notifier.calls.Load() != 1 {
+		t.Fatalf("AdminBound called %d times, want 1", notifier.calls.Load())
+	}
+	if lookup.calls.Load() < 5 {
+		t.Fatalf("lookup called %d times, want at least 5 (1 initial + 3 re-check failures + 1 re-check success)", lookup.calls.Load())
+	}
+}

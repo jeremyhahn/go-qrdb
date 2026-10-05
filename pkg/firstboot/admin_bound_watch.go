@@ -121,13 +121,32 @@ func WatchForAdminBound(ctx context.Context, lookup AdminLookup, watcher AdminRe
 	defer func() { _ = w.Close() }()
 
 	// Re-check: close the gap between the lookup above and this watch's
-	// own registration (see the doc comment).
-	if u2, err := lookup.GetUserByUsername(ctx, tenantid.System, adminUsername); err == nil {
+	// own registration (see the doc comment). A transient failure here
+	// (go-qrdb#591 re-review, item B) must not be read as "no bind landed
+	// in the gap" -- the whole point of this re-check is to catch a bind
+	// that already committed before the watch above was live to see it as
+	// an event, so silently swallowing the read's own failure would leave
+	// exactly that race unclosed on the one call where it actually
+	// mattered. lookupAdminRetrying applies the same bounded exponential
+	// backoff the initial lookup above already uses, rather than treating
+	// a single transient read failure as a verdict.
+	if u2, err := lookupAdminRetrying(ctx, lookup); err == nil {
 		if verifyAdminBindings(u2, time.Now().UTC()) == nil {
 			notifier.AdminBound()
 			return nil
 		}
+	} else if ctx.Err() != nil {
+		// The retry's own backoff wait ended because ctx did, not because
+		// of a verdict on the re-check itself -- an ordinary watch
+		// shutdown, same as the ctx.Done() case in the event loop below.
+		return nil
 	}
+	// Any other error here is lookupAdminRetrying's immediate,
+	// no-retry UserNotFoundError (the only other path that returns one):
+	// nothing to bind to yet, exactly like the common "not bound" case
+	// above. Proceed to the event loop rather than ending the watch --
+	// the key is already registered, and the account reappearing is not
+	// this call's concern to adjudicate.
 
 	for {
 		select {
