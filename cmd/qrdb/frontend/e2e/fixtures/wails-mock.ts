@@ -2226,7 +2226,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         BackupBinding: {
-          Create: async (req: { destination: string; compression?: string; encryption?: string; encryption_key?: string }) => {
+          Create: async (req: { destination: string; compression?: string; encryption?: string; key_provider_id?: string; key_ref?: string }) => {
             maybeReject("BackupBinding.Create");
             backupCounter += 1;
             const info = {
@@ -2258,7 +2258,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             if (!backupStore.has(id)) throw new Error(`backup "${id}" not found`);
             backupStore.delete(id);
           },
-          Restore: async (req: { backup_id: string; validate_first?: boolean; decryption_key?: string }) => {
+          Restore: async (req: { backup_id: string; validate_first?: boolean; decryption_key_ref?: string }) => {
             maybeReject("BackupBinding.Restore");
             if (!backupStore.has(req.backup_id)) throw new Error(`backup "${req.backup_id}" not found`);
             return {

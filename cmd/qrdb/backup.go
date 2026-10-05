@@ -125,7 +125,7 @@ func newBackupCreateCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("destination")
 	cmd.Flags().StringVar(&compression, "compression", "none", "Compression algorithm: none, zstd, snappy")
 	cmd.Flags().StringVar(&encryption, "encryption", "", "Encryption algorithm: aes256 (default; requires --encryption-key-file), or none to explicitly write the backup in plaintext")
-	cmd.Flags().StringVar(&encryptionKeyRef, "encryption-key-file", "", "Path to the 32-byte key file the key-wrap provider resolves (required unless --encryption is none)")
+	cmd.Flags().StringVar(&encryptionKeyRef, "encryption-key-file", "", "Name of the 32-byte key file, inside the server's configured key directory, the key-wrap provider resolves (required unless --encryption is none; a bare file name, never a path -- the server never reads a path a client supplies)")
 	cmd.Flags().StringVar(&keyProvider, "key-provider", "", "The registered keywrap.Provider to wrap this backup's DEK with (default: software)")
 
 	return cmd
@@ -275,7 +275,7 @@ func newBackupRestoreCmd() *cobra.Command {
 	cmd.Flags().StringVar(&backupID, "id", "", "Backup ID to restore from")
 	_ = cmd.MarkFlagRequired("id")
 	cmd.Flags().BoolVar(&validate, "validate", false, "Run integrity verification before restoring")
-	cmd.Flags().StringVar(&decryptionKeyRef, "decryption-key-file", "", "Overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used")
+	cmd.Flags().StringVar(&decryptionKeyRef, "decryption-key-file", "", "Name of a key file, inside the server's configured key directory, that overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used. A bare file name, never a path.")
 	cmd.Flags().StringVar(&targetShards, "shards", "", "Comma-separated shard IDs to restore (default: all shards)")
 
 	return cmd

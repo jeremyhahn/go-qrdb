@@ -46,9 +46,11 @@
   // the default to match the server's own default, matching the server
   // refusing a request that names neither a key nor an explicit "none".
   let newEncryption = $state<"aes256" | "none">("aes256");
-  // keyRef names the key-wrap provider's reference -- a key-file path on
-  // the SERVER's own node for the built-in "software" provider, never raw
-  // key bytes: there is no inline-key field on this surface any more.
+  // keyRef names the key-wrap provider's reference -- for the built-in
+  // "software" provider, the NAME of a key file inside the server's own
+  // configured key directory (never a path the client supplies, and
+  // never raw key bytes: there is no inline-key field on this surface any
+  // more).
   let newKeyRef: string = $state("");
 
   // Restore form
@@ -333,16 +335,17 @@
       </label>
       {#if newEncryption !== "none"}
         <label class="form-control w-full">
-          <div class="label"><span class="label-text">Key File Path</span></div>
+          <div class="label"><span class="label-text">Key File Name</span></div>
           <input
             type="text"
             class="input input-bordered w-full font-mono text-xs"
-            placeholder="/etc/qrdb/backup.key"
+            placeholder="backup.key"
             bind:value={newKeyRef}
           />
           <div class="label">
             <span class="label-text-alt">
-              A path on the server's own node, resolved by the key-wrap provider -- not a secret value typed here.
+              The name of a key file inside the server's own configured key directory, resolved by
+              the key-wrap provider -- not a path, and not a secret value typed here.
             </span>
           </div>
         </label>
@@ -381,7 +384,7 @@
         <span class="label-text">Validate backup integrity before restoring</span>
       </label>
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Key File Path Override (optional)</span></div>
+        <div class="label"><span class="label-text">Key File Name Override (optional)</span></div>
         <input
           type="text"
           class="input input-bordered w-full font-mono text-xs"
