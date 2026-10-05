@@ -106,6 +106,23 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// nodeCAKeyUnavailable reports whether this node's local ca-key.pem cache,
+// read from beside cfg.TLSCACert, has already been removed. cmd/qrdbd
+// deletes that cache unconditionally -- not only in Raft mode -- once the
+// cluster CA key is confirmed durable in the replicated store
+// (cmd/qrdbd/clusterca.go's confirmClusterCAPersisted; see
+// docs/certificate-authority/architecture.md's "Bootstrap crash window" and
+// the CA-signer ruling that a CA private key is never cached on disk past
+// that confirmation). That confirmation runs before the admin endpoint
+// opens, so by the time this suite's /health readiness gate has passed --
+// the only way these tests observe the server -- the cache is
+// deterministically already gone: callers do not need to guard against a
+// race with removal still in flight.
+func nodeCAKeyUnavailable(cfg *TestConfig) bool {
+	_, err := os.Stat(filepath.Join(filepath.Dir(cfg.TLSCACert), "ca-key.pem"))
+	return os.IsNotExist(err)
+}
+
 // loadCACertPool loads the test CA certificate pool from the given path.
 func loadCACertPool(caFile string) *x509.CertPool {
 	caPEM, err := os.ReadFile(caFile)

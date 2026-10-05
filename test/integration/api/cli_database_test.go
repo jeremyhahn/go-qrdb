@@ -676,8 +676,13 @@ func TestCLIMultiProtocolDatabaseUpdateProtocolPostgreSQL(t *testing.T) {
 }
 
 // TestCLIMultiProtocolDatabaseUpdateRaftFlags tests creating a database and
-// updating its Raft configuration with additional flags (shard-id, replica-id,
-// raft-address) across all protocols.
+// updating its Raft configuration with additional flags (replica-id,
+// raft-address) across all protocols. There is no --shard-id flag: the
+// cluster issues a database's shard ID once at create and it never changes
+// (docs/databases/api.md "There is no shardId"; docs/databases/engineering.md
+// "No caller-chosen IDs" -- no transport, the Go/TypeScript SDKs, or the CLI
+// carries one on a create or Raft-update request, and Manager.UpdateRaft
+// refuses any value other than the issued ID as defence in depth).
 func TestCLIMultiProtocolDatabaseUpdateRaftFlags(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -708,7 +713,6 @@ func TestCLIMultiProtocolDatabaseUpdateRaftFlags(t *testing.T) {
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"database", "update-raft", dbName,
 				"--cluster-mode", "distributed",
-				"--shard-id", "10",
 				"--replica-id", "1",
 				"--raft-address", "127.0.0.1:7001")
 			if err != nil {

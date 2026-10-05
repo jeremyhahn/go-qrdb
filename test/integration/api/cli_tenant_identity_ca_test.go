@@ -8,18 +8,13 @@ package integration
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // identityTLSProtocols is the subset of AllProtocols() where mTLS client
@@ -128,7 +123,7 @@ func parseIDResponse(t *testing.T, proto ProtocolType, what, out string) string 
 // end-to-end via ca issue.
 //
 // Step 7 (using that identity to authenticate a barrier-init/barrier-unseal
-// call) is a VERIFIED, REPRODUCIBLE PARITY GAP, not a workaround-avoidance
+// call) was a VERIFIED, REPRODUCIBLE PARITY GAP, not a workaround-avoidance
 // choice: pkg/cert.DefaultCertProvider (used by `ca issue`) mints its own
 // independent CA on first use (pkg/server/lifecycle/lifecycle.go ->
 // cert.NewDefaultProvider(certStore, infra.SealBarrier) ->
@@ -148,11 +143,29 @@ func parseIDResponse(t *testing.T, proto ProtocolType, what, out string) string 
 // mTLS listener, and every tenant-scoped barrier operation reachable ONLY
 // via that identity (tenant barrier-init/unseal, which
 // authorizeTenantBarrierOp denies to the admin/system-tenant identity, see
-// cli_tenant_barrier_test.go) is therefore UNREACHABLE end-to-end via pure
-// CLI subprocesses against a standard qrdbd deployment today. This test
-// pins that exact, current failure (a REST 401 "no client certificate in
-// TLS connection" / equivalent transport error on other protocols) rather
-// than working around it.
+// cli_tenant_barrier_test.go) is UNREACHABLE end-to-end via pure CLI
+// subprocesses against a standard qrdbd deployment today.
+//
+// The pin point moved EARLIER. Reaching step 7 at all required minting the
+// tenant administrator's Key-A-trusted bootstrap certificate (step 6) by
+// reading this node's own ca-key.pem and signing with it directly -- the
+// only way to get a certificate the mTLS listener accepts for a brand-new
+// subject. cmd/qrdbd now deletes that local key cache unconditionally
+// (every boot, not only Raft mode) once the cluster CA key is confirmed
+// durable in the replicated store (cmd/qrdbd/clusterca.go
+// confirmClusterCAPersisted; see docs/certificate-authority/architecture.md
+// "Bootstrap crash window" and the CA-signer ruling: a CA private key is
+// never returned or cached on disk past that confirmation). That
+// confirmation runs before the admin endpoint opens, so by the time this
+// suite's /health readiness gate passes -- its only way to observe the
+// server -- the cache is reliably already gone: nodeCAKeyUnavailable below
+// is deterministic here, not a race. There is therefore no supported way,
+// through any CLI or API surface, to mint a NEW Key-A-trusted identity for
+// an arbitrary subject on an already-booted node, which makes step 6 itself
+// unreachable now, not only step 7. This test pins THAT (a REST 401 "no
+// client certificate in TLS connection" / equivalent transport error is no
+// longer even reachable to observe) rather than working around it with the
+// now-closed raw-key-file shortcut.
 func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -247,70 +260,27 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 				"ca", "issue", "--username", username, "--tenant-id", tenantID, "--out", certDir)
 			assertPermissionDenied(t, proto, "system admin ca issue --tenant-id "+tenantID, stdout, stderr, err)
 
-			// The tenant's own administrator issues it, logging in with a
-			// client certificate minted from the node's CA.
-			nodeCA, err := qrdbdharness.LoadCA(cfg.TLSCACert, filepath.Join(filepath.Dir(cfg.TLSCACert), "ca-key.pem"))
-			if err != nil {
-				t.Fatalf("[%s] load the node CA: %v", proto, err)
+			// The tenant's own administrator would issue it next, logging in
+			// with a client certificate minted from the node's own CA -- but
+			// that requires this node's local ca-key.pem cache, which
+			// cmd/qrdbd deletes once the cluster CA key is confirmed durable
+			// in the replicated store (see the function doc comment). By the
+			// time the suite's readiness gate passed, that confirmation has
+			// already run, so the cache is deterministically gone here: there
+			// is no supported way to mint a Key-A-trusted certificate for a
+			// brand-new subject, which makes everything past this point --
+			// the tenant administrator's own `ca issue`, and the barrier
+			// operation it would have authenticated -- unreachable via pure
+			// CLI subprocesses against a standard qrdbd deployment today.
+			if !nodeCAKeyUnavailable(cfg) {
+				t.Fatalf("[%s] ca-key.pem is present at %s -- the local-key-cache removal this test pins on "+
+					"appears to be CLOSED (or this node never confirmed persistence); update this test to "+
+					"mint and exercise the tenant administrator's identity instead of stopping here",
+					proto, filepath.Join(filepath.Dir(cfg.TLSCACert), "ca-key.pem"))
 			}
-			adminKP, err := nodeCA.Issue(t.TempDir(), qrdbdharness.WithSubject(username, tenantID))
-			if err != nil {
-				t.Fatalf("[%s] mint the tenant administrator's client certificate: %v", proto, err)
-			}
-			stdout, stderr, err = execCLIWithProtocolAndCert(t, cfg, proto, adminKP.CertPath, adminKP.KeyPath,
-				"ca", "issue", "--username", username, "--tenant-id", tenantID, "--out", certDir)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] ca issue failed: %v", proto, err)
-			}
-			certFile := filepath.Join(certDir, "cert.pem")
-			keyFile := filepath.Join(certDir, "key.pem")
-
-			certPEM, err := os.ReadFile(certFile)
-			if err != nil {
-				t.Fatalf("[%s] ca issue did not write %s: %v", proto, certFile, err)
-			}
-			if _, err := os.Stat(keyFile); err != nil {
-				t.Fatalf("[%s] ca issue did not write %s: %v", proto, keyFile, err)
-			}
-
-			// Verify the issued certificate carries the expected identity shape:
-			// CN=username, OU=[tenantID].
-			block, _ := pem.Decode(certPEM)
-			if block == nil {
-				t.Fatalf("[%s] ca issue cert.pem is not valid PEM", proto)
-			}
-			cert, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				t.Fatalf("[%s] failed to parse issued certificate: %v", proto, err)
-			}
-			assertEqual(t, username, cert.Subject.CommonName,
-				fmt.Sprintf("[%s] issued cert CommonName should equal the requested username", proto))
-			if len(cert.Subject.OrganizationalUnit) != 1 || cert.Subject.OrganizationalUnit[0] != tenantID {
-				t.Fatalf("[%s] issued cert OU = %v, want [%s]",
-					proto, cert.Subject.OrganizationalUnit, tenantID)
-			}
-
-			// Step 7 (PARITY GAP -- see the function doc comment): attempt to use
-			// the freshly minted tenant identity to authenticate a tenant-scoped
-			// barrier operation. This is expected to FAIL today because the
-			// issuing CA (pkg/cert) is not in the node's mTLS ClientCAs trust
-			// pool. We assert the failure (not a workaround) and log the exact
-			// error so a future fix (client-CA convergence, or a documented
-			// bootstrap path to seed mtls.client_ca_files) has a concrete
-			// regression signal: this test must be revisited to assert SUCCESS
-			// once that trust gap is closed.
-			stdout, stderr, err = execCLIWithProtocolAndCert(t, cfg, proto, certFile, keyFile,
-				"tenant", "barrier-init", "--id", tenantID,
-				"--strategy", "passphrase", "--passphrase", "identity-flow-test-passphrase")
-			if err == nil {
-				t.Fatalf("[%s] tenant barrier-init unexpectedly SUCCEEDED using a ca-issue-minted identity "+
-					"(stdout: %s) -- the CA trust gap documented in this test's doc comment appears to be "+
-					"CLOSED; update this test to assert success and remove the parity-gap note", proto, stdout)
-			}
-			t.Logf("[%s] tenant barrier-init with ca-issue-minted identity failed as documented "+
-				"(CA trust gap): stdout=%q stderr=%q err=%v", proto, stdout, stderr, err)
+			t.Logf("[%s] node CA key cache is unavailable (ca-key.pem removed once persisted to the "+
+				"replicated store) -- minting the tenant administrator's Key-A-trusted identity, and the "+
+				"barrier operation it would authenticate, is unreachable on an already-booted node", proto)
 		})
 	}
 }

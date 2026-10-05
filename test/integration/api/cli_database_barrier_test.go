@@ -51,6 +51,18 @@ const databaseBarrierSharedStoreMsg = "encryption barrier requires a dedicated s
 // EnsureBarrier/RegisterBarrier).
 const databaseBarrierTenantNotFoundMsg = "tenant not found"
 
+// databaseNotFoundMsg is the exact error text produced by
+// pkg/database.NotFoundError, surfaced whenever a database name was never
+// created at all. It takes priority over databaseBarrierTenantNotFoundMsg:
+// existence of the resource is checked before the state of any sub-resource
+// (its barrier registration included), so a database `seal`/`unseal`/
+// `barrier-status` call against a name no `database create` ever produced
+// reports THIS, not the barrier-registry lookup it never reaches. See
+// docs/databases/api.md's "Unknown database, or another tenant's database"
+// row (404 NOT_FOUND), which already documents this as the general rule for
+// every data-plane call.
+const databaseNotFoundMsg = "database not found"
+
 // TestCLIMultiProtocolDatabaseBarrierEnableThenStatus creates a database and
 // attempts to enable its barrier via `database update-barrier --enabled`,
 // confirming the request fails closed with SharedStoreBarrierUnsupportedError
@@ -191,9 +203,12 @@ func TestCLIMultiProtocolDatabaseUnsealWrongSecret(t *testing.T) {
 }
 
 // TestCLIMultiProtocolDatabaseSealNonexistentDatabase verifies `database
-// seal` on a database name that was never created fails with the
-// tenant-not-found error (the barrier manager is configured, but nothing was
-// ever registered for a name that was never even created).
+// seal` on a database name that was never created fails with
+// databaseNotFoundMsg, not databaseBarrierTenantNotFoundMsg: existence of
+// the database itself is checked before its barrier registration is ever
+// looked up, so a name no `database create` produced is NotFoundError, the
+// same as any other data-plane call against it (docs/databases/api.md's
+// "Unknown database, or another tenant's database" row).
 func TestCLIMultiProtocolDatabaseSealNonexistentDatabase(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -212,8 +227,8 @@ func TestCLIMultiProtocolDatabaseSealNonexistentDatabase(t *testing.T) {
 					proto, stdout)
 			}
 			output := strings.ToLower(stdout + stderr + err.Error())
-			assertContains(t, output, databaseBarrierTenantNotFoundMsg,
-				fmt.Sprintf("[%s] database seal on nonexistent database should report the barrier was never registered", proto))
+			assertContains(t, output, databaseNotFoundMsg,
+				fmt.Sprintf("[%s] database seal on a nonexistent database should report the database itself is not found", proto))
 		})
 	}
 }

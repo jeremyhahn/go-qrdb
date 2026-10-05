@@ -478,6 +478,16 @@ DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
 TAG_FLAG         := $(if $(strip $(BUILD_TAGS)),-tags "$(strip $(BUILD_TAGS))",)
 DESKTOP_TAG_FLAG := -tags "$(strip $(DESKTOP_TAGS))"
 
+# QRDB_BUILD_TAGS carries BUILD_TAGS into test/integration/api/docker-compose.yml's
+# build args, through the same environment-PASSTHROUGH mechanism as the
+# scanner-version pins ($(SCANNER_BUILD_ARGS) below): exported here, read
+# there by name with no value given, so compose fills it from THIS process's
+# environment when make runs it and leaves it to .devcontainer/Dockerfile's
+# own ARG default when nothing exported it (a bare `docker compose build`,
+# #302). See .devcontainer/Dockerfile's QRDB_BUILD_TAGS comment for what
+# drifting the two apart cost (go-qrdb#555).
+export QRDB_BUILD_TAGS := $(strip $(BUILD_TAGS))
+
 # Package paths
 PKG_CONFIG         := ./pkg/config/...
 PKG_DAO            := ./pkg/dao/...
@@ -1010,12 +1020,23 @@ INT_IMAGE   := go-qrdb-dev:latest
 # shared $(stage-gomodauth) prelude near the top of this file -- every other
 # entrypoint that builds this Dockerfile uses the same one, which is what
 # stops the two from disagreeing (#302).
+#
+# --build-arg QRDB_BUILD_TAGS passes BUILD_TAGS -- the same feature set
+# `make test`/`make coverage` compile, `make print-build-tags` prints -- so
+# the qrdbd and qrdb binaries this image bakes always carry every CLI
+# command and flag the Makefile's own feature flags enable (go-qrdb#555: a
+# Dockerfile ARG left at a hardcoded, narrower default silently built a CLI
+# that could not drive the server it was tested against). The ARG's default
+# in .devcontainer/Dockerfile is a second copy for a bare `docker compose
+# build` that skips make (#302); docker_build_tags_test.go
+# (test/buildgates) keeps the two from drifting apart.
 .PHONY: integration-image
 integration-image:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
 	  --secret id=gomodauth,env=GOMODAUTH \
 	  $(SCANNER_BUILD_ARGS) \
+	  --build-arg QRDB_BUILD_TAGS="$(strip $(BUILD_TAGS))" \
 	  --target integration \
 	  -f .devcontainer/Dockerfile \
 	  -t $(INT_IMAGE) .

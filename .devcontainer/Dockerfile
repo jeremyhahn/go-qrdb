@@ -339,6 +339,31 @@ RUN --mount=type=secret,id=gomodauth \
 FROM deps AS integration
 COPY . .
 
+# QRDB_BUILD_TAGS is a DELIBERATE second copy of the Makefile's BUILD_TAGS
+# (go-qrdb#555): a Dockerfile cannot read a make variable, and #302 requires
+# a build that goes around make -- VS Code "Reopen in Container", a bare
+# `docker compose build` -- keep working, the same reasoning
+# check-tool-versions.sh's header gives for the scanner-version ARGs just
+# above. `make integration-image` overrides this default with
+# `--build-arg QRDB_BUILD_TAGS="$(BUILD_TAGS)"`, so a `make`-driven build
+# always gets the Makefile's own value; this default is what a build that
+# skips `make` falls back to.
+#
+# WHAT DRIFT COST HERE. Before this ARG existed, both `go build -tags` lines
+# below spelled out a literal, narrower list ('codec_json raft qrdb_ts
+# qrdb_vector' for qrdbd, 'qrdb_ts qrdb_vector' for qrdb) that nothing kept in
+# step with BUILD_TAGS. The standalone integration stage's qrdbd and qrdb
+# binaries came up missing qrdb_sql, qrdb_mysql, qrdb_pgsql, qrdb_etcd,
+# qrdb_embedded and all four codec_* tags, so every CLI command and flag
+# those tags gate (`database create --sql-concurrency`, `--etcd`, `--mysql`,
+# `--postgresql`, ...) failed with cobra's "unknown flag" against a server
+# that itself had never compiled the corresponding handler in either --
+# fourteen test failures (#555) that all traced to this one pair of literals.
+# docker_build_tags_test.go (test/buildgates) asserts this ARG's default
+# equals `make -s print-build-tags`'s output, so the two cannot drift apart
+# silently again.
+ARG QRDB_BUILD_TAGS="codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+
 # Build the binaries the stack runs, at image build time rather than at
 # container start.
 #
@@ -350,14 +375,18 @@ COPY . .
 # container start a server start, so the health window measures what it is
 # supposed to measure.
 #
-# The feature tags match what the compose entrypoints used, and CGO is
-# required -- go-mysql-server's internal/regex has no pure-Go build.
+# qrdbd and qrdb share QRDB_BUILD_TAGS: the CLI's own feature-gated commands
+# and flags (database create --sql-concurrency/--etcd/--mysql/--postgresql,
+# ...) must match what the server it drives was built with, or the CLI
+# either offers a flag the server never compiled a handler for or refuses one
+# the server supports. CGO is required -- go-mysql-server's internal/regex
+# has no pure-Go build.
 RUN CGO_ENABLED=1 go build -buildvcs=false \
-      -tags 'codec_json raft qrdb_ts qrdb_vector' \
+      -tags "${QRDB_BUILD_TAGS}" \
       -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
       -o /app/build/bin/qrdbd ./cmd/qrdbd \
  && CGO_ENABLED=1 go build -buildvcs=false \
-      -tags 'qrdb_ts qrdb_vector' \
+      -tags "${QRDB_BUILD_TAGS}" \
       -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
       -o /app/build/bin/qrdb ./cmd/qrdb
 

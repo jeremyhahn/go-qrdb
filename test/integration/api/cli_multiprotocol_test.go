@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -445,7 +446,16 @@ func TestCLIMultiProtocolKVRange(t *testing.T) {
 	}
 }
 
-// TestCLIMultiProtocolKVCompact tests the kv compact command across all protocols.
+// TestCLIMultiProtocolKVCompact tests the kv compact command across all
+// protocols. Compact is monotonic (service.MVCCKVService.CompactPrefix's doc
+// comment: a revision at or below the database's floor is refused by the
+// state machine, *RevisionCompactedError), and every subtest here shares one
+// long-lived server, so compacting at a revision fixed in the source would
+// only ever succeed for whichever subtest happened to run first -- every
+// later one would find the floor already at or past it. Each subtest
+// instead puts a key to advance the revision counter and reads `kv
+// revision` immediately before compacting, so its target is always ahead of
+// the current floor.
 func TestCLIMultiProtocolKVCompact(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -456,7 +466,29 @@ func TestCLIMultiProtocolKVCompact(t *testing.T) {
 				t.Fatalf("server not available for protocol %s", proto)
 			}
 
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "compact", "--revision", "1")
+			key := fmt.Sprintf("kvcompact-%s-%d", proto, testTimestamp())
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", key) //nolint:errcheck
+			})
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "kv-compact-value")
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] kv put failed: %v", proto, err)
+			}
+
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "revision")
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] kv revision failed: %v", proto, err)
+			}
+			revision := strings.TrimSpace(stdout)
+			if _, err := strconv.ParseInt(revision, 10, 64); err != nil {
+				t.Fatalf("[%s] kv revision did not return an integer: %q", proto, revision)
+			}
+
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "compact", "--revision", revision)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)

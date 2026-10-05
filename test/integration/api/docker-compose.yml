@@ -12,22 +12,27 @@
 # port. Nothing referenced those names: the tests address the servers by compose
 # SERVICE name (https://qrdbd:63002). The Makefile supplies a per-run project
 # name so containers, networks and volumes are namespaced together.
-# The analyser pins .devcontainer/Dockerfile bakes in (#322). These three
-# services build that same Dockerfile into the same `go-qrdb-dev:latest` tag the
-# devcontainer uses, so they take the same args, or an integration build and a
-# gate build would bake different analysers into one tag.
+# The analyser pins .devcontainer/Dockerfile bakes in (#322), plus
+# QRDB_BUILD_TAGS (go-qrdb#555), the feature-tag set its qrdbd/qrdb builds
+# compile with. These three services build that same Dockerfile into the
+# same `go-qrdb-dev:latest` tag the devcontainer uses, so they take the same
+# args, or an integration build and a gate build would bake different
+# analysers -- or different CLI/server feature sets -- into one tag.
 #
 # THE KEYS CARRY NO VALUE ON PURPOSE -- compose's environment-passthrough form,
 # which takes the value from the environment when set and OMITS the arg when it
 # is not, letting the Dockerfile's ARG default apply. `${VAR}` would pass an
-# empty string instead and trip the Dockerfile's guard. The reasoning, and the
-# measurement behind it, is in .devcontainer/docker-compose.yml next to the same
-# block; the Makefile `export`s the variables so `make` builds win.
+# empty string instead and trip the Dockerfile's guard (QRDB_BUILD_TAGS has
+# none, but an empty string would still build qrdbd/qrdb with no feature tags
+# at all, which is just as wrong). The reasoning, and the measurement behind
+# it, is in .devcontainer/docker-compose.yml next to the same block; the
+# Makefile `export`s the variables so `make` builds win.
 x-scanner-pins: &scanner-pins
   GOLANGCI_LINT_VERSION:
   GOSEC_VERSION:
   GOVULNCHECK_VERSION:
   TRIVY_VERSION:
+  QRDB_BUILD_TAGS:
 
 services:
   # QRDB server with all protocols enabled.

@@ -24,7 +24,7 @@ type tenantAdminIdentity struct {
 }
 
 // newTenantAdminIdentity creates tenantID, a role in it carrying perms, and a
-// user holding that role, then mints the user's client certificate
+// user holding that role, then tries to mint the user's client certificate
 // (CN=username, OU=tenantID) from the node's own CA -- the CA the mTLS
 // listener trusts, read from beside cfg.TLSCACert -- so the CLI can act AS
 // that tenant's administrator.
@@ -33,7 +33,20 @@ type tenantAdminIdentity struct {
 // ScopeSelfStrict), so a test that needs a tenant's certificate operations
 // performs them as the tenant's own administrator, which is what this builds.
 // The harness admin only provisions the tenant, role and user.
-func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, tenantID string, perms ...string) *tenantAdminIdentity {
+//
+// Minting that administrator's certificate needs this node's local
+// ca-key.pem cache, and cmd/qrdbd deletes that cache unconditionally once
+// the cluster CA key is confirmed durable in the replicated store (see
+// nodeCAKeyUnavailable). That confirmation runs before the admin endpoint
+// opens, so the cache is deterministically already gone by the time this
+// suite's readiness gate passes: there is no supported way, through any CLI
+// or API surface, to mint a NEW Key-A-trusted identity for an arbitrary
+// subject on an already-booted node. The ok return reports whether the
+// identity was actually minted; a caller that gets false has still
+// provisioned the tenant, role and user (reachable, and asserted here), but
+// must stop before anything that needs to act as that tenant's
+// administrator -- see TestCLIMultiProtocolCertsGenerateTenant.
+func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, tenantID string, perms ...string) (*tenantAdminIdentity, bool) {
 	t.Helper()
 	ts := testTimestamp()
 	username := fmt.Sprintf("tadmin-%s-%d", proto, ts)
@@ -67,6 +80,12 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	})
 	run("roles assign", "roles", "assign", "--user", userID, "--role", roleID)
 
+	if nodeCAKeyUnavailable(cfg) {
+		t.Logf("[%s] node CA key cache is unavailable (ca-key.pem removed once persisted to the "+
+			"replicated store) -- cannot mint %s/%s's Key-A-trusted client certificate", proto, tenantID, username)
+		return nil, false
+	}
+
 	caDir := filepath.Dir(cfg.TLSCACert)
 	ca, err := qrdbdharness.LoadCA(cfg.TLSCACert, filepath.Join(caDir, "ca-key.pem"))
 	if err != nil {
@@ -76,7 +95,7 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	if err != nil {
 		t.Fatalf("[%s] mint %s/%s's client certificate: %v", proto, tenantID, username, err)
 	}
-	return &tenantAdminIdentity{tenantID: tenantID, username: username, certFile: kp.CertPath, keyFile: kp.KeyPath}
+	return &tenantAdminIdentity{tenantID: tenantID, username: username, certFile: kp.CertPath, keyFile: kp.KeyPath}, true
 }
 
 // exec runs the CLI as this tenant administrator.

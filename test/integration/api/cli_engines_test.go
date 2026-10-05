@@ -7,6 +7,7 @@ package integration
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -166,8 +167,17 @@ func TestCLIEngineMVCC(t *testing.T) {
 			assertContains(t, output, key,
 				fmt.Sprintf("[%s] kv range should contain the key", proto))
 
-			// Step 5: Compact at revision 1.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "compact", "--revision", "1")
+			// Step 5: Compact at the revision this subtest's put advanced the
+			// store to. Compact is monotonic (service.MVCCKVService's
+			// RevisionCompactedError), and every protocol subtest shares one
+			// long-lived server, so a revision fixed in the source would only
+			// ever succeed for whichever subtest ran first; revOutput (read
+			// in step 2, after this subtest's own put, with no further
+			// mutation since) is always ahead of the current floor.
+			if _, err := strconv.ParseInt(revOutput, 10, 64); err != nil {
+				t.Fatalf("[%s] kv revision did not return an integer: %q", proto, revOutput)
+			}
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "compact", "--revision", revOutput)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
