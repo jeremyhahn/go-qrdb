@@ -88,10 +88,11 @@ func CheckKeyLen(key []byte) error {
 // len(payload)-2-that width, so a keyLen that would leave the trailing field
 // truncated is refused here rather than discovered by a panic downstream.
 //
-// This is the ONE place every 2-byte-prefixed key decoder in this package,
-// and every caller outside it (pkg/statemachine, pkg/engine, pkg/store),
-// must get the length through — never by computing "N + keyLen" while
-// keyLen is still the uint16 encoding.Binary.Uint16 returned. That sum is
+// This is the shared primitive for that decode, used by this package's own
+// DecodeMVCCPut and DecodeMVCCDelete, and directly by
+// pkg/statemachine's decodeKeyValuePayload and pkg/engine's
+// decodeBaseKVPut/handleBaseKVDelete — never by computing "N + keyLen" while
+// keyLen is still the uint16 encoding/binary.Uint16 returned. That sum is
 // done in 16-bit arithmetic and wraps for a key within a few bytes of 65535,
 // which lets a bounds check built the same way -- or the slice expression
 // derived from it -- silently accept, or silently misuse, the wrapped,
@@ -100,9 +101,11 @@ func CheckKeyLen(key []byte) error {
 // (halting Raft `Update` on every replica that applies the entry); on
 // another, both the check and the slice stay in bounds but land on the
 // wrong offset, so the stored value is silently corrupted instead.
-// decodeLen -- this function's unexported counterpart for the package's
-// 4-byte-prefixed fields -- compares in uint64 for the identical reason;
-// this is its 2-byte sibling.
+// pkg/store never decodes a 2-byte key-length prefix of its own; it
+// reaches this function only indirectly, through DecodeMVCCPut/
+// DecodeMVCCDelete. decodeLen -- this function's unexported counterpart for
+// the package's 4-byte-prefixed fields -- compares in uint64 for the
+// identical reason; this is its 2-byte sibling.
 func DecodeKeyLen(payload []byte, remaining int, reason string) (keyLen int, err error) {
 	if len(payload) < 2 {
 		return 0, &InvalidCommandError{Reason: reason + ": payload too short"}

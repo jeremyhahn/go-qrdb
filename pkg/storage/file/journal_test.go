@@ -220,3 +220,57 @@ func TestSet_LeavesNoTempFiles(t *testing.T) {
 		t.Fatal(walkErr)
 	}
 }
+
+// TestWriteJournal_CreateTempErrorPropagates covers writeJournal's first
+// error path directly: the engine root cannot be written into.
+func TestWriteJournal_CreateTempErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	dir := t.TempDir()
+	e, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	if err := os.Chmod(dir, 0o500); err != nil { // r-x: no write
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err = e.writeJournal([]byte("x"))
+	var jwe *JournalWriteError
+	if !errors.As(err, &jwe) {
+		t.Fatalf("writeJournal = %v, want *JournalWriteError", err)
+	}
+}
+
+// TestClearJournal_RemoveErrorPropagates covers clearJournal's error path:
+// a committed journal is present, but the engine root denies write, so
+// removing it fails for a reason other than "already gone".
+func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	dir := t.TempDir()
+	e, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	if err := os.WriteFile(filepath.Join(dir, journalFileName), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil { // r-x: no write
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err = e.clearJournal()
+	var jwe *JournalWriteError
+	if !errors.As(err, &jwe) {
+		t.Fatalf("clearJournal = %v, want *JournalWriteError", err)
+	}
+}

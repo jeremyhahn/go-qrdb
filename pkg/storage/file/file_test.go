@@ -16,6 +16,7 @@ package file
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1270,5 +1271,425 @@ func TestFileEngine_SnapshotIteratorReverse(t *testing.T) {
 	expected := []string{"c", "b", "a"}
 	if len(keys) != len(expected) {
 		t.Fatalf("snapshot reverse iterator: got %v, want %v", keys, expected)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#592 coverage: error paths in mkdirAllDurable, writeFormatMarker,
+// Set's fsync.Rename, and cleanupTempSetFiles.
+// ---------------------------------------------------------------------------
+
+// TestMkdirAllDurable_StatErrorPropagates covers the branch where os.Stat
+// fails with something other than ENOENT (a real fault, not "does not
+// exist yet"): denying execute on the PARENT makes Stat on the child fail
+// with a permission error.
+func TestMkdirAllDurable_StatErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	base := t.TempDir()
+	parent := filepath.Join(base, "parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	err := mkdirAllDurable(filepath.Join(parent, "child"))
+	if err == nil {
+		t.Fatal("expected a permission error, got nil")
+	}
+	if os.IsNotExist(err) {
+		t.Fatalf("expected a permission error, got IsNotExist: %v", err)
+	}
+}
+
+// TestMkdirAllDurable_MkdirErrorPropagates covers os.Mkdir failing with an
+// error OTHER than IsExist: the parent exists (so mkdirAllDurable's
+// recursive call for it takes the fast "already exists" path) but denies
+// write, so creating the new child directory itself fails.
+func TestMkdirAllDurable_MkdirErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	base := t.TempDir()
+	parent := filepath.Join(base, "parent")
+	if err := os.Mkdir(parent, 0o500); err != nil { // r-x: no write
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	err := mkdirAllDurable(filepath.Join(parent, "child"))
+	if err == nil {
+		t.Fatal("expected a permission error creating the child, got nil")
+	}
+	if os.IsExist(err) {
+		t.Fatalf("expected a permission error, got IsExist: %v", err)
+	}
+}
+
+// TestWriteFormatMarker_CreateTempErrorPropagates covers writeFormatMarker's
+// own first error path: a directory New finds empty but cannot write into.
+func TestWriteFormatMarker_CreateTempErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil { // r-x: no write
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("expected a permission error writing the format marker, got nil")
+	}
+}
+
+// TestSet_RenameErrorPropagates covers fsync.Rename failing: the record's
+// target path is occupied by a non-empty directory, so the rename that
+// publishes the temp file cannot succeed.
+func TestSet_RenameErrorPropagates(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	key := []byte("blocked-by-a-directory")
+	_, recordPath := e.recordPaths(key)
+	if err := os.MkdirAll(recordPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A non-empty directory at the target makes the rename fail; an empty
+	// one could rename-over on some platforms.
+	if err := os.WriteFile(filepath.Join(recordPath, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.Set(key, []byte("v")); err == nil {
+		t.Fatal("expected Set to fail renaming onto a non-empty directory")
+	}
+}
+
+// TestCleanupTempSetFiles_RemovesStrayTempFiles proves New's own crash-
+// recovery cleanup actually removes a ".tmp-set-*" leftover under a shard
+// directory, not merely that it compiles.
+func TestCleanupTempSetFiles_RemovesStrayTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	e, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shardDir, _ := e.recordPaths([]byte("k"))
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(shardDir, ".tmp-set-stray")
+	if err := os.WriteFile(stray, []byte("leftover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	e2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = e2.Close() }()
+	if _, statErr := os.Stat(stray); !os.IsNotExist(statErr) {
+		t.Fatalf("stray temp file not removed at Open: stat = %v", statErr)
+	}
+}
+
+// TestCleanupTempSetFiles_RemoveErrorPropagates covers the branch where
+// os.Remove itself fails for a reason other than the file already being
+// gone: the shard directory denies write, so removing the stray temp file
+// inside it fails.
+func TestCleanupTempSetFiles_RemoveErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	shardDir, _ := e.recordPaths([]byte("k"))
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(shardDir, ".tmp-set-stray")
+	if err := os.WriteFile(stray, []byte("leftover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shardDir, 0o500); err != nil { // r-x: no write
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+
+	if err := e.cleanupTempSetFiles(); err == nil {
+		t.Fatal("expected an error removing a temp file in a read-only directory")
+	}
+}
+
+// TestCleanupTempSetFiles_WalkErrorPropagates covers the branch where the
+// walk itself fails for a reason other than ENOENT: a shard directory this
+// engine cannot read at all.
+func TestCleanupTempSetFiles_WalkErrorPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	shardDir, _ := e.recordPaths([]byte("k"))
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shardDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+
+	if err := e.cleanupTempSetFiles(); err == nil {
+		t.Fatal("expected a permission error reading the shard directory")
+	}
+}
+
+// TestList_WalkErrorOnAShardDirectoryPropagates covers List's non-ENOENT
+// walk-error branch distinctly from TestList_WalkError, which removes the
+// engine's own root: here the root is intact and a single shard directory
+// is unreadable.
+func TestList_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	shardDir, _ := e.recordPaths([]byte("k"))
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shardDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+
+	if _, err := e.List(nil); err == nil {
+		t.Fatal("expected a permission error reading the shard directory")
+	}
+}
+
+// TestIterator_WalkErrorOnAShardDirectoryPropagates is List's test above,
+// for the iterator's own walk.
+func TestIterator_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	shardDir, _ := e.recordPaths([]byte("k"))
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shardDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+
+	it := e.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+	for it.SeekToFirst(); it.Valid(); it.Next() {
+	}
+	if err := it.Error(); err == nil {
+		t.Fatal("expected a permission error reading the shard directory")
+	}
+}
+
+// TestSync_ClosedEngine covers Sync's own closed-engine check, otherwise
+// only exercised on an open engine elsewhere.
+func TestSync_ClosedEngine(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var closedErr *storage.ClosedError
+	if err := e.Sync(); !errors.As(err, &closedErr) {
+		t.Fatalf("Sync on a closed engine = %v, want *storage.ClosedError", err)
+	}
+}
+
+// TestIsHashFileName exercises every branch directly: the right length and
+// alphabet, the wrong length, and a disqualifying character at every
+// position the loop can reach.
+func TestIsHashFileName(t *testing.T) {
+	validHash := make([]byte, hashHexLen)
+	for i := range validHash {
+		validHash[i] = "0123456789abcdef"[i%16]
+	}
+	if !isHashFileName(string(validHash)) {
+		t.Errorf("isHashFileName(%q) = false, want true", validHash)
+	}
+	if isHashFileName("") {
+		t.Error("isHashFileName(\"\") = true, want false")
+	}
+	if isHashFileName(string(validHash[:len(validHash)-1])) {
+		t.Error("isHashFileName(too short) = true, want false")
+	}
+	if isHashFileName(string(validHash) + "0") {
+		t.Error("isHashFileName(too long) = true, want false")
+	}
+	upper := append([]byte(nil), validHash...)
+	upper[0] = 'A'
+	if isHashFileName(string(upper)) {
+		t.Error("isHashFileName(uppercase hex) = true, want false")
+	}
+	nonHex := append([]byte(nil), validHash...)
+	nonHex[len(nonHex)-1] = 'g'
+	if isHashFileName(string(nonHex)) {
+		t.Error("isHashFileName(non-hex tail) = true, want false")
+	}
+}
+
+// TestIsShardDirName is isHashFileName's test, for the 2-character shard
+// directory name shape.
+func TestIsShardDirName(t *testing.T) {
+	cases := map[string]bool{
+		"ab":         true,
+		"00":         true,
+		"ff":         true,
+		"":           false,
+		"a":          false,
+		"abc":        false,
+		"AB":         false,
+		"lost+found": false,
+		"g0":         false,
+		"0g":         false,
+	}
+	for name, want := range cases {
+		if got := isShardDirName(name); got != want {
+			t.Errorf("isShardDirName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestDecodeRecord_CorruptRecords exercises decodeRecord's two corruption
+// branches directly, rather than only through RecordCorruptError.Error().
+func TestDecodeRecord_CorruptRecords(t *testing.T) {
+	t.Run("shorter than the header", func(t *testing.T) {
+		_, _, err := decodeRecord("/some/path", []byte{0x00, 0x00})
+		var rce *RecordCorruptError
+		if !errors.As(err, &rce) {
+			t.Fatalf("decodeRecord = %v, want *RecordCorruptError", err)
+		}
+	})
+	t.Run("declared key length exceeds the record", func(t *testing.T) {
+		record := make([]byte, keyHeaderLen+2)
+		binary.BigEndian.PutUint32(record[0:keyHeaderLen], 999)
+		_, _, err := decodeRecord("/some/path", record)
+		var rce *RecordCorruptError
+		if !errors.As(err, &rce) {
+			t.Fatalf("decodeRecord = %v, want *RecordCorruptError", err)
+		}
+	})
+	t.Run("well-formed record round-trips", func(t *testing.T) {
+		record := encodeRecord([]byte("key"), []byte("value"))
+		key, value, err := decodeRecord("/some/path", record)
+		if err != nil {
+			t.Fatalf("decodeRecord: %v", err)
+		}
+		if string(key) != "key" || string(value) != "value" {
+			t.Fatalf("decodeRecord = (%q, %q), want (\"key\", \"value\")", key, value)
+		}
+	})
+}
+
+// TestGet_KeyMismatchError covers the branch where a record's stored key
+// does not match the key whose hash named the file -- corruption, not a
+// realistic SHA-256 collision -- exercised through Get itself rather than
+// only through KeyMismatchError.Error().
+func TestGet_KeyMismatchError(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	key := []byte("a")
+	if err := e.Set(key, []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	_, path := e.recordPaths(key)
+	corrupt := encodeRecord([]byte("not-a"), []byte("v"))
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = e.Get(key)
+	var kme *KeyMismatchError
+	if !errors.As(err, &kme) {
+		t.Fatalf("Get = %v, want *KeyMismatchError", err)
+	}
+}
+
+// TestEnsureFormatMarker_ReadFileErrorPropagates covers the "neither nil
+// nor IsNotExist" branch of os.ReadFile(markerPath): the marker path is
+// occupied by a directory, so reading it as a file fails for a reason
+// other than absence.
+func TestEnsureFormatMarker_ReadFileErrorPropagates(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, formatMarkerFileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(dir)
+	if err == nil {
+		t.Fatal("expected an error reading a format marker occupied by a directory")
+	}
+}
+
+// TestSnapshot_PropagatesIteratorError covers newSnapshot's error branch:
+// a load the underlying iterator could not complete must fail the
+// Snapshot call, not return a silently truncated snapshot (go-qrdb#592 F2).
+func TestSnapshot_PropagatesIteratorError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission denial cannot be exercised")
+	}
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	shardDir, _ := e.recordPaths([]byte("k"))
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shardDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+
+	if _, err := e.Snapshot(); err == nil {
+		t.Fatal("expected Snapshot to propagate the permission error")
 	}
 }

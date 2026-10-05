@@ -253,15 +253,15 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   `concurrent.go`, `fast.go`, `putifabsent.go` — now one shared
   `decodeKeyValuePayload` instead of five copies of the defect), and in
   `pkg/engine/mvcc_engine.go`'s own base-KV handlers — rather than each
-  computing the sum in the field's own width. The new Apply-time
-  key-length refusal this introduces in `validateClientKey` is gated behind
-  a cluster feature (`featuregate.KeyLengthCap`, following the
-  `guarded-writes` pattern): without a gate wired, or before the cluster
-  activates it, the check is enforced unconditionally (correct for a
-  deployment that is known to run one binary version everywhere); once
-  activated, every replica enforces it identically, so a rolling upgrade
-  can never have a new replica refuse a key an old peer in the same group
-  just applied.
+  computing the sum in the field's own width. `validateClientKey` enforces
+  no length cap at Apply at all, by design: Apply must be a pure,
+  deterministic function of the committed log, and the cap is a
+  proposal-time policy (`protocol.CheckKeyLen` inside
+  `EncodeOp`/`EncodeCompare`, and every other encoder's own structural
+  frame width) rather than a replica-local decision that could diverge
+  two replicas running different binary versions during a rolling
+  upgrade. A key already committed to the log, however long, applies
+  identically on every replica and every `sm_type`, including on replay.
 - **A concurrent `Set` or `Delete` to an unrelated key could abort an
   iterator scan or `List` entirely, or make `Snapshot` return a silently
   truncated result with a nil error, on `raft.sm_storage: file`
@@ -276,10 +276,20 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   if it were whole.
 - **The file engine's format-marker check refused to initialize a mount
   root whose only content was `lost+found`**, the directory `mkfs`/`fsck`
-  creates at the root of a freshly formatted filesystem — never written by
-  any layout this engine has had, and never meaningful to it. `New` now
-  excludes `lost+found` when deciding whether a directory is fresh, while
-  still refusing one that also holds genuine old-layout content.
+  creates at the root of a freshly formatted filesystem (root-owned, mode
+  `0700` by convention) — never written by any layout this engine has had,
+  and never meaningful to it. `New` excludes `lost+found` when deciding
+  whether a directory is fresh, while still refusing one that also holds
+  genuine old-layout content. A first fix stopped there and still failed:
+  `cleanupTempSetFiles`, `List`, and the iterator (so `Snapshot`, which
+  loads through it) all walked the tree with `filepath.Walk` rooted at the
+  engine's own root, and `filepath.Walk` reads a directory's contents
+  BEFORE it ever calls back for that directory — too late for the callback
+  to skip a root-level entry it cannot read. All three now list the root
+  with `os.ReadDir` and walk `filepath.Walk` only from entries that already
+  look like one of the engine's own two shard-directory levels
+  (`isShardDirName`), so a genuinely unreadable `lost+found` is never
+  opened at all, not merely tolerated after the fact.
 - **`pkg/storage/file`'s `New` is also what backs `BackendFile` databases,
   every database's barrier-metadata store regardless of that database's
   own configured backend, partitions, and the repository `qrdbd restore
@@ -295,11 +305,16 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   durably published to ITS parent: `mkdirAllDurable`'s "already exists" and
   "lost the creation race" paths now fsync the parent unconditionally
   rather than trust that the directory's actual creator has already done
-  so. `New` also removes any `.tmp-set-*` crash leftovers from an
-  interrupted `Set` under the engine root at Open, and the CHANGELOG and
-  `docs/storage-engines` wording that described this layout change as
-  replacing two PRIOR RELEASES is corrected: the intermediate
-  one-directory-per-key design never shipped — it existed only between
+  so. Because that makes every `Set` pay a parent fsync even for a shard
+  directory this `Engine` instance already confirmed durable, `Set` now
+  checks a per-instance, concurrency-safe cache (`ensureShardDirDurable`)
+  first and skips `mkdirAllDurable` entirely on a hit, so only the FIRST
+  `Set` into any given shard directory pays the cost. `New` also removes
+  any `.tmp-set-*` crash leftovers from an interrupted `Set` under the
+  engine root at Open, and the CHANGELOG and `docs/storage-engines` wording
+  that described this layout change as replacing two PRIOR RELEASES is
+  corrected: the intermediate one-directory-per-key design never shipped —
+  it existed only between
   commits of this same unreleased change.
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled

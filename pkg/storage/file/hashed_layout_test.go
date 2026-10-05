@@ -446,3 +446,232 @@ func TestNew_LostAndFoundDoesNotMaskOldLayoutContent(t *testing.T) {
 		t.Fatalf("New(dir with lost+found AND old-layout content) = %v, want *FormatMarkerMissingError", err)
 	}
 }
+
+// TestWalks_NeverDescendIntoAnUnreadableRootEntry is the real-world shape
+// F3 is about: lost+found on a genuine mount is root-owned, mode 0700, so a
+// non-root process cannot even LIST its contents, let alone read them.
+// ensureFormatMarker's os.ReadDir(e.dir) only lists the ROOT (never
+// descends), so it was never at risk; New's OWN cleanupTempSetFiles, List,
+// and the iterator (and so Snapshot, which loads through the same
+// iterator) all walk the tree with filepath.Walk and must never try to
+// open this directory's contents at all -- SkipDir on sight, not a
+// permission error caught and ignored after the fact. Denies this
+// process's own access (mode 0) rather than relying on root ownership,
+// which a non-root test cannot create; the remote gate (per the task that
+// added this test) runs it as a non-root user for the identical reason a
+// real mount would deny a non-root qrdbd.
+func TestWalks_NeverDescendIntoAnUnreadableRootEntry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a 0-mode directory is still readable by root, so this test cannot exercise the permission denial it is about")
+	}
+
+	dir := t.TempDir()
+	lostAndFound := filepath.Join(dir, "lost+found")
+	if err := os.Mkdir(lostAndFound, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lostAndFound, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lostAndFound, 0o700) })
+
+	// New itself must succeed: it runs cleanupTempSetFiles, which walks the
+	// tree exactly like List and the iterator do.
+	e, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = e.Close() }()
+
+	if err := e.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	keys, err := e.List(nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 1 || string(keys[0]) != "k" {
+		t.Fatalf("List = %q, want [\"k\"]", keys)
+	}
+
+	it := e.NewIterator(nil)
+	n := 0
+	for it.SeekToFirst(); it.Valid(); it.Next() {
+		n++
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterator error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("iterator saw %d entries, want 1", n)
+	}
+	_ = it.Close()
+
+	snap, err := e.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+	v, err := snap.Get([]byte("k"))
+	if err != nil || string(v) != "v" {
+		t.Fatalf("Snapshot.Get = (%q, %v), want (\"v\", nil)", v, err)
+	}
+
+	// Reopening over the same, still-unreadable lost+found must also
+	// succeed: New's own cleanupTempSetFiles walk is exercised again.
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	e2, err := New(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	_ = e2.Close()
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#592 performance: a shard directory confirmed durable once must
+// not pay mkdirAllDurable's parent fsync again on every later Set into it.
+// ---------------------------------------------------------------------------
+
+// TestEnsureShardDirDurable_CachesPerDirectory pins the mechanism directly:
+// the first Set into a shard directory records it in durableShardDirs, a
+// repeat Set to the SAME key (same shard directory) is a cache hit and
+// leaves the cache unchanged, and a key that hashes into a DIFFERENT shard
+// directory gets its own, separate entry.
+func TestEnsureShardDirDurable_CachesPerDirectory(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	countCached := func() int {
+		n := 0
+		e.durableShardDirs.Range(func(_, _ any) bool {
+			n++
+			return true
+		})
+		return n
+	}
+
+	if n := countCached(); n != 0 {
+		t.Fatalf("fresh engine: %d shard directories already cached, want 0", n)
+	}
+
+	if err := e.Set([]byte("a"), []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	dirA, _ := e.recordPaths([]byte("a"))
+	if _, ok := e.durableShardDirs.Load(dirA); !ok {
+		t.Fatal("Set did not record its shard directory as durable")
+	}
+	if n := countCached(); n != 1 {
+		t.Fatalf("after one key: %d shard directories cached, want 1", n)
+	}
+
+	// A repeat Set to the IDENTICAL key hashes into the identical shard
+	// directory: the cache must not grow.
+	if err := e.Set([]byte("a"), []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+	if n := countCached(); n != 1 {
+		t.Fatalf("after repeating the same key: %d shard directories cached, want 1", n)
+	}
+	got, err := e.Get([]byte("a"))
+	if err != nil || string(got) != "2" {
+		t.Fatalf("Get after the repeated Set = (%q, %v), want (\"2\", nil)", got, err)
+	}
+
+	// A key that is EXTREMELY unlikely to share "a"'s shard directory (the
+	// hash is content-addressed and uniform) gets its own cache entry.
+	if err := e.Set([]byte("a wildly different key, not sharing a's shard"), []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	if n := countCached(); n != 2 {
+		t.Fatalf("after a second, differently-hashing key: %d shard directories cached, want 2", n)
+	}
+}
+
+// TestEnsureShardDirDurable_SkipsMkdirAllDurableOnCacheHit confirms the
+// cache is actually consulted BEFORE mkdirAllDurable would run, not merely
+// populated alongside it: removing the shard directory out from under a
+// cached entry (something Set itself never does -- shard directories are
+// permanent) and then calling Set again must still succeed by trusting the
+// cache rather than re-verifying the directory on disk, which is exactly
+// the work the cache exists to skip.
+func TestEnsureShardDirDurable_SkipsMkdirAllDurableOnCacheHit(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	key := []byte("cache-hit-key")
+	if err := e.Set(key, []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := e.recordPaths(key)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// mkdirAllDurable would recreate dir here; a cache hit skips it
+	// entirely, so dir stays gone and the write below fails with ENOENT --
+	// proof the cache path, not mkdirAllDurable, decided the outcome.
+	err = e.ensureShardDirDurable(dir)
+	if err != nil {
+		t.Fatalf("ensureShardDirDurable returned an error on a cache hit: %v", err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("cache hit recreated the removed directory: stat = %v", statErr)
+	}
+}
+
+// TestApplyBufferedOps_SetErrorPropagates covers applyBufferedOps's Set
+// branch failing mid-batch: the journal is already durable (by design, for
+// a transient fault recovery can retry), and the error reaches the caller.
+func TestApplyBufferedOps_SetErrorPropagates(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	key := []byte("blocked-in-a-batch")
+	shardDir, _ := e.recordPaths(key)
+	obstacle := filepath.Dir(shardDir)
+	if err := os.RemoveAll(obstacle); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(obstacle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.commitBufferedOps([]storage.BufferedOp{{Key: key, Value: []byte("v")}}); err == nil {
+		t.Fatal("expected Set to fail inside the batch")
+	}
+}
+
+// TestApplyBufferedOps_DeleteErrorPropagates is the Delete-branch twin.
+func TestApplyBufferedOps_DeleteErrorPropagates(t *testing.T) {
+	e, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+
+	key := []byte("blocked-delete-in-a-batch")
+	_, recordPath := e.recordPaths(key)
+	if err := os.MkdirAll(recordPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recordPath, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.commitBufferedOps([]storage.BufferedOp{{Key: key, Deleted: true}}); err == nil {
+		t.Fatal("expected Delete to fail inside the batch")
+	}
+}

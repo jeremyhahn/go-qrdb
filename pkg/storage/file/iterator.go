@@ -17,7 +17,6 @@ package file
 import (
 	"bytes"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -79,20 +78,21 @@ func newIteratorFromEntries(entries []fileEntry, opts *storage.IteratorOptions) 
 // that silently skipped a key would be a wrong answer instead of a loud one.
 func (it *fileIterator) load(e *Engine) {
 	var entries []fileEntry
-	walkErr := filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
+	walkErr := e.walkShardDirs(func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
 		if err != nil {
-			// path == e.dir means the engine's OWN root failed to stat --
-			// a real fault, never skipped. Otherwise: the directory
-			// listing that produced path is already stale -- a concurrent
-			// Set renamed its ".tmp-set-*" file into place and away from
-			// this name, or a concurrent Delete removed a record, between
-			// Walk reading the parent directory and stat'ing this entry.
-			// Neither is a scan fault -- storage.Storage gives Set/Delete
-			// on different keys no serialization promise against a
-			// concurrent scan -- so skip the vanished entry and keep
-			// walking rather than abort the whole scan over it
-			// (go-qrdb#592 F2).
-			if path != e.dir && os.IsNotExist(err) {
+			// The directory listing that produced path is already stale --
+			// a concurrent Set renamed its ".tmp-set-*" file into place and
+			// away from this name, or a concurrent Delete removed a
+			// record, between walkShardDirs reading the parent directory
+			// and stat'ing this entry. Neither is a scan fault --
+			// storage.Storage gives Set/Delete on different keys no
+			// serialization promise against a concurrent scan -- so skip
+			// the vanished entry and keep walking rather than abort the
+			// whole scan over it (go-qrdb#592 F2). os.ReadDir(e.dir)
+			// failing -- the engine's own root being gone, a real fault --
+			// is surfaced directly by walkShardDirs and never reaches this
+			// callback at all.
+			if os.IsNotExist(err) {
 				return nil
 			}
 			return err

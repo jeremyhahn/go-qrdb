@@ -70,6 +70,19 @@ type Engine struct {
 	// file in the engine root, so two concurrent commits must not
 	// interleave publish/apply/clear.
 	journalMu sync.Mutex
+
+	// durableShardDirs remembers, by path, every shard directory this
+	// Engine has already confirmed durable (see ensureShardDirDurable): a
+	// concurrent-safe, in-process cache so Set's hot path pays the parent
+	// fsync mkdirAllDurable always does only the first time any key hashes
+	// into a given shard directory, not on every subsequent Set into it
+	// (go-qrdb#592 performance). It is memory only and never persisted: a
+	// fresh Engine over the same directory starts with an empty cache and
+	// simply re-confirms (and re-fsyncs) each shard directory the first
+	// time THIS instance touches it again, which is correct and cheap --
+	// the directory is already durable from before; the fsync it repeats
+	// is redundant work, not a correctness requirement.
+	durableShardDirs sync.Map
 }
 
 const (
@@ -141,16 +154,48 @@ func New(dir string) (*Engine, error) {
 	return e, nil
 }
 
-// cleanupTempSetFiles removes every ".tmp-set-*" file under the engine
-// root: Set's own crash leftovers from a process that died between
-// creating one (os.CreateTemp) and its final fsync.Rename into place
-// (go-qrdb#592 Low). None ever named a committed record -- isHashFileName
-// already excludes them from List, the iterator, and Get -- so leaving one
-// in place is disk-space hygiene debt, not a correctness problem; this runs
-// once, at Open, rather than having every later Set, List, or iterator scan
-// check for one.
+// walkShardDirs calls fn once for every path filepath.Walk would report
+// beneath one of this engine's own shard directories -- never for the
+// engine root, and never for a root-level entry this engine did not create.
+//
+// filepath.Walk reads a directory's contents BEFORE it ever calls fn for
+// that directory: fn learns about a failed os.ReadDir only as the err
+// argument of the one call it gets for that path, with the read already
+// attempted, so returning filepath.SkipDir from fn cannot prevent a read
+// that already happened. Calling filepath.Walk on the engine ROOT would
+// therefore attempt to read a foreign root-level entry's contents -- most
+// notably lost+found, root-owned and mode 0700 by convention on a real
+// mount -- before this engine's own callback runs at all, which is too late
+// to skip it. Listing the root with os.ReadDir instead, and walking only the
+// entries that already look like one of this engine's own shard directories
+// (isShardDirName), never makes that attempt in the first place
+// (go-qrdb#592 F3).
+func (e *Engine) walkShardDirs(fn filepath.WalkFunc) error {
+	entries, err := os.ReadDir(e.dir)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() || !isShardDirName(ent.Name()) {
+			continue
+		}
+		if err := filepath.Walk(filepath.Join(e.dir, ent.Name()), fn); err != nil { // #nosec G122 -- internal storage directory, no symlink risk
+			return err
+		}
+	}
+	return nil
+}
+
+// cleanupTempSetFiles removes every ".tmp-set-*" file under one of this
+// engine's shard directories: Set's own crash leftovers from a process that
+// died between creating one (os.CreateTemp) and its final fsync.Rename into
+// place (go-qrdb#592 Low). None ever named a committed record --
+// isHashFileName already excludes them from List, the iterator, and Get --
+// so leaving one in place is disk-space hygiene debt, not a correctness
+// problem; this runs once, at Open, rather than having every later Set,
+// List, or iterator scan check for one.
 func (e *Engine) cleanupTempSetFiles() error {
-	return filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
+	return e.walkShardDirs(func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -249,6 +294,31 @@ func isHashFileName(name string) bool {
 	return true
 }
 
+// isShardDirName reports whether name has the shape of one of this engine's
+// own two shard-directory levels: exactly shardHexLen (2) lowercase hex
+// characters. Every directory walk that starts at the engine root uses this
+// to recognise, and descend into, only directories this engine itself could
+// have created — never a foreign entry sitting at the root for a reason that
+// has nothing to do with this engine, most notably lost+found, the
+// directory mkfs/fsck creates at an ext2/3/4 mount root (root-owned, mode
+// 0700 by convention) and recreates after a repair. A walk that tried to
+// read lost+found's contents would fail with a permission error that is not
+// this engine's fault and has nothing to do with its data; one that never
+// descends into it in the first place cannot fail on it at all (go-qrdb#592
+// F3).
+func isShardDirName(name string) bool {
+	if len(name) != shardHexLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 // Get retrieves the value for the given key. Returns nil, nil when the key
 // does not exist per the storage.Storage contract.
 //
@@ -298,7 +368,7 @@ func (e *Engine) Set(key, value []byte) error {
 		return err
 	}
 	dir, path := e.recordPaths(key)
-	if err := mkdirAllDurable(dir); err != nil {
+	if err := e.ensureShardDirDurable(dir); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-set-*")
@@ -376,17 +446,16 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		return nil, &storage.ClosedError{}
 	}
 	var keys [][]byte
-	err := filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error {
+	err := e.walkShardDirs(func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			// path == e.dir means the engine's OWN root failed to stat --
-			// not a benign race with a concurrent Set or Delete but a real
-			// fault (the directory this engine owns is gone), so it is
-			// never skipped, ENOENT or not. See fileIterator.load: a
-			// concurrent Set's rename-into-place, or a concurrent Delete,
-			// CAN remove any OTHER entry between Walk reading its parent
-			// directory and stat'ing it; that race is not a scan fault and
-			// is skipped (go-qrdb#592 F2).
-			if path != e.dir && os.IsNotExist(err) {
+			// A concurrent Set's rename-into-place, or a concurrent
+			// Delete, CAN remove an entry between walkShardDirs reading its
+			// parent directory and stat'ing it; that race is not a scan
+			// fault and is skipped (go-qrdb#592 F2). os.ReadDir(e.dir)
+			// failing -- the engine's own root being gone, a real fault --
+			// is surfaced directly by walkShardDirs itself and never
+			// reaches this callback at all.
+			if os.IsNotExist(err) {
 				return nil
 			}
 			return err
@@ -481,6 +550,31 @@ func (e *Engine) Sync() error {
 // Close marks the engine as closed. Subsequent operations return ClosedError.
 func (e *Engine) Close() error {
 	e.closed.Store(true)
+	return nil
+}
+
+// ensureShardDirDurable is mkdirAllDurable for one of e's own shard
+// directories, memoized: a shard directory this Engine instance has already
+// confirmed durable once is remembered in durableShardDirs, so Set's hot
+// path -- every key that hashes into an already-touched shard directory --
+// skips mkdirAllDurable, and so its parent fsync, entirely. The first Set
+// into any given shard directory still pays the real cost; only repeat
+// access to the SAME directory is free (go-qrdb#592 performance).
+//
+// A concurrent first touch of the same directory can race this check (one
+// goroutine's Store has not landed before another's Load runs): both simply
+// take the slow path once each, which is correct -- just not the full
+// benefit of the cache on that one race -- and the entry either one stores
+// makes every later Set to the same directory free regardless of which one
+// won.
+func (e *Engine) ensureShardDirDurable(dir string) error {
+	if _, ok := e.durableShardDirs.Load(dir); ok {
+		return nil
+	}
+	if err := mkdirAllDurable(dir); err != nil {
+		return err
+	}
+	e.durableShardDirs.Store(dir, struct{}{})
 	return nil
 }
 
