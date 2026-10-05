@@ -662,16 +662,25 @@ func TestPool_ClusterCABroken_StaticExemptionStillWorks(t *testing.T) {
 	}
 }
 
-// TestPool_KeyBNeverSucceeded_StaticExemptionStillUncertainButSafe proves
-// the OTHER direction is unaffected by this fix: a Key B provider that has
-// NEVER once succeeded (CACertPEMs always fails, e.g. sealed) genuinely
-// cannot rule out whether a given issuer might be some tenant's Key B CA,
-// so isRegisteredKeyBCA's conservative "uncertain, so true" answer for a
-// cache that was never built even once is unchanged -- this is a
-// correctness floor, not the B3 bug (which was specifically a cluster CA
-// failure blocking a Key-B-only cache refresh that would otherwise have
-// succeeded).
-func TestPool_KeyBNeverSucceeded_StaticExemptionStillUncertainButSafe(t *testing.T) {
+// TestPool_KeyBNeverSucceeded_StaticExemptionStillHonored is the B3
+// remainder's red/green proof (go-qrdb#591's review): on a self-issued
+// cluster, Key B's CACertPEMs has NEVER succeeded before the barrier is
+// first unsealed -- that is the ordinary boot sequence, not an edge case
+// -- and the static exemption must still accept a certificate that
+// verifies against a CONFIGURED static anchor (an operator's
+// mtls.client_ca_files entry, or a test harness's own CA) regardless of
+// Key B's state. B3's actual requirement is narrower than the prior
+// behavior enforced: static, Key A and operator anchors are ALWAYS
+// honored, whatever Key B's state; only an ACTUAL Key B-issued
+// certificate -- one that affirmatively verifies against a BUILT
+// Key-B-only cache -- may fail closed. An unbuilt cache proves nothing
+// about the issuer either way, so it must not be treated as "assume
+// it's a Key B CA"; isRegisteredKeyBCA now answers false, not true,
+// when the cache has never been built, and the confirmed-match case
+// TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA pins
+// is unaffected: that test builds the cache first, so its match is
+// never "uncertain".
+func TestPool_KeyBNeverSucceeded_StaticExemptionStillHonored(t *testing.T) {
 	harnessCAPEM, harnessCACert := genCAPEM(t)
 	harnessPool := x509.NewCertPool()
 	harnessPool.AppendCertsFromPEM(harnessCAPEM)
@@ -685,13 +694,11 @@ func TestPool_KeyBNeverSucceeded_StaticExemptionStillUncertainButSafe(t *testing
 		t.Fatal("expected resolveClientCAs to fail while Key B has never once succeeded")
 	}
 
-	// Unchanged, conservative behavior: a Key B provider IS installed, but
-	// nothing proves harnessCACert is NOT one of its tenants' CAs yet, so
-	// the exemption is refused -- this is NOT the B3 regression, which
-	// was specifically about a cluster CA failure preventing a refresh
-	// that Key B's OWN health would otherwise have allowed to succeed.
-	if pool.IsStaticallyTrusted(harnessCACert) {
-		t.Fatal("expected the exemption to stay refused while Key B has never once resolved (conservative-uncertain, unrelated to B3)")
+	// The static anchor must still be honored: it is not, and has never
+	// been claimed to be, a Key B CA -- Key B's own unresolved state is
+	// not evidence against it.
+	if !pool.IsStaticallyTrusted(harnessCACert) {
+		t.Fatal("expected the static exemption to be honored even though Key B has never once resolved (B3 remainder)")
 	}
 }
 
@@ -829,13 +836,18 @@ func TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA(t *testing
 	}
 }
 
-// TestPool_IsStaticallyTrusted_UncertainBeforeCacheRefusesClosed proves
-// isRegisteredKeyBCA's "uncertain" branch: a Key B provider IS installed
-// (so there is a Key B concept in play for this Pool), but no handshake has
-// run yet, so poolCache.keyBOnly does not exist. IsStaticallyTrusted must
-// refuse the exemption rather than guess, because granting a blanket pass
-// on an unproven negative is the wrong direction to be wrong in.
-func TestPool_IsStaticallyTrusted_UncertainBeforeCacheRefusesClosed(t *testing.T) {
+// TestPool_IsStaticallyTrusted_UncertainBeforeCacheIsHonored is
+// isRegisteredKeyBCA's "uncertain" branch, corrected per the B3 remainder
+// (go-qrdb#591's review): a Key B provider IS installed (so there is a
+// Key B concept in play for this Pool), but no handshake has run yet, so
+// poolCache.keyBOnly does not exist. An unbuilt cache is not evidence
+// that staticCert IS a Key B CA -- it proves nothing about it either way
+// -- so IsStaticallyTrusted must honor the static exemption rather than
+// refuse on an unproven suspicion; only an AFFIRMATIVELY confirmed Key B
+// CA match (a built cache the issuer actually verifies against, see
+// TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA) may
+// still refuse it.
+func TestPool_IsStaticallyTrusted_UncertainBeforeCacheIsHonored(t *testing.T) {
 	_, staticCert := genCAPEM(t)
 	staticPool := x509.NewCertPool()
 	staticPool.AddCert(staticCert)
@@ -847,8 +859,8 @@ func TestPool_IsStaticallyTrusted_UncertainBeforeCacheRefusesClosed(t *testing.T
 	// No handshake run: cfg.GetConfigForClient is never invoked, so
 	// p.cache.Load() is still nil here.
 
-	if pool.IsStaticallyTrusted(staticCert) {
-		t.Fatal("expected the static exemption to be refused while the Key-B-only cache is still unbuilt")
+	if !pool.IsStaticallyTrusted(staticCert) {
+		t.Fatal("expected the static exemption to be honored while the Key-B-only cache is still unbuilt (B3 remainder)")
 	}
 }
 

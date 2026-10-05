@@ -319,12 +319,17 @@ func (p *Pool) IsClusterCA(ctx context.Context, cert *x509.Certificate) bool {
 // never called) is never a match: fail closed, same as every other
 // resolution failure in this type.
 //
-// Refuses the exemption outright when issuer is ALSO a registered Key B
-// CA for some tenant (isRegisteredKeyBCA), uncertain or not: an operator
-// (or a test harness) that accidentally adds a tenant's Key B CA to the
-// static ClientCAs must not thereby grant that CA a blanket, any-tenant
-// pass -- it stays scoped to its own tenant via the ordinary per-tenant
-// check below.
+// Refuses the exemption outright when issuer is AFFIRMATIVELY CONFIRMED to
+// be a registered Key B CA for some tenant (isRegisteredKeyBCA against a
+// BUILT Key-B-only cache): an operator (or a test harness) that accidentally
+// adds a tenant's Key B CA to the static ClientCAs must not thereby grant
+// that CA a blanket, any-tenant pass -- it stays scoped to its own tenant
+// via the ordinary per-tenant check below. A Key-B-only cache that has never
+// been built (Key B provider never read successfully, e.g. still sealed) is
+// NOT treated as a match -- it proves nothing about issuer either way, and
+// B3's actual requirement (go-qrdb#591's review, B3 remainder) is that a
+// static anchor is honored regardless of Key B's own state; only an
+// affirmatively confirmed Key B CA may fail closed.
 func (p *Pool) IsStaticallyTrusted(issuer *x509.Certificate) bool {
 	if issuer == nil {
 		return false
@@ -339,18 +344,24 @@ func (p *Pool) IsStaticallyTrusted(issuer *x509.Certificate) bool {
 	return !p.isRegisteredKeyBCA(issuer)
 }
 
-// isRegisteredKeyBCA reports whether issuer verifies against the Key-B-only
-// portion of the most recently cached widened pool (see poolCache.keyBOnly)
-// -- i.e. whether it is SOME tenant's registered Key B CA, regardless of
-// which.
+// isRegisteredKeyBCA reports whether issuer AFFIRMATIVELY verifies against
+// the Key-B-only portion of the most recently cached widened pool (see
+// poolCache.keyBOnly) -- i.e. whether it is CONFIRMED to be some tenant's
+// registered Key B CA, regardless of which.
 //
-// No Key B provider installed at all (SetKeyBProvider never called) answers
-// false unconditionally: with no Key B concept in play for this Pool, there
-// is no Key B CA issuer could "accidentally" be. Otherwise, uncertain (a
-// provider IS installed but no handshake has built the cache yet) answers
-// true: IsStaticallyTrusted's caller treats "might be a Key B CA" the same
-// as "is one" and refuses the static exemption, because granting a blanket
-// pass on an unproven negative is the wrong direction to be wrong in.
+// No Key B provider installed at all (SetKeyBProvider never called), or a
+// provider installed but no handshake has built the cache yet (sealed, or
+// simply not yet run), both answer false: an unbuilt cache is not evidence
+// that issuer IS a Key B CA, only that this Pool cannot yet say either way,
+// and B3's actual requirement (go-qrdb#591's review, B3 remainder) is that
+// static, Key A and operator anchors are ALWAYS honored regardless of Key
+// B's state -- only an issuer this Pool can AFFIRMATIVELY confirm is a
+// registered Key B CA may cause IsStaticallyTrusted to refuse the
+// exemption. Before this, an unbuilt cache answered true ("assume it's a
+// Key B CA"), which refused the static exemption for every issuer on a
+// self-issued cluster until Key B became readable for the first time --
+// including the operator's own configured anchors, which have nothing to
+// do with Key B.
 func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
 	box := p.provider.Load()
 	if box == nil || box.prov == nil {
@@ -358,7 +369,7 @@ func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
 	}
 	cached := p.keyBCache.Load()
 	if cached == nil || cached.keyBOnly == nil {
-		return true
+		return false
 	}
 	_, err := issuer.Verify(x509.VerifyOptions{Roots: cached.keyBOnly, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 	return err == nil
