@@ -91,11 +91,12 @@ func writeTestKeyFile(t *testing.T, fill byte) string {
 // ---------------------------------------------------------------------------
 
 type mockSnapshotProvider struct {
-	shards       map[uint64][]byte
-	restoreErr   error
-	snapshotErr  error
-	availableErr error
-	restoreCalls atomic.Int32
+	shards        map[uint64][]byte
+	restoreErr    error
+	restoreErrFor map[uint64]error // per-shard override, checked before restoreErr
+	snapshotErr   error
+	availableErr  error
+	restoreCalls  atomic.Int32
 }
 
 func newMockSnapshotProvider() *mockSnapshotProvider {
@@ -130,8 +131,11 @@ func (m *mockSnapshotProvider) SnapshotShard(_ context.Context, shardID uint64) 
 	return data, nil
 }
 
-func (m *mockSnapshotProvider) RestoreShard(_ context.Context, _ uint64, _ []byte) error {
+func (m *mockSnapshotProvider) RestoreShard(_ context.Context, shardID uint64, _ []byte) error {
 	m.restoreCalls.Add(1)
+	if err, ok := m.restoreErrFor[shardID]; ok {
+		return err
+	}
 	return m.restoreErr
 }
 

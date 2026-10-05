@@ -570,22 +570,29 @@ func TestBackupService_CreateBackup_FailedPlaintextBackupAuditsAsFailure(t *test
 	}
 }
 
-// TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure
+// TestBackupService_RestoreBackup_TotalImportFailureSettlesAsFailure
 // proves the B5-online gap: a plaintext restore where EVERY target
 // shard's import fails operationally returns (result, nil) --
 // RestoreBackup's own contract for per-shard operational failures is
 // unchanged, reported via result.Errors, never a top-level error -- but
 // the plaintext audit settle record must NOT say OutcomeSuccess for a
-// restore that imported zero shards. Before this fix, the settle closure
-// looked at resultErr alone, which is nil here, so it recorded success
-// (go-qrdb security review, backup-encrypt-default round 4, B5 online).
-func TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure(t *testing.T) {
+// restore that imported zero shards. Before the B5-online fix, the
+// settle closure looked at resultErr alone, which is nil here, so it
+// recorded success (go-qrdb security review, backup-encrypt-default
+// round 4, B5 online). The settle reason is "total-import-failure", a
+// label distinct from a genuinely PARTIAL failure (see
+// TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure
+// below): a restore that imported nothing left the target shard
+// untouched, which an operator reading the audit trail afterward needs
+// to be able to tell apart from one that imported some, but not all, of
+// the backup's data.
+func TestBackupService_RestoreBackup_TotalImportFailureSettlesAsFailure(t *testing.T) {
 	ring := audit.NewRingBuffer(0)
 	provider := newMockSnapshotProvider()
 	svc := mustNewBackupService(t, provider, WithAuditLogger(ring))
 
 	ctx := context.Background()
-	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial-import", Encryption: EncryptionNone})
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/total-import", Encryption: EncryptionNone})
 	if err != nil {
 		t.Fatalf("CreateBackup: %v", err)
 	}
@@ -602,21 +609,72 @@ func TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure(t *tes
 		t.Fatal("expected per-shard errors in result.Errors")
 	}
 
-	var restoreEvents []audit.AuditEvent
-	for _, ev := range ring.Snapshot() {
-		if ev.Action == "backup.restore" {
-			restoreEvents = append(restoreEvents, ev)
-		}
-	}
+	restoreEvents := restoreAuditEvents(ring)
 	if len(restoreEvents) != 2 {
 		t.Fatalf("got %d backup.restore audit events, want exactly 2 (gate + settle)", len(restoreEvents))
 	}
 	if restoreEvents[0].Outcome != audit.OutcomePermitted {
 		t.Fatalf("gate event Outcome = %q, want %q", restoreEvents[0].Outcome, audit.OutcomePermitted)
 	}
-	if restoreEvents[1].Outcome == audit.OutcomeSuccess {
-		t.Fatalf("settle event Outcome = %q, want a failure outcome: the restore imported 0/%d shards", restoreEvents[1].Outcome, len(result.Errors))
+	wantOutcome := audit.OutcomeFailure + ":total-import-failure"
+	if restoreEvents[1].Outcome != wantOutcome {
+		t.Fatalf("settle event Outcome = %q, want %q: the restore imported 0/%d shards", restoreEvents[1].Outcome, wantOutcome, len(result.Errors))
 	}
+}
+
+// TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure
+// proves the genuinely PARTIAL half of the same distinction: a restore
+// where SOME, but not all, target shards fail to import
+// (result.ShardsRestored > 0 AND result.Errors non-empty) settles with
+// "partial-import-failure", never "total-import-failure" -- the two
+// describe different states left behind on the target shard, and
+// collapsing them would hide which one happened from the audit trail.
+func TestBackupService_RestoreBackup_PartialImportFailureSettlesAsFailure(t *testing.T) {
+	ring := audit.NewRingBuffer(0)
+	provider := newMockSnapshotProvider()
+	svc := mustNewBackupService(t, provider, WithAuditLogger(ring))
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/partial-import", Encryption: EncryptionNone})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	// Exactly one of the backup's three shards (1, 2, 3) fails to
+	// import; the other two succeed.
+	provider.restoreErrFor = map[uint64]error{2: errors.New("store refused import")}
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, AllowPlaintext: true})
+	if err != nil {
+		t.Fatalf("RestoreBackup should not return a top-level error for per-shard operational failures: %v", err)
+	}
+	if result.ShardsRestored == 0 {
+		t.Fatalf("expected at least one shard restored for a genuinely PARTIAL failure, got %d", result.ShardsRestored)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected per-shard errors in result.Errors")
+	}
+
+	restoreEvents := restoreAuditEvents(ring)
+	if len(restoreEvents) != 2 {
+		t.Fatalf("got %d backup.restore audit events, want exactly 2 (gate + settle)", len(restoreEvents))
+	}
+	wantOutcome := audit.OutcomeFailure + ":partial-import-failure"
+	if restoreEvents[1].Outcome != wantOutcome {
+		t.Fatalf("settle event Outcome = %q, want %q: the restore imported %d/%d shards",
+			restoreEvents[1].Outcome, wantOutcome, result.ShardsRestored, result.ShardsRestored+len(result.Errors))
+	}
+}
+
+// restoreAuditEvents filters ring down to this backup's own
+// "backup.restore" audit events, in emission order.
+func restoreAuditEvents(ring *audit.RingBuffer) []audit.AuditEvent {
+	var out []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == "backup.restore" {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // TestBackupService_SetAuditFailurePolicy_AppliesAfterConstruction proves

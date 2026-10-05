@@ -603,8 +603,9 @@ func (s *BackupService) auditPlaintextGate(ctx context.Context, id, destination,
 
 // auditPlaintextSettle records the REAL outcome of a plaintext backup or
 // restore previously admitted by auditPlaintextGate: audit.OutcomeSuccess
-// when opErr is nil, else a failure outcome carrying a fixed reason token
-// (plaintextAuditReason) -- never opErr's own free text, which may
+// when opErr is nil and importFailureReason is empty, else a failure
+// outcome carrying a fixed reason token (plaintextAuditReason, or
+// importFailureReason verbatim) -- never opErr's own free text, which may
 // originate outside this package. It is POST-HOC (audit.EmitBestEffort):
 // the operation has already happened by the time this runs, so there is
 // nothing left to refuse, and a sink that refuses this record is counted
@@ -612,20 +613,25 @@ func (s *BackupService) auditPlaintextGate(ctx context.Context, id, destination,
 // identical posture pkg/ceremony/holder_audit.go's settle holds. Called
 // only when auditPlaintextGate itself succeeded; a gate refusal already
 // returned before any work started, so there is no operation to settle.
-func (s *BackupService) auditPlaintextSettle(ctx context.Context, id, destination, action string, opErr error, partial bool) {
+func (s *BackupService) auditPlaintextSettle(ctx context.Context, id, destination, action string, opErr error, importFailureReason string) {
 	outcome := audit.OutcomeSuccess
 	switch {
 	case opErr != nil:
 		outcome = audit.OutcomeFailure + ":" + plaintextAuditReason(opErr)
-	case partial:
-		// RestoreBackup returns (result, nil) even when every target
-		// shard failed to import operationally (result.Errors
+	case importFailureReason != "":
+		// RestoreBackup returns (result, nil) even when one or more
+		// target shards failed to import operationally (result.Errors
 		// non-empty): resultErr alone is nil, but the restore did not
-		// fully succeed, and a record saying OutcomeSuccess for a
-		// restore that imported zero shards is exactly the gap this
-		// catches (go-qrdb security review, backup-encrypt-default
-		// round 4, B5 online).
-		outcome = audit.OutcomeFailure + ":partial-import-failure"
+		// fully succeed, and a record saying OutcomeSuccess for that is
+		// exactly the gap this catches (go-qrdb security review,
+		// backup-encrypt-default round 4, B5 online). The caller picks
+		// "partial-import-failure" (some shards restored) or
+		// "total-import-failure" (zero did) -- the two are not the same
+		// failure to someone reading the audit trail afterward: a
+		// restore that imported nothing left the target shard
+		// untouched, while a partial one left it with some, but not
+		// all, of the backup's data.
+		outcome = audit.OutcomeFailure + ":" + importFailureReason
 	}
 	ev := plaintextAuditEvent(ctx, id, destination, action, outcome)
 	audit.EmitBestEffort(ctx, s.auditLogger(), "backup", ev)
@@ -652,7 +658,7 @@ func (s *BackupService) GatePlaintextRestore(ctx context.Context, id, destinatio
 // settle call in this package -- see auditPlaintextSettle's own doc
 // comment.
 func (s *BackupService) SettlePlaintextRestore(ctx context.Context, id, destination string, opErr error) {
-	s.auditPlaintextSettle(ctx, id, destination, "backup.restore", opErr, false)
+	s.auditPlaintextSettle(ctx, id, destination, "backup.restore", opErr, "")
 }
 
 // plaintextAuditReason renders err as a FIXED reason token for the
@@ -1055,7 +1061,7 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (r
 			return nil, err
 		}
 		defer func() {
-			s.auditPlaintextSettle(ctx, id, opts.Destination, "backup.create", resultErr, false)
+			s.auditPlaintextSettle(ctx, id, opts.Destination, "backup.create", resultErr, "")
 		}()
 	}
 
@@ -1529,14 +1535,26 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 			return nil, err
 		}
 		defer func() {
-			// A restore whose every target shard failed to import
+			// A restore with one or more failed target shards
 			// (result.Errors non-empty) returns (result, nil) --
 			// resultErr alone would settle this as a success. Treat a
 			// non-empty Errors list as a failed settle too (go-qrdb
 			// security review, backup-encrypt-default round 4, B5
-			// online).
-			partial := result != nil && len(result.Errors) > 0
-			s.auditPlaintextSettle(ctx, opts.BackupID, entry.info.Destination, "backup.restore", resultErr, partial)
+			// online), distinguishing a restore that imported NOTHING
+			// (ShardsRestored == 0 -- the target shard was never
+			// touched) from one that imported SOME of the backup's
+			// shards but not all: the two leave the target in very
+			// different states, and an operator reading the audit
+			// trail afterward needs to tell them apart.
+			var importFailureReason string
+			if result != nil && len(result.Errors) > 0 {
+				if result.ShardsRestored == 0 {
+					importFailureReason = "total-import-failure"
+				} else {
+					importFailureReason = "partial-import-failure"
+				}
+			}
+			s.auditPlaintextSettle(ctx, opts.BackupID, entry.info.Destination, "backup.restore", resultErr, importFailureReason)
 		}()
 	}
 
