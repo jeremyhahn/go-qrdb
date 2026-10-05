@@ -81,6 +81,8 @@ package node
 import (
 	"context"
 	"crypto/fips140"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"os"
@@ -244,6 +246,10 @@ type nodeOptions struct {
 	// the auth middleware's chain after the built-in mTLS authenticator.
 	// See WithAuthenticators.
 	extraAuthenticators []auth.Authenticator
+
+	// embeddedCaller is the client certificate the embedded client forwards
+	// as. See WithEmbeddedCaller.
+	embeddedCaller *tls.Certificate
 
 	// authorizerWrapper decorates the node's fully built RBAC[+ABAC]
 	// authorizer with embedder-supplied logic. See WithAuthorizerWrapper.
@@ -827,6 +833,11 @@ type Node struct {
 	// wireClientAndServer (authenticator chain).
 	extraAuthenticators []auth.Authenticator
 	authorizerWrapper   func(inner auth.Authorizer) auth.Authorizer
+
+	// embeddedCaller is the certificate chain, leaf first, of the identity
+	// the embedded client forwards as (WithEmbeddedCaller); nil forwards
+	// nothing.
+	embeddedCaller []*x509.Certificate
 
 	// peerAttestation carries WithPeerAttestationGate from the node
 	// constructor to wireClientAndServer.
@@ -2190,6 +2201,9 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		clusterCACertPEM:          nOpts.clusterCACertPEM,
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
 	}
+	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
+		return nil, err
+	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
 	if err != nil {
@@ -2385,6 +2399,9 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
 		clusterCACertPEM:          nOpts.clusterCACertPEM,
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
+	}
+	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
+		return nil, err
 	}
 
 	dataDir := cfg.Raft.DataDir
@@ -3066,6 +3083,12 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// a stream the seal must end, as it ends a network listener's.
 	if n.clusterSeal != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithSealStreams(n.clusterSeal.Streams()))
+	}
+	// A clustered node's client forwards a call the node refuses because it
+	// holds no replica of the database, as the caller the embedder configured
+	// (WithEmbeddedCaller), never as the node.
+	if opt := n.embeddedForwardingOption(standalone, cfg.ReplicaForwarding.On()); opt != nil {
+		embeddedOpts = append(embeddedOpts, opt)
 	}
 
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
