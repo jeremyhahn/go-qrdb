@@ -1114,20 +1114,11 @@ func TestCeremony_SignCSR_CLI_PerProtocol(t *testing.T) {
 func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 	t.Helper()
 	node := startFreshSealedNode(t, "none", 0, 0)
-	flags := node.flagsFor(proto)
-	waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
-	if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-		"barrier", "init", "--barrier-strategy", "none")...); err != nil {
-		t.Fatalf("[%s] barrier init: %v\nstderr: %s", proto.name, err, stderr)
-	}
+	waitForBarrierReachable(t, node.cli, node.noAuthFlagsFor(proto), 60*time.Second)
+	node.initSystem(t, proto, "--barrier-strategy", "none")
 	node.waitForFullBoot(t)
-	_, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-		"--output", "json",
-		"init", "--so-pin", "SOPIN-"+proto.name, "--user-pin", "USERPIN-"+proto.name)...)
-	if err != nil {
-		t.Fatalf("[%s] qrdb init: %v\nstderr: %s", proto.name, err, stderr)
-	}
-	soPin := "SOPIN-" + proto.name
+	flags := node.flagsFor(proto)
+	soPin := sealNodeSOPIN
 	csrPEM, _ := generateCeremonyCSR(t, "svc-"+proto.name)
 	csrPath := writeTempFile(t, "svc-"+proto.name+".csr", csrPEM)
 
