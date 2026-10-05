@@ -19,6 +19,7 @@ import (
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
