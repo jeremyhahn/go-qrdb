@@ -605,8 +605,9 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1_PostBackupWriteSurvivesIdemp
 	}
 
 	result, err := backupSvc.RestoreBackup(ctx, service.RestoreOptions{
-		BackupID:     backup.ID,
-		TargetShards: []uint64{shardID},
+		BackupID:       backup.ID,
+		TargetShards:   []uint64{shardID},
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup: %v", err)
