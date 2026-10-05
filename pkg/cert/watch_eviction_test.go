@@ -79,6 +79,21 @@ func (w *fakeWatcher) deliver(t *testing.T, evType watch.EventType, key string) 
 	}
 }
 
+// deliverBatch sends a response carrying events verbatim -- including nil
+// entries, wrong event types, or nil Kv -- so a test can exercise
+// consumeCertCADeletes/consumeTombstonePuts defensive filtering directly,
+// rather than only the well-formed events deliver constructs.
+func (w *fakeWatcher) deliverBatch(t *testing.T, events []*watch.Event) {
+	t.Helper()
+	select {
+	case w.events <- watch.WatchResponse{Events: events}:
+	case <-w.closed:
+		t.Fatal("deliverBatch: watcher was already closed")
+	case <-time.After(5 * time.Second):
+		t.Fatal("deliverBatch: timed out, nothing consumed the event")
+	}
+}
+
 type fakeWatchService struct {
 	mu       sync.Mutex
 	watchers map[string]*fakeWatcher
@@ -88,6 +103,18 @@ type fakeWatchService struct {
 	// reestablishWatch through a chosen number of failed retries before
 	// it finally succeeds.
 	failNext int
+	// failPrefix, when non-empty, makes exactly the NEXT WatchPrefix call
+	// for THAT prefix fail (clearing itself afterward), independent of
+	// failNext -- so a test can fail WatchForDeletions' SECOND call
+	// (tenant.TombstonePrefix) while letting its first (prefixCertCA)
+	// succeed, which a plain call-counter cannot express.
+	failPrefix string
+	// cancelOnFail, when set, is called immediately before WatchPrefix
+	// returns a forced failure (from either failNext or failPrefix) --
+	// letting a test force reestablishWatch's post-failure ctx.Err()
+	// check to observe an already-canceled context deterministically,
+	// rather than racing a separate goroutine's cancel against it.
+	cancelOnFail context.CancelFunc
 	// calls records the time of every WatchPrefix call (successful or
 	// not), for a test asserting on the backoff between them.
 	calls []time.Time
@@ -100,9 +127,22 @@ func newFakeWatchService() *fakeWatchService {
 func (s *fakeWatchService) WatchPrefix(_ context.Context, prefix string, _ ...watch.WatchOption) (watch.Watcher, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, time.Now())
+	if s.failPrefix != "" && prefix == s.failPrefix {
+		s.failPrefix = ""
+		cancel := s.cancelOnFail
+		s.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return nil, errors.New("fakeWatchService: forced WatchPrefix failure for prefix")
+	}
 	if s.failNext > 0 {
 		s.failNext--
+		cancel := s.cancelOnFail
 		s.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		return nil, errors.New("fakeWatchService: forced WatchPrefix failure")
 	}
 	w := newFakeWatcher()
@@ -516,4 +556,297 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishmentInvalidatesEveryth
 	if got := atomic.LoadInt32(&invalidated); got == 0 {
 		t.Error("expected OnInvalidate to fire on watch reestablishment, even with no delete event delivered")
 	}
+}
+
+// TestDefaultCertProvider_WatchForDeletions_CertCAWatchFails proves a
+// WatchPrefix failure on the FIRST watcher (prefixCertCA) surfaces as a
+// StoreError naming that prefix, rather than silently proceeding with no
+// eviction coverage at all.
+func TestDefaultCertProvider_WatchForDeletions_CertCAWatchFails(t *testing.T) {
+	ws := newFakeWatchService()
+	ws.failNext = 1
+	p, _, _ := newTestProvider(WithWatchService(ws))
+
+	err := p.WatchForDeletions(context.Background())
+	if err == nil {
+		t.Fatal("WatchForDeletions = nil, want an error when the cert_ca watcher fails to establish")
+	}
+	var storeErr *StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("WatchForDeletions error = %v (%T), want *StoreError", err, err)
+	}
+	if storeErr.Detail != prefixCertCA {
+		t.Errorf("StoreError.Detail = %q, want %q", storeErr.Detail, prefixCertCA)
+	}
+}
+
+// TestDefaultCertProvider_WatchForDeletions_TombstoneWatchFails proves a
+// WatchPrefix failure on the SECOND watcher (tenant.TombstonePrefix) closes
+// the already-established cert_ca watcher and surfaces a StoreError naming
+// the tombstone prefix, rather than leaking the first watcher.
+func TestDefaultCertProvider_WatchForDeletions_TombstoneWatchFails(t *testing.T) {
+	ws := newFakeWatchService()
+	ws.failPrefix = tenant.TombstonePrefix
+	p, _, _ := newTestProvider(WithWatchService(ws))
+
+	err := p.WatchForDeletions(context.Background())
+	if err == nil {
+		t.Fatal("WatchForDeletions = nil, want an error when the tombstone watcher fails to establish")
+	}
+	var storeErr *StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("WatchForDeletions error = %v (%T), want *StoreError", err, err)
+	}
+	if storeErr.Detail != tenant.TombstonePrefix {
+		t.Errorf("StoreError.Detail = %q, want %q", storeErr.Detail, tenant.TombstonePrefix)
+	}
+
+	certCAWatcher := ws.watcherFor(t, prefixCertCA)
+	select {
+	case <-certCAWatcher.closed:
+	case <-time.After(2 * time.Second):
+		t.Error("the already-established cert_ca watcher was never closed after the tombstone watcher failed")
+	}
+}
+
+// TestDefaultCertProvider_OnInvalidate_NilIsNoop proves OnInvalidate(nil)
+// does not register anything to be called, matching its documented
+// contract (nothing is ever invoked for a nil fn).
+func TestDefaultCertProvider_OnInvalidate_NilIsNoop(t *testing.T) {
+	p, _, _ := newTestProvider()
+	p.OnInvalidate(nil)
+	p.mu.RLock()
+	n := len(p.invalidateHooks)
+	p.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("invalidateHooks has %d entries after OnInvalidate(nil), want 0", n)
+	}
+
+	// A subsequent invalidateAll must not panic calling through a nil hook.
+	p.invalidateAll()
+}
+
+// TestReestablishWatch_CtxDoneDuringBackoff proves reestablishWatch returns
+// ctx.Err() promptly when ctx is canceled while it is waiting out its
+// backoff, rather than completing the (here, very long) wait first.
+func TestReestablishWatch_CtxDoneDuringBackoff(t *testing.T) {
+	old := watchReestablishBackoff
+	watchReestablishBackoff = time.Hour
+	t.Cleanup(func() { watchReestablishBackoff = old })
+
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.reestablishWatch(ctx, "test label", "test/prefix", nil)
+		errCh <- err
+	}()
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("reestablishWatch error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reestablishWatch did not return promptly after ctx was canceled during its backoff wait")
+	}
+
+	if got := len(ws.callTimes()); got != 0 {
+		t.Errorf("WatchPrefix was called %d times, want 0 (ctx was canceled before the backoff elapsed)", got)
+	}
+}
+
+// TestReestablishWatch_CtxDoneAfterFailedAttempt proves reestablishWatch
+// returns ctx.Err(), not a retry, when ctx is ALREADY done by the time a
+// failed WatchPrefix attempt returns -- the race the ctx.Err() check right
+// after the failed call exists to catch, distinct from the ctx.Done()
+// select case that only fires while still waiting on backoff.
+func TestReestablishWatch_CtxDoneAfterFailedAttempt(t *testing.T) {
+	old := watchReestablishBackoff
+	watchReestablishBackoff = time.Millisecond
+	t.Cleanup(func() { watchReestablishBackoff = old })
+
+	ws := newFakeWatchService()
+	ws.failNext = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	ws.cancelOnFail = cancel
+	p, _, _ := newTestProvider(WithWatchService(ws))
+
+	_, err := p.reestablishWatch(ctx, "test label", "test/prefix", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("reestablishWatch error = %v, want context.Canceled", err)
+	}
+	if got := len(ws.callTimes()); got != 1 {
+		t.Errorf("WatchPrefix was called %d times, want exactly 1 (no retry once ctx was done)", got)
+	}
+}
+
+// TestSuperviseWatch_ReturnsWhenReestablishFails proves superviseWatch
+// stops its loop (rather than spinning forever) once reestablishWatch
+// gives up because ctx itself ended -- the only condition under which
+// reestablishWatch returns an error at all.
+func TestSuperviseWatch_ReturnsWhenReestablishFails(t *testing.T) {
+	old := watchReestablishBackoff
+	watchReestablishBackoff = 200 * time.Millisecond
+	t.Cleanup(func() { watchReestablishBackoff = old })
+
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// A stub consume that returns immediately, simulating the watched
+	// channel closing, without ctx being done yet -- so superviseWatch
+	// proceeds past its OWN ctx.Err() check and into reestablishWatch,
+	// which is then the one to observe ctx canceled, during its backoff
+	// wait.
+	consumeStub := func(context.Context, watch.Watcher) {}
+
+	done := make(chan struct{})
+	go func() {
+		p.superviseWatch(ctx, "test label", "test/prefix", nil, newFakeWatcher(), consumeStub)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("superviseWatch did not return after reestablishWatch failed due to ctx cancellation")
+	}
+}
+
+// TestDefaultCertProvider_WatchForDeletions_ConsumeCertCADeletes_IgnoresNonMatchingEvents
+// proves consumeCertCADeletes skips a nil event, a wrong-type event, a
+// nil-Kv event, a record under prefixCertCA that is neither a material nor
+// a certificate record, and a material/certificate record with an empty
+// tenant ID -- without evicting anything, and without the consumer
+// goroutine dying on the malformed input.
+func TestDefaultCertProvider_WatchForDeletions_ConsumeCertCADeletes_IgnoresNonMatchingEvents(t *testing.T) {
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx := context.Background()
+
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "frank", TenantID: "acme"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	certCAWatcher := ws.watcherFor(t, prefixCertCA)
+
+	certCAWatcher.deliverBatch(t, []*watch.Event{
+		nil,
+		{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte(prefixCertCA + "acme/material")}},
+		{Type: watch.EventDelete, Kv: nil},
+		{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte(prefixCertCA + "acme/some-other-record")}},
+		{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte(prefixCertCA + materialRecordSuffix)}},
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	p.mu.RLock()
+	_, stillCached := p.perTenant["acme"]
+	p.mu.RUnlock()
+	if !stillCached {
+		t.Fatal("a malformed or unrelated event evicted acme's cache entry")
+	}
+
+	// Prove the consumer goroutine survived the malformed batch and is
+	// still correctly processing real events.
+	certCAWatcher.deliver(t, watch.EventDelete, prefixCertCA+"acme/material")
+	pollUntil(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		_, stillCached := p.perTenant["acme"]
+		return !stillCached
+	})
+}
+
+// TestDefaultCertProvider_WatchForDeletions_ConsumeTombstonePuts_IgnoresNonMatchingEvents
+// proves consumeTombstonePuts skips a nil event, a wrong-type event, a
+// nil-Kv event, a key with no tenant.TombstonePrefix at all, and the
+// tombstone prefix key itself with an empty tenant ID -- without evicting
+// anything, and without the consumer goroutine dying on the malformed
+// input.
+func TestDefaultCertProvider_WatchForDeletions_ConsumeTombstonePuts_IgnoresNonMatchingEvents(t *testing.T) {
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx := context.Background()
+
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "grace", TenantID: "acme"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
+
+	tombstoneWatcher.deliverBatch(t, []*watch.Event{
+		nil,
+		{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte(tenant.TombstonePrefix + "acme")}},
+		{Type: watch.EventPut, Kv: nil},
+		{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte("unrelated/key")}},
+		{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte(tenant.TombstonePrefix)}},
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	p.mu.RLock()
+	_, stillCached := p.perTenant["acme"]
+	p.mu.RUnlock()
+	if !stillCached {
+		t.Fatal("a malformed or unrelated event evicted acme's cache entry")
+	}
+
+	tombstoneWatcher.deliver(t, watch.EventPut, tenant.TombstonePrefix+"acme")
+	pollUntil(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		_, stillCached := p.perTenant["acme"]
+		return !stillCached
+	})
+}
+
+// TestDefaultCertProvider_WatchForDeletions_TombstoneWatchReestablishesClosedWatch
+// proves the tombstone watcher, not only the cert_ca watcher, is
+// supervised and reestablished when the hub closes its events channel --
+// consumeTombstonePuts own closed-channel return, and the subsequent
+// reestablishment, are exercised independently of the cert_ca path.
+func TestDefaultCertProvider_WatchForDeletions_TombstoneWatchReestablishesClosedWatch(t *testing.T) {
+	old := watchReestablishBackoff
+	watchReestablishBackoff = time.Millisecond
+	t.Cleanup(func() { watchReestablishBackoff = old })
+
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	if err := p.WatchForDeletions(ctx); err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "henry", TenantID: "acme"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+
+	firstWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
+	firstWatcher.closeEvents()
+
+	var secondWatcher *fakeWatcher
+	pollUntil(t, func() bool {
+		secondWatcher = ws.watcherFor(t, tenant.TombstonePrefix)
+		return secondWatcher != firstWatcher
+	})
+
+	secondWatcher.deliver(t, watch.EventPut, tenant.TombstonePrefix+"acme")
+	pollUntil(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		_, stillCached := p.perTenant["acme"]
+		return !stillCached
+	})
 }
