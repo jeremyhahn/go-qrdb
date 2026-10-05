@@ -78,6 +78,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1113,9 +1114,20 @@ func TestCeremony_SignCSR_CLI_PerProtocol(t *testing.T) {
 
 func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 	t.Helper()
-	node := startFreshSealedNode(t, "none", 0, 0)
+	// `ceremony sign-csr` only issues holder certificates while the
+	// ceremony is enrolling (PreOperationalOnly), so this must bootstrap
+	// an M-of-N Shamir ceremony and leave it enrolling -- mirroring
+	// TestCLI_Ceremony_StatusAndSubcommands -- rather than the single-
+	// admin "none" strategy, which goes straight to operational and never
+	// passes through enrolling at all.
+	const threshold, total = 2, 2
+	node := startFreshSealedNode(t, "shamir", threshold, total)
 	waitForBarrierReachable(t, node.cli, node.noAuthFlagsFor(proto), 60*time.Second)
-	node.initSystem(t, proto, "--barrier-strategy", "none")
+	workDir := t.TempDir()
+	_, holderFlags := initHolders(t, workDir, "alice-"+proto.name, "bob-"+proto.name)
+	node.initSystem(t, proto, append([]string{
+		"--barrier-strategy", "shamir", "--shares", strconv.Itoa(total), "--threshold", strconv.Itoa(threshold),
+	}, holderFlags...)...)
 	node.waitForFullBoot(t)
 	flags := node.flagsFor(proto)
 	soPin := sealNodeSOPIN
@@ -1124,7 +1136,7 @@ func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 
 	out, err := runQRDB(t, node.cli, flags,
 		"ceremony", "sign-csr", "--username", "svc1", "--so-pin", soPin,
-		"--csr-file", csrPath, "--role", "operator")
+		"--csr-file", csrPath, "--role", "custodian")
 	if err != nil {
 		t.Fatalf("ceremony sign-csr with the correct SO PIN should succeed: %v\noutput: %s", err, out)
 	}
@@ -1134,7 +1146,7 @@ func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 
 	out, err = runQRDB(t, node.cli, flags,
 		"ceremony", "sign-csr", "--username", "svc2", "--so-pin", "wrong-pin",
-		"--csr-file", csrPath, "--role", "operator")
+		"--csr-file", csrPath, "--role", "custodian")
 	if err == nil {
 		t.Fatalf("ceremony sign-csr with the wrong SO PIN should fail; output: %s", out)
 	}
