@@ -82,7 +82,7 @@ type fixedCaller struct {
 }
 
 func (c fixedCaller) Authenticate(context.Context) (*auth.Identity, error) { return c.id, c.err }
-func (fixedCaller) Name() string                                         { return "fixed" }
+func (fixedCaller) Name() string                                           { return "fixed" }
 
 var alice = &auth.Identity{Subject: "alice", TenantID: "acme"}
 
@@ -161,7 +161,6 @@ func TestForwardingScope_AnswersTheNodesResultWhenNotForwarded(t *testing.T) {
 		reg     *nonReplicaRegistry
 		fwd     *recordingForwarder
 		caller  auth.Authenticator
-		db      string
 		check   func(error) bool
 		reached bool
 	}{
