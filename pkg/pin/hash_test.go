@@ -101,9 +101,10 @@ func TestHashPINWithConfig_Argon2id_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestVerifyArgon2id_LegacyRecordWithoutParams(t *testing.T) {
-	// Manually craft a record that uses defaults but omits the Params
-	// field — exercises the fallback branch in verifyArgon2id.
+func TestVerifyArgon2id_RecordWithoutParamsFailsClosed(t *testing.T) {
+	// A record missing its Params field carries no parameters to verify
+	// against, so it must be refused rather than silently matched against a
+	// hardcoded default.
 	cfg := DefaultHashConfig()
 	cfg.Time = 3
 	cfg.Memory = 64 * 1024
@@ -115,18 +116,14 @@ func TestVerifyArgon2id_LegacyRecordWithoutParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hashPINWithConfig: %v", err)
 	}
-	legacy := &PINRecord{
+	noParams := &PINRecord{
 		Algorithm: full.Algorithm,
 		Hash:      full.Hash,
 		Salt:      full.Salt,
 		// Params intentionally nil.
 	}
-	ok, err := verifyPINRecord("legacy-pin", legacy)
-	if err != nil {
-		t.Fatalf("verifyPINRecord legacy: %v", err)
-	}
-	if !ok {
-		t.Fatal("legacy record must verify with fallback defaults")
+	if _, err := verifyPINRecord("legacy-pin", noParams); err == nil {
+		t.Fatal("verifyPINRecord with no Params: want an error, got nil")
 	}
 }
 

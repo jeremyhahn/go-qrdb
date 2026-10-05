@@ -142,7 +142,7 @@ func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 					return code
 				}, http.StatusConflict, "guarded write to the dropped %s through node %d", gatedDatabase, i+2)
 				for j, readPort := range adminPorts[1:] {
-					code, body := kvRequest(t, client, http.MethodGet, readPort, gatedDatabase, key, nil, "?stale=true")
+					code, body := kvRequest(t, client, http.MethodGet, readPort, gatedDatabase, key, nil, "?consistency=eventual")
 					if code == http.StatusOK {
 						t.Fatalf("node %d applied the refused write %q (%s)", j+2, key, strings.TrimSpace(string(body)))
 					}

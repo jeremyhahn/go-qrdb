@@ -3073,10 +3073,11 @@ func TestHandleBatchImport_ArchiveFormat(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Stale read tests -- exercises ?stale=true code paths
+// Eventual-consistency read tests -- exercises ?consistency=eventual, which
+// routes to the service's *Stale methods
 // ---------------------------------------------------------------------------
 
-func TestHandleKVGet_StaleRead_Success(t *testing.T) {
+func TestHandleKVGet_EventualConsistency_Success(t *testing.T) {
 	kvSvc := &mockKVService{
 		getFn: func(_ context.Context, key string) ([]byte, error) {
 			if key != "test-key" {
@@ -3087,7 +3088,7 @@ func TestHandleKVGet_StaleRead_Success(t *testing.T) {
 	}
 	srv := NewServer(kvSvc, newDefaultAdminSvc(), "127.0.0.1:0")
 
-	req := httptest.NewRequest(http.MethodGet, "/kv/test-key?stale=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/kv/test-key?consistency=eventual", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -3097,7 +3098,7 @@ func TestHandleKVGet_StaleRead_Success(t *testing.T) {
 	}
 }
 
-func TestHandleKVGet_StaleRead_NotFound(t *testing.T) {
+func TestHandleKVGet_EventualConsistency_NotFound(t *testing.T) {
 	kvSvc := &mockKVService{
 		getFn: func(_ context.Context, _ string) ([]byte, error) {
 			return nil, &service.KeyNotFoundError{Key: "missing"}
@@ -3105,14 +3106,14 @@ func TestHandleKVGet_StaleRead_NotFound(t *testing.T) {
 	}
 	srv := NewServer(kvSvc, newDefaultAdminSvc(), "127.0.0.1:0")
 
-	req := httptest.NewRequest(http.MethodGet, "/kv/missing?stale=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/kv/missing?consistency=eventual", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
-func TestHandleKVList_StaleRead_Success(t *testing.T) {
+func TestHandleKVList_EventualConsistency_Success(t *testing.T) {
 	kvSvc := &mockKVService{
 		listFn: func(_ context.Context, prefix string) ([]string, error) {
 			if prefix != "app/" {
@@ -3123,7 +3124,7 @@ func TestHandleKVList_StaleRead_Success(t *testing.T) {
 	}
 	srv := NewServer(kvSvc, newDefaultAdminSvc(), "127.0.0.1:0")
 
-	req := httptest.NewRequest(http.MethodGet, "/kv?prefix=app/&stale=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/kv?prefix=app/&consistency=eventual", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -3136,7 +3137,7 @@ func TestHandleKVList_StaleRead_Success(t *testing.T) {
 	}
 }
 
-func TestHandleKVList_StaleRead_ServiceError(t *testing.T) {
+func TestHandleKVList_EventualConsistency_ServiceError(t *testing.T) {
 	kvSvc := &mockKVService{
 		listFn: func(_ context.Context, _ string) ([]string, error) {
 			return nil, errors.New("storage failure")
@@ -3144,7 +3145,7 @@ func TestHandleKVList_StaleRead_ServiceError(t *testing.T) {
 	}
 	srv := NewServer(kvSvc, newDefaultAdminSvc(), "127.0.0.1:0")
 
-	req := httptest.NewRequest(http.MethodGet, "/kv?prefix=app/&stale=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/kv?prefix=app/&consistency=eventual", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 

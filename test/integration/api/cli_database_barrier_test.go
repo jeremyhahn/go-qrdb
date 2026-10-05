@@ -17,7 +17,7 @@ import (
 // daemon (pkg/server/lifecycle.BuildServices wires
 // database.WithBarrierManager / service.WithBarrierManager whenever the seal
 // subsystem's BarrierRegistry is available -- see config.test.yaml's
-// `seal: {enabled: true, strategy: software}`), so `database seal`,
+// `seal: {enabled: true, strategy: passphrase}`), so `database seal`,
 // `database unseal`, and `database barrier-status` are no longer universally
 // rejected with "not configured".
 //

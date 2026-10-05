@@ -177,11 +177,3 @@ func TestInitializeTenantBarrier_DoubleInitWrapped(t *testing.T) {
 		t.Fatalf("err = %v, want *TenantBarrierInitError", err)
 	}
 }
-
-func TestUnresolvableSystemRoleError_NamesRoleAndTenant(t *testing.T) {
-	err := &UnresolvableSystemRoleError{Role: "admin", TenantID: "acme"}
-	want := "bootstrap: role admin already exists in tenant acme but no role name resolver is configured; set Dependencies.RoleResolver so the grant binds to the persisted role ID"
-	if got := err.Error(); got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}

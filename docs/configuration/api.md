@@ -64,6 +64,4 @@ a composition-plane (Tier 2) surface with no wire endpoint — see
 ## Versioning
 
 `GET /v1/config/initialized` is under `/v1/`; `GET /capabilities` is
-unversioned. Neither is deprecated. Within the configuration schema,
-`seal.strategy: software` is a **deprecated alias** for `passphrase`,
-canonicalized at load.
+unversioned. Neither is deprecated.

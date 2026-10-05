@@ -142,7 +142,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	}
 
 	var strategies []seal.SealingStrategy
-	switch f.sealConfig.CanonicalStrategy() {
+	switch f.sealConfig.Strategy {
 	case "shamir":
 		shamirStrat, shamirErr := seal.NewShamirStrategy(
 			f.sealConfig.ShamirThreshold, f.sealConfig.ShamirTotal)
@@ -271,7 +271,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	}
 
 	slog.Info("seal subsystem initialized",
-		slog.String("strategy", f.sealConfig.CanonicalStrategy()),
+		slog.String("strategy", f.sealConfig.Strategy),
 		slog.String("data_dir", sealDataDir))
 
 	return &sealSubsystem{

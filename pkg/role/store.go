@@ -1139,14 +1139,6 @@ func ownerPermissions() []permission.Permission {
 // ID) and by the bootstrap flow to grant the canonical Admin@system role
 // with a stable cluster-wide identifier. An empty tenantID defaults to
 // SystemTenantID to match BuiltInRoles behavior.
-//
-// A cluster seeded before the move off UUIDv5 still holds its system roles
-// under their legacy identifiers; seeding is name-unique, so those records
-// are never replaced by ones keyed on the value returned here. Code that
-// must address the role AS PERSISTED — granting it to a user, or deciding
-// whether an existing grant denotes it — resolves through the role store
-// with ResolveSystemRoleID or SystemRoleIDs instead of calling this
-// function directly.
 func SystemRoleID(tenantID, roleName string) string {
 	if tenantID == "" {
 		tenantID = tenantid.System
@@ -1168,9 +1160,7 @@ const systemRoleNamespace = "go-qrdb:role-namespace/v8/"
 // name-based UUID can carry a SHA-256 derivation.
 //
 // The result keeps the 36-character UUID text shape, so no caller, index
-// key, or wire format reformats. It is NOT the value the SHA-1 derivation
-// produced for the same inputs — see SystemRoleID for how already-seeded
-// clusters keep resolving.
+// key, or wire format reformats.
 //
 // tenantID and name are length-prefixed rather than merely joined so that
 // the encoding is injective: without framing, tenant "a/b" with role "c"

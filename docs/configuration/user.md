@@ -212,9 +212,10 @@ out at its default.
 default. If you see a zero, the file loaded (so the key is real), but check
 whether you meant to set it inside a different section than it landed in.
 
-**"software" appears in your config but the server reports "passphrase".**
-That is correct: `seal.strategy: software` is a deprecated alias, canonicalized
-once at load. Every consumer sees `passphrase`.
+**Your config was refused with `seal.strategy: must be one of: passphrase,
+shamir, none`.** An older config using `strategy: software` names a strategy
+that no longer exists; change it to `passphrase`, the canonical name for the
+same software-protected strategy.
 
 **You want to change something without a restart.** Not possible for
 configuration. Some runtime objects are mutable through their own APIs — per

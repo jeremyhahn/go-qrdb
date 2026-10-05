@@ -10,7 +10,6 @@ func DefaultConfig() *Config
 func (c *Config) Validate() error                // returns the FIRST error
 func (c *Config) ValidateCapabilities() error    // separate; called by composition roots
 func (c *Config) EffectiveCapabilities() ...     // sealed into pkg/capabilities at boot
-func (c *SealConfig) CanonicalStrategy() string  // canonicalizes the "software" alias
 
 const DefaultServerHost = "0.0.0.0"              // the defaults-layer bind host
 const DefaultSecureMemoryBudgetMiB int64 = 64    // ceiling of the derived secure-memory budget
@@ -62,9 +61,6 @@ flags alone.
   build tags a binary carries.
 - **Precedence is build tag > run mode > config.** Config narrows only; asking
   for more is a validation error, never a silent no-op.
-- **`seal.strategy: software` is a deprecated alias for `passphrase`**,
-  canonicalized **once at load** by `SealConfig.CanonicalStrategy()`, so every
-  downstream consumer sees `passphrase`.
 - **`mode` absent means `raft`** — full backward compatibility with configs
   written before run modes existed.
 - **No infrastructure literal on a configuration path.** Bind hosts, ports and

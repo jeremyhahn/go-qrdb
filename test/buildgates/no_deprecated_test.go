@@ -427,3 +427,113 @@ func TestCLINoRedirectStub(t *testing.T) {
 		}
 	}
 }
+
+// legacyOrDeprecatedAliasPhrase matches "legacy alias" or "deprecated
+// alias" (case-insensitive, whitespace-tolerant) -- the exact shape of the
+// config.go sealStrategyAliases/CanonicalStrategy affordance the
+// no-compat-cleanup lane deleted (`seal.strategy: software` as a "legacy
+// alias" for `passphrase`). A config validation table or a doc describing
+// one of its values this way is describing exactly the thing the
+// no-backward-compatibility ruling requires deleting, not documenting.
+var legacyOrDeprecatedAliasPhrase = regexp.MustCompile(`(?i)\b(?:legacy|deprecated)\s+alias\b`)
+
+// minConfigDocFilesScanned is a floor below the combined count of
+// docs/**/*.md and pkg/config/**/*.go files (measured near 280), wide
+// enough to tolerate normal churn while still catching a scan that walked
+// nothing.
+const minConfigDocFilesScanned = 150
+
+// TestNoLegacyOrDeprecatedAliasLanguage fails if any tracked documentation
+// file under docs/, or any Go source under pkg/config/, describes a value as
+// a "legacy alias" or "deprecated alias". Per the owner's
+// no-backward-compatibility ruling an alias naming an old value is deleted
+// outright, not kept and documented as legacy or deprecated -- see
+// config.go's removed sealStrategyAliases/CanonicalStrategy and the doc
+// prose that described it before the no-compat-cleanup lane.
+//
+// CHANGELOG.md is deliberately NOT scanned: it is the historical record of
+// what was removed and when, and describing a past removal in that language
+// is exactly its job.
+func TestNoLegacyOrDeprecatedAliasLanguage(t *testing.T) {
+	root := repoRoot(t)
+
+	type hit struct {
+		rel, detail string
+		line        int
+	}
+	var hits []hit
+	scanned := 0
+
+	scan := func(path, rel string) error {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			// See walkGoFiles: an unreadable leftover artifact has no content
+			// for this gate to see either way.
+			if os.IsNotExist(err) || os.IsPermission(err) {
+				t.Logf("TestNoLegacyOrDeprecatedAliasLanguage: skipping unreadable path %s: %v", path, err)
+				return nil
+			}
+			return err
+		}
+		scanned++
+		for i, line := range strings.Split(string(src), "\n") {
+			if legacyOrDeprecatedAliasPhrase.MatchString(line) {
+				hits = append(hits, hit{rel: rel, line: i + 1, detail: strings.TrimSpace(line)})
+			}
+		}
+		return nil
+	}
+
+	walk := func(start string, suffix string) {
+		err := filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) || os.IsPermission(err) {
+					t.Logf("TestNoLegacyOrDeprecatedAliasLanguage: skipping unreadable path %s: %v", path, err)
+					if d != nil && d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() {
+				if skipDirs[d.Name()] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, suffix) {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			return scan(path, filepath.ToSlash(rel))
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", start, err)
+		}
+	}
+
+	walk(filepath.Join(root, "docs"), ".md")
+	walk(filepath.Join(root, "pkg", "config"), ".go")
+
+	if scanned < minConfigDocFilesScanned {
+		t.Fatalf("scanned %d docs/*.md + pkg/config/*.go files, floor is %d; either the "+
+			"scan is broken or the tree shrank -- if deliberate, lower "+
+			"minConfigDocFilesScanned in the same commit", scanned, minConfigDocFilesScanned)
+	}
+
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].rel != hits[j].rel {
+			return hits[i].rel < hits[j].rel
+		}
+		return hits[i].line < hits[j].line
+	})
+	for _, h := range hits {
+		t.Errorf("%s:%d: %s -- 'legacy alias'/'deprecated alias' language; per the "+
+			"no-backward-compatibility ruling, delete the alias instead of documenting it "+
+			"as legacy or deprecated", h.rel, h.line, h.detail)
+	}
+}

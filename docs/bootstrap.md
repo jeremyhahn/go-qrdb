@@ -91,8 +91,7 @@ The barrier status is checked via `BarrierStatus`. If sealed, data operations ar
 
 The daemon creates five system roles deterministically on first init. Each role is
 assigned a fixed UUIDv8 (RFC 9562 §5.8, derived over SHA-256) from its tenant and
-name to ensure cross-cluster stability. Roles seeded before the FIPS 140-3
-migration off UUIDv5/SHA-1 keep their legacy identifiers and still resolve; see
+name to ensure cross-cluster stability; see
 [roles/README.md](roles/README.md#storage-schema).
 
 **System Roles** (undeletable, persist at `__sys:role/<id>`):

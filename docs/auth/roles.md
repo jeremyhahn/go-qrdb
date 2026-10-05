@@ -429,11 +429,9 @@ On daemon initialization (`qrdbd start`), the five system roles are created dete
 
 - Each role is assigned a fixed UUIDv8 (RFC 9562 §5.8) derived over SHA-256 from
   the fixed `"go-qrdb:role-namespace/v8/"` prefix plus the tenant ID and role
-  name — `pkg/role.SystemRoleID(tenantID, roleName)`. The derivation was UUIDv5
-  (SHA-1) before the FIPS 140-3 migration; a cluster seeded then keeps its roles
-  under the legacy identifiers, which still resolve. See
+  name — `pkg/role.SystemRoleID(tenantID, roleName)`. See
   [identity-rbac/engineering.md](../identity-rbac/engineering.md#persistence)
-  for the compatibility rules.
+  for the derivation rules.
 - All five roles are marked as **system roles** (undeletable)
 - Roles are persisted in the KV store at `__sys:role/<id>` (Raft-replicated)
 - If roles already exist (restart scenario), the function returns immediately without duplication

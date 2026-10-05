@@ -31,10 +31,6 @@ func TestEntitlements_AllowsBarrierMode_Default(t *testing.T) {
 			t.Errorf("default AllowsBarrierMode(%q) = true, want false (hardware must be granted)", mode)
 		}
 	}
-	// "software" is normalized to "passphrase".
-	if !e.AllowsBarrierMode("software") {
-		t.Error(`AllowsBarrierMode("software") = false, want true (alias of passphrase)`)
-	}
 }
 
 // TestEntitlements_AllowsBarrierMode_Explicit proves a non-empty list is the
@@ -49,11 +45,6 @@ func TestEntitlements_AllowsBarrierMode_Explicit(t *testing.T) {
 	}
 	if e.AllowsBarrierMode("none") {
 		t.Error("none not in explicit list must be denied")
-	}
-	// software alias matches a "software" entry too.
-	e2 := &Entitlements{AllowedBarrierModes: []string{"software"}}
-	if !e2.AllowsBarrierMode("passphrase") {
-		t.Error(`AllowedBarrierModes ["software"] should allow "passphrase"`)
 	}
 }
 

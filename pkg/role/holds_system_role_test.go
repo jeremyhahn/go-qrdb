@@ -71,27 +71,6 @@ func TestHoldsSystemRole_OtherRoleDoesNotHold(t *testing.T) {
 	}
 }
 
-// TestHoldsSystemRole_CanonicalDoesNotHoldOverLegacy: on a cluster seeded
-// before the UUIDv5 migration the canonical identifier names no role, so it
-// grants nothing. Only the persisted legacy identifier does.
-func TestHoldsSystemRole_CanonicalDoesNotHoldOverLegacy(t *testing.T) {
-	kv := newMemKVStore()
-	svc, err := NewStore(kv)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	legacy := seedLegacyRole(t, kv, "acme", RoleNameSO, nil).ID
-
-	got, err := HoldsSystemRole(context.Background(), svc, "acme", []string{SystemRoleID("acme", RoleNameSO)}, RoleNameSO)
-	if err != nil || got {
-		t.Fatalf("HoldsSystemRole(canonical) = %v, %v; want false over a legacy seeding", got, err)
-	}
-	got, err = HoldsSystemRole(context.Background(), svc, "acme", []string{legacy}, RoleNameSO)
-	if err != nil || !got {
-		t.Fatalf("HoldsSystemRole(legacy) = %v, %v; want true", got, err)
-	}
-}
-
 // TestHoldsSystemRole_OtherTenantsRoleDoesNotHold: the SO role of another
 // tenant is not this tenant's SO.
 func TestHoldsSystemRole_OtherTenantsRoleDoesNotHold(t *testing.T) {

@@ -157,21 +157,14 @@ type Dependencies struct {
 	// Roles is the role-creation surface. Required.
 	Roles RoleCreator
 
-	// RoleResolver resolves a system role to the identifier it is actually
-	// persisted under, so grants bind to that record rather than to a
-	// freshly derived identifier. On a cluster seeded before system role
-	// IDs moved off UUIDv5/SHA-1, the seeded roles keep their legacy
-	// identifiers (seeding is name-unique and tolerates already-exists),
-	// and a grant written against the derived identifier would name no
-	// role at all.
-	//
-	// Leaving it nil is safe in two cases, and refused otherwise. It is
-	// safe when Roles itself implements role.NameResolver — qrdb's own
-	// role.RoleServicer does, and it is then used automatically — and when
-	// this run actually seeds the roles, where the derived identifier is
-	// the one being written. If the roles already existed and nothing can
-	// resolve them, first-boot fails with UnresolvableSystemRoleError
-	// rather than writing a guessed grant.
+	// RoleResolver looks a role up by name so registerBuiltInRoles can verify
+	// that a create-time collision on a built-in role's reserved name (or
+	// generated id) actually names that exact canonical role — same tenant,
+	// name, System flag and permission set — before treating it as this
+	// run's own idempotent re-attempt rather than a genuine, unexplained
+	// conflict (see builtInRoleAlreadySeeded). Leaving it nil is safe when
+	// Roles itself implements role.NameResolver, which qrdb's own
+	// role.RoleServicer does and which is then used automatically.
 	RoleResolver role.NameResolver
 
 	// UserResolver looks the admin user up by username so createAdminUser can
@@ -284,7 +277,7 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	}
 
 	// Step 2: built-in roles. Tolerates already-exists for idempotency.
-	rolesPreexisted, err := registerBuiltInRoles(ctx, deps, tenantID, result)
+	_, err := registerBuiltInRoles(ctx, deps, tenantID, result)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +286,7 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	// already-exists for idempotency. Cert generation only runs on the
 	// initial create so a re-run does not rotate the platform key
 	// material.
-	adminUser, created, err := createAdminUser(ctx, deps, tenantID, rolesPreexisted)
+	adminUser, created, err := createAdminUser(ctx, deps, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -467,10 +460,7 @@ func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID
 // under the supplied tenant. Already-exists for any individual role is
 // treated as idempotent success; only structural errors propagate.
 //
-// It reports whether any role was found to already exist. That distinguishes
-// a store this run seeded — where deriving a system role ID is exactly right,
-// because it is the identifier just written — from one seeded earlier, whose
-// identifiers this code may be unable to derive at all.
+// It reports whether any role was found to already exist.
 //
 // Two DIFFERENT "already exists" outcomes are tolerated, and BOTH are
 // verified by reading the persisted record back — see
@@ -478,16 +468,15 @@ func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID
 // value matching its collision kind:
 //
 //   - A name collision (RoleNameExistsError) does not need the persisted id
-//     to equal the freshly derived one: role.SystemRoleID's derivation has
-//     changed hash algorithm before (FIPS 140-3's move off SHA-1), and a
-//     cluster seeded under the retired scheme keeps its roles under their
-//     legacy identifiers rather than this run treating the mismatch as a
-//     reason to refuse. Every OTHER field — tenant, name, System, and the
-//     permission set — must still match exactly: an earlier release
-//     persisted every built-in role with System: false (CreateRoleRequest
-//     had no such field then), and accepting a record like that here would
-//     leave a reserved-name role mutable and deletable through the ordinary
-//     role APIs.
+//     to equal the freshly derived one: role.SystemRoleID is a pure function
+//     of tenant and name, so an idempotent re-attempt derives the identical
+//     id anyway, and this tolerance lets a genuinely matching record through
+//     on tenant/name/System/permissions alone. Every OTHER field — tenant,
+//     name, System, and the permission set — must still match exactly: an
+//     earlier release persisted every built-in role with System: false
+//     (CreateRoleRequest had no such field then), and accepting a record
+//     like that here would leave a reserved-name role mutable and deletable
+//     through the ordinary role APIs.
 //   - An id collision (RoleIDExistsError) does not answer "is this already
 //     seeded" from the error alone — see go-qrdb#555. CreateRole's atomic
 //     path guards the id claim and the name together and diagnoses the id
@@ -582,12 +571,12 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 //   - On a NAME collision the store's own name-uniqueness rule already
 //     proves the record this function reads back IS the one blocking the
 //     create — there is exactly one way to be blocked on a canonical name.
-//     Its id is deliberately NOT required to equal want.ID:
-//     role.SystemRoleID's derivation has changed hash algorithm before
-//     (UUIDv5/SHA-1 to UUIDv8/SHA-256, for FIPS 140-3), and a cluster seeded
-//     under the retired scheme keeps its roles under their legacy
-//     identifiers rather than this run silently trying to mint a second
-//     "admin" role under the current one.
+//     Its id is NOT required to equal want.ID: role.SystemRoleID is a pure
+//     function of tenant and name, so an idempotent re-attempt derives the
+//     identical id anyway, and this check exists to let a genuinely matching
+//     record through on tenant/name/System/permissions alone rather than
+//     fail a safe idempotent re-attempt on an id comparison that already
+//     cannot differ for one.
 //   - On an ID collision, want.ID already names SOME record, but the record
 //     found by NAME could be a different one entirely — an unrelated custom
 //     role might coincidentally claim the canonical name while a wholly
@@ -771,22 +760,8 @@ func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
 
 // createAdminUser creates the bootstrap admin. It returns the created user
 // (nil when the admin already existed), a created flag, and an error.
-func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, rolesPreexisted bool) (*user.User, bool, error) {
-	resolver := roleResolver(deps)
-	// Deriving a system role ID is correct only when this run seeded the
-	// store, because the derived value is then exactly what was written. If
-	// the roles were already there and nothing can tell us which identifiers
-	// they carry, the derived value is a guess — and on a cluster seeded
-	// before the UUIDv5 migration it is the wrong guess, producing an admin
-	// bound to no role at all while bootstrap reports success.
-	if resolver == nil && rolesPreexisted {
-		return nil, false, &UnresolvableSystemRoleError{Role: role.RoleNameAdmin, TenantID: tenantID}
-	}
-
-	adminRoleID, err := role.ResolveSystemRoleID(ctx, resolver, tenantID, role.RoleNameAdmin)
-	if err != nil {
-		return nil, false, err
-	}
+func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*user.User, bool, error) {
+	adminRoleID := role.SystemRoleID(tenantID, role.RoleNameAdmin)
 	roleIDs := []string{adminRoleID}
 
 	// Under the standard (non-strict) posture, also grant the Owner role so
@@ -795,11 +770,7 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, ro
 	// keeps only the canonical Admin@system grant and data-plane/governance
 	// duties require the operator/SO identities.
 	if !deps.SeparationOfDuties {
-		ownerRoleID, ownerErr := role.ResolveSystemRoleID(ctx, resolver, tenantID, role.RoleNameOwner)
-		if ownerErr != nil {
-			return nil, false, ownerErr
-		}
-		roleIDs = append(roleIDs, ownerRoleID)
+		roleIDs = append(roleIDs, role.SystemRoleID(tenantID, role.RoleNameOwner))
 	}
 
 	// A concurrent bootstrap attempt racing for the SAME fixed admin username

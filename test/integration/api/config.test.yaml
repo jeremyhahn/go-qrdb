@@ -43,10 +43,10 @@ auth:
   enabled: true
 
 # Seal configuration for barrier encryption integration testing.
-# Uses software strategy with deployment-ID-derived passphrase.
+# Uses the passphrase strategy with deployment-ID-derived passphrase.
 seal:
   enabled: true
-  strategy: "software"
+  strategy: "passphrase"
   root_key_path: "__sys:seal/root_key"
   credential_strategy: "barrier"
 

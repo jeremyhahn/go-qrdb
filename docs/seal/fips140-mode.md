@@ -268,14 +268,11 @@ without framing, tenant `a/b` with role `c` and tenant `a` with role `b/c`
 would collide on one identifier.
 
 **These identifiers are persisted data** — role primary keys, both secondary
-indexes, and the contents of every user record's `RoleIDs` — so the change is
-versioned, not a flag day. Writes emit only the v8 form; reads accept both.
-Re-deriving from a tenant and a role NAME is the direction that needs care,
-because on an already-seeded cluster the v8 identifier names no record:
-`role.ResolveSystemRoleID` answers from the store's name index and falls back
-to the canonical value, and `role.SystemRoleIDs` returns the whole set so that
-the SO deny-list and the separation-of-duties Owner strip match a legacy grant
-instead of letting it escape a control that exists to void it.
+indexes, and the contents of every user record's `RoleIDs`. There is no
+surviving compatibility layer for a pre-migration (UUIDv5/SHA-1) identifier:
+every cluster is provisioned, or re-provisioned, under the v8 scheme, and the
+SO deny-list and the separation-of-duties Owner strip match a role id against
+its canonical, deterministic `role.SystemRoleID` derivation directly.
 
 ### KDF selection — a test that pinned the toolchain instead of the selector
 

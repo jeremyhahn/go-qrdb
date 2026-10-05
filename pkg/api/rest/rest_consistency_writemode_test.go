@@ -225,25 +225,6 @@ func TestHandleKVGet_ConsistencyEventual_CallsGetStale(t *testing.T) {
 	}
 }
 
-func TestHandleKVGet_StaleTrue_CallsGetStale(t *testing.T) {
-	staleCalled := false
-	kvSvc := &captureKVService{}
-	kvSvc.getStaleFn = func(_ context.Context, _ string) ([]byte, error) {
-		staleCalled = true
-		return []byte("stale-legacy"), nil
-	}
-	srv := newCaptureSrv(kvSvc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/kv/mykey?stale=true", nil)
-	rec := httptest.NewRecorder()
-	srv.handleKVGet(rec, req, "mykey")
-
-	assertStatus(t, rec, http.StatusOK)
-	if !staleCalled {
-		t.Fatal("expected GetStale to be called for ?stale=true")
-	}
-}
-
 func TestHandleKVGet_NoParams_CallsPlainGet(t *testing.T) {
 	plainCalled := false
 	kvSvc := &captureKVService{}
@@ -274,7 +255,7 @@ func TestHandleKVGet_InvalidConsistency_Returns400(t *testing.T) {
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleKVGet_ConsistencyWinsOverStale(t *testing.T) {
+func TestHandleKVGet_Consistency_IgnoresUnrelatedParams(t *testing.T) {
 	var capturedLevel consistency.Level
 	kvSvc := &captureKVService{}
 	kvSvc.getWithConsistencyFn = func(_ context.Context, _ string, opts consistency.ReadOptions) ([]byte, error) {
@@ -283,7 +264,8 @@ func TestHandleKVGet_ConsistencyWinsOverStale(t *testing.T) {
 	}
 	srv := newCaptureSrv(kvSvc, nil)
 
-	// Both set: ?consistency= should win.
+	// An unrelated, unrecognised query parameter alongside ?consistency= must
+	// not change the resolved level.
 	req := httptest.NewRequest(http.MethodGet, "/kv/mykey?consistency=strong&stale=true", nil)
 	rec := httptest.NewRecorder()
 	srv.handleKVGet(rec, req, "mykey")
@@ -594,25 +576,6 @@ func TestHandleKVList_ConsistencyEventual_CallsListStale(t *testing.T) {
 	}
 }
 
-func TestHandleKVList_StaleTrue_CallsListStale(t *testing.T) {
-	staleCalled := false
-	kvSvc := &captureKVService{}
-	kvSvc.listStaleFn = func(_ context.Context, _ string) ([]string, error) {
-		staleCalled = true
-		return []string{"stale-k"}, nil
-	}
-	srv := newCaptureSrv(kvSvc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/kv?stale=true", nil)
-	rec := httptest.NewRecorder()
-	srv.handleKVList(rec, req)
-
-	assertStatus(t, rec, http.StatusOK)
-	if !staleCalled {
-		t.Fatal("expected ListStale for ?stale=true")
-	}
-}
-
 func TestHandleKVList_NoParams_CallsPlainList(t *testing.T) {
 	plainCalled := false
 	kvSvc := &captureKVService{}
@@ -682,25 +645,6 @@ func TestHandleKVScan_ConsistencyEventual_CallsScanStale(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK)
 	if !staleCalled {
 		t.Fatal("expected ScanStale for eventual consistency")
-	}
-}
-
-func TestHandleKVScan_StaleTrue_CallsScanStale(t *testing.T) {
-	staleCalled := false
-	kvSvc := &captureKVService{}
-	kvSvc.scanStaleFn = func(_ context.Context, _ string) (map[string][]byte, error) {
-		staleCalled = true
-		return map[string][]byte{"k": []byte("v")}, nil
-	}
-	srv := newCaptureSrv(kvSvc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/kv/scan?stale=true", nil)
-	rec := httptest.NewRecorder()
-	srv.handleKVScan(rec, req)
-
-	assertStatus(t, rec, http.StatusOK)
-	if !staleCalled {
-		t.Fatal("expected ScanStale for ?stale=true")
 	}
 }
 

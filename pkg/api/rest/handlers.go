@@ -439,8 +439,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 // existed at that historical revision.
 //
 // Optional query parameter ?consistency=strong|linearizable|eventual selects
-// the read consistency level. The legacy ?stale=true is equivalent to
-// ?consistency=eventual. When both are given, ?consistency= wins.
+// the read consistency level.
 func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
@@ -513,7 +512,7 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 	}
 
 	// Default: simple byte value retrieval. Consistency is controlled via
-	// ?consistency= or the legacy ?stale=true shorthand.
+	// ?consistency=.
 	kvSvc := s.kvSvcFor(w, ctx)
 	if kvSvc == nil {
 		return
@@ -528,7 +527,6 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 	var err error
 	switch {
 	case consistSpecified && consistOpts.Consistency == consistency.Eventual:
-		// Both ?consistency=eventual and legacy ?stale=true take this path.
 		data, err = kvSvc.GetStale(ctx, key)
 	case consistSpecified:
 		data, err = kvSvc.GetWithConsistency(ctx, key, consistOpts)
@@ -591,8 +589,7 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 }
 
 // handleKVList handles GET /kv?prefix=X -- lists keys by prefix. Consistency
-// is controlled via ?consistency=strong|linearizable|eventual or the legacy
-// ?stale=true shorthand (equivalent to eventual).
+// is controlled via ?consistency=strong|linearizable|eventual.
 func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	prefix := q.Get("prefix")
@@ -630,8 +627,7 @@ func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
 
 // handleKVScan handles GET /kv/scan?prefix=X -- returns key-value pairs
 // matching the given prefix. Consistency is controlled via
-// ?consistency=strong|linearizable|eventual or the legacy ?stale=true
-// shorthand (equivalent to eventual).
+// ?consistency=strong|linearizable|eventual.
 func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	prefix := q.Get("prefix")

@@ -169,9 +169,8 @@ func (m *tenantAwareRoleService) ResolvePermissions(ctx context.Context, roleIDs
 }
 
 // GetRoleByName always reports absence: this double tracks roles by id only,
-// and ResolveSystemRoleID treats *role.RoleNotFoundError as "not seeded yet,
-// fall back to the canonical deterministic id" -- exactly the behavior the
-// strict-SoD tests below rely on.
+// and the RoleServicer interface requires the method even though nothing in
+// this file's tests resolves a role by name.
 func (m *tenantAwareRoleService) GetRoleByName(_ context.Context, _, name string) (*role.Role, error) {
 	return nil, &role.RoleNotFoundError{ID: name}
 }
@@ -271,48 +270,26 @@ func TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant(t *testing.T) {
 	}
 }
 
-// nameLookupFailingRoleService resolves permissions like its embedded
-// tenant-aware double but fails every by-name lookup, so the system-role
-// resolution the SO deny-list and the Owner strip depend on cannot answer.
-type nameLookupFailingRoleService struct {
-	*tenantAwareRoleService
-}
-
-func (nameLookupFailingRoleService) GetRoleByName(context.Context, string, string) (*role.Role, error) {
-	return nil, errors.New("role store unavailable")
-}
-
-// TestAuthorize_BoundGrantFailuresDeny asserts every failure on the bound-role
-// path denies with an error rather than being read as "no grant, no
-// restriction": the SO check, the strict-SoD Owner strip, and the permission
-// resolution of the bound roles themselves.
-func TestAuthorize_BoundGrantFailuresDeny(t *testing.T) {
+// TestAuthorize_BoundGrantFailureDeniesForUnknownRole asserts a bound role
+// unknown in its target tenant denies with an error rather than being read
+// as "no grant, no restriction": ResolvePermissions reports it as
+// *role.RoleNotFoundError, wrapped in *ResolveError.
+//
+// The SO deny-list and the strict-SoD Owner strip are not covered here: they
+// match a bound role id against its role NAME and canonical identifier
+// directly, in memory (roleIDsHoldSystemRole, stripOwnerRole), with no role
+// store lookup to fail.
+func TestAuthorize_BoundGrantFailureDeniesForUnknownRole(t *testing.T) {
 	bound := &auth.Identity{
 		Subject:      "svc-1",
 		TenantID:     tenantid.System,
 		RoleBindings: []auth.RoleBinding{{RoleID: "acme-custom", TenantID: "acme"}},
 	}
-	failingNames := nameLookupFailingRoleService{&tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{
-		"acme": {"acme-custom": {permission.KVGet}},
-	}}}
-	tests := []struct {
-		name     string
-		authz    *RBACAuthorizer
-		resource string
-		action   string
-	}{
-		{name: "SO check cannot resolve the bound role", authz: New(failingNames), resource: "keys", action: "sign"},
-		{name: "Owner strip cannot resolve the bound role", authz: New(failingNames, WithStrictSeparation(true)), resource: "kv", action: "get"},
-		{name: "bound role unknown in its tenant", authz: New(&tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{"acme": {}}}), resource: "kv", action: "get"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.authz.Authorize(ctxFor("acme"), bound, tt.resource, tt.action)
-			var re *ResolveError
-			if !errors.As(err, &re) {
-				t.Fatalf("Authorize() = %v, want *ResolveError", err)
-			}
-		})
+	authz := New(&tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{"acme": {}}})
+	err := authz.Authorize(ctxFor("acme"), bound, "kv", "get")
+	var re *ResolveError
+	if !errors.As(err, &re) {
+		t.Fatalf("Authorize() = %v, want *ResolveError", err)
 	}
 }
 

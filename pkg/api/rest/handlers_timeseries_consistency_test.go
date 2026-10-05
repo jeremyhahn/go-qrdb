@@ -68,18 +68,21 @@ func TestHandleTSQuery_WithConsistency_RoutesToWithConsistency(t *testing.T) {
 	}
 }
 
-// TestHandleTSQuery_StaleParam_RoutesToWithConsistency verifies that the
-// legacy ?stale=true parameter is treated as Eventual consistency.
-func TestHandleTSQuery_StaleParam_RoutesToWithConsistency(t *testing.T) {
-	withConsistencyCalled := false
+// TestHandleTSQuery_StaleParamAlone_IsNotASpecialCase verifies that a bare
+// ?stale=true with no ?consistency= is not recognised as a consistency
+// shorthand: it routes to the plain Query path exactly like an absent
+// consistency parameter.
+func TestHandleTSQuery_StaleParamAlone_IsNotASpecialCase(t *testing.T) {
+	plainCalled := false
 
 	mock := &tsMock{
-		queryWithConsistencyFn: func(_ context.Context, _ string, _, _ time.Time, ropts consistency.ReadOptions, _ ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
-			withConsistencyCalled = true
-			if ropts.Consistency != consistency.Eventual {
-				t.Errorf("consistency = %v, want Eventual", ropts.Consistency)
-			}
+		queryFn: func(_ context.Context, _ string, _, _ time.Time, _ ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+			plainCalled = true
 			return []timeseries.DataPoint{}, nil
+		},
+		queryWithConsistencyFn: func(_ context.Context, _ string, _, _ time.Time, _ consistency.ReadOptions, _ ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+			t.Error("QueryWithConsistency must not be called for a bare ?stale=true")
+			return nil, nil
 		},
 	}
 	srv := newTSServer(mock)
@@ -91,8 +94,8 @@ func TestHandleTSQuery_StaleParam_RoutesToWithConsistency(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusOK)
-	if !withConsistencyCalled {
-		t.Fatal("QueryWithConsistency was not called for ?stale=true")
+	if !plainCalled {
+		t.Fatal("plain Query was not called for a bare ?stale=true")
 	}
 }
 

@@ -292,7 +292,7 @@ default (linearizable reads / sync writes), so existing clients are unaffected.
 |-----------|--------------------|---------------------|
 | **gRPC / Unix** | `ConsistencyLevel` enum on the request (`CONSISTENCY_LEVEL_STRONG/LINEARIZABLE/EVENTUAL`; `UNSPECIFIED`=default) | `WriteMode` enum (`WRITE_MODE_SYNC/WAL_DURABLE/BATCHED`) |
 | **QUIC** | Same protobuf request enums as gRPC | Same |
-| **REST** | `?consistency=strong\|linearizable\|eventual` query param (legacy `?stale=true` ≡ `eventual`) | `?write_mode=sync\|wal_durable\|batched` query param |
+| **REST** | `?consistency=strong\|linearizable\|eventual` query param | `?write_mode=sync\|wal_durable\|batched` query param |
 | **MCP** | optional `consistency` tool argument | optional `write_mode` tool argument |
 | **Embedded / SDK** | `transport.WithConsistency(level)` / `WithAllowStale()` read option | `transport.WithWriteMode(mode)` write option |
 | **Time-series** | `Consistency` field on the TS request structs (SDK) / `consistency` arg/param/enum on each transport | n/a (writes go through Raft proposal) |

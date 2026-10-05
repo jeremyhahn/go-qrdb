@@ -353,10 +353,6 @@ func TestClassifyAuthError_ResolveErrorDefinitiveCausesStayUnknown(t *testing.T)
 			err:  &rbac.ResolveError{Err: &role.InvalidResolverResultError{Name: "so", TenantID: "acme"}},
 		},
 		{
-			name: "rbac.InvalidRoleLookupError -- a resolver contract violation",
-			err:  &rbac.ResolveError{Err: &rbac.InvalidRoleLookupError{RoleID: "x"}},
-		},
-		{
 			// Review finding BL2: the cause chain can implement transientMarker
 			// and still answer false -- a corrupt stored record or a decrypt/
 			// authentication refusal, which role.newStoreError and

@@ -326,8 +326,8 @@ var authFailureRules = []struct {
 		var e *StoreUnavailableError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
-	// The RBAC authorizer's role-resolution failure (rbac.resolvePermissionSet,
-	// systemRoleIDs, staleMayDenote): the primary (linearizable) role store
+	// The RBAC authorizer's role-resolution failure
+	// (rbac.resolvePermissionSet): the primary (linearizable) role store
 	// failed or timed out, and either no StaleRead fallback is configured or
 	// -- go-qrdb strict-isolation phase 0 review finding B1 -- the caller's
 	// tenant is not the system tenant the fallback is confined to, so it was
@@ -341,16 +341,16 @@ var authFailureRules = []struct {
 	// returned VERBATIM, and that includes DEFINITIVE answers: a deleted (or
 	// never-existent) role is *role.RoleNotFoundError, a malformed request is
 	// *role.ValidationError, and a resolver contract violation is
-	// *role.InvalidResolverResultError or rbac's own
-	// *rbac.InvalidRoleLookupError. None of those is retryable -- retrying a
-	// RoleNotFoundError never finds the role, and a ValidationError's request
-	// never becomes valid -- so classifying every ResolveError as Unavailable
-	// turned a deleted role (401/403 on dev/main) into a PERMANENT retryable
-	// 503 on every request its holders made. An exclude-list would need to
-	// name every definitive type this package will ever meet; an allow-list
-	// instead names only what IS safe to retry, so a future definitive error
-	// type this rule does not yet recognise falls through unclassified
-	// (the caller's own fallback) rather than silently becoming retryable.
+	// *role.InvalidResolverResultError. None of those is retryable -- retrying
+	// a RoleNotFoundError never finds the role, and a ValidationError's
+	// request never becomes valid -- so classifying every ResolveError as
+	// Unavailable turned a deleted role (401/403 on dev/main) into a
+	// PERMANENT retryable 503 on every request its holders made. An
+	// exclude-list would need to name every definitive type this package will
+	// ever meet; an allow-list instead names only what IS safe to retry, so a
+	// future definitive error type this rule does not yet recognise falls
+	// through unclassified (the caller's own fallback) rather than silently
+	// becoming retryable.
 	{"rbac.ResolveError", func(err error) (AuthFailureClass, bool) {
 		var re *rbac.ResolveError
 		if !errors.As(err, &re) {

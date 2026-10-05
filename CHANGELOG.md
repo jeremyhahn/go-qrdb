@@ -86,6 +86,30 @@ are not reconstructed here — their history is in the git log.
     caller-supplied context. Read the plaintext through the ctx-taking
     `WithBytes(ctx, fn)` or `Open(ctx)` instead; `SecretValue` no longer
     implements `fmt.Stringer`.
+  - **`seal.strategy: software` alias removed.** It named the same strategy
+    as `passphrase` and is now refused like any other unknown value:
+    `seal.strategy: must be one of: passphrase, shamir, none`. Change
+    `strategy: software` to `strategy: passphrase` in any config. The same
+    alias in `pkg/quota`'s `Entitlements.AllowsBarrierMode` is also gone.
+  - **REST `?stale=true` removed; use `?consistency=eventual`.** The two
+    named the same read mode. A request using the old parameter name is now
+    read as an unrecognized query parameter rather than silently switched to
+    eventual consistency.
+  - **System-role-ID UUIDv5→UUIDv8 dual-read compatibility removed.**
+    `role.ResolveSystemRoleID`, `role.SystemRoleIDs` and their SDK
+    re-exports (`sdk.ResolveSystemRoleID`, `sdk.SystemRoleIDs`) are gone, along
+    with `rbac.InvalidRoleLookupError` and `rbac.CrossTenantFallbackError`,
+    which existed only to support that path. Every system role ID is now the
+    single canonical `role.SystemRoleID(tenantID, roleName)` derivation
+    (RFC 9562 §5.8 UUIDv8 over SHA-256); there is no alternate legacy
+    (UUIDv5/SHA-1) identifier a role can be persisted under, and nothing to
+    resolve. System roles are undeletable and name-immutable, so this
+    removes no reachable behavior on a cluster that has ever run a
+    FIPS-140-3-migrated release.
+  - **`pkg/pin` legacy Argon2id parameter defaults removed.** A stored PIN
+    record's hash parameters are always read from the record; a record
+    carrying no parameters now fails closed instead of falling back to a
+    hardcoded legacy default.
   - A buildgate (`test/buildgates/no_deprecated_test.go`) now fails the build
     if any non-generated, non-vendored Go source or `.proto` file declares
     `Deprecated:`/`deprecated = true`, or if the CLI defines a cobra

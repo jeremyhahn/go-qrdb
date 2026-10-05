@@ -438,11 +438,12 @@ func httpGet(t *testing.T, ca *testCA, port int, key string) []byte {
 	return nil
 }
 
-// httpGetStale sends a GET request with ?stale=true for local state machine
-// reads without Raft coordination. Retries up to 3 times on transient errors.
+// httpGetStale sends a GET request with ?consistency=eventual for local
+// state machine reads without Raft coordination. Retries up to 3 times on
+// transient errors.
 func httpGetStale(t *testing.T, ca *testCA, port int, key string) []byte {
 	t.Helper()
-	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s?stale=true", port, key)
+	url := fmt.Sprintf("https://127.0.0.1:%d/kv/%s?consistency=eventual", port, key)
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
 	var lastErr error

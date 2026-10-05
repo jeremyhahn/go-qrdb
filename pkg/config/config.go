@@ -1256,39 +1256,15 @@ func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
 
 // validSealStrategies contains the accepted seal strategy strings.
 // "passphrase" is the canonical name for the passphrase-protected software
-// seal strategy. "software" is accepted as a deprecated alias for
-// "passphrase": rejecting it would hard-break existing configs that the
-// validation message itself documents as a supported deprecated alias.
-// "none" is a barrier-present-but-unencrypted strategy: the at-rest store is
-// wrapped by the barrier in zero-epoch (plaintext) format so it can later be
-// migrated to a keyed strategy in place via `qrdb barrier enable-encryption`
-// (see docs/seal/enabling-encryption.md). It is the canonical source state for
-// enabling encryption after the fact.
+// seal strategy. "none" is a barrier-present-but-unencrypted strategy: the
+// at-rest store is wrapped by the barrier in zero-epoch (plaintext) format so
+// it can later be migrated to a keyed strategy in place via
+// `qrdb barrier enable-encryption` (see docs/seal/enabling-encryption.md). It
+// is the canonical source state for enabling encryption after the fact.
 var validSealStrategies = map[string]struct{}{
 	"passphrase": {},
 	"shamir":     {},
-	"software":   {},
 	"none":       {},
-}
-
-// sealStrategyAliases maps deprecated seal strategy spellings to their
-// canonical equivalent. Canonicalization happens once (Config.Validate and
-// SealConfig.CanonicalStrategy) so no downstream consumer ever has to special-
-// case an alias — every consumer reads the canonical strategy ID.
-var sealStrategyAliases = map[string]string{
-	"software": "passphrase",
-}
-
-// CanonicalStrategy returns the seal strategy with deprecated aliases resolved
-// to their canonical name (e.g. "software" -> "passphrase"). An empty Strategy
-// is returned unchanged so callers can apply their own default. This is the
-// single source of truth for alias resolution and must be used by every
-// consumer that branches on the strategy ID.
-func (c SealConfig) CanonicalStrategy() string {
-	if canonical, ok := sealStrategyAliases[c.Strategy]; ok {
-		return canonical
-	}
-	return c.Strategy
 }
 
 // validCredentialStrategies contains the accepted credential strategy strings.
@@ -2000,12 +1976,8 @@ func (c *Config) Validate() error {
 	if c.Seal.Enabled {
 		if c.Seal.Strategy != "" {
 			if _, ok := validSealStrategies[c.Seal.Strategy]; !ok {
-				return &ValidationError{Field: "seal.strategy", Reason: "must be one of: passphrase, shamir (software is a deprecated alias for passphrase)"}
+				return &ValidationError{Field: "seal.strategy", Reason: "must be one of: passphrase, shamir, none"}
 			}
-			// Canonicalize deprecated aliases once, here, so every downstream
-			// consumer reads the canonical strategy ID and never has to special-
-			// case "software".
-			c.Seal.Strategy = c.Seal.CanonicalStrategy()
 		}
 		if c.Seal.Strategy == "shamir" {
 			if c.Seal.ShamirThreshold < 2 {

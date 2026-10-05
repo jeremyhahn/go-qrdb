@@ -931,13 +931,13 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 	})
 
 	t.Run("persisted id differs, checkID=false", func(t *testing.T) {
-		// The RoleNameExistsError path's tolerance: a cluster seeded before
-		// role.SystemRoleID's hash algorithm changed (UUIDv5 to UUIDv8, FIPS
-		// 140-3) keeps its roles under their legacy identifiers, and a name
-		// collision alone already proves this record is the one blocking the
-		// create — so an id mismatch here is expected, not a conflict.
+		// The RoleNameExistsError path's tolerance: a name collision alone
+		// already proves this record is the one blocking the create, so
+		// builtInRoleAlreadySeeded does not additionally require the id to
+		// match before treating tenant/name/System/permissions agreement as
+		// an idempotent re-attempt.
 		roles := &fakeRoles{}
-		roles.remember(role.Role{ID: "a-legacy-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
+		roles.remember(role.Role{ID: "an-unrelated-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
 		if !builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, false) {
 			t.Error("expected true when only the id differs and checkID is false")
 		}

@@ -198,8 +198,7 @@ func verifyPINRecord(pin string, record *PINRecord) (bool, error) {
 func verifyArgon2id(pin string, record *PINRecord) (bool, error) {
 	var p argon2idParams
 	if err := json.Unmarshal(record.Params, &p); err != nil {
-		// Backward-compatible defaults for legacy records lacking params.
-		p = argon2idParams{Time: 3, Memory: 64 * 1024, Threads: 4, KeyLen: 32}
+		return false, err
 	}
 	computed := argon2.IDKey([]byte(pin), record.Salt, p.Time, p.Memory, p.Threads, p.KeyLen)
 	return subtle.ConstantTimeCompare(computed, record.Hash) == 1, nil

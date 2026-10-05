@@ -97,15 +97,7 @@ func seedJoinTokenFixtures(t *testing.T, n *node.Node, callerTenant, roleName st
 			}
 		}
 	}
-	// ResolveSystemRoleID, not the canonical SystemRoleID: a system role may
-	// be persisted under an identifier assigned before the v8 (SHA-256)
-	// canonical derivation existed, and matching the canonical hash
-	// directly would then name no role at all. See
-	// pkg/role/system_id.go's own doc comment.
-	roleID, err := role.ResolveSystemRoleID(ctx, svc.Role, callerTenant, roleName)
-	if err != nil {
-		t.Fatalf("ResolveSystemRoleID(%s, %s): %v", callerTenant, roleName, err)
-	}
+	roleID := role.SystemRoleID(callerTenant, roleName)
 	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             "matrix",

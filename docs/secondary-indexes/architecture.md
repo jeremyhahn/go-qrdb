@@ -215,17 +215,15 @@ already carries — changes the planner's documented contract and needs a
 ruling; so does threading order-preserving numeric encoding through
 `EntityIndex` and the Raft command format.
 
-**Refused: `index:"case_insensitive"` on the engine-backed and transport
-paths** (tracked as #34). The DAO-level index-creation path does not thread a
-case-sensitivity flag through to `KVEngine.handleIndexCreate`, which always
-builds a case-sensitive index there. Accepting the definition would create a
-case-SENSITIVE index
-while reporting success, and a lookup for `Alpha` over a stored `alpha` would
-return empty with a nil error — so those adapters refuse it and the DAO plans
-a correct full scan. Only an explicit `case_insensitive` tag is affected:
-`index.ParseIndexTags` defaults to case-sensitive, so ordinary `index:"true"`
-and `index:"unique"` fields keep their real engine index. `MemoryKVStore`
-honours the flag itself and does not refuse.
+**`index:"case_insensitive"` is honoured on every backend** (#34). The
+case-sensitivity flag is threaded end to end: `protocol.IndexFlagCaseInsensitive`
+carries it on the wire, and `KVEngine.handleIndexCreate`, `MVCCEngine`'s
+equivalent handler, the Pebble-backed `StoragePebbleIndex`, and
+`kvStoreAdapter.RegisterEntityIndexes` all derive `index.IndexConfig.CaseSensitive`
+from it rather than defaulting to case-sensitive. A case-insensitive
+definition now produces a real case-insensitive index everywhere, so a lookup
+for `Alpha` over a stored `alpha` matches instead of returning empty with a
+nil error. `MemoryKVStore` honours the flag the same way.
 
 **Open: indexing barrier-encrypted tenant stores.** The two `seal` stores exist
 to guarantee that an operator reading the shared store sees only ciphertext. An

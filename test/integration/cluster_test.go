@@ -788,7 +788,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 		deadline := time.Now().Add(30 * time.Second)
 		client := mtlsHTTPClient(t, ca, 5*time.Second)
 		for time.Now().Before(deadline) {
-			url := fmt.Sprintf("https://127.0.0.1:%d/kv?prefix=persist/&stale=true", port)
+			url := fmt.Sprintf("https://127.0.0.1:%d/kv?prefix=persist/&consistency=eventual", port)
 			resp, err := client.Get(url)
 			if err != nil {
 				lastDiag = fmt.Sprintf("conn error: %v", err)

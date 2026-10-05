@@ -22,30 +22,18 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
-// parseConsistencyParam reads the ?consistency= and ?stale= query parameters
-// from q and returns the resolved ReadOptions. The second return value is true
-// when an explicit consistency parameter was provided (and the caller should
-// use the WithConsistency service variant instead of the plain one).
-//
-// Precedence: an explicit ?consistency= wins over ?stale=true. When
-// ?consistency= is absent but ?stale=true is set, consistency.Eventual is
-// used so the legacy ?stale path keeps working.
+// parseConsistencyParam reads the ?consistency= query parameter from q and
+// returns the resolved ReadOptions. The second return value is true when an
+// explicit consistency parameter was provided (and the caller should use the
+// WithConsistency service variant instead of the plain one).
 //
 // On an unrecognised ?consistency= value the helper writes an HTTP 400 to w
 // and returns (_, false, false) — the caller must check the third return value
 // and return immediately when it is false.
 func parseConsistencyParam(w http.ResponseWriter, q url.Values) (opts consistency.ReadOptions, specified bool, ok bool) {
 	consistencyStr := q.Get("consistency")
-	staleStr := q.Get("stale")
 
 	if consistencyStr == "" {
-		if staleStr == "true" {
-			// Legacy compat: ?stale=true treated as eventual consistency.
-			return consistency.ReadOptions{
-				Consistency: consistency.Eventual,
-				AllowStale:  true,
-			}, true, true
-		}
 		// Absent: caller uses plain service method.
 		return consistency.ReadOptions{}, false, true
 	}

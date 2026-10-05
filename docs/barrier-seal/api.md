@@ -332,9 +332,7 @@ the section above that the whole surface is covered.
 
 ## Versioning
 
-Barrier REST paths are under `/v1/`. Nothing here is deprecated, but note the
-config-level alias: `seal.strategy: software` is a **deprecated alias** for
-`passphrase`, canonicalized at load.
+Barrier REST paths are under `/v1/`. Nothing here is deprecated.
 
 **Breaking change — credential fields moved from string to bytes.** The
 credential fields listed under *Schemas* were text strings in earlier

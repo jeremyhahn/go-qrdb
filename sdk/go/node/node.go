@@ -2499,7 +2499,7 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 
 	sealBackend := seal.NewStorageAdapter(sealStore)
 
-	strategyID := seal.StrategyID(cfg.Seal.CanonicalStrategy())
+	strategyID := seal.StrategyID(cfg.Seal.Strategy)
 	if strategyID == "" {
 		strategyID = seal.StrategyPassphrase
 	}
@@ -2649,7 +2649,7 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 //     must submit quorum shares via the barrier API.
 //   - StrategyPassphrase without a supplied passphrase.
 func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCfg qrdbconfig.SealConfig, passphrase []byte, log *slog.Logger) bool {
-	strategyID := seal.StrategyID(sealCfg.CanonicalStrategy())
+	strategyID := seal.StrategyID(sealCfg.Strategy)
 	if strategyID == "" {
 		strategyID = seal.StrategyPassphrase
 	}

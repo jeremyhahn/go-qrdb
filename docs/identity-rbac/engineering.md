@@ -934,20 +934,15 @@ effect is the same for both paths: a correctly enrolled non-system tenant
 user gets the retryable error, never a silent deny, and it now arrives within
 the same 500 ms budget either way, for both the user and the role lookup.
 
-**The role fallback's defect ran deeper than the user fallback's**:
-`role.SystemRoleIDs`/`ResolveSystemRoleID`
-read "no persisted record" from the fallback as "no legacy override — use the
-freshly derived canonical identifier", which is correct for a store with full
-visibility into the tenant and wrong for one simply blind to it. Every one of
-a tenant's role ids then missed that canonical-only set and fell to
-`staleMayDenote`, which treats an identifier the replica has no record of as
-one that MAY denote the system role being checked (the replica could be behind
-a role recreated under a generated identifier) — so an ordinary tenant role
-was wrongly recognised as SO (a false 403 under FIPS 140-3 AS10.03) or wrongly
-stripped by the strict-separation-of-duties Owner strip. Gating the fallback by
-tenant closes this the same way it closes the user-lookup case: the primary's
-transient error is reported instead of a verdict the fallback was never in a
-position to make.
+**The two grant-voiding controls need no fallback, or any store lookup, at
+all.** A system role's identifier is always its canonical, deterministic
+derivation (`pkg/role.SystemRoleID`): system roles are undeletable
+(`kvRoleStore.DeleteRole` refuses on `System: true`) and their name is
+immutable, so no system role is ever persisted under any other identifier.
+`roleIDsHoldSystemRole` (the SO deny-list) and `stripOwnerRole` (the
+strict-separation-of-duties Owner strip) match a role id against the role
+NAME and the canonical identifier directly, in memory, with no store
+consulted and nothing to fail over to.
 
 **A ResolveError's class depends on WHAT the primary returned, not just THAT
 it returned an error.** `resolvePermissionSet` wraps whatever the primary
@@ -1034,28 +1029,22 @@ unchecked call panics rather than failing cleanly.
   be captured by access logs, proxies, tracing and browser history on every
   successful read.
 
-**Identifier compatibility.** The derivation was UUIDv5 (name-based, SHA-1)
-until the FIPS 140-3 migration: SHA-1 does not exist under FIPS 140-3, and RFC
-4122 fixes v3 to MD5 and v5 to SHA-1, so v8 — the version reserved for
-application-defined derivations — is the only name-based form an approved hash
-can take. The 36-character UUID text shape is unchanged, so no index key or wire
-format moved with it.
+**Identifier scheme.** The derivation is RFC 9562 §5.8 UUIDv8 over SHA-256 of
+a fixed `"go-qrdb:role-namespace/v8/"` prefix plus the length-framed tenant ID
+and role name. SHA-1 does not exist under FIPS 140-3, and RFC 4122 fixes v3 to
+MD5 and v5 to SHA-1, so v8 — the version reserved for application-defined
+derivations — is the only name-based form an approved hash can take. There is
+only the one scheme: no alternate identifier a role can be persisted under,
+and no resolution step a caller must go through to find it.
 
-These identifiers are persisted data (role primary keys, both secondary indexes,
-and every user record's `RoleIDs`), so the change is versioned rather than a flag
-day: **writes emit only the v8 form, reads accept both.** A cluster seeded before
-the migration keeps its roles under their UUIDv5 identifiers — seeding is
-name-unique and tolerates already-exists, so those records are never replaced —
-and nothing already persisted becomes unresolvable:
-
-| Direction | How it stays correct |
+| Direction | How it works |
 |-----------|----------------------|
-| Identifier → role | Unchanged: a stored identifier is looked up verbatim, so `GetRole`, `ListRoles` and `ResolvePermissions` resolve a legacy record as they always did. |
-| Tenant + name → identifier | `role.ResolveSystemRoleID` answers from the name index rather than from a hash, so a grant binds to the record that exists. Bootstrap and first boot use it when assigning system roles. |
-| "Is this identifier role X?" | `role.SystemRoleIDs` returns both the canonical and the persisted identifier. The RBAC authorizer matches against the whole set, so the SO deny-list (FIPS 140-3 AS10.03) and the strict-separation-of-duties Owner strip still void a grant made before the migration. |
+| Identifier → role | A stored identifier is looked up verbatim, so `GetRole`, `ListRoles` and `ResolvePermissions` resolve it directly. |
+| Tenant + name → identifier | `pkg/role.SystemRoleID` derives the identifier directly from the tenant ID and role name. Bootstrap and first boot use it when assigning system roles. |
+| "Is this identifier role X?" (voiding a grant) | `roleIDsHoldSystemRole` (the SO deny-list) and `stripOwnerRole` (the strict-separation-of-duties Owner strip) compare a role id against the role NAME and the canonical identifier directly, in memory — see the paragraph above. |
 | Cluster permissions | `admin:add_member`, `admin:remove_member`, `admin:drain`, `admin:snapshot`, `admin:start_shard`, `admin:stop_shard`, `admin:shard_state`, `admin:topology`, `admin:node_compaction` (the node keyspace's compaction policy, which the built-in Admin role carries and only the system tenant's Admin can therefore use), every `rebalance:*` and every `backup:*` permission are `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): they act on shards every tenant shares and name no tenant, so as ScopeSelf the built-in Admin and SO roles let any tenant's Admin remove replicas from the system shard. `admin:peers` stays ScopeSelf for the etcd listener's tenant-facing `Cluster.MemberList`. See [../auth/roles.md](../auth/roles.md#cluster-membership-permissions-are-platform-operator-only). |
 | Node-barrier permissions | Every `seal:*` permission but `seal:status` -- including `seal:officer_register`, `seal:officer_list` and `seal:officer_revoke` -- and `ceremony:initialize` and `ceremony:sign_csr` are `ScopeCross` (`pkg/permission/node_barrier_scope.go`): the node barrier is a platform singleton, so ScopeSelf -- which compares the caller's tenant with itself for an operation that names no tenant -- let any tenant's SO rekey it, and register officers into its unseal and recovery domains, each of which receives a share of the node key at every distribution. See [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only). |
-| "Does this caller hold role X?" (admitting) | `role.HoldsSystemRole` matches only the identifier the role store persists the role under, in the caller's own tenant. It never matches the role *name* and never the canonical identifier when a legacy one is persisted: a control that ADMITS a caller must under-match, where a control that voids a grant over-matches. The SO dual-factor gate uses it. `Identity.Roles` holds role identifiers, so comparing a role name against it (`Identity.HasRole("so")`) refuses every real holder and admits any identity whose roles carry the literal string. |
+| "Does this caller hold role X?" (admitting) | `role.HoldsSystemRole` matches only the identifier the role store persists the role under, in the caller's own tenant. It never matches the role *name*: a control that ADMITS a caller must under-match, where a control that voids a grant over-matches. The SO dual-factor gate uses it. `Identity.Roles` holds role identifiers, so comparing a role name against it (`Identity.HasRole("so")`) refuses every real holder and admits any identity whose roles carry the literal string. |
 
 No capability is absent from a FIPS build as a result: the v8 derivation is the
 only one compiled, in every build.

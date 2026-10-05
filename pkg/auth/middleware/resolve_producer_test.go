@@ -230,29 +230,6 @@ func TestResolveErrorIsTransient_ProducerDeclaresTransience(t *testing.T) {
 		}
 	})
 
-	t.Run("role store name-index read failure is transient (SystemRoleIDs/GetRoleByName)", func(t *testing.T) {
-		// A re-review found this producer site (pkg/role/store.go GetRoleByName,
-		// the name-index read systemRoleIDs/the SO deny-list and the strict-SoD
-		// Owner strip resolve through) was never exercised: the earlier "role
-		// store read failure" subtest above only drives GetRole's PRIMARY key
-		// read. role.SystemRoleIDs calls GetRoleByName directly, so its own
-		// failure -- not GetRole's -- is what reaches ClassifyAuthError here.
-		readErr := errors.New("read index not ready")
-		svc, err := role.NewStore(&flakyGetKVStore{KVStore: kvstore.NewMemoryKVStore(), getErr: readErr})
-		if err != nil {
-			t.Fatalf("role.NewStore: %v", err)
-		}
-		_, resolveErr := role.SystemRoleIDs(context.Background(), svc, "acme", role.RoleNameSO)
-		if resolveErr == nil {
-			t.Fatal("expected an error from a name-index Get that always fails")
-		}
-		wrapped := &rbac.ResolveError{Err: resolveErr}
-		if got := ClassifyAuthError(wrapped); got != AuthFailureUnavailable {
-			t.Fatalf("ClassifyAuthError = %v, want AuthFailureUnavailable: a role store name-index "+
-				"read failure (GetRoleByName, the SO deny-list's own producer site) must be retryable", got)
-		}
-	})
-
 	t.Run("tenant service (seal.StorageBackend) read failure is transient (TenantService.GetTenant)", func(t *testing.T) {
 		// tenant.TenantService is the PRODUCTION TenantServicer wired in
 		// pkg/server/lifecycle and cmd/qrdbd -- not kvTenantService, which the

@@ -289,9 +289,6 @@ services and to the server, which wraps the node's sealed-window probe with
 - **Multiple registered strategies require an explicit choice.**
   `ErrNoStrategySpecified` otherwise. Exactly one registered is selected
   unconditionally.
-- **`software` is a deprecated config alias for `passphrase`**, canonicalized
-  once at load (`SealConfig.CanonicalStrategy()`), so every consumer sees
-  `passphrase` — and the strategy itself reports `ID() == "passphrase"`.
 - **Sealed refuses everything.** `ErrBarrierSealed` for every data-path read and
   write until unsealed. Only the sealed-window allowlist is reachable. That
   includes what was opened before the seal: on the SQL wires every statement of
@@ -682,7 +679,7 @@ tenant act on any tenant's database.
 ```yaml
 seal:
   enabled: true          # false (the default) runs with no barrier at all
-  strategy: passphrase   # passphrase | none | shamir  ("software" = deprecated alias)
+  strategy: passphrase   # passphrase | none | shamir
 ```
 
 Cluster sealing and cluster enable-encryption add:
@@ -701,8 +698,7 @@ a third of `cluster_lease`; and `cluster_ack_timeout` at most half of it. A
 config that breaks any of these is refused at load with a
 `config.ValidationError` naming the field.
 
-`SealConfig.CanonicalStrategy()` canonicalizes the alias at load. Per-database
-and per-tenant barrier configuration lives in
+Per-database and per-tenant barrier configuration lives in
 [../databases/](../databases/engineering.md) and
 [../multi-tenancy/](../multi-tenancy/engineering.md).
 

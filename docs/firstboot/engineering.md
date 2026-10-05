@@ -125,9 +125,8 @@ a second, unrelated credential bound instead.
   canonical name, the `System` flag, and permission set against the
   canonical built-in definition — an id collision additionally requires the
   persisted id to match exactly, while a name collision does not, since
-  `role.SystemRoleID`'s derivation has changed hash algorithm before
-  (UUIDv5/SHA-1 to UUIDv8/SHA-256, for FIPS 140-3) and a cluster seeded under
-  the retired scheme keeps its roles under their legacy identifiers. The
+  `role.SystemRoleID` is a pure function of tenant and name and an idempotent
+  re-attempt derives the identical id anyway. The
   `System` check exists because an earlier release persisted every built-in
   role with `System: false` (`CreateRoleRequest` had no such field then), and
   matching id/tenant/permissions while accepting that flag mismatch would

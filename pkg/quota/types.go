@@ -203,18 +203,15 @@ func (e *Entitlements) AllowsIsolation(mode string) bool {
 // AllowsBarrierMode reports whether an isolated tenant may select the given
 // dedicated-barrier sealing strategy. With an empty AllowedBarrierModes the
 // built-in software defaults (none/passphrase/shamir) are permitted and all
-// other modes (hardware) are denied; with a non-empty list only listed modes are
-// permitted. The "software" alias is normalized to "passphrase".
+// other modes (hardware) are denied; with a non-empty list only listed modes
+// are permitted.
 func (e *Entitlements) AllowsBarrierMode(mode string) bool {
-	if mode == "software" {
-		mode = "passphrase"
-	}
 	if len(e.AllowedBarrierModes) == 0 {
 		_, ok := defaultBarrierModes[mode]
 		return ok
 	}
 	for _, m := range e.AllowedBarrierModes {
-		if m == mode || (m == "software" && mode == "passphrase") {
+		if m == mode {
 			return true
 		}
 	}
