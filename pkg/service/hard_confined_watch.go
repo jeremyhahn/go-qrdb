@@ -32,14 +32,28 @@ import (
 // directly and relay through a channel of WatchEntityEvent, not through
 // this interface's Watch/WatchPrefix, so embedding would bypass the
 // refusal and filter above entirely. WatchEntity's key is composed exactly
-// like WatchEntity -- refused outright, matching Watch. WatchEntityType's
-// prefix is "{entityType}/": since an entity type is never a strict
-// substring of another (the composed prefix always ends at a "/"
-// boundary immediately after the whole type name), the confined entity
-// type's prefix either matches one of hardConfinedPrefixes exactly or does not
-// overlap it at all -- there is no partial-overlap case to filter, so
-// WatchEntityType refuses outright too rather than returning a channel
-// that could only ever deliver nothing.
+// like Watch's -- refused outright, matching Watch.
+//
+// WatchEntityType's prefix is "{entityType}/", and an EARLIER revision of
+// this file assumed that meant it could only ever match one of
+// hardConfinedPrefixes exactly or not overlap at all -- "an entity type is
+// never a strict substring of another" -- and refused outright on that
+// exact-match test alone. That assumption is false: an EntityType whose
+// own string is a SUB-PATH of a confined prefix (e.g. one beginning
+// "__sys:cert_ca/something") composes a prefix that lies INSIDE the
+// confined namespace without equaling it, which neither isHardConfinedKey
+// (wrong suffix test) nor an exact-equality check against
+// hardConfinedPrefixes ever catches, yet would reach the real
+// WatchEntityType unfiltered (go-qrdb#591's review, non-blocking -- found
+// latent, closed before it was reachable in practice). WatchEntityType now
+// uses hardConfinedPrefixOverlaps, the same overlap test WatchPrefix uses,
+// and filters rather than refuses when it overlaps without being an exact
+// root match, for the identical go-qrdb#555 reason WatchPrefix does: an
+// outright refusal over a broad sweep that merely touches the confined
+// namespace would break a legitimate broad watch the same way it broke a
+// broad Range. The bare confined root itself (isHardConfinedRoot) is still
+// refused outright, matching Watch and WatchEntity's own overt-probe
+// treatment.
 type hardConfinedWatch struct {
 	WatchServicer
 }
@@ -157,10 +171,37 @@ func (h *hardConfinedWatch) WatchEntity(ctx context.Context, req *WatchEntityReq
 }
 
 func (h *hardConfinedWatch) WatchEntityType(ctx context.Context, req *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error) {
-	if req != nil {
-		if prefix := entityPrefix(req.EntityType); isHardConfinedKey(prefix) || isHardConfinedRoot(prefix) {
-			return nil, &HardConfinedKeyError{Key: prefix}
-		}
+	if req == nil {
+		return h.WatchServicer.WatchEntityType(ctx, req)
 	}
-	return h.WatchServicer.WatchEntityType(ctx, req)
+	prefix := entityPrefix(req.EntityType)
+	if isHardConfinedRoot(prefix) {
+		return nil, &HardConfinedKeyError{Key: prefix}
+	}
+	inner, err := h.WatchServicer.WatchEntityType(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if !hardConfinedPrefixOverlaps(prefix) {
+		return inner, nil
+	}
+	return newHardConfinedFilteredEntityEvents(inner), nil
+}
+
+// hardConfinedFilteredEntityEvents is hardConfinedFilteredWatcher's analog
+// for WatchEntityType's own channel of WatchEntityEvent: every event whose
+// composed storage key (entityKey) lies in the hard-confined namespace is
+// dropped before it reaches the caller.
+func newHardConfinedFilteredEntityEvents(inner <-chan WatchEntityEvent) <-chan WatchEntityEvent {
+	out := make(chan WatchEntityEvent)
+	go func() {
+		defer close(out)
+		for ev := range inner {
+			if isHardConfinedKey(entityKey(ev.EntityType, ev.ID)) {
+				continue
+			}
+			out <- ev
+		}
+	}()
+	return out
 }

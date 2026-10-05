@@ -56,6 +56,11 @@ type fakeWatch struct {
 	calledWatch       bool
 	calledWatchPrefix bool
 	prefixWatcher     *fakeWatcher
+
+	// entityTypeChan, when non-nil, is returned by WatchEntityType instead
+	// of the default already-closed empty channel, so a test can push
+	// synthetic WatchEntityEvents onto it.
+	entityTypeChan chan WatchEntityEvent
 }
 
 func (f *fakeWatch) Watch(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
@@ -78,6 +83,9 @@ func (f *fakeWatch) WatchEntity(_ context.Context, _ *WatchEntityRequest) (<-cha
 
 func (f *fakeWatch) WatchEntityType(_ context.Context, _ *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error) {
 	f.calledWatchPrefix = true
+	if f.entityTypeChan != nil {
+		return f.entityTypeChan, nil
+	}
 	ch := make(chan WatchEntityEvent)
 	close(ch)
 	return ch, nil
@@ -249,6 +257,47 @@ func TestHardConfinedWatch_WatchEntityTypeRefusesTheConfinedType(t *testing.T) {
 	}
 	if fake.calledWatchPrefix {
 		t.Fatal("WatchEntityType delegated to the underlying servicer despite the refusal")
+	}
+}
+
+// TestHardConfinedWatch_WatchEntityTypeFiltersASubPathOverlap is go-qrdb#591's
+// review (non-blocking, "latent, but close it") red/green proof: an
+// EntityType whose own composed prefix lies INSIDE a confined namespace
+// without being EQUAL to its root (confinedEntityType + "/sub", here)
+// neither matches isHardConfinedRoot (not an exact match) nor
+// isHardConfinedKey (wrong suffix, a prefix test was never meant to use
+// it) -- so it was never refused at all before this fix, and reached the
+// underlying WatchEntityType unfiltered. It must now be let through
+// (never refused outright, the same go-qrdb#555 lesson WatchPrefix
+// learned for a broad sweep) but filtered: an event naming a
+// hard-confined key is dropped, and an ordinary one passes.
+func TestHardConfinedWatch_WatchEntityTypeFiltersASubPathOverlap(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWatch{entityTypeChan: make(chan WatchEntityEvent, 2)}
+	w := NewHardConfinedWatch(fake)
+
+	subPathType := EntityType(string(confinedEntityType) + "/sub")
+	ch, err := w.WatchEntityType(ctx, &WatchEntityTypeRequest{EntityType: subPathType})
+	if err != nil {
+		t.Fatalf("WatchEntityType(sub-path overlap) = %v, want no refusal", err)
+	}
+	if !fake.calledWatchPrefix {
+		t.Fatal("expected WatchEntityType to reach the underlying servicer rather than refusing outright")
+	}
+
+	fake.entityTypeChan <- WatchEntityEvent{EntityType: subPathType, ID: confinedEntityID}
+	fake.entityTypeChan <- WatchEntityEvent{EntityType: subPathType, ID: "ordinary-id"}
+	close(fake.entityTypeChan)
+
+	got, ok := <-ch
+	if !ok {
+		t.Fatal("expected the ordinary event to be delivered, got channel closed first")
+	}
+	if got.ID != "ordinary-id" {
+		t.Fatalf("delivered event ID = %q, want %q (the confined one must have been dropped)", got.ID, "ordinary-id")
+	}
+	if _, ok := <-ch; ok {
+		t.Fatal("expected the channel to close after the one ordinary event")
 	}
 }
 
