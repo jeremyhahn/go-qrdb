@@ -26,7 +26,7 @@ func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePu
 	if err := t.gate("SealStorePut"); err != nil {
 		return err
 	}
-	if err := t.requireIdentity(ctx); err != nil {
+	if err := t.authorize(ctx, "SealStorePut"); err != nil {
 		return err
 	}
 	if t.closed.Load() {
@@ -43,7 +43,7 @@ func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGe
 	if err := t.gate("SealStoreGet"); err != nil {
 		return nil, err
 	}
-	if err := t.requireIdentity(ctx); err != nil {
+	if err := t.authorize(ctx, "SealStoreGet"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -67,7 +67,7 @@ func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStor
 	if err := t.gate("SealStoreDelete"); err != nil {
 		return err
 	}
-	if err := t.requireIdentity(ctx); err != nil {
+	if err := t.authorize(ctx, "SealStoreDelete"); err != nil {
 		return err
 	}
 	if t.closed.Load() {
@@ -84,7 +84,7 @@ func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreList
 	if err := t.gate("SealStoreList"); err != nil {
 		return nil, err
 	}
-	if err := t.requireIdentity(ctx); err != nil {
+	if err := t.authorize(ctx, "SealStoreList"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -107,7 +107,7 @@ func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStor
 	if err := t.gate("SealStoreReseal"); err != nil {
 		return err
 	}
-	if err := t.requireIdentity(ctx); err != nil {
+	if err := t.authorize(ctx, "SealStoreReseal"); err != nil {
 		return err
 	}
 	if t.closed.Load() {
@@ -124,7 +124,7 @@ func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreSt
 	if err := t.gate("SealStoreStatus"); err != nil {
 		return nil, err
 	}
-	if err := t.requireIdentity(ctx); err != nil {
+	if err := t.authorize(ctx, "SealStoreStatus"); err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {

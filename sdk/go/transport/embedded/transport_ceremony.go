@@ -49,9 +49,10 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err := t.gate("CeremonyInitialize"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "CeremonyInitialize"); err != nil {
-		return nil, err
-	}
+	// CeremonyInitialize is a sealed-window verb (pkg/api/sealedwindow.VerbCeremonyInitialize): public
+	// on every transport's boot-time sealed listener, because an embedded node
+	// has no IAM store to authenticate against while sealed. It is gated by
+	// the CA state (pre-operational) the ceremony service checks, not an RBAC permission.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -144,9 +145,10 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if err := t.gate("CeremonySignCSR"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "CeremonySignCSR"); err != nil {
-		return nil, err
-	}
+	// CeremonySignCSR is a sealed-window verb (pkg/api/sealedwindow.VerbCeremonySignCSR): public
+	// on every transport's boot-time sealed listener, because an embedded node
+	// has no IAM store to authenticate against while sealed. It is gated by
+	// the SO PIN the ceremony service verifies, not an RBAC permission.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

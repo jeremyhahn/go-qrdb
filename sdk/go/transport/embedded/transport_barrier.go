@@ -44,9 +44,9 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if err := t.gate("BarrierInitialize"); err != nil {
 		return err
 	}
-	if err := t.authorize(ctx, "BarrierInitialize"); err != nil {
-		return err
-	}
+	// BarrierInitialize is a sealed-window verb (pkg/api/sealedwindow.VerbBarrierInitialize): public on every transport's boot-time sealed listener, because an
+	// embedded node has no IAM store to authenticate against while sealed.
+	// It is gated by secret (passphrase/Shamir share set) the strategy verifies, not an RBAC permission.
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -65,9 +65,9 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	if err := t.gate("BarrierUnseal"); err != nil {
 		return err
 	}
-	if err := t.authorize(ctx, "BarrierUnseal"); err != nil {
-		return err
-	}
+	// BarrierUnseal is a sealed-window verb (pkg/api/sealedwindow.VerbBarrierUnseal): public on every transport's boot-time sealed listener, because an
+	// embedded node has no IAM store to authenticate against while sealed.
+	// It is gated by the unseal secret the barrier strategy verifies, not an RBAC permission.
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -159,9 +159,9 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if err := t.gate("BarrierInitializeShamir"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "BarrierInitializeShamir"); err != nil {
-		return nil, err
-	}
+	// BarrierInitializeShamir is a sealed-window verb (pkg/api/sealedwindow.VerbShamirInitialize): public on every transport's boot-time sealed listener, because an
+	// embedded node has no IAM store to authenticate against while sealed.
+	// It is gated by the SO/user PINs ProvisionInitializePINs verifies, not an RBAC permission.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -503,9 +503,9 @@ func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerR
 	if err := t.gate("OfficerRegister"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "OfficerRegister"); err != nil {
-		return nil, err
-	}
+	// OfficerRegister is a sealed-window verb (pkg/api/sealedwindow.VerbOfficerRegister): public on every transport's boot-time sealed listener, because an
+	// embedded node has no IAM store to authenticate against while sealed.
+	// It is gated by the CA trust-on-first-use registration the sealed-window listener grants anonymously.
 	return t.registerHolder(ctx, seal.DomainUnseal, req)
 }
 
@@ -514,9 +514,9 @@ func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.
 	if err := t.gate("RecoveryOfficerRegister"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "RecoveryOfficerRegister"); err != nil {
-		return nil, err
-	}
+	// RecoveryOfficerRegister is a sealed-window verb (pkg/api/sealedwindow.VerbRecoveryOfficerRegister): public on every transport's boot-time sealed listener, because an
+	// embedded node has no IAM store to authenticate against while sealed.
+	// It is gated by the CA trust-on-first-use registration the sealed-window listener grants anonymously.
 	return t.registerHolder(ctx, seal.DomainRecovery, req)
 }
 

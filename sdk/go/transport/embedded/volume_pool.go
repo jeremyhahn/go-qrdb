@@ -80,6 +80,9 @@ func (c *volumePoolClient) List(ctx context.Context) ([]transport.VolumePool, er
 	if err := c.transport.gate("VolumePoolClient.List"); err != nil {
 		return nil, err
 	}
+	if err := c.transport.authorize(ctx, "VolumePoolClient.List"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -100,6 +103,9 @@ func (c *volumePoolClient) List(ctx context.Context) ([]transport.VolumePool, er
 // Pick returns one backend from the named pool.
 func (c *volumePoolClient) Pick(ctx context.Context, poolName string, hint transport.VolumePoolHint) (*transport.VolumePoolBackend, error) {
 	if err := c.transport.gate("VolumePoolClient.Pick"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.authorize(ctx, "VolumePoolClient.Pick"); err != nil {
 		return nil, err
 	}
 	if c.transport.closed.Load() {
@@ -136,6 +142,9 @@ func (c *volumePoolClient) Pick(ctx context.Context, poolName string, hint trans
 // initialisation.
 func (c *volumePoolClient) RegisterPool(ctx context.Context, req transport.RegisterVolumePoolRequest) error {
 	if err := c.transport.gate("VolumePoolClient.RegisterPool"); err != nil {
+		return err
+	}
+	if err := c.transport.authorize(ctx, "VolumePoolClient.RegisterPool"); err != nil {
 		return err
 	}
 	if c.transport.closed.Load() {

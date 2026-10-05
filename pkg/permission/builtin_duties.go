@@ -114,6 +114,7 @@ func registerGovernanceDuties() {
 		SealStatus, SealRotateRootKey, SealRekey,
 		SealGenerateRecovery,
 		SealInitializeShamir,
+		SealStoreManage,
 		// Share-holder registry.
 		SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
 		// Shamir ceremony (SO-exclusive).

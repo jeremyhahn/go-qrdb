@@ -777,9 +777,9 @@ func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, erro
 	if err := t.gate("Health"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "Health"); err != nil {
-		return nil, err
-	}
+	// Health is public on every transport (pkg/api/sealedwindow.VerbHealth;
+	// REST's /health is server.publicIf with no permission at all), sealed or
+	// not: liveness must be checkable with no identity and no barrier state.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

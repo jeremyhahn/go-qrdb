@@ -263,31 +263,23 @@ var operationPermissions = map[string]permission.Permission{
 
 	// Ceremony. Share holders claim their envelopes through the barrier
 	// holder methods, not here.
-	"CeremonyInitialize": permission.CeremonyInitialize,
-	"CeremonyStatus":     permission.CeremonyStatus,
-	"CeremonySignCSR":    permission.CeremonySignCSR,
+	"CeremonyStatus": permission.CeremonyStatus,
 
 	// Node barrier (the system barrier itself -- a platform singleton no
 	// tenant owns). Share-claim and quorum routes are IdentityGated, not
 	// here -- see transport_barrier.go.
-	"BarrierInitialize":           permission.SealBootstrap,
-	"BarrierUnseal":               permission.SealUnseal,
 	"BarrierSeal":                 permission.SealSeal,
 	"BarrierClusterUnseal":        permission.SealUnseal,
 	"BarrierStatus":               permission.SealStatus,
-	"BarrierInitializeShamir":     permission.SealInitializeShamir,
 	"BarrierEnableEncryption":     permission.SealEnableEncryption,
 	"BarrierGenerateRecoveryKeys": permission.SealGenerateRecovery,
 	"BarrierDeleteRecoveryKeys":   permission.SealGenerateRecovery,
 	"BarrierHasRecoveryKeys":      permission.SealStatus,
 	"OfficerList":                 permission.SealOfficerList,
-	"OfficerRegister":             permission.SealOfficerRegister,
-	"RecoveryOfficerRegister":     permission.SealOfficerRegister,
 	"BarrierRekeyStart":           permission.SealRekey,
 	"BarrierOfficerRevoke":        permission.SealOfficerRevoke,
 
 	// Admin / cluster membership.
-	"Health":            permission.AdminHealth,
 	"Status":            permission.AdminStatus,
 	"Peers":             permission.AdminPeers,
 	"AddMember":         permission.AdminAddMember,
@@ -308,24 +300,72 @@ var operationPermissions = map[string]permission.Permission{
 	// from a request field).
 	"AuditClient.QueryAudit":  permission.AuditQuery,
 	"AuditClient.VerifyChain": permission.AuditVerify,
+
+	// FactorClient (userID-scoped MFA enrollment lifecycle; the same
+	// underlying userAuthFactorSvc the "User auth factors" block above
+	// authorizes for UserAuthFactorClient, so the SAME permissions --
+	// matching the network's userauthfactor.* route family exactly. Target
+	// resolution is NOT SelfTarget, unlike this map's other entries: see
+	// authorizeUserTarget calls in factor.go.
+	//
+	// "Verify" has no dedicated permission of its own: it is the
+	// challenge-response check a login flow performs against an
+	// already-enrolled factor, so it is gated on user_authfactors:login,
+	// the same permission userauthfactor.Login checks on every network
+	// transport.
+
+	// VolumePoolClient (ScopeCross: a volume pool is platform storage
+	// topology, not a tenant's). No network transport exposes this family
+	// at all -- it is a host-composition-time facility -- so it is gated
+	// here, ambient-self, exactly like every other ScopeCross entry in this
+	// table: AuthorizeTarget resolves SelfTarget to the caller's own
+	// tenant and the RBAC authorizer's ScopeCross rule admits only a
+	// system-tenant identity regardless.
+	"VolumePoolClient.List":         permission.VolumePoolList,
+	"VolumePoolClient.Pick":         permission.VolumePoolRead,
+	"VolumePoolClient.RegisterPool": permission.VolumePoolCreate,
+
+	// RBACClient.ListPermissions resolves an ARBITRARY identity's effective
+	// permissions (the identity argument, not necessarily the caller) --
+	// the same introspection permissions:resolve already gates for the
+	// caller's own tenant (ResolvePermissions above), required here too
+	// before handing back someone else's grants.
+	"RBACClient.ListPermissions": permission.PermissionsResolve,
+
+	// PermissionClient (the permission-catalog sub-client; read-only,
+	// mirrors role.ListPermissions's permissions:list on every network
+	// transport. Lookup/LookupScope have no network route of their own --
+	// embedded/SDK-only catalog conveniences -- so they are gated on the
+	// same catalog-read permission as List.
+	"PermissionClient.List":        permission.PermissionsList,
+	"PermissionClient.Lookup":      permission.PermissionsList,
+	"PermissionClient.LookupScope": permission.PermissionsList,
+
+	// SealStore* (a generic secret-store abstraction over a seal strategy's
+	// own state, reached only through the embedded SDK -- no network route
+	// exists). seal:store_manage is ScopeCross like every other node-barrier
+	// permission, so SelfTarget here resolves to the caller's own tenant and
+	// the RBAC authorizer's ScopeCross rule admits only a system-tenant
+	// identity regardless, exactly like the "Node barrier" block above.
+	"SealStorePut":    permission.SealStoreManage,
+	"SealStoreGet":    permission.SealStoreManage,
+	"SealStoreDelete": permission.SealStoreManage,
+	"SealStoreList":   permission.SealStoreManage,
+	"SealStoreReseal": permission.SealStoreManage,
+	"SealStoreStatus": permission.SealStoreManage,
 }
 
-// requireIdentity is the floor for an operation with no network-exposed
-// equivalent and so no entry in pkg/permission to check: SealStore* (a
-// generic secret-store abstraction over a seal strategy's own state,
-// reached only through the embedded SDK). It cannot authorize against a
-// PERMISSION that does not exist, but it must not leave the operation open
-// to a context carrying no identity at all, so it requires the same thing
-// permission.IdentityGated requires everywhere else: an authenticated
-// caller. This is a documented, deliberately conservative floor -- see
-// go-qrdb's embedded-authorization report -- pending an owner decision on
-// whether this surface gets its own permission family.
+// requireIdentity is the floor for the share-claim and quorum handshakes
+// (permission.IdentityGated): no permission check, just an authenticated
+// caller -- the holder authenticates through the factor it presents (a
+// certificate, a PIN), not a role. A nil t.authMW authorizes everything.
 func (t *Transport) requireIdentity(ctx context.Context) error {
 	if t.authMW == nil {
 		return nil
 	}
 	return t.authMW.AuthorizeTarget(ctx, permission.IdentityGated, authmw.SelfTarget())
 }
+
 
 // authorizeCertTenant gates a certificate operation on the tenant the
 // REQUEST names (generate, list), not the tenant the caller happens to be
@@ -350,26 +390,46 @@ func (t *Transport) authorizeCertRevoke(ctx context.Context, serial string) erro
 	return t.authMW.AuthorizeCertRevoke(ctx, serial, t.certProv)
 }
 
+// UnregisteredOperationError is returned by authorize when called with a
+// method key that operationPermissions does not declare. It is a
+// programming-error floor, not a caller-facing denial: authorize is called
+// only with literal string keys this package itself controls, and every
+// one of them is proven present in operationPermissions by
+// TestTransportClientAuthorizationSurface_CoversEveryMethod and
+// TestSubClientAuthorizationSurface_CoversEveryMethod, so this should be
+// unreachable in a build that passes them. It exists so a FUTURE call that
+// slips past those gates (a typo, a key removed from the table but not from
+// its call site) fails CLOSED in production rather than silently admitting
+// every caller -- the fail-open the no-op return used to be, before the
+// owner's "one pluggable auth chain" security review asked for enforcement
+// rather than a declaration that could drift from it.
+type UnregisteredOperationError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *UnregisteredOperationError) Error() string {
+	return "embedded: " + e.Method + " has no registered permission; refusing rather than admitting an uncontrolled operation"
+}
+
 // authorize is the generic RBAC check every ambient-self operation above
 // runs: AuthMiddleware.AuthorizeTarget against the caller's own tenant --
 // the SAME decision, through the SAME pkg/auth/middleware call and the SAME
 // pkg/permission entry, that the network transports make for the SAME
-// operation. method must be a key of operationPermissions; this is a
-// deliberate no-op for one that is not, so a target-resolved or
-// IdentityGated operation calling it by mistake fails neither open nor
-// closed -- it fails LOUD, in
-// TestTransportClientAuthorizationSurface_CoversEveryMethod, which requires
-// every transport.Client method to be registered somewhere.
+// operation. method must be a key of operationPermissions.
 //
 // A nil t.authMW authorizes everything, matching a network transport run
-// with no AuthMiddleware (--auth-enabled=false): RBAC stays opt-in.
+// with no AuthMiddleware (--auth-enabled=false): RBAC stays opt-in. Once an
+// AuthMiddleware IS installed, an unregistered method key fails CLOSED
+// (UnregisteredOperationError), not open: see
+// TestOperationPermissions_UnknownKeyFailsClosed.
 func (t *Transport) authorize(ctx context.Context, method string) error {
 	if t.authMW == nil {
 		return nil
 	}
 	perm, ok := operationPermissions[method]
 	if !ok {
-		return nil
+		return &UnregisteredOperationError{Method: method}
 	}
 	return t.authMW.AuthorizeTarget(ctx, perm, authmw.SelfTarget())
 }

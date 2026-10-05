@@ -474,6 +474,16 @@ const (
 	// with their certificate thumbprints and claim state. ScopeCross, so only
 	// a system-tenant identity exercises it.
 	SealOfficerList Permission = "seal:officer_list"
+
+	// SealStoreManage grants access to the generic secret store a seal
+	// strategy keeps for its own state (SealStore{Put,Get,Delete,List,
+	// Reseal,Status} on the embedded SDK transport -- there is no network
+	// route for this surface, it exists only for an in-process embedder).
+	// It is platform state, like every other node-barrier permission:
+	// ScopeCross (node_barrier_scope.go), so only a system-tenant identity
+	// exercises it, and a tenant-scoped identity is refused regardless of
+	// what it names.
+	SealStoreManage Permission = "seal:store_manage"
 )
 
 // ---------------------------------------------------------------------------
@@ -990,6 +1000,7 @@ var categories = []Category{
 			SealRotateRootKey, SealRekey, SealEnableEncryption,
 			SealGenerateRecovery, SealInitializeShamir,
 			SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
+			SealStoreManage,
 		},
 	},
 	{

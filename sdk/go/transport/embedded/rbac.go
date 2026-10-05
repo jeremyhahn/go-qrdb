@@ -96,9 +96,16 @@ func validateIdentity(id *transport.Identity) error {
 	return nil
 }
 
-// Authorize delegates to the wrapped auth.Authorizer.
+// Authorize delegates to the wrapped auth.Authorizer. It is an
+// introspection tool -- "can THIS identity do THAT" -- not an operation on
+// the caller's own identity, so it carries no permission.Permission of its
+// own; permission.IdentityGated is its floor, requiring an authenticated
+// caller so the probe itself is not reachable anonymously.
 func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity, resource, action string) error {
 	if err := c.transport.gate("RBACClient.Authorize"); err != nil {
+		return err
+	}
+	if err := c.transport.requireIdentity(ctx); err != nil {
 		return err
 	}
 	if c.transport.closed.Load() {
@@ -132,6 +139,9 @@ func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity
 // the built-in Admin role grants this way.
 func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Identity) ([]transport.PermissionInfo, error) {
 	if err := c.transport.gate("RBACClient.ListPermissions"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.authorize(ctx, "RBACClient.ListPermissions"); err != nil {
 		return nil, err
 	}
 	if c.transport.closed.Load() {

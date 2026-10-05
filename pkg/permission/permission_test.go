@@ -562,7 +562,9 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 1 databases:officer_unenrol, removing a database holder before its
 	//   custody is initialized = 376.
 	// + 1 cluster join-token minting perm (cluster:join_token) = 377 total.
-	const expectedTotal = 377
+	// + 1 seal:store_manage, the generic secret store a seal strategy keeps
+	//   for its own state (embedded-SDK-only; no network route) = 378 total.
+	const expectedTotal = 378
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

@@ -55,6 +55,10 @@ func nodeBarrierSOPermissions() []Permission {
 		SealRotateRootKey,
 		SealSeal,
 		SealUnseal,
+		// SealStoreManage: the generic secret store a seal strategy keeps
+		// for its own state is platform singleton state, like the rest of
+		// this set -- see its own doc comment in constants.go.
+		SealStoreManage,
 	}
 }
 

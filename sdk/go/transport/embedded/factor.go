@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -187,6 +188,9 @@ func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transpo
 	if err := c.transport.gate("FactorClient.Enroll"); err != nil {
 		return err
 	}
+	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsAdd); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -209,6 +213,9 @@ func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transpo
 // List returns every factor belonging to the user.
 func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Factor, error) {
 	if err := c.transport.gate("FactorClient.List"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsList); err != nil {
 		return nil, err
 	}
 	if c.transport.closed.Load() {
@@ -239,6 +246,9 @@ func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID strin
 	if err := c.transport.gate("FactorClient.Remove"); err != nil {
 		return err
 	}
+	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsRemove); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -261,6 +271,12 @@ func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID strin
 // factor type.
 func (c *factorClient) Verify(ctx context.Context, userID uint64, challenge transport.VerifyChallenge) (*transport.FactorVerifyResult, error) {
 	if err := c.transport.gate("FactorClient.Verify"); err != nil {
+		return nil, err
+	}
+	// Verify is the challenge-response check a login flow performs against an
+	// already-enrolled factor -- the same action user_authfactors:login
+	// gates on every network transport's userauthfactor.Login route.
+	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsLogin); err != nil {
 		return nil, err
 	}
 	if c.transport.closed.Load() {

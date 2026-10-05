@@ -96,17 +96,44 @@ var identityGatedOperations = map[string]struct{}{
 	"DatabaseBarrierShareClaimComplete": {},
 	"DatabaseBarrierQuorumBegin":        {},
 	"DatabaseBarrierQuorumSubmit":       {},
+}
 
-	// SealStore* has no permission.Permission of its own (see
-	// requireIdentity's comment); it is grouped here because, like the
-	// claim/quorum handshakes, the floor it enforces is "an authenticated
-	// caller", not an RBAC grant.
-	"SealStorePut":    {},
-	"SealStoreGet":    {},
-	"SealStoreDelete": {},
-	"SealStoreList":   {},
-	"SealStoreReseal": {},
-	"SealStoreStatus": {},
+// publicOperations are *Transport methods reachable with NO identity and NO
+// permission at all, matching network parity exactly (owner security review
+// item 7):
+//
+//   - Health: public on every transport (REST's /health is
+//     server.publicIf, carrying no permission). Liveness must be checkable
+//     with no identity and no barrier state.
+//   - The sealed-window bootstrap/unseal verbs
+//     (pkg/api/sealedwindow.Table): BarrierInitialize, BarrierUnseal,
+//     BarrierInitializeShamir, OfficerRegister, RecoveryOfficerRegister,
+//     CeremonyInitialize, CeremonySignCSR. Every protocol transport's
+//     boot-time sealed-window listener serves these with NO authentication,
+//     because that listener has no identity plane to authenticate against
+//     -- an embedded node has no IAM store while sealed either, so the
+//     embedder must be able to drive the SAME verbs in-process. Each is
+//     gated instead by its own domain credential: the unseal secret /
+//     Shamir share set the barrier strategy verifies, the SO/user PINs
+//     ProvisionInitializePINs verifies, or the CA's trust-on-first-use
+//     registration.
+//
+// BarrierStatus, CeremonyStatus and Status are NOT here: REST gates all
+// three behind an RBAC permission outside the sealed window
+// (permission.AdminStatus/SealStatus/CeremonyStatus), and the embedded
+// transport's single code path is that regular, authenticated side of the
+// gate -- matching pkg/api/sealedwindow's own documented assumption for
+// the embedded transport ("it is always the regular, authenticated side").
+// Only the verbs with no OTHER path to succeed while sealed are public.
+var publicOperations = map[string]struct{}{
+	"Health":                  {},
+	"BarrierInitialize":       {},
+	"BarrierUnseal":           {},
+	"BarrierInitializeShamir": {},
+	"OfficerRegister":         {},
+	"RecoveryOfficerRegister": {},
+	"CeremonyInitialize":      {},
+	"CeremonySignCSR":         {},
 }
 
 // lifecycleOperations are request-shaped methods that are not requests:
@@ -118,15 +145,8 @@ var identityGatedOperations = map[string]struct{}{
 // the clone), and the "Phase 3 provider" accessors (RBACClient,
 // FactorClient, LoginClient, SessionClient, VolumePoolClient, AuditClient,
 // PermissionClient, SQLClient) that construct and return a sub-client
-// rather than perform an operation themselves.
-//
-// The sub-clients those accessors return are NOT covered by this gate: their
-// methods (FactorClient.Enroll, RBACClient.Authorize, and so on) live on a
-// different concrete type (factorClient, rbacClient, ...), so
-// reflect.TypeOf(&Transport{}) never sees them. FactorClient's four methods
-// in particular (Enroll/List/Remove/Verify, each keyed by userID) have no
-// permission check at all today -- a known, documented gap, not a silent
-// one. See the embedded-authorization report for the follow-up.
+// rather than perform an operation themselves. The sub-clients those
+// accessors return ARE covered, by subClientCoverage below.
 var lifecycleOperations = map[string]struct{}{
 	"Connect":              {},
 	"Close":                {},
@@ -174,21 +194,14 @@ var buildTagGatedMethods = map[string]struct{}{
 // way. Every method must be declared in exactly one of: operationPermissions
 // (ambient-self, routed through the SAME pkg/auth/middleware decision and
 // pkg/permission entry the equivalent network route uses, where one exists),
-// targetResolvedOperations, identityGatedOperations, or
+// targetResolvedOperations, identityGatedOperations, publicOperations, or
 // lifecycleOperations. A method declared in more than one, or in none,
 // fails the build -- so a new operation cannot ship without its
 // authorization mechanism stated, and this table cannot silently drift out
 // of step with the type it describes.
-//
-// What this gate does NOT reach: the sub-clients the "Phase 3 provider"
-// accessors return (FactorClient, RBACClient, LoginClient, SessionClient,
-// VolumePoolClient, AuditClient, PermissionClient, SQLClient) live on their
-// own concrete types, invisible to reflect.TypeOf(&Transport{}). See
-// lifecycleOperations' comment for the one documented gap that leaves open
-// (FactorClient's four methods).
 func TestTransportClientAuthorizationSurface_CoversEveryMethod(t *testing.T) {
 	typ := reflect.TypeOf(&Transport{})
-	sets := []map[string]struct{}{targetResolvedOperations, identityGatedOperations, lifecycleOperations}
+	sets := []map[string]struct{}{targetResolvedOperations, identityGatedOperations, publicOperations, lifecycleOperations}
 
 	seen := make(map[string]bool, typ.NumMethod())
 	for i := 0; i < typ.NumMethod(); i++ {
@@ -203,14 +216,15 @@ func TestTransportClientAuthorizationSurface_CoversEveryMethod(t *testing.T) {
 		for _, set := range sets {
 			if _, ok := set[name]; ok {
 				count++
-				declaredIn = append(declaredIn, "a target/identity/lifecycle set")
+				declaredIn = append(declaredIn, "a target/identity/public/lifecycle set")
 			}
 		}
 		switch count {
 		case 0:
 			t.Errorf("(*Transport).%s is declared in none of operationPermissions, "+
-				"targetResolvedOperations, identityGatedOperations, or lifecycleOperations: "+
-				"a new embedded operation must state how it is authorized before it ships", name)
+				"targetResolvedOperations, identityGatedOperations, publicOperations, or "+
+				"lifecycleOperations: a new embedded operation must state how it is "+
+				"authorized before it ships", name)
 		case 1:
 			// exactly one -- correct.
 		default:
@@ -235,12 +249,13 @@ func TestTransportClientAuthorizationSurface_CoversEveryMethod(t *testing.T) {
 	}
 	checkStale("targetResolvedOperations", targetResolvedOperations)
 	checkStale("identityGatedOperations", identityGatedOperations)
+	checkStale("publicOperations", publicOperations)
 	checkStale("lifecycleOperations", lifecycleOperations)
 	for name := range operationPermissions {
-		// A dotted name (AuditClient.QueryAudit) belongs to a Phase 3
-		// provider sub-client (transport.AuditProvider), not *Transport
-		// itself, so it is never checked against this type's method set.
-		if name == "AuditClient.QueryAudit" || name == "AuditClient.VerifyChain" {
+		if isSubClientKey(name) {
+			// A dotted name (AuditClient.QueryAudit) belongs to a Phase 3
+			// provider sub-client, not *Transport itself -- checked against
+			// its OWN type by TestSubClientAuthorizationSurface_CoversEveryMethod.
 			continue
 		}
 		if _, gated := buildTagGatedMethods[name]; gated {

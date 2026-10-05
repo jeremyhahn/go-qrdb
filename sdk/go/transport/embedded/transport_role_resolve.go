@@ -45,11 +45,11 @@ func (t *Transport) ResolvePermissions(ctx context.Context, req *transport.Resol
 	if err := t.gate("ResolvePermissions"); err != nil {
 		return nil, err
 	}
-	if t.roleSvc == nil {
-		return nil, &transport.NotImplementedError{Method: "ResolvePermissions"}
-	}
 	if err := t.authorize(ctx, "ResolvePermissions"); err != nil {
 		return nil, err
+	}
+	if t.roleSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "ResolvePermissions"}
 	}
 	perms, err := t.roleSvc.ResolvePermissions(ctx, req.RoleIDs)
 	if err != nil {

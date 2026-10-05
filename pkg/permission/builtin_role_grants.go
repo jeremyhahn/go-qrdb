@@ -49,6 +49,7 @@ func registerSOGrants() {
 		SealStatus, SealRotateRootKey, SealRekey,
 		SealGenerateRecovery,
 		SealInitializeShamir,
+		SealStoreManage,
 		// Share-holder enrolment and revocation (Admins enrol too)
 		SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
 		// Ceremony (SO-exclusive)

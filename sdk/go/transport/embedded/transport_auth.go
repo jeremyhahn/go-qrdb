@@ -133,11 +133,11 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 	if err := t.gate("GetUserByCertThumbprint"); err != nil {
 		return nil, err
 	}
-	if t.userSvc == nil {
-		return nil, &transport.NotImplementedError{Method: "GetUserByCertThumbprint"}
-	}
 	if err := t.authorize(ctx, "GetUserByCertThumbprint"); err != nil {
 		return nil, err
+	}
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "GetUserByCertThumbprint"}
 	}
 	u, err := t.userSvc.UserByCertThumbprint(ctx, thumbprint)
 	if err != nil {
