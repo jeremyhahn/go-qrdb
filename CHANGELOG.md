@@ -325,11 +325,6 @@ are not reconstructed here — their history is in the git log.
   the PIN with `transport.WithSOPIN`, which every network transport already
   reads into the request's `so_pin` field. The Go SDK's
   `BarrierSeal(ctx)` is unchanged: a caller binds the PIN to `ctx`.
-- **BREAKING: the TypeScript SDK and the desktop app seal with the SO PIN.**
-  `SealClient.seal(soPin?)` sends `so_pin` (REST) or passes it to the desktop
-  binding, whose Go signature is now `SealBinding.Seal(soPin string)`; the
-  Seal Manager's confirmation asks for the SO PIN. Neither could seal a node
-  with an SO PIN provisioned before.
 - **The sign-csr state refusal names the state it runs in.**
   `ceremony.ErrNotInitializedOrEnrolling` read "requires enrolling or
   operational state", but sign-csr is pre-operational only; it now reads
@@ -337,6 +332,34 @@ are not reconstructed here — their history is in the git log.
   shared that sentinel for a different refusal, returns the new
   `ceremony.ErrNotInitialized` (`qrdb.ErrCeremonyNotInitialized` in the Go
   SDK) before `qrdb init` has run.
+- **Followers now actually leave "awaiting admin credential" without a
+  restart.** `WatchForAdminBound` watched the bare, un-namespaced admin
+  record key, but every production composer namespaces the user store by
+  `tenant.IdentityNamespace` before it reaches the replicated KV plane, so
+  the real committed key is `"system/"` plus that record key. A bind
+  committed between the initial lookup and the watch's own registration
+  was also invisible to both; the watch now re-checks once immediately
+  after registering. A lookup failure other than "no admin account yet"
+  ended the watch permanently instead of retrying it. `cmd/qrdbd`'s watch
+  goroutine was untracked at shutdown; it is now waited on. `sdk/go/node`
+  decided this posture once, before any embedder had run first boot, so a
+  fresh node whose first boot created the admin unbound stayed "not
+  awaiting" until a restart; `Node.FirstBoot`/`FirstBootWithCeremony` now
+  re-decide it immediately afterward.
+- **The per-source SO PIN lockout keyed an unauthenticated caller by
+  host:port, not host.** A rotating ephemeral client port -- or a new
+  connection per request behind a pooling reverse proxy -- gave a fresh
+  counter every time, defeating the isolation entirely; every such
+  "addr:" principal also counted toward the 64-failure aggregate cap meant
+  for authenticated principals only, so enough distinct unauthenticated
+  hosts guessing together could lock out both a different host and an
+  authenticated officer. The address is now keyed by host alone (IPv6
+  normalized, zone-aware), and "addr:" principals no longer participate
+  in, or are refused by, the aggregate cap.
+- **`ReissueAdminCredential` refused outright on a BYO-TLS node (no
+  configured `CeremonyCA`), and separately risked a nil-pointer panic
+  reading the CA's bundle directly.** BYOC reissue needs no `CeremonyCA`
+  at all; it now resolves the trust bundle the same way `Initialize` does.
 
 ### Security
 
