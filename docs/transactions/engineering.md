@@ -61,6 +61,20 @@ whole, and a failed guard applies neither write — on every engine, mode and
 transport cell, through `sdk.NewKVStoreAdapter` exactly as a consumer
 reaches it.
 
+**BREAKING: `UnitOfWork.Commit` now requires `transaction:execute`, not
+`kv:put`/`kv:delete`.** The removed sequential apply-and-compensate
+fallback applied each queued operation through the DAO's own `Save`/`Delete`,
+which over the SDK is a plain `kv.Put`/`kv.Delete` call -- gated by
+`kv:put`/`kv:delete` on every transport (the proto's
+`option (qrdb.v1.permission)` on `rpc Put`/`rpc Delete`). `Commit` now
+always goes through the SAME `ExecuteTransaction` RPC `PutAllIfAllUnchanged`
+does, gated by `transaction:execute` (`rpc Transaction`'s own proto option,
+identical on REST/QUIC/MCP's route tables and the etcd shim). A role or a
+caller that held `kv:put`/`kv:delete` but not `transaction:execute` could
+commit a `UnitOfWork` before; it is refused with `PermissionDenied` now.
+The built-in `Operator` role holds both and is unaffected; a caller running
+under a narrower, hand-authored role needs `transaction:execute` added.
+
 ### Types
 
 ```go
@@ -206,6 +220,7 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | Import format cannot be inferred and none given | refused | **yes** |
 | `--transactional` import, any row fails | whole import rolled back, `ImportResult.Failed > 0` | **yes** |
 | Missing `transaction:execute` / `batch:execute` | permission denied | **yes** |
+| `UnitOfWork.Commit` by a caller holding `kv:put`/`kv:delete` but not `transaction:execute` | permission denied (**BREAKING**: the removed compensating fallback needed only `kv:put`/`kv:delete`) | **yes** |
 | Barrier sealed | refused | **yes** |
 
 ## Configuration

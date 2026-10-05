@@ -467,7 +467,16 @@ are not reconstructed here — their history is in the git log.
   `MultiGuardedBatchKVStore` and refuses with `*AtomicBatchUnsupportedError`
   otherwise; the sequential apply-with-best-effort-compensation fallback is
   removed entirely (coordinator ruling) because it was not atomic against a
-  concurrent reader. `sdk/go` gains `NewDAOUnitOfWork`, `RegisterDAOSave`,
+  concurrent reader. **This also changes the permission `Commit` needs**:
+  the removed fallback applied each queued operation as a plain
+  `kv.Put`/`kv.Delete` (`kv:put`/`kv:delete`); the guarded-batch path it
+  always takes now is the same `ExecuteTransaction` RPC
+  `PutAllIfAllUnchanged` uses, gated by `transaction:execute` on every
+  transport. A caller holding only `kv:put`/`kv:delete` could commit a
+  `UnitOfWork` before and is refused with `PermissionDenied` now; the
+  built-in `Operator` role holds both and is unaffected. See
+  [docs/transactions/engineering.md](docs/transactions/engineering.md).
+  `sdk/go` gains `NewDAOUnitOfWork`, `RegisterDAOSave`,
   `RegisterDAODelete` and `WithDAOUnitOfWorkTimeout` -- the generic
   functions a `DAOUnitOfWork` needs to be constructed and populated from
   outside the module, which the existing type-only re-export could not
