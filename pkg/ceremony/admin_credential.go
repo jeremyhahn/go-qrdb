@@ -424,7 +424,7 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state == StateAwaitingInit || s.deps.CA == nil {
+	if s.state == StateAwaitingInit {
 		return nil, ErrNotInitialized
 	}
 
@@ -452,9 +452,15 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 		return nil, err
 	}
 
-	caBundle, err := s.deps.CA.CABundle()
+	// resolveCABundlePEM, exactly as Initialize uses it: a configured
+	// CeremonyCA's own bundle, or this node's configured client-CA trust
+	// anchor when deps.CA is nil (BYO-TLS, go-qrdb#560 re-review item 3,
+	// which this call wrongly refused outright before resolving anything,
+	// and would otherwise nil-pointer on deps.CA.CABundle() below -- BYOC
+	// reissue needs no CeremonyCA at all).
+	caBundle, err := s.resolveCABundlePEM(s.deps.CA)
 	if err != nil {
-		return nil, &AdminCredentialRejectedError{Cause: err}
+		return nil, err
 	}
 
 	certPEM, keyPEM, source, aerr := issueAdminCredential(ctx, s.deps.CA, opts, caBundle)

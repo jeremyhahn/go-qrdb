@@ -304,6 +304,74 @@ func TestReissueAdminCredential_Succeeds(t *testing.T) {
 	assert.Equal(t, StateOperational, svc.State())
 }
 
+// TestReissueAdminCredential_BYOTLSBYOCBinds is the go-qrdb#560 re-review
+// item 3 regression test: on a BYO-TLS node (Initialize called with a nil
+// CeremonyCA, exactly as cmd/qrdbd and sdk/go/node wire a node with no
+// cluster CA private key), ReissueAdminCredential used to refuse outright
+// with ErrNotInitialized the instant deps.CA was nil -- regardless of
+// state -- and would have nil-pointer panicked on deps.CA.CABundle() had
+// that guard not caught it first. BYOC reissue needs no CeremonyCA at all
+// (issueAdminCredential's own BYOC branch never reads ca), so the fix
+// reuses resolveCABundlePEM exactly as Initialize does: a configured CA's
+// bundle, or this node's configured ClientCACertPEM when ca is nil.
+//
+// Models the full scenario: BYO-TLS init with a first BYOC admin
+// certificate, that certificate is lost (the "restart into awaiting
+// admin credential" case firstboot's own tests cover at the orchestration
+// layer -- this test isolates the ceremony-level bug beneath it), and a
+// SO-PIN-gated reissue with a SECOND BYOC certificate must bind.
+func TestReissueAdminCredential_BYOTLSBYOCBinds(t *testing.T) {
+	operatorCA := newMockCA(t)
+	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
+	})
+	require.NoError(t, err)
+	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
+
+	firstAdminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
+	})
+	require.NoError(t, err)
+
+	cfg := byoTLSConfig(serverLeaf.CertPEM, clientCACertPEM)
+	svc := newTestCeremonyService(t, cfg, testBarrier(t))
+
+	// BYO-TLS init via BYOC: ca is nil throughout, exactly as a real
+	// BYO-TLS composition calls Initialize.
+	first, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		AdminCertPEM: firstAdminLeaf.CertPEM,
+	})
+	require.NoError(t, err)
+	require.Equal(t, AdminCredentialBYOC, first.AdminCredentialSource)
+
+	// The first certificate is lost (expired, or simply never reached the
+	// admin account's binding before a restart); a second BYOC certificate
+	// is presented to the SO-PIN-gated reissue path instead of re-running
+	// the whole ceremony.
+	secondAdminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ValidityDays: 30,
+	})
+	require.NoError(t, err)
+
+	second, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{
+		SOPin:        "test-so-pin",
+		AdminCertPEM: secondAdminLeaf.CertPEM,
+	})
+	require.NoError(t, err, "BYOC reissue on a BYO-TLS node (deps.CA == nil) must not refuse or panic")
+	assert.Equal(t, AdminCredentialBYOC, second.AdminCredentialSource)
+	assert.Equal(t, secondAdminLeaf.CertPEM, second.AdminCertPEM)
+	assert.NotEqual(t, first.AdminCertPEM, second.AdminCertPEM, "reissue must bind the SECOND certificate, not replay the first")
+
+	last, source := svc.LastIssuedAdminCertPEM()
+	assert.Equal(t, second.AdminCertPEM, last)
+	assert.Equal(t, AdminCredentialBYOC, source)
+}
+
 // TestReissueAdminCredential_HonoursCSRPath covers that reissue applies the
 // SAME path resolution as Initialize: supplying a CSR selects CSR-sign.
 func TestReissueAdminCredential_HonoursCSRPath(t *testing.T) {
