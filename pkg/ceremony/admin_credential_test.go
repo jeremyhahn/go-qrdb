@@ -421,6 +421,74 @@ func TestReissueAdminCredential_UnprovisionedBackendRefuses(t *testing.T) {
 	assert.ErrorIs(t, err, pin.ErrPINNotSet)
 }
 
+// TestReissueAdminCredential_WrongPINRefusedBeforeAnyCredentialWork is the
+// core-gate regression test the re-review asked for alongside the BYO-TLS
+// fix above: the WRONG SO PIN against an ALREADY-provisioned ceremony must
+// refuse before resolveCABundlePEM or issueAdminCredential ever run, not
+// merely before an unprovisioned backend's different refusal (the existing
+// TestReissueAdminCredential_UnprovisionedBackendRefuses). Proves the SO
+// PIN gate and the credential-issuance path stay in that order on both
+// compositions this call reaches -- a configured CA (generate) and
+// BYO-TLS, CA nil (BYOC) -- so a caller presenting no valid PIN can reach
+// neither.
+func TestReissueAdminCredential_WrongPINRefusedBeforeAnyCredentialWork(t *testing.T) {
+	t.Run("configured CA (generate)", func(t *testing.T) {
+		svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+
+		first, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+			SOPin:         "test-so-pin",
+			UserPin:       "test-user-pin",
+			AdminGenerate: true,
+		})
+		require.NoError(t, err)
+
+		_, err = svc.ReissueAdminCredential(context.Background(), &InitializeOptions{
+			SOPin:         "definitely-the-wrong-pin",
+			AdminGenerate: true,
+		})
+		require.ErrorIs(t, err, pin.ErrPINInvalid)
+
+		// The refusal must be pure: no fresh credential was minted, and
+		// the certificate Initialize already issued is still the last
+		// one recorded.
+		last, source := svc.LastIssuedAdminCertPEM()
+		assert.Equal(t, first.AdminCertPEM, last)
+		assert.Equal(t, AdminCredentialGenerated, source)
+	})
+
+	t.Run("BYO-TLS, CA nil (BYOC)", func(t *testing.T) {
+		operatorCA := newMockCA(t)
+		serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+			CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
+		})
+		require.NoError(t, err)
+		clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
+		adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+			CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			ValidityDays: 30,
+		})
+		require.NoError(t, err)
+
+		svc := newTestCeremonyService(t, byoTLSConfig(serverLeaf.CertPEM, clientCACertPEM), testBarrier(t))
+		first, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
+			SOPin: "test-so-pin", UserPin: "test-user-pin",
+			AdminCertPEM: adminLeaf.CertPEM,
+		})
+		require.NoError(t, err)
+
+		_, err = svc.ReissueAdminCredential(context.Background(), &InitializeOptions{
+			SOPin:        "definitely-the-wrong-pin",
+			AdminCertPEM: adminLeaf.CertPEM,
+		})
+		require.ErrorIs(t, err, pin.ErrPINInvalid)
+
+		last, source := svc.LastIssuedAdminCertPEM()
+		assert.Equal(t, first.AdminCertPEM, last)
+		assert.Equal(t, AdminCredentialBYOC, source)
+	})
+}
+
 // TestCACertPool_BeforeInitialize covers the not-yet-initialized case.
 func TestCACertPool_BeforeInitialize(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
