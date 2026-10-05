@@ -120,6 +120,89 @@ func TestRaftSMOverFileStorage_ServesAndSurvivesRestart(t *testing.T) {
 	t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
 }
 
+// TestRaftSMOverFileStorage_PrefixKeyPairSurvivesEitherOrder is the
+// end-to-end acceptance for go-qrdb#592: a disk-SM-over-file-storage raft
+// node used to kill the shard on an ordinary pair of client writes -- a key
+// and a key for which it is a '/' prefix, in either order -- because the
+// file backend's key-to-path mapping collided the second write with the
+// first's own directory. `SM.Apply` returning that storage error is fatal
+// to go-quicraft: `lastApplied` stops advancing on the replica and every
+// later linearizable read stalls, which is why this runs through the real
+// daemon and CLI rather than only at the state-machine level -- it is the
+// shard staying responsive afterward that the unit-level tests cannot
+// observe. Both orders must leave the shard able to serve a `kv get` for
+// EVERY key this test writes, including ones proposed after the pair.
+func TestRaftSMOverFileStorage_PrefixKeyPairSurvivesEitherOrder(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+	ca := generateTestCA(t)
+	dataDir := t.TempDir()
+
+	raftPort := allocatePorts(t, 1)[0]
+	tcpPorts := allocateTCPPorts(t, 2)
+	restPort, grpcPort := tcpPorts[0], tcpPorts[1]
+
+	startSMFileNode(t, bin, dataDir, raftPort, restPort, grpcPort, ca)
+
+	cliArgs := func(args ...string) []string {
+		base := []string{
+			"--server", fmt.Sprintf("https://127.0.0.1:%d", restPort),
+			"--ca-file", ca.CertPath,
+			"--timeout", "20s",
+		}
+		return append(base, args...)
+	}
+
+	put := func(key, value string) {
+		t.Helper()
+		deadline := time.Now().Add(60 * time.Second)
+		var out string
+		var err error
+		for time.Now().Before(deadline) {
+			out, err = runCLI(t, cli, cliArgs("kv", "put", key, value)...)
+			if err == nil {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		t.Fatalf("kv put %s=%s never succeeded (this is the circuit-breaker trip "+
+			"go-qrdb#592 describes if it stalls rather than erroring quickly): %v\n%s", key, value, err, out)
+	}
+	get := func(key, want string) {
+		t.Helper()
+		deadline := time.Now().Add(60 * time.Second)
+		var out string
+		var err error
+		for time.Now().Before(deadline) {
+			out, err = runCLI(t, cli, cliArgs("kv", "get", key)...)
+			if err == nil && strings.Contains(out, want) {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		t.Fatalf("kv get %s never returned %q (shard may be stalled): err=%v out=%s", key, want, err, out)
+	}
+
+	// Child, then its own '/' prefix -- the exact order the report named.
+	put("prefix-a/child", "child-value")
+	put("prefix-a", "parent-value")
+	get("prefix-a/child", "child-value")
+	get("prefix-a", "parent-value")
+
+	// The reverse order, on a second key pair so the two cases cannot mask
+	// each other.
+	put("prefix-b", "parent-value-2")
+	put("prefix-b/child", "child-value-2")
+	get("prefix-b", "parent-value-2")
+	get("prefix-b/child", "child-value-2")
+
+	// The shard must still apply and serve an entry proposed after both
+	// pairs -- the property an actual breaker trip would have cost every
+	// later proposal on the shard.
+	put("after-the-pairs", "still-alive")
+	get("after-the-pairs", "still-alive")
+}
+
 // TestRaftSMOverFileStorage_ThreeNodeCluster is the clustered half of the
 // phase-5 acceptance: a 3-node raft group whose replicas all apply
 // through file-backed SM storage reaches quorum, accepts a write on one
