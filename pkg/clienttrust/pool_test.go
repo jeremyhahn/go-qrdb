@@ -1590,3 +1590,83 @@ func TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf(t *testing.T) {
 		})
 	}
 }
+
+// TestRV794_LongLivedConnStaticAnchorAfterReseal is the red/green proof for
+// go-qrdb#591's final delta review (re-review blocker 2 regression): a
+// long-lived connection's own TLS handshake is never re-run after a
+// reseal, but pkg/auth's authenticator calls VerifyPeerChain on every
+// request once VerifiedChains comes back empty -- which Wire's ClientAuth
+// remap makes true for EVERY connection this Pool wires, healthy or not
+// (see VerifyPeerChain's own doc comment). Before this fix, a
+// resolveClientCAs failure (Key B unavailable: sealed, or any other
+// transient CACertPEMs failure) made VerifyPeerChain refuse EVERY leaf
+// outright, including a Key A-issued or operator-CA-issued leaf that a
+// FRESH handshake made in that exact same sealed state would still accept
+// (configForClient's own fallback to the unmodified cfg, verified by
+// crypto/tls directly against cfg's static ClientCAs). A pooled connection
+// that authenticated while Key B was healthy must keep letting
+// CallerPrincipal/quorumCaller see a verified chain across a reseal; only
+// a Key B-issued leaf, never part of the static baseline, is refused once
+// Key B stops resolving.
+func TestRV794_LongLivedConnStaticAnchorAfterReseal(t *testing.T) {
+	keyAPEM, keyACert, keyAKey := genCAWithKey(t, "key-a")
+	operatorPEM, operatorCert, operatorKey := genCAWithKey(t, "operator-ca")
+	keyBPEM, keyBCert, keyBKey := genCAWithKey(t, "tenant-key-b-ca")
+
+	staticPool := x509.NewCertPool()
+	staticPool.AppendCertsFromPEM(keyAPEM)
+	staticPool.AppendCertsFromPEM(operatorPEM)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
+	pool.SetKeyBProvider(prov)
+
+	parseLeaf := func(tc tls.Certificate) *x509.Certificate {
+		leaf, err := x509.ParseCertificate(tc.Certificate[0])
+		if err != nil {
+			t.Fatalf("ParseCertificate: %v", err)
+		}
+		return leaf
+	}
+	keyALeaf := parseLeaf(genLeafTLSCert(t, keyACert, keyAKey))
+	operatorLeaf := parseLeaf(genLeafTLSCert(t, operatorCert, operatorKey))
+	keyBLeaf := parseLeaf(genLeafTLSCert(t, keyBCert, keyBKey))
+
+	ctx := context.Background()
+
+	// Healthy: every leaf -- Key A, the operator's own static anchor, and
+	// Key B -- authenticates on a connection re-verified through
+	// VerifyPeerChain, matching what a fresh handshake's own widened pool
+	// would accept.
+	for name, leaf := range map[string]*x509.Certificate{"keyA": keyALeaf, "operator": operatorLeaf, "keyB": keyBLeaf} {
+		if _, err := pool.VerifyPeerChain(ctx, leaf, nil); err != nil {
+			t.Fatalf("%s: expected VerifyPeerChain to accept while healthy: %v", name, err)
+		}
+	}
+
+	// Simulate a reseal: CACertPEMs starts failing, and poolCacheTTL
+	// elapses so the widened-pool cache and the Key-B-only cache are not
+	// merely serving a stale pre-reseal entry. The cluster CA resolver
+	// itself stays healthy throughout, matching an ordinary reseal where
+	// Key A's own certificate is still readable.
+	prov.err = errors.New("barrier is sealed")
+	time.Sleep(poolCacheTTL + 50*time.Millisecond)
+
+	// A long-lived connection presenting a Key A or operator-CA leaf must
+	// keep authenticating -- the regression this test guards against.
+	for name, leaf := range map[string]*x509.Certificate{"keyA": keyALeaf, "operator": operatorLeaf} {
+		if _, err := pool.VerifyPeerChain(ctx, leaf, nil); err != nil {
+			t.Errorf("%s: static anchor refused on an existing connection after reseal: %v", name, err)
+		}
+	}
+
+	// A Key B leaf on a long-lived connection must still be refused once
+	// Key B itself is unavailable: the static-baseline fallback must never
+	// widen to include Key B.
+	if _, err := pool.VerifyPeerChain(ctx, keyBLeaf, nil); err == nil {
+		t.Error("expected a Key B leaf to be refused on a long-lived connection after Key B became unavailable")
+	}
+}

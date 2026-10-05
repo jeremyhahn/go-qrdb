@@ -600,27 +600,62 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 // whenever VerifiedChains comes back empty on a connection Wire touched,
 // rather than treating an unverified PeerCertificates list as good enough.
 // Returns the verified chain (leaf first) on success.
+//
+// A resolveClientCAs failure (Key B unavailable -- sealed, or any other
+// transient resolution failure) does NOT refuse every leaf outright
+// (go-qrdb#591's review, re-review blocker 2 regression). configForClient
+// hits this exact failure on a FRESH handshake and falls back to cfg
+// unmodified, which leaves crypto/tls to verify that new connection
+// against cfg's own static ClientCAs (this listener's baseline, already
+// carrying Key A for every composer -- see Wire) with no Key B widening
+// at all; this fallback reproduces that SAME trust decision for a
+// long-lived connection re-verified here instead of at a fresh handshake,
+// so a connection accepted while Key B was healthy keeps authenticating
+// for a Key A or operator-trusted leaf across a reseal, exactly as a new
+// connection made in that same sealed state would. Only a Key B-issued
+// leaf -- never part of the static baseline -- is refused once Key B
+// stops resolving.
 func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
 	if leaf == nil {
 		return nil, &PeerCertificateNotTrustedError{}
 	}
 	pool, err := p.resolveClientCAs(ctx, p.staticBase.Load())
 	if err != nil {
-		return nil, &PeerCertificateNotTrustedError{Err: err}
+		pool = p.fallbackClientCAs(ctx)
 	}
 	inter := x509.NewCertPool()
 	for _, c := range intermediates {
 		inter.AddCert(c)
 	}
-	chains, err := leaf.Verify(x509.VerifyOptions{
+	chains, verifyErr := leaf.Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: inter,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
-	if err != nil {
-		return nil, &PeerCertificateNotTrustedError{Err: err}
+	if verifyErr != nil {
+		return nil, &PeerCertificateNotTrustedError{Err: verifyErr}
 	}
 	return chains[0], nil
+}
+
+// fallbackClientCAs returns the pool a FRESH handshake would be verified
+// against in whatever state made resolveClientCAs fail: this listener's
+// own static ClientCAs baseline (p.staticBase, captured once at Wire --
+// see IsStaticallyTrusted) plus the cluster CA, when it still resolves
+// right now on its own. It never includes Key B: that is exactly the
+// trust resolveClientCAs could not produce, and the only thing this
+// fallback must NOT grant. See VerifyPeerChain's doc comment for why this
+// must match configForClient's own unmodified-cfg fallback rather than
+// refusing every leaf.
+func (p *Pool) fallbackClientCAs(ctx context.Context) *x509.CertPool {
+	pool := x509.NewCertPool()
+	if base := p.staticBase.Load(); base != nil {
+		pool = base.Clone()
+	}
+	if cert, err := p.resolveClusterCA(ctx); err == nil && cert != nil {
+		pool.AddCert(cert)
+	}
+	return pool
 }
 
 // resolveClientCAs returns the widened ClientCAs pool (the cluster CA, when
