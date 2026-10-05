@@ -1167,7 +1167,7 @@ func runStart(f *startFlags) (err error) {
 	// was started and alongside the explicit Stop on the shutdown path.
 	defer bootServers.Stop()
 
-	// joinServer is the member-side CSR-sign (Noise_NK) listener started
+	// clusterJoin is the member-side CSR-sign (Noise_NK) listener started
 	// below once the cluster CA provider is confirmed persisted, mirroring
 	// bootServers: declared here so the deferred Stop below covers every
 	// return between its start and the explicit shutdown path, including the
@@ -1176,14 +1176,8 @@ func runStart(f *startFlags) (err error) {
 	// joinServer's final value is not known until well after this defer is
 	// registered -- a bare `defer joinServer.Stop()` here would bind the
 	// nil receiver immediately and never see the assignment below.
-	var joinServer *clusterenroll.JoinServer
-	defer func() { joinServer.Stop() }()
-	// clusterJoinStore is the replicated kvstore join tokens are minted
-	// into and consumed from (clusterenroll.MintJoinToken/ConsumeJoinToken),
-	// built alongside joinServer below (cluster-join-enabled path only) and
-	// reused for server.WithClusterJoin so both transports share the exact
-	// same store handle.
-	var clusterJoinStore kvstore.AtomicKVStore
+	var clusterJoin *lifecycle.ClusterJoin
+	defer func() { clusterJoin.Stop() }()
 
 	// Enable TLS certificate hot-reload when certs are file-backed.
 	// The CertReloader watches the data directory for cert changes and
@@ -1740,58 +1734,26 @@ func runStart(f *startFlags) (err error) {
 					_ = shutdownNode(nodeCloser)
 					return err
 				}
-				// Record this node's own identity as admitted, independent
-				// of whether member-side CSR join is enabled on THIS boot:
-				// an admin who enables it later must find every existing
-				// member -- founders included -- already refusing a token
-				// minted for their node ID. See recordOwnJoinIdentity's own
-				// doc comment for the documented BYO-TLS gap this cannot
-				// close.
-				if err := recordOwnJoinIdentity(sigCtx, newKVServiceAdapter(svcNode.KV, nil, nil), bundle.CertPEM, f.clusterTrustDomain); err != nil {
-					_ = svcNode.Stop(context.Background())
-					_ = shutdownNode(nodeCloser)
-					return err
-				}
-				if f.clusterJoinEnabled {
-					clusterJoinStore = newKVServiceAdapter(svcNode.KV, nil, nil)
-					joinServer, err = clusterenroll.StartJoinServer(svcNode.ClusterCAProv, clusterenroll.JoinServerOptions{
-						Host:        f.clusterJoinListenHost,
-						Port:        f.clusterJoinListenPort,
-						Store:       clusterJoinStore,
-						TrustDomain: f.clusterTrustDomain,
-						AdminPort:   f.adminPort,
-					}, f.dataDir, slog.Default())
-					if err != nil {
-						_ = svcNode.Stop(context.Background())
-						_ = shutdownNode(nodeCloser)
-						return err
-					}
-					// Binds the admin:cluster:join_token verb (minted
-					// through the REST route and CLI, permission.
-					// ClusterJoinToken) to the SAME store and trust domain
-					// the listener above validates presented tokens
-					// against -- there is exactly one join-token store per
-					// node, never a second one a mint call might write into
-					// while the listener reads from the first. svcNode.Admin
-					// is always a *service.AdminService here (constructed by
-					// lifecycle.BuildServices just above); the assertion
-					// only guards against a future composition root
-					// substituting a different AdminServicer.
-					if adminSvc, ok := svcNode.Admin.(*service.AdminService); ok {
-						adminSvc.SetClusterJoinTokenStore(clusterJoinStore, f.clusterTrustDomain)
-					}
-				}
-			} else if f.clusterJoinEnabled {
-				// BYO-TLS (lifecycle.Infra.NoClusterCAKey): this node has no
-				// cluster CA key to sign a joiner's CSR with, so the join
-				// listener and route are never started -- the node still
-				// boots and serves, per the BYO-TLS ruling, but member-side
-				// CSR join is simply unavailable here. Logged so an operator
-				// who set --cluster-join-enabled on a BYO-TLS node learns why
-				// nothing is listening, rather than discovering it from a
-				// joiner's connection refused.
-				slog.Warn("member-side CSR join requested but this node has no cluster CA key (BYO-TLS); " +
-					"the join listener was not started. Inject a cakey.Provider or use a cluster-managed CA to enable it.")
+			}
+			// Member-side CSR join, composed exactly as an embedded clustered
+			// node composes it: the node's own identity recorded as admitted
+			// whenever it holds a cluster CA key, and, with
+			// --cluster-join-enabled, the join listener and the join-token
+			// verb bound to one store. A BYO-TLS node starts no listener.
+			clusterJoin, err = lifecycle.StartClusterJoin(sigCtx, svcNode, lifecycle.ClusterJoinConfig{
+				Enabled:     f.clusterJoinEnabled,
+				ListenHost:  f.clusterJoinListenHost,
+				ListenPort:  f.clusterJoinListenPort,
+				AdminPort:   f.adminPort,
+				TrustDomain: f.clusterTrustDomain,
+				DataDir:     f.dataDir,
+				NodeCertPEM: bundle.CertPEM,
+				Logger:      slog.Default(),
+			})
+			if err != nil {
+				_ = svcNode.Stop(context.Background())
+				_ = shutdownNode(nodeCloser)
+				return err
 			}
 			// Guarded so the system-migration path (which closes svcNode early to
 			// release its vector-store Pebble lock for re-encryption, then nils it)
@@ -2466,9 +2428,7 @@ func runStart(f *startFlags) (err error) {
 			// only after confirmClusterCAPersisted -- Key A is unseal-only,
 			// so this route is deliberately never a member of the
 			// sealed-window allowlist.
-			if joinServer != nil {
-				serverOpts = append(serverOpts, server.WithClusterJoin(svcNode.ClusterCAProv, clusterJoinStore, f.clusterTrustDomain))
-			}
+			serverOpts = append(serverOpts, clusterJoin.ServerOptions()...)
 			if svcNode.Embedding != nil {
 				serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))
 			}
