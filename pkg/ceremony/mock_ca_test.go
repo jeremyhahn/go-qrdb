@@ -131,7 +131,7 @@ func (m *mockCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions)
 	return x509.ParseCertificate(certDER)
 }
 
-func (m *mockCA) CACertificate() (*x509.Certificate, error) {
+func (m *mockCA) CACertificate(_ context.Context) (*x509.Certificate, error) {
 	return m.cert, nil
 }
 
