@@ -38,6 +38,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
+// embeddedCABudget bounds the test's waits on the single-node cluster.
+const embeddedCABudget = 2 * time.Minute
+
 // operatorCA is the CA an embedder's operator issues node identities under,
 // and whose key an HSM or KMS (here: memory) holds.
 type operatorCA struct {
@@ -136,7 +139,7 @@ func TestEmbeddedNode_InjectedClusterCAKeySignsAndMintsJoinTokens(t *testing.T) 
 		t.Fatalf("NewClusteredNode: %v", err)
 	}
 	t.Cleanup(func() { _ = n.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), embeddedCABudget)
 	defer cancel()
 
 	if n.byoTLS() {
@@ -205,6 +208,6 @@ func retryUntil(ctx context.Context, f func() error) error {
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
-		time.Sleep(clusterPollInterval)
+		time.Sleep(25 * time.Millisecond)
 	}
 }
