@@ -18,6 +18,7 @@ package grpc
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -31,19 +32,22 @@ import (
 
 // TestGRPC_CeremonyInitialize_PerSourceLockoutDoesNotCrossConnections is
 // the go-qrdb#560 review C acceptance test for gRPC: two REAL, independent
-// client connections to the same server -- distinct source ports, so
-// injectRemoteAddr's auth.WithRemoteAddr records a distinct
-// "addr:<remote>" principal for each (go-qrdb#560 review C) -- and a wrong
-// SO PIN repeated past auth.SOPINFreeFailures on connection A locks out
-// ONLY A's principal; connection B, presenting the identical wrong PIN
-// immediately afterward, still gets the ordinary Unauthenticated refusal,
-// never ResourceExhausted. Before go-qrdb#560 review C, every
-// unauthenticated gRPC caller shared ONE anonymous lockout bucket, so B
-// would have been locked out too, by a guess it never made. The Unix
-// socket transport shares this same qrdbServiceServer and interceptor
-// chain, so this also exercises Unix's gate logic (its own peer address
-// has no equivalent per-connection granularity -- see
-// pkg/api/unix's sibling test for what IS testable there).
+// client connections to the same server, from genuinely different source
+// HOSTS -- dial's localIP parameter binds each connection's LOCAL socket to
+// a distinct loopback alias, since two connections both presenting as
+// "127.0.0.1" with different ports only are the SAME source under
+// auth.CallerPrincipal's host-only keying (go-qrdb#591's re-review, item
+// 2) -- and a wrong SO PIN repeated past
+// auth.SOPINFreeFailures on connection A locks out ONLY A's principal;
+// connection B, presenting the identical wrong PIN immediately afterward,
+// still gets the ordinary Unauthenticated refusal, never ResourceExhausted.
+// Before go-qrdb#560 review C, every unauthenticated gRPC caller shared ONE
+// anonymous lockout bucket, so B would have been locked out too, by a guess
+// it never made. The Unix socket transport shares this same
+// qrdbServiceServer and interceptor chain, so this also exercises Unix's
+// gate logic (its own peer address has no equivalent per-connection
+// granularity -- see pkg/api/unix's sibling test for what IS testable
+// there).
 func TestGRPC_CeremonyInitialize_PerSourceLockoutDoesNotCrossConnections(t *testing.T) {
 	wrapped, ca, _ := servicetest.NewRealReissueStack(t, "correct-horse-battery")
 
@@ -56,9 +60,15 @@ func TestGRPC_CeremonyInitialize_PerSourceLockoutDoesNotCrossConnections(t *test
 	}
 	defer srv.Stop()
 
-	dial := func() pb.QRDBServiceClient {
+	dial := func(localIP string) pb.QRDBServiceClient {
 		t.Helper()
-		conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
+		dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(localIP)}}
+		conn, err := grpc.NewClient(srv.Addr(),
+			grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)),
+			grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, "tcp", addr)
+			}),
+		)
 		if err != nil {
 			t.Fatalf("grpc.NewClient: %v", err)
 		}
@@ -66,8 +76,8 @@ func TestGRPC_CeremonyInitialize_PerSourceLockoutDoesNotCrossConnections(t *test
 		return pb.NewQRDBServiceClient(conn)
 	}
 
-	clientA := dial()
-	clientB := dial()
+	clientA := dial("127.0.0.1")
+	clientB := dial("127.0.0.2")
 
 	ceremonyCall := func(client pb.QRDBServiceClient, soPIN string) codes.Code {
 		t.Helper()

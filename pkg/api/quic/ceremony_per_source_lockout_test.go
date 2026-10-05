@@ -15,8 +15,12 @@
 package quic
 
 import (
+	"context"
+	"net"
 	"testing"
+	"time"
 
+	quicgo "github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -25,11 +29,52 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
 
+// dialServerFromHost opens a QUIC connection to env's server, binding its
+// LOCAL socket to localIP (a loopback alias such as "127.0.0.2") instead of
+// the OS-assigned default, so the server's own view of the connection's
+// remote HOST -- not merely its ephemeral port -- genuinely differs from a
+// sibling connection dialed from a different localIP. Two ordinary
+// env.dialServer(t) calls both present as "127.0.0.1" with different ports
+// only, which auth.CallerPrincipal's host-only keying (go-qrdb#591's
+// re-review, item 2) correctly treats as the SAME source -- this helper is
+// what this file needs to prove isolation across GENUINELY different
+// sources instead.
+func dialServerFromHost(t *testing.T, env *integrationEnv, localIP string) *quicgo.Conn {
+	t.Helper()
+
+	localAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(localIP, "0"))
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr(local): %v", err)
+	}
+	pconn, err := net.ListenUDP("udp", localAddr)
+	if err != nil {
+		t.Fatalf("ListenUDP on %s: %v", localIP, err)
+	}
+	t.Cleanup(func() { _ = pconn.Close() })
+
+	remoteAddr, err := net.ResolveUDPAddr("udp", env.srv.Addr())
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr(remote): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tr := &quicgo.Transport{Conn: pconn}
+	t.Cleanup(func() { _ = tr.Close() })
+	conn, err := tr.Dial(ctx, remoteAddr, env.clientCfg, &quicgo.Config{MaxIdleTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("dial server from %s: %v", localIP, err)
+	}
+	t.Cleanup(func() { _ = conn.CloseWithError(0, "test done") })
+	return conn
+}
+
 // TestCeremonyInitialize_PerSourceLockoutDoesNotCrossConnections is the
 // go-qrdb#560 review C acceptance test for the native QUIC transport: two
-// REAL, independent QUIC connections to the same server -- distinct UDP
-// 4-tuples, so withConnectionState's auth.WithRemoteAddr records a distinct
-// "addr:<remote>" principal for each (go-qrdb#560 review C) -- and a wrong
+// REAL, independent QUIC connections to the same server, from genuinely
+// different source HOSTS (not merely different UDP 4-tuples on the same
+// loopback host -- see dialServerFromHost's own doc comment) -- and a wrong
 // SO PIN repeated past auth.SOPINFreeFailures on connection A locks out
 // ONLY connection A's principal; connection B, presenting the identical
 // wrong PIN immediately afterward, still gets the ordinary invalid-PIN
@@ -42,8 +87,8 @@ func TestCeremonyInitialize_PerSourceLockoutDoesNotCrossConnections(t *testing.T
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
 		WithCeremonyService(wrapped), WithCeremonyCA(ca))
 
-	connA := env.dialServer(t)
-	connB := env.dialServer(t)
+	connA := dialServerFromHost(t, env, "127.0.0.1")
+	connB := dialServerFromHost(t, env, "127.0.0.2")
 
 	wrongPayload, err := proto.Marshal(&pb.CeremonyInitializeRequest{SoPin: "wrong-pin", AdminGenerate: true})
 	if err != nil {
