@@ -112,10 +112,6 @@ type Server struct {
 	listener             net.Listener
 	serveWg              sync.WaitGroup
 
-	// maxRecvMsgSize is the server's configured max receive message size.
-	// Zero means grpcpkg.DefaultMaxRecvMsgSize; see WithMaxImportMessageSize.
-	maxRecvMsgSize int
-
 	// maxConcurrentStreams is the server's configured per-connection stream
 	// cap. Zero means grpcpkg.DefaultMaxConcurrentStreams; see
 	// WithMaxConcurrentStreams.
@@ -124,16 +120,6 @@ type Server struct {
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
-
-// WithMaxImportMessageSize raises the server's max receive message size to n
-// bytes, exactly as the TCP gRPC server's option of the same name
-// (pkg/api/grpc.WithMaxImportMessageSize) -- see its doc comment for why the
-// default is bounded and what opting in costs.
-func WithMaxImportMessageSize(n int) ServerOption {
-	return func(s *Server) {
-		s.maxRecvMsgSize = n
-	}
-}
 
 // WithMaxConcurrentStreams overrides grpcpkg.DefaultMaxConcurrentStreams, the
 // number of simultaneously active RPCs grpc-go admits on one connection.
@@ -598,10 +584,6 @@ func (s *Server) Start() error {
 		streamInterceptors = append(streamInterceptors, sealedStream)
 	}
 
-	recvMsgSize := s.maxRecvMsgSize
-	if recvMsgSize == 0 {
-		recvMsgSize = grpcpkg.DefaultMaxRecvMsgSize
-	}
 	maxStreams := s.maxConcurrentStreams
 	if maxStreams == 0 {
 		maxStreams = grpcpkg.DefaultMaxConcurrentStreams
@@ -609,7 +591,7 @@ func (s *Server) Start() error {
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
 		grpc.ChainStreamInterceptor(streamInterceptors...),
-		grpc.MaxRecvMsgSize(recvMsgSize),
+		grpc.MaxRecvMsgSize(grpcpkg.DefaultMaxRecvMsgSize),
 		grpc.MaxConcurrentStreams(maxStreams),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             grpcpkg.DefaultKeepaliveMinTime,

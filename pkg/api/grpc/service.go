@@ -993,8 +993,8 @@ func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*p
 // the request. It resolves the batch service through the SAME per-(tenant,
 // database) scope as Batch, so the namespaced wrapper's KeyPrefix is applied
 // to every imported key exactly as it is for every other write to the
-// database. The file must fit within the server's configured max receive
-// message size (see WithMaxImportMessageSize).
+// database. The file must fit within the server's max receive message size
+// (DefaultMaxRecvMsgSize).
 func (s *qrdbServiceServer) BatchImport(ctx context.Context, req *pb.BatchImportRequest) (*pb.BatchImportResponse, error) {
 	batchSvc, svcErr := s.batchSvcFor(ctx)
 	if svcErr != nil {

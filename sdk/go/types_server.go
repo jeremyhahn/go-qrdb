@@ -62,13 +62,6 @@ var WithCeremonyCA = qrdbserver.WithCeremonyCA
 // conservative default unless it opts in through these.
 // ---------------------------------------------------------------------------
 
-// WithGRPCMaxImportMessageSize raises the TCP gRPC and Unix socket servers'
-// max receive message size to n bytes, in place of their own conservative
-// default. Pass MaxImportMessageSize to accept BatchImport over gRPC or the
-// Unix socket; n then applies to every RPC both servers expose, not
-// BatchImport alone, since grpc-go has no per-method receive-size hook.
-var WithGRPCMaxImportMessageSize = qrdbserver.WithGRPCMaxImportMessageSize
-
 // WithGRPCMaxConcurrentStreams overrides the TCP gRPC and Unix socket
 // servers' default cap on simultaneously active RPCs per HTTP/2 connection.
 var WithGRPCMaxConcurrentStreams = qrdbserver.WithGRPCMaxConcurrentStreams
@@ -77,13 +70,8 @@ var WithGRPCMaxConcurrentStreams = qrdbserver.WithGRPCMaxConcurrentStreams
 // simultaneously open connections to its /mcp listener.
 var WithMCPMaxConnections = qrdbserver.WithMCPMaxConnections
 
-// MaxImportMessageSize is the gRPC/Unix message size needed to carry a
-// BatchImport request's file payload; pass it to
-// WithGRPCMaxImportMessageSize to opt in.
-const MaxImportMessageSize = grpcapi.MaxImportMessageSize
-
 // DefaultGRPCMaxRecvMsgSize is the TCP gRPC and Unix socket servers' max
-// receive message size when WithGRPCMaxImportMessageSize is not used.
+// receive message size, applied to every RPC.
 const DefaultGRPCMaxRecvMsgSize = grpcapi.DefaultMaxRecvMsgSize
 
 // DefaultGRPCMaxConcurrentStreams is the TCP gRPC and Unix socket servers'

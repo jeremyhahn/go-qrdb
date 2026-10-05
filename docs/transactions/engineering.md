@@ -191,18 +191,18 @@ the JSON wire form carries **integers**, not names. A client that hardcodes
   reports per-row failures.
 - **Imports always target the raw KV keyspace.** There is no collection-targeted
   import path.
-- **Import size ceilings are per transport**: 100 MB on REST, gRPC, Unix and
-  MCP; approximately 63 MB on QUIC, set by the QUIC wire protocol's shared
-  per-RPC payload cap. On gRPC and Unix the 100 MB ceiling is an explicit
-  opt-in (`grpcapi.WithMaxImportMessageSize` / `unixapi.WithMaxImportMessageSize`,
-  re-exported as `sdk.WithGRPCMaxImportMessageSize`): grpc-go buffers an
-  incoming message up to the server's configured receive bound before any
-  interceptor runs, so leaving every RPC able to accept 100+ MB by default
-  would let an unauthenticated peer force that allocation with no rate limit
-  of its own. `cmd/qrdbd` opts in, since BatchImport over every
-  transport is one of its shipped capabilities; an embedder that builds
-  `pkg/api/grpc` or `pkg/api/unix` (or `pkg/server`) directly without opting in
-  gets a 4 MiB default on EVERY RPC those servers expose, not just import.
+- **Import size ceilings are per transport**: 100 MB on REST and MCP;
+  approximately 63 MB on QUIC, set by the QUIC wire protocol's shared
+  per-RPC payload cap. On gRPC and Unix, every RPC -- import included -- is
+  bounded by `DefaultMaxRecvMsgSize` (4 MiB): grpc-go buffers
+  an incoming message up to the server's configured receive bound before
+  any interceptor runs, so leaving every RPC able to accept 100+ MB by
+  default would let an unauthenticated peer force that allocation with no
+  rate limit of its own. There is currently no larger-message opt-in for
+  BatchImport over gRPC/Unix; a payload that does not fit is refused with
+  `codes.ResourceExhausted`. A chunked-import redesign, carrying a payload
+  in bounded pieces instead of one large message, is expected to replace
+  this ceiling rather than reintroduce a larger-message opt-in.
 
 ## Error semantics
 

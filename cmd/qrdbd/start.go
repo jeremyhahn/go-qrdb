@@ -43,7 +43,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/spf13/cobra"
 
-	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -2386,13 +2385,6 @@ func runStart(f *startFlags) (err error) {
 				server.WithCACertPool(bundle.CACertPool),
 				server.WithLeaderForwarding(registry),
 				server.WithBatch(batchSvc),
-				// BatchImport over gRPC and the Unix socket is a tier-1
-				// capability of this daemon (REST, gRPC, Unix, QUIC, MCP and
-				// embedded all carry it), so the daemon opts in to the larger
-				// receive bound explicitly; a library embedder that builds
-				// pkg/api/grpc or pkg/api/unix directly gets the conservative
-				// default unless it opts in the same way (go-qrdb#576).
-				server.WithGRPCMaxImportMessageSize(grpcapi.MaxImportMessageSize),
 				server.WithTimeSeries(tsSvc),
 				server.WithIndex(indexSvc),
 				server.WithVector(vectorSvc),

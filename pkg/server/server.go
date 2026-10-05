@@ -302,11 +302,9 @@ type serverOptions struct {
 	restPacketConn net.PacketConn
 	grpcListener   net.Listener
 
-	// grpcMaxImportMessageSize and grpcMaxConcurrentStreams carry an
-	// embedder's explicit opt-in into the TCP gRPC and Unix socket servers'
-	// hardening bounds; see WithGRPCMaxImportMessageSize and
+	// grpcMaxConcurrentStreams carries an embedder's explicit opt-in into the
+	// TCP gRPC and Unix socket servers' per-connection stream cap; see
 	// WithGRPCMaxConcurrentStreams. Zero leaves each server's own default.
-	grpcMaxImportMessageSize int
 	grpcMaxConcurrentStreams uint32
 
 	// mcpMaxConnections overrides the MCP server's DefaultMaxConnections; see
@@ -419,18 +417,6 @@ func WithRESTPacketConn(pc net.PacketConn) ServerOption {
 func WithGRPCListener(ln net.Listener) ServerOption {
 	return func(o *serverOptions) {
 		o.grpcListener = ln
-	}
-}
-
-// WithGRPCMaxImportMessageSize opts the TCP gRPC and Unix socket servers into
-// a max receive message size of n bytes, in place of their own
-// DefaultMaxRecvMsgSize (go-qrdb#576). Pass grpcapi.MaxImportMessageSize to
-// accept BatchImport over gRPC or the Unix socket; n then applies to every
-// RPC both servers expose, not BatchImport alone, since grpc-go has no
-// per-method receive-size hook.
-func WithGRPCMaxImportMessageSize(n int) ServerOption {
-	return func(o *serverOptions) {
-		o.grpcMaxImportMessageSize = n
 	}
 }
 
@@ -1855,9 +1841,6 @@ func (s *Server) startGRPC() error {
 		}
 		grpcOpts = append(grpcOpts, grpcapi.WithListener(ln))
 	}
-	if s.opts.grpcMaxImportMessageSize != 0 {
-		grpcOpts = append(grpcOpts, grpcapi.WithMaxImportMessageSize(s.opts.grpcMaxImportMessageSize))
-	}
 	if s.opts.grpcMaxConcurrentStreams != 0 {
 		grpcOpts = append(grpcOpts, grpcapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
 	}
@@ -2126,9 +2109,6 @@ func (s *Server) startUnix() error {
 		return err
 	}
 	unixOpts = append(unixOpts, unixapi.WithTLS(tlsCfg))
-	if s.opts.grpcMaxImportMessageSize != 0 {
-		unixOpts = append(unixOpts, unixapi.WithMaxImportMessageSize(s.opts.grpcMaxImportMessageSize))
-	}
 	if s.opts.grpcMaxConcurrentStreams != 0 {
 		unixOpts = append(unixOpts, unixapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
 	}
