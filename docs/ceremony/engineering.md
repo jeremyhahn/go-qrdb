@@ -201,10 +201,15 @@ durable, replicated state.
     address -- in practice, a caller a test builds by hand -- falls back to
     the single bare anonymous counter (`""`) that predates this address
     keying. The address is keyed by HOST ONLY, with the port stripped and
-    an IPv6 host normalized (`auth.remoteHostOnly`): keying on host:port
-    would give a rotating ephemeral client port -- or a new connection per
-    request behind a pooling reverse proxy -- a FRESH counter every time,
-    defeating the isolation this bullet describes entirely.
+    an IPv6 host normalized AND masked to its /64 (`auth.remoteHostOnly`):
+    keying on host:port would give a rotating ephemeral client port -- or
+    a new connection per request behind a pooling reverse proxy -- a FRESH
+    counter every time, defeating the isolation this bullet describes
+    entirely; keying on the full 128-bit IPv6 address would let whoever
+    controls the surrounding /64 -- the standard single-subnet allocation
+    for one customer, host or container's egress -- mint an effectively
+    unlimited number of distinct addresses within it, each a fresh counter
+    for free, the identical defeat one level up.
     **Caveat: behind a reverse proxy that does not forward the original
     client address (no `X-Forwarded-For`/`Forwarded` header is read here),
     every client behind that proxy shares the proxy's own one address, and
@@ -227,19 +232,34 @@ durable, replicated state.
     presenting a TLS-verified client certificate -- may present at most 64
     wrong PINs in a 15-minute window; past that, every such check of the
     key -- the officer's included -- is refused until the window ends.
-    **Address-keyed (`"addr:<host>"`) and the single bare anonymous (`""`)
-    principals never count toward, and are never refused by, this cap** --
-    only an authenticated identity or a certificate principal does. An
-    unauthenticated caller is reachable with no proof of who it is at all,
-    so letting enough distinct hosts guess together lock out a DIFFERENT
-    host, or an authenticated officer sharing the aggregate pool, would let
-    anonymous noise deny service to a caller the cap is meant to protect;
-    each address keeps only its own per-principal backoff instead, with no
-    shared ceiling across addresses. One principal's
-    own backoff holds it to about 15 failures in a window, so the cap is
-    reached only by several principals guessing together, and it never
-    refuses a **known-good** principal: one
-    that has presented the correct SO PIN before. Up to 8 known-good
+    **Address-keyed (`"addr:<host>"`) principals never count toward, and
+    are never refused by, this cap** -- only an authenticated identity or
+    a certificate principal does, for the reason above: an unauthenticated
+    caller is reachable with no proof of who it is at all, so letting
+    enough distinct hosts guess together lock out a DIFFERENT host, or an
+    authenticated officer sharing the aggregate pool, would let anonymous
+    noise deny service to a caller the cap is meant to protect.
+    **Address-keyed principals instead share their OWN, separate aggregate
+    cap** (`auth.SOPINAddrAggregateFailures`/`Window`) -- the identical
+    64-in-15-minutes shape, a completely independent budget that never
+    adds to or is cleared by the authenticated one. Without it, enough
+    distinct address principals
+    guessing together -- several /64s, say, each one its own principal
+    after the masking above -- could still grind down one address's own
+    backoff, or keep minting new tracked `"addr:"` principals fast enough
+    to push the per-key tracked-principal cap (below) into eviction
+    pressure indefinitely. The single bare anonymous (`""`) principal
+    joins neither cap: each address keeps its own per-principal backoff
+    plus its cap's shared ceiling, with no cross-cap effect either way.
+    One principal's
+    own backoff holds it to about 15 failures in a window, so either cap is
+    reached only by several principals guessing together. The
+    authenticated cap never refuses a **known-good** principal: one
+    that has presented the correct SO PIN before -- a concept the address
+    cap has no equivalent of (an `"addr:"` principal never joins the
+    known-good set at all, see below), so it refuses whichever address
+    principal asks once it is held, with no exemption for one that
+    previously guessed correctly. Up to 8 known-good
     principals are kept per key, persisted with the PIN backend (the software
     backend's storage) and, for a tenant SO PIN, in the authenticator's store,
     so the exemption survives a restart. What is persisted is a

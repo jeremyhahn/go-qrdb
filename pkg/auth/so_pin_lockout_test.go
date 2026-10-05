@@ -252,15 +252,19 @@ func TestSOPINLockout_AggregateCapsManyPrincipals(t *testing.T) {
 
 // TestSOPINLockout_AddrPrincipalsExcludedFromAggregateCap is the
 // go-qrdb#560 re-review item 2 regression test: unlike an authenticated
-// principal, an "addr:" principal's failures never engage the aggregate
-// cap, so enough distinct unauthenticated hosts guessing together can
-// neither lock out a DIFFERENT host nor an authenticated officer -- "one
-// host locked out a different host AND an authenticated officer" is
-// exactly the re-review's finding this closes. Each host still locks
-// itself out on its own backoff; that part is unchanged.
+// principal, an "addr:" principal's failures never engage the
+// AUTHENTICATED aggregate cap, so enough distinct unauthenticated hosts
+// guessing together can neither lock out a DIFFERENT host nor an
+// authenticated officer -- "one host locked out a different host AND an
+// authenticated officer" is exactly the re-review's finding this closes.
+// Each host still locks itself out on its own backoff; that part is
+// unchanged. Stays well under SOPINAddrAggregateFailures (go-qrdb#591
+// re-review item D's own, separate cap) so it tests ONLY the authenticated
+// cap's exclusion, not that cap's own threshold --
+// TestSOPINLockout_AddrAggregateCapsManyAddrPrincipals below covers that.
 func TestSOPINLockout_AddrPrincipalsExcludedFromAggregateCap(t *testing.T) {
 	f := newLockoutFixture()
-	for i := 0; i < SOPINAggregateFailures; i++ {
+	for i := 0; i < SOPINAggregateFailures/2; i++ {
 		host := CallerPrincipal(WithRemoteAddr(context.Background(), addrForTest(i)))
 		if err := f.l.Check(context.Background(), "node", host, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
 			t.Fatalf("failure %d by %s = %v, want the plain wrong-PIN error (not yet locked)", i, host, err)
@@ -291,6 +295,91 @@ func TestSOPINLockout_AddrPrincipalsExcludedFromAggregateCap(t *testing.T) {
 // range (TEST-NET-3, RFC 5737).
 func addrForTest(i int) string {
 	return fmt.Sprintf("203.0.113.%d:443", 1+i%254)
+}
+
+// addrV6SubnetForTest returns the i-th of a distinct run of IPv6 host:port
+// strings, each in its OWN /64 (varying the 4th group, which /64 masking
+// keeps), within the documentation/example range (RFC 3849, 2001:db8::/32).
+func addrV6SubnetForTest(i int) string {
+	return fmt.Sprintf("[2001:db8:0:%x::1]:443", i)
+}
+
+// TestRemoteHostOnly_IPv6MaskedToSlash64 is the go-qrdb#591 re-review item
+// D regression test for the masking half of the fix: two addresses within
+// the SAME /64 (differing only in the bits below it) collapse to the
+// identical "addr:" principal, exactly as two different ephemeral ports on
+// the same host already did -- the attack this closes is a single /64
+// minting effectively unlimited distinct /128 addresses, each otherwise a
+// fresh, un-rate-limited principal. A different /64 still gets a different
+// principal: masking narrows what counts as "the same source," it does
+// not erase host isolation entirely.
+func TestRemoteHostOnly_IPv6MaskedToSlash64(t *testing.T) {
+	principalFor := func(addr string) string {
+		return CallerPrincipal(WithRemoteAddr(context.Background(), addr))
+	}
+	base := principalFor("[2001:db8:1234:5678::1]:443")
+	sameSubnet := []string{
+		"[2001:db8:1234:5678::2]:443",
+		"[2001:db8:1234:5678:ffff:ffff:ffff:ffff]:9",
+		"2001:db8:1234:5678::1",
+	}
+	for _, addr := range sameSubnet {
+		if got := principalFor(addr); got != base {
+			t.Fatalf("principal for %q = %q, want %q (same /64, only the host part differs)", addr, got, base)
+		}
+	}
+	differentSubnet := principalFor("[2001:db8:1234:5679::1]:443")
+	if differentSubnet == base {
+		t.Fatalf("a genuinely different /64 got the same principal as %q: %q", base, differentSubnet)
+	}
+	// An IPv4-mapped IPv6 address is unmapped and keyed as the IPv4 host it
+	// actually is, never treated as a /64 of its own.
+	v4mapped := principalFor("[::ffff:203.0.113.9]:443")
+	v4native := principalFor("203.0.113.9:443")
+	if v4mapped != v4native {
+		t.Fatalf("IPv4-mapped principal = %q, want the same as native IPv4 %q", v4mapped, v4native)
+	}
+}
+
+// TestSOPINLockout_AddrAggregateCapsManyAddrPrincipals is the go-qrdb#591
+// re-review item D regression test for the aggregate-cap half of the fix:
+// mirrors TestSOPINLockout_AggregateCapsManyPrincipals, but for "addr:"
+// principals in distinct /64s instead of authenticated identities. Enough
+// of them guessing together engage a SEPARATE cap (SOPINAddrAggregateFailures),
+// never the authenticated one -- a fresh addr principal is refused, but an
+// authenticated officer and a different key both stay untouched, and the
+// cap releases after its own window.
+func TestSOPINLockout_AddrAggregateCapsManyAddrPrincipals(t *testing.T) {
+	f := newLockoutFixture()
+	for i := 0; i < SOPINAddrAggregateFailures; i++ {
+		host := CallerPrincipal(WithRemoteAddr(context.Background(), addrV6SubnetForTest(i)))
+		if err := f.l.Check(context.Background(), "node", host, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
+			t.Fatalf("failure %d by %s = %v, want the plain wrong-PIN error (not yet locked)", i, host, err)
+		}
+	}
+	freshHost := CallerPrincipal(WithRemoteAddr(context.Background(), "[2001:db8:ffff:ffff::1]:443"))
+	var locked *SOPINLockedError
+	if err := f.l.Check(context.Background(), "node", freshHost, f.wrong, f.isWrong); !errors.As(err, &locked) || locked.RetryAfter != SOPINAddrAggregateWindow {
+		t.Fatalf("a fresh /64 past the addr: aggregate cap = %v, want locked for the window", err)
+	}
+	if _, until := f.l.Status("node", freshHost); until.IsZero() {
+		t.Fatal("status does not report the addr: aggregate lock")
+	}
+	// The AUTHENTICATED aggregate cap is a separate budget: an officer who
+	// never guessed at all must still be admitted after only addr:
+	// failures, exactly as the exclusion test above already proves in the
+	// other direction.
+	so := CallerPrincipal(WithIdentity(context.Background(), &Identity{Subject: "officer", TenantID: "system"}))
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
+		t.Fatalf("an authenticated officer after only addr: failures = %v, want admitted", err)
+	}
+	if err := f.l.Check(context.Background(), "tenant-acme", "addr:198.51.100.1", f.right, f.isWrong); err != nil {
+		t.Fatalf("another key = %v, want untouched", err)
+	}
+	f.now = f.now.Add(SOPINAddrAggregateWindow)
+	if err := f.l.Check(context.Background(), "node", freshHost, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
+		t.Fatalf("after the window = %v, want the plain wrong-PIN error, not still locked", err)
+	}
 }
 
 // TestSOPINLockout_PrincipalsBeyondTheCapShareOverflow: past
@@ -368,7 +457,7 @@ func TestSOPINLockout_KnownGoodSOPassesTheHeldCap(t *testing.T) {
 			}
 			progress = true
 		}
-		if _, held = f.l.keys["node"].aggregate.locked(f.now); held {
+		if _, held = f.l.keys["node"].aggregate.locked(f.now, SOPINAggregateFailures, SOPINAggregateWindow); held {
 			break
 		}
 		if !progress {

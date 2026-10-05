@@ -40,16 +40,21 @@ import (
 //   - one counter PER PRINCIPAL (CallerPrincipal): the authenticated
 //     identity, the verified client certificate, or -- for a caller that is
 //     neither, such as the sealed-window caller or an
-//     awaiting-admin-credential reissue -- the caller's own remote address
-//     (go-qrdb#560 review C), so that one source's wrong guesses never lock
-//     out a different, unrelated source making the identical kind of
-//     anonymous check;
+//     awaiting-admin-credential reissue -- the caller's own remote address,
+//     an IPv6 one masked to its /64 (go-qrdb#560 review C; go-qrdb#591
+//     re-review item D), so that one source's wrong guesses never lock out
+//     a different, unrelated source making the identical kind of anonymous
+//     check;
 //   - one anonymous counter shared only by checks made under a context that
 //     carries no identity, certificate OR remote address at all -- every
 //     production transport records one, so this is reached only when a
 //     caller (chiefly a test) builds its own bare context;
 //   - one aggregate cap over every principal with a recorded identity
-//     together (anything other than the bare anonymous counter above).
+//     together (anything other than the bare anonymous counter above), and
+//     a SEPARATE aggregate cap over every "addr:" principal together
+//     (go-qrdb#591 re-review item D) -- two independent budgets, so
+//     anonymous and authenticated guessing can never add together against
+//     either.
 //
 // Only a wrong PIN counts. The first SOPINFreeFailures failures in a row on a
 // counter cost nothing; every failure from then on locks that counter for a
@@ -70,6 +75,18 @@ import (
 // window), so reaching it takes several principals guessing together: that is
 // the residual, by design, because the alternative is unbounded distributed
 // guessing.
+//
+// The "addr:" aggregate cap bounds the identical kind of distributed
+// guessing among anonymous sources: at most SOPINAddrAggregateFailures
+// wrong PINs from "addr:" principals in any SOPINAddrAggregateWindow, after
+// which every "addr:" check of the key is refused until that window ends --
+// never touching the authenticated cap or vice versa. Without it, a large
+// enough attacker controlling many distinct /64s (each one its own
+// principal; a single /64 is one principal no matter how many addresses
+// within it guess, see CallerPrincipal) could keep minting new tracked
+// "addr:" principals fast enough to push SOPINMaxTrackedPrincipals into
+// eviction pressure indefinitely, aging legitimate sources out early and
+// crowding them onto the shared overflow counter.
 //
 // A principal that has presented the correct SO PIN for a key joins that key's
 // known-good set (at most SOPINMaxKnownGood, the most recent kept), which a
@@ -105,6 +122,20 @@ const (
 	SOPINAggregateFailures = 64
 	// SOPINAggregateWindow is the aggregate cap's window.
 	SOPINAggregateWindow = 15 * time.Minute
+	// SOPINAddrAggregateFailures is the most wrong SO PINs all "addr:"
+	// principals of one key together may present in one aggregate window
+	// (go-qrdb#591 re-review item D): a SEPARATE budget from
+	// SOPINAggregateFailures, never shared with it, so anonymous and
+	// authenticated guessing cannot add together against either cap.
+	// Without it, enough distinct /64s (item D's other half makes a
+	// single /64 one principal, not unlimited ones, but a large-enough
+	// attacker still controls many /64s) could keep minting new "addr:"
+	// principals indefinitely, aging out legitimate ones early under
+	// SOPINMaxTrackedPrincipals pressure and pushing them onto the
+	// shared overflow counter.
+	SOPINAddrAggregateFailures = 64
+	// SOPINAddrAggregateWindow is the "addr:" aggregate cap's window.
+	SOPINAddrAggregateWindow = 15 * time.Minute
 	// SOPINMaxTrackedPrincipals caps the per-principal counters kept for one
 	// key; further principals share one overflow counter.
 	SOPINMaxTrackedPrincipals = 4096
@@ -240,6 +271,16 @@ func CallerPrincipal(ctx context.Context) string {
 	return ""
 }
 
+// remoteHostOnlyPrefixBitsV6 is the IPv6 prefix length CallerPrincipal's
+// "addr:" bucket keys on, instead of the full 128-bit address: a /64 is the
+// standard single-subnet allocation (one assigned to one customer, one host,
+// or one container's egress), so an attacker who controls it can mint an
+// effectively unlimited number of distinct /128 source addresses within it
+// for free -- keying on the full address would hand each one its own fresh
+// counter, exactly the host:port rotation go-qrdb#560 review item 2 already
+// closed for ports, left open one level up (go-qrdb#591 re-review item D).
+const remoteHostOnlyPrefixBitsV6 = 64
+
 // remoteHostOnly returns addr's host, with any port stripped, for
 // CallerPrincipal's "addr:" bucket. An ephemeral client port changes on
 // every new connection -- or, behind a pooling reverse proxy, on every
@@ -249,19 +290,31 @@ func CallerPrincipal(ctx context.Context) string {
 // re-review item 2). An IPv6 address is normalized through netip.ParseAddr
 // (which, unlike net.ParseIP, understands a zone id) so the same host is
 // one principal regardless of how it was written -- brackets, a zone,
-// leading zeros in a group. addr with no parseable port, or a host that is
-// not an IP at all (a hostname, as some reverse proxies log), is returned
-// as net.SplitHostPort left it: stripping only ever removes a port, never
+// leading zeros in a group -- and then masked to its /64
+// (remoteHostOnlyPrefixBitsV6), so every address within one subnet shares
+// ONE counter rather than each of its (effectively unlimited) addresses
+// getting its own. An IPv4-mapped IPv6 address (::ffff:a.b.c.d) is unmapped
+// first and keyed as the IPv4 host it actually is, never masked as if it
+// were a /64 of its own. addr with no parseable port, or a host that is not
+// an IP at all (a hostname, as some reverse proxies log), is returned as
+// net.SplitHostPort left it: stripping only ever removes a port, never
 // invents a host.
 func remoteHostOnly(addr string) string {
 	host := addr
 	if h, _, err := net.SplitHostPort(addr); err == nil {
 		host = h
 	}
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return ip.String()
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
 	}
-	return host
+	ip = ip.Unmap()
+	if ip.Is6() {
+		if prefix, err := ip.Prefix(remoteHostOnlyPrefixBitsV6); err == nil {
+			return prefix.Addr().String()
+		}
+	}
+	return ip.String()
 }
 
 // soPINCounter counts one caller's failed SO PIN checks for a key.
@@ -294,25 +347,29 @@ func (c *soPINCounter) fail(now time.Time) {
 	}
 }
 
-// soPINAggregate is the fixed-window cap over a key's authenticated failures.
+// soPINAggregate is a fixed-window cap over a key's failures, from some
+// class of principal -- authenticated ones and "addr:" ones each get their
+// OWN instance (go-qrdb#591 re-review item D), with separate budgets that
+// never add together against either.
 type soPINAggregate struct {
 	windowStart time.Time
 	failures    int
 }
 
-// locked reports how long the cap holds at now, and whether it does.
-func (a *soPINAggregate) locked(now time.Time) (time.Duration, bool) {
-	end := a.windowStart.Add(SOPINAggregateWindow)
-	if a.failures >= SOPINAggregateFailures && now.Before(end) {
+// locked reports how long the cap holds at now, and whether it does, under
+// a budget of maxFailures per window.
+func (a *soPINAggregate) locked(now time.Time, maxFailures int, window time.Duration) (time.Duration, bool) {
+	end := a.windowStart.Add(window)
+	if a.failures >= maxFailures && now.Before(end) {
 		return end.Sub(now), true
 	}
 	return 0, false
 }
 
-// fail counts one authenticated wrong PIN at now, opening a new window when
-// the last has ended.
-func (a *soPINAggregate) fail(now time.Time) {
-	if !now.Before(a.windowStart.Add(SOPINAggregateWindow)) {
+// fail counts one wrong PIN at now against a budget of window, opening a
+// new window when the last has ended.
+func (a *soPINAggregate) fail(now time.Time, window time.Duration) {
+	if !now.Before(a.windowStart.Add(window)) {
 		a.windowStart, a.failures = now, 0
 	}
 	a.failures++
@@ -330,7 +387,13 @@ type soPINKeyState struct {
 
 	anonymous  soPINCounter
 	principals map[string]*soPINCounter
-	aggregate  soPINAggregate
+	// aggregate is the authenticated-principal cap's state (SOPINAggregateFailures
+	// / SOPINAggregateWindow); addrAggregate is the SEPARATE "addr:" cap's
+	// state (SOPINAddrAggregateFailures / SOPINAddrAggregateWindow,
+	// go-qrdb#591 re-review item D) -- two independent budgets, never one
+	// shared between authenticated and anonymous guessing.
+	aggregate     soPINAggregate
+	addrAggregate soPINAggregate
 	// knownGood is the key's known-good digests (knownGoodDigest), oldest
 	// first, and knownGoodLoaded whether the store has been read.
 	knownGood       []string
@@ -346,7 +409,8 @@ type soPINKeyState struct {
 
 // empty reports whether the state holds nothing worth keeping.
 func (k *soPINKeyState) empty() bool {
-	return k.anonymous == (soPINCounter{}) && len(k.principals) == 0 && k.aggregate.failures == 0 && len(k.knownGood) == 0
+	return k.anonymous == (soPINCounter{}) && len(k.principals) == 0 &&
+		k.aggregate.failures == 0 && k.addrAggregate.failures == 0 && len(k.knownGood) == 0
 }
 
 // isKnownGood reports whether digest is in k's known-good set.
@@ -586,24 +650,36 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 	c := &state.anonymous
 	capped := false
 	// An "addr:" principal -- a caller with no identity or certificate at
-	// all, isolated only by remote host (go-qrdb#560 re-review item 2) --
+	// all, isolated only by remote host, masked to a /64 for IPv6
+	// (go-qrdb#560 re-review item 2; go-qrdb#591 re-review item D) --
 	// gets its OWN counter below, exactly like an authenticated principal,
-	// but never participates in the aggregate cap: that cap exists so a
-	// coordinated AUTHENTICATED attack cannot grind down a key's own
-	// backoff by spreading guesses across many identities, and extending
-	// it to anonymous sources would let any one anonymous source's
-	// failures count against, and its success clear, a cap an
+	// but never participates in the AUTHENTICATED aggregate cap: that cap
+	// exists so a coordinated AUTHENTICATED attack cannot grind down a
+	// key's own backoff by spreading guesses across many identities, and
+	// extending it to anonymous sources would let any one anonymous
+	// source's failures count against, and its success clear, a cap an
 	// authenticated officer's failures engaged -- the opposite of "an
 	// authenticated principal must never be affected by anonymous
-	// failures."
+	// failures." It instead has its OWN, separate aggregate cap
+	// (addrAggregate): enough distinct "addr:" principals guessing
+	// together -- several /64s, say -- must not be able to grind down one
+	// address's own backoff either, nor keep minting new tracked
+	// principals indefinitely under SOPINMaxTrackedPrincipals pressure.
+	// Neither cap's failures or resets ever reach the other.
 	aggregateEligible := principal != "" && !isAddrPrincipal(principal)
+	addrEligible := isAddrPrincipal(principal)
 	digest := knownGoodDigest(key, principal)
 	if principal != "" {
 		c = state.principalCounter(principal, true, now)
 	}
 	if aggregateEligible {
 		capped = !state.isKnownGood(digest)
-		if wait, held := state.aggregate.locked(now); capped && held {
+		if wait, held := state.aggregate.locked(now, SOPINAggregateFailures, SOPINAggregateWindow); capped && held {
+			return false, &SOPINLockedError{RetryAfter: wait}
+		}
+	}
+	if addrEligible {
+		if wait, held := state.addrAggregate.locked(now, SOPINAddrAggregateFailures, SOPINAddrAggregateWindow); held {
 			return false, &SOPINLockedError{RetryAfter: wait}
 		}
 	}
@@ -622,6 +698,9 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 			state.aggregate = soPINAggregate{}
 			changed = state.addKnownGood(digest)
 		}
+		if addrEligible {
+			state.addrAggregate = soPINAggregate{}
+		}
 		return changed, nil
 	}
 	if !mismatch(err) {
@@ -629,7 +708,10 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 	}
 	c.fail(now)
 	if capped {
-		state.aggregate.fail(now)
+		state.aggregate.fail(now, SOPINAggregateWindow)
+	}
+	if addrEligible {
+		state.addrAggregate.fail(now, SOPINAddrAggregateWindow)
 	}
 	return false, err
 }
@@ -648,8 +730,9 @@ func isAddrPrincipal(principal string) bool {
 }
 
 // Status reports key's counter for principal ("" is the anonymous caller):
-// its consecutive failures and, while it -- or for an authenticated
-// principal the aggregate cap -- is locked, the time the lockout ends.
+// its consecutive failures and, while it -- or the aggregate cap it
+// participates in, authenticated or "addr:" -- is locked, the time the
+// lockout ends.
 func (l *SOPINLockout) Status(key, principal string) (failures int, lockedUntil time.Time) {
 	l.mu.Lock()
 	_, ok := l.keys[key]
@@ -664,7 +747,12 @@ func (l *SOPINLockout) Status(key, principal string) (failures int, lockedUntil 
 	now := l.now()
 	c := &state.anonymous
 	if principal != "" && !isAddrPrincipal(principal) {
-		if wait, held := state.aggregate.locked(now); held && !state.isKnownGood(knownGoodDigest(key, principal)) {
+		if wait, held := state.aggregate.locked(now, SOPINAggregateFailures, SOPINAggregateWindow); held && !state.isKnownGood(knownGoodDigest(key, principal)) {
+			lockedUntil = now.Add(wait)
+		}
+	}
+	if isAddrPrincipal(principal) {
+		if wait, held := state.addrAggregate.locked(now, SOPINAddrAggregateFailures, SOPINAddrAggregateWindow); held {
 			lockedUntil = now.Add(wait)
 		}
 	}
