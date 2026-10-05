@@ -34,7 +34,7 @@ it is an operation on the cluster, taking a backup as input.
   "compression": "zstd",
   "encryption": "aes256",
   "key_provider_id": "software",
-  "key_ref": "/etc/qrdb/backup.key",
+  "key_ref": "backup.key",
   "metadata": { "schedule": "nightly" },
   "shard_ids": [1, 2, 3] }
 ```
@@ -75,8 +75,18 @@ descending**.
 { "backup_id": "bkp-20260819-0300",
   "target_shards": [1, 2],
   "validate_first": true,
-  "decryption_key_ref": "/etc/qrdb/backup.key" }
+  "decryption_key_ref": "backup.key" }
 ```
+
+`allow_plaintext` (omitted above) is the caller's explicit opt-in to
+restore a backup whose OWN stored state is plaintext
+(`encryption: "none"`). Left unset (`false`), restoring such a backup is
+refused with `BackupPlaintextRestoreNotAllowedError` before any shard is
+touched -- never inferred from the backup's own metadata. See
+[../key-wrapping/](../key-wrapping/architecture.md) for why: an attacker
+who both flips a backup's stored `encryption` to `"none"` and deletes its
+envelope object produces a backup that is internally consistent
+plaintext, indistinguishable by stored state alone from a genuine one.
 
 `decryption_key_ref` is optional and usually omitted: the backup's own
 envelope records the key reference it was wrapped under, so restore
@@ -142,7 +152,9 @@ The checksum provides **integrity**; authenticated encryption provides
 | Unsupported compression or encryption type | 400 | `INVALID_ARGUMENT` |
 | Default encryption (unset) and no key reference | 400 | `INVALID_ARGUMENT` — `BackupEncryptionRequiredError`, **fail closed** |
 | Encryption explicitly requested without a key reference | 400 | `INVALID_ARGUMENT` — `BackupEncryptionKeyRequiredError`, **fail closed** |
-| Unregistered `key_provider_id`, wrong key reference, or tampered ciphertext on restore | 400 | `INVALID_ARGUMENT` — `BackupDecryptionFailedError`, **fail closed** (see [../key-wrapping/api.md](../key-wrapping/api.md)) |
+| Unregistered `key_provider_id`, or wrong key reference, on restore | 400 | `INVALID_ARGUMENT` — `BackupDecryptionFailedError`, **fail closed** (see [../key-wrapping/api.md](../key-wrapping/api.md)) |
+| Tampered shard ciphertext on restore | 400 | `INVALID_ARGUMENT` — `BackupVerificationFailedError` wrapping `BackupShardIntegrityError`, **fail closed** -- a DIFFERENT typed error from the row above; checked at a different layer (see [../key-wrapping/api.md](../key-wrapping/api.md)) |
+| Plaintext backup restored without `allow_plaintext` | 400 | `INVALID_ARGUMENT` — `BackupPlaintextRestoreNotAllowedError`, **fail closed** |
 | Backup not found | 404 | `NOT_FOUND` |
 | Checksum mismatch under `validate_first` | 409 | `FAILED_PRECONDITION` — restore aborts before touching shards |
 | Snapshot capture failed | 500 | `INTERNAL` — recorded as `status: failed` |

@@ -175,6 +175,7 @@ directory for `"software"`, never a path), never raw bytes.
 |---|---|---|
 | `KeyAccessError` | `keyRef` is not a bare name, or does not resolve to a regular, exactly-32-byte file inside the configured directory | yes |
 | `KeyDirectoryError` | `NewSoftwareProvider`'s configured directory cannot be opened as an `*os.Root` | yes (construction-time) |
+| `ProviderClosedError` | `Wrap`/`Unwrap` called after this provider's own `Close` has already run | yes |
 | `ProviderAlreadyRegisteredError` | `Register` called with a duplicate ID | yes |
 | `ProviderNotRegisteredError` | `LookupFactory`/`Lookup` called with an unregistered ID | yes |
 | `UnwrapFailedError` | GCM authentication failed on `Unwrap` (wrong KEK or tampered `wrapped`) | **yes** |
@@ -190,6 +191,9 @@ directory for `"software"`, never a path), never raw bytes.
 | `BackupVerificationFailedError` | RestoreBackup's top-level, pre-import verification failure for a specific target shard (wraps one of the above) | **yes** |
 | `BackupShardNotFoundError` | A target shard has no stored payload, or no manifest entry | **yes** |
 | `BackupKeyDirNotConfiguredError` | The built-in `"software"` provider is resolved with no `WithKeyDir`/`lifecycle.Infra.KeyDir` configured | **yes** |
+| `BackupEnvelopeVersionError` | The envelope names a `FormatVersion` this build does not implement | **yes** |
+| `BackupManifestAlgorithmError` | The authenticated manifest names an `Algorithm` this build does not implement | **yes** |
+| `BackupPlaintextRestoreNotAllowedError` | Restoring a backup whose stored state is plaintext without the caller's explicit `AllowPlaintext` opt-in | **yes** |
 
 `BackupDecryptionFailedError` retires `BackupDecryptionKeyRequiredError`:
 restore no longer requires the caller to supply anything (the envelope's

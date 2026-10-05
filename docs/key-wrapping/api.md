@@ -15,7 +15,7 @@ the fields this feature adds or changes to that existing schema.
   "compression": "zstd",
   "encryption": "aes256",
   "key_provider_id": "software",
-  "key_ref": "/etc/qrdb/backup.key",
+  "key_ref": "backup.key",
   "metadata": { "schedule": "nightly" },
   "shard_ids": [1, 2, 3] }
 ```

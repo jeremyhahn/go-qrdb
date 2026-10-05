@@ -20,6 +20,12 @@ no directory configured refuses with a typed, server-side error
 (`*BackupKeyDirNotConfiguredError`) rather than falling back to an implicit
 location. `--restore-decryption-key-file` (below) resolves against this
 same directory during an offline, boot-time disaster-recovery restore.
+`--restore-backup-id`'s offline restore mirrors `qrdb backup restore`'s
+own `--allow-plaintext` opt-in as `--allow-plaintext-restore`: a
+plaintext-stored backup is refused (`*BackupPlaintextRestoreNotAllowedError`)
+unless the operator sets it, and the gate/settle audit record brackets the
+WHOLE offline sequence (decrypt, bootstrap, stop, import, restart), not
+merely the decrypt step.
 
 ## `qrdb backup create` — new and changed flags
 
@@ -68,6 +74,7 @@ name never leaves the server's configured key directory. See
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
 | `--decryption-key-file` | string | — | the NAME of a key file inside the server's `--backup-key-dir` that overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used |
+| `--allow-plaintext` | bool | `false` | explicit opt-in required to restore a backup whose OWN stored state is plaintext; refused with a typed error (`BackupPlaintextRestoreNotAllowedError`) when unset, never inferred from the backup's own metadata (round 4 security review -- see [architecture.md](architecture.md#envelope-format)) |
 
 ```bash
 # The common case: no key flag at all -- the envelope's own stored
@@ -76,7 +83,7 @@ qrdb backup restore --id bkp-20261004-0300 --validate
 
 # Only needed when the key file has moved, or restore runs elsewhere.
 qrdb backup restore --id bkp-20261004-0300 \
-     --decryption-key-file /etc/qrdb/backup.key --validate
+     --decryption-key-file backup.key --validate
 ```
 
 A restore naming the wrong key file, or a key file for a different

@@ -175,7 +175,9 @@ proves the refusal.
 | `BackupCreateError` | snapshot capture failed | yes |
 | `BackupEmptyIDError` | ID empty on get/delete/verify/restore | yes |
 | `BackupNotFoundError` | no backup with that ID | yes |
-| `BackupDecryptionFailedError` | an unregistered `KeyProviderID` (create or restore), a bad/wrong key reference, or a tampered shard — see [../key-wrapping/](../key-wrapping/engineering.md) | **yes** |
+| `BackupDecryptionFailedError` | an unregistered `KeyProviderID` (create or restore), or a bad/wrong key reference — see [../key-wrapping/](../key-wrapping/engineering.md) | **yes** |
+| `BackupVerificationFailedError` | a target shard failed verification before import -- wraps `BackupShardIntegrityError` (tampered shard ciphertext, a DIFFERENT error from `BackupDecryptionFailedError` above) or `BackupShardNotFoundError` | **yes** |
+| `BackupPlaintextRestoreNotAllowedError` | restoring a plaintext-stored backup without the caller's explicit `AllowPlaintext`/`allow_plaintext` opt-in | **yes** |
 | `BackupChecksumMismatchError` | `ValidateFirst` verification failed | **yes** — restore aborts |
 | `BackupRestoreError` | context cancelled, or verification failed | **yes** |
 
@@ -213,11 +215,14 @@ path.
 
 - **Unit**: create with each compression and encryption combination, the
   default-with-no-key refusal, the explicit-encryption-with-no-key refusal,
-  the wrong-key-reference and tampered-ciphertext refusals (both
-  `*BackupDecryptionFailedError` — see
-  [../key-wrapping/engineering.md](../key-wrapping/engineering.md)),
-  checksum computation and mismatch detection, selective shard capture and
-  restore, per-shard error reporting, and `ListBackups` ordering.
+  the wrong-key-reference refusal (`*BackupDecryptionFailedError`) and the
+  tampered-shard-ciphertext refusal (the DIFFERENT
+  `*BackupVerificationFailedError` wrapping `*BackupShardIntegrityError` —
+  see [../key-wrapping/engineering.md](../key-wrapping/engineering.md)),
+  the plaintext-restore-without-opt-in refusal
+  (`*BackupPlaintextRestoreNotAllowedError`), checksum computation and
+  mismatch detection, selective shard capture and restore, per-shard error
+  reporting, and `ListBackups` ordering.
 - **The encryption-required refusals are security tests.** They are what stop
   a backup being written in plaintext by omission -- the default is
   encrypted, and getting plaintext takes an explicit, visible choice.

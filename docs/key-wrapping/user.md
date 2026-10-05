@@ -168,9 +168,9 @@ Not something you configure from the CLI today. A deployment that ships
 with hardware or cloud-KMS key custody (go-xkms-based products) registers
 that backend once, at startup, and from then on `--key-provider <name>`
 selects it the same way `--encryption-key-file` selects the built-in
-software path. If you are running plain go-qrdb with no such product
-layered on top, the software key-file path above is what you have, and it
-is fully supported — not a fallback.
+software provider. If you are running plain go-qrdb with no such product
+layered on top, the software key-file setup described above is what you
+have, and it is fully supported — not a fallback.
 
 ## Troubleshooting
 
@@ -186,6 +186,19 @@ does not match the one used at create time, or the backup's stored data
 was altered. Both report the same way on purpose — qrdb will not tell an
 attacker which of the two it was, which would help them narrow down a
 correct key by trial and error. Nothing is restored either way.
+
+**"is stored as plaintext; restoring it requires an explicit opt-in".**
+Restoring a backup whose OWN stored state is plaintext always requires
+you to say so explicitly — `--allow-plaintext` on `qrdb backup restore`,
+`allow_plaintext`/`AllowPlaintext` on every other transport and SDK, or
+`--allow-plaintext-restore` on `qrdbd start --restore-backup-id`'s
+offline path. It is never inferred from the backup's own metadata: an
+attacker who flips a backup's stored `encryption` to `"none"` and
+deletes its envelope object produces a backup that LOOKS like a genuine
+plaintext one by stored state alone, and this opt-in is the only thing
+that still requires a human (or an automation that has decided to trust
+this specific backup) to say so on every restore, not merely once at
+create time.
 
 **"key must be exactly 32 bytes" / the key reference was refused.** Your
 key file is the wrong size, or the value you passed was not a bare file
