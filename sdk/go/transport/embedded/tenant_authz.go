@@ -33,10 +33,20 @@ import (
 // SAME pkg/permission operation table -- there is no second, embedded-only
 // permission table. AuthorizeTarget is the method pkg/auth/middleware/target.go
 // documents as "the embedded transport authorizes its typed calls through
-// this": the embedded transport has no router to run an entry-level check
-// ahead of a handler, so each helper here carries the FULL decision (rate
-// limit charge and audit record) that a network transport splits between its
-// route middleware and a handler-level re-check.
+// this".
+//
+// The embedded transport has no router to run an entry-level check ahead of
+// a handler, so where a network transport's route middleware authorizes the
+// ambient-self ENTRY check (charging the rate-limit token and writing the
+// audit record) before its handler's target RE-check runs, the embedded
+// handler calls BOTH explicitly, in the same order: see UpdateTenant
+// (tenant.go) for the one operation with a re-check that charges neither on
+// a grant (AuthorizeTenantTarget), where skipping the entry check would
+// leave a successful call charged and audited nowhere at all. Every other
+// helper below (authorizeTenantTarget alone, authorizeTenantBarrierInit,
+// authorizeTenantBarrierSealedOp) calls AuthorizeTarget/the AuthMiddleware
+// method that itself charges the FULL decision, so it needs no separate
+// entry check of its own.
 //
 // A nil t.authMW means no AuthMiddleware was installed -- the node runs with
 // RBAC disabled, matching --auth-enabled=false on every network transport --

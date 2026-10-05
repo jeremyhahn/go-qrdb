@@ -104,7 +104,11 @@ func TestEmbeddedCreateUser_NoMiddlewareSkipsOnlyAuthorization(t *testing.T) {
 func TestEmbeddedCreateUser_DeniedWithoutRolesAssign(t *testing.T) {
 	roleSvc := &mockRoleServicer{
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
-			return nil, nil // no permissions at all
+			// users:create granted, roles:assign withheld: the denial below
+			// must be attributable to roles:assign alone, not to the base
+			// users:create check CreateUser also runs -- granting NO
+			// permissions at all could not tell the two gates apart.
+			return []permission.Permission{permission.UsersCreate}, nil
 		},
 	}
 	userSvc := &mockUserServicer{
@@ -214,7 +218,9 @@ func TestEmbeddedCreateUser_RejectsRoleFromAnotherTenant(t *testing.T) {
 func TestEmbeddedUpdateUser_DeniedWithoutRolesAssign(t *testing.T) {
 	roleSvc := &mockRoleServicer{
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
-			return nil, nil
+			// users:update granted, roles:assign withheld -- see the
+			// identical comment on TestEmbeddedCreateUser_DeniedWithoutRolesAssign.
+			return []permission.Permission{permission.UsersUpdate}, nil
 		},
 	}
 	userSvc := &mockUserServicer{
