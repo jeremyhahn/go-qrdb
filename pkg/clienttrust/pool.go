@@ -546,11 +546,15 @@ func (p *Pool) configForClient(hello *tls.ClientHelloInfo, base *tls.Config) (*t
 // whatever remapped ClientAuth mode decided (an optional mode lets it
 // through; a required one never reaches here with an empty list at all,
 // since crypto/tls refuses the handshake before VerifyConnection runs).
-// ExtKeyUsageAny, not ExtKeyUsageClientAuth specifically, matches
-// IsStaticallyTrusted's own verification above for the same reason: a
-// leaf this codebase issues for client authentication is not guaranteed
-// to carry that EKU explicitly, and this is the TRUST decision, not an
-// EKU policy one.
+//
+// ExtKeyUsageClientAuth, not Any (go-qrdb#591's review, blocker 3): this
+// IS the EKU policy decision for a certificate presented AS a client
+// identity, so a leaf this cluster or an operator issued for some OTHER
+// purpose -- serverAuth on a peer's TLS listener, say -- must not also
+// authenticate as a client merely because it chains to a CA this Pool
+// trusts. IsStaticallyTrusted and isRegisteredKeyBCA stay on Any: they
+// decide whether an ISSUER is trusted at all, not whether a presented
+// LEAF's own EKU permits the role it is being used in.
 func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool) error {
 	if len(cs.PeerCertificates) == 0 {
 		return nil
@@ -562,7 +566,7 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 	_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: intermediates,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if err != nil {
 		return &PeerCertificateNotTrustedError{Err: err}
@@ -572,14 +576,15 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 
 // VerifyPeerChain verifies leaf (with optional intermediates) against
 // this Pool's current widened trust pool -- the SAME verification
-// verifyPeerConnection performs during the TLS handshake -- for a caller
-// that needs to re-derive the chain crypto/tls itself no longer builds:
-// ClientAuth's remap in configForClient means tls.ConnectionState.
-// VerifiedChains is never populated for a connection this Pool wired,
-// so pkg/auth's authenticator (every request, not merely the handshake --
-// see its own doc comment on why) calls this instead whenever
-// VerifiedChains comes back empty on a connection Wire touched, rather
-// than treating an unverified PeerCertificates list as good enough.
+// verifyPeerConnection performs during the TLS handshake, including the
+// same ExtKeyUsageClientAuth EKU policy (go-qrdb#591's review, blocker 3)
+// -- for a caller that needs to re-derive the chain crypto/tls itself no
+// longer builds: ClientAuth's remap in configForClient means
+// tls.ConnectionState.VerifiedChains is never populated for a connection
+// this Pool wired, so pkg/auth's authenticator (every request, not merely
+// the handshake -- see its own doc comment on why) calls this instead
+// whenever VerifiedChains comes back empty on a connection Wire touched,
+// rather than treating an unverified PeerCertificates list as good enough.
 // Returns the verified chain (leaf first) on success.
 func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
 	if leaf == nil {
@@ -596,7 +601,7 @@ func (p *Pool) VerifyPeerChain(ctx context.Context, leaf *x509.Certificate, inte
 	chains, err := leaf.Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: inter,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if err != nil {
 		return nil, &PeerCertificateNotTrustedError{Err: err}

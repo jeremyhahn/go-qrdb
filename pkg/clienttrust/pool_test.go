@@ -248,6 +248,35 @@ func genLeafTLSCert(t testing.TB, caCert *x509.Certificate, caKey *ecdsa.Private
 	return tls.Certificate{Certificate: [][]byte{der, caCert.Raw}, PrivateKey: leafKey}
 }
 
+// genLeafWithEKU signs a leaf certificate under caCert/caKey carrying ONLY
+// the given extended key usages -- no ExtKeyUsageClientAuth unless eku
+// names it -- for a test that needs a cert a client-auth verification must
+// refuse on EKU grounds alone, with trust otherwise intact.
+func genLeafWithEKU(t testing.TB, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, eku []x509.ExtKeyUsage) *x509.Certificate {
+	t.Helper()
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (leaf): %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "server-auth-only-leaf"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  eku,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate (leaf): %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate (leaf): %v", err)
+	}
+	return leaf
+}
+
 func baseConfig(t testing.TB, keyA *x509.CertPool) *tls.Config {
 	t.Helper()
 	return &tls.Config{
@@ -1333,5 +1362,55 @@ func TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds(t *testing.T)
 	cached := pool.keyBCache.Load()
 	if cached == nil || len(cached.pems) != 1 {
 		t.Fatal("expected the singleflighted call's result to populate the cache for every waiter")
+	}
+}
+
+// TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf is the red/green proof
+// for go-qrdb#591's review (blocker 3): a leaf carrying ONLY
+// ExtKeyUsageServerAuth -- never issued for client authentication, but
+// trust-wise signed by a CA this Pool DOES trust (Key A, or an operator's
+// own static anchor) -- must still be refused, by EKU, at both
+// verification points every connection this Pool wired is checked
+// against: the handshake's own VerifyConnection hook (verifyPeerConnection)
+// and the authenticator's re-derivation path (VerifyPeerChain). Using
+// ExtKeyUsageAny for these two checks (as opposed to IsStaticallyTrusted
+// and isRegisteredKeyBCA, which stay on Any -- they decide TRUST, not EKU
+// policy) would accept a certificate this cluster issued, or an operator
+// configured, for an entirely different purpose as a client identity.
+func TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf(t *testing.T) {
+	_, keyACert, keyAKey := genCAWithKey(t, "key-a")
+	operatorPEM, operatorCert, operatorKey := genCAWithKey(t, "operator-ca")
+
+	staticPool := x509.NewCertPool()
+	staticPool.AppendCertsFromPEM(operatorPEM)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	pool.SetKeyBProvider(&fakeCertProvider{})
+
+	widened, err := pool.resolveClientCAs(context.Background(), cfg.ClientCAs)
+	if err != nil {
+		t.Fatalf("resolveClientCAs: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		leaf *x509.Certificate
+	}{
+		{"signed by Key A", genLeafWithEKU(t, keyACert, keyAKey, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})},
+		{"signed by the operator CA", genLeafWithEKU(t, operatorCert, operatorKey, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{c.leaf}}
+			if err := pool.verifyPeerConnection(cs, widened); err == nil {
+				t.Error("expected verifyPeerConnection to refuse a serverAuth-only leaf")
+			}
+			if _, err := pool.VerifyPeerChain(context.Background(), c.leaf, nil); err == nil {
+				t.Error("expected VerifyPeerChain to refuse a serverAuth-only leaf")
+			}
+		})
 	}
 }
