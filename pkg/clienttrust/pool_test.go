@@ -1365,6 +1365,141 @@ func TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds(t *testing.T)
 	}
 }
 
+// TestPool_Reseal_DropsKeyBTrust is go-qrdb#591's review (blocker 2) red/
+// green proof: docs/certificate-authority/architecture.md promises that a
+// runtime reseal makes the dynamic trust pool drop Key B, bounded only by
+// the existing poolCacheTTL mitigation window, never indefinitely. Before
+// this fix, refreshKeyBOnlyCache left the LAST SUCCESSFUL keyBCache entry
+// in place forever once CACertPEMs started failing (the documented
+// contract for a merely transient blip), so a reseal's failing CACertPEMs
+// never actually cleared it: resolveClientCAs kept widening from
+// certificates read before the seal, with no path back to the static
+// baseline short of CACertPEMs succeeding again.
+//
+// A Key B-issued leaf authenticates while the provider is healthy; once
+// CACertPEMs starts failing (simulating a reseal) and poolCacheTTL has
+// elapsed, the SAME leaf must be refused, and the listener's
+// GetConfigForClient hook must have reverted to the static baseline: no
+// VerifyConnection override installed, so a subsequent real handshake's
+// verification runs through crypto/tls's OWN path and populates
+// ConnectionState.VerifiedChains -- never populated for a connection this
+// Pool's own VerifyConnection hook handled (see VerifyPeerChain's doc
+// comment) -- directly proving the pool, not merely Pool's own
+// bookkeeping, reverted.
+func TestPool_Reseal_DropsKeyBTrust(t *testing.T) {
+	operatorCAPEM, operatorCACert, operatorCAKey := genCAWithKey(t, "operator-static-ca")
+	operatorPool := x509.NewCertPool()
+	operatorPool.AppendCertsFromPEM(operatorCAPEM)
+
+	keyBPEM, keyBCACert, keyBCAKey := genCAWithKey(t, "tenant-key-b-ca")
+
+	serverLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
+	keyBClientLeaf := genLeafTLSCert(t, keyBCACert, keyBCAKey)
+	operatorClientLeaf := genLeafTLSCert(t, operatorCACert, operatorCAKey)
+
+	serverCfg := &tls.Config{
+		Certificates: []tls.Certificate{serverLeaf},
+		ClientCAs:    operatorPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	pool := New()
+	pool.Wire(serverCfg)
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
+	pool.SetKeyBProvider(prov)
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", serverCfg)
+	if err != nil {
+		t.Fatalf("tls.Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	handshake := func(clientLeaf tls.Certificate) (serverErr, clientErr error, serverCS tls.ConnectionState) {
+		type acceptResult struct {
+			conn *tls.Conn
+			err  error
+		}
+		accepted := make(chan acceptResult, 1)
+		go func() {
+			conn, aerr := ln.Accept()
+			if aerr != nil {
+				accepted <- acceptResult{err: aerr}
+				return
+			}
+			tc := conn.(*tls.Conn)
+			accepted <- acceptResult{conn: tc, err: tc.Handshake()}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		rawConn, derr := (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+		if derr != nil {
+			t.Fatalf("dial: %v", derr)
+		}
+		clientTLS := tls.Client(rawConn, &tls.Config{
+			// GetClientCertificate, not a static Certificates field: Go's
+			// own client-side selection logic for a static field filters
+			// against the server's advertised AcceptableCAs -- which this
+			// Pool deliberately never widens (see configForClient's doc
+			// comment) -- and silently sends no certificate at all when
+			// none of the client's configured certs match, exactly the
+			// case a Key B-signed leaf hits. GetClientCertificate bypasses
+			// that selection entirely, matching what a real client
+			// presenting a Key B leaf actually does.
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &clientLeaf, nil },
+			InsecureSkipVerify:   true, // this test measures the SERVER's verification of the client cert, not the reverse
+			MinVersion:           tls.VersionTLS13,
+		})
+		defer func() { _ = clientTLS.Close() }()
+		clientErr = clientTLS.HandshakeContext(ctx)
+
+		select {
+		case res := <-accepted:
+			serverErr = res.err
+			if res.conn != nil {
+				defer func() { _ = res.conn.Close() }()
+				serverCS = res.conn.ConnectionState()
+			}
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for the server-side handshake")
+		}
+		return serverErr, clientErr, serverCS
+	}
+
+	// Healthy: the Key B-issued leaf authenticates, through Pool's own
+	// VerifyConnection hook (which never populates VerifiedChains itself
+	// -- see VerifyPeerChain's doc comment).
+	if serverErr, clientErr, cs := handshake(keyBClientLeaf); serverErr != nil || clientErr != nil {
+		t.Fatalf("expected the Key B leaf to authenticate while healthy: server=%v client=%v", serverErr, clientErr)
+	} else if len(cs.VerifiedChains) != 0 {
+		t.Error("expected VerifiedChains empty while Pool's own VerifyConnection hook is active")
+	}
+
+	// Simulate a reseal: CACertPEMs starts failing, and poolCacheTTL
+	// elapses -- both the widened-pool cache AND the Key-B-only cache
+	// expire and are not refreshed from stale data.
+	prov.err = errors.New("barrier is sealed")
+	time.Sleep(poolCacheTTL + 50*time.Millisecond)
+
+	// The Key B leaf must now be refused outright.
+	if serverErr, clientErr, _ := handshake(keyBClientLeaf); serverErr == nil && clientErr == nil {
+		t.Fatal("expected the Key B leaf to be refused once CACertPEMs has been failing past poolCacheTTL")
+	}
+
+	// A leaf the STATIC baseline (the operator's own CA) signs must still
+	// authenticate -- through crypto/tls's OWN native verification this
+	// time, not Pool's VerifyConnection hook, proving the hook reverted to
+	// the static baseline rather than merely refusing everything.
+	serverErr, clientErr, cs := handshake(operatorClientLeaf)
+	if serverErr != nil || clientErr != nil {
+		t.Fatalf("expected the operator's own static-anchor leaf to still authenticate after the reseal: server=%v client=%v", serverErr, clientErr)
+	}
+	if len(cs.VerifiedChains) == 0 {
+		t.Fatal("expected VerifiedChains populated by crypto/tls's own verification, proving the hook returned the unmodified static-baseline config")
+	}
+}
+
 // TestPool_ClientAuthEKU_RefusesServerAuthOnlyLeaf is the red/green proof
 // for go-qrdb#591's review (blocker 3): a leaf carrying ONLY
 // ExtKeyUsageServerAuth -- never issued for client authentication, but

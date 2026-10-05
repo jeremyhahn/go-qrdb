@@ -684,24 +684,27 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 
 // refreshKeyBOnlyCache rebuilds p.keyBCache from the installed Key B
 // provider's CACertPEMs, when the current entry (if any) is older than
-// poolCacheTTL. It never returns an error: a failure (no provider, no
-// CertSource, CACertPEMs itself failing -- sealed is the ordinary cause
-// in Raft mode) simply leaves whatever is already cached in place,
-// stale or nil, rather than tearing it down -- isRegisteredKeyBCA's
-// "uncertain" answer for a nil/never-built cache is the conservative
-// default for a Key B CA it cannot rule out, but a cache that WAS built
-// and is merely aging is still the best available answer, not something
-// a transient CACertPEMs failure should discard.
+// poolCacheTTL. It never returns an error, but a CACertPEMs failure (a
+// reseal is the ordinary cause in Raft mode, where the barrier is checked
+// explicitly and sealed refuses it -- see
+// docs/certificate-authority/architecture.md's "a runtime reseal must
+// make the dynamic client-auth trust pool drop Key B immediately" rule)
+// CLEARS the cache rather than leaving a stale, pre-reseal entry in
+// place (go-qrdb#591's review, blocker 2): resolveClientCAs's own
+// caller-visible promise is that Key B stops being trusted once its
+// source of truth stops answering, bounded only by poolCacheTTL, and a
+// cache that kept the last successful read forever violated that for as
+// long as CACertPEMs kept failing, with no bound at all.
 //
 // Called from resolveClientCAs UNCONDITIONALLY, before that function's
 // own cluster-CA resolution: a broken cluster CA resolver must never
 // prevent this refresh (go-qrdb#591's review, B3), because
 // isRegisteredKeyBCA reads ONLY this cache, and a cache that stops
-// refreshing degrades to "uncertain" forever -- which IsStaticallyTrusted
-// then treats as "assume yes, refuse the exemption" for every issuer,
-// including the cluster CA's own operator-configured static anchors and
-// a test harness's ad-hoc CA, neither of which has anything to do with
-// Key B.
+// refreshing degrades to "never built" -- which isRegisteredKeyBCA now
+// answers false for (go-qrdb#591's review, B3 remainder), so
+// IsStaticallyTrusted's static-anchor exemption -- Key A, the cluster's
+// own operator-configured anchors, a test harness's ad-hoc CA, none of
+// which has anything to do with Key B -- is unaffected either way.
 func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
 	if cached := p.keyBCache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
 		return
@@ -729,8 +732,13 @@ func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
 		}
 		pems, err := src.CACertPEMs(ctx)
 		if err != nil {
-			// Never propagated as Do's own error: matches the documented
-			// "leave the stale cache in place" contract above.
+			// Cleared, not left in place: a failure here (go-qrdb#591's
+			// review, blocker 2) means Key B must stop being trusted, not
+			// keep widening from certificates read before whatever just
+			// started failing. Never propagated as Do's own error: the
+			// caller (resolveClientCAs) learns of this through the now-nil
+			// cache, not through an error from this function.
+			p.keyBCache.Store(nil)
 			return nil, nil
 		}
 		keyBOnly := x509.NewCertPool()
