@@ -333,7 +333,8 @@ RUN --mount=type=secret,id=gomodauth \
     else \
       echo "==> go mod download: NO Gitea module credentials mounted -- github.com/jeremyhahn/* can resolve from the public proxy ONLY (correct on GitHub; on an internal host this build cannot see unmirrored tags). See dependency-resolution.md section 6."; \
     fi; \
-    go mod download
+    go mod download; \
+    (cd sdk/go && go mod download)
 
 
 FROM deps AS integration
