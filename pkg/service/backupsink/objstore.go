@@ -64,10 +64,18 @@ func New(store storage.Storage) *Sink {
 	return &Sink{store: store}
 }
 
+// marshalJSON is encoding/json.Marshal, indirected so a test can force
+// Write's otherwise-unreachable encode-failure branches: every field of
+// service.BackupInfo and service.BackupEnvelope is a type json.Marshal
+// cannot fail on (strings, time.Time, int64, []byte, map[string]string),
+// so neither branch below is reachable against the real encoder. Never
+// swapped outside a test.
+var marshalJSON = json.Marshal
+
 // Write persists a backup's metadata, shard payloads, and -- when encrypted
 // -- its envelope. envelope is nil for an EncryptionNone backup.
 func (s *Sink) Write(_ context.Context, info service.BackupInfo, shards map[uint64][]byte, envelope *service.BackupEnvelope) error {
-	metaBytes, err := json.Marshal(info)
+	metaBytes, err := marshalJSON(info)
 	if err != nil {
 		return &EncodeError{ID: info.ID, Err: err}
 	}
@@ -79,7 +87,7 @@ func (s *Sink) Write(_ context.Context, info service.BackupInfo, shards map[uint
 		return err
 	}
 	if envelope != nil {
-		envBytes, err := json.Marshal(envelope)
+		envBytes, err := marshalJSON(envelope)
 		if err != nil {
 			_ = s.store.Delete([]byte(dataPrefix + info.ID))
 			return &EncodeError{ID: info.ID, Err: err}
