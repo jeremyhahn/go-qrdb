@@ -37,26 +37,35 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
 - **First boot could crash a node with `register role <name> failed: role: id
   already exists`** when several seeders raced the SAME built-in role under
   its deterministic `role.SystemRoleID`: concurrent nodes' own first-boot
-  (`pkg/firstboot.registerBuiltInRoles`) racing each other, and a tenant's
+  (`pkg/firstboot.registerBuiltInRoles`) racing each other, a tenant's
   `CreateTenant`-triggered role seeder (`pkg/server/lifecycle`'s
-  `roleSeederAdapter`) racing first-boot's. Two causes, both closed:
-  `roleSeederAdapter` built its role store without `WithIdentityIndex`/
-  `WithAtomicIdentity`, so its `CreateRole` fell back to three separate,
-  non-atomic proposals (primary record, then tenant index, then name index)
-  — a concurrent racer could observe the primary record by id before the
-  name index existed, fail its own "already seeded?" verification by name,
-  and refuse the whole run. It is now wired atomically, exactly like
-  cmd/qrdbd's boot-time role stores. Separately, a create collision's
-  verification (`firstboot.builtInRoleAlreadySeeded`, and
-  `role.ReconcileBuiltInRoles`'s own `seedMissingRole`) was a single,
-  un-retried read: the LOSING side of a genuine atomic race can be told
-  "guard failed" before its own local StaleRead has replicated the WINNING
-  write. Both now retry briefly (`builtInRoleAlreadySeededWithin`,
-  `awaitMatchingRole`) before concluding a collision is a real, unexplained
-  conflict rather than its own idempotent re-attempt racing visibility.
-  Regression-tested over a real go-quicraft cluster
-  (`TestRegisterBuiltInRoles_ConcurrentSeedersConverge`,
-  `TestReconcileBuiltInRoles_ConcurrentCallersConverge`) and with
+  `roleSeederAdapter`) racing first-boot's, and two concurrent
+  `bootstrap.ProvisionTenant` calls for the same new tenant racing each
+  other's `seedTenantRoles`. Three call sites, all converging on the same
+  two causes: `roleSeederAdapter` built its role store without
+  `WithIdentityIndex`/`WithAtomicIdentity`, so its `CreateRole` fell back to
+  three separate, non-atomic proposals (primary record, then tenant index,
+  then name index) — a concurrent racer could observe the primary record by
+  id before the name index existed, fail its own "already seeded?"
+  verification by name, and refuse the whole run. It is now wired
+  atomically, exactly like cmd/qrdbd's boot-time role stores. Separately, a
+  create collision's verification was either a single, un-retried read
+  (`firstboot.builtInRoleAlreadySeeded`, `role.ReconcileBuiltInRoles`'s own
+  `seedMissingRole`) or missing entirely (`bootstrap.seedTenantRoles` never
+  checked `RoleIDExistsError` at all, only `RoleNameExistsError`, and never
+  verified a name collision was actually its own canonical definition
+  before accepting it): the LOSING side of a genuine atomic race can be
+  told "guard failed" before its own local StaleRead has replicated the
+  WINNING write. All three now retry briefly and verify both collision
+  kinds against the canonical definition before concluding a collision is a
+  real, unexplained conflict rather than an idempotent re-attempt racing
+  visibility — `seedTenantRoles` reuses `firstboot`'s now-exported
+  `BuiltInRoleAlreadySeededWithin` rather than a third copy of the same
+  check. A record that resolves but disagrees with the canonical definition
+  still fails, on every path. Regression-tested over a real go-quicraft
+  cluster (`TestRegisterBuiltInRoles_ConcurrentSeedersConverge`,
+  `TestReconcileBuiltInRoles_ConcurrentCallersConverge`,
+  `TestProvisionTenant_ConcurrentCallersConverge`) and with
   `TestClusterEnableEncryption_TenantScope_RF3 -count=10`.
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled

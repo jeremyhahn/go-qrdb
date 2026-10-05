@@ -26,6 +26,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,18 +35,23 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/raftharness"
 )
 
 // ---------------------------------------------------------------------------
@@ -222,25 +228,29 @@ type fakeRoles struct {
 	createCount  atomic.Int32
 	createErr    error
 	existsByName map[string]bool
-	createCalls  []role.CreateRoleRequest
-	seeded       []role.Role
+	// existsByID models a RoleIDExistsError collision — a losing racer whose
+	// id, not its name, is what the store reports as already claimed.
+	existsByID map[string]bool
+	// mismatch, when true, makes a reported collision's "already persisted"
+	// record deliberately disagree with the request (a different id) —
+	// modelling a genuine, unrelated conflict rather than this call's own
+	// idempotent re-attempt. False (the default) models the ordinary
+	// idempotent case: the collision is this exact canonical definition,
+	// seeded field-for-field identical to the request.
+	mismatch    bool
+	createCalls []role.CreateRoleRequest
+	seeded      []role.Role
 }
 
 func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 	f.createCalls = append(f.createCalls, *req)
-	if f.existsByName[req.Name] {
-		// Record what is "already persisted" as field-for-field identical to
-		// this request — a restart or another node's own successful attempt
-		// — so GetRoleByName below can find it. go-qrdb#555's provenance
-		// check (registerBuiltInRoles) reads this back and refuses the
-		// collision as unverifiable if it cannot: a fakeRoles that reported
-		// "already exists" without ever remembering a matching record would
-		// make every idempotent re-run fail, not merely fail to prove.
-		f.seeded = append(f.seeded, role.Role{
-			ID: req.ID, Name: req.Name, TenantID: req.TenantID,
-			Permissions: req.Permissions, System: role.IsSystemRoleName(req.Name),
-		})
+	switch {
+	case f.existsByName[req.Name]:
+		f.recordCollision(req)
 		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+	case f.existsByID[req.ID]:
+		f.recordCollision(req)
+		return nil, &role.RoleIDExistsError{ID: req.ID, TenantID: req.TenantID}
 	}
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -248,6 +258,24 @@ func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (
 	f.createCount.Add(1)
 	f.seeded = append(f.seeded, role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions})
 	return &role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions}, nil
+}
+
+// recordCollision records what is "already persisted" for a collision
+// CreateRole is about to report, so GetRoleByName below can find it. The
+// provenance check (firstboot.BuiltInRoleAlreadySeededWithin,
+// go-qrdb#555) reads this back and refuses the collision as unverifiable
+// if it cannot: a fakeRoles that reported "already exists" without ever
+// remembering a matching record would make every idempotent re-run fail,
+// not merely fail to prove.
+func (f *fakeRoles) recordCollision(req *role.CreateRoleRequest) {
+	id := req.ID
+	if f.mismatch {
+		id = "some-other-tenants-role-id"
+	}
+	f.seeded = append(f.seeded, role.Role{
+		ID: id, Name: req.Name, TenantID: req.TenantID,
+		Permissions: req.Permissions, System: role.IsSystemRoleName(req.Name),
+	})
 }
 
 // GetRoleByName makes fakeRoles a role.NameResolver, as qrdb's own
@@ -1248,6 +1276,199 @@ func TestProvisionTenant_IdempotentReRun(t *testing.T) {
 	}
 	if result.AdminCertPEM != nil {
 		t.Error("AdminCertPEM set on idempotent re-run; want nil (no rotation)")
+	}
+}
+
+// TestProvisionTenant_RoleIDCollisionVerifiedIdempotent covers the OTHER
+// collision CreateRole can report for a built-in role:
+// role.RoleIDExistsError, not only role.RoleNameExistsError.
+// seedTenantRoles must verify this collision the SAME way, via
+// firstboot.BuiltInRoleAlreadySeededWithin, and accept it as this run's own
+// idempotent re-attempt — not merely the name-collision case
+// TestProvisionTenant_IdempotentReRun already covers.
+func TestProvisionTenant_RoleIDCollisionVerifiedIdempotent(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	roles := &fakeRoles{existsByID: map[string]bool{
+		role.SystemRoleID("acme", role.RoleNameSO):       true,
+		role.SystemRoleID("acme", role.RoleNameAdmin):    true,
+		role.SystemRoleID("acme", role.RoleNameOperator): true,
+		role.SystemRoleID("acme", role.RoleNameUser):     true,
+		role.SystemRoleID("acme", role.RoleNameAuditor):  true,
+	}}
+	users := &fakeUsers{exists: true}
+
+	if _, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles, Logger: discardLogger(),
+	}); err != nil {
+		t.Fatalf("ProvisionTenant (id-collision, verified identical): %v", err)
+	}
+}
+
+// TestProvisionTenant_RoleCollisionMismatchFails proves the OTHER half of
+// the verification: a collision whose persisted record does NOT match the
+// canonical definition is a genuine, unexplained conflict, never accepted
+// as an idempotent re-attempt — on either collision kind, and no amount of
+// the bounded retry changes that.
+func TestProvisionTenant_RoleCollisionMismatchFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		roles *fakeRoles
+	}{
+		{"name collision", &fakeRoles{mismatch: true, existsByName: map[string]bool{role.RoleNameSO: true}}},
+		{"id collision", &fakeRoles{mismatch: true, existsByID: map[string]bool{role.SystemRoleID("acme", role.RoleNameSO): true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+				Tenants: &fakeTenants{createAlreadyErr: true}, Users: &fakeUsers{exists: true}, Roles: tc.roles,
+				Logger: discardLogger(),
+			})
+			var want *TenantAdminRoleCreationError
+			if !errors.As(err, &want) {
+				t.Fatalf("err = %v, want *TenantAdminRoleCreationError", err)
+			}
+		})
+	}
+}
+
+// concurrentFakeTenants is fakeTenants made safe for concurrent callers: the
+// FIRST CreateTenant call for an id creates it; every other call — from
+// another goroutine racing the same tenant, exactly as N nodes' own
+// ProvisionTenant calls would — gets tenant.ErrTenantAlreadyExists, exactly
+// as the real tenant.TenantServicer answers a racing create.
+type concurrentFakeTenants struct {
+	mu      sync.Mutex
+	created map[string]bool
+}
+
+func (f *concurrentFakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created == nil {
+		f.created = map[string]bool{}
+	}
+	if f.created[id] {
+		return nil, tenant.ErrTenantAlreadyExists
+	}
+	f.created[id] = true
+	return &tenant.TenantInfo{ID: id, Name: name, IsolationType: isolationType}, nil
+}
+
+// concurrentFakeUsers is fakeUsers made safe for concurrent callers: the
+// FIRST CreateUser call for a tenant+username pair creates it; every other
+// call gets user.UsernameExistsError, exactly as the real user.UserServicer
+// answers a racing create.
+type concurrentFakeUsers struct {
+	mu      sync.Mutex
+	nextID  uint64
+	created map[string]bool
+}
+
+func (f *concurrentFakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := req.TenantID + "/" + req.Username
+	if f.created == nil {
+		f.created = map[string]bool{}
+	}
+	if f.created[key] {
+		return nil, &user.UsernameExistsError{Username: req.Username, TenantID: req.TenantID}
+	}
+	f.created[key] = true
+	f.nextID++
+	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive}, nil
+}
+
+// TestProvisionTenant_ConcurrentCallersConverge is the regression test for
+// the firstboot role race's second root cause: seedTenantRoles, reached
+// through ProvisionTenant, racing ANOTHER concurrent ProvisionTenant call
+// for the SAME new tenant under the SAME deterministic built-in role ids.
+//
+// Runs over a REAL go-quicraft cluster (raftharness), not a fake, for the
+// same reason TestRegisterBuiltInRoles_ConcurrentSeedersConverge
+// (pkg/firstboot) and TestReconcileBuiltInRoles_ConcurrentCallersConverge
+// (pkg/role) do: the defect is a visibility-lag race between a create
+// collision (reported authoritatively by the Raft LEADER) and the
+// verifying read's own StaleRead, which a single-process fake cannot model.
+// Tenants/Users are concurrency-safe fakes (the race under test is
+// specifically about ROLES); Roles is a REAL, WithAtomicIdentity role.Store
+// per caller, one per cluster host, exactly as production composes it.
+func TestProvisionTenant_ConcurrentCallersConverge(t *testing.T) {
+	const callers = 3
+	const shardID = uint64(9201)
+	const tenantID = "concurrent-tenant"
+
+	c := raftharness.NewCluster(t, callers)
+	members := make(map[uint64]string, callers)
+	for i := range callers {
+		members[uint64(i+1)] = c.Addrs[i]
+	}
+	for i := range callers {
+		if err := c.Hosts[i].StartShard(members, false, c.CreateFn(), quicraftconfig.Config{
+			ShardID: shardID, ReplicaID: uint64(i + 1), MemberIdentities: c.Identities,
+		}); err != nil {
+			t.Fatalf("StartShard(host %d): %v", i, err)
+		}
+	}
+	c.WaitReadable(t, shardID, c.Hosts...)
+
+	roleSvcs := make([]role.RoleServicer, callers)
+	for i := range callers {
+		host := raftbackend.New(c.Hosts[i])
+		guarded, err := lifecycle.NewGuardedKVStoreAdapter(
+			service.NewKVService(host, shardID),
+			service.NewIndexService(host, shardID),
+			service.NewTransactionService(host, shardID),
+		)
+		if err != nil {
+			t.Fatalf("NewGuardedKVStoreAdapter(host %d): %v", i, err)
+		}
+		idx, err := tenant.NewIdentityIndex(guarded)
+		if err != nil {
+			t.Fatalf("NewIdentityIndex(host %d): %v", i, err)
+		}
+		svc, err := role.NewStore(guarded, role.WithIdentityIndex(idx), role.WithAtomicIdentity())
+		if err != nil {
+			t.Fatalf("role.NewStore(host %d): %v", i, err)
+		}
+		roleSvcs[i] = svc
+	}
+
+	tenants := &concurrentFakeTenants{}
+	users := &concurrentFakeUsers{}
+
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: tenantID}, Dependencies{
+				Tenants: tenants, Users: users, Roles: roleSvcs[i], Logger: discardLogger(),
+			})
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("caller %d: ProvisionTenant: %v", i, err)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+
+	for _, want := range role.BuiltInRoles(tenantID) {
+		for i := range callers {
+			got, err := roleSvcs[i].GetRoleByName(context.Background(), tenantID, want.Name)
+			if err != nil {
+				t.Fatalf("host %d: GetRoleByName(%q): %v", i, want.Name, err)
+			}
+			if got.ID != want.ID || got.TenantID != want.TenantID || got.System != want.System {
+				t.Errorf("host %d: role %q = %+v, want canonical %+v", i, want.Name, got, want)
+			}
+		}
 	}
 }
 

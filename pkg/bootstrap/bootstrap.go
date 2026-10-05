@@ -855,26 +855,60 @@ func resolveExistingTenantAdmin(ctx context.Context, deps Dependencies, tenantID
 }
 
 // seedTenantRoles installs the tenant-scoped built-in roles. Already-exists
-// for any individual role is idempotent success.
+// for any individual role is idempotent success — verified, not assumed, on
+// EITHER collision CreateRole can report, by the SAME bounded-retry check
+// pkg/firstboot's registerBuiltInRoles uses for the identical reason
+// (go-qrdb's firstboot role race, 61d7cb049): two concurrent ProvisionTenant
+// calls for the SAME new tenant race each other's seedTenantRoles under the
+// SAME deterministic role.SystemRoleID, and the losing side can be told
+// "already exists" before the winner's write has replicated to its own
+// read. Reusing firstboot.BuiltInRoleAlreadySeededWithin rather than
+// re-deriving the verification a third time (pkg/role's own
+// ReconcileBuiltInRoles/seedMissingRole is the second).
+//
+// A record that DOES resolve but disagrees with the canonical definition —
+// a genuine conflict, not a racing idempotent re-attempt — still fails:
+// BuiltInRoleAlreadySeededWithin only returns true on an exact match (id,
+// tenant, name, System flag, and permission set).
 func seedTenantRoles(ctx context.Context, deps Dependencies, tenantID string) (preexisting bool, err error) {
+	resolver := tenantRoleResolver(deps)
 	for _, r := range role.BuiltInRoles(tenantID) {
-		_, err := deps.Roles.CreateRole(ctx, &role.CreateRoleRequest{
+		_, createErr := deps.Roles.CreateRole(ctx, &role.CreateRoleRequest{
 			ID:          r.ID,
 			Name:        r.Name,
 			TenantID:    r.TenantID,
 			Permissions: r.Permissions,
 		})
-		if err == nil {
+		if createErr == nil {
 			continue
 		}
 		var nameExists *role.RoleNameExistsError
-		if errors.As(err, &nameExists) {
-			preexisting = true
-			continue
+		var idExists *role.RoleIDExistsError
+		if errors.As(createErr, &nameExists) || errors.As(createErr, &idExists) {
+			if firstboot.BuiltInRoleAlreadySeededWithin(ctx, resolver, tenantID, r) {
+				preexisting = true
+				continue
+			}
 		}
-		return false, &TenantAdminRoleCreationError{Cause: err}
+		return false, &TenantAdminRoleCreationError{Cause: createErr}
 	}
 	return preexisting, nil
+}
+
+// tenantRoleResolver returns the seam seedTenantRoles verifies a create
+// collision through, preferring an explicit Dependencies.RoleResolver and
+// falling back to Roles itself when it happens to implement
+// role.NameResolver — mirroring pkg/firstboot's own roleResolver fallback
+// for the identical reason: a caller that wires only Roles still gets
+// verified idempotency instead of a silently unverifiable collision.
+func tenantRoleResolver(deps Dependencies) role.NameResolver {
+	if deps.RoleResolver != nil {
+		return deps.RoleResolver
+	}
+	if r, ok := deps.Roles.(role.NameResolver); ok {
+		return r
+	}
+	return nil
 }
 
 // enrollAdminCert issues, thumbprints, and binds a tenant-admin certificate
