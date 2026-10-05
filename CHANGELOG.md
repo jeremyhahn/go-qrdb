@@ -1534,6 +1534,7 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   wrappers check every guard's and write's key before forwarding, so the
   refusal matches what an embedded, same-process caller already got.
 - **`--backup-key-dir`** (`qrdbd start`): the directory the built-in `"software"` key-wrap provider's key files must live inside. Required to create or restore an encrypted backup with the built-in provider; kept outside `--data-dir`/`--backup-dir` on purpose, so a backup made with a key from this directory is still restorable after `--data-dir` is lost entirely. `--restore-decryption-key-file`'s value is now a bare file NAME inside this directory, never a path.
+- **`server.WithKeyDir`** mirrors `--backup-key-dir` for every embedder that composes through `pkg/server`/`sdk/go/node` (both the seal-enabled and seal-disabled construction paths) rather than `cmd/qrdbd` directly, forwarded via the same `ResolveCryptoOptions`/`lifecycle.Infra.KeyDir` path `WithStrategyRegistry` already uses.
 
 ### Security
 
