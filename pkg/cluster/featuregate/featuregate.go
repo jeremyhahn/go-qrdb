@@ -110,9 +110,21 @@ const NodeCompaction Feature = "node-compaction"
 // enablement is not the right test.
 const ClusterSeal Feature = "cluster-seal"
 
+// KeyLengthCap is pkg/statemachine's Apply-time refusal of any client key
+// over protocol.MaxClientKeyLength (validateClientKey, go-qrdb#592 F5).
+// Unlike GuardedWrites, this adds no opcode an old binary cannot decode --
+// it makes an EXISTING opcode (Put, Delete, and the rest validateClientKey
+// guards) newly refuse something an old binary always applied. Enabled must
+// therefore gate the refusal itself, not a wrapper an unready peer can be
+// routed around (there is no wrapper to withhold): until every replica
+// advertises it, every replica applies any key length, matching what an old
+// binary alone would do; once active, every replica refuses identically.
+// See pkg/statemachine.KeyLengthCapGate.
+const KeyLengthCap Feature = "key-length-cap"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, KeyLengthCap}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

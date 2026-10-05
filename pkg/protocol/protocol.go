@@ -1223,13 +1223,15 @@ func DecodeCommand(data []byte) (Command, error) {
 }
 
 // DecodeMVCCPut extracts key, value, and leaseID from an MVCC Put payload.
+// Format: [keyLen:2 LE][key][leaseID:8 LE][value].
 func DecodeMVCCPut(payload []byte) (key, value []byte, leaseID int64, err error) {
-	if len(payload) < 2 {
-		return nil, nil, 0, &InvalidCommandError{Reason: "mvcc put: payload too short"}
-	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen+8) > len(payload) {
-		return nil, nil, 0, &InvalidCommandError{Reason: "mvcc put: key length exceeds payload"}
+	// The 8-byte lease ID must also fit after the key, so the length is
+	// checked against the payload with both the 2-byte prefix AND that
+	// trailing fixed-width field already reserved; DecodeKeyLen never sees a
+	// keyLen that would leave the lease ID truncated.
+	keyLen, err := DecodeKeyLen(payload, len(payload)-2-8, "mvcc put")
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	key = payload[2 : 2+keyLen]
 	leaseID = int64(binary.LittleEndian.Uint64(payload[2+keyLen:]))
@@ -1238,13 +1240,11 @@ func DecodeMVCCPut(payload []byte) (key, value []byte, leaseID int64, err error)
 }
 
 // DecodeMVCCDelete extracts the key from an MVCC Delete payload.
+// Format: [keyLen:2 LE][key].
 func DecodeMVCCDelete(payload []byte) (key []byte, err error) {
-	if len(payload) < 2 {
-		return nil, &InvalidCommandError{Reason: "mvcc delete: payload too short"}
-	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return nil, &InvalidCommandError{Reason: "mvcc delete: key length exceeds payload"}
+	keyLen, err := DecodeKeyLen(payload, len(payload)-2, "mvcc delete")
+	if err != nil {
+		return nil, err
 	}
 	return payload[2 : 2+keyLen], nil
 }

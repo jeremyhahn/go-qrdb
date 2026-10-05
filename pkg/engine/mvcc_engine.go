@@ -17,7 +17,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"log/slog"
 	"sort"
@@ -698,12 +697,9 @@ func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
 // exactly (see kv.EncodePutIfAbsent) -- only the opcode and the guard differ --
 // so both handlers decode through here.
 func decodeBaseKVPut(payload []byte) (key, value []byte, err error) {
-	if len(payload) < 2 {
-		return nil, nil, &protocol.InvalidCommandError{Reason: "base kv put: payload too short"}
-	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(keyLen)+2 > len(payload) {
-		return nil, nil, &protocol.InvalidCommandError{Reason: "base kv put: key length exceeds payload"}
+	keyLen, err := protocol.DecodeKeyLen(payload, len(payload)-2, "base kv put")
+	if err != nil {
+		return nil, nil, err
 	}
 	return payload[2 : 2+keyLen], payload[2+keyLen:], nil
 }
@@ -1014,12 +1010,9 @@ func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch s
 // decoding the simple [keyLen:2 LE][key] payload and delegating to the MVCC
 // store. After deleting, registered secondary indexes are updated.
 func (e *MVCCEngine) handleBaseKVDelete(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "base kv delete: payload too short"}
-	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(keyLen)+2 > len(payload) {
-		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "base kv delete: key length exceeds payload"}
+	keyLen, err := protocol.DecodeKeyLen(payload, len(payload)-2, "base kv delete")
+	if err != nil {
+		return sm.Result{}, nil, err
 	}
 	key := payload[2 : 2+keyLen]
 

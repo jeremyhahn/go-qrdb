@@ -15,11 +15,13 @@
 package statemachine
 
 import (
-	"encoding/binary"
+	"errors"
 	"sync"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // This file holds every implementation of kv.OpPutIfAbsent, together rather
@@ -53,18 +55,29 @@ import (
 //     identical log.
 
 // decodeKeyValuePayload parses the [keyLen:2 LE][key][value] body shared by
-// kv.OpPut and kv.OpPutIfAbsent. The op byte has already been stripped by the
-// dispatcher.
+// kv.OpPut and kv.OpPutIfAbsent, and -- since they decode the identical
+// shape -- by every state machine's own handlePut/handleDelete in this
+// package (regular.go, concurrent.go, fast.go, kv_statemachine.go). The op
+// byte has already been stripped by the dispatcher.
+//
+// The length is decoded through protocol.DecodeKeyLen rather than by adding
+// to the raw uint16 directly: that addition wraps in 16-bit arithmetic for a
+// key within a few bytes of 65535 and lets a narrower bounds check -- or the
+// slice expression built from it -- silently misuse the wrapped value
+// instead of refusing it, panicking Update on every replica that applies the
+// entry (go-qrdb#592 F1). Four copies of that defect, one per state machine,
+// is exactly the duplication this shared helper exists to prevent.
 //
 // The returned slices alias payload, which the caller may not retain: entry
 // buffers are recycled, so a handler that stores either must copy first.
 func decodeKeyValuePayload(payload []byte, op string) (key, value []byte, err error) {
-	if len(payload) < 2 {
-		return nil, nil, &IncompleteDataError{Reason: op + ": payload too short"}
-	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return nil, nil, &IncompleteDataError{Reason: op + ": key length exceeds payload"}
+	keyLen, derr := protocol.DecodeKeyLen(payload, len(payload)-2, op)
+	if derr != nil {
+		var ice *protocol.InvalidCommandError
+		if errors.As(derr, &ice) {
+			return nil, nil, &IncompleteDataError{Reason: ice.Reason}
+		}
+		return nil, nil, &IncompleteDataError{Reason: derr.Error()}
 	}
 	return payload[2 : 2+keyLen], payload[2+keyLen:], nil
 }
@@ -79,7 +92,7 @@ func (k *KVStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (sm.
 	if err != nil {
 		return sm.Result{}, err
 	}
-	if kerr := validateClientKey("put_if_absent", key); kerr != nil {
+	if kerr := validateClientKey("put_if_absent", key, k.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
 
@@ -120,7 +133,7 @@ func (r *RegularStateMachine) handlePutIfAbsent(payload []byte, revision uint64)
 	if err != nil {
 		return sm.Result{}, err
 	}
-	if kerr := validateClientKey("put_if_absent", key); kerr != nil {
+	if kerr := validateClientKey("put_if_absent", key, r.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	k := string(key)

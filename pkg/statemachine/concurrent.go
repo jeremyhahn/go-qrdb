@@ -804,15 +804,11 @@ func (c *ConcurrentStateMachine) clearStorage() error {
 // handlePut decodes a KV Put command and writes the key-value pair.
 // Payload format: [keyLen:2 LE][key][value].
 func (c *ConcurrentStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
+	keyBytes, value, err := decodeKeyValuePayload(payload, "put")
+	if err != nil {
+		return sm.Result{}, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return sm.Result{}, &IncompleteDataError{Reason: "put: key length exceeds payload"}
-	}
-	key := string(payload[2 : 2+keyLen])
-	value := payload[2+keyLen:]
+	key := string(keyBytes)
 
 	ownedValue := make([]byte, len(value))
 	copy(ownedValue, value)
@@ -829,14 +825,11 @@ func (c *ConcurrentStateMachine) handlePut(payload []byte, revision uint64) (sm.
 // handleDelete decodes a KV Delete command and removes the key.
 // Payload format: [keyLen:2 LE][key].
 func (c *ConcurrentStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
+	keyBytes, _, err := decodeKeyValuePayload(payload, "delete")
+	if err != nil {
+		return sm.Result{}, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return sm.Result{}, &IncompleteDataError{Reason: "delete: key length exceeds payload"}
-	}
-	key := string(payload[2 : 2+keyLen])
+	key := string(keyBytes)
 
 	c.concurrentCacheDelete(key)
 

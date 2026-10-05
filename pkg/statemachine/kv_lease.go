@@ -210,7 +210,7 @@ func (k *KVStateMachine) handleNativeMVCCPut(payload []byte, revision uint64) (s
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "mvcc put: " + err.Error()}
 	}
-	if kerr := validateClientKey("put", key); kerr != nil {
+	if kerr := validateClientKey("put", key, k.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	if res, refused := LeaseRefusal(k.lessor, leaseID); refused {
@@ -231,7 +231,7 @@ func (k *KVStateMachine) handleNativeMVCCDelete(payload []byte, revision uint64)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "mvcc delete: " + err.Error()}
 	}
-	if kerr := validateClientKey("delete", key); kerr != nil {
+	if kerr := validateClientKey("delete", key, k.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	muts := []Mutation{{Key: key, Delete: true}}

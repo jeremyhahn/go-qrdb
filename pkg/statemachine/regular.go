@@ -85,6 +85,14 @@ func WithRegularMVCCStore(ms MVCCStore) RegularOption {
 	}
 }
 
+// WithRegularKeyLengthCapGate is WithKVKeyLengthCapGate for
+// RegularStateMachine; see KeyLengthCapGate and validateClientKey.
+func WithRegularKeyLengthCapGate(gate KeyLengthCapGate) RegularOption {
+	return func(r *RegularStateMachine) {
+		r.keyLengthGate = gate
+	}
+}
+
 // RegularStateMachine is a pure in-memory state machine that implements
 // sm.StateMachine and sm.Hasher. Unlike FastStateMachine, it has no
 // persistent storage layer and no sharded cache. All state is held in a
@@ -104,6 +112,12 @@ type RegularStateMachine struct {
 	leaseManager LeaseManager
 	tsStore      TimeSeriesStore
 	mvccStore    MVCCStore
+
+	// keyLengthGate, when set (WithRegularKeyLengthCapGate), decides
+	// whether validateClientKey may enforce its length cap. nil -- the
+	// default -- enforces it unconditionally; see keyLengthCapActive and
+	// KVStateMachine's identical field.
+	keyLengthGate KeyLengthCapGate
 }
 
 // Compile-time interface assertions.
@@ -111,6 +125,12 @@ var (
 	_ sm.StateMachine = (*RegularStateMachine)(nil)
 	_ sm.Hasher       = (*RegularStateMachine)(nil)
 )
+
+// keyLengthCapActive is KVStateMachine.keyLengthCapActive for
+// RegularStateMachine.
+func (r *RegularStateMachine) keyLengthCapActive() bool {
+	return r.keyLengthGate == nil || r.keyLengthGate()
+}
 
 // NewRegularStateMachine creates a new pure in-memory state machine with
 // the given optional configuration.
@@ -478,18 +498,14 @@ func (r *RegularStateMachine) listKeys(prefix string) ([]string, error) {
 // handlePut decodes a KV Put command and writes the key-value pair.
 // Payload format: [keyLen:2 LE][key][value].
 func (r *RegularStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
+	keyBytes, value, err := decodeKeyValuePayload(payload, "put")
+	if err != nil {
+		return sm.Result{}, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return sm.Result{}, &IncompleteDataError{Reason: "put: key length exceeds payload"}
-	}
-	key := string(payload[2 : 2+keyLen])
-	if kerr := validateClientKey("put", []byte(key)); kerr != nil {
+	key := string(keyBytes)
+	if kerr := validateClientKey("put", keyBytes, r.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
-	value := payload[2+keyLen:]
 
 	// Make an owned copy of the value so it survives after the entry
 	// buffer is recycled.
@@ -510,16 +526,13 @@ func (r *RegularStateMachine) handlePut(payload []byte, revision uint64) (sm.Res
 // handleDelete decodes a KV Delete command and removes the key.
 // Payload format: [keyLen:2 LE][key].
 func (r *RegularStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
+	keyBytes, _, err := decodeKeyValuePayload(payload, "delete")
+	if err != nil {
+		return sm.Result{}, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return sm.Result{}, &IncompleteDataError{Reason: "delete: key length exceeds payload"}
-	}
-	key := string(payload[2 : 2+keyLen])
+	key := string(keyBytes)
 
-	if kerr := validateClientKey("delete", []byte(key)); kerr != nil {
+	if kerr := validateClientKey("delete", keyBytes, r.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	r.mu.Lock()
@@ -579,3 +592,6 @@ func (ks regularKeyspace) ApplyAtomic(muts []Mutation) error {
 	}
 	return nil
 }
+
+// keyLengthCapActive delegates to the wrapped RegularStateMachine.
+func (ks regularKeyspace) keyLengthCapActive() bool { return ks.r.keyLengthCapActive() }

@@ -354,3 +354,96 @@ func TestRaftSMOverFileStorage_ThreeNodeCluster(t *testing.T) {
 		}
 	}
 }
+
+// TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard is the
+// clustered, end-to-end acceptance for go-qrdb#592 F1: a 65,535-byte key
+// (protocol.MaxClientKeyLength, the exact boundary where a 2-byte
+// key-length field's "N + keyLen" arithmetic wrapped in 16-bit arithmetic
+// while keyLen was still a uint16) must apply on EVERY replica of a real
+// 3-node raft group running sm_storage: file, and the shard must stay
+// healthy afterward on every one of them.
+func TestRaftSMOverFileStorage_MaxLengthKeyNeverHaltsTheShard(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+	ca := generateTestCA(t)
+
+	raftPorts := allocatePorts(t, 3)
+	adminPorts := allocateTCPPorts(t, 3)
+	grpcPorts := allocateTCPPorts(t, 3)
+	peersFlag := buildPeersFlag(raftPorts)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
+
+	for i := range 3 {
+		args := []string{
+			"start",
+			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
+			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
+			"--data-dir", t.TempDir(),
+			"--discovery", "static",
+			"--peers", peersFlag,
+			"--member-identities", memberIDs,
+			"--shard-id", "1",
+			"--replica-id", fmt.Sprintf("%d", i+1),
+			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--auth-enabled=false",
+			"--enable-rest",
+			"--sm", "disk",
+			"--sm-storage", "file",
+		}
+		args = append(args, nodeTLS[i]...)
+		startNode(t, bin, args, fmt.Sprintf("[sm-file-maxkey node%d] ", i+1))
+	}
+	for i := range 3 {
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+	}
+
+	cliArgs := func(rest int, rest2 ...string) []string {
+		base := []string{
+			"--server", fmt.Sprintf("https://127.0.0.1:%d", rest),
+			"--ca-file", ca.CertPath,
+			"--timeout", "20s",
+		}
+		return append(base, rest2...)
+	}
+
+	maxKey := strings.Repeat("k", 65535)
+
+	// Write the max-length key through node 1 (leader forwarding routes to
+	// the leader).
+	deadline := time.Now().Add(90 * time.Second)
+	var out string
+	var err error
+	for time.Now().Before(deadline) {
+		out, err = runCLI(t, cli, cliArgs(adminPorts[0], "kv", "put", maxKey, "max-length-value")...)
+		if err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("kv put of a 65535-byte key never succeeded: %v\n%s", err, out)
+	}
+
+	// Read the max-length key, and confirm the shard is healthy, through
+	// EVERY node.
+	for i := range 3 {
+		nodeDeadline := time.Now().Add(60 * time.Second)
+		for {
+			out, err = runCLI(t, cli, cliArgs(adminPorts[i], "kv", "get", maxKey)...)
+			if err == nil && strings.Contains(out, "max-length-value") {
+				break
+			}
+			if time.Now().After(nodeDeadline) {
+				t.Fatalf("node %d never served the 65535-byte key's value: err=%v out=%s", i+1, err, out)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		out, err = runCLI(t, cli, cliArgs(adminPorts[i], "kv", "put",
+			fmt.Sprintf("after-maxkey-node%d", i+1), "still-alive")...)
+		if err != nil {
+			t.Fatalf("node %d unhealthy after the max-length key: %v\n%s", i+1, err, out)
+		}
+	}
+}

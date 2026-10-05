@@ -1417,8 +1417,26 @@ func runStart(f *startFlags) (err error) {
 
 			// Build the state machine factory with this node's subsystems and
 			// its at-rest encryptor; see buildSMCreateFunc.
+			//
+			// keyLengthGateBox carries the Apply-time key-length cap's
+			// feature-gate decision (featuregate.KeyLengthCap, go-qrdb#592
+			// F5) into the state machine the call below constructs, even
+			// though the *featuregate.Gate itself does not exist yet: it is
+			// built from `host`, a few lines below, and `host` cannot exist
+			// before the state machine factory that creates it does. The
+			// closure passed to WithKVKeyLengthCapGate reads the box fresh
+			// on every Apply, so it is correct however that ordering
+			// resolves: unset (nil) answers true -- enforce -- matching a
+			// single-binary deployment, exactly WithKVKeyLengthCapGate's own
+			// documented default, until the Store below (after featureGate
+			// is built) makes it answer the real cluster-wide decision.
+			var keyLengthGateBox atomic.Pointer[featuregate.Gate]
+			keyLengthGate := func() bool {
+				gate := keyLengthGateBox.Load()
+				return gate == nil || gate.Enabled(f.shardID, featuregate.KeyLengthCap)
+			}
 			if f.mode != capabilities.ModeStandalone {
-				createFn, err := buildSMCreateFunc(f, enc, lr, watchHub)
+				createFn, err := buildSMCreateFunc(f, enc, lr, watchHub, keyLengthGate)
 				if err != nil {
 					return err
 				}
@@ -1521,6 +1539,7 @@ func runStart(f *startFlags) (err error) {
 					return gerr
 				}
 				featureGate = gate
+				keyLengthGateBox.Store(featureGate)
 				svcHost = newHostAdapter(host, raftbackend.WithFeatureGate(featureGate))
 				rnode = host
 				nodeCloser = host
@@ -3231,7 +3250,12 @@ func shutdownNode(node io.Closer) error {
 // them. A type that cannot keep leases is refused at start
 // (SMLeasesUnsupportedError) rather than run without them: cluster membership
 // and the feature gate are lease-backed, so it could not form a cluster.
-func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
+//
+// keyLengthGate is forwarded to statemachine.WithKVKeyLengthCapGate for every
+// KVStateMachine-backed type (go-qrdb#592 F5); "mvcc" and "pebble" are not
+// KVStateMachine and never enforce the cap at Apply at all (see
+// pkg/store/mvcc.go, pkg/store/pebble.go), so there is nothing to gate there.
+func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub, keyLengthGate statemachine.KeyLengthCapGate) (sm.CreateFunc, error) {
 	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
 	switch f.smType {
 	case "mvcc":
@@ -3251,7 +3275,8 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, h
 	default:
 		return resolveCreateFunc(f.smType, f.smBackend,
 			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage, Encryptor: enc},
-			statemachine.WithKVLessor(lr))
+			statemachine.WithKVLessor(lr),
+			statemachine.WithKVKeyLengthCapGate(keyLengthGate))
 	}
 }
 

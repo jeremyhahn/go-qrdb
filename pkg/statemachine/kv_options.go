@@ -80,3 +80,12 @@ func WithKVMVCCStore(ms MVCCStore) KVOption {
 		k.mvccStore = ms
 	}
 }
+
+// WithKVKeyLengthCapGate injects the decision of whether validateClientKey
+// may enforce its Apply-time key-length refusal (go-qrdb#592 F5). Without
+// it the refusal is enforced unconditionally; see KeyLengthCapGate.
+func WithKVKeyLengthCapGate(gate KeyLengthCapGate) KVOption {
+	return func(k *KVStateMachine) {
+		k.keyLengthGate = gate
+	}
+}

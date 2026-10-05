@@ -15,7 +15,6 @@
 package statemachine
 
 import (
-	"encoding/binary"
 	"errors"
 	"log/slog"
 	"sync"
@@ -65,6 +64,18 @@ type KVStateMachine struct {
 	indexManager IndexManager
 	tsStore      TimeSeriesStore
 	mvccStore    MVCCStore
+
+	// keyLengthGate, when set (WithKVKeyLengthCapGate), decides whether
+	// validateClientKey may enforce its length cap. nil -- the default --
+	// enforces it unconditionally; see keyLengthCapActive.
+	keyLengthGate KeyLengthCapGate
+}
+
+// keyLengthCapActive reports whether k may enforce validateClientKey's
+// length cap: true when no gate was wired (single-binary-version default)
+// or when the gate says every replica of this shard supports it.
+func (k *KVStateMachine) keyLengthCapActive() bool {
+	return k.keyLengthGate == nil || k.keyLengthGate()
 }
 
 // NewKVStateMachine creates a new KVStateMachine backed by the given
@@ -196,18 +207,13 @@ func (k *KVStateMachine) applyEntries(entries []sm.Entry, results []sm.Result) e
 // the backend.
 // Payload format: [keyLen:2 LE][key][value].
 func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
+	key, value, err := decodeKeyValuePayload(payload, "put")
+	if err != nil {
+		return sm.Result{}, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return sm.Result{}, &IncompleteDataError{Reason: "put: key length exceeds payload"}
-	}
-	key := payload[2 : 2+keyLen]
-	if kerr := validateClientKey("put", key); kerr != nil {
+	if kerr := validateClientKey("put", key, k.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
-	value := payload[2+keyLen:]
 
 	if err := k.putKey(key, value, false); err != nil {
 		return sm.Result{}, &StorageError{Op: "put", Inner: err}
@@ -224,16 +230,12 @@ func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, 
 // backend.
 // Payload format: [keyLen:2 LE][key].
 func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
+	key, _, err := decodeKeyValuePayload(payload, "delete")
+	if err != nil {
+		return sm.Result{}, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(2+keyLen) > len(payload) {
-		return sm.Result{}, &IncompleteDataError{Reason: "delete: key length exceeds payload"}
-	}
-	key := payload[2 : 2+keyLen]
 
-	if kerr := validateClientKey("delete", key); kerr != nil {
+	if kerr := validateClientKey("delete", key, k.keyLengthCapActive()); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	if err := k.deleteKey(key, false); err != nil {

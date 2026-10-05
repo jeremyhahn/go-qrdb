@@ -61,12 +61,31 @@ import (
 // concurrent Lookup sees half a transaction and a crash leaves all of it or
 // none.
 
+// KeyLengthCapGate reports whether every replica of a shard can enforce
+// validateClientKey's Apply-time key-length refusal (go-qrdb#592 F5). The
+// composition root wires one from pkg/cluster/featuregate, e.g.
+//
+//	gate.Enabled(shardID, featuregate.KeyLengthCap)
+//
+// called fresh on every Apply, never cached beyond that call, so activation
+// (permanent, per pkg/cluster/featuregate) takes effect starting with the
+// very next entry once observed. See WithKVKeyLengthCapGate,
+// WithRegularKeyLengthCapGate, and validateClientKey's own doc comment for
+// why the check is gated this way rather than deferred at proposal time the
+// way protocol.OpGuarded is.
+type KeyLengthCapGate func() bool
+
 // keyspace is what the native transaction and batch plane needs from a state
 // machine: a point read of its own keyspace and an all-or-nothing commit to
 // it. Every Backend is one, and RegularStateMachine adapts its map to it.
 type keyspace interface {
 	Get(key []byte) ([]byte, error)
 	ApplyAtomic(muts []Mutation) error
+
+	// keyLengthCapActive reports whether this keyspace's owning state
+	// machine may enforce validateClientKey's length cap at Apply (see
+	// validateClientKey, go-qrdb#592 F5).
+	keyLengthCapActive() bool
 }
 
 // leaseKeyspace is a keyspace that keeps leases: a put in a batch or a
@@ -92,6 +111,7 @@ type leasedKeyspace struct {
 func (ks leasedKeyspace) Get(key []byte) ([]byte, error)    { return ks.k.backend.Get(key) }
 func (ks leasedKeyspace) ApplyAtomic(muts []Mutation) error { return ks.k.commitLeased(muts, nil) }
 func (ks leasedKeyspace) hasLease(id int64) bool            { return ks.k.lessor.Has(id) }
+func (ks leasedKeyspace) keyLengthCapActive() bool          { return ks.k.keyLengthCapActive() }
 func (ks leasedKeyspace) commitLeased(muts []Mutation, leases []int64) error {
 	return ks.k.commitLeased(muts, leases)
 }
@@ -175,14 +195,15 @@ func applyNativeTransaction(ks keyspace, payload []byte) (txnOutcome, error) {
 	// checked before anything is evaluated, so an invalid key refuses the
 	// transaction whichever branch it would take, identically on every
 	// replica, instead of reaching storage and halting Apply.
+	lengthCapActive := ks.keyLengthCapActive()
 	for _, dc := range txn.Compares {
-		if err := validateClientKey("transaction compare", dc.Key); err != nil {
+		if err := validateClientKey("transaction compare", dc.Key, lengthCapActive); err != nil {
 			return txnOutcome{}, err
 		}
 	}
 	for _, ops := range [][]protocol.DecodedOp{txn.SuccessOps, txn.FailureOps} {
 		for _, op := range ops {
-			if err := validateClientKey("transaction op", op.Key); err != nil {
+			if err := validateClientKey("transaction op", op.Key, lengthCapActive); err != nil {
 				return txnOutcome{}, err
 			}
 		}
@@ -287,10 +308,11 @@ func batchMutations(ks keyspace, ops []protocol.DecodedOp) ([]Mutation, []int64,
 		return nil, nil, err
 	}
 	lk, keepsLeases := ks.(leaseKeyspace)
+	lengthCapActive := ks.keyLengthCapActive()
 	muts := make([]Mutation, len(ops))
 	leases := make([]int64, len(ops))
 	for i, op := range ops {
-		if err := validateClientKey("batch op", op.Key); err != nil {
+		if err := validateClientKey("batch op", op.Key, lengthCapActive); err != nil {
 			return nil, nil, err
 		}
 		if op.LeaseID != 0 {
@@ -377,11 +399,30 @@ var reservedKeys = map[string]struct{}{
 // it first, nor on a caller that reached this state machine some other way
 // than those encoders; and a reserved key. It is refused on every state
 // machine alike, so a request is valid or invalid regardless of sm_type.
-func validateClientKey(op string, key []byte) error {
+//
+// lengthCapActive gates ONLY the length check (go-qrdb#592 F5). The length
+// cap is new Apply-time BEHAVIOR on opcodes every binary has always
+// understood, unlike protocol.OpGuarded, which is a new OPCODE an old binary
+// cannot decode at all -- so there is nothing to defer at proposal time the
+// way guardCommand defers wrapping a write until every replica supports
+// OpGuarded (pkg/service/write_guard.go). An old replica mid-rolling-upgrade
+// never checked key length at Apply and applies any key its backend will
+// hold; a new replica that enforced the cap unconditionally would refuse an
+// entry an old peer just committed, diverging from it on an ordinary write.
+// A caller that never wires a gate (WithKeyLengthCapGate,
+// WithRegularKeyLengthCapGate) gets lengthCapActive==true unconditionally --
+// correct whenever every replica is known to run this binary: a standalone
+// node, a test double, or any composition that does not gate features at
+// all (see pkg/service/write_guard.go's identical default for
+// FeatureGatedHost). The empty-key and reserved-key refusals are
+// unconditional: both predate this cap and recur on every binary that has
+// ever run this state machine, so there is no old behavior to preserve for
+// either.
+func validateClientKey(op string, key []byte, lengthCapActive bool) error {
 	if len(key) == 0 {
 		return &InvalidKeyError{Op: op, Reason: "empty key"}
 	}
-	if len(key) > protocol.MaxClientKeyLength {
+	if lengthCapActive && len(key) > protocol.MaxClientKeyLength {
 		return &InvalidKeyError{Op: op, Reason: "key length " + strconv.Itoa(len(key)) +
 			" exceeds the maximum of " + strconv.Itoa(protocol.MaxClientKeyLength) + " bytes"}
 	}

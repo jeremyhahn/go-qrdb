@@ -14,7 +14,10 @@
 
 package protocol
 
-import "strconv"
+import (
+	"encoding/binary"
+	"strconv"
+)
 
 // MaxClientKeyLength is the global maximum length, in bytes, of any key a
 // client may name on the KV data plane (owner ruling, go-qrdb#592). It is
@@ -75,4 +78,35 @@ func CheckKeyLen(key []byte) error {
 		return &KeyTooLongError{Length: len(key)}
 	}
 	return nil
+}
+
+// DecodeKeyLen decodes a 2-byte little-endian key-length prefix at the start
+// of payload and returns it widened to int, bounds-checked against
+// remaining -- the number of bytes available after the prefix for the key
+// and anything a caller requires to still follow it. A caller with a further
+// fixed-width field after the key (DecodeMVCCPut's 8-byte lease ID) passes
+// len(payload)-2-that width, so a keyLen that would leave the trailing field
+// truncated is refused here rather than discovered by a panic downstream.
+//
+// This is the ONE place every 2-byte-prefixed key decoder in this package,
+// and every caller outside it (pkg/statemachine, pkg/engine, pkg/store),
+// must get the length through — never by computing "N + keyLen" while
+// keyLen is still the uint16 encoding.Binary.Uint16 returned. That sum is
+// done in 16-bit arithmetic and wraps for a key within a few bytes of 65535,
+// which lets a bounds check built the same way -- or the slice expression
+// derived from it -- silently accept, or silently misuse, the wrapped,
+// too-small value instead of refusing the key (go-qrdb#592 F1): on one shape
+// of payload the wrapped check passes and the following slice panics
+// (halting Raft `Update` on every replica that applies the entry); on
+// another, both the check and the slice stay in bounds but land on the
+// wrong offset, so the stored value is silently corrupted instead.
+// decodeLen -- this function's unexported counterpart for the package's
+// 4-byte-prefixed fields -- compares in uint64 for the identical reason;
+// this is its 2-byte sibling.
+func DecodeKeyLen(payload []byte, remaining int, reason string) (keyLen int, err error) {
+	if len(payload) < 2 {
+		return 0, &InvalidCommandError{Reason: reason + ": payload too short"}
+	}
+	raw := binary.LittleEndian.Uint16(payload[0:2])
+	return decodeLen(uint32(raw), remaining, reason+": key length exceeds payload")
 }
