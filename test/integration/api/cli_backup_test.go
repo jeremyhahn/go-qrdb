@@ -253,7 +253,7 @@ func TestCLIMultiProtocolBackupCreateGetListVerifyRestoreDeleteLifecycle(t *test
 			// deployment and why the CLI exits non-zero when it does.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"--output", "json", "backup", "restore",
-				"--id", id, "--validate",
+				"--id", id, "--validate", "--allow-plaintext",
 			)
 			assertError(t, err, fmt.Sprintf(
 				"[%s] restoring into the live system-tenant shard must fail the command, not just the shard", proto))

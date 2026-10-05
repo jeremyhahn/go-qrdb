@@ -441,7 +441,9 @@ func testBackupCommandTreeOverProtocol(t *testing.T, node *multiProtoNode, proto
 // failure. A decode failure of the JSON payload itself remains fatal.
 func runCLIRestoreJSON(t *testing.T, node *multiProtoNode, proto multiProtocol, id string, validate bool) backupRestoreDisplay {
 	t.Helper()
-	args := []string{"--output", "json", "backup", "restore", "--id", id}
+	// --allow-plaintext: every caller of this helper restores the
+	// explicit-"none" backup created above.
+	args := []string{"--output", "json", "backup", "restore", "--id", id, "--allow-plaintext"}
 	if validate {
 		args = append(args, "--validate")
 	}
