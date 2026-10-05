@@ -52,7 +52,7 @@ func TestListDeletedTenants_OnEveryTransport(t *testing.T) {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootCell(t, tk, permission.TenantsListDeleted, permission.TenantsReconcileDeleted)
 			before := retireThroughNode(t, c, "charlie", "alpha", "bravo")
-			ctx := boundedCtx(t)
+			ctx := c.callerCtx(t, tk)
 
 			first, err := c.tenants.ListDeletedTenants(ctx, &transport.ListDeletedTenantsRequest{PageSize: 2})
 			if err != nil {
@@ -96,7 +96,7 @@ func TestReconcileDeletedTenants_OnEveryTransport(t *testing.T) {
 			c := bootCell(t, tk, permission.TenantsListDeleted, permission.TenantsReconcileDeleted)
 			retireThroughNode(t, c, "alpha", "bravo")
 
-			report, err := c.tenants.ReconcileDeletedTenants(boundedCtx(t))
+			report, err := c.tenants.ReconcileDeletedTenants(c.callerCtx(t, tk))
 			if err != nil {
 				t.Fatalf("%s: ReconcileDeletedTenants: %v", tk, err)
 			}
@@ -115,16 +115,16 @@ func TestReconcileDeletedTenants_OnEveryTransport(t *testing.T) {
 }
 
 // TestDeletedTenantVerbs_RequireTheirPermission: an identity without the two
-// cross-scope permissions is refused on every remote transport, so neither
-// verb is reachable by a caller merely able to list tenants.
+// cross-scope permissions is refused on every transport, remote and embedded
+// alike, so neither verb is reachable by a caller merely able to list
+// tenants. Before go-qrdb's embedded-authorization fix the embedded
+// transport ran neither check at all, which is why this suite used to skip
+// it (tk.remote()).
 func TestDeletedTenantVerbs_RequireTheirPermission(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
-		if !tk.remote() {
-			continue
-		}
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootCell(t, tk)
-			ctx := boundedCtx(t)
+			ctx := c.callerCtx(t, tk)
 			if _, err := c.tenants.ListDeletedTenants(ctx, &transport.ListDeletedTenantsRequest{}); err == nil {
 				t.Fatalf("%s: ListDeletedTenants succeeded without %s", tk, permission.TenantsListDeleted)
 			}
