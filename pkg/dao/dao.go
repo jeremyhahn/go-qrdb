@@ -16,6 +16,13 @@ package dao
 import "context"
 
 // Pager provides pagination operations for entity collections.
+//
+// Neither method verifies a natural key: both return whatever is stored,
+// scanned by key prefix rather than looked up by a specific natural-key
+// value, so there is no "expected" value to check a record against. Only
+// Save, SaveIfAbsent, UnitOfWork's queued saves and GetByNaturalKey verify
+// (see GenericDAO.GetByNaturalKey's doc for the full list of which
+// operations do and do not).
 type Pager[E any] interface {
 	// Page retrieves a single page of entities.
 	// The PageQuery specifies page number, size, and sort order.
@@ -120,6 +127,15 @@ type GenericDAO[E Entity] interface {
 
 	// Get retrieves an entity by ID.
 	// Returns ErrNotFound if the entity doesn't exist.
+	//
+	// Get does NOT verify a natural key: it takes a bare id, never the
+	// natural-key value a mismatch would be checked against, so there is
+	// nothing for it to verify. A caller that computed id itself from a
+	// DeterministicIDGenerator and must not silently accept a DIFFERENT
+	// entity that happened to hash to the same id calls VerifyNaturalKey
+	// explicitly afterward, or uses GetByNaturalKey instead, which does
+	// this automatically. See GetByNaturalKey's doc for the full list of
+	// which operations verify and which do not.
 	Get(ctx context.Context, id uint64) (E, error)
 
 	// GetByNaturalKey retrieves the entity whose natural-key field equals
@@ -127,25 +143,40 @@ type GenericDAO[E Entity] interface {
 	// the same way Save does, and verifying the result against value with
 	// VerifyNaturalKey before returning it.
 	//
-	// This is the read-side half of the create-if-absent guarantee Save
-	// provides for a DeterministicIDGenerator (FieldHashGenerator,
-	// CryptoFieldHashGenerator, DynamicFieldHashGenerator,
-	// CryptoDynamicFieldHashGenerator): a hash-derived ID is drawn from a
-	// 64-bit space shared by every natural-key value the generator ever
-	// hashes, so Get(ctx, id) alone cannot tell a collision from a correct
-	// lookup -- by the time it has an ID it no longer has the value the
-	// caller meant to look up by. GetByNaturalKey cannot be called without
-	// the verification, unlike the manual Get-then-VerifyNaturalKey
-	// pattern, which a caller can forget half of (go-qrdb#589).
+	// This is the read-side half of the write-side guarantee Save and
+	// UnitOfWork's queued saves provide for a DeterministicIDGenerator
+	// (FieldHashGenerator, CryptoFieldHashGenerator,
+	// DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator): a
+	// hash-derived ID is drawn from a 64-bit space shared by every
+	// natural-key value the generator ever hashes, so Get(ctx, id) alone
+	// cannot tell a collision from a correct lookup -- by the time it has
+	// an ID it no longer has the value the caller meant to look up by.
+	// GetByNaturalKey cannot be called without the verification, unlike the
+	// manual Get-then-VerifyNaturalKey pattern, which a caller can forget
+	// half of (go-qrdb#589).
+	//
+	// Only the create/save paths verify the natural key, and only
+	// GetByNaturalKey verifies on read: Save, SaveIfAbsent, UnitOfWork's
+	// queued saves and GetByNaturalKey all call VerifyNaturalKey (directly,
+	// or through the guarded conditional write the coordinator ruling on
+	// re-saving the same natural key requires -- see Save's doc). Get(id),
+	// Page, ForEachPage and Delete do NOT verify: each takes an id or an
+	// already-loaded entity, never the natural-key value a mismatch would
+	// be checked against.
 	//
 	// Returns *UnsupportedIDGeneratorError when the configured IDGenerator
 	// is not a DeterministicIDGenerator, since there is then no
 	// deterministic way to derive an ID from a bare value. Returns
-	// *NaturalKeyMismatchError when the derived ID names a DIFFERENT
-	// entity. Returns NotFoundError when it names no entity at all.
+	// NaturalKeyMismatchError when the derived ID names a DIFFERENT entity.
+	// Returns NotFoundError when it names no entity at all.
 	GetByNaturalKey(ctx context.Context, value string) (E, error)
 
 	// Delete removes an entity from storage.
+	//
+	// Delete does NOT verify a natural key: it takes an already-loaded
+	// entity and removes whatever is stored under its EntityID(), with no
+	// "expected" natural-key value to check that record against. See
+	// GetByNaturalKey's doc for the full list of which operations verify.
 	// Returns ErrInvalidEntityID if entity.EntityID() is 0.
 	// Returns nil if the entity doesn't exist (idempotent).
 	Delete(ctx context.Context, entity E) error

@@ -108,10 +108,18 @@ type DAOAtomicBatchUnsupportedError
 // every entity already persisted under it.
 //
 // GenericDAO closes the write- and read-side gaps a collision leaves open,
-// for every generator that implements DeterministicIDGenerator (all four):
-// Save routes a NEW entity's hash-derived ID through the store's atomic
-// create-if-absent write and refuses with *DAOIDCollisionError rather than
-// silently overwriting whichever entity got there first.
+// for every generator that implements DeterministicIDGenerator (all four).
+// Save and DAOUnitOfWork's queued saves route a NEW entity's hash-derived
+// ID through the store's atomic conditional write and apply the
+// coordinator ruling on what an occupied ID means: a
+// record carrying the SAME natural-key value is the SAME logical entity --
+// an update, via CompareAndSwap against the record just read so it stays
+// atomic -- and only a record carrying a DIFFERENT natural-key value is a
+// genuine collision, refused with *DAOIDCollisionError rather than
+// silently overwritten. A same-key update whose CompareAndSwap loses every
+// retry to sustained concurrent writers refuses with
+// *DAOSaveContentionExhaustedError instead -- never *DAOIDCollisionError,
+// which is reserved for a confirmed different natural key.
 // GetByNaturalKey(ctx, value) derives the lookup ID and calls
 // VerifyNaturalKey(entity, entityType, fieldName, value) on the result
 // before returning it -- comparing the read-back entity's natural-key
@@ -119,8 +127,15 @@ type DAOAtomicBatchUnsupportedError
 // opt-in the way calling VerifyNaturalKey manually after a plain Get is.
 // *DAOUnsupportedIDGeneratorError is GetByNaturalKey's refusal when the
 // configured generator is not deterministic.
+//
+// Only the create/save paths verify the natural key, and only
+// GetByNaturalKey verifies on read: Get(id), Page, ForEachPage and Delete
+// do NOT -- each takes a bare id or an already-loaded entity, never the
+// natural-key value a mismatch would be checked against, so there is
+// nothing for them to verify.
 type DeterministicIDGenerator
 type DAOIDCollisionError
+type DAOSaveContentionExhaustedError
 type DAOUnsupportedIDGeneratorError
 var NewCryptoFieldHashGenerator, NewCryptoDynamicFieldHashGenerator
 var VerifyNaturalKey
@@ -388,10 +403,13 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |
 | Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
 | `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |
-| `Save` of a NEW entity (`EntityID() == 0`) whose `DeterministicIDGenerator`-derived ID already names a different stored record | `*dao.IDCollisionError` | **yes** — routed through the store's atomic create-if-absent write, never an unconditional `Put` |
+| `Save`/`UnitOfWork.Commit` for a NEW entity (`EntityID() == 0`) whose `DeterministicIDGenerator`-derived ID already names a DIFFERENT stored record (a confirmed collision) | `*dao.IDCollisionError` | **yes** — routed through the store's atomic conditional write, never an unconditional `Put` |
+| `Save`/`UnitOfWork.Commit` for a NEW entity whose derived ID already names a record with the SAME natural-key value (the same logical entity) | applied as an update (`CompareAndSwap` against the record just read), no error | n/a — not a collision; the coordinator ruling |
+| `Save`'s same-key update path exhausts its bounded retry budget under sustained concurrent writers | `*dao.SaveContentionExhaustedError` | **yes** — never `*dao.IDCollisionError`, which is reserved for a confirmed different natural key |
 | `Save` of a NEW entity with a `DeterministicIDGenerator` configured, over a store with no atomic write | `*dao.AtomicWriteUnsupportedError` | **yes** — the same refusal `SaveIfAbsent` gives; `Save` does not silently fall back to an unconditional `Put` for this case |
 | `GetByNaturalKey` where the configured `IDGenerator` is not a `DeterministicIDGenerator` | `*dao.UnsupportedIDGeneratorError` | **yes** — there is no deterministic way to derive an ID from a bare value |
 | `GetByNaturalKey` where the derived ID names a DIFFERENT entity | `dao.NaturalKeyMismatchError` | **yes** — the mismatched record is never returned |
+| `Get(id)`, `Page`, `ForEachPage`, `Delete` | never verify a natural key | n/a — each takes a bare id or an already-loaded entity, never the natural-key value a mismatch would be checked against |
 
 **There is one atomic-refusal marker: `kvstore.ErrAtomicWriteUnsupported`.**
 Every layer that refuses a guarded write for want of the capability — the

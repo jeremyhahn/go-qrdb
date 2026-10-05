@@ -244,27 +244,22 @@ func New[E Entity](
 // When EntityID() is 0 and the configured IDGenerator is a
 // DeterministicIDGenerator (FieldHashGenerator, CryptoFieldHashGenerator,
 // DynamicFieldHashGenerator, CryptoDynamicFieldHashGenerator), the generated
-// ID can already name a DIFFERENT entity -- a hash-derived ID is drawn from
-// a 64-bit space shared by every natural-key value the generator ever
-// hashes (go-qrdb#589). Save closes that gap itself: it routes this case
-// through SaveIfAbsent's atomic create-if-absent write instead of an
-// unconditional Put, and refuses with *IDCollisionError when the ID was
-// already in use rather than silently overwriting whichever entity got
-// there first.
+// ID can already name a record -- a hash-derived ID is drawn from a 64-bit
+// space shared by every natural-key value the generator ever hashes
+// (go-qrdb#589). Save decides what that means (the coordinator ruling from
+// the go-qrdb#589 review): a record at that ID carrying the SAME
+// natural-key value is the SAME logical entity, so the write proceeds as an
+// atomic update (CompareAndSwap against the record just read); a record
+// carrying a DIFFERENT natural-key value is a genuine collision, refused
+// with *IDCollisionError rather than silently overwritten. See
+// saveDeterministic.
 //
 // A caller with EntityID() already set (an update, or a non-deterministic
 // generator) takes the unconditional Put path unchanged.
 func (d *genericDAO[E]) Save(ctx context.Context, entity E) error {
 	if entity.EntityID() == 0 {
-		if _, deterministic := d.idGen.(DeterministicIDGenerator); deterministic {
-			stored, err := d.SaveIfAbsent(ctx, entity)
-			if err != nil {
-				return err
-			}
-			if !stored {
-				return &IDCollisionError{EntityType: d.entityType, ID: entity.EntityID()}
-			}
-			return nil
+		if gen, deterministic := d.idGen.(DeterministicIDGenerator); deterministic {
+			return d.saveDeterministic(ctx, entity, gen)
 		}
 		entity.SetEntityID(d.idGen.NextID(entity))
 	}
@@ -282,6 +277,109 @@ func (d *genericDAO[E]) Save(ctx context.Context, entity E) error {
 	// Store in KVStore
 	key := d.makeKey(entity.EntityID())
 	return d.store.Put(ctx, key, data)
+}
+
+// maxSaveDeterministicAttempts bounds saveDeterministic's read-compare-swap
+// retry loop for the update case: a concurrent writer can win the
+// CompareAndSwap between the read that confirmed the same natural key and
+// the swap, and retrying re-reads the new value rather than giving up after
+// the first lost race. Bounded for the same reason every CAS retry loop in
+// this codebase is -- unbounded retry under sustained concurrent writes
+// would starve the caller instead of reporting an outcome.
+const maxSaveDeterministicAttempts = 8
+
+// saveDeterministic implements Save's contract for a DeterministicIDGenerator
+// and EntityID() == 0: the generator's own ID is assigned, then an atomic
+// create-if-absent write (PutIfAbsent) is attempted. When the key is already
+// occupied, the coordinator ruling decides what happens next:
+//
+//   - The occupying record carries the SAME natural-key value as entity:
+//     the same logical entity, so this is an UPDATE. Applied with
+//     CompareAndSwap against the exact bytes just read, so the write stays
+//     atomic against a concurrent writer -- a lost race retries, bounded by
+//     maxSaveDeterministicAttempts, rather than silently skipping the write
+//     or reporting a false collision.
+//   - The occupying record carries a DIFFERENT natural-key value (or
+//     entity's own natural-key field cannot be read at all, so there is
+//     nothing to compare): a genuine collision, refused with
+//     *IDCollisionError. Nothing is overwritten.
+func (d *genericDAO[E]) saveDeterministic(ctx context.Context, entity E, gen DeterministicIDGenerator) error {
+	entity.SetEntityID(gen.NextID(entity))
+
+	atomicStore, ok := d.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return &AtomicWriteUnsupportedError{EntityType: d.entityType}
+	}
+
+	expectedValue, hasNaturalKey := extractNaturalKeyValue(entity, gen.FieldName())
+
+	data, err := d.codec.Marshal(entity)
+	if err != nil {
+		return SerializationFailedError{EntityType: d.entityType, Cause: err}
+	}
+
+	ctx, cancel := d.ensureTimeout(ctx)
+	defer cancel()
+
+	key := d.makeKey(entity.EntityID())
+
+	for attempt := 0; attempt < maxSaveDeterministicAttempts; attempt++ {
+		stored, putErr := atomicStore.PutIfAbsent(ctx, key, data)
+		if putErr != nil {
+			if errors.Is(putErr, kvstore.ErrAtomicWriteUnsupported) {
+				return &AtomicWriteUnsupportedError{EntityType: d.entityType, Err: putErr}
+			}
+			return putErr
+		}
+		if stored {
+			return nil
+		}
+
+		// The key is occupied. Read it back to decide whether this is the
+		// same logical entity (an update) or a different one (a collision).
+		existingData, getErr := d.store.Get(ctx, key)
+		if getErr != nil {
+			return getErr
+		}
+		if existingData == nil {
+			// Raced a delete between PutIfAbsent and Get; the key is absent
+			// again, so retry the create.
+			continue
+		}
+
+		if !hasNaturalKey {
+			// entity carries no comparable natural-key value of its own (the
+			// configured field is absent from this entity), so there is
+			// nothing to verify sameness against: the occupied key is a
+			// collision.
+			return &IDCollisionError{EntityType: d.entityType, ID: entity.EntityID()}
+		}
+
+		existing := d.newEntity()
+		if unmarshalErr := d.codec.Unmarshal(existingData, &existing); unmarshalErr != nil {
+			return DeserializationFailedError{EntityType: d.entityType, Cause: unmarshalErr}
+		}
+		if mismatch := VerifyNaturalKey(existing, d.entityType, gen.FieldName(), expectedValue); mismatch != nil {
+			return &IDCollisionError{EntityType: d.entityType, ID: entity.EntityID()}
+		}
+
+		// Same natural key: an update. CompareAndSwap from the bytes just
+		// read, so the write stays atomic against a concurrent writer
+		// instead of blindly overwriting whatever is there now.
+		swapped, swapErr := atomicStore.CompareAndSwap(ctx, key, existingData, data)
+		if swapErr != nil {
+			if errors.Is(swapErr, kvstore.ErrAtomicWriteUnsupported) {
+				return &AtomicWriteUnsupportedError{EntityType: d.entityType, Err: swapErr}
+			}
+			return swapErr
+		}
+		if swapped {
+			return nil
+		}
+		// Lost the race to a concurrent writer; retry from PutIfAbsent so a
+		// delete in between is handled too.
+	}
+	return &SaveContentionExhaustedError{EntityType: d.entityType, ID: entity.EntityID(), Attempts: maxSaveDeterministicAttempts}
 }
 
 // SaveIfAbsent persists an entity only when its key is absent.

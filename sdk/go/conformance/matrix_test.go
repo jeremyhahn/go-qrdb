@@ -83,6 +83,7 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 	assertSingleKeyGuardedVerbsWork(t, cl)
 	assertTransactionsWork(t, c, cl)
 	assertGuardedBatchMoveIsAtomic(t, cl)
+	assertUnitOfWorkCollisionRefusedAtomically(t, cl)
 	if c.mode == raft && c.smType != "" {
 		assertLeasedWriteBindsAndRefusesUnknownLease(t, c, cl)
 	}
@@ -180,6 +181,119 @@ func assertGuardedBatchMoveIsAtomic(t *testing.T, cl clients) {
 		if got, err := cl.kv.Get(ctx, k); err != nil || string(got) != want {
 			t.Errorf("%s = %q err=%v; want %q", k, got, err, want)
 		}
+	}
+}
+
+// conformanceAccount is a minimal sdk.Entity with a natural-key field
+// ("Email"), used by assertUnitOfWorkCollisionRefusedAtomically to drive a
+// real sdk.DAOUnitOfWork over this cell's store.
+type conformanceAccount struct {
+	ID    uint64 `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+func (a *conformanceAccount) EntityID() uint64      { return a.ID }
+func (a *conformanceAccount) SetEntityID(id uint64) { a.ID = id }
+
+// conformanceCollidingGenerator is a consumer-defined
+// sdk.DeterministicIDGenerator that maps every natural-key value to the
+// SAME id, forcing the collision a real hash generator would only hit by
+// chance (go-qrdb#589). Implemented against the SDK-exported interface
+// (never an internal pkg/dao type), proving a CONSUMER's own generator gets
+// the same protection the built-in ones do, exactly as
+// TestSDK_IDCollisionIsTestableByConsumers already proves outside this
+// matrix -- this is that same guarantee reached over the real wire, on
+// every engine, mode and transport.
+type conformanceCollidingGenerator struct{ id uint64 }
+
+func (g *conformanceCollidingGenerator) NextID(sdk.Entity) uint64 { return g.id }
+func (g *conformanceCollidingGenerator) FieldName() string        { return "Email" }
+func (g *conformanceCollidingGenerator) IDForValue(string) uint64 { return g.id }
+
+var _ sdk.DeterministicIDGenerator = (*conformanceCollidingGenerator)(nil)
+
+// assertUnitOfWorkCollisionRefusedAtomically proves the go-qrdb#589 review's
+// BLOCKER fix end to end, through the real sdk.DAOUnitOfWork, on every
+// engine, mode and transport this matrix covers: a RegisterDAOSave whose
+// deterministic ID collides with a DIFFERENT already-stored entity refuses
+// the WHOLE Commit with *sdk.DAOIDCollisionError, and nothing in the batch
+// -- not even an unrelated save queued alongside it -- applies. The
+// coordinator ruling's other half is proven in the same cell: re-saving the
+// SAME natural key through the SAME UnitOfWork path is an update, not a
+// refused collision.
+func assertUnitOfWorkCollisionRefusedAtomically(t *testing.T, cl clients) {
+	t.Helper()
+	ctx := boundedCtx(t)
+
+	idx, ok := cl.kv.(transport.IndexClient)
+	if !ok {
+		t.Fatalf("the matrix's KV client does not implement transport.IndexClient")
+	}
+	store, err := sdk.NewKVStoreAdapter(cl.kv, idx)
+	if err != nil {
+		t.Fatalf("NewKVStoreAdapter: %v", err)
+	}
+
+	gen := &conformanceCollidingGenerator{id: 0x5EEDFACE}
+	accountDAO, err := sdk.NewDAO(store, "uow-collision-accounts",
+		func() *conformanceAccount { return &conformanceAccount{} },
+		sdk.WithIDGenerator(gen))
+	if err != nil {
+		t.Fatalf("NewDAO: %v", err)
+	}
+
+	alice := &conformanceAccount{Name: "alice", Email: "alice@example.com"}
+	if err := accountDAO.Save(ctx, alice); err != nil {
+		t.Fatalf("Save (seed): %v", err)
+	}
+
+	bob := &conformanceAccount{Name: "bob", Email: "bob@example.com"} // forces the SAME id, a different entity
+	harmless := &conformanceAccount{ID: 0xFEEDCAFE, Name: "unrelated"}
+
+	uow := sdk.NewDAOUnitOfWork(store)
+	if err := sdk.RegisterDAOSave(uow, accountDAO, bob); err != nil {
+		t.Fatalf("RegisterDAOSave(bob): %v", err)
+	}
+	if err := sdk.RegisterDAOSave(uow, accountDAO, harmless); err != nil {
+		t.Fatalf("RegisterDAOSave(harmless): %v", err)
+	}
+
+	err = uow.Commit(ctx)
+	var collision *sdk.DAOIDCollisionError
+	if !errors.As(err, &collision) {
+		t.Fatalf("Commit with a forced collision = %v (%T), want *sdk.DAOIDCollisionError", err, err)
+	}
+
+	got, err := accountDAO.Get(ctx, gen.id)
+	if err != nil {
+		t.Fatalf("Get(%d): %v", gen.id, err)
+	}
+	if got.Email != "alice@example.com" {
+		t.Fatalf("Get(%d).Email = %q, want %q (bob must not have overwritten alice)", gen.id, got.Email, "alice@example.com")
+	}
+
+	var notFound sdk.DAONotFoundError
+	if _, getErr := accountDAO.Get(ctx, 0xFEEDCAFE); !errors.As(getErr, &notFound) {
+		t.Fatalf("Get(unrelated) after a refused batch = %v, want DAONotFoundError (nothing in the batch applies)", getErr)
+	}
+
+	// The coordinator ruling's other half: the SAME natural key is an
+	// update, applied through the SAME UnitOfWork path, not refused.
+	renamed := &conformanceAccount{Name: "alice renamed", Email: "alice@example.com"}
+	uow2 := sdk.NewDAOUnitOfWork(store)
+	if err := sdk.RegisterDAOSave(uow2, accountDAO, renamed); err != nil {
+		t.Fatalf("RegisterDAOSave(renamed): %v", err)
+	}
+	if err := uow2.Commit(ctx); err != nil {
+		t.Fatalf("Commit (same natural key, want an update): %v", err)
+	}
+	got, err = accountDAO.Get(ctx, gen.id)
+	if err != nil {
+		t.Fatalf("Get(%d) after update: %v", gen.id, err)
+	}
+	if got.Name != "alice renamed" {
+		t.Fatalf("Get(%d).Name = %q, want %q (the update must have applied)", gen.id, got.Name, "alice renamed")
 	}
 }
 

@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // collidingGenerator is a DeterministicIDGenerator stub that maps every
@@ -81,6 +83,99 @@ func TestGenericDAO_Save_RefusesOnIDCollision(t *testing.T) {
 	}
 	if got.Email != "alice@example.com" {
 		t.Fatalf("Get(42).Email = %q, want %q (second must not have overwritten first)", got.Email, "alice@example.com")
+	}
+}
+
+// TestGenericDAO_Save_SameNaturalKeyIsUpdate proves the coordinator ruling
+// (go-qrdb#589 review): a Save whose hash-derived ID already names a
+// record carrying the SAME natural-key value is the SAME logical entity, so
+// it is applied as an update, not refused as a collision.
+func TestGenericDAO_Save_SameNaturalKeyIsUpdate(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryKVStore()
+	gen := NewCryptoFieldHashGenerator("Email")
+	d, err := New(store, "entities", func() *TestEntity { return &TestEntity{} }, WithIDGenerator(gen))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	first := &TestEntity{Name: "alice", Email: "alice@example.com"}
+	if err := d.Save(ctx, first); err != nil {
+		t.Fatalf("Save(first): %v", err)
+	}
+	id := first.EntityID()
+	if id == 0 {
+		t.Fatal("first.EntityID() = 0, want a hash-derived ID")
+	}
+
+	// A second entity value with the SAME email re-derives the SAME ID. It
+	// must update the existing record, not refuse as a collision.
+	second := &TestEntity{Name: "alice renamed", Email: "alice@example.com"}
+	if err := d.Save(ctx, second); err != nil {
+		t.Fatalf("Save(second, same natural key) = %v, want nil (an update)", err)
+	}
+	if second.EntityID() != id {
+		t.Fatalf("second.EntityID() = %d, want %d (the same derived ID)", second.EntityID(), id)
+	}
+
+	got, err := d.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get(%d): %v", id, err)
+	}
+	if got.Name != "alice renamed" {
+		t.Fatalf("Get(%d).Name = %q, want %q (the update must have applied)", id, got.Name, "alice renamed")
+	}
+}
+
+// failingCompareAndSwapStore wraps an AtomicKVStore so every CompareAndSwap
+// reports swapped=false, nil -- a guard that never holds -- simulating
+// sustained concurrent-writer contention without an actual concurrency
+// harness.
+type failingCompareAndSwapStore struct {
+	kvstore.AtomicKVStore
+}
+
+func (s failingCompareAndSwapStore) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, nil
+}
+
+var _ kvstore.AtomicKVStore = failingCompareAndSwapStore{}
+
+// TestGenericDAO_Save_ContentionExhaustedIsNotACollision proves a Save
+// whose update path (same natural key) loses every CompareAndSwap retry to
+// simulated contention is refused with *SaveContentionExhaustedError, never
+// *IDCollisionError -- the coordinator ruling's error message fix: a
+// contended update is not a collision, and must not be reported as one.
+func TestGenericDAO_Save_ContentionExhaustedIsNotACollision(t *testing.T) {
+	ctx := context.Background()
+	inner := newMemoryKVStore().(kvstore.AtomicKVStore)
+	store := failingCompareAndSwapStore{inner}
+	gen := NewCryptoFieldHashGenerator("Email")
+	d, err := New(store, "entities", func() *TestEntity { return &TestEntity{} }, WithIDGenerator(gen))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	first := &TestEntity{Name: "alice", Email: "alice@example.com"}
+	if err := d.Save(ctx, first); err != nil {
+		t.Fatalf("Save(first): %v", err)
+	}
+
+	second := &TestEntity{Name: "alice renamed", Email: "alice@example.com"}
+	err = d.Save(ctx, second)
+	if err == nil {
+		t.Fatal("Save(second) = nil error, want *SaveContentionExhaustedError")
+	}
+	var collision *IDCollisionError
+	if errors.As(err, &collision) {
+		t.Fatalf("Save(second) error = %v (%T), a contended update must never report *IDCollisionError", err, err)
+	}
+	var contended *SaveContentionExhaustedError
+	if !errors.As(err, &contended) {
+		t.Fatalf("Save(second) error = %v (%T), want *SaveContentionExhaustedError", err, err)
+	}
+	if contended.Attempts != maxSaveDeterministicAttempts {
+		t.Fatalf("contended.Attempts = %d, want %d", contended.Attempts, maxSaveDeterministicAttempts)
 	}
 }
 

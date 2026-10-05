@@ -52,10 +52,15 @@ type IDGenerator = dao.IDGenerator
 // result depends only on one named natural-key value, so two different
 // entities can land on the same ID through nothing worse than an unlucky
 // draw from the 64-bit output space (see CryptoFieldHashGenerator's doc for
-// the bound). GenericDAO.Save and GenericDAO.GetByNaturalKey use it to
-// close the write- and read-side halves of that gap (go-qrdb#589); an
-// embedder implementing a custom deterministic generator satisfies both by
-// implementing this interface.
+// the bound). GenericDAO.Save, DAOUnitOfWork's queued saves and
+// GenericDAO.GetByNaturalKey use it to close the write- and read-side
+// halves of that gap (go-qrdb#589). A record at the derived ID carrying the
+// SAME natural-key value is the SAME logical entity -- an update, applied
+// through a guarded conditional write so it stays atomic -- not a
+// collision; only a DIFFERENT natural-key value at that ID is a genuine
+// collision, refused with *DAOIDCollisionError. An embedder implementing a
+// custom deterministic generator satisfies both write- and read-side
+// guarantees by implementing this interface.
 type DeterministicIDGenerator = dao.DeterministicIDGenerator
 
 // FieldHashGenerator generates deterministic entity IDs by hashing a
@@ -82,6 +87,15 @@ var NewFieldHashGenerator = dao.NewFieldHashGenerator
 // attack FNV-1a is open to. A caller that must DETECT a collision that
 // occurred despite this -- rather than merely resist one being engineered
 // -- uses GetByNaturalKey, or calls VerifyNaturalKey after Get directly.
+//
+// Only the create/save paths verify the natural key: Save, SaveIfAbsent,
+// DAOUnitOfWork's queued saves and GetByNaturalKey all call VerifyNaturalKey
+// (directly or through the create-if-absent/guarded-update write). Get(id),
+// Page, ForEachPage and Delete do NOT -- they take an id or an
+// already-loaded entity, never the natural-key value a mismatch would be
+// checked against, so there is nothing for them to verify. A caller reading
+// by id after resolving it some other way (an index query, a cached value)
+// that must not accept a collided record calls VerifyNaturalKey itself.
 type CryptoFieldHashGenerator = dao.CryptoFieldHashGenerator
 
 // NewCryptoFieldHashGenerator creates a new CryptoFieldHashGenerator for
@@ -91,10 +105,12 @@ var NewCryptoFieldHashGenerator = dao.NewCryptoFieldHashGenerator
 // NaturalKeyMismatchError is returned by VerifyNaturalKey when an entity
 // read back by a hash-derived ID does not carry the natural-key value the
 // caller looked it up by -- two distinct natural keys hashed to the same ID.
+// It is a value type, not a pointer: match it with
+// `var mismatch NaturalKeyMismatchError; errors.As(err, &mismatch)`.
 type NaturalKeyMismatchError = dao.NaturalKeyMismatchError
 
 // VerifyNaturalKey reads fieldName off entity and reports a
-// *NaturalKeyMismatchError when its string form does not equal expected.
+// NaturalKeyMismatchError when its string form does not equal expected.
 //
 // GenericDAO.GetByNaturalKey calls this on every read, so a caller using it
 // gets the check with no separate step to remember. Call it directly after
@@ -272,12 +288,28 @@ type DAODeserializationFailedError = dao.DeserializationFailedError
 // DAOInvalidEntityIDError is returned when an entity ID is invalid.
 type DAOInvalidEntityIDError = dao.InvalidEntityIDError
 
-// DAOIDCollisionError is Save's refusal when a DeterministicIDGenerator
-// derives an ID for a NEW entity that already names a different stored
-// record. Save routes that case through the store's atomic
-// create-if-absent write and refuses rather than silently overwrite the
-// existing record (go-qrdb#589).
+// DAOIDCollisionError is Save's and DAOUnitOfWork.Commit's refusal when a
+// DeterministicIDGenerator derives an ID for a NEW entity that already
+// names a stored record carrying a DIFFERENT natural-key value.
+//
+// It is reserved for a CONFIRMED collision -- never returned for a record
+// at that ID carrying the SAME natural-key value, which is the same
+// logical entity and is applied as an update instead (the coordinator
+// ruling, go-qrdb#589 review), nor for a write refused by contention alone
+// (see *DAOSaveContentionExhaustedError). Save and DAOUnitOfWork.Commit
+// both route the write through the store's atomic conditional write and
+// refuse with this error rather than silently overwrite a different
+// entity's record.
 type DAOIDCollisionError = dao.IDCollisionError
+
+// DAOSaveContentionExhaustedError is Save's refusal when a deterministic
+// ID's update path -- the existing record carries the SAME natural-key
+// value, so the write is a CompareAndSwap, not a create -- lost its
+// bounded retry budget to a concurrent writer repeatedly winning the race
+// between the read and the swap. It is NOT a collision: the natural key
+// matched every time it was checked, so this is never
+// *DAOIDCollisionError's message.
+type DAOSaveContentionExhaustedError = dao.SaveContentionExhaustedError
 
 // DAOUnsupportedIDGeneratorError is GetByNaturalKey's refusal when the
 // DAO's configured IDGenerator does not implement DeterministicIDGenerator,

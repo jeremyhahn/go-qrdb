@@ -31,6 +31,37 @@ type unitOp struct {
 	key      string
 	value    []byte // serialized entity value; nil for delete operations
 	isDelete bool
+	// deterministic is non-nil for a save whose ID came from a
+	// DeterministicIDGenerator (EntityID() == 0 at RegisterSave time). It
+	// carries what Commit needs to decide -- against the record actually at
+	// this key when the batch is built, not against whatever RegisterSave
+	// observed -- whether this write is a create (the key is absent), an
+	// update of the SAME logical entity (the existing record's natural key
+	// matches), or a genuine collision with a DIFFERENT one. See
+	// deterministicSaveInfo.
+	deterministic *deterministicSaveInfo
+}
+
+// deterministicSaveInfo captures what Commit needs to resolve one
+// deterministic-ID save's guard against the store, and to name the
+// entity/ID in a refusal. Captured as a closure rather than a field holding
+// the entity's own type, because UnitOfWork queues operations from many
+// different GenericDAO[E] instantiations into one untyped slice.
+type deterministicSaveInfo struct {
+	entityType string
+	id         uint64
+
+	// sameNaturalKey decodes existingData with the owning DAO's codec and
+	// entity type and reports whether it carries the SAME natural-key value
+	// the entity being saved carries -- the coordinator ruling (go-qrdb#589
+	// review): the SAME logical entity is an update, a DIFFERENT one is a
+	// collision. same is false, with a nil error, when the entity being
+	// saved has no natural-key value of its own to compare (nothing to
+	// verify sameness against, so the occupied key is treated as a
+	// collision candidate). A non-nil error means existingData itself could
+	// not be decoded at all -- a real failure, not a mismatch -- and is
+	// propagated rather than silently treated as either outcome.
+	sameNaturalKey func(existingData []byte) (same bool, err error)
 }
 
 // UnitOfWork coordinates operations across multiple DAOs, collecting
@@ -90,6 +121,17 @@ func NewUnitOfWork(store kvstore.KVStore, opts ...UnitOfWorkOption) *UnitOfWork 
 // RegisterSave queues a typed entity save operation within the UnitOfWork.
 // The entity is serialized immediately and the resulting key-value pair is
 // queued for batch commit. If the entity has no ID, one is auto-generated.
+//
+// When the DAO's configured IDGenerator is a DeterministicIDGenerator
+// (FieldHashGenerator, CryptoFieldHashGenerator, DynamicFieldHashGenerator,
+// CryptoDynamicFieldHashGenerator) and entity has no ID, the derived ID can
+// already name a record -- a hash-derived ID is drawn from a 64-bit space
+// shared by every natural-key value the generator ever hashes
+// (go-qrdb#589). RegisterSave captures what Commit needs to apply the
+// coordinator ruling for this save at commit time: a record at that ID
+// carrying the SAME natural-key value is the SAME logical entity (an
+// update), a DIFFERENT one is a genuine collision (refused with
+// *IDCollisionError, nothing in the batch applies). See Commit.
 func RegisterSave[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) error {
 	if uow.closed.Load() {
 		return UnitOfWorkClosedError{Op: "RegisterSave"}
@@ -100,9 +142,28 @@ func RegisterSave[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) error 
 		return err
 	}
 
-	// Auto-generate ID if not set
+	var det *deterministicSaveInfo
 	if entity.EntityID() == 0 {
-		entity.SetEntityID(gDAO.idGen.NextID(entity))
+		if gen, deterministic := gDAO.idGen.(DeterministicIDGenerator); deterministic {
+			entity.SetEntityID(gen.NextID(entity))
+			expectedValue, hasNaturalKey := extractNaturalKeyValue(entity, gen.FieldName())
+			det = &deterministicSaveInfo{
+				entityType: gDAO.entityType,
+				id:         entity.EntityID(),
+				sameNaturalKey: func(existingData []byte) (bool, error) {
+					if !hasNaturalKey {
+						return false, nil
+					}
+					existing := gDAO.newEntity()
+					if unmarshalErr := gDAO.codec.Unmarshal(existingData, &existing); unmarshalErr != nil {
+						return false, DeserializationFailedError{EntityType: gDAO.entityType, Cause: unmarshalErr}
+					}
+					return VerifyNaturalKey(existing, gDAO.entityType, gen.FieldName(), expectedValue) == nil, nil
+				},
+			}
+		} else {
+			entity.SetEntityID(gDAO.idGen.NextID(entity))
+		}
 	}
 
 	// Serialize the entity
@@ -113,9 +174,10 @@ func RegisterSave[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) error 
 
 	key := gDAO.makeKey(entity.EntityID())
 	uow.ops = append(uow.ops, unitOp{
-		key:      key,
-		value:    data,
-		isDelete: false,
+		key:           key,
+		value:         data,
+		isDelete:      false,
+		deterministic: det,
 	})
 
 	return nil
@@ -156,11 +218,24 @@ func RegisterDelete[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) erro
 // with *AtomicBatchUnsupportedError otherwise -- there is no sequential,
 // non-atomic fallback (go-qrdb#589's coordinator ruling; see the type doc).
 // Every operation is applied as one guarded batch write
-// (PutAllIfAllUnchanged with no guards -- every operation is unconditional,
-// but the whole batch is still ONE atomic step): no reader can observe the
-// batch partially applied, which matters for a move/rename that deletes one
-// key and puts another and must never be visible with the delete done and
-// the put not yet landed, or the reverse.
+// (PutAllIfAllUnchanged): no reader can observe the batch partially
+// applied, which matters for a move/rename that deletes one key and puts
+// another and must never be visible with the delete done and the put not
+// yet landed, or the reverse.
+//
+// A RegisterSave whose ID came from a DeterministicIDGenerator carries its
+// own guard into this batch (go-qrdb#589 review, the coordinator ruling on
+// re-saving the same natural key -- see RegisterSave): Commit reads the
+// record actually at that key when the batch is built and decides whether
+// it is absent (guarded on absence: a create), the SAME logical entity
+// (guarded on the exact bytes read: an update via CompareAndSwap), or a
+// DIFFERENT one (guarded on absence too, so the server's own evaluation --
+// not this read -- is what refuses it). Every OTHER queued operation
+// (a non-deterministic save, a delete) carries no guard and is applied
+// unconditionally within the same atomic proposal. If the batch is refused
+// because of a confirmed collision, Commit returns *IDCollisionError and
+// NOTHING in the batch applies -- not even the operations that carried no
+// guard of their own.
 //
 // After Commit (success or failure), the UnitOfWork is closed and cannot
 // be reused.
@@ -191,17 +266,55 @@ func (uow *UnitOfWork) Commit(ctx context.Context) error {
 }
 
 // commitAtomic applies every queued operation as one guarded batch write.
-// See Commit's doc for why an empty guard list still means atomic, not
+// See Commit's doc for how a deterministic-ID save's own guard is decided,
+// and for why an empty guard list still means atomic, not
 // unconditional-and-unordered: PutAllIfAllUnchanged proposes the whole batch
 // as a single state-machine transaction regardless of how many guards it
 // carries.
 func (uow *UnitOfWork) commitAtomic(ctx context.Context, store kvstore.MultiGuardedBatchKVStore) error {
 	writes := make([]kvstore.KV, len(uow.ops))
+	var guards []kvstore.Guard
+
 	for i, op := range uow.ops {
 		writes[i] = kvstore.KV{Key: op.key, Value: op.value, Delete: op.isDelete}
+		if op.deterministic == nil {
+			continue
+		}
+
+		existingData, getErr := store.Get(ctx, op.key)
+		if getErr != nil {
+			return getErr
+		}
+		if existingData == nil {
+			// Still absent: a create, guarded on absence so a concurrent
+			// create landing between this read and the commit is caught by
+			// the server's own evaluation, not assumed away.
+			guards = append(guards, kvstore.Guard{Key: op.key, Value: nil})
+			continue
+		}
+
+		same, verifyErr := op.deterministic.sameNaturalKey(existingData)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if same {
+			// The SAME logical entity: an update, guarded on the exact
+			// bytes just read so the write stays atomic against a
+			// concurrent writer instead of blindly overwriting whatever is
+			// there by the time the batch commits.
+			guards = append(guards, kvstore.Guard{Key: op.key, Value: existingData})
+			continue
+		}
+
+		// A DIFFERENT entity occupies the key: a collision candidate.
+		// Guarded on absence, which the server refuses unless the
+		// collision has since resolved itself (the other record was
+		// deleted before this batch commits) -- the guard the server
+		// evaluates, not this read, is the one that actually decides.
+		guards = append(guards, kvstore.Guard{Key: op.key, Value: nil})
 	}
 
-	applied, err := store.PutAllIfAllUnchanged(ctx, nil, writes)
+	applied, err := store.PutAllIfAllUnchanged(ctx, guards, writes)
 	if err != nil {
 		if errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
 			return &AtomicBatchUnsupportedError{Err: err}
@@ -209,11 +322,40 @@ func (uow *UnitOfWork) commitAtomic(ctx context.Context, store kvstore.MultiGuar
 		return err
 	}
 	if !applied {
-		// Reachable only if a future MultiGuardedBatchKVStore implementation
-		// can refuse a batch carrying zero guards for some reason other than
-		// an error; today none does, since there is nothing for zero guards
-		// to fail. Reported honestly rather than assumed impossible.
+		if collisionErr := uow.detectDeterministicCollision(ctx, store); collisionErr != nil {
+			return collisionErr
+		}
+		// Refused by contention alone (a concurrent writer winning the race
+		// on what would otherwise have been a same-key update, or a create
+		// whose absence guard lost to a concurrent create) -- not a
+		// confirmed collision. Reported honestly as outcome-unknown-refused
+		// rather than guessed at.
 		return kvstore.ErrNotApplied
+	}
+	return nil
+}
+
+// detectDeterministicCollision runs after a refused batch to decide whether
+// the refusal was caused by a CONFIRMED collision on one of the batch's
+// deterministic-ID saves. It is best-effort, exactly as
+// kvstore.CompareAndSwapWithCurrent's follow-up read is: the batch's own
+// refusal is already final, and this only decides which typed error to
+// report for it. Returns the first confirmed collision found, or nil when
+// none of the deterministic saves' keys currently hold a different entity
+// -- in which case the refusal was contention alone, not a collision.
+func (uow *UnitOfWork) detectDeterministicCollision(ctx context.Context, store kvstore.KVStore) error {
+	for _, op := range uow.ops {
+		if op.deterministic == nil {
+			continue
+		}
+		data, err := store.Get(ctx, op.key)
+		if err != nil || data == nil {
+			continue
+		}
+		same, verifyErr := op.deterministic.sameNaturalKey(data)
+		if verifyErr != nil || !same {
+			return &IDCollisionError{EntityType: op.deterministic.entityType, ID: op.deterministic.id}
+		}
 	}
 	return nil
 }

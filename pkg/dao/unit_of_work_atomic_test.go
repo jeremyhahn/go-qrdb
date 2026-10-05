@@ -182,3 +182,113 @@ func TestUnitOfWork_Commit_RefusesWithoutGuardedBatch(t *testing.T) {
 		t.Fatalf("Get(1) after a refused Commit = %v, want NotFoundError (nothing applied)", err)
 	}
 }
+
+// TestUnitOfWork_RegisterSave_RefusesOnIDCollision_NothingApplies is the
+// BLOCKER this file's review found: RegisterSave used to queue an
+// unconditional write for a deterministic-ID save, and Commit sent
+// PutAllIfAllUnchanged with no guards at all, so a forced collision
+// silently overwrote the existing record on every transport. A
+// collidingGenerator forces a second, different entity onto the SAME ID as
+// an already-stored one; Commit must refuse the WHOLE batch with
+// *IDCollisionError, and a harmless, unrelated save queued in the same
+// batch must not land either -- proving the guard is evaluated atomically
+// with everything else, not as a separate pre-check that lets the rest of
+// the batch through regardless.
+func TestUnitOfWork_RegisterSave_RefusesOnIDCollision_NothingApplies(t *testing.T) {
+	store := kvstoretest.NewGuardedMemoryStore()
+	ctx := context.Background()
+
+	gen := &collidingGenerator{fieldName: "Email", id: 42}
+	userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} }, WithIDGenerator(gen))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	alice := &TestEntity{Name: "alice", Email: "alice@example.com"}
+	if err := userDAO.Save(ctx, alice); err != nil {
+		t.Fatalf("Save (seed): %v", err)
+	}
+
+	bob := &TestEntity{Name: "bob", Email: "bob@example.com"} // forces the SAME id, a different entity
+	harmless := &TestEntity{ID: 999, Name: "unrelated"}
+
+	uow := NewUnitOfWork(store)
+	if err := RegisterSave(uow, userDAO, bob); err != nil {
+		t.Fatalf("RegisterSave(bob): %v", err)
+	}
+	if err := RegisterSave(uow, userDAO, harmless); err != nil {
+		t.Fatalf("RegisterSave(harmless): %v", err)
+	}
+
+	err = uow.Commit(ctx)
+	var collision *IDCollisionError
+	if !errors.As(err, &collision) {
+		t.Fatalf("Commit with a forced collision = %v (%T), want *IDCollisionError", err, err)
+	}
+	if collision.ID != 42 {
+		t.Fatalf("collision.ID = %d, want 42", collision.ID)
+	}
+
+	// The original entity is untouched.
+	got, err := userDAO.Get(ctx, 42)
+	if err != nil {
+		t.Fatalf("Get(42): %v", err)
+	}
+	if got.Email != "alice@example.com" {
+		t.Fatalf("Get(42).Email = %q, want %q (bob must not have overwritten alice)", got.Email, "alice@example.com")
+	}
+
+	// The harmless, unrelated save in the SAME batch must not have landed
+	// either: the whole batch is one atomic proposal.
+	var notFound NotFoundError
+	if _, err := userDAO.Get(ctx, 999); !errors.As(err, &notFound) {
+		t.Fatalf("Get(999) after a refused batch = %v, want NotFoundError (nothing in the batch applies)", err)
+	}
+}
+
+// TestUnitOfWork_RegisterSave_SameNaturalKeyIsUpdate proves the coordinator
+// ruling applies to UnitOfWork exactly as it does to Save: a RegisterSave
+// whose hash-derived ID already names a record carrying the SAME
+// natural-key value is the SAME logical entity, so Commit applies it as an
+// update rather than refusing the batch.
+func TestUnitOfWork_RegisterSave_SameNaturalKeyIsUpdate(t *testing.T) {
+	store := kvstoretest.NewGuardedMemoryStore()
+	ctx := context.Background()
+
+	gen := NewCryptoFieldHashGenerator("Email")
+	userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} }, WithIDGenerator(gen))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	first := &TestEntity{Name: "alice", Email: "alice@example.com"}
+	if err := userDAO.Save(ctx, first); err != nil {
+		t.Fatalf("Save (seed): %v", err)
+	}
+	id := first.EntityID()
+
+	second := &TestEntity{Name: "alice renamed", Email: "alice@example.com"}
+	harmless := &TestEntity{ID: 999, Name: "unrelated"}
+
+	uow := NewUnitOfWork(store)
+	if err := RegisterSave(uow, userDAO, second); err != nil {
+		t.Fatalf("RegisterSave(second): %v", err)
+	}
+	if err := RegisterSave(uow, userDAO, harmless); err != nil {
+		t.Fatalf("RegisterSave(harmless): %v", err)
+	}
+	if err := uow.Commit(ctx); err != nil {
+		t.Fatalf("Commit (same natural key, want an update): %v", err)
+	}
+
+	got, err := userDAO.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get(%d): %v", id, err)
+	}
+	if got.Name != "alice renamed" {
+		t.Fatalf("Get(%d).Name = %q, want %q (the update must have applied)", id, got.Name, "alice renamed")
+	}
+	if _, err := userDAO.Get(ctx, 999); err != nil {
+		t.Fatalf("Get(999): %v, want the harmless save to have applied alongside the update", err)
+	}
+}

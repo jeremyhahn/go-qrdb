@@ -11,33 +11,6 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-### Security
-
-- **The embedded transport cannot be used to set a tenant's own plan
-  (go-qrdb#574).** `tenants:create`, `tenants:set_quotas`,
-  `tenants:set_entitlements` and an isolation-tier change are
-  platform-operator-only (ScopeCross) on every network transport, enforced
-  by `AuthMiddleware`'s entry check before the request reaches the tenant
-  service. The embedded transport runs no `AuthMiddleware` and had no
-  equivalent check at all: `Transport.CreateTenant`, `UpdateTenantQuotas`
-  and `UpdateTenantEntitlements` called straight into the `TenantServicer`,
-  so an embedder that itself binds a tenant-scoped `auth.Identity` onto the
-  context before calling (`auth.WithIdentity`, the same exported function
-  `AuthMiddleware` uses to bind an authenticated REQUEST's identity for the
-  network transports -- a DIFFERENT, unrelated call, since the embedded
-  transport's methods read whatever the caller already put on `ctx` and run
-  no middleware pipeline of their own) could create tenants or raise its
-  own plan's quotas and entitlements. New
-  `tenant.RequirePlatformOperator` enforces the identical rule directly
-  (typed `*tenant.PlatformOperatorRequiredError`, mapped to
-  `PermissionDenied`); `Transport.UpdateTenant` calls it only when the
-  patch also changes `IsolationType`, mirroring
-  `AuthMiddleware.AuthorizeTenantUpdate`. An embedded caller with no bound
-  identity -- a trusted in-process host with no auth wired up, the
-  existing default -- resolves to the system tenant exactly as `tenant.Confine`
-  already treats it for certificates and audit queries, so this adds no
-  new restriction for that case.
-
 ### Fixed
 
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
@@ -204,6 +177,34 @@ are not reconstructed here — their history is in the git log.
     if any non-generated, non-vendored Go source or `.proto` file declares
     `Deprecated:`/`deprecated = true`, or if the CLI defines a cobra
     `Deprecated` field or a redirect stub, so none of this creeps back.
+- **`securefile.WriteFileAtomic` refuses a pre-existing symlink at its
+  target (#580).** Checked with `os.Lstat` before anything is written,
+  reported as the new typed `*SymlinkRefusedError`, instead of the previous
+  unconditional `rename(2)`, which replaced the symlink itself (not
+  whatever it pointed at) with a plain file. This reaches every
+  `pkg/clustertls`/`pkg/clusterenroll` write of cluster CA material, an
+  enrollment key, or the role file -- a deployment that points its data
+  directory at a **Kubernetes Secret volume mount** (every file under one
+  is itself a symlink the kubelet swaps on rotation) now gets the typed
+  refusal on every boot that writes, where it previously got the symlink
+  silently severed into a plain file. See
+  [docs/clustering/engineering.md](docs/clustering/engineering.md) and
+  [docs/clustering/user.md](docs/clustering/user.md)'s troubleshooting
+  entry.
+- **`UnitOfWork.Commit` now REQUIRES the store to implement
+  `kvstore.MultiGuardedBatchKVStore` (#589), and that changes which
+  permission `Commit` needs.** It refuses with
+  `*dao.AtomicBatchUnsupportedError` otherwise; the sequential
+  apply-with-best-effort-compensation fallback is removed entirely
+  (coordinator ruling) because it was not atomic against a concurrent
+  reader. The removed fallback applied each queued operation as a plain
+  `kv.Put`/`kv.Delete` (`kv:put`/`kv:delete`); the guarded-batch path
+  `Commit` always takes now is the same `ExecuteTransaction` RPC
+  `PutAllIfAllUnchanged` uses, gated by `transaction:execute` on every
+  transport. A caller holding only `kv:put`/`kv:delete` could commit a
+  `UnitOfWork` before and is refused with `PermissionDenied` now; the
+  built-in `Operator` role holds both and is unaffected. See
+  [docs/transactions/engineering.md](docs/transactions/engineering.md).
 
 - **`qrdb completion` and `qrdbd completion` failed with a connection error
   on a host with no reachable daemon** instead of printing their static
@@ -334,6 +335,30 @@ are not reconstructed here — their history is in the git log.
   sees a consistent snapshot instead of a config being mutated under it.
   Proven with a `-race` test driving real handshakes concurrently with
   `SetClientAuthMode`.
+- **The embedded transport cannot be used to set a tenant's own plan
+  (go-qrdb#574).** `tenants:create`, `tenants:set_quotas`,
+  `tenants:set_entitlements` and an isolation-tier change are
+  platform-operator-only (ScopeCross) on every network transport, enforced
+  by `AuthMiddleware`'s entry check before the request reaches the tenant
+  service. The embedded transport runs no `AuthMiddleware` and had no
+  equivalent check at all: `Transport.CreateTenant`, `UpdateTenantQuotas`
+  and `UpdateTenantEntitlements` called straight into the `TenantServicer`,
+  so an embedder that itself binds a tenant-scoped `auth.Identity` onto the
+  context before calling (`auth.WithIdentity`, the same exported function
+  `AuthMiddleware` uses to bind an authenticated REQUEST's identity for the
+  network transports -- a DIFFERENT, unrelated call, since the embedded
+  transport's methods read whatever the caller already put on `ctx` and run
+  no middleware pipeline of their own) could create tenants or raise its
+  own plan's quotas and entitlements. New
+  `tenant.RequirePlatformOperator` enforces the identical rule directly
+  (typed `*tenant.PlatformOperatorRequiredError`, mapped to
+  `PermissionDenied`); `Transport.UpdateTenant` calls it only when the
+  patch also changes `IsolationType`, mirroring
+  `AuthMiddleware.AuthorizeTenantUpdate`. An embedded caller with no bound
+  identity -- a trusted in-process host with no auth wired up, the
+  existing default -- resolves to the system tenant exactly as `tenant.Confine`
+  already treats it for certificates and audit queries, so this adds no
+  new restriction for that case.
 
 ### Added
 
@@ -429,20 +454,8 @@ are not reconstructed here — their history is in the git log.
 - **`sdk/go` re-exports the atomic, mode-enforcing file writer (#580).**
   `pkg/util/securefile.WriteFileAtomic` (moved out of `pkg/clustertls`) and
   new `CreateExclusive` (O_EXCL, create-only, typed `*FileExistsError`) are
-  re-exported from `sdk/go`. **BREAKING:** `WriteFileAtomic` now refuses a
-  pre-existing symlink at its target with a typed `*SymlinkRefusedError`,
-  checked with `os.Lstat` before anything is written, instead of the
-  previous unconditional `rename(2)`, which replaced the symlink itself
-  (not whatever it pointed at) with a plain file. This reaches every
-  `pkg/clustertls`/`pkg/clusterenroll` write of cluster CA material, an
-  enrollment key, or the role file -- a deployment that points its data
-  directory at a **Kubernetes Secret volume mount** (every file under one
-  is itself a symlink the kubelet swaps on rotation) now gets the typed
-  refusal on every boot that writes, where it previously got the symlink
-  silently severed into a plain file. See
-  [docs/clustering/engineering.md](docs/clustering/engineering.md) and
-  [docs/clustering/user.md](docs/clustering/user.md)'s troubleshooting
-  entry.
+  re-exported from `sdk/go`. `WriteFileAtomic` also now refuses a
+  pre-existing symlink at its target -- see **Changed — BREAKING** below.
 - **`sdk/go` re-exports `pkg/ratelimit`, wired into the embedded node
   (#398).** `WithRateLimitPolicies` and `WithRateLimiter` are new
   `sdk/go/node.NodeOption`s, threaded into the same
@@ -471,26 +484,16 @@ are not reconstructed here — their history is in the git log.
   and embedded, as one atomic Raft/MVCC transaction end to end. No new
   proto message or per-transport wire verb was added: duplicating
   `ExecuteTransaction` under a new name would not reach anywhere it
-  cannot already go. **BREAKING:**
-  `UnitOfWork.Commit` now REQUIRES the store to implement
-  `MultiGuardedBatchKVStore` and refuses with `*AtomicBatchUnsupportedError`
-  otherwise; the sequential apply-with-best-effort-compensation fallback is
-  removed entirely (coordinator ruling) because it was not atomic against a
-  concurrent reader. **This also changes the permission `Commit` needs**:
-  the removed fallback applied each queued operation as a plain
-  `kv.Put`/`kv.Delete` (`kv:put`/`kv:delete`); the guarded-batch path it
-  always takes now is the same `ExecuteTransaction` RPC
-  `PutAllIfAllUnchanged` uses, gated by `transaction:execute` on every
-  transport. A caller holding only `kv:put`/`kv:delete` could commit a
-  `UnitOfWork` before and is refused with `PermissionDenied` now; the
-  built-in `Operator` role holds both and is unaffected. See
-  [docs/transactions/engineering.md](docs/transactions/engineering.md).
-  `sdk/go` gains `NewDAOUnitOfWork`, `RegisterDAOSave`,
-  `RegisterDAODelete` and `WithDAOUnitOfWorkTimeout` -- the generic
-  functions a `DAOUnitOfWork` needs to be constructed and populated from
-  outside the module, which the existing type-only re-export could not
-  reach. `kvstore.CompareAndSwapWithCurrent` returns
-  the current value on a failed compare. `dao.CryptoFieldHashGenerator` /
+  cannot already go. `UnitOfWork.Commit` now requires the store to
+  implement `MultiGuardedBatchKVStore` and the sequential
+  apply-with-best-effort-compensation fallback is removed entirely
+  (coordinator ruling) -- see **Changed — BREAKING** below, which also
+  covers the permission change that comes with it. `sdk/go` gains
+  `NewDAOUnitOfWork`, `RegisterDAOSave`, `RegisterDAODelete` and
+  `WithDAOUnitOfWorkTimeout` -- the generic functions a `DAOUnitOfWork`
+  needs to be constructed and populated from outside the module, which the
+  existing type-only re-export could not reach. `kvstore.CompareAndSwapWithCurrent`
+  returns the current value on a failed compare. `dao.CryptoFieldHashGenerator` /
   `CryptoDynamicFieldHashGenerator` hash a natural key with SHA-256,
   truncated to 64 bits (the standard construction; an earlier revision of
   this change XOR-folded the digest's four lanes instead, on the mistaken
@@ -499,18 +502,32 @@ are not reconstructed here — their history is in the git log.
   `FieldHashGenerator`/`DynamicFieldHashGenerator` are unchanged, since
   swapping their hash in place would orphan already-persisted entities. A
   move to string entity IDs (the issue's other suggested option) is an
-  architecture decision left to the owner. **`GenericDAO.Save` now closes
-  the write-path gap a hash-derived ID leaves open**: a NEW entity
-  (`EntityID() == 0`) whose generator implements the new
-  `dao.DeterministicIDGenerator` interface is created through the store's
-  atomic create-if-absent write, refusing with `*dao.IDCollisionError`
-  rather than silently overwriting whichever entity got there first. The
-  new `GenericDAO.GetByNaturalKey(ctx, value)` is the read-side half,
-  deriving the lookup ID and calling `dao.VerifyNaturalKey` on the result
-  before returning it, in one call that cannot be split apart and only
-  have half of it remembered; it refuses with
-  `*dao.UnsupportedIDGeneratorError` when the configured generator is not
-  deterministic. **An empty key in a guarded batch now refuses with the
+  architecture decision left to the owner.
+  **`GenericDAO.Save` and `UnitOfWork.Commit` close the write-path gap a
+  hash-derived ID leaves open, and apply the coordinator ruling on what an
+  occupied ID means (go-qrdb#589 review).** A NEW entity (`EntityID() == 0`)
+  whose generator implements the new `dao.DeterministicIDGenerator`
+  interface is created through the store's atomic conditional write. A
+  record already at that ID carrying the SAME natural-key value is the SAME
+  logical entity: the write is applied as an UPDATE, via `CompareAndSwap`
+  against the record just read so it stays atomic against a concurrent
+  writer (bounded retries on a lost race; exhausting them refuses with the
+  new `*dao.SaveContentionExhaustedError`, never a collision). A record
+  carrying a DIFFERENT natural-key value is a genuine collision, refused
+  with `*dao.IDCollisionError` rather than silently overwritten.
+  `RegisterSave` carries this same guard into `UnitOfWork.Commit`'s one
+  atomic batch, so a collision refuses the WHOLE batch -- nothing in it
+  applies, not even an operation queued alongside the colliding save that
+  carried no guard of its own. The new `GenericDAO.GetByNaturalKey(ctx,
+  value)` is the read-side half, deriving the lookup ID and calling
+  `dao.VerifyNaturalKey` on the result before returning it, in one call
+  that cannot be split apart and only have half of it remembered; it
+  refuses with `*dao.UnsupportedIDGeneratorError` when the configured
+  generator is not deterministic. Only the create/save paths verify the
+  natural key (`Save`, `SaveIfAbsent`, `UnitOfWork`'s queued saves,
+  `GetByNaturalKey`); `Get(id)`, `Page`, `ForEachPage` and `Delete` do not,
+  since none of them carry a natural-key value to check a record against.
+  **An empty key in a guarded batch now refuses with the
   typed `kvstore.EmptyKeyError`** (`sdk.KVEmptyKeyError`) instead of a
   generic error reconstructed from an RPC transport's wire response:
   `sdk.KVStoreAdapter.PutAllIfAllUnchanged`, `pkg/server/lifecycle`'s

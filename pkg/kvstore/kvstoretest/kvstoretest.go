@@ -100,7 +100,25 @@ func (s *GuardedMemoryStore) PutAllIfUnchanged(ctx context.Context, guardKey str
 //
 // A KV with Delete set removes its key instead of writing it, so a batch
 // can delete one key and put others in the same atomic step (go-qrdb#589).
+//
+// An empty guard or write key is refused with *kvstore.EmptyKeyError before
+// anything is evaluated, matching every production
+// MultiGuardedBatchKVStore (sdk.kvStoreAdapter, pkg/server/lifecycle's
+// ExecuteGuardedBatch, and pkg/kvstore's own namespaced wrappers): a test
+// written against this double must see the same refusal a real backend
+// gives it, not a double that is more permissive than production.
 func (s *GuardedMemoryStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for i, g := range guards {
+		if g.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "guard", Index: i}
+		}
+	}
+	for i, w := range writes {
+		if w.Key == "" {
+			return false, &kvstore.EmptyKeyError{Field: "write", Index: i}
+		}
+	}
+
 	s.batchMu.Lock()
 	defer s.batchMu.Unlock()
 	for _, g := range guards {

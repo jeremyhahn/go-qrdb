@@ -32,15 +32,20 @@ import (
 // space (go-qrdb#589; see CryptoFieldHashGenerator's doc for how large that
 // draw has to be).
 //
-// genericDAO uses it for two things. Save routes a generator's own
-// first-time ID assignment (EntityID() == 0) through the store's atomic
-// create-if-absent write (SaveIfAbsent) instead of an unconditional Put, so
-// a collision REFUSES with *IDCollisionError rather than silently
-// overwriting whichever entity got there first. GetByNaturalKey derives the
-// lookup ID from IDForValue and verifies the result against the natural-key
-// value with VerifyNaturalKey before returning it -- the read-side half of
-// the same guarantee, not opt-in because there is no way to call
-// GetByNaturalKey without it.
+// genericDAO and UnitOfWork use it for three things. Save and
+// UnitOfWork.Commit route a generator's own ID assignment (EntityID() == 0)
+// through the store's atomic conditional write instead of an unconditional
+// Put: when the derived ID already names a record carrying the SAME
+// natural-key value, that record and the entity being saved are the same
+// logical entity, so the write proceeds as an UPDATE, guarded by
+// CompareAndSwap against the record just read so it stays atomic against a
+// concurrent writer; a DIFFERENT natural-key value at that ID is a genuine
+// collision and REFUSES with *IDCollisionError rather than silently
+// overwriting the other entity. GetByNaturalKey derives the lookup ID from
+// IDForValue and verifies the result against the natural-key value with
+// VerifyNaturalKey before returning it -- the read-side half of the same
+// guarantee, not opt-in because there is no way to call GetByNaturalKey
+// without it.
 type DeterministicIDGenerator interface {
 	IDGenerator
 
@@ -323,8 +328,31 @@ func (e NaturalKeyMismatchError) Error() string {
 		e.EntityType, e.FieldName, e.Expected, e.Actual)
 }
 
+// extractNaturalKeyValue reads fieldName off entity and renders it as a
+// string, dispatching on whether entity is a *DynamicEntity (a Fields map
+// lookup) or an ordinary struct (structFieldString's reflection). ok is
+// false when there is nothing to read: entity is a DynamicEntity with a nil
+// or missing Fields entry, or a struct that does not dereference to one or
+// does not have the named field. It is the one place both VerifyNaturalKey
+// (reading a record just fetched) and Save's deterministic-ID path (reading
+// the entity about to be written) extract a natural-key value, so the two
+// always agree on what "the same field" means for a given entity.
+func extractNaturalKeyValue(entity Entity, fieldName string) (value string, ok bool) {
+	if de, isDynamic := entity.(*DynamicEntity); isDynamic {
+		if de.Fields == nil {
+			return "", false
+		}
+		val, exists := de.Fields[fieldName]
+		if !exists {
+			return "", false
+		}
+		return fmt.Sprint(val), true
+	}
+	return structFieldString(entity, fieldName)
+}
+
 // VerifyNaturalKey reads fieldName off entity and reports a
-// *NaturalKeyMismatchError when its string form does not equal expected.
+// NaturalKeyMismatchError when its string form does not equal expected.
 //
 // GenericDAO.GetByNaturalKey calls this on every read for an entity
 // configured with a DeterministicIDGenerator, so a caller using it gets the
@@ -341,34 +369,27 @@ func (e NaturalKeyMismatchError) Error() string {
 //	}
 //
 // It is a verification, not a defense: nothing here prevents a collision
-// from being written in the first place through a path other than Save or
-// SaveIfAbsent (a store write that bypasses GenericDAO entirely, or data
-// persisted before the create-if-absent write-path guard existed).
-// VerifyNaturalKey only ensures such a collision is NOISY rather than
-// silent, at the one place it can still be caught: the read that would
+// from being written in the first place through a path other than Save,
+// SaveIfAbsent or UnitOfWork.Commit (a store write that bypasses GenericDAO
+// entirely, or data persisted before the create-if-absent write-path guard
+// existed). VerifyNaturalKey only ensures such a collision is NOISY rather
+// than silent, at the one place it can still be caught: the read that would
 // otherwise hand back someone else's record.
+//
+// Only the create/save paths verify: Save, SaveIfAbsent, UnitOfWork.Commit
+// and GetByNaturalKey all call this. Get(id), Page, ForEachPage and Delete
+// do NOT -- they take an id or an already-loaded entity, never the
+// natural-key value a mismatch would be checked against, so there is
+// nothing for them to verify. A caller reading by id after resolving it some
+// other way (an index query, a cached value) that must not accept a
+// collided record calls VerifyNaturalKey itself, as the example above does.
 //
 // entity not dereferencing to a struct, or fieldName not existing on it, is
 // not an error here: there is nothing to verify, and the caller gets
 // whatever Get already gave it. DynamicEntity is handled directly, since it
 // carries no reflectable struct fields of its own.
 func VerifyNaturalKey(entity Entity, entityType, fieldName, expected string) error {
-	if de, ok := entity.(*DynamicEntity); ok {
-		if de.Fields == nil {
-			return nil
-		}
-		val, exists := de.Fields[fieldName]
-		if !exists {
-			return nil
-		}
-		actual := fmt.Sprint(val)
-		if actual != expected {
-			return NaturalKeyMismatchError{EntityType: entityType, FieldName: fieldName, Expected: expected, Actual: actual}
-		}
-		return nil
-	}
-
-	actual, ok := structFieldString(entity, fieldName)
+	actual, ok := extractNaturalKeyValue(entity, fieldName)
 	if !ok {
 		return nil
 	}

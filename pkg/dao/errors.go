@@ -313,9 +313,21 @@ func (e *AtomicBatchUnsupportedError) Is(target error) bool {
 // Unwrap returns the store's refusal, if any.
 func (e *AtomicBatchUnsupportedError) Unwrap() error { return e.Err }
 
-// IDCollisionError is Save's refusal when a DeterministicIDGenerator derives
-// an ID for a NEW entity (EntityID() == 0 at Save time) that already names a
-// different stored record.
+// IDCollisionError is Save's and UnitOfWork.Commit's refusal when a
+// DeterministicIDGenerator derives an ID for a NEW entity (EntityID() == 0
+// at Save/RegisterSave time) that already names a stored record carrying a
+// DIFFERENT natural-key value.
+//
+// It is reserved for a CONFIRMED collision -- it is never returned for the
+// record at that ID carrying the SAME natural-key value, which is the same
+// logical entity and is an update, not a collision (the coordinator ruling,
+// go-qrdb#589 review): Save and UnitOfWork.Commit both verify the existing
+// record's natural key before deciding which this is, and apply the update
+// through CompareAndSwap against the record just read so it stays atomic
+// against a concurrent writer. It is also never returned for a write refused
+// by contention alone -- a concurrent writer winning the race on what would
+// otherwise have been a same-key update -- see
+// *SaveContentionExhaustedError for that outcome.
 //
 // A hash-derived ID is drawn from a 64-bit space shared by every natural-key
 // value the generator ever hashes, so a draw landing on an already-occupied
@@ -324,7 +336,7 @@ func (e *AtomicBatchUnsupportedError) Unwrap() error { return e.Err }
 // through the store's atomic create-if-absent write (the same primitive
 // SaveIfAbsent uses) and refuses with this error rather than silently
 // overwriting the existing record, since the two entities share an ID but
-// not an identity (go-qrdb#589).
+// not an identity.
 type IDCollisionError struct {
 	EntityType string
 	ID         uint64
@@ -333,6 +345,30 @@ type IDCollisionError struct {
 // Error returns a human-readable description naming the entity type and ID.
 func (e *IDCollisionError) Error() string {
 	return fmt.Sprintf("dao: %s: ID %d is already in use by a different entity (hash-derived ID collision)", e.EntityType, e.ID)
+}
+
+// SaveContentionExhaustedError is Save's refusal when a deterministic ID's
+// update path -- the existing record at that ID carries the SAME
+// natural-key value, so the write is a CompareAndSwap, not a create -- lost
+// its bounded retry budget to a concurrent writer repeatedly winning the
+// race between the read and the swap.
+//
+// It is NOT a collision: the natural key matched every time it was checked,
+// so this is never *IDCollisionError's message, which is reserved for a
+// CONFIRMED different natural key at the same ID. A caller sees this only
+// under sustained concurrent writes to the same logical entity; retrying
+// the whole Save call is the correct response, exactly as it would be for
+// any other lost-race outcome.
+type SaveContentionExhaustedError struct {
+	EntityType string
+	ID         uint64
+	Attempts   int
+}
+
+// Error returns a human-readable description naming the entity type, ID and
+// attempt count.
+func (e *SaveContentionExhaustedError) Error() string {
+	return fmt.Sprintf("dao: %s: ID %d: update contended by concurrent writers across %d attempts", e.EntityType, e.ID, e.Attempts)
 }
 
 // UnsupportedIDGeneratorError is GetByNaturalKey's refusal when the DAO's

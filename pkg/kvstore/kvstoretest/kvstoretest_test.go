@@ -67,6 +67,36 @@ func TestGuardedMemoryStore_PutAllIfAllUnchanged_AppliesWhenAllAbsent(t *testing
 	}
 }
 
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_RefusesEmptyKey proves this
+// double gives a test the SAME typed refusal production gives for an empty
+// guard or write key, rather than being more permissive than a real
+// MultiGuardedBatchKVStore.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_RefusesEmptyKey(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	ctx := context.Background()
+
+	_, err := s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: ""}}, []kvstore.KV{{Key: "a", Value: []byte("1")}})
+	var emptyKey *kvstore.EmptyKeyError
+	if !errors.As(err, &emptyKey) {
+		t.Fatalf("empty guard key: err = %v (%T), want *kvstore.EmptyKeyError", err, err)
+	}
+	if emptyKey.Field != "guard" {
+		t.Fatalf("empty guard key: Field = %q, want guard", emptyKey.Field)
+	}
+
+	_, err = s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: ""}})
+	if !errors.As(err, &emptyKey) {
+		t.Fatalf("empty write key: err = %v (%T), want *kvstore.EmptyKeyError", err, err)
+	}
+	if emptyKey.Field != "write" {
+		t.Fatalf("empty write key: Field = %q, want write", emptyKey.Field)
+	}
+
+	if v, _ := s.Get(ctx, "a"); v != nil {
+		t.Error("the refused batch wrote the key anyway")
+	}
+}
+
 func TestGuardedMemoryStore_PutAllIfAllUnchanged_RefusesWhenAnyGuardFails(t *testing.T) {
 	s := NewGuardedMemoryStore()
 	ctx := context.Background()
