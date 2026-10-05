@@ -19,6 +19,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,5 +133,59 @@ func TestEstablishClusterCA_WrapsFailure(t *testing.T) {
 	}
 	if !errors.Is(err, boom) {
 		t.Errorf("EstablishClusterCA error does not unwrap to the underlying cause: %v", err)
+	}
+}
+
+// TestAwaitClusterCACertificate_DeadlineExceeded proves a deadline that has
+// already elapsed by the time a transient *service.NotLeaderError is
+// observed gives up immediately, reporting that error, rather than
+// sleeping through at least one more backoff first.
+func TestAwaitClusterCACertificate_DeadlineExceeded(t *testing.T) {
+	stub := &flakyClusterCAProvider{notLeaderCalls: 1000000}
+
+	_, err := AwaitClusterCACertificate(context.Background(), stub, 0, time.Second, 5*time.Second)
+	var notLeader *service.NotLeaderError
+	if !errors.As(err, &notLeader) {
+		t.Fatalf("AwaitClusterCACertificate = %v (%T), want *service.NotLeaderError", err, err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("Certificate called %d times, want exactly 1 (deadline already elapsed)", stub.calls)
+	}
+}
+
+// TestAwaitClusterCACertificate_CtxCanceledDuringBackoff proves a ctx
+// cancellation during the backoff wait is honored immediately rather than
+// waiting out the (here, long) remaining delay.
+func TestAwaitClusterCACertificate_CtxCanceledDuringBackoff(t *testing.T) {
+	stub := &flakyClusterCAProvider{notLeaderCalls: 1000000}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := AwaitClusterCACertificate(ctx, stub, time.Minute, time.Second, 5*time.Second)
+	elapsed := time.Since(start)
+	var notLeader *service.NotLeaderError
+	if !errors.As(err, &notLeader) {
+		t.Fatalf("AwaitClusterCACertificate = %v (%T), want *service.NotLeaderError", err, err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("AwaitClusterCACertificate took %s, want an immediate return once ctx was canceled", elapsed)
+	}
+}
+
+// TestClusterCAEstablishError_Error proves the message names both the
+// fixed prefix and the underlying cause, rather than only being reachable
+// through errors.As/errors.Is.
+func TestClusterCAEstablishError_Error(t *testing.T) {
+	err := &ClusterCAEstablishError{Err: errors.New("barrier sealed")}
+	msg := err.Error()
+	if !strings.Contains(msg, "cluster CA establishment failed") {
+		t.Errorf("Error() = %q, missing the fixed prefix", msg)
+	}
+	if !strings.Contains(msg, "barrier sealed") {
+		t.Errorf("Error() = %q, missing the underlying cause", msg)
 	}
 }

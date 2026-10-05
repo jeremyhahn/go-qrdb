@@ -870,3 +870,63 @@ func TestKVSealBackend_GuardedWritesRequireATransactionService(t *testing.T) {
 		}
 	})
 }
+
+// TestKVSealBackend_PutIfAllAbsent_ExecuteError proves putIfAllAbsent
+// propagates a transaction failure verbatim, reporting created=false,
+// rather than treating an unknown outcome as a refusal.
+func TestKVSealBackend_PutIfAllAbsent_ExecuteError(t *testing.T) {
+	sentinel := errors.New("raft unavailable")
+	tx := &mockTransactionServicer{
+		executeFn: func(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
+			return nil, sentinel
+		},
+	}
+	b := kvSealBackend{KVStore: &mockKVStore{}, tx: tx}
+	created, err := b.PutIfAllAbsent(context.Background(), "key", []byte("v"), "fence")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("PutIfAllAbsent error = %v, want %v", err, sentinel)
+	}
+	if created {
+		t.Error("created must be false on transaction error")
+	}
+}
+
+// TestKVSealBackend_CompareAndDelete_ExecuteError proves CompareAndDelete
+// propagates a transaction failure verbatim, reporting ok=false, rather
+// than treating an unknown outcome as a refused guard.
+func TestKVSealBackend_CompareAndDelete_ExecuteError(t *testing.T) {
+	sentinel := errors.New("raft unavailable")
+	tx := &mockTransactionServicer{
+		executeFn: func(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
+			return nil, sentinel
+		},
+	}
+	b := kvSealBackend{KVStore: &mockKVStore{}, tx: tx}
+	ok, err := b.CompareAndDelete(context.Background(), "key", []byte("v"))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("CompareAndDelete error = %v, want %v", err, sentinel)
+	}
+	if ok {
+		t.Error("ok must be false on transaction error")
+	}
+}
+
+// TestKVSealBackend_CompareAndSwap_ExecuteError proves CompareAndSwap
+// propagates a transaction failure verbatim, reporting ok=false, rather
+// than treating an unknown outcome as a refused guard.
+func TestKVSealBackend_CompareAndSwap_ExecuteError(t *testing.T) {
+	sentinel := errors.New("raft unavailable")
+	tx := &mockTransactionServicer{
+		executeFn: func(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
+			return nil, sentinel
+		},
+	}
+	b := kvSealBackend{KVStore: &mockKVStore{}, tx: tx}
+	ok, err := b.CompareAndSwap(context.Background(), "key", []byte("v"), []byte("next"))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("CompareAndSwap error = %v, want %v", err, sentinel)
+	}
+	if ok {
+		t.Error("ok must be false on transaction error")
+	}
+}
