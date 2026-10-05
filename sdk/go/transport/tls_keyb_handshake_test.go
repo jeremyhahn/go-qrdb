@@ -12,7 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package transport
+// package transport_test, not transport: this file pulls in pkg/cert
+// (through pkg/clienttrust's own test fixtures) to drive a real TLS
+// handshake end to end, and pkg/cert reaches back into this module via
+// pkg/service and pkg/user (see pkg/user/cert_binding.go's wire-type
+// projections) -- an internal "package transport" test file closes that
+// into an import cycle the production code never has. An external test
+// package has no such cycle, since nothing needs to import it back.
+package transport_test
 
 import (
 	"context"
@@ -32,6 +39,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // genKeyBHandshakeCA generates a throwaway self-signed CA, returning its
@@ -212,7 +220,7 @@ func TestBuildTLSConfig_KeyBCertPresentedOnEveryTransport(t *testing.T) {
 	// constructor does -- BuildTLSConfig loads the tenant's Key B leaf,
 	// which must be PRESENTED even though it will never appear in the
 	// server's AcceptableCAs list.
-	clientCfg, err := BuildTLSConfig(TLSBuildOptions{
+	clientCfg, err := transport.BuildTLSConfig(transport.TLSBuildOptions{
 		Enabled:  true,
 		CertFile: leafCertFile,
 		KeyFile:  leafKeyFile,
@@ -321,7 +329,7 @@ func TestBuildTLSConfig_CustomConfigKeyBCertPresented(t *testing.T) {
 	// The client side: a Custom config carrying the Key B leaf directly
 	// in Certificates, exactly as an embedder wiring its own *tls.Config
 	// would, rather than through CertFile/KeyFile.
-	clientCfg, err := BuildTLSConfig(TLSBuildOptions{
+	clientCfg, err := transport.BuildTLSConfig(transport.TLSBuildOptions{
 		Custom: &tls.Config{Certificates: []tls.Certificate{clientLeaf}},
 	})
 	if err != nil {
