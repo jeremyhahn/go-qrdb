@@ -4241,6 +4241,13 @@ message BackupRestoreRequest {
     // the backup was created under; this field never selects a different
     // provider than that.
     string          decryption_key_ref = 5;
+    // allow_plaintext is the caller's explicit opt-in to restore a
+    // backup whose stored state is plaintext. Left false (the
+    // default), the server refuses with a typed error before touching
+    // any shard -- never inferred from the backup's own stored
+    // metadata, which an attacker who also deletes the backup's
+    // envelope can make internally consistent.
+    bool            allow_plaintext    = 6;
 }
 
 // ShardError reports a per-shard failure during restore.

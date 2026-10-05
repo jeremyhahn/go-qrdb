@@ -228,6 +228,7 @@ func newBackupRestoreCmd() *cobra.Command {
 		validate         bool
 		decryptionKeyRef string
 		targetShards     string
+		allowPlaintext   bool
 	)
 
 	cmd := &cobra.Command{
@@ -239,6 +240,7 @@ func newBackupRestoreCmd() *cobra.Command {
 				BackupID:         backupID,
 				ValidateFirst:    validate,
 				DecryptionKeyRef: decryptionKeyRef,
+				AllowPlaintext:   allowPlaintext,
 			}
 
 			if targetShards != "" {
@@ -277,6 +279,7 @@ func newBackupRestoreCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&validate, "validate", false, "Run integrity verification before restoring")
 	cmd.Flags().StringVar(&decryptionKeyRef, "decryption-key-file", "", "Name of a key file, inside the server's configured key directory, that overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node); left unset, the stored reference is used. A bare file name, never a path.")
 	cmd.Flags().StringVar(&targetShards, "shards", "", "Comma-separated shard IDs to restore (default: all shards)")
+	cmd.Flags().BoolVar(&allowPlaintext, "allow-plaintext", false, "Explicit opt-in required to restore a backup whose stored state is plaintext; refused with a typed error otherwise")
 
 	return cmd
 }

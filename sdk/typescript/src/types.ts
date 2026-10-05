@@ -3150,6 +3150,14 @@ export interface RestoreRequest {
      * supplied at all in the common case.
      */
     readonly decryptionKeyRef?: string;
+    /**
+     * Explicit opt-in required to restore a backup whose stored state is
+     * plaintext. Left unset (false), the server refuses with a typed
+     * error before touching any shard -- never inferred from the
+     * backup's own stored metadata, which an attacker who also deletes
+     * the backup's envelope can make internally consistent.
+     */
+    readonly allowPlaintext?: boolean;
 }
 
 /** Result of a restore operation. */

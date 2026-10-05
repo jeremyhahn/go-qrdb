@@ -143,6 +143,9 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 	if req.DecryptionKeyRef != "" {
 		args["decryption_key_ref"] = req.DecryptionKeyRef
 	}
+	if req.AllowPlaintext {
+		args["allow_plaintext"] = true
+	}
 
 	text, err := t.callTool(ctx, "qrdb_backup_restore", args)
 	if err != nil {

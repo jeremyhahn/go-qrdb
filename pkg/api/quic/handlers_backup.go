@@ -160,6 +160,7 @@ func (s *Server) handleBackupRestore(ctx context.Context, payload []byte) ([]byt
 		TargetShards:     req.GetTargetShards(),
 		ValidateFirst:    req.GetValidateFirst(),
 		DecryptionKeyRef: req.GetDecryptionKeyRef(),
+		AllowPlaintext:   req.GetAllowPlaintext(),
 	})
 	if err != nil {
 		return nil, err

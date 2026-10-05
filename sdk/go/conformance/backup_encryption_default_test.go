@@ -181,9 +181,17 @@ func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 			if plain.Encryption != transport.EncryptionNone {
 				t.Fatalf("%s: Encryption = %q, want %q", tk, plain.Encryption, transport.EncryptionNone)
 			}
+			// Restoring it is refused on EVERY transport without the
+			// caller's explicit opt-in (go-qrdb security review,
+			// backup-encrypt-default round 4) -- never inferred from
+			// the backup's own stored metadata.
+			if _, err := bc.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: plain.ID}); err == nil {
+				t.Fatalf("%s: RestoreBackup of the explicit-plaintext backup succeeded with no AllowPlaintext opt-in", tk)
+			}
 			// An explicit plaintext backup still restores -- with no
-			// decryption key, since it was never encrypted.
-			if _, err := bc.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: plain.ID}); err != nil {
+			// decryption key, since it was never encrypted -- once the
+			// caller opts in with AllowPlaintext.
+			if _, err := bc.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: plain.ID, AllowPlaintext: true}); err != nil {
 				t.Fatalf("%s: RestoreBackup of the explicit-plaintext backup: %v", tk, err)
 			}
 		})

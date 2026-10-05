@@ -132,6 +132,7 @@ func (s *qrdbServiceServer) BackupRestore(ctx context.Context, req *pb.BackupRes
 		TargetShards:     req.GetTargetShards(),
 		ValidateFirst:    req.GetValidateFirst(),
 		DecryptionKeyRef: req.GetDecryptionKeyRef(),
+		AllowPlaintext:   req.GetAllowPlaintext(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)

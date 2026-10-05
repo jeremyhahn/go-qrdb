@@ -131,6 +131,7 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 		TargetShards:     req.TargetShards,
 		ValidateFirst:    req.ValidateFirst,
 		DecryptionKeyRef: req.DecryptionKeyRef,
+		AllowPlaintext:   req.AllowPlaintext,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "RestoreBackup", Err: err}

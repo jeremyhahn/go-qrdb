@@ -190,6 +190,9 @@ func toolBackupRestore() mcp.Tool {
 		mcp.WithString("decryption_key_ref",
 			mcp.Description("Overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node). Left unset, the stored reference is used."),
 		),
+		mcp.WithBoolean("allow_plaintext",
+			mcp.Description("Explicit opt-in required to restore a backup whose stored state is plaintext. Refused with a typed error when unset and the backup's stored state is plaintext."),
+		),
 	)
 }
 
@@ -206,6 +209,7 @@ func handleBackupRestore(svc service.BackupServicer) mcpserver.ToolHandlerFunc {
 			TargetShards:     parseShardIDs(req, "target_shards"),
 			ValidateFirst:    mcp.ParseBoolean(req, "validate_first", false),
 			DecryptionKeyRef: mcp.ParseString(req, "decryption_key_ref", ""),
+			AllowPlaintext:   mcp.ParseBoolean(req, "allow_plaintext", false),
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_backup_restore", Err: err}

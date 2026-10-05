@@ -324,7 +324,8 @@ func TestTransportBackup_RestoreBackup_Success(t *testing.T) {
 	}
 
 	result, err := tr.RestoreBackup(ctx, &transport.RestoreRequest{
-		BackupID: created.ID,
+		BackupID:       created.ID,
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup: %v", err)
@@ -334,6 +335,33 @@ func TestTransportBackup_RestoreBackup_Success(t *testing.T) {
 	}
 	if result.ShardsRestored != 2 {
 		t.Fatalf("expected 2 shards restored, got %d", result.ShardsRestored)
+	}
+}
+
+// TestTransportBackup_RestoreBackup_PlaintextRefusedWithoutOptIn proves a
+// plaintext-stored backup is refused with
+// *transport.BackupPlaintextRestoreNotAllowedError when the caller does
+// not set RestoreRequest.AllowPlaintext (go-qrdb security review,
+// backup-encrypt-default round 4).
+func TestTransportBackup_RestoreBackup_PlaintextRefusedWithoutOptIn(t *testing.T) {
+	tr := newBackupTransport(t)
+	ctx := context.Background()
+
+	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
+		Destination: "/backups/restore-no-optin",
+		Encryption:  transport.EncryptionNone,
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	_, err = tr.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: created.ID})
+	if err == nil {
+		t.Fatal("RestoreBackup: expected an error for a plaintext backup with no AllowPlaintext opt-in")
+	}
+	var notAllowed *transport.BackupPlaintextRestoreNotAllowedError
+	if !errors.As(err, &notAllowed) {
+		t.Fatalf("RestoreBackup: err = %T, want *transport.BackupPlaintextRestoreNotAllowedError: %v", err, err)
 	}
 }
 
@@ -477,8 +505,9 @@ func TestTransportBackup_FullLifecycle(t *testing.T) {
 
 	// Restore.
 	result, err := tr.RestoreBackup(ctx, &transport.RestoreRequest{
-		BackupID:      created.ID,
-		ValidateFirst: true,
+		BackupID:       created.ID,
+		ValidateFirst:  true,
+		AllowPlaintext: true,
 	})
 	if err != nil {
 		t.Fatalf("RestoreBackup: %v", err)

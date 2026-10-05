@@ -143,6 +143,7 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 		TargetShards:     req.TargetShards,
 		ValidateFirst:    req.ValidateFirst,
 		DecryptionKeyRef: req.DecryptionKeyRef,
+		AllowPlaintext:   req.AllowPlaintext,
 	}
 	result, err := t.backupSvc.RestoreBackup(ctx, opts)
 	if err != nil {
@@ -289,6 +290,11 @@ func translateBackupError(err error) error {
 	var bie *service.BackupInvalidEncryptionError
 	if errors.As(err, &bie) {
 		return &transport.BackupCreateError{Err: bie}
+	}
+
+	var pnr *service.BackupPlaintextRestoreNotAllowedError
+	if errors.As(err, &pnr) {
+		return &transport.BackupPlaintextRestoreNotAllowedError{BackupID: pnr.BackupID}
 	}
 
 	return &transport.RequestError{Method: "backup", Err: err}

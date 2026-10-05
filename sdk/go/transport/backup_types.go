@@ -176,6 +176,16 @@ type RestoreRequest struct {
 	// backup was created under; this field never selects a different
 	// provider than that.
 	DecryptionKeyRef string `json:"decryption_key_ref,omitempty"`
+
+	// AllowPlaintext is the operator's explicit opt-in to restore a
+	// backup whose stored state is plaintext (EncryptionNone). Left
+	// false (the default), the server refuses with a typed error before
+	// touching any shard -- never inferred from the backup's own stored
+	// metadata, which an attacker who also deletes the backup's envelope
+	// can make internally consistent. Mirrors
+	// service.RestoreOptions.AllowPlaintext; see that field's own doc
+	// comment for the downgrade this closes.
+	AllowPlaintext bool `json:"allow_plaintext,omitempty"`
 }
 
 // RestoreResult describes the outcome of a restore operation.

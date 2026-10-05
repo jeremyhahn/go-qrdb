@@ -52,6 +52,7 @@ type restoreBackupRequest struct {
 	TargetShards     []uint64 `json:"target_shards,omitempty"`
 	ValidateFirst    bool     `json:"validate_first,omitempty"`
 	DecryptionKeyRef string   `json:"decryption_key_ref,omitempty"`
+	AllowPlaintext   bool     `json:"allow_plaintext,omitempty"`
 }
 
 // backupResponse is the JSON representation of a backup artifact's metadata.
@@ -181,6 +182,7 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		TargetShards:     req.TargetShards,
 		ValidateFirst:    req.ValidateFirst,
 		DecryptionKeyRef: req.DecryptionKeyRef,
+		AllowPlaintext:   req.AllowPlaintext,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

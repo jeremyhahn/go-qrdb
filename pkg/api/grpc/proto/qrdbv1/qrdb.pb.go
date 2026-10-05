@@ -21347,8 +21347,15 @@ type BackupRestoreRequest struct {
 	// the backup was created under; this field never selects a different
 	// provider than that.
 	DecryptionKeyRef string `protobuf:"bytes,5,opt,name=decryption_key_ref,json=decryptionKeyRef,proto3" json:"decryption_key_ref,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// allow_plaintext is the caller's explicit opt-in to restore a
+	// backup whose stored state is plaintext. Left false (the
+	// default), the server refuses with a typed error before touching
+	// any shard -- never inferred from the backup's own stored
+	// metadata, which an attacker who also deletes the backup's
+	// envelope can make internally consistent.
+	AllowPlaintext bool `protobuf:"varint,6,opt,name=allow_plaintext,json=allowPlaintext,proto3" json:"allow_plaintext,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *BackupRestoreRequest) Reset() {
@@ -21407,6 +21414,13 @@ func (x *BackupRestoreRequest) GetDecryptionKeyRef() string {
 		return x.DecryptionKeyRef
 	}
 	return ""
+}
+
+func (x *BackupRestoreRequest) GetAllowPlaintext() bool {
+	if x != nil {
+		return x.AllowPlaintext
+	}
+	return false
 }
 
 // ShardError reports a per-shard failure during restore.
@@ -29260,12 +29274,13 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x10BackupGetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"%\n" +
 	"\x13BackupDeleteRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xc3\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xec\x01\n" +
 	"\x14BackupRestoreRequest\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12#\n" +
 	"\rtarget_shards\x18\x02 \x03(\x04R\ftargetShards\x12%\n" +
 	"\x0evalidate_first\x18\x03 \x01(\bR\rvalidateFirst\x12,\n" +
-	"\x12decryption_key_ref\x18\x05 \x01(\tR\x10decryptionKeyRefJ\x04\b\x04\x10\x05R\x0edecryption_key\"A\n" +
+	"\x12decryption_key_ref\x18\x05 \x01(\tR\x10decryptionKeyRef\x12'\n" +
+	"\x0fallow_plaintext\x18\x06 \x01(\bR\x0eallowPlaintextJ\x04\b\x04\x10\x05R\x0edecryption_key\"A\n" +
 	"\n" +
 	"ShardError\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x18\n" +

@@ -643,10 +643,13 @@ func (e *BackupChecksumMismatchError) Error() string {
 
 // BackupDecryptionFailedError is returned when a backup's envelope cannot
 // be processed: an unregistered key-wrap provider (create or restore), a
-// bad key reference, the wrong KEK, a tampered wrapped DEK, or a tampered
-// shard's own AES-256-GCM authentication failure. These are deliberately
-// not distinguished from each other -- see
-// service.BackupDecryptionFailedError, which this mirrors.
+// bad key reference, or the wrong KEK/a tampered wrapped DEK. These are
+// deliberately not distinguished from each other -- see
+// service.BackupDecryptionFailedError, which this mirrors. A tampered
+// SHARD's own ciphertext is a DIFFERENT error,
+// *BackupVerificationFailedError wrapping *BackupShardIntegrityError --
+// checked at a different layer (the shard's own AEAD tag, not the KEK or
+// the wrapped DEK) and never collapsed into this one.
 type BackupDecryptionFailedError struct {
 	BackupID string
 	Err      error
@@ -667,6 +670,19 @@ func (e *BackupDecryptionFailedError) Error() string {
 // Unwrap returns the underlying error.
 func (e *BackupDecryptionFailedError) Unwrap() error {
 	return e.Err
+}
+
+// BackupPlaintextRestoreNotAllowedError is returned when a backup's
+// stored state is plaintext and the caller did not set
+// RestoreRequest.AllowPlaintext -- mirrors
+// service.BackupPlaintextRestoreNotAllowedError.
+type BackupPlaintextRestoreNotAllowedError struct {
+	BackupID string
+}
+
+// Error returns a human-readable description.
+func (e *BackupPlaintextRestoreNotAllowedError) Error() string {
+	return "transport: backup " + e.BackupID + " is stored as plaintext; restoring it requires an explicit opt-in (allow_plaintext)"
 }
 
 // ---------------------------------------------------------------------------
