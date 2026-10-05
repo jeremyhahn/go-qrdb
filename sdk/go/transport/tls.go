@@ -66,9 +66,12 @@ func (e *CertificateLoadError) Unwrap() error {
 // TLSBuildOptions configures BuildTLSConfig. The zero value disables TLS.
 type TLSBuildOptions struct {
 	// Custom is a pre-built tls.Config that takes precedence over all
-	// file-based fields. When set with no NextProtos it is returned
-	// unmodified; when NextProtos is also set, a clone with the required
-	// ALPN protocols appended is returned instead.
+	// file-based fields. When set with no NextProtos, and either no
+	// single static Certificates entry or one paired with the caller's
+	// own GetClientCertificate already, it is returned unmodified;
+	// otherwise a clone is returned with the ALPN protocols appended
+	// and/or GetClientCertificate applied over a lone static certificate
+	// -- see BuildTLSConfig's own doc comment for why the latter matters.
 	Custom *tls.Config
 
 	// Enabled controls whether a file-based configuration is built when
@@ -101,13 +104,36 @@ type TLSBuildOptions struct {
 // File-based configs enforce TLS 1.3 as the minimum version. All
 // failures are returned as *TLSError wrapping a typed cause
 // (*CAFileReadError, *CAParseError, or *CertificateLoadError).
+//
+// A Custom config carrying exactly one static Certificates entry, and no
+// GetClientCertificate of its own, has that one certificate wrapped in a
+// GetClientCertificate hook too -- the same fix applied to the file-based
+// path below, and for the identical reason (go-qrdb#591's review,
+// non-blocking 5): crypto/tls's default client-side selector for the
+// static field only offers an entry whose issuer appears in the server's
+// CertificateRequest.AcceptableCAs, silently sending none at all
+// otherwise, which is exactly what a Key B leaf hits against a listener
+// composed over pkg/clienttrust.Pool. A caller supplying its own
+// GetClientCertificate, or more than one static certificate (an ambiguous
+// case this function cannot resolve on the caller's behalf), is left
+// untouched.
 func BuildTLSConfig(opts TLSBuildOptions) (*tls.Config, error) {
 	if opts.Custom != nil {
-		if len(opts.NextProtos) == 0 {
-			return opts.Custom, nil
+		cfg := opts.Custom
+		needsALPN := len(opts.NextProtos) != 0
+		needsClientCertFix := len(cfg.Certificates) == 1 && cfg.GetClientCertificate == nil
+		if needsALPN || needsClientCertFix {
+			cfg = opts.Custom.Clone()
 		}
-		cfg := opts.Custom.Clone()
-		cfg.NextProtos = mergeALPN(cfg.NextProtos, opts.NextProtos)
+		if needsALPN {
+			cfg.NextProtos = mergeALPN(cfg.NextProtos, opts.NextProtos)
+		}
+		if needsClientCertFix {
+			cert := cfg.Certificates[0]
+			cfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return &cert, nil
+			}
+		}
 		return cfg, nil
 	}
 
