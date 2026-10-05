@@ -152,3 +152,33 @@ func TestRecordOwnJoinIdentity_MalformedCertIsNoOp(t *testing.T) {
 		t.Fatalf("recordOwnJoinIdentity (malformed cert) = %v, want nil", err)
 	}
 }
+
+// refusingStore is a join store that refuses every write.
+type refusingStore struct {
+	kvstore.AtomicKVStore
+}
+
+var errStoreRefused = errors.New("store refused")
+
+func (refusingStore) Put(context.Context, string, []byte) error { return errStoreRefused }
+
+func (refusingStore) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, errStoreRefused
+}
+
+func (refusingStore) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, errStoreRefused
+}
+
+// A store that refuses the write fails the record with the typed error, and
+// a nil join stops as a no-op.
+func TestRecordOwnJoinIdentity_StoreRefusalIsTyped(t *testing.T) {
+	certPEM := joinTestLeaf(t, spiffe.NodeURI("test.cluster", "founder-1"))
+	err := recordOwnJoinIdentity(context.Background(), refusingStore{kvstore.NewMemoryKVStore()}, certPEM, "test.cluster")
+	var recErr *JoinIdentityRecordError
+	if !errors.As(err, &recErr) || !errors.Is(err, errStoreRefused) || recErr.Error() == "" {
+		t.Fatalf("recordOwnJoinIdentity = %v; want *JoinIdentityRecordError wrapping the refusal", err)
+	}
+	var j *ClusterJoin
+	j.Stop()
+}
