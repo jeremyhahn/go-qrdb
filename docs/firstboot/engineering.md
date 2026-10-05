@@ -229,6 +229,41 @@ until `timeout`
 daemon and the SDK node call it with a linearizable store, so a follower
 waits for the admin's bindings rather than judging a lagging copy.
 
+### Leaving "awaiting admin credential" without a restart
+
+`firstboot.AwaitingAdminCredentialProbe` is the in-process gate every
+transport consults: while `AwaitingAdminCredential()` reports true, only
+ceremony status and ceremony-initialize are served (anonymously, bypassing
+authMW — there is no bound identity to authenticate as yet) and every other
+request is refused. `AdminBound()` clears it, permanently for the life of
+that probe instance; a later expiry of the binding never re-arms it.
+
+`service.CeremonyServiceWithAdminRebind`'s admin-credential retry calls
+`AdminBound()` directly, but only on the node that actually performed the
+reissue — ordinarily the Raft leader, since that retry is leader-gated.
+Every other node in the cluster learns the admin bound only once the write
+replicates. `firstboot.WatchForAdminBound(ctx, lookup, watcher, notifier)`
+is how a follower learns that without re-reading the store on every
+request: it resolves the admin's user ID once, then opens an event-driven
+watch on `user.PrimaryRecordKey(id)` (`firstboot.AdminRecordWatcher`,
+satisfied directly by `*watch.Hub` or by `pkg/service.WatchServicer`) and
+calls `notifier.AdminBound()` the moment a delivered event decodes to a
+live certificate binding — judged by the SAME predicate the boot-time check
+applies. A lookup that finds no admin account yet is not an error: nothing
+to watch exists until first boot creates the account, so it returns `nil`
+immediately.
+
+`cmd/qrdbd/start.go` (`bootstrapAuthEnforcement`) and `sdk/go/node`
+(`wireClientAndServer`) both start this watch, in their own goroutine, only
+when the node's own `AwaitingAdminCredentialProbe` already reports
+awaiting right after `Initialize` — a node that is not awaiting has nothing
+the watch would change — and run it under the node's own background
+context rather than the boot call's, so it outlives that call and is
+waited on at `Close`. The practical effect: in a cluster where the admin
+binds through the leader, every follower leaves "awaiting admin
+credential" as soon as that write replicates, with no restart and no
+request re-driving the check.
+
 ## Built-in roles
 
 | Role | Permissions | Notes |

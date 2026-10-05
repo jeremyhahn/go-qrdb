@@ -183,21 +183,35 @@ durable, replicated state.
   - **A counter per caller.** Every check names its caller
     (`auth.CallerPrincipal`): an authenticated identity (not admitted
     anonymously by the sealed window) is its tenant and subject; otherwise a
-    TLS-verified client certificate is the digest of its leaf; anything else
-    is the one *anonymous* caller. Each authenticated principal has its own
-    counter. The transports and the service select it from the request
-    (`pin.ForCaller`, applied inside `pin.RequireSOPIN`,
+    TLS-verified client certificate is the digest of its leaf; otherwise a
+    caller with no identity or certificate at all -- the sealed-window
+    caller, or an awaiting-admin-credential reissue -- is its own remote
+    network address, recorded as `"addr:<remote>"` by `auth.WithRemoteAddr`,
+    which every transport calls where it first
+    builds the request's context, before any gate that might bypass
+    authentication entirely. Each distinct principal, address-keyed or
+    authenticated, has its own counter, so one unauthenticated source's
+    wrong guesses never lock out a different, unrelated source making the
+    identical kind of anonymous check -- one caller sharing a listener with
+    another cannot deny it a seal, a rekey or a sign-csr. Only a context no
+    transport ever decorated with ANY of identity, certificate or remote
+    address -- in practice, a caller a test builds by hand -- falls back to
+    the single bare anonymous counter (`""`) that predates this address
+    keying. The transports and the service select the counter from the
+    request (`pin.ForCaller`, applied inside `pin.RequireSOPIN`,
     `pin.RequireProvisionedSOPIN` and `pin.Provision`). Wrong PINs guessed
     anonymously, or by a tenant user, a share holder or anyone else holding a
     certificate the client CA issued, therefore lock out only that caller: the
     Security Officer's rekey or revocation is still admitted. An officer's own
     wrong PINs lock only the officer.
-  - **An aggregate cap.** All authenticated principals of one key together may
-    present at most 64 wrong PINs in a 15-minute window; past that, every
-    authenticated check of the key -- the officer's included -- is refused
-    until the window ends. One principal's own backoff holds it to about 15
-    failures in a window, so the cap is reached only by several principals
-    guessing together, and it never refuses a **known-good** principal: one
+  - **An aggregate cap.** All principals of one key with a recorded
+    identity, certificate OR remote address together -- anything other than
+    the bare anonymous counter above -- may present at most 64 wrong PINs
+    in a 15-minute window; past that, every such check of the key -- the
+    officer's included -- is refused until the window ends. One principal's
+    own backoff holds it to about 15 failures in a window, so the cap is
+    reached only by several principals guessing together, and it never
+    refuses a **known-good** principal: one
     that has presented the correct SO PIN before. Up to 8 known-good
     principals are kept per key, persisted with the PIN backend (the software
     backend's storage) and, for a tenant SO PIN, in the authenticator's store,
