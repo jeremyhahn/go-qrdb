@@ -615,6 +615,45 @@ func (a authInjectingLease) LeaseList(ctx context.Context) ([]*transport.LeaseIn
 	return a.inner.LeaseList(a.bind(ctx))
 }
 
+// authInjectingBackup is authInjectingKV's counterpart for BackupClient --
+// the embedded cell's way of presenting the same authenticated "matrix"
+// caller a remote cell's client certificate authenticates as, for the
+// backup:* family (go-qrdb backup-encrypt-default conformance).
+type authInjectingBackup struct {
+	inner    transport.BackupClient
+	identity *auth.Identity
+}
+
+var _ transport.BackupClient = authInjectingBackup{}
+
+func (a authInjectingBackup) bind(ctx context.Context) context.Context {
+	return tenant.WithTenantID(auth.WithIdentity(ctx, a.identity), a.identity.TenantID)
+}
+
+func (a authInjectingBackup) CreateBackup(ctx context.Context, req *transport.BackupRequest) (*transport.BackupInfo, error) {
+	return a.inner.CreateBackup(a.bind(ctx), req)
+}
+
+func (a authInjectingBackup) ListBackups(ctx context.Context) ([]transport.BackupInfo, error) {
+	return a.inner.ListBackups(a.bind(ctx))
+}
+
+func (a authInjectingBackup) GetBackup(ctx context.Context, id string) (*transport.BackupInfo, error) {
+	return a.inner.GetBackup(a.bind(ctx), id)
+}
+
+func (a authInjectingBackup) DeleteBackup(ctx context.Context, id string) error {
+	return a.inner.DeleteBackup(a.bind(ctx), id)
+}
+
+func (a authInjectingBackup) RestoreBackup(ctx context.Context, req *transport.RestoreRequest) (*transport.RestoreResult, error) {
+	return a.inner.RestoreBackup(a.bind(ctx), req)
+}
+
+func (a authInjectingBackup) VerifyBackup(ctx context.Context, id string) (*transport.VerifyResult, error) {
+	return a.inner.VerifyBackup(a.bind(ctx), id)
+}
+
 // remoteServerTLS builds the mTLS material a remote listener needs. Every qrdb
 // transport is TLS-only by design — the client certificate IS the identity the
 // auth middleware authenticates — so there is no insecure shortcut here, and

@@ -142,7 +142,15 @@ func TestTenantDEK_PermissionIsEnforcedOnEveryRemoteTransport(t *testing.T) {
 			continue
 		}
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootAuthorizedCell(t, tk, func(n *node.Node) { seedGuardedIdentity(t, n) }).DEK()
+			// seedGuardedIdentity only creates the role; bootCellAs's remote
+			// branch looks "matrix" up by username (enrollMatrixCert) before
+			// this closure returns, so the seed must create the user too --
+			// see createMatrixUser's own doc comment ("must run before
+			// enrollMatrixCert, which looks that user up by username").
+			c := bootAuthorizedCell(t, tk, func(n *node.Node) {
+				roleID := seedGuardedIdentity(t, n)
+				createMatrixUser(t, n, roleID)
+			}).DEK()
 			_, err := c.TenantDEKEncrypt(boundedCtx(t), &transport.TenantDEKEncryptRequest{Plaintext: []byte("x")})
 			if err == nil {
 				t.Fatalf("%s: an identity without dek:encrypt encrypted", tk)

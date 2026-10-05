@@ -27,6 +27,7 @@ import (
 
 	mcpwire "github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	quicwire "github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -95,13 +96,20 @@ func bootBackupCell(t *testing.T, tk transportKind, keyDir string) transport.Bac
 	// else touches the store -- mirrors cell.boot's raft branch exactly.
 	awaitWritable(t, c, n.Client().KV())
 
-	if !tk.remote() {
-		return n.Client().Backup()
-	}
-
-	seedIdentityFixtures(t, n,
+	roleID, _ := seedIdentityFixtures(t, n,
 		permission.BackupCreate, permission.BackupList, permission.BackupRead,
 		permission.BackupRestore, permission.BackupVerify)
+
+	if !tk.remote() {
+		// Embedded-authz (go-qrdb#517/#548 review) requires an identity in
+		// ctx for every embedded Transport call; authInjectingBackup is
+		// cell.boot's own pattern (authInjectingKV et al.) for presenting
+		// "matrix" to the in-process client the same way a remote cell's
+		// client certificate would.
+		identity := &auth.Identity{Subject: "matrix", TenantID: tenantid.System, Roles: []string{roleID}}
+		return authInjectingBackup{inner: n.Client().Backup(), identity: identity}
+	}
+
 	// seedIdentityFixtures only creates "matrix"; it carries no certificate
 	// binding yet, so under the default auth.mtls_binding_policy "required"
 	// clientKP's certificate would be refused as naming no bound account
