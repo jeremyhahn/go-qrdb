@@ -31,22 +31,24 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// writeBackupKeyFile writes a fixed, well-formed 32-byte key file under
-// t.TempDir() and returns its path, for use as BackupRequest.KeyRef /
+// writeBackupKeyFile writes a fixed, well-formed 32-byte key file inside
+// dir (the cell's own configured key directory, via server.WithKeyDir)
+// and returns its bare NAME, for use as BackupRequest.KeyRef /
 // RestoreRequest.DecryptionKeyRef against the "software" keywrap provider
-// -- the OWNER-RULING scenarios care about the DEFAULT applying and a key
-// being present, not about key management.
-func writeBackupKeyFile(t *testing.T) string {
+// -- a bare name, never a path (go-qrdb security review,
+// backup-encrypt-default #B4). The OWNER-RULING scenarios care about the
+// DEFAULT applying and a key being present, not about key management.
+func writeBackupKeyFile(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup.key")
+	name := "backup.key"
 	key := make([]byte, 32) // the software keywrap provider requires exactly 32
 	for i := range key {
 		key[i] = byte('a' + i%26)
 	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), key, 0o600); err != nil {
 		t.Fatalf("writing backup key file: %v", err)
 	}
-	return path
+	return name
 }
 
 // bootBackupCell starts a real raft-mode node (backup is a raft-mode
@@ -57,16 +59,23 @@ func writeBackupKeyFile(t *testing.T) string {
 // docs/backup-restore/engineering.md's "Permission model"), so the seeded
 // identity must be of the system tenant -- remoteServerTLS(tenantid.System)
 // is what issues "matrix"'s client certificate there.
-func bootBackupCell(t *testing.T, tk transportKind) transport.BackupClient {
+//
+// keyDir is this cell's configured key directory (server.WithKeyDir) for
+// the built-in "software" key-wrap provider -- every KeyRef/
+// DecryptionKeyRef the scenarios below use (writeBackupKeyFile) is a bare
+// name inside it.
+func bootBackupCell(t *testing.T, tk transportKind, keyDir string) transport.BackupClient {
 	t.Helper()
 	c := cell{backend: database.BackendPebble, mode: raft, transport: tk, want: fullPassage}
 	cfg := c.config(t)
 
-	var serverOpts []server.ServerOption
+	serverOpts := []server.ServerOption{server.WithKeyDir(keyDir)}
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if tk.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t, tenantid.System)
+		var remoteOpts []server.ServerOption
+		ca, clientKP, remoteOpts = remoteServerTLS(t, tenantid.System)
+		serverOpts = append(serverOpts, remoteOpts...)
 	}
 
 	members := map[uint64]string{1: cfg.Raft.RaftAddress}
@@ -129,7 +138,8 @@ func bootBackupCell(t *testing.T, tk transportKind) transport.BackupClient {
 func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			bc := bootBackupCell(t, tk)
+			keyDir := t.TempDir()
+			bc := bootBackupCell(t, tk, keyDir)
 			ctx := boundedCtx(t)
 
 			// Scenario 1: default, no key -- refused.
@@ -140,10 +150,10 @@ func TestBackupEncryptionDefault_OnEveryTransport(t *testing.T) {
 			}
 
 			// Scenario 2: default, with a key -- encrypts and restores.
-			keyPath := writeBackupKeyFile(t)
+			keyName := writeBackupKeyFile(t, keyDir)
 			created, err := bc.CreateBackup(ctx, &transport.BackupRequest{
 				Destination: "conformance/default-with-key",
-				KeyRef:      keyPath,
+				KeyRef:      keyName,
 			})
 			if err != nil {
 				t.Fatalf("%s: CreateBackup with the default encryption and a key: %v", tk, err)

@@ -60,17 +60,18 @@ var multiProtocols = []multiProtocol{
 // test in this batch boots once (via startMultiProtocolNode) and reuses
 // across its per-protocol subtests.
 type multiProtoNode struct {
-	cli        string
-	ca         *testCA
-	dataDir    string
-	clientCert string
-	clientKey  string
-	unixSocket string
-	restPort   int
-	grpcPort   int
-	mcpPort    int
-	quicPort   int
-	passphrase string
+	cli          string
+	ca           *testCA
+	dataDir      string
+	backupKeyDir string
+	clientCert   string
+	clientKey    string
+	unixSocket   string
+	restPort     int
+	grpcPort     int
+	mcpPort      int
+	quicPort     int
+	passphrase   string
 }
 
 // portFor returns the TCP/UDP port serving the given named protocol ("rest",
@@ -199,6 +200,13 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 	t.Cleanup(func() { os.RemoveAll(sockDir) })
 	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
 
+	// The built-in "software" key-wrap provider confines every key file to
+	// one configured directory (go-qrdb security review,
+	// backup-encrypt-default #B4); every encrypted-backup test against
+	// this harness needs it configured, kept separate from --data-dir like
+	// production.
+	backupKeyDir := t.TempDir()
+
 	raftPorts := allocatePorts(t, 1)
 	quicPorts := allocatePorts(t, 1)
 	tcpPorts := allocateTCPPorts(t, 3) // admin (REST), grpc, mcp
@@ -229,6 +237,7 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 		"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPort),
 		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
 		"--enable-unix", "--unix-socket-path", unixSocket,
+		"--backup-key-dir", backupKeyDir,
 	}
 	if smType != "" {
 		args = append(args, "--sm", smType)
@@ -250,17 +259,18 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 	waitForLeaderViaAdmin(t, ca, []int{restPort}, 60*time.Second)
 
 	n := &multiProtoNode{
-		cli:        cli,
-		ca:         ca,
-		dataDir:    dataDir,
-		clientCert: clientCert,
-		clientKey:  clientKey,
-		unixSocket: unixSocket,
-		restPort:   restPort,
-		grpcPort:   grpcPort,
-		mcpPort:    mcpPort,
-		quicPort:   quicPort,
-		passphrase: passphrase,
+		cli:          cli,
+		ca:           ca,
+		dataDir:      dataDir,
+		backupKeyDir: backupKeyDir,
+		clientCert:   clientCert,
+		clientKey:    clientKey,
+		unixSocket:   unixSocket,
+		restPort:     restPort,
+		grpcPort:     grpcPort,
+		mcpPort:      mcpPort,
+		quicPort:     quicPort,
+		passphrase:   passphrase,
 	}
 
 	// Confirm every transport is actually serving (not just that its

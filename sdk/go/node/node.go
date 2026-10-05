@@ -587,6 +587,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.AuditLogger = crypto.AuditLogger
 	infra.KeyWrapRegistry = crypto.KeyWrapRegistry
 	infra.KeyWrapProvider = crypto.KeyWrapProvider
+	infra.KeyDir = crypto.KeyDir
 	// The holder events (and the backup plaintext-override audit) recorded
 	// before they take effect follow the node's one audit failure posture.
 	// The sealed window's graph is built before the authorization

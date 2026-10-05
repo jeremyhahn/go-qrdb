@@ -92,22 +92,24 @@ import (
 	"testing"
 )
 
-// writeIntegrationKeyFile writes a fresh 32-byte key file under t.TempDir()
-// and returns its path, for use as --encryption-key-file /
-// --decryption-key-file against the real CLI binary: the process under
-// test runs in this same test binary's filesystem, so a temp file written
-// here is exactly what the server-side "software" keywrap provider reads.
-func writeIntegrationKeyFile(t *testing.T, fill byte) string {
+// writeIntegrationKeyFile writes a fresh 32-byte key file inside dir (the
+// daemon's own --backup-key-dir, e.g. node.backupKeyDir) and returns its
+// bare NAME, for use as --encryption-key-file / --decryption-key-file
+// against the real CLI binary: the daemon process under test runs in this
+// same test binary's filesystem, so a file written here is exactly what
+// the server-side "software" keywrap provider reads -- by NAME, never a
+// path (go-qrdb security review, backup-encrypt-default #B4).
+func writeIntegrationKeyFile(t *testing.T, dir string, fill byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup.key")
+	name := "backup.key"
 	data := make([]byte, 32)
 	for i := range data {
 		data[i] = fill + byte(i)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		t.Fatalf("writeIntegrationKeyFile: %v", err)
 	}
-	return path
+	return name
 }
 
 // backupInfoDisplay mirrors cmd/qrdb/backup.go's printBackupInfo JSON shape
@@ -251,7 +253,7 @@ func testBackupCommandTreeOverProtocol(t *testing.T, node *multiProtoNode, proto
 		"--destination", destination+"-encrypted",
 		"--compression", "zstd",
 		"--encryption", "aes256",
-		"--encryption-key-file", writeIntegrationKeyFile(t, 0x01),
+		"--encryption-key-file", writeIntegrationKeyFile(t, node.backupKeyDir, 0x01),
 	)
 	if err != nil {
 		t.Fatalf("[%s] backup create (compressed+encrypted): %v\noutput: %s", proto.name, err, out)

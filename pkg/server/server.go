@@ -272,6 +272,11 @@ type serverOptions struct {
 	// own.
 	keyWrapProvider keywrap.Provider
 
+	// keyDir is the directory the built-in "software" key-wrap provider's
+	// key files must live inside, confined via *os.Root. Only consulted
+	// when keyWrapRegistry is nil.
+	keyDir string
+
 	// pinBackend is the canonical PIN management implementation. nil
 	// means every PIN-gated operation fails closed with
 	// pin.ErrBackendNotConfigured; composers wire a software backend over
@@ -1010,6 +1015,20 @@ func WithKeyWrapProvider(p keywrap.Provider) ServerOption {
 	return func(o *serverOptions) { o.keyWrapProvider = p }
 }
 
+// WithKeyDir configures the directory the built-in "software" key-wrap
+// provider's key files must live inside -- every key reference a backup
+// names is a bare file name inside it, never a path (go-qrdb security
+// review, backup-encrypt-default #B4). Only consulted when
+// WithKeyWrapRegistry/WithKeyWrapProvider do not already supply a
+// registry of the caller's own.
+//
+// Like WithKeyWrapRegistry, this is forwarded through ResolveCryptoOptions
+// into lifecycle.Infra.KeyDir up front; passing it only to server.New
+// would be too late.
+func WithKeyDir(dir string) ServerOption {
+	return func(o *serverOptions) { o.keyDir = dir }
+}
+
 // WithPINBackend injects the canonical PIN backend. Without one every
 // PIN-gated operation fails closed with pin.ErrBackendNotConfigured. Hardware
 // callers inject TPM2 or PKCS#11 backends from go-xkms here; the
@@ -1088,6 +1107,7 @@ type CryptoOptions struct {
 	// the same reason: the Backup service is built before server.New runs.
 	KeyWrapRegistry keywrap.Registry
 	KeyWrapProvider keywrap.Provider
+	KeyDir          string
 	// AuthFactorService is the caller-supplied AuthFactorServicer, if any.
 	// When non-nil the caller passed server.WithAuthFactorService explicitly.
 	// When nil and FactorRegistry is non-nil, the server and SDK node builders
@@ -1121,6 +1141,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		AuditLogger:            o.auditLogger,
 		KeyWrapRegistry:        o.keyWrapRegistry,
 		KeyWrapProvider:        o.keyWrapProvider,
+		KeyDir:                 o.keyDir,
 		AuthFactorService:      o.authFactorSvc,
 		CeremonyCA:             o.ceremonyCA,
 	}

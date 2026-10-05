@@ -70,6 +70,7 @@ type restoreDRNode struct {
 	ca            *testCA
 	dataDir       string
 	backupDir     string
+	backupKeyDir  string
 	adminPort     int
 	grpcPort      int
 	startArgs     []string
@@ -96,6 +97,12 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 	grpcPort := allocateTCPPorts(t, 1)[0]
 	dataDir := t.TempDir()
 	backupDir := t.TempDir()
+	// The built-in "software" key-wrap provider confines every key file to
+	// one configured directory (go-qrdb security review,
+	// backup-encrypt-default #B4); kept OUTSIDE --data-dir, like backupDir,
+	// so a simulated-loss wipe of dataDir never destroys a key an
+	// encrypted backup needs to restore.
+	backupKeyDir := t.TempDir()
 	// The admin client cert lives in its own directory, independent of the
 	// node's --data-dir, so a simulated-loss wipe of dataDir never destroys
 	// the credential the test CLI needs to reach the node afterward.
@@ -109,6 +116,7 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
 		"--data-dir", dataDir,
 		"--backup-dir", backupDir,
+		"--backup-key-dir", backupKeyDir,
 		"--sm", "mvcc",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPort),
@@ -122,12 +130,13 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 	}
 
 	n := &restoreDRNode{
-		ca:        ca,
-		dataDir:   dataDir,
-		backupDir: backupDir,
-		adminPort: adminPort,
-		grpcPort:  grpcPort,
-		startArgs: args,
+		ca:           ca,
+		dataDir:      dataDir,
+		backupDir:    backupDir,
+		backupKeyDir: backupKeyDir,
+		adminPort:    adminPort,
+		grpcPort:     grpcPort,
+		startArgs:    args,
 	}
 	n.proc = startNode(t, bin, args, prefix)
 
@@ -358,16 +367,17 @@ func TestBackupRestore_CLI_DisasterRecovery_Encrypted(t *testing.T) {
 
 	node := startRestoreDRNode(t, bin, "[dr-restore-enc] ")
 
-	// The key file lives OUTSIDE --data-dir, in its own temp directory, so
-	// it survives the simulated total-loss wipe below -- exactly like
-	// node.backupDir does, and for the same reason.
-	keyDir := t.TempDir()
-	keyPath := keyDir + "/backup.key"
+	// The key file lives in node.backupKeyDir -- OUTSIDE --data-dir, so it
+	// survives the simulated total-loss wipe below, exactly like
+	// node.backupDir does and for the same reason. --encryption-key-file
+	// is a bare NAME inside that directory, never a path (go-qrdb security
+	// review, backup-encrypt-default #B4).
+	const keyName = "backup.key"
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i)
 	}
-	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(node.backupKeyDir, keyName), key, 0o600); err != nil {
 		t.Fatalf("write key file: %v", err)
 	}
 
@@ -389,7 +399,7 @@ func TestBackupRestore_CLI_DisasterRecovery_Encrypted(t *testing.T) {
 
 	// --- backup create, encrypted ---------------------------------------
 	out, err := runQRDB(t, cli, node.connArgs, "--output", "json", "backup", "create",
-		"--destination", "/backups/dr-encrypted", "--encryption-key-file", keyPath)
+		"--destination", "/backups/dr-encrypted", "--encryption-key-file", keyName)
 	if err != nil {
 		t.Fatalf("backup create (encrypted): %v\noutput: %s", err, out)
 	}
