@@ -369,6 +369,39 @@ func TestSoftwareProvider_KeyFileNeverCachedAcrossCalls(t *testing.T) {
 	}
 }
 
+// TestSoftwareProvider_WrapUnwrapAfterCloseRefused proves a Wrap/Unwrap
+// call reaching an already-Closed provider gets a typed
+// *ProviderClosedError, not a silent reopen and not the generic
+// *KeyAccessError every unrelated key-lookup failure folds into -- the
+// lifecycle mistake (something called Wrap/Unwrap after the owner's own
+// Close) reports as itself (go-qrdb security review,
+// backup-encrypt-default round 4).
+func TestSoftwareProvider_WrapUnwrapAfterCloseRefused(t *testing.T) {
+	p, dir := newTestProvider(t)
+	keyName := writeKeyFile(t, dir, "k", 32, 0x70)
+	dek := []byte("0123456789abcdef0123456789abcdef")[:32]
+
+	wrapped, err := p.Wrap(context.Background(), keyName, dek)
+	if err != nil {
+		t.Fatalf("Wrap before Close: %v", err)
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = p.Wrap(context.Background(), keyName, dek)
+	var closedErr *ProviderClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("Wrap after Close: err = %T, want *ProviderClosedError: %v", err, err)
+	}
+
+	_, err = p.Unwrap(context.Background(), keyName, wrapped)
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("Unwrap after Close: err = %T, want *ProviderClosedError: %v", err, err)
+	}
+}
+
 // TestSoftwareProvider_RotationNewVersionIsANewRefAndOldStillWorks proves
 // the documented rotation discipline: a new key version is a NEW file and
 // a new ref, never an in-place overwrite of the old one, and a wrapped

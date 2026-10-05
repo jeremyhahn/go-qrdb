@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -95,8 +96,9 @@ var newGCM = func(key []byte) (cipher.AEAD, error) {
 // own in-memory copy (secure.Wipe) before returning -- the key is never
 // cached across calls.
 type SoftwareProvider struct {
-	root *os.Root
-	dir  string // server-log detail only; never returned to a caller
+	root   *os.Root
+	dir    string // server-log detail only; never returned to a caller
+	closed atomic.Bool
 }
 
 // Compile-time interface check.
@@ -127,6 +129,7 @@ func (p *SoftwareProvider) ProviderID() string {
 // per call) should call this once, during its own shutdown, so the
 // directory handle does not outlive the provider holding it.
 func (p *SoftwareProvider) Close() error {
+	p.closed.Store(true)
 	return p.root.Close()
 }
 
@@ -174,6 +177,18 @@ func (p *SoftwareProvider) Unwrap(ctx context.Context, keyRef string, wrapped []
 // cipher.AEAD over it, along with the raw key bytes so the caller can wipe
 // them once done. The returned AEAD does not retain a reference to key.
 func (p *SoftwareProvider) gcm(keyRef string) (cipher.AEAD, []byte, error) {
+	// A Wrap/Unwrap call reaching an already-Closed provider is a
+	// lifecycle error in the CALLER (something held this instance past
+	// its owner's Close), not a key-reference problem -- returning a
+	// typed *ProviderClosedError here means that caller's log line says
+	// so, rather than this falling through to readKeyFile, failing on
+	// the now-closed *os.Root with an OS-level error, and getting folded
+	// into the same detail-free *KeyAccessError every unrelated key
+	// lookup failure already uses (go-qrdb security review,
+	// backup-encrypt-default round 4).
+	if p.closed.Load() {
+		return nil, nil, &ProviderClosedError{ProviderID: SoftwareProviderID}
+	}
 	key, err := p.readKeyFile(keyRef)
 	if err != nil {
 		return nil, nil, err
@@ -220,15 +235,30 @@ func (p *SoftwareProvider) readKeyFile(keyRef string) ([]byte, error) {
 		return nil, &KeyAccessError{}
 	}
 
-	// Stat BEFORE Open, via the Root (so this still follows a symlink the
-	// same way the opened file's own Stat would, and still stays
-	// confined to the root): os.Open on a FIFO blocks until some other
-	// process opens the write end, so a key reference naming a named
-	// pipe planted inside the confined key directory would otherwise
-	// hang this call -- and every caller waiting on it -- indefinitely.
-	// Refusing a non-regular file here means Open is never even
-	// attempted against one.
-	info, err := p.root.Stat(keyRef)
+	// Open with O_NONBLOCK, via the Root, rather than Stat-then-Open: a
+	// Stat followed by a separate Open is a TOCTOU window (the name
+	// could be replaced by a FIFO between the two calls), and plain
+	// os.Open on a FIFO blocks until some other process opens the write
+	// end -- a key reference naming a named pipe planted inside the
+	// confined key directory would otherwise hang this call, and every
+	// caller waiting on it, indefinitely. O_NONBLOCK makes the open
+	// itself return immediately regardless of a FIFO's writer (POSIX);
+	// it is a no-op on a regular file, so the only change on the
+	// common path is removing the earlier, separate Stat call.
+	f, err := p.root.OpenFile(keyRef, os.O_RDONLY|openNonBlockFlag, 0)
+	if err != nil {
+		slog.Error("keywrap: key file open failed",
+			"dir", p.dir, "key_ref", keyRef, "error", err)
+		return nil, &KeyAccessError{}
+	}
+	defer func() { _ = f.Close() }()
+
+	// Fstat the OPENED file descriptor -- not a pre-open Stat of the
+	// name, which names, and therefore confirms, nothing about what
+	// Open actually returned: this is the authoritative check against
+	// the exact object bytes are about to be read from, with no window
+	// for it to be swapped out from under the check.
+	info, err := f.Stat()
 	if err != nil {
 		slog.Error("keywrap: key file stat failed",
 			"dir", p.dir, "key_ref", keyRef, "error", err)
@@ -239,14 +269,6 @@ func (p *SoftwareProvider) readKeyFile(keyRef string) ([]byte, error) {
 			"dir", p.dir, "key_ref", keyRef, "mode", info.Mode().String())
 		return nil, &KeyAccessError{}
 	}
-
-	f, err := p.root.Open(keyRef)
-	if err != nil {
-		slog.Error("keywrap: key file open failed",
-			"dir", p.dir, "key_ref", keyRef, "error", err)
-		return nil, &KeyAccessError{}
-	}
-	defer func() { _ = f.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(f, softwareKeyReadLimit))
 	if err != nil {

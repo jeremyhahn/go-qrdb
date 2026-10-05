@@ -138,6 +138,23 @@ func (e *UnwrapFailedError) Error() string {
 	return "keywrap: unwrap failed: wrong key-encrypting key, or the wrapped data was tampered with"
 }
 
+// ProviderClosedError is returned by Wrap/Unwrap when called on a
+// Provider instance after its own Close has already run -- a lifecycle
+// error in the caller (something held the instance past its owner's
+// Close), never a key-reference problem. It exists so that mistake
+// reports as itself rather than falling through to whatever OS-level
+// failure a closed resource happens to produce and getting folded into
+// the generic, detail-free *KeyAccessError every unrelated key-lookup
+// failure uses.
+type ProviderClosedError struct {
+	ProviderID string
+}
+
+// Error returns a human-readable description.
+func (e *ProviderClosedError) Error() string {
+	return "keywrap: provider " + e.ProviderID + " already closed"
+}
+
 // joinStrings renders a slice of strings as a comma-separated list,
 // mirroring seal.joinNames.
 func joinStrings(ss []string) string {
