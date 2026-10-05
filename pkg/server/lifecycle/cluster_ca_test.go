@@ -134,6 +134,9 @@ func TestEstablishClusterCA_WrapsFailure(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Errorf("EstablishClusterCA error does not unwrap to the underlying cause: %v", err)
 	}
+	if !strings.Contains(estErr.Error(), boom.Error()) {
+		t.Errorf("Error() = %q, want it to contain %q", estErr.Error(), boom.Error())
+	}
 }
 
 // TestAwaitClusterCACertificate_DeadlineExceeded proves a deadline that has

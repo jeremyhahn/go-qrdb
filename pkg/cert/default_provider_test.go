@@ -1368,6 +1368,14 @@ type partialErrorKVStore struct {
 	getCount            int
 	failGetN            int // fail the Nth Get call (1-based)
 	failPutAllUnchanged bool
+	failDelete          bool
+}
+
+func (p *partialErrorKVStore) Delete(ctx context.Context, key string) error {
+	if p.failDelete {
+		return errors.New("injected delete error")
+	}
+	return p.mockKVStore.Delete(ctx, key)
 }
 
 func (p *partialErrorKVStore) Put(ctx context.Context, key string, value []byte) error {
@@ -1457,6 +1465,35 @@ func TestDefaultCertProvider_RevokeCert_ScanError(t *testing.T) {
 	_, err = p.RevokeCert(ctx, bundle.Serial)
 	if err == nil {
 		t.Fatal("expected error when scan fails")
+	}
+	var se *StoreError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *StoreError, got %T: %v", err, err)
+	}
+}
+
+// TestDefaultCertProvider_RevokeCert_RecordPutError covers the SECOND Put
+// (the found record's own Revoked=true update) failing after the FIRST Put
+// (the revocation marker) has already succeeded -- the marker is durable
+// and the caller must still see this as a failure, since the record itself
+// never got updated.
+func TestDefaultCertProvider_RevokeCert_RecordPutError(t *testing.T) {
+	p, kv, _ := initializeProvider(t)
+	ctx := context.Background()
+
+	req := &GenerateRequest{Username: "revoke-record-put-err-user", TenantID: "system"}
+	bundle, err := p.GenerateClientCert(ctx, req)
+	if err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+
+	// Fail only the SECOND Put RevokeCert makes: the first (the revocation
+	// marker) must already have succeeded by the time this one is reached.
+	p.kvStore = &partialErrorKVStore{mockKVStore: kv, failPutN: 2}
+
+	_, err = p.RevokeCert(ctx, bundle.Serial)
+	if err == nil {
+		t.Fatal("expected error when the record update Put fails")
 	}
 	var se *StoreError
 	if !errors.As(err, &se) {

@@ -57,6 +57,37 @@ func TestNewSealStorePINBackend_PersistsAcrossRestarts(t *testing.T) {
 	}
 }
 
+// TestNewSealStorePINBackend_RollbackDeletesThePersistedRecord proves the
+// seal-store-backed PIN backend's RollbackProvision reaches all the way
+// down to sealPINStore.Delete: the persisted record is gone from the
+// node-local seal store itself, not merely un-set in memory, so a fresh
+// backend over the same store does not reload it.
+func TestNewSealStorePINBackend_RollbackDeletesThePersistedRecord(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	b, err := lifecycle.NewSealStorePINBackend(store)
+	if err != nil {
+		t.Fatalf("NewSealStorePINBackend: %v", err)
+	}
+	if err := pin.Provision(context.Background(), b, "so-pin-1234", "user-pin-1234"); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	rb, ok := b.(pin.ProvisionRollback)
+	if !ok {
+		t.Fatal("the seal-store-backed PIN backend must implement pin.ProvisionRollback")
+	}
+	if err := rb.RollbackProvision(); err != nil {
+		t.Fatalf("RollbackProvision: %v", err)
+	}
+
+	restarted, err := lifecycle.NewSealStorePINBackend(store)
+	if err != nil {
+		t.Fatalf("NewSealStorePINBackend (restart): %v", err)
+	}
+	if restarted.SOPINSet() {
+		t.Fatal("a restarted backend must not reload a rolled-back PIN: the persisted record was not actually deleted")
+	}
+}
+
 // TestNewSealStorePINBackend_NilStore pins the typed refusal.
 func TestNewSealStorePINBackend_NilStore(t *testing.T) {
 	_, err := lifecycle.NewSealStorePINBackend(nil)

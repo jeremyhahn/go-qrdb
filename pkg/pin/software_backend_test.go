@@ -618,6 +618,100 @@ func TestZeroBytes_Empty(t *testing.T) {
 // FIDO2 hash cache rotation
 // =============================================================================
 
+// =============================================================================
+// RollbackProvision
+// =============================================================================
+
+// TestSoftwareBackend_RollbackProvision_ClearsInMemoryAndPersistedState
+// proves RollbackProvision un-sets both PINs' in-memory flags AND deletes
+// their persisted records, so a fresh backend over the same store (a
+// restart) does not reload the aborted PINs.
+func TestSoftwareBackend_RollbackProvision_ClearsInMemoryAndPersistedState(t *testing.T) {
+	b, store := newTestBackend(t)
+	if err := b.SetSOPIN("", "so-pin-1"); err != nil {
+		t.Fatalf("SetSOPIN: %v", err)
+	}
+	if err := b.SetUserPIN("so-pin-1", "user-pin-1"); err != nil {
+		t.Fatalf("SetUserPIN: %v", err)
+	}
+	if !b.SOPINSet() || !b.UserPINSet() {
+		t.Fatal("both PINs must be set before rollback")
+	}
+	if !store.has(soPINStorageKey) || !store.has(userPINStorageKey) {
+		t.Fatal("both PIN records must be persisted before rollback")
+	}
+
+	if err := b.RollbackProvision(); err != nil {
+		t.Fatalf("RollbackProvision: %v", err)
+	}
+	if b.SOPINSet() || b.UserPINSet() {
+		t.Fatal("RollbackProvision must clear both in-memory flags")
+	}
+	if store.has(soPINStorageKey) || store.has(userPINStorageKey) {
+		t.Fatal("RollbackProvision must delete both persisted records")
+	}
+
+	// A fresh backend over the SAME store must not reload the aborted PINs.
+	restarted, err := NewSoftwareBackend(store, fastHashConfig())
+	if err != nil {
+		t.Fatalf("NewSoftwareBackend: %v", err)
+	}
+	if restarted.SOPINSet() || restarted.UserPINSet() {
+		t.Fatal("a restarted backend must not reload a rolled-back PIN")
+	}
+}
+
+// TestSoftwareBackend_RollbackProvision_NilStoreIsANoop covers the backend
+// built with no Storage at all (in-memory only): RollbackProvision must
+// still clear in-memory state and return nil, never panic on a nil store.
+func TestSoftwareBackend_RollbackProvision_NilStoreIsANoop(t *testing.T) {
+	b, err := NewSoftwareBackend(nil, fastHashConfig())
+	if err != nil {
+		t.Fatalf("NewSoftwareBackend: %v", err)
+	}
+	if err := b.SetSOPIN("", "so-pin-1"); err != nil {
+		t.Fatalf("SetSOPIN: %v", err)
+	}
+	if err := b.RollbackProvision(); err != nil {
+		t.Fatalf("RollbackProvision with no store: %v", err)
+	}
+	if b.SOPINSet() {
+		t.Fatal("RollbackProvision must clear the in-memory flag even with no store")
+	}
+}
+
+// TestSoftwareBackend_RollbackProvision_JoinsBothDeleteErrors proves both
+// deletes are attempted regardless of the first one's outcome, and both
+// failures are joined into the returned error -- while the in-memory state
+// is still cleared either way.
+func TestSoftwareBackend_RollbackProvision_JoinsBothDeleteErrors(t *testing.T) {
+	store := newFaultyStore()
+	b, err := NewSoftwareBackend(store, fastHashConfig())
+	if err != nil {
+		t.Fatalf("NewSoftwareBackend: %v", err)
+	}
+	if err := b.SetSOPIN("", "so-pin-1"); err != nil {
+		t.Fatalf("SetSOPIN: %v", err)
+	}
+	if err := b.SetUserPIN("so-pin-1", "user-pin-1"); err != nil {
+		t.Fatalf("SetUserPIN: %v", err)
+	}
+
+	wantErr := errors.New("faulty store: delete failed")
+	store.delErr = wantErr
+
+	err = b.RollbackProvision()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("RollbackProvision error = %v, want it to wrap %v", err, wantErr)
+	}
+	if store.delCalls != 2 {
+		t.Fatalf("delCalls = %d, want 2 (both keys attempted regardless of the first's failure)", store.delCalls)
+	}
+	if b.SOPINSet() || b.UserPINSet() {
+		t.Fatal("in-memory state must still be cleared even when the persisted delete fails")
+	}
+}
+
 func TestCacheFIDO2Hash_OverwritesPrevious(t *testing.T) {
 	b, _ := newTestBackend(t)
 	_ = b.SetSOPIN("", "so-pin-1")

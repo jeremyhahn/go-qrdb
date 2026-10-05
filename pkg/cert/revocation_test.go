@@ -325,3 +325,34 @@ func TestRevokeCert_ReapsExpiredMarkers(t *testing.T) {
 		t.Fatal("the marker just written was reaped")
 	}
 }
+
+// TestRevokeCert_ReapFailureIsWarnedNotReturned proves a failure reaping
+// expired markers never turns a completed revocation into a reported
+// failure: the new marker this call just wrote is already durable by the
+// time the best-effort reap runs, so RevokeCert must still succeed even
+// though an expired marker could not be cleaned up.
+func TestRevokeCert_ReapFailureIsWarnedNotReturned(t *testing.T) {
+	p, kv, _ := initializeProvider(t)
+	ctx := context.Background()
+
+	putEntry(t, kv, "stale", time.Now().UTC().Add(-time.Hour))
+
+	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "bob", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+
+	p.kvStore = &partialErrorKVStore{mockKVStore: kv, failDelete: true}
+
+	result, err := p.RevokeCert(ctx, bundle.Serial)
+	if err != nil {
+		t.Fatalf("RevokeCert must succeed even when the best-effort reap fails: %v", err)
+	}
+	if result.Serial != bundle.Serial {
+		t.Fatalf("result.Serial = %q, want %q", result.Serial, bundle.Serial)
+	}
+	// The expired marker the failing reap could not delete is still there.
+	if _, ok := kv.data[prefixCertsRevoked+"stale"]; !ok {
+		t.Fatal("expired marker should still be present: the injected delete failure must have left it")
+	}
+}

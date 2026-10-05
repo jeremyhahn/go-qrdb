@@ -69,6 +69,16 @@ func requireLocked(t *testing.T, err error, retry time.Duration) {
 	}
 }
 
+// TestSOPINLockedError_Error pins the message's wording and that
+// RetryAfter is formatted into it.
+func TestSOPINLockedError_Error(t *testing.T) {
+	err := &SOPINLockedError{RetryAfter: 30 * time.Second}
+	want := "pin: SO PIN locked after repeated failures; retry after 30s"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
 // TestLockoutBackend_BackoffDoublesAndResets walks the lockout on a fake
 // clock: free failures cost nothing; each failure after them locks the SO PIN
 // for a backoff that doubles; a locked check is refused without comparing,
@@ -217,6 +227,32 @@ func TestLockoutBackend_FIDO2Delegates(t *testing.T) {
 	plain := NewLockoutBackend(&nativeLockoutBackend{PINBackend: newProvisionBackend(t)}).(*lockoutBackend)
 	if plain.VerifyFIDO2Hash(ComputeFIDO2PINHash("user-pin-1234")) {
 		t.Fatal("a backend with no FIDO2 verifier must answer false")
+	}
+}
+
+// TestLockoutBackend_RollbackProvisionDelegates proves the lockout
+// decoration's RollbackProvision delegates to the decorated backend's own
+// ProvisionRollback when it has one, and answers nil (nothing to undo) when
+// it does not -- the lockout decoration itself carries no provisioned-PIN
+// state of its own to revert.
+func TestLockoutBackend_RollbackProvisionDelegates(t *testing.T) {
+	b, inner, _ := newLockoutFixture(t)
+	if err := inner.SetUserPIN(lockoutSOPIN, "user-pin-1234"); err != nil {
+		t.Fatal(err)
+	}
+	if !inner.SOPINSet() || !inner.UserPINSet() {
+		t.Fatal("both PINs must be set before rollback")
+	}
+	if err := b.RollbackProvision(); err != nil {
+		t.Fatalf("RollbackProvision: %v", err)
+	}
+	if inner.SOPINSet() || inner.UserPINSet() {
+		t.Fatal("RollbackProvision must have delegated to the decorated SoftwareBackend's own ProvisionRollback")
+	}
+
+	plain := NewLockoutBackend(&nativeLockoutBackend{PINBackend: newProvisionBackend(t)}).(*lockoutBackend)
+	if err := plain.RollbackProvision(); err != nil {
+		t.Fatalf("RollbackProvision over a backend with no ProvisionRollback capability = %v, want nil", err)
 	}
 }
 
