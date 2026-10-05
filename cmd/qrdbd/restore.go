@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/backupsink"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
@@ -72,7 +73,7 @@ import (
 //  5. Start the shard again, now recovering the imported (or, in the
 //     idempotent-skip case, already-restored) state, and hand control back to
 //     the normal boot sequence.
-func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.Host, createFn sm.CreateFunc, shardCfg quicraftconfig.Config) error {
+func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.Host, createFn sm.CreateFunc, shardCfg quicraftconfig.Config, complianceAudit audit.AuditLogger, auditPolicy audit.FailurePolicy) error {
 	if f.backupDir == "" {
 		return &RestoreBackupSourceRequiredError{}
 	}
@@ -85,9 +86,18 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 
 	sink := backupsink.New(backupStore)
 	provider := service.NewHostShardSnapshotProvider(newHostAdapter(host))
+	// The compliance audit trail is already open by the time boot reaches
+	// here (start.go opens it before the seal subsystem); threading it
+	// and this node's audit failure posture through means a plaintext
+	// restore on THIS path is recorded exactly like the live daemon's own
+	// RestoreBackup/DecryptBackupShard calls, instead of silently having
+	// no audit logger at all (go-qrdb security review,
+	// backup-encrypt-default #B5).
 	backupOpts := []service.BackupServiceOption{
 		service.WithBackupSink(sink),
 		service.WithKeyDir(f.backupKeyDir),
+		service.WithAuditLogger(complianceAudit),
+		service.WithAuditFailurePolicy(auditPolicy),
 	}
 	// Shared with this daemon's live BuildServices call (start.go) so an
 	// embedder's injected key-wrap provider is honored on the offline
@@ -110,6 +120,11 @@ func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.H
 	if !ok {
 		return &RestoreBackupError{Phase: "open-backup-store", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: &RestoreBackupServiceTypeError{}}
 	}
+	// This one-shot service is discarded once this function returns;
+	// release its cached "software" key-wrap provider's *os.Root (if the
+	// default registry ever resolved one) rather than leaking it for the
+	// remaining life of this boot.
+	defer func() { _ = bs.Close() }()
 
 	slog.Info("offline restore: verifying backup", "backup_id", f.restoreBackupID, "shard_id", shardCfg.ShardID)
 	verifyResult, err := backupSvc.VerifyBackup(ctx, f.restoreBackupID)

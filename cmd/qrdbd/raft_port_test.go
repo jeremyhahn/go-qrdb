@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 )
 
@@ -52,7 +53,7 @@ func TestInitializeNode_RaftPortZeroRefused(t *testing.T) {
 				host:            testBindHost,
 			}
 			tc.mutate(f)
-			_, err := initializeNode(context.Background(), f, nil)
+			_, err := initializeNode(context.Background(), f, nil, nil, audit.FailClosed)
 			var zero *cluster.RaftPortZeroError
 			require.ErrorAs(t, err, &zero)
 			require.Equal(t, tc.field, zero.Field)

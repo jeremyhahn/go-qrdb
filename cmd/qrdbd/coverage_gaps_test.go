@@ -40,6 +40,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -711,7 +712,7 @@ func TestInitializeNode_MultiNodeMTLSConfig(t *testing.T) {
 		host:            testBindHost,
 	}
 
-	_, err = initializeNode(context.Background(), f, bundle)
+	_, err = initializeNode(context.Background(), f, bundle, nil, audit.FailClosed)
 	// Expected to fail at bootstrap (DNS discovery finds no peers)
 	// but the mTLS config branch (lines 619-625) is exercised.
 	require.Error(t, err)
@@ -746,7 +747,7 @@ func TestInitializeNode_MultiNodeNilBundle(t *testing.T) {
 
 	// nil bundle means no mTLS config, but multi-node. Host creation
 	// may succeed but shard start could fail.
-	_, err = initializeNode(context.Background(), f, nil)
+	_, err = initializeNode(context.Background(), f, nil, nil, audit.FailClosed)
 	// We don't assert the specific error type since it depends on
 	// transport availability, just that it completes without panic.
 	_ = err

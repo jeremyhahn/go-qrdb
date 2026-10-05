@@ -1594,7 +1594,7 @@ func runStart(f *startFlags) (err error) {
 				slog.Info("standalone mode: raft-free data plane composed",
 					slog.String("backend", string(localBackend)))
 			} else {
-				h, err := initializeNode(sigCtx, f, bundle)
+				h, err := initializeNode(sigCtx, f, bundle, complianceAudit, auditPolicy)
 				if err != nil {
 					return err
 				}
@@ -3010,7 +3010,7 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 // host, and starts the shard. Returns the running host or an error.
 // The bundle is used to configure mTLS on the QUIC transport for
 // multi-node clusters (nil for single-node which uses WithoutTransport).
-func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*quicraft.Host, error) {
+func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, complianceAudit audit.AuditLogger, auditPolicy audit.FailurePolicy) (*quicraft.Host, error) {
 	slog.Info("starting qrdbd node",
 		"listen", f.listen,
 		"raft_address", f.raftAddress,
@@ -3148,7 +3148,7 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	// bootstraps the shard, stops it, imports the backup artifact, and
 	// starts it again from the recovered state. See restore.go.
 	if f.restoreBackupID != "" {
-		if err := restoreShardFromBackup(ctx, f, host, createFn, shardCfg); err != nil {
+		if err := restoreShardFromBackup(ctx, f, host, createFn, shardCfg, complianceAudit, auditPolicy); err != nil {
 			_ = host.Close()
 			return nil, err
 		}

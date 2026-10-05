@@ -1813,7 +1813,7 @@ func TestInitializeNode_PeerParseError(t *testing.T) {
 		host:            testBindHost,
 	}
 
-	_, err = initializeNode(context.Background(), f, bundle)
+	_, err = initializeNode(context.Background(), f, bundle, nil, audit.FailClosed)
 	require.Error(t, err)
 	var peerErr *PeerParseError
 	require.True(t, errors.As(err, &peerErr))
@@ -1839,7 +1839,7 @@ func TestInitializeNode_UnknownSMType(t *testing.T) {
 		host:            testBindHost,
 	}
 
-	_, err := initializeNode(context.Background(), f, nil)
+	_, err := initializeNode(context.Background(), f, nil, nil, audit.FailClosed)
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))

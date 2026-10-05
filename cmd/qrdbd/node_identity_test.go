@@ -27,6 +27,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 )
 
@@ -114,7 +115,7 @@ func TestInitializeNode_MemberIdentitiesFormTheShard(t *testing.T) {
 	require.NoError(t, err)
 	f := multiNodeIdentityFlags(t, []string{"2=" + peerTwoIdentity})
 
-	host, err := initializeNode(context.Background(), f, bundle)
+	host, err := initializeNode(context.Background(), f, bundle, nil, audit.FailClosed)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = host.Close() })
 
@@ -131,7 +132,7 @@ func TestInitializeNode_MissingPeerIdentityRefused(t *testing.T) {
 	require.NoError(t, err)
 	f := multiNodeIdentityFlags(t, nil)
 
-	host, err := initializeNode(context.Background(), f, bundle)
+	host, err := initializeNode(context.Background(), f, bundle, nil, audit.FailClosed)
 	if err == nil {
 		_ = host.Close()
 	}
@@ -147,7 +148,7 @@ func TestInitializeNode_BadMemberIdentityRefusedBeforeHost(t *testing.T) {
 
 	t.Run("malformed", func(t *testing.T) {
 		f := multiNodeIdentityFlags(t, []string{"2=not-an-identity"})
-		_, err := initializeNode(context.Background(), f, bundle)
+		_, err := initializeNode(context.Background(), f, bundle, nil, audit.FailClosed)
 		var formatErr *cluster.MemberIdentityFormatError
 		require.ErrorAs(t, err, &formatErr)
 		_, statErr := os.Stat(filepath.Join(f.dataDir, "wal"))
@@ -155,7 +156,7 @@ func TestInitializeNode_BadMemberIdentityRefusedBeforeHost(t *testing.T) {
 	})
 	t.Run("contradicts the certificate", func(t *testing.T) {
 		f := multiNodeIdentityFlags(t, []string{"1=" + peerTwoIdentity, "2=" + peerTwoIdentity})
-		_, err := initializeNode(context.Background(), f, bundle)
+		_, err := initializeNode(context.Background(), f, bundle, nil, audit.FailClosed)
 		var mismatch *cluster.MemberIdentityMismatchError
 		require.ErrorAs(t, err, &mismatch)
 	})

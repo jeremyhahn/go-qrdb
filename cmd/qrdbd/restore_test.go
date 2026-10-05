@@ -24,6 +24,7 @@ import (
 
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/backupsink"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
@@ -36,7 +37,7 @@ import (
 func TestRestoreShardFromBackup_RequiresBackupDir(t *testing.T) {
 	f := &startFlags{restoreBackupID: "some-backup-id"}
 
-	err := restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{})
+	err := restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{}, nil, audit.FailClosed)
 	if err == nil {
 		t.Fatal("restoreShardFromBackup: expected an error when --backup-dir is unset, got nil")
 	}
@@ -57,7 +58,7 @@ func TestRestoreShardFromBackup_MissingBackupFailsVerify(t *testing.T) {
 		restoreBackupID: "does-not-exist",
 	}
 
-	err := restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: 1})
+	err := restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: 1}, nil, audit.FailClosed)
 	if err == nil {
 		t.Fatal("restoreShardFromBackup: expected an error for an unknown backup ID, got nil")
 	}
@@ -170,7 +171,7 @@ func TestRestoreShardFromBackup_DecryptFailureIsNotMisreportedAsShardMissing(t *
 		backupKeyDir:    keyDir,
 	}
 
-	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID})
+	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID}, nil, audit.FailClosed)
 	if err == nil {
 		t.Fatal("restoreShardFromBackup: expected an error, got nil")
 	}
@@ -186,6 +187,79 @@ func TestRestoreShardFromBackup_DecryptFailureIsNotMisreportedAsShardMissing(t *
 	}
 	if restoreErr.Phase != "decrypt" {
 		t.Fatalf("restoreShardFromBackup: Phase = %q, want %q", restoreErr.Phase, "decrypt")
+	}
+}
+
+// TestRestoreShardFromBackup_PlaintextRestoreAudited proves the offline,
+// boot-time disaster-recovery restore path (restoreShardFromBackup) wires
+// the compliance audit trail into the BackupService it builds, so a
+// plaintext ("none") backup's restore is recorded through
+// DecryptBackupShard's own gate+settle audit exactly like the live
+// daemon's RestoreBackup/DecryptBackupShard calls are.
+//
+// Before this fix, restoreShardFromBackup built its BackupService with
+// WithBackupSink/WithKeyDir and the key-wrap injection options but never
+// WithAuditLogger/WithAuditFailurePolicy, although start.go already has
+// the compliance trail open at this point in boot (it opens before the
+// seal subsystem, and restoreShardFromBackup runs inside initializeNode,
+// called after that) -- so a plaintext offline restore left NO audit
+// record at all, unlike every other path into DecryptBackupShard.
+func TestRestoreShardFromBackup_PlaintextRestoreAudited(t *testing.T) {
+	backupDir := t.TempDir()
+	backupStore, err := file.New(backupDir)
+	if err != nil {
+		t.Fatalf("file.New: %v", err)
+	}
+	defer func() { _ = backupStore.Close() }()
+
+	sink := backupsink.New(backupStore)
+	const shardID = uint64(1)
+	provider := &fixtureSnapshotProvider{shardID: shardID, data: []byte("plaintext-shard")}
+	seedSvc, err := service.NewBackupService(provider,
+		service.WithBackupSink(sink),
+		service.WithIDGenerator(func() string { return "fixture-backup" }),
+	)
+	if err != nil {
+		t.Fatalf("NewBackupService: %v", err)
+	}
+	if _, err := seedSvc.CreateBackup(context.Background(), service.BackupOptions{
+		Destination: "test-fixture-plaintext",
+		Encryption:  service.EncryptionNone,
+		ShardIDs:    []uint64{shardID},
+	}); err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	ring := audit.NewRingBuffer(0)
+	f := &startFlags{
+		backupDir:       backupDir,
+		restoreBackupID: "fixture-backup",
+	}
+
+	// restoreShardFromBackup itself fails at the bootstrap phase (a nil
+	// host), but DecryptBackupShard -- and its audit gate+settle -- runs
+	// strictly BEFORE that, so the trail already carries both records by
+	// the time this returns.
+	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID}, ring, audit.FailClosed)
+	if err == nil {
+		t.Fatal("restoreShardFromBackup: expected an error from the nil host at the bootstrap phase, got nil")
+	}
+	var restoreErr *RestoreBackupError
+	if !errors.As(err, &restoreErr) {
+		t.Fatalf("restoreShardFromBackup: err = %v (%T), want *RestoreBackupError", err, err)
+	}
+	if restoreErr.Phase == "decrypt" {
+		t.Fatalf("restoreShardFromBackup failed at the decrypt phase (%v): expected it to get past DecryptBackupShard", restoreErr.Err)
+	}
+
+	var restoreEvents int
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == "backup.restore" {
+			restoreEvents++
+		}
+	}
+	if restoreEvents != 2 {
+		t.Fatalf("got %d backup.restore audit events on the offline restore path, want exactly 2 (gate + settle)", restoreEvents)
 	}
 }
 
@@ -274,7 +348,7 @@ func TestRestoreShardFromBackup_UsesInjectedKeyWrapProvider(t *testing.T) {
 	// decrypt successfully to the bootstrap phase (where the nil host
 	// finally surfaces), rather than failing at "decrypt" -- which is
 	// exactly what happens if the fake provider is NOT resolved.
-	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID})
+	err = restoreShardFromBackup(context.Background(), f, nil, nil, quicraftconfig.Config{ShardID: shardID}, nil, audit.FailClosed)
 	if err == nil {
 		t.Fatal("restoreShardFromBackup: expected an error from the nil host at the bootstrap phase, got nil")
 	}
