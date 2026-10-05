@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -56,6 +57,57 @@ func TestCallerPrincipal_Classification(t *testing.T) {
 		if got := CallerPrincipal(ctx); got != "" { //nolint:staticcheck // SA1012: a nil context is one of the cases under test
 			t.Errorf("%s: principal = %q, want anonymous", name, got)
 		}
+	}
+}
+
+// TestCallerPrincipal_AddrKeysByHostOnly is the go-qrdb#560 re-review item
+// 2 regression test: an "addr:" principal must be the SAME principal
+// across different ephemeral source ports on the same host (a rotating
+// client port, or a new connection per request behind a pooling reverse
+// proxy), and the same IPv4/IPv6 host written in different but equivalent
+// forms (with/without a port, bracketed IPv6, a zone id, leading zeros in
+// a group) must collapse to the one principal too -- a different host
+// must still be a different principal.
+func TestCallerPrincipal_AddrKeysByHostOnly(t *testing.T) {
+	principalFor := func(addr string) string {
+		return CallerPrincipal(WithRemoteAddr(context.Background(), addr))
+	}
+	rotatingPorts := []string{"203.0.113.9:1234", "203.0.113.9:5555", "203.0.113.9:65000"}
+	first := principalFor(rotatingPorts[0])
+	if first == "" || first[:5] != "addr:" {
+		t.Fatalf("principal = %q, want an addr: principal", first)
+	}
+	for _, addr := range rotatingPorts[1:] {
+		if got := principalFor(addr); got != first {
+			t.Fatalf("principal for %q = %q, want %q (same host, different port)", addr, got, first)
+		}
+	}
+	equivalentIPv6 := []string{
+		"[2001:db8::1]:443",
+		"[2001:0db8:0000:0000:0000:0000:0000:0001]:9",
+		"2001:db8::1",
+	}
+	v6first := principalFor(equivalentIPv6[0])
+	for _, addr := range equivalentIPv6[1:] {
+		if got := principalFor(addr); got != v6first {
+			t.Fatalf("principal for %q = %q, want %q (same IPv6 host, different form)", addr, got, v6first)
+		}
+	}
+	if v6first == first {
+		t.Fatalf("the IPv4 and IPv6 principals collided: %q", v6first)
+	}
+	zoned := principalFor("[fe80::1%eth0]:443")
+	if zoned == "" || zoned == first || zoned == v6first {
+		t.Fatalf("zoned IPv6 principal = %q, want its own distinct, non-empty principal", zoned)
+	}
+	if got := principalFor("203.0.113.10:1234"); got == first {
+		t.Fatalf("a genuinely different host got the same principal as %q: %q", first, got)
+	}
+	// A hostname a reverse proxy might log instead of an IP is stripped of
+	// its port and otherwise passed through unchanged -- stripping only
+	// ever removes a port, never invents a host.
+	if got := principalFor("proxy.example.com:8080"); got != "addr:proxy.example.com" {
+		t.Fatalf("hostname principal = %q, want %q", got, "addr:proxy.example.com")
 	}
 }
 
@@ -196,6 +248,49 @@ func TestSOPINLockout_AggregateCapsManyPrincipals(t *testing.T) {
 	if err := f.l.Check(context.Background(), "node", "id:system/officer", f.right, f.isWrong); err != nil {
 		t.Fatalf("after the window = %v, want admitted", err)
 	}
+}
+
+// TestSOPINLockout_AddrPrincipalsExcludedFromAggregateCap is the
+// go-qrdb#560 re-review item 2 regression test: unlike an authenticated
+// principal, an "addr:" principal's failures never engage the aggregate
+// cap, so enough distinct unauthenticated hosts guessing together can
+// neither lock out a DIFFERENT host nor an authenticated officer -- "one
+// host locked out a different host AND an authenticated officer" is
+// exactly the re-review's finding this closes. Each host still locks
+// itself out on its own backoff; that part is unchanged.
+func TestSOPINLockout_AddrPrincipalsExcludedFromAggregateCap(t *testing.T) {
+	f := newLockoutFixture()
+	for i := 0; i < SOPINAggregateFailures; i++ {
+		host := CallerPrincipal(WithRemoteAddr(context.Background(), addrForTest(i)))
+		if err := f.l.Check(context.Background(), "node", host, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
+			t.Fatalf("failure %d by %s = %v, want the plain wrong-PIN error (not yet locked)", i, host, err)
+		}
+	}
+	// A host NOT among the ones above, guessing for the first time, must
+	// be admitted to the comparison (a wrong PIN, not a lockout) --
+	// proving the aggregate cap never engaged across all those addr:
+	// failures.
+	freshHost := CallerPrincipal(WithRemoteAddr(context.Background(), "198.51.100.1:1"))
+	if err := f.l.Check(context.Background(), "node", freshHost, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
+		t.Fatalf("a fresh, unrelated host = %v, want the plain wrong-PIN error, not an aggregate lockout", err)
+	}
+	// An authenticated officer, who never guessed at all, must be
+	// admitted too.
+	so := CallerPrincipal(WithIdentity(context.Background(), &Identity{Subject: "officer", TenantID: "system"}))
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
+		t.Fatalf("an authenticated officer after only addr: failures = %v, want admitted", err)
+	}
+	if _, until := f.l.Status("node", so); !until.IsZero() {
+		t.Fatalf("status reports the officer held by the aggregate cap after only addr: failures")
+	}
+}
+
+// addrForTest returns the i-th of a distinct run of IPv4 host:port strings
+// for TestSOPINLockout_AddrPrincipalsExcludedFromAggregateCap, each a
+// different host (so each gets its own counter) within one private test
+// range (TEST-NET-3, RFC 5737).
+func addrForTest(i int) string {
+	return fmt.Sprintf("203.0.113.%d:443", 1+i%254)
 }
 
 // TestSOPINLockout_PrincipalsBeyondTheCapShareOverflow: past

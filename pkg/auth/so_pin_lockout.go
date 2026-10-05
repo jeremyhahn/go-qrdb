@@ -19,7 +19,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net"
+	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -232,9 +235,33 @@ func CallerPrincipal(ctx context.Context) string {
 		return "cert:" + hex.EncodeToString(sum[:])
 	}
 	if addr, ok := RemoteAddrFromContext(ctx); ok {
-		return "addr:" + addr
+		return "addr:" + remoteHostOnly(addr)
 	}
 	return ""
+}
+
+// remoteHostOnly returns addr's host, with any port stripped, for
+// CallerPrincipal's "addr:" bucket. An ephemeral client port changes on
+// every new connection -- or, behind a pooling reverse proxy, on every
+// request -- so keying on host:port would hand a rotating-port caller a
+// FRESH counter each time: not "one source, one counter," the per-source
+// isolation the lockout exists to provide, but no counter at all (go-qrdb#560
+// re-review item 2). An IPv6 address is normalized through netip.ParseAddr
+// (which, unlike net.ParseIP, understands a zone id) so the same host is
+// one principal regardless of how it was written -- brackets, a zone,
+// leading zeros in a group. addr with no parseable port, or a host that is
+// not an IP at all (a hostname, as some reverse proxies log), is returned
+// as net.SplitHostPort left it: stripping only ever removes a port, never
+// invents a host.
+func remoteHostOnly(addr string) string {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.String()
+	}
+	return host
 }
 
 // soPINCounter counts one caller's failed SO PIN checks for a key.
@@ -528,7 +555,10 @@ func (k *soPINKeyState) principalCounter(principal string, create bool, now time
 func (l *SOPINLockout) Check(ctx context.Context, key, principal string, verify func() error, mismatch func(error) bool) error {
 	state := l.acquire(key)
 	defer l.release(key, state)
-	if principal != "" {
+	// An "addr:" principal never consults or joins the known-good set --
+	// see check's aggregateEligible -- so loading it here would only ever
+	// be a wasted store round-trip for one.
+	if principal != "" && !isAddrPrincipal(principal) {
 		l.loadKnownGood(ctx, key, state)
 	}
 	changed, err := l.check(state, key, principal, verify, mismatch)
@@ -555,10 +585,24 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 	now := l.now()
 	c := &state.anonymous
 	capped := false
+	// An "addr:" principal -- a caller with no identity or certificate at
+	// all, isolated only by remote host (go-qrdb#560 re-review item 2) --
+	// gets its OWN counter below, exactly like an authenticated principal,
+	// but never participates in the aggregate cap: that cap exists so a
+	// coordinated AUTHENTICATED attack cannot grind down a key's own
+	// backoff by spreading guesses across many identities, and extending
+	// it to anonymous sources would let any one anonymous source's
+	// failures count against, and its success clear, a cap an
+	// authenticated officer's failures engaged -- the opposite of "an
+	// authenticated principal must never be affected by anonymous
+	// failures."
+	aggregateEligible := principal != "" && !isAddrPrincipal(principal)
 	digest := knownGoodDigest(key, principal)
 	if principal != "" {
-		capped = !state.isKnownGood(digest)
 		c = state.principalCounter(principal, true, now)
+	}
+	if aggregateEligible {
+		capped = !state.isKnownGood(digest)
 		if wait, held := state.aggregate.locked(now); capped && held {
 			return false, &SOPINLockedError{RetryAfter: wait}
 		}
@@ -574,7 +618,7 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 				delete(state.principals, name)
 			}
 		}
-		if principal != "" {
+		if aggregateEligible {
 			state.aggregate = soPINAggregate{}
 			changed = state.addKnownGood(digest)
 		}
@@ -588,6 +632,19 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 		state.aggregate.fail(now)
 	}
 	return false, err
+}
+
+// addrPrincipalPrefix is CallerPrincipal's prefix for a caller isolated
+// only by remote host (go-qrdb#560 re-review item 2): no identity, no
+// certificate, just a per-source bucket among other such callers.
+const addrPrincipalPrefix = "addr:"
+
+// isAddrPrincipal reports whether principal is one of CallerPrincipal's
+// "addr:" buckets, as opposed to an authenticated identity ("id:"/
+// "holder:"), a verified certificate ("cert:"), or the single bare
+// anonymous counter ("").
+func isAddrPrincipal(principal string) bool {
+	return strings.HasPrefix(principal, addrPrincipalPrefix)
 }
 
 // Status reports key's counter for principal ("" is the anonymous caller):
@@ -606,10 +663,12 @@ func (l *SOPINLockout) Status(key, principal string) (failures int, lockedUntil 
 	defer state.mu.Unlock()
 	now := l.now()
 	c := &state.anonymous
-	if principal != "" {
+	if principal != "" && !isAddrPrincipal(principal) {
 		if wait, held := state.aggregate.locked(now); held && !state.isKnownGood(knownGoodDigest(key, principal)) {
 			lockedUntil = now.Add(wait)
 		}
+	}
+	if principal != "" {
 		if c = state.principalCounter(principal, false, now); c == nil {
 			return 0, lockedUntil
 		}
