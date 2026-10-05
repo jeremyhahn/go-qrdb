@@ -60,9 +60,16 @@ func TestMixedCluster_EmbeddedNodeServesAndForwardsARaftTenant(t *testing.T) {
 		// included, authenticated the tenant's caller over REST -- which
 		// needs the tenant's key. Its embedded client reads what a qrdbd
 		// node wrote, from its own replica.
+		// The anchor's group may still be electing its leader: the write is
+		// retried until the group commits it.
 		qrdbd := 0
-		if a := rest.put(t, c, qrdbd, fwdAsWriter, "fwd-anchor", "mixed/k1", "from-qrdbd"); !a.ok {
-			t.Fatalf("Put through qrdbd node %d: %s", qrdbd+1, a.detail)
+		if err := retry(func() error {
+			if a := rest.put(t, c, qrdbd, fwdAsWriter, "fwd-anchor", "mixed/k1", "from-qrdbd"); !a.ok {
+				return &fwdAnswerError{a: a}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("Put through qrdbd node %d: %v", qrdbd+1, err)
 		}
 		scoped, err := emb.Client().DatabaseScoped("fwd-anchor")
 		if err != nil {
@@ -88,6 +95,11 @@ func TestMixedCluster_EmbeddedNodeServesAndForwardsARaftTenant(t *testing.T) {
 		}
 	})
 }
+
+// fwdAnswerError is a transport answer that was not a success.
+type fwdAnswerError struct{ a fwdAnswer }
+
+func (e *fwdAnswerError) Error() string { return "answered " + e.a.detail }
 
 // singleReplicaDatabaseAvoiding creates single-replica databases until one is
 // placed on a node other than avoid, and returns it and that node.
