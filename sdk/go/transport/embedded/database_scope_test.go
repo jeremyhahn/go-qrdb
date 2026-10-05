@@ -156,7 +156,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "lockSvc", "custodianGroupSvc", "shareSvc",
 		"authFactorSvc", "auditLogger", "encMigrator", "registry", "rbacAuthz", "authMW", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",
-		"nowFunc", "standalone", "sealProbe", "sealStreams"} {
+		"nowFunc", "standalone", "sealProbe", "sealStreams", "forwarding"} {
 		copied[n] = true
 	}
 	for i := 0; i < reflect.TypeOf((*Transport)(nil)).Elem().NumField(); i++ {

@@ -166,6 +166,10 @@ type Transport struct {
 	poolManager       objpool.Manager
 	poolStateStore    objpool.StateStore
 
+	// forwarding makes a database-scoped clone forward what the node refuses
+	// as a non-replica; see WithReplicaForwarding. Nil forwards nothing.
+	forwarding *replicaForwarding
+
 	// nowFunc is overridable so tests can drive deterministic time
 	// without monkey-patching. Defaults to time.Now().UTC at New.
 	nowFunc func() time.Time

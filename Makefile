@@ -2175,14 +2175,15 @@ test-artifact-paths:
 	@./scripts/check-artifact-paths_test.sh
 
 # sdk/go/transport/embedded/database_scope_services.go is generated from the
-# pkg/service interfaces by internal/scopegen (go generate in that package).
-# An interface that grows a method, or a hand edit to the file, leaves it
+# pkg/service interfaces, and replica_forward_methods.go from the SDK client
+# interfaces, by internal/scopegen (go generate in that package). An
+# interface that grows a method, or a hand edit to either file, leaves it
 # stale; this fails until it is regenerated. The generator's own tests
-# (TestCommittedFileIsCurrent) make the same check under `go test`, and cover
-# its rejecting branches.
+# (TestCommittedFileIsCurrent, TestCommittedForwardFileIsCurrent) make the
+# same check under `go test`, and cover its rejecting branches.
 .PHONY: check-generated
 check-generated:
-	cd sdk/go && GOWORK=off $(GO) run ./transport/embedded/internal/scopegen -check transport/embedded/database_scope_services.go
+	cd sdk/go && GOWORK=off $(GO) run ./transport/embedded/internal/scopegen -check transport/embedded/database_scope_services.go -forward-check transport/embedded/replica_forward_methods.go
 
 .PHONY: vet
 vet:

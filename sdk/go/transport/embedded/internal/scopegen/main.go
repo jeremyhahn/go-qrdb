@@ -133,19 +133,43 @@ func (e *GenerateError) Error() string {
 func (e *GenerateError) Unwrap() error { return e.Err }
 
 func main() {
-	out := flag.String("o", "", "write the generated file to this path")
-	check := flag.String("check", "", "fail when this file differs from the generated one")
+	out := flag.String("o", "", "write the generated scoped servicers to this path")
+	check := flag.String("check", "", "fail when this scoped-servicer file differs from the generated one")
+	forwardOut := flag.String("forward-o", "", "write the generated forwarding methods to this path")
+	forwardCheck := flag.String("forward-check", "", "fail when this forwarding-method file differs from the generated one")
 	flag.Parse()
-	if err := run(*out, *check); err != nil {
+	if err := runAll(*out, *check, *forwardOut, *forwardCheck); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-// run generates the file and writes it to out, checks it against check, or
-// both.
+// runAll generates the files the flags ask for: the scoped servicers unless
+// only the forwarding methods were asked for, then the forwarding methods
+// when they were.
+func runAll(out, check, forwardOut, forwardCheck string) error {
+	forward := forwardOut != "" || forwardCheck != ""
+	if !forward || out != "" || check != "" {
+		if err := run(out, check); err != nil {
+			return err
+		}
+	}
+	if !forward {
+		return nil
+	}
+	return runWith(generateForward, forwardOut, forwardCheck)
+}
+
+// run generates the scoped servicers and writes them to out, checks them
+// against check, or both.
 func run(out, check string) error {
-	src, err := generate()
+	return runWith(generate, out, check)
+}
+
+// runWith generates a file with gen and writes it to out, checks it against
+// check, or both; with neither it writes the file to standard output.
+func runWith(gen func() ([]byte, error), out, check string) error {
+	src, err := gen()
 	if err != nil {
 		return err
 	}

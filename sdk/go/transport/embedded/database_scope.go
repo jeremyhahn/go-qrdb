@@ -59,7 +59,7 @@ var errScopedNeedsContext = &service.CapabilityUnsupportedError{
 	Message: "embedded: a database-scoped call needs the caller's context to resolve its tenant",
 }
 
-//go:generate go run ./internal/scopegen -o database_scope_services.go
+//go:generate go run ./internal/scopegen -o database_scope_services.go -forward-o replica_forward_methods.go
 
 // resolve returns the time-series service of the scoped database for ctx's
 // tenant.
@@ -121,6 +121,9 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	c.lockSvc = scopedIfServed[service.LockServicer](t.lockSvc, &scopedLock{scope: scope})
 	if t.ragSvc != nil {
 		c.ragSvc = &scopedRAG{inner: t.ragSvc, database: db}
+	}
+	if t.forwarding != nil {
+		return &forwardingScope{Transport: c, database: db, fwd: t.forwarding}, nil
 	}
 	return c, nil
 }
@@ -189,6 +192,7 @@ func (t *Transport) cloneShared() *Transport {
 		loginSessions:     t.loginSessions,
 		poolManager:       t.poolManager,
 		poolStateStore:    t.poolStateStore,
+		forwarding:        t.forwarding,
 		nowFunc:           t.nowFunc,
 	}
 	t.factorVerifierMu.RLock()
