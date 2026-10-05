@@ -58,7 +58,34 @@ type Transport struct {
 	// frames. An empty string (or the default "system" scope) selects the
 	// server's implicit bootstrap database. It is set via WithDatabase.
 	database string
+
+	// send, when set, carries every unary request frame in place of a QUIC
+	// connection of this transport's own; see NewFrameTransport.
+	send FrameSender
 }
+
+// FrameSender sends one request frame -- its method, database scope and
+// payload -- and returns the status and payload of the frame that answered
+// it. An error means no answer arrived.
+type FrameSender func(ctx context.Context, method, database string, payload []byte) (status uint16, body []byte, err error)
+
+// NewFrameTransport returns a transport scoped to database that encodes
+// every unary call into the request frame it would write to a qrdb QUIC
+// listener, and hands that frame to send instead of writing it to a
+// connection of its own. Answers are
+// decoded, and error statuses mapped, exactly as on a connected transport. It
+// needs no Connect; a stream (Watch) has no single frame to hand over and is
+// refused with *transport.CapabilityUnsupportedError.
+//
+// It is how the embedded transport sends a call a non-replica refused to the
+// replica that serves it, as the QUIC request the caller would have sent
+// there (docs/replica-forwarding).
+func NewFrameTransport(database string, send FrameSender) *Transport {
+	return &Transport{config: transport.ApplyOptions(), database: transport.NormalizeDatabaseScope(database), send: send}
+}
+
+// errFrameStream refuses a stream on a frame transport.
+var errFrameStream = &transport.CapabilityUnsupportedError{Message: "quic: a frame transport carries no stream"}
 
 // Compile-time assertion that the QUIC transport supports database scoping.
 var _ transport.DatabaseScoper = (*Transport)(nil)
@@ -73,6 +100,7 @@ func (t *Transport) withDatabase(database string) *Transport {
 		config:   t.config,
 		conn:     t.conn,
 		database: transport.NormalizeDatabaseScope(database),
+		send:     t.send,
 	}
 	clone.closed.Store(t.closed.Load())
 	return clone
@@ -777,6 +805,10 @@ func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]
 	ctx, cancel := t.callContext(ctx)
 	defer cancel()
 
+	if t.send != nil {
+		return t.sendFrame(ctx, method, payload)
+	}
+
 	stream, err := t.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, &streamError{Err: err}
@@ -816,6 +848,19 @@ func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]
 	}
 
 	return respPayload, nil
+}
+
+// sendFrame hands the request frame to the transport's FrameSender and maps
+// the answer as call maps the frame a connection reads.
+func (t *Transport) sendFrame(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	status, body, err := t.send(ctx, method, t.database, payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: callContextError(ctx, err)}
+	}
+	if status != wire.StatusOK {
+		return nil, mapWireError(method, status, body)
+	}
+	return body, nil
 }
 
 // callContextError reports err as the context's own error when the context is

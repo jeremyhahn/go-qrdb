@@ -53,6 +53,9 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if t.send != nil {
+		return nil, errFrameStream
+	}
 
 	payload, err := proto.Marshal(&pb.WatchRequest{
 		Key:            key,
