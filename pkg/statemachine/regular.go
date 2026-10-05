@@ -85,14 +85,6 @@ func WithRegularMVCCStore(ms MVCCStore) RegularOption {
 	}
 }
 
-// WithRegularKeyLengthCapGate is WithKVKeyLengthCapGate for
-// RegularStateMachine; see KeyLengthCapGate and validateClientKey.
-func WithRegularKeyLengthCapGate(gate KeyLengthCapGate) RegularOption {
-	return func(r *RegularStateMachine) {
-		r.keyLengthGate = gate
-	}
-}
-
 // RegularStateMachine is a pure in-memory state machine that implements
 // sm.StateMachine and sm.Hasher. Unlike FastStateMachine, it has no
 // persistent storage layer and no sharded cache. All state is held in a
@@ -112,12 +104,6 @@ type RegularStateMachine struct {
 	leaseManager LeaseManager
 	tsStore      TimeSeriesStore
 	mvccStore    MVCCStore
-
-	// keyLengthGate, when set (WithRegularKeyLengthCapGate), decides
-	// whether validateClientKey may enforce its length cap. nil -- the
-	// default -- enforces it unconditionally; see keyLengthCapActive and
-	// KVStateMachine's identical field.
-	keyLengthGate KeyLengthCapGate
 }
 
 // Compile-time interface assertions.
@@ -125,12 +111,6 @@ var (
 	_ sm.StateMachine = (*RegularStateMachine)(nil)
 	_ sm.Hasher       = (*RegularStateMachine)(nil)
 )
-
-// keyLengthCapActive is KVStateMachine.keyLengthCapActive for
-// RegularStateMachine.
-func (r *RegularStateMachine) keyLengthCapActive() bool {
-	return r.keyLengthGate == nil || r.keyLengthGate()
-}
 
 // NewRegularStateMachine creates a new pure in-memory state machine with
 // the given optional configuration.
@@ -503,7 +483,7 @@ func (r *RegularStateMachine) handlePut(payload []byte, revision uint64) (sm.Res
 		return sm.Result{}, err
 	}
 	key := string(keyBytes)
-	if kerr := validateClientKey("put", keyBytes, r.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("put", keyBytes); kerr != nil {
 		return sm.Result{}, kerr
 	}
 
@@ -532,7 +512,7 @@ func (r *RegularStateMachine) handleDelete(payload []byte, revision uint64) (sm.
 	}
 	key := string(keyBytes)
 
-	if kerr := validateClientKey("delete", keyBytes, r.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("delete", keyBytes); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	r.mu.Lock()
@@ -592,6 +572,3 @@ func (ks regularKeyspace) ApplyAtomic(muts []Mutation) error {
 	}
 	return nil
 }
-
-// keyLengthCapActive delegates to the wrapped RegularStateMachine.
-func (ks regularKeyspace) keyLengthCapActive() bool { return ks.r.keyLengthCapActive() }

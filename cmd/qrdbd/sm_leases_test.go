@@ -36,7 +36,7 @@ func TestBuildSMCreateFunc_RegistryTypesKeepTheNodesLeases(t *testing.T) {
 		t.Run(smType, func(t *testing.T) {
 			lr := lease.NewLessor()
 			f := &startFlags{smType: smType, dataDir: t.TempDir()}
-			createFn, err := buildSMCreateFunc(f, atrest.New(nil), lr, watch.NewHub(), nil)
+			createFn, err := buildSMCreateFunc(f, atrest.New(nil), lr, watch.NewHub())
 			if err != nil {
 				t.Fatalf("buildSMCreateFunc(%s): %v", smType, err)
 			}
@@ -58,7 +58,7 @@ func TestBuildSMCreateFunc_RegistryTypesKeepTheNodesLeases(t *testing.T) {
 	}
 
 	f := &startFlags{smType: "regular", dataDir: t.TempDir()}
-	_, err := buildSMCreateFunc(f, atrest.New(nil), lease.NewLessor(), watch.NewHub(), nil)
+	_, err := buildSMCreateFunc(f, atrest.New(nil), lease.NewLessor(), watch.NewHub())
 	var unsupported *SMLeasesUnsupportedError
 	if !errors.As(err, &unsupported) || unsupported.SMType != "regular" {
 		t.Fatalf("buildSMCreateFunc(regular) = %v; want *SMLeasesUnsupportedError", err)

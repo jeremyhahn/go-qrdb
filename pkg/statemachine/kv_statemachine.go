@@ -64,18 +64,6 @@ type KVStateMachine struct {
 	indexManager IndexManager
 	tsStore      TimeSeriesStore
 	mvccStore    MVCCStore
-
-	// keyLengthGate, when set (WithKVKeyLengthCapGate), decides whether
-	// validateClientKey may enforce its length cap. nil -- the default --
-	// enforces it unconditionally; see keyLengthCapActive.
-	keyLengthGate KeyLengthCapGate
-}
-
-// keyLengthCapActive reports whether k may enforce validateClientKey's
-// length cap: true when no gate was wired (single-binary-version default)
-// or when the gate says every replica of this shard supports it.
-func (k *KVStateMachine) keyLengthCapActive() bool {
-	return k.keyLengthGate == nil || k.keyLengthGate()
 }
 
 // NewKVStateMachine creates a new KVStateMachine backed by the given
@@ -211,7 +199,7 @@ func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, 
 	if err != nil {
 		return sm.Result{}, err
 	}
-	if kerr := validateClientKey("put", key, k.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("put", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 
@@ -235,7 +223,7 @@ func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Resul
 		return sm.Result{}, err
 	}
 
-	if kerr := validateClientKey("delete", key, k.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("delete", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	if err := k.deleteKey(key, false); err != nil {

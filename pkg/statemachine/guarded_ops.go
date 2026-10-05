@@ -153,7 +153,7 @@ func (k *KVStateMachine) handleCompareAndDelete(payload []byte, revision uint64)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_delete: " + err.Error()}
 	}
-	if kerr := validateClientKey("compare_and_delete", key, k.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("compare_and_delete", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 
@@ -190,7 +190,7 @@ func (k *KVStateMachine) handleCompareAndSwap(payload []byte, revision uint64) (
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_swap: " + err.Error()}
 	}
-	if kerr := validateClientKey("compare_and_swap", key, k.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("compare_and_swap", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 
@@ -231,7 +231,7 @@ func (r *RegularStateMachine) handleCompareAndDelete(payload []byte, revision ui
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_delete: " + err.Error()}
 	}
-	if kerr := validateClientKey("compare_and_delete", key, r.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("compare_and_delete", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	k := string(key)
@@ -262,7 +262,7 @@ func (r *RegularStateMachine) handleCompareAndSwap(payload []byte, revision uint
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_swap: " + err.Error()}
 	}
-	if kerr := validateClientKey("compare_and_swap", key, r.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("compare_and_swap", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	k := string(key)

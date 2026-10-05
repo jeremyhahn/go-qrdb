@@ -17,13 +17,13 @@ package statemachine
 import (
 	"context"
 	"encoding/binary"
-	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	filestore "github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
 
 // This file is the regression coverage for go-qrdb#592 F1: a 2-byte
@@ -239,12 +239,18 @@ func TestKeyLengthBoundary_EveryStateMachine_Delete(t *testing.T) {
 	}
 }
 
-// TestKeyLengthBoundary_OverCapRefusedNotFatal bypasses kv.EncodePut's own
-// client-side cap (rawKeyOp) to prove validateClientKey's Apply-time
-// length branch refuses a 65,536-byte key deterministically, as a result
-// refusal, on every state machine -- never a Go error that would halt
-// Apply.
-func TestKeyLengthBoundary_OverCapRefusedNotFatal(t *testing.T) {
+// TestKeyLengthBoundary_OverCapKeyAppliesDeterministically is the F5
+// reversal (go-qrdb#592): Apply must be a pure, deterministic function of
+// the committed log, with nothing else -- not a feature gate, not a config
+// flag, not a length policy -- in the computation. validateClientKey
+// enforces NO length cap at all; the cap lives only at proposal time
+// (protocol.CheckKeyLen inside EncodeOp/EncodeCompare, and every other
+// encoder's own structural frame width). rawKeyOp bypasses every encoder's
+// own cap to build the entry a non-conforming client, an old encoder, or
+// simply a committed historical log entry could carry: once it is in the
+// log, every replica and every sm_type must apply it identically, never
+// refuse it for being "too long."
+func TestKeyLengthBoundary_OverCapKeyAppliesDeterministically(t *testing.T) {
 	kinds := []string{"memory", "highperf", "disk-over-pebble", "disk-over-file", "fast-over-file", "regular"}
 	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {
@@ -263,12 +269,21 @@ func TestKeyLengthBoundary_OverCapRefusedNotFatal(t *testing.T) {
 				t.Fatal(err)
 			}
 			res := applyOne(t, u, cmd)
-			msg, refused := protocol.DecodeAppError(res.Data)
-			if !refused {
-				t.Fatalf("a 65536-byte key was not refused at Apply")
+			if msg, refused := protocol.DecodeAppError(res.Data); refused {
+				t.Fatalf("a committed over-cap key was refused at Apply: %q -- "+
+					"Apply must be a deterministic function of the log, not a length policy", msg)
 			}
-			if !strings.Contains(msg, "invalid key") && !strings.Contains(msg, "key length") {
-				t.Errorf("refusal %q does not say the key was too long", msg)
+
+			lk, ok := s.(lookuper)
+			if !ok {
+				return
+			}
+			got, err := lk.Lookup(context.Background(), key)
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			if gb, _ := got.([]byte); string(gb) != "v" {
+				t.Fatalf("stored value = %q, want %q", gb, "v")
 			}
 
 			// The shard must still be healthy afterward.
@@ -278,9 +293,60 @@ func TestKeyLengthBoundary_OverCapRefusedNotFatal(t *testing.T) {
 			}
 			res = applyOne(t, u, healthCmd)
 			if _, refused := protocol.DecodeAppError(res.Data); refused {
-				t.Fatalf("shard unhealthy after the over-cap refusal")
+				t.Fatalf("shard unhealthy after the over-cap key")
 			}
 		})
+	}
+}
+
+// TestKeyLengthBoundary_OverCapKeySurvivesReplay is the "including during
+// replay" half: a committed over-cap key must come back identically after
+// the state machine is closed and reopened over its own persisted storage
+// -- the disk engine's own recovery path, which is exactly where an
+// Apply-time length check would have diverged two replicas running
+// different binary versions during a rolling upgrade (the defect the
+// dropped feature gate existed to paper over; removing the Apply-time
+// check removes the divergence at its root instead).
+func TestKeyLengthBoundary_OverCapKeySurvivesReplay(t *testing.T) {
+	dir := t.TempDir()
+	key := make([]byte, protocol.MaxClientKeyLength+1)
+	for i := range key {
+		key[i] = 'k'
+	}
+	cmd, err := protocol.EncodeBatch([][]byte{rawKeyOp(protocol.OpMVCCPut, key, []byte("v"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := filestore.New(dir)
+	if err != nil {
+		t.Fatalf("filestore.New: %v", err)
+	}
+	a := newDiskAdapter(st)
+	if res := applyOne(t, a, cmd); func() bool { _, refused := protocol.DecodeAppError(res.Data); return refused }() {
+		t.Fatal("over-cap key refused before replay")
+	}
+	if err := a.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Reopen over the SAME directory: the disk engine's own recovery path,
+	// not a fresh Update call -- the data must already be there.
+	st2, err := filestore.New(dir)
+	if err != nil {
+		t.Fatalf("filestore.New (reopen): %v", err)
+	}
+	a2 := newDiskAdapter(st2)
+	defer func() { _ = a2.Close(context.Background()) }()
+	if _, err := a2.Open(context.Background(), dir, nil); err != nil {
+		t.Fatalf("Open (replay): %v", err)
+	}
+	got, err := a2.Lookup(context.Background(), key)
+	if err != nil {
+		t.Fatalf("Lookup after replay: %v", err)
+	}
+	if gb, _ := got.([]byte); string(gb) != "v" {
+		t.Fatalf("stored value after replay = %q, want %q", gb, "v")
 	}
 }
 

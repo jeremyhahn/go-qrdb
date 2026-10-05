@@ -92,7 +92,7 @@ func (k *KVStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (sm.
 	if err != nil {
 		return sm.Result{}, err
 	}
-	if kerr := validateClientKey("put_if_absent", key, k.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("put_if_absent", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 
@@ -133,7 +133,7 @@ func (r *RegularStateMachine) handlePutIfAbsent(payload []byte, revision uint64)
 	if err != nil {
 		return sm.Result{}, err
 	}
-	if kerr := validateClientKey("put_if_absent", key, r.keyLengthCapActive()); kerr != nil {
+	if kerr := validateClientKey("put_if_absent", key); kerr != nil {
 		return sm.Result{}, kerr
 	}
 	k := string(key)

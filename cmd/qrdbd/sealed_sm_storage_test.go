@@ -49,7 +49,7 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 		{"mvcc", "", false},
 	} {
 		f := &startFlags{smType: tc.smType, smStorage: tc.storage, dataDir: t.TempDir()}
-		fn, err := buildSMCreateFunc(f, sealed, lr, hub, nil)
+		fn, err := buildSMCreateFunc(f, sealed, lr, hub)
 		var plaintext *SealedSMStoragePlaintextError
 		if got := errors.As(err, &plaintext); got != tc.refused {
 			t.Fatalf("--sm %s --sm-storage %q under the barrier: err = %v; refused=%v, want %v",
@@ -68,7 +68,7 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 
 	// The barrier off: storage-backed disk builds, as it always has.
 	f := &startFlags{smType: "disk", smStorage: "file", dataDir: t.TempDir()}
-	if _, err := buildSMCreateFunc(f, atrest.New(nil), lr, hub, nil); err != nil {
+	if _, err := buildSMCreateFunc(f, atrest.New(nil), lr, hub); err != nil {
 		t.Fatalf("--sm disk --sm-storage file with the barrier off: %v", err)
 	}
 }
