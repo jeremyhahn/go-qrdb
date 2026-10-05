@@ -55,12 +55,12 @@ func TestHTTPSClient(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		cert      *tls.Certificate
-		wantCerts int
+		name                     string
+		cert                     *tls.Certificate
+		wantGetClientCertificate bool
 	}{
-		{name: "ca only", cert: nil, wantCerts: 0},
-		{name: "mutual tls", cert: &cert, wantCerts: 1},
+		{name: "ca only", cert: nil, wantGetClientCertificate: false},
+		{name: "mutual tls", cert: &cert, wantGetClientCertificate: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,8 +81,17 @@ func TestHTTPSClient(t *testing.T) {
 			if transport.TLSClientConfig.RootCAs != ca.Pool {
 				t.Error("RootCAs is not the supplied pool")
 			}
-			if got := len(transport.TLSClientConfig.Certificates); got != tc.wantCerts {
-				t.Errorf("client certificates = %d, want %d", got, tc.wantCerts)
+			// The static Certificates field stays empty either way: a
+			// supplied cert is carried via GetClientCertificate instead,
+			// so it is presented on every handshake regardless of the
+			// server's advertised AcceptableCAs (HTTPSClient's own doc
+			// comment).
+			if got := len(transport.TLSClientConfig.Certificates); got != 0 {
+				t.Errorf("client certificates = %d, want 0 (carried via GetClientCertificate instead)", got)
+			}
+			hasGetClientCert := transport.TLSClientConfig.GetClientCertificate != nil
+			if hasGetClientCert != tc.wantGetClientCertificate {
+				t.Errorf("GetClientCertificate set = %v, want %v", hasGetClientCert, tc.wantGetClientCertificate)
 			}
 		})
 	}

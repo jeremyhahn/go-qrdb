@@ -200,6 +200,14 @@ func TestBuildTLSConfig_WithCAFile(t *testing.T) {
 	}
 }
 
+// TestBuildTLSConfig_WithClientCert proves the loaded client certificate is
+// carried via GetClientCertificate, not the static Certificates field:
+// crypto/tls's default selector for Certificates only offers an entry whose
+// issuer appears in the server's CertificateRequest.AcceptableCAs, and
+// silently sends none otherwise -- exactly what a server composed over
+// pkg/clienttrust.Pool does for every tenant's Key B CA (go-qrdb#591's
+// review, B2). GetClientCertificate bypasses that selection entirely,
+// unconditionally presenting the one certificate the caller configured.
 func TestBuildTLSConfig_WithClientCert(t *testing.T) {
 	mat := newTLSTestMaterial(t)
 	got, err := BuildTLSConfig(TLSBuildOptions{
@@ -211,8 +219,18 @@ func TestBuildTLSConfig_WithClientCert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildTLSConfig: %v", err)
 	}
-	if len(got.Certificates) != 1 {
-		t.Fatalf("expected 1 client certificate, got %d", len(got.Certificates))
+	if len(got.Certificates) != 0 {
+		t.Fatalf("expected the static Certificates field to stay empty, got %d entries", len(got.Certificates))
+	}
+	if got.GetClientCertificate == nil {
+		t.Fatal("expected GetClientCertificate to be set")
+	}
+	cert, err := got.GetClientCertificate(&tls.CertificateRequestInfo{})
+	if err != nil {
+		t.Fatalf("GetClientCertificate: %v", err)
+	}
+	if cert == nil || len(cert.Certificate) == 0 {
+		t.Fatal("expected GetClientCertificate to return the loaded certificate")
 	}
 }
 

@@ -59,7 +59,20 @@ func HTTPSClient(pool *x509.CertPool, cert *tls.Certificate, timeout time.Durati
 		MinVersion: tls.VersionTLS13,
 	}
 	if cert != nil {
-		tlsConfig.Certificates = []tls.Certificate{*cert}
+		// GetClientCertificate, not Certificates: crypto/tls's default
+		// getClientCertificate only offers a Certificates entry whose
+		// issuer appears in the server's CertificateRequest.AcceptableCAs,
+		// and silently sends NO certificate otherwise -- a server composed
+		// over pkg/clienttrust.Pool (go-qrdb#591's review, B2) deliberately
+		// advertises only its static baseline there, never a tenant's own
+		// Key B CA, so a harness client presenting one would otherwise be
+		// refused with no_peer_cert despite holding a certificate the
+		// server's VerifyConnection (out-of-band from AcceptableCAs) would
+		// actually trust. See sdk/go/transport.BuildTLSConfig's identical
+		// fix for the SDK's own transports.
+		tlsConfig.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return cert, nil
+		}
 	}
 	return &http.Client{
 		Timeout: timeout,

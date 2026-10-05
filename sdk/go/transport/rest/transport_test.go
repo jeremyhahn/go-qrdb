@@ -645,8 +645,15 @@ func TestBuildTLSConfig_WithMTLS(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("expected non-nil TLS config")
 	}
-	if len(cfg.Certificates) != 1 {
-		t.Errorf("expected 1 client certificate, got %d", len(cfg.Certificates))
+	// The static Certificates field stays empty: the client certificate
+	// is carried via GetClientCertificate instead, so it is presented on
+	// every handshake regardless of the server's advertised
+	// AcceptableCAs (transport.BuildTLSConfig's own doc comment).
+	if len(cfg.Certificates) != 0 {
+		t.Errorf("expected the static Certificates field to stay empty, got %d entries", len(cfg.Certificates))
+	}
+	if cfg.GetClientCertificate == nil {
+		t.Error("expected GetClientCertificate to be set")
 	}
 	if cfg.RootCAs == nil {
 		t.Error("expected RootCAs to be populated")

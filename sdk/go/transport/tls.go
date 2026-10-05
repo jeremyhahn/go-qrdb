@@ -130,12 +130,29 @@ func BuildTLSConfig(opts TLSBuildOptions) (*tls.Config, error) {
 	}
 
 	// Load client certificate for mTLS.
+	//
+	// GetClientCertificate, not Certificates, carries it: crypto/tls's
+	// default getClientCertificate (handshake_client.go) only offers an
+	// entry from Certificates whose issuer appears in the server's
+	// CertificateRequest.AcceptableCAs, and silently sends NO certificate
+	// at all otherwise -- never surfacing an error the caller could act
+	// on. A server composed over pkg/clienttrust.Pool (go-qrdb#591's
+	// review, B2) deliberately advertises only its static baseline there,
+	// NEVER a tenant's own Key B CA, to keep the CertificateRequest message
+	// under the TLS 64 KiB limit at scale; verification of a presented
+	// certificate against the full widened pool happens out-of-band in
+	// VerifyConnection, which the client cannot see from AcceptableCAs.
+	// Unconditionally returning this cert is therefore correct, not merely
+	// permissive: the one certificate a caller configured is the one it
+	// means to present, on every server this SDK talks to.
 	if opts.CertFile != "" && opts.KeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(opts.CertFile, opts.KeyFile)
 		if err != nil {
 			return nil, &TLSError{Err: &CertificateLoadError{Err: err}}
 		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
+		tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return &cert, nil
+		}
 	}
 
 	return tlsCfg, nil

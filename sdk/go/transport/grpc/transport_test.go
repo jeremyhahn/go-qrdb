@@ -1272,7 +1272,7 @@ func TestBuildTLSConfig_WithCAFile(t *testing.T) {
 }
 
 // TestBuildTLSConfig_WithCertAndKey verifies that a client certificate and key
-// are loaded and placed in the Certificates slice.
+// are loaded and carried via GetClientCertificate.
 func TestBuildTLSConfig_WithCertAndKey(t *testing.T) {
 	bundle := generateTestCerts(t)
 	defer bundle.cleanup()
@@ -1290,8 +1290,15 @@ func TestBuildTLSConfig_WithCertAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig: %v", err)
 	}
-	if len(got.Certificates) != 1 {
-		t.Fatalf("expected 1 certificate, got %d", len(got.Certificates))
+	// The static Certificates field stays empty: the client certificate
+	// is carried via GetClientCertificate instead, so it is presented on
+	// every handshake regardless of the server's advertised
+	// AcceptableCAs (transport.BuildTLSConfig's own doc comment).
+	if len(got.Certificates) != 0 {
+		t.Fatalf("expected the static Certificates field to stay empty, got %d entries", len(got.Certificates))
+	}
+	if got.GetClientCertificate == nil {
+		t.Fatal("expected GetClientCertificate to be set")
 	}
 	if got.RootCAs == nil {
 		t.Fatal("expected RootCAs to be populated")
