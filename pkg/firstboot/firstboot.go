@@ -872,18 +872,11 @@ func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error
 	return adopted, nil
 }
 
-// spkiThumbprintFromCertPEM parses a PEM certificate and returns its canonical
-// SPKI thumbprint via user.ComputeSPKIThumbprint.
+// spkiThumbprintFromCertPEM parses a PEM certificate and returns its
+// canonical SPKI thumbprint. Delegates to the one stack-wide implementation,
+// user.ComputeSPKIThumbprintFromCertPEM.
 func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return "", errors.New("firstboot: admin cert PEM has no CERTIFICATE block")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", err
-	}
-	return user.ComputeSPKIThumbprint(cert), nil
+	return user.ComputeSPKIThumbprintFromCertPEM(certPEM)
 }
 
 // createAdminUser creates the bootstrap admin. It returns the created user

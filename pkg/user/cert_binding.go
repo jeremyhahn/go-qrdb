@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -106,6 +107,25 @@ func ComputeSPKIThumbprint(cert *x509.Certificate) string {
 	}
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// ComputeSPKIThumbprintFromCertPEM parses a single PEM-encoded certificate
+// and returns its canonical SPKI thumbprint (ComputeSPKIThumbprint). THE
+// single implementation of this three-step operation for the whole stack:
+// pkg/firstboot, pkg/service and pkg/bootstrap each carried their own
+// byte-for-byte copy, none of them importable by the others without a
+// cycle, but all three already import pkg/user for ComputeSPKIThumbprint
+// itself.
+func ComputeSPKIThumbprintFromCertPEM(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", &NoCertificateBlockError{}
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	return ComputeSPKIThumbprint(cert), nil
 }
 
 // IsValidSPKIThumbprint reports whether s is a canonical SPKI thumbprint: a

@@ -480,3 +480,12 @@ func (e *FactorLookupError) Error() string {
 
 // Unwrap exposes the underlying factor-store error.
 func (e *FactorLookupError) Unwrap() error { return e.Err }
+
+// NoCertificateBlockError is returned by ComputeSPKIThumbprintFromCertPEM
+// when the input carries no PEM "CERTIFICATE" block to parse.
+type NoCertificateBlockError struct{}
+
+// Error reports that no PEM CERTIFICATE block was found.
+func (e *NoCertificateBlockError) Error() string {
+	return "user: certificate PEM has no CERTIFICATE block"
+}

@@ -16,8 +16,6 @@ package service
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -251,18 +249,8 @@ func (s *CeremonyServiceWithAdminRebind) bindReissuedCredential(ctx context.Cont
 }
 
 // spkiThumbprintFromCertPEM parses a PEM certificate and returns its
-// canonical SPKI thumbprint. Mirrors pkg/firstboot's and pkg/bootstrap's own
-// unexported helpers of the same name and shape -- neither is importable
-// here without a cycle, so this is the service layer's own copy of the same
-// three-line operation.
+// canonical SPKI thumbprint. Delegates to the one stack-wide implementation,
+// user.ComputeSPKIThumbprintFromCertPEM.
 func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return "", errors.New("service: reissued admin cert PEM has no CERTIFICATE block")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", err
-	}
-	return user.ComputeSPKIThumbprint(cert), nil
+	return user.ComputeSPKIThumbprintFromCertPEM(certPEM)
 }

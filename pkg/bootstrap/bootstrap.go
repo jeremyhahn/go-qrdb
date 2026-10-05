@@ -37,7 +37,6 @@ package bootstrap
 import (
 	"context"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"log/slog"
 	"slices"
@@ -989,16 +988,9 @@ func enrollAdminCert(ctx context.Context, deps Dependencies, tenantID, subject s
 	return nil
 }
 
-// spkiThumbprintFromCertPEM parses a PEM certificate and returns its canonical
-// SPKI thumbprint via user.ComputeSPKIThumbprint.
+// spkiThumbprintFromCertPEM parses a PEM certificate and returns its
+// canonical SPKI thumbprint. Delegates to the one stack-wide implementation,
+// user.ComputeSPKIThumbprintFromCertPEM.
 func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return "", errors.New("bootstrap: cert PEM has no CERTIFICATE block")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", err
-	}
-	return user.ComputeSPKIThumbprint(cert), nil
+	return user.ComputeSPKIThumbprintFromCertPEM(certPEM)
 }
