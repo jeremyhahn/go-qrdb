@@ -17,7 +17,7 @@ are not reconstructed here — their history is in the git log.
   replica of a `raft`-isolated database forwards a request for it to a
   replica, on the caller's behalf, and returns the replica's answer, instead
   of refusing with `NotAReplicaError`. It works over REST, gRPC, the Unix
-  socket, QUIC and MCP; the embedded transport is still pending.
+  socket, QUIC and MCP, and for the embedded client.
   - The original caller travels as the signed on-behalf assertion, bound to
     the request on every transport. The target re-authorizes the caller with
     roles it resolves itself. A request with no authenticated caller is not
@@ -59,6 +59,21 @@ are not reconstructed here — their history is in the git log.
   them on MCP and QUIC; the gRPC unary interceptor verifies them for gRPC
   and the Unix socket.
 
+- **The embedded client forwards as the caller its embedder configures**
+  (`node.WithEmbeddedCaller`, a client certificate and its key). A database-
+  scoped embedded client's data-plane call that its node refuses as a
+  non-replica is sent, over QUIC, as the `forward.OnBehalf` request a QUIC
+  client's forward sends, signed for that caller; the replica authorizes the
+  caller, never the node. Each forward authenticates the certificate as the
+  QUIC listener authenticates a client's, through the node's one
+  authentication chain (the mTLS authenticator, or one a composer added, such
+  as an attested-host authenticator). With no caller configured the call is
+  refused with `NotAReplicaError`. Streams are not forwarded. New surface:
+  `embedded.WithReplicaForwarding` and `embedded.ReplicaForwarder`,
+  `quic.NewFrameTransport` (SDK), `quic.FrameForwarder` (`pkg/api/quic`),
+  `Server.ReplicaForwarder` and `Server.AuthenticateCertificate`. An
+  embedded node does not yet take part in the tenant key transport, so it
+  forwards only for a tenant whose key it holds.
 - `lifecycle.Node.PlacementChanges`, the placement table's change feed: every
   placement written or deleted, as the node applies it. Replica forwarding
   invalidates its leader cache from it. `Node.PlacementStore` keeps no feed,

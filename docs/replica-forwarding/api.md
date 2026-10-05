@@ -1,7 +1,7 @@
 # Replica Forwarding — API
 
-> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
-> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
+> Scope: go-qrdb · Last verified: 2026-10-05
 
 Replica forwarding adds **no new routes, RPCs or tools**, and one QUIC method,
 `forward.OnBehalf`, that only a cluster node may call. It changes what every
@@ -9,7 +9,8 @@ existing **database-scoped, unary** capability does when the request reaches a
 node that holds no replica of the database. Instead of refusing, the node
 forwards the request to a replica and returns that node's answer. That
 applies to KV, MVCC, batch, transactions, SQL, collections, time series,
-vectors and leases, on every network transport.
+vectors and leases, on every network transport, and to the data-plane calls of
+a database-scoped embedded client.
 
 ## Per-transport form
 
@@ -20,7 +21,7 @@ vectors and leases, on every network transport.
 | Unix socket | gRPC | as gRPC | as gRPC |
 | QUIC | QUIC | the `forward.OnBehalf` request: an envelope of the caller's method and payload, and the assertion | none: an answer frame has no metadata |
 | MCP | MCP (streamable HTTP) | the REST headers, on every HTTP request of the forward's session | `_meta["x-qrdb-forwarded-to"]` on the tool result |
-| Embedded | QUIC | *(pending)* | *(pending)* |
+| Embedded | QUIC | the `forward.OnBehalf` request, as on QUIC, for the caller the embedder configured | none, as on QUIC |
 
 A client never sets the assertion. A request that carries one from anything
 but a verified cluster node certificate is refused as unauthenticated.
@@ -76,11 +77,60 @@ On gRPC and the Unix socket the same data is a `google.rpc.ErrorInfo` detail
 frame's `google.rpc.Status`. On MCP it is the error envelope's `reason` and
 `metadata`.
 
+## Embedded
+
+The embedded client has no wire of its own, so a call its node refuses as a
+non-replica is sent as the QUIC request a QUIC client would have sent to the
+replica: `forward.OnBehalf`, signed by the node, carrying the caller the
+embedder configured. Without a configured caller nothing is forwarded and the
+call returns `*placement.NotAReplicaError`, never a call made as the node.
+
+```go
+cert, err := tls.LoadX509KeyPair("<install-dir>/orders-app.crt", "<install-dir>/orders-app.key")
+if err != nil { /* ... */ }
+n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts,
+    node.WithEmbeddedCaller(cert), // the identity this node's client forwards as
+)
+orders, err := n.Client().DatabaseScoped("orders")
+err = orders.KV().Put(tenant.WithTenantID(ctx, "acme"), "k", []byte("v"))
+```
+
+| Symbol | Package | Purpose |
+|---|---|---|
+| `WithEmbeddedCaller(tls.Certificate) NodeOption` | `sdk/go/node` | The identity the node's embedded client forwards as. A certificate that is empty, does not parse, or does not match its key fails the node's construction with `*node.ConfigError`. |
+| `WithReplicaForwarding(ReplicaForwarder, auth.Authenticator) Option` | `sdk/go/transport/embedded` | Makes a database-scoped transport forward what the node refuses as a non-replica, as the identity the authenticator returns. `sdk/go/node` installs it. |
+| `ReplicaForwarder` | `sdk/go/transport/embedded` | Forwards one QUIC request frame as a caller; `*quic.FrameForwarder` (`pkg/api/quic`) is one. |
+| `NewFrameTransport(database string, send FrameSender) *Transport` | `sdk/go/transport/quic` | A QUIC client transport that hands each request frame to `send` instead of a connection. |
+| `(*Server).ReplicaForwarder() (*quic.FrameForwarder, error)` | `pkg/server` | The node's in-process forwarder; `(nil, nil)` when forwarding is off. |
+| `(*Server).AuthenticateCertificate(ctx, []*x509.Certificate) (*auth.Identity, error)` | `pkg/server` | Authenticates a certificate chain as the QUIC listener authenticates a client's. |
+
+Each forward authenticates the configured certificate again, the way the QUIC
+listener authenticates a client: the chain must verify, for client
+authentication, to the node's CA pool, and the identity is what the node's one
+authentication chain derives from it -- the mTLS authenticator, or an
+authenticator a composer added (`node.WithAuthenticators`), such as an
+attested-host authenticator. A revoked or expired certificate stops
+forwarding at once. A caller of another tenant than the refused database is
+not forwarded.
+
+The calls an embedded client forwards are every unary method of the
+data-plane client interfaces (KV, guarded KV, MVCC, transactions, batch,
+leases, locks, indexes, time series, vectors, collections). A stream --
+`Watch`, `WatchPrefix`, `ImportFile` -- is refused with the replica set.
+
+| Refusal | Error |
+|---|---|
+| No caller configured, the caller does not authenticate or belongs to another tenant, or no replica served it | `*placement.NotAReplicaError`, wrapped in `*transport.RequestError` |
+| The replica answered with an error | the replica's status, as a QUIC client receives it (`*transport.RequestError` with `StatusCode`) |
+| The configured certificate does not verify | `*server.CallerCertificateError` (logged; the call gets the refusal) |
+
 ## Permissions
 
 None new. Ingress authorizes the caller for the capability as it does today.
 The target authorizes the same caller again, through the assertion, with the
-permission the capability already requires.
+permission the capability already requires. For the embedded client the
+target authorizes the configured caller: its roles are resolved on the
+target, never taken from the forwarding node.
 
 ## Versioning
 

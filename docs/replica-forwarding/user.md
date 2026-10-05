@@ -1,7 +1,7 @@
 # Replica Forwarding — User Guide
 
-> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
-> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
+> Scope: go-qrdb · Last verified: 2026-10-05
 
 A database with its own Raft group lives on a few nodes of the cluster: its
 replicas. You do not need to know which. Send a request to any node, over any
@@ -24,6 +24,31 @@ Nothing beyond a running raft cluster. Forwarding is on by default.
   on gRPC and the Unix socket, and `x-qrdb-forwarded-to` in an MCP tool
   result's `_meta`. A QUIC answer frame has no metadata and carries none. Use
   it when you are diagnosing latency.
+
+## Embedding a node
+
+An embedded client calls the node's services in-process and presents no
+credential, so the node cannot know who is calling. To let its client forward,
+give the node the identity to forward as: a client certificate and its key,
+issued by the cluster CA for a user of the tenant.
+
+```go
+cert, err := tls.LoadX509KeyPair("<install-dir>/orders-app.crt", "<install-dir>/orders-app.key")
+n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts, node.WithEmbeddedCaller(cert))
+```
+
+- The node checks that certificate on every forward, as its QUIC listener
+  checks a client's, and the replica authorizes **that** identity, with its
+  roles there. A revoked or expired certificate stops forwarding at once.
+- Without `WithEmbeddedCaller`, a call to a database the node holds no
+  replica of fails with "not a replica" and the replica set. The node never
+  forwards as itself.
+- Forwarding goes to a replica's QUIC listener, so enable QUIC on the nodes
+  that hold replicas.
+- The node must hold the tenant's key, as any node must to authenticate a
+  caller of that tenant on any transport. An embedded node does not yet take
+  part in the cluster's tenant key transport, so today it holds the key only
+  of a tenant it created itself.
 
 ## Watches and other streams
 
@@ -49,5 +74,6 @@ from a database it holds no replica of.
 | "not a replica … its replicas are on …" on an ordinary request | no replica could be reached from the node you asked, or forwarding is off on it | check the replicas are up; check `replica_forwarding.enabled` on that node |
 | "not a replica" on a watch | streams are never forwarded | reconnect the watch to a node the error lists |
 | `replica forwarding off: no CA pool` in a node's log | the node has no CA to verify a replica with | configure the cluster CA (`--tls-ca-file`), or `server.WithCACertPool` when you embed the node |
+| "not a replica" from an embedded client | the node has no caller configured, or the configured certificate did not authenticate (`replicaforward: embedded call not forwarded` in its log) | configure `node.WithEmbeddedCaller` with a certificate the cluster CA issued for a user of the tenant |
 | permission denied that you do not get on the replica directly | the replica refused the forwarding node's assertion: its certificate does not chain to the cluster CA the replica trusts | check every node's TLS configuration; on operator-supplied TLS, every node must trust the same peer CA |
 | "unavailable … forward over … failed" on a write | the forward failed after it may have reached the replica, which may have applied it | read the key back before retrying, as for any write that timed out |

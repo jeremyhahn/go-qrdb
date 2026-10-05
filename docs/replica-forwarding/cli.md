@@ -1,7 +1,7 @@
 # Replica Forwarding — CLI
 
-> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
-> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
+> Scope: go-qrdb · Last verified: 2026-10-05
 
 No CLI verbs. Forwarding is server behaviour: every `qrdb` verb that addresses
 a `raft`-isolated database works through any node, over every network
@@ -34,6 +34,11 @@ application that runs nodes itself passes the same pool as
 `server.WithCACertPool`. A server asked to forward without one forwards
 nothing: it logs `replica forwarding off: no CA pool` once and answers the
 refusal.
+
+An embedding application has no flag to set: its node forwards its embedded
+client's calls as the caller it configures with `node.WithEmbeddedCaller`
+(see [api.md](api.md#embedded)), and the two settings above apply to it as to
+`qrdbd`.
 
 A watch on a database through a node that holds no replica fails with the
 replica set, so the client can reconnect there:

@@ -207,6 +207,30 @@ founding node missing one is refused at start. See
 [clustering/architecture.md](clustering/architecture.md#member-identities).
 Its Raft address cannot use port 0.
 
+### Forwarding the client's calls to a replica
+
+A clustered node holds a replica of only some raft databases. Its embedded
+client presents no credential, so for that client's call to a database the
+node holds no replica of to be forwarded, configure the identity it forwards
+as -- a client certificate and key the cluster CA issued for a user of the
+tenant:
+
+```go
+caller, err := tls.LoadX509KeyPair(callerCertFile, callerKeyFile)
+n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts,
+    node.WithRaftMTLS(&node.RaftMTLSConfig{CACert: caPEM, Cert: certPEM, Key: keyPEM}),
+    node.WithEmbeddedCaller(caller),
+)
+```
+
+Every forward authenticates that certificate as the node's QUIC listener
+authenticates a client's, and the replica authorizes that identity. Without
+`WithEmbeddedCaller` such a call fails with `*placement.NotAReplicaError` and
+the replica set; the node never forwards as itself. `serverOpts` must carry
+the cluster CA (`server.WithCACertPool`) and the node's TLS identity, and the
+replicas must serve QUIC. See
+[replica-forwarding/api.md](replica-forwarding/api.md#embedded).
+
 ### Pre-bound listeners
 
 To serve REST and gRPC on kernel-assigned ports without a reservation race,

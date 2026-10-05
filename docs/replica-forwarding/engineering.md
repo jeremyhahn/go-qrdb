@@ -1,11 +1,10 @@
 # Replica Forwarding — Engineering
 
-> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
-> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
+> Scope: go-qrdb · Last verified: 2026-10-05
 >
-> Rulings 6 (member records on every raft node) and 7 (the leader cache) are
-> in [architecture.md](architecture.md#rulings). Identifiers marked
-> *(pending)* belong to the embedded transport and do not exist yet.
+> Rulings 6 (member records on every raft node), 7 (the leader cache) and 8
+> (the embedded caller) are in [architecture.md](architecture.md#rulings).
 
 ## Exported surface
 
@@ -123,11 +122,55 @@ full method and the request message serialized deterministically.
 | `server.WithReplicaForwarding(l *replicaforward.Locator, timeout)` | `pkg/server`: every listener, verifying targets against `WithCACertPool` |
 | `wire.MethodOnBehalf`, `wire.OnBehalf`, `wire.ErrorPayload.Info` | `pkg/api/quic/wire` |
 | `wire.ErrorPayload.Reason`, `.Metadata` | `pkg/api/mcp/wire` |
-| `embedded.WithReplicaForwarding` *(pending)* | `sdk/go/transport/embedded` |
+| `NewFrameForwarder(cfg, nodeTLS) *FrameForwarder`, `(*FrameForwarder).Forward(ctx, caller, method, database, payload, refusal)` | `pkg/api/quic`: the QUIC listener's forwarder, and the embedded client's |
 
 `cmd/qrdbd` and `sdk/go/node` compose forwarding on every raft-mode node with
 a placement table: `replicaforward.Start` over the node's membership store and
 placement table, handed to `server.WithReplicaForwarding`.
+
+### Embedded
+
+```go
+// sdk/go/node
+func WithEmbeddedCaller(cert tls.Certificate) NodeOption
+
+// sdk/go/transport/embedded
+type ReplicaForwarder interface {
+	Forward(ctx context.Context, caller *auth.Identity, method, database string, payload []byte,
+		refusal *placement.NotAReplicaError) (status uint16, body []byte, forwarded bool)
+}
+func WithReplicaForwarding(forwarder ReplicaForwarder, caller auth.Authenticator) Option
+
+// sdk/go/transport/quic
+type FrameSender func(ctx context.Context, method, database string, payload []byte) (status uint16, body []byte, err error)
+func NewFrameTransport(database string, send FrameSender) *Transport
+
+// pkg/server
+func (s *Server) ReplicaForwarder() (*quic.FrameForwarder, error)
+func (s *Server) AuthenticateCertificate(ctx context.Context, chain []*x509.Certificate) (*auth.Identity, error)
+type EmbeddedForwardingStoppedError struct{}
+type CallerCertificateError struct{ Reason string; Err error }
+type CallerAuthUnavailableError struct{}
+```
+
+`WithDatabase` on an embedded transport with forwarding returns a
+`forwardingScope`: the scoped transport, embedded, with every unary method of
+the data-plane client interfaces overridden by a delegate that makes the call
+on the node and, when the node refused it with `*placement.NotAReplicaError`,
+makes it again on a `quic.NewFrameTransport` whose sender is the node's
+`FrameForwarder`, for the identity the configured caller authenticates. The
+delegates are generated (`replica_forward_methods.go`, by `internal/scopegen
+-forward-o`; `make check-generated` fails on drift), so a client interface
+that grows a method is forwarded once regenerated, and a stream -- a reader,
+a channel or a callback in its signature -- is never overridden and so is
+refused.
+
+`sdk/go/node` installs the option on a clustered node with forwarding on and
+a caller configured: the forwarder is the current server's
+`ReplicaForwarder()`, built on first use from the QUIC TLS identity and the
+forwarding configuration and closed with the server; the caller authenticates
+the configured chain through the current server's `AuthenticateCertificate`
+on every forward.
 
 ### Cache invalidation hooks
 
@@ -220,6 +263,22 @@ every raft node publishes its member record under a lease (ruling 6).
   `NodeIdentity`.
 - `pkg/auth/middleware`: on-behalf verification for gRPC, QUIC and the HTTP
   path MCP uses.
+- `sdk/go/transport/embedded`: a refused write is sent as the request frame
+  a QUIC client sends, for the configured caller; the replica's answer and its
+  error status come back; no caller, a caller that does not authenticate, one
+  of another tenant, no replica serving, another refusal and a served call
+  are all the node's own result; re-scoping keeps forwarding.
+  `internal/scopegen`: the committed delegates are current, streams are not
+  forwarded, every forwardable method exists on the QUIC transport.
+- `sdk/go/transport/quic`: a frame transport hands over the exact frame and
+  maps the answer; a sender error is the call's; a watch is refused.
+- `pkg/server`: `AuthenticateCertificate` through the mTLS authenticator and
+  through a composer's authenticator reading the verified chain; another CA's
+  certificate, no chain, no CA pool and no chain of authenticators refused.
+  `ReplicaForwarder` built once, refused after stop.
+- `sdk/go/node`: `WithEmbeddedCaller` refuses an empty, unparseable, keyless
+  or mismatched certificate at construction; the option is installed only on
+  a clustered node with forwarding on and a caller.
 - Each transport's forwarding layer, against fake or real target listeners:
   forward and relay as the caller, the hop marker, retry on `NotLeader`,
   unreachable to the next replica, no retry after a send, the target's error
@@ -249,6 +308,15 @@ set over every network transport -- REST, gRPC, QUIC, MCP and the Unix socket:**
 
 The same suite on a BYO-TLS cluster lands with the Key B lane (decision D2).
 
+The embedded multi-node case -- an embedded node holding no replica forwards
+as its configured caller, a caller without the permission is refused by the
+replica, and a node with no caller is refused with `NotAReplicaError` -- needs
+an embedded node that holds a raft tenant's key without having created it.
+An embedded clustered node does not yet compose the tenant key transport, the
+follower admission and the rebalance dependencies `qrdbd` composes, so that
+case lands with them; until then the embedded path is proven by the unit
+tests above.
+
 ## Observability
 
 | Log event | Level |
@@ -256,6 +324,7 @@ The same suite on a BYO-TLS cluster lands with the Key B lane (decision D2).
 | `replicaforward: forwarded` (`tenant`, `database`, `protocol`, `target`, `attempt`) | DEBUG |
 | `replicaforward: no target` (`tenant`, `database`, `protocol`) | WARN |
 | `replicaforward: not forwarded` (no caller or no node identity) | WARN |
+| `replicaforward: embedded call not forwarded: …` (the configured caller did not authenticate, or belongs to another tenant; the node's forwarder could not be built) | WARN |
 | `replicaforward: invalidation feed down; leader cache cleared` | WARN |
 | `replica forwarding off: no CA pool …` (once per server) | WARN |
 

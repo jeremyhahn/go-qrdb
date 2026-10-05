@@ -1,7 +1,7 @@
 # Replica Forwarding — Architecture
 
-> **Status: IN PROGRESS — REST, gRPC, Unix socket, QUIC and MCP shipped;
-> embedded pending.** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
+> Scope: go-qrdb · Last verified: 2026-10-05
 >
 > The owner's rulings are recorded under [Rulings](#rulings).
 
@@ -102,6 +102,18 @@ and binds a non-HTTP request by protocol, method name and payload digest
 instead of HTTP method, path and body digest. A request with no authenticated
 caller is never forwarded: a node identity alone authorizes nothing.
 
+**The embedded caller.** An in-process embedded call carries no credential:
+it reaches the service layer directly. Its caller is therefore one the
+embedder configures on the node (`node.WithEmbeddedCaller`): a client
+certificate and its key, which the node authenticates on every forward
+exactly as its QUIC listener authenticates the certificate a client presents
+-- the chain verified to the node's CA pool for client authentication, the
+identity derived by the node's one authentication chain (the mTLS
+authenticator, or an authenticator a composer added, such as an attested-host
+authenticator). That identity is what the assertion carries and what the
+target authorizes. A node with no caller configured forwards nothing: the
+call is refused with `NotAReplicaError`, never made as the node.
+
 **Hop limit 1.** A forwarded request is never forwarded again. A target that
 finds it is not a replica either (a placement that changed in flight) refuses
 with `NotAReplicaError`. The forwarding node may spend its one retry, and then
@@ -116,7 +128,7 @@ returns its own refusal.
 | Unix socket | gRPC | the Unix socket serves the gRPC services, so it installs the gRPC interceptor; it dials the target's gRPC endpoint |
 | QUIC | QUIC | sends the target's QUIC endpoint a `forward.OnBehalf` request: an envelope of the caller's method and payload and the assertion. The frame format has no header, so the forward is a method of its own. The answer frame is relayed as is |
 | MCP | MCP | opens an MCP session to the target's MCP endpoint and calls the same tool with the same arguments; every HTTP request of the session carries an assertion bound to it |
-| Embedded | QUIC | *(pending)* the in-process client sends the call as the QUIC request it would have sent to the target's QUIC endpoint; QUIC is always present because it is Raft's transport |
+| Embedded | QUIC | a database-scoped embedded client makes the call on the node; when the node refuses it as a non-replica, it makes the same call on a QUIC client transport whose request frame is handed to the node's QUIC forwarder instead of a connection -- the `forward.OnBehalf` request a QUIC caller's forward sends, signed for the configured caller. Streams are not forwarded |
 
 Node-to-node forwarding speaks REST, gRPC and QUIC at minimum (owner ruling).
 MCP forwards MCP-to-MCP. A target that does not advertise the protocol is
@@ -182,6 +194,13 @@ holds no data for it.
 - **Tenant scope is unchanged.** The forwarding node resolves the placement
   only for the tenant the caller is authorized for. A caller cannot use
   forwarding to learn another tenant's replica set.
+- **The embedded caller is authenticated, not asserted.** The embedder hands
+  the node a certificate and its key, not an identity: the node refuses to
+  start with a key that does not match the certificate, and derives the
+  identity through its authentication chain on every forward, so revocation,
+  expiry and an attested-host authenticator's freshness apply to it as to any
+  QUIC client. A configured caller of one tenant is never forwarded for
+  another tenant's database.
 
 ## Component boundaries
 
@@ -191,7 +210,9 @@ holds no data for it.
 | Target resolution (placement → member → endpoint), the leader cache, its invalidation, the structured refusal, metrics | `pkg/replicaforward` |
 | Assertion signing and verification, request bindings, the node signing identity | `pkg/auth/forward` |
 | On-behalf verification per transport | `pkg/auth/middleware`: REST and MCP (`AuthenticateHTTP`), gRPC and Unix (the unary interceptor), QUIC (`AuthenticateQUICOnBehalf`) |
-| Forwarding layers | `pkg/api/rest`, `pkg/api/grpc` (also the Unix socket's), `pkg/api/quic`, `pkg/api/mcp`; `sdk/go/transport/embedded` *(pending)* |
+| Forwarding layers | `pkg/api/rest`, `pkg/api/grpc` (also the Unix socket's), `pkg/api/quic` (its `FrameForwarder` also serves the embedded client), `pkg/api/mcp`; `sdk/go/transport/embedded` (the forwarding scope, its methods generated from the SDK client interfaces by `internal/scopegen`) |
+| The QUIC request frame of an SDK call, without a connection | `sdk/go/transport/quic` (`NewFrameTransport`) |
+| The embedded caller's authentication, the node's in-process forwarder | `pkg/server` (`AuthenticateCertificate`, `ReplicaForwarder`), composed by `sdk/go/node` (`WithEmbeddedCaller`) |
 | The placement table's change feed | `pkg/server/lifecycle` |
 | Composition | `cmd/qrdbd`, `sdk/go/node`, through `server.WithReplicaForwarding` |
 | Endpoint advertisement | `pkg/cluster` (ruling 6) |
@@ -245,7 +266,8 @@ From the owner, recorded verbatim in substance:
    writes both forward.
 3. Node-to-node forwarding works over REST, gRPC and QUIC at minimum. QUIC is
    always present (it is Raft's transport), so embedded forwards over QUIC by
-   default.
+   default. (The forward reaches a replica's QUIC API listener; a replica that
+   does not advertise one is skipped, as on every transport.)
 4. Streams are refused with the typed `NotAReplicaError`, carrying the replica
    set; the client redials.
 5. On BYO-TLS nodes the operator's peer CA counts as the cluster CA for
@@ -259,6 +281,13 @@ From the owner, recorded verbatim in substance:
    - evicted by a transport error, `NotAReplica` or an unknown leader;
    - invalidated on every node by placement changes (move, rebalance, replica
      add and remove) and by member-record changes.
+8. (Embedded identity, option b) The embedder configures the embedded
+   client's caller: an mTLS identity, or an identity the node's pluggable
+   authentication chain derives -- the attested-host authenticator among them.
+   Forwarded embedded calls carry that identity in the signed on-behalf
+   assertion, over QUIC. An embedded call with no configured identity is
+   refused with the typed `NotAReplicaError` and is never forwarded as the
+   node.
 
    A miss resolves again from placement, then member records, then the one
    bounded retry.
@@ -271,3 +300,11 @@ From the owner, recorded verbatim in substance:
 - **D2.** Build against the existing cluster-CA check. The Key B lane wires
   `IsClusterCA` for BYO-TLS nodes, and the BYO-TLS integration case turns green
   with it.
+- **D3 → ruling 8.** Option (b) for the embedded caller: embedder-configured.
+  The alternatives -- forwarding only calls whose context carries an identity,
+  or signing as the node -- were rejected; the second contradicts ruling 2.
+- **D4.** The embedded client forwards with the QUIC client transport's own
+  encoding of each call (`quic.NewFrameTransport`) and the QUIC listener's own
+  forwarder (`quic.FrameForwarder`), so there is no per-method forwarding code
+  beyond a generated delegate per data-plane method, and nothing a QUIC
+  forward does that an embedded one does not.
