@@ -17,6 +17,7 @@ package firstboot
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -675,5 +676,321 @@ func TestWatchForAdminBound_TransientRecheckFailureRetries(t *testing.T) {
 	}
 	if lookup.calls.Load() < 5 {
 		t.Fatalf("lookup called %d times, want at least 5 (1 initial + 3 re-check failures + 1 re-check success)", lookup.calls.Load())
+	}
+}
+
+// ===========================================================================
+// go-qrdb#591 re-review item B coverage-ratchet follow-up: WatchForAdminBound
+// and its two helpers each have a handful of error/edge paths the tests
+// above never exercise -- the initial lookup's own permanent failure, a
+// watch-registration failure, a re-check that fails for the life of the
+// watch, the event channel ending on its own, and lookupAdminRetrying's and
+// adminBoundFromEvents' own edge branches.
+// ===========================================================================
+
+// TestWatchForAdminBound_ContextCanceledDuringInitialLookupRetryPropagatesError
+// is the "first lookup never succeeds" counterpart to
+// TestWatchForAdminBound_ContextCanceledReturnsNil: when the context is
+// canceled while the INITIAL lookupAdminRetrying call is still retrying a
+// transient fault (never a *user.UserNotFoundError), WatchForAdminBound must
+// propagate that fault rather than reading the cancellation as "no admin
+// account yet."
+func TestWatchForAdminBound_ContextCanceledDuringInitialLookupRetryPropagatesError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup.remain.Store(1_000_000) // never succeeds within this test's lifetime
+
+	notifier := &capturingAdminBoundNotifier{}
+	done := make(chan error, 1)
+	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
+
+	time.Sleep(10 * time.Millisecond) // let the first failing call enter its backoff wait
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, transientLookupFault) {
+			t.Fatalf("WatchForAdminBound returned %v, want %v", err, transientLookupFault)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchForAdminBound never returned after context cancellation during the initial lookup's retry")
+	}
+	if notifier.calls.Load() != 0 {
+		t.Fatalf("AdminBound called %d times, want 0", notifier.calls.Load())
+	}
+}
+
+// failingAdminWatcher is an AdminRecordWatcher whose Watch call always
+// fails, simulating a watch-registration failure distinct from any error
+// the subsequent read path can produce.
+type failingAdminWatcher struct{ err error }
+
+func (w failingAdminWatcher) Watch(context.Context, string, ...watch.WatchOption) (watch.Watcher, error) {
+	return nil, w.err
+}
+
+// TestWatchForAdminBound_WatchRegistrationFailurePropagates confirms a
+// failure to register the watch itself -- as opposed to any failure in the
+// lookups around it -- is returned to the caller.
+func TestWatchForAdminBound_WatchRegistrationFailurePropagates(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	if _, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	wantErr := errors.New("firstboot_test: simulated watch registration failure")
+	notifier := &capturingAdminBoundNotifier{}
+	if err := WatchForAdminBound(ctx, userSvc, failingAdminWatcher{err: wantErr}, notifier); !errors.Is(err, wantErr) {
+		t.Fatalf("WatchForAdminBound returned %v, want %v", err, wantErr)
+	}
+	if notifier.calls.Load() != 0 {
+		t.Fatalf("AdminBound called %d times, want 0", notifier.calls.Load())
+	}
+}
+
+// failsAfterFirstCall is an AdminLookup whose first call -- WatchForAdminBound's
+// initial ID resolution -- delegates to real, and every call after that
+// fails with a transient fault forever. It isolates "the post-registration
+// re-check can never succeed, for the life of the watch" from the admin
+// ever being found at all, distinct from failsReCheckNTimesThenSucceeds,
+// which eventually recovers.
+type failsAfterFirstCall struct {
+	real  AdminLookup
+	fail  error
+	calls atomic.Int32
+}
+
+func (l *failsAfterFirstCall) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
+	if l.calls.Add(1) == 1 {
+		return l.real.GetUserByUsername(ctx, tenantID, username)
+	}
+	return nil, l.fail
+}
+
+// TestWatchForAdminBound_ContextCanceledDuringRecheckRetryReturnsNil is the
+// re-check's own counterpart to the initial-lookup test above: when the
+// re-check's lookupAdminRetrying is retrying a transient fault that never
+// clears, and the context is canceled while it does, WatchForAdminBound
+// must end the watch cleanly (nil) -- an ordinary shutdown, not a verdict
+// that the re-check found no binding.
+func TestWatchForAdminBound_ContextCanceledDuringRecheckRetryReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	if _, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	lookup := &failsAfterFirstCall{real: userSvc, fail: transientLookupFault}
+	notifier := &capturingAdminBoundNotifier{}
+	done := make(chan error, 1)
+	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
+
+	time.Sleep(10 * time.Millisecond) // let the re-check's first failing call enter its backoff wait
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WatchForAdminBound returned a non-nil error on context cancellation during the re-check's retry: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchForAdminBound never returned after context cancellation during the re-check's retry")
+	}
+	if notifier.calls.Load() != 0 {
+		t.Fatalf("AdminBound called %d times, want 0", notifier.calls.Load())
+	}
+}
+
+// closedEventsWatcher is a watch.Watcher whose Events channel is already
+// closed, simulating the watch ending on its own -- e.g. the underlying hub
+// shutting down -- rather than via context cancellation.
+type closedEventsWatcher struct {
+	events chan watch.WatchResponse
+	err    error
+}
+
+func newClosedEventsWatcher(err error) *closedEventsWatcher {
+	w := &closedEventsWatcher{events: make(chan watch.WatchResponse), err: err}
+	close(w.events)
+	return w
+}
+func (w *closedEventsWatcher) Events() <-chan watch.WatchResponse { return w.events }
+func (w *closedEventsWatcher) WatchID() int64                     { return 1 }
+func (w *closedEventsWatcher) Close() error                       { return nil }
+func (w *closedEventsWatcher) Err() error                         { return w.err }
+
+// closedEventsAdminWatcher implements AdminRecordWatcher by registering a
+// closedEventsWatcher, so WatchForAdminBound's event loop observes the
+// channel closing on its very first receive.
+type closedEventsAdminWatcher struct{ err error }
+
+func (w closedEventsAdminWatcher) Watch(context.Context, string, ...watch.WatchOption) (watch.Watcher, error) {
+	return newClosedEventsWatcher(w.err), nil
+}
+
+// TestWatchForAdminBound_ClosedEventsChannelReturnsWatcherErr confirms the
+// event loop reports the watcher's own Err() -- not nil, not a generic
+// sentinel -- when the Events channel closes rather than delivering a
+// binding.
+func TestWatchForAdminBound_ClosedEventsChannelReturnsWatcherErr(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	if _, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	wantErr := errors.New("firstboot_test: simulated watch end")
+	notifier := &capturingAdminBoundNotifier{}
+	if err := WatchForAdminBound(ctx, userSvc, closedEventsAdminWatcher{err: wantErr}, notifier); !errors.Is(err, wantErr) {
+		t.Fatalf("WatchForAdminBound returned %v, want %v", err, wantErr)
+	}
+	if notifier.calls.Load() != 0 {
+		t.Fatalf("AdminBound called %d times, want 0", notifier.calls.Load())
+	}
+}
+
+// TestLookupAdminRetrying_BackoffCapsAtOneSecond drives lookupAdminRetrying
+// through 5 transient failures -- enough for its doubling backoff (50 ->
+// 100 -> 200 -> 400 -> 800 -> 1600, capped to adminBoundWatchRetryCap) to
+// exercise the cap-enforcement branch at least once -- before the 6th call
+// succeeds.
+func TestLookupAdminRetrying_BackoffCapsAtOneSecond(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	created, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup.remain.Store(5)
+
+	u, err := lookupAdminRetrying(ctx, lookup)
+	if err != nil {
+		t.Fatalf("lookupAdminRetrying: %v", err)
+	}
+	if u.ID != created.ID {
+		t.Fatalf("lookupAdminRetrying returned user %d, want %d", u.ID, created.ID)
+	}
+	if lookup.calls.Load() < 6 {
+		t.Fatalf("lookup called %d times, want at least 6 (5 failures + 1 success)", lookup.calls.Load())
+	}
+}
+
+// TestAdminBoundFromEvents_SkipsInvalidEntriesAndReturnsFalseWithoutABoundEvent
+// covers adminBoundFromEvents' skip branches -- a nil event, an event with a
+// nil Kv, a delete event, and an event whose value fails to decode as a
+// user.User -- and confirms it returns false when nothing in the list
+// carries a live binding, rather than panicking or returning true.
+func TestAdminBoundFromEvents_SkipsInvalidEntriesAndReturnsFalseWithoutABoundEvent(t *testing.T) {
+	if adminBoundFromEvents(nil) {
+		t.Fatal("adminBoundFromEvents(nil) = true, want false")
+	}
+
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+	if _, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	unbound, err := userSvc.GetUserByUsername(ctx, tenantid.System, user.BootstrapAdminUsername)
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	unboundJSON, err := json.Marshal(unbound)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	evts := []*watch.Event{
+		nil,
+		{Kv: nil},
+		{Type: watch.EventDelete, Kv: &kv.KeyValue{Value: unboundJSON}},
+		{Type: watch.EventPut, Kv: &kv.KeyValue{Value: []byte("not valid json")}},
+		{Type: watch.EventPut, Kv: &kv.KeyValue{Value: unboundJSON}},
+	}
+	if adminBoundFromEvents(evts) {
+		t.Fatal("adminBoundFromEvents = true, want false: no event in the list carries a live binding")
+	}
+}
+
+// TestAdminBoundFromEvents_TrueWhenAnEventCarriesALiveBinding is the
+// positive counterpart: a real, bound admin record decodes cleanly and is
+// recognized.
+func TestAdminBoundFromEvents_TrueWhenAnEventCarriesALiveBinding(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	created, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := userSvc.AddCertBinding(ctx, created.ID, validSPKIThumbprintForTest(), 0); err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	bound, err := userSvc.GetUserByUsername(ctx, tenantid.System, user.BootstrapAdminUsername)
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	boundJSON, err := json.Marshal(bound)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	evts := []*watch.Event{
+		{Type: watch.EventPut, Kv: &kv.KeyValue{Value: boundJSON}},
+	}
+	if !adminBoundFromEvents(evts) {
+		t.Fatal("adminBoundFromEvents = false, want true: the event carries a live certificate binding")
 	}
 }
