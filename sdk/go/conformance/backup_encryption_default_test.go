@@ -102,6 +102,12 @@ func bootBackupCell(t *testing.T, tk transportKind, keyDir string) transport.Bac
 	seedIdentityFixtures(t, n,
 		permission.BackupCreate, permission.BackupList, permission.BackupRead,
 		permission.BackupRestore, permission.BackupVerify)
+	// seedIdentityFixtures only creates "matrix"; it carries no certificate
+	// binding yet, so under the default auth.mtls_binding_policy "required"
+	// clientKP's certificate would be refused as naming no bound account
+	// (the same gap go-qrdb#517/#548's review found in three other cells --
+	// see enrollMatrixCert's own doc comment).
+	enrollMatrixCert(t, n, tenantid.System, clientKP)
 
 	clientCert, err := clientKP.TLSCertificate()
 	if err != nil {

@@ -127,6 +127,14 @@ func bootKeyBLoginCell(t *testing.T, tk transportKind) (*node.Node, *x509.CertPo
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
+	// This cell is about the Key B dynamic trust pool, not
+	// auth.mtls_binding_policy (go-qrdb#517/#548): "alice" is deliberately
+	// never enrolled (see below), so under the default "required" her
+	// Key-B-issued certificate would be refused as naming no bound
+	// account before Key B's own behavior is ever reached. "enrolled" is
+	// the documented opt-out for exactly an account the policy was never
+	// meant to gate.
+	cfg.Auth.MTLSBindingPolicy = "enrolled"
 
 	cfg.Protocols.REST = tk == restTransport
 	cfg.Protocols.GRPC = tk == grpcTransport
