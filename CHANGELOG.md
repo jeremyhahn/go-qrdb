@@ -37,9 +37,69 @@ are not reconstructed here — their history is in the git log.
 - **Integration coverage: membership, join tokens and cluster unseal.** `admin member add/remove` now adds and removes real spare nodes, since the `guarded-writes` gate correctly refuses an address that is not advertising. `admin join-token mint` is proven single-use on every transport, with the typed refusal on BYO-TLS nodes. `barrier cluster-unseal` runs a full seal, restart and unseal cycle through the CLI on every transport.
 - **MCP `qrdb_ceremony_sign_csr` returns the signed certificate.** The handler marshalled the internal result type, whose fields carry no JSON tags, instead of the wire `SignCSRInitResponse`. So `qrdb ceremony sign-csr` over MCP exited 0 with an empty certificate. The other transports were unaffected.
 - **Integration coverage: every system-scope `barrier` passphrase and Shamir verb runs on all five transports.** This covers officer register, list, claim and claim-begin/complete; quorum seal, unseal and root-token; rekey; the recovery domain; `ceremony sign-csr`; `batch import`; `audit verify`; node and database compaction. The CLI test binary is now built with the daemon's full tag set, so the SQL protocol surface is actually exercised.
+
 - **The standalone integration stage's Docker image baked `qrdbd` and `qrdb` from a literal, narrower tag list than `BUILD_TAGS`** (`'codec_json raft qrdb_ts qrdb_vector'` for `qrdbd`, `'qrdb_ts qrdb_vector'` for `qrdb`), so the server and the CLI driving it had each compiled a different, incomplete feature set — fourteen standalone tests failed on "unknown flag" for `--sql-concurrency`, `--etcd`, `--mysql`, `--postgresql`. `.devcontainer/Dockerfile`'s integration stage now takes a `QRDB_BUILD_TAGS` build ARG that `make integration-image` overrides with `BUILD_TAGS` itself, and a new buildgate (`test/buildgates/docker_build_tags_test.go`) asserts the ARG's default stays byte-for-byte equal to `make -s print-build-tags` so the two cannot drift apart silently again.
 - **The standalone Shamir server's bootstrap entrypoint signed the bare claim nonce instead of the domain-separated claim message** `pkg/ceremony/claim_message.go`'s `verifyShareClaim` checks against, so every officer's `claim/complete` failed "nonce signature verification failed" and the holders file the standalone Shamir CLI tests depend on came up with zero holders every run. The entrypoint (`test/integration/api/docker-compose.yml`) now signs `ShareClaimMessage`, the same message the product's own claim verification expects.
 
+- **The documented Key B authentication parity gap is closed.** A Key
+  B-issued login certificate now authenticates on the client-facing
+  listeners of both the qrdbd daemon composer and an `sdk/go/node`-embedded
+  one that supplies its own TLS config via `server.WithTLS`. Proven directly
+  for all five remote transports in
+  `sdk/go/conformance/key_b_login_test.go`.
+- **A latent QUIC ALPN-negotiation bug the dynamic trust pool would have
+  triggered in production is fixed before it shipped.** `pkg/api/quic/
+  server.go` clones the shared TLS config and pins its own ALPN protocol,
+  but `Clone()` copies a `GetConfigForClient` closure's reference, not its
+  effect: the closure still cloned from the PRE-pin config, so any QUIC
+  connection that took the dynamic (Key B) path would have been served the
+  wrong ALPN list and failed the handshake. The listener now wraps the
+  dynamic hook and re-pins its ALPN list on whatever config the hook returns.
+- **The same closure-replacement hazard existed on REST, gRPC, Unix and
+  MCP's TLS 1.3 `MinVersion` floor**, not only QUIC's ALPN pin: each
+  `WithTLS` cloned and mutated the supplied config directly, so a
+  connection taking the dynamic trust-pool path would have been served
+  whatever `MinVersion` the pre-override config carried -- measured as a
+  TLS 1.2 downgrade. All four now compose with the same
+  `clienttrust.ReassertListenerTLS` helper QUIC's ALPN pin uses.
+- **`getCAMaterial` and `ExportPKCS12` could mix up two tenants' CA
+  certificates under concurrent calls.** Both read back the single
+  process-wide `p.caCertPEM`/`p.caCert` cache after resolving a specific
+  tenant's provider, so a second tenant's concurrent call landing in
+  between could hand the first tenant's caller the SECOND tenant's CA
+  certificate. Both now resolve and return the specific tenant's own
+  certificate directly from its `cakey.Provider`, never through the shared
+  cache.
+- **`TestGuardedVerbConformanceMatrix`'s leased-transaction-write assertion
+  was pinning behavior the product had already and deliberately stopped
+  having.** "statemachine: the KV state machines keep durable leases" gave
+  every KV-family `raft.sm_type` (`memory`/`standard`, `fast`, `disk`, and
+  their siblings) a real lease table, so a transaction write naming a lease
+  the state machine actually granted now binds its key to it; only the
+  legacy `regular` type still refuses one outright. The conformance test
+  still asserted a blanket capability refusal for every non-default
+  `sm_type`, which that change made false without updating it. The
+  assertion now grants a real lease and expects the bound write to succeed,
+  and separately proves an unknown lease ID is still refused with
+  `*transport.LeaseNotFoundError` -- not a capability refusal, since the
+  capability is present and only the named lease is missing.
+  `docs/transactions/architecture.md` and `docs/key-value/engineering.md`
+  carried the same stale claim and are corrected alongside it.
+- **`ExecuteTransaction` and `ExecuteBatch` mapped every remote transport's
+  "lease not found" refusal to a generic not-found error instead of
+  `*transport.LeaseNotFoundError`**, on gRPC, Unix, QUIC, MCP and REST. Each
+  transport's generic not-found mapping has no way to know a NotFound
+  response is about a lease rather than a key -- unlike the dedicated
+  lease-by-ID RPCs, which already carry this disambiguation because the
+  caller supplies the lease ID being asked about. `checkResultError`'s only
+  NotFound-classed outcome for a transaction or batch command is exactly
+  this refusal, so each transport now reconstructs the typed error from the
+  lease ID already present in the request's own ops, the same structural
+  certainty the lease-by-ID endpoints already relied on, rather than
+  guessing from the server's message text (the substring classification
+  go-qrdb#289 deleted). The embedded transport was unaffected: it decodes
+  `service.LeaseNotFoundError` directly instead of going through a shared
+  status code.
 
 ### Changed — BREAKING
 
@@ -134,32 +194,70 @@ are not reconstructed here — their history is in the git log.
   store may not exist or be unsealed yet, so it is still left to a later
   `roles reconcile`, unchanged from before.
 
-### Added
-
-- Integration coverage for `qrdb completion`/`qrdbd completion`
-  (bash/zsh/fish/powershell), `qrdbd node-identity`, and `tenant
-  list-deleted`/`reconcile-deleted`, closing a CLI-coverage audit finding
-  that all three had none.
-
 ### Security
 
-- **BREAKING: an injected Key B provider now requires one key per tenant.**
-  `cert.WithKeyProvider`/`server.WithCertKeyProvider` (shipped in
-  v0.40.0-alpha as a single `cakey.Provider` shared across every tenant) are
-  renamed `cert.WithKeyProviderFactory`/`server.WithCertKeyProviderFactory`
-  and now take a `cakey.ProviderFactory`, resolved per tenant
+- **New: an injected Key B provider is now resolved per tenant.**
+  `cert.WithKeyProviderFactory`/`server.WithCertKeyProviderFactory` let an
+  embedder supply a `cakey.ProviderFactory`, resolved per tenant
   (`ProviderForTenant(tenantID)`) exactly like the built-in software path.
-  The single-shared-provider shape made the issuer-tenant binding
-  (`IsTenantIssuer`) vacuous: every tenant's presented certificate verified
-  against the SAME injected CA, so the binding answered true for whichever
-  tenant a certificate's Subject OU merely claimed, regardless of which
-  tenant the signing key was actually provisioned for (owner ruling,
-  go-qrdb#591's review). There is no migration shim: an embedder on the old
-  API adapts its provider into a factory (`ProviderForTenant`/`TenantIDs`),
-  resolving its own key per tenant. `cert.DefaultCertProvider.CACertPEMs`
-  now enumerates a factory-backed deployment's tenants via
-  `factory.TenantIDs(ctx)`, since qrdb's own store has no record of a
-  factory-backed tenant's CA.
+  A single provider shared across every tenant would make the
+  issuer-tenant binding (`IsTenantIssuer`) vacuous: every tenant's
+  presented certificate would verify against the SAME injected CA, so the
+  binding would answer true for whichever tenant a certificate's Subject OU
+  merely claimed, regardless of which tenant the signing key was actually
+  provisioned for (owner ruling, go-qrdb#591's review). An embedder
+  resolves its own key per tenant via `ProviderForTenant`/`TenantIDs`.
+  `cert.DefaultCertProvider.CACertPEMs` enumerates a factory-backed
+  deployment's tenants via `factory.TenantIDs(ctx)`, since qrdb's own store
+  has no record of a factory-backed tenant's CA.
+- **BREAKING: per-tenant Key B CAs replace the single shared login CA.**
+  Every tenant now has its OWN registered Key B CA
+  (`__sys:cert_ca/{tenantID}/`), and the issuer-tenant binding
+  (`auth.IssuerVerifier`, above) enforces that a tenant's login certificates
+  are anchored at ITS OWN CA, not any other tenant's. **An existing tenant
+  login certificate anchored at the OLD single shared CA stops
+  authenticating once the binding is wired**, because that CA is not the
+  new per-tenant one the binding checks against. There is no migration
+  code: old systems reissue affected tenants' login certificates against
+  their own CA. This is a pre-publication breaking change with zero
+  external consumers to migrate at the time it landed.
+- **A verified on-behalf cluster-forwarding assertion now requires the
+  cluster CA as the peer certificate's issuer, not merely a node-shaped
+  SPIFFE SAN.** `forward.ClusterPeer` checks only the SAN's SHAPE; with
+  every tenant's Key B CA trusted on the same client-facing listener, a Key
+  B leaf carrying a forged node SPIFFE SAN could otherwise present an
+  honored on-behalf assertion AS THE CLUSTER. `AuthMiddleware.
+  authenticateOnBehalf` now also requires `IssuerVerifier.IsClusterCA`
+  against the verified chain's direct issuer, failing closed when unknown.
+- **The dynamic Key B trust pool and the issuer-tenant binding could
+  disagree about whether Key B was trusted at all.** Each composer wired
+  `SetKeyBProvider` without a corresponding cluster-CA resolver reaching the
+  binding (or vice versa), so Key B could be trusted at the TLS layer with
+  the binding unenforced at the authentication layer, or built as two
+  independently-constructed pools that drifted out of sync with each other.
+  `clienttrust.Pool` is now the ONE object both halves read, resolving the
+  cluster CA fresh and unconditionally on every check (see `pkg/clienttrust`
+  above); a transient resolution failure withdraws Key B trust for that
+  call only, never stickily.
+- **Every per-handshake scan of `__sys:cert_ca/` parsing every tenant's CA
+  was an unauthenticated, pre-auth cost an attacker controlled the rate
+  of**, measured at ~20ms at 1,000 tenants. The widened trust pool is now
+  cached for 2 seconds, invalidated immediately on a CA create/rotation
+  (`SetKeyBProvider`/`SetClusterCA`), cutting the measured cost to ~20µs.
+- **`IsTenantIssuer` and `CACertPEMs` could create certificate authority
+  material as a side effect of being asked about it.** `IsTenantIssuer`
+  called the built-in per-tenant provider's `Certificate` directly, which
+  auto-initializes a brand-new CA key via `cakey.SoftwareProvider.material`
+  on first use -- so an authentication-path probe for a tenant that had
+  never established a CA (including a nonexistent tenant named by a
+  presented leaf) minted one. `IsTenantIssuer` is now load-only: a tenant
+  with no established CA answers `false`, never creating one.
+  `Initialize`/`Unseal`/`getCAMaterial`'s own auto-init path is now
+  serialized per tenant for the same reason: two callers racing the
+  first-ever issuance for a brand-new tenant could both observe "nothing
+  exists" and both generate and persist a CA key, with whichever write
+  landed last silently winning over the other caller's already-cached,
+  now-orphaned in-memory key.
 - **BREAKING: a TLS handshake's trust resolution can never generate a CA,
   and is bounded by a deadline derived from the handshake itself, never
   `context.Background()`.** `ceremony.CeremonyCA.CACertificate` and
@@ -212,6 +310,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- Integration coverage for `qrdb completion`/`qrdbd completion`
+  (bash/zsh/fish/powershell), `qrdbd node-identity`, and `tenant
+  list-deleted`/`reconcile-deleted`, closing a CLI-coverage audit finding
+  that all three had none.
 - `pkg/clienttrust`: the ONE shared implementation of the dynamic
   client-auth trust pool AND the issuer-tenant binding (`IsClusterCA`,
   `VerifyIssuer`, implementing the new `auth.IssuerVerifier` interface) --
@@ -279,120 +381,6 @@ are not reconstructed here — their history is in the git log.
   generate and persist one, producing a leaf signed by whichever key lost
   the race to be cached in memory while a DIFFERENT key was the one actually
   persisted last.
-
-### Security
-
-- **BREAKING: per-tenant Key B CAs replace the single shared login CA.**
-  Every tenant now has its OWN registered Key B CA
-  (`__sys:cert_ca/{tenantID}/`), and the issuer-tenant binding
-  (`auth.IssuerVerifier`, above) enforces that a tenant's login certificates
-  are anchored at ITS OWN CA, not any other tenant's. **An existing tenant
-  login certificate anchored at the OLD single shared CA stops
-  authenticating once the binding is wired**, because that CA is not the
-  new per-tenant one the binding checks against. There is no migration
-  code: old systems reissue affected tenants' login certificates against
-  their own CA. This is a pre-publication breaking change with zero
-  external consumers to migrate at the time it landed.
-- **A verified on-behalf cluster-forwarding assertion now requires the
-  cluster CA as the peer certificate's issuer, not merely a node-shaped
-  SPIFFE SAN.** `forward.ClusterPeer` checks only the SAN's SHAPE; with
-  every tenant's Key B CA trusted on the same client-facing listener, a Key
-  B leaf carrying a forged node SPIFFE SAN could otherwise present an
-  honored on-behalf assertion AS THE CLUSTER. `AuthMiddleware.
-  authenticateOnBehalf` now also requires `IssuerVerifier.IsClusterCA`
-  against the verified chain's direct issuer, failing closed when unknown.
-- **The dynamic Key B trust pool and the issuer-tenant binding could
-  disagree about whether Key B was trusted at all.** Each composer wired
-  `SetKeyBProvider` without a corresponding cluster-CA resolver reaching the
-  binding (or vice versa), so Key B could be trusted at the TLS layer with
-  the binding unenforced at the authentication layer, or built as two
-  independently-constructed pools that drifted out of sync with each other.
-  `clienttrust.Pool` is now the ONE object both halves read, resolving the
-  cluster CA fresh and unconditionally on every check (see `pkg/clienttrust`
-  above); a transient resolution failure withdraws Key B trust for that
-  call only, never stickily.
-- **Every per-handshake scan of `__sys:cert_ca/` parsing every tenant's CA
-  was an unauthenticated, pre-auth cost an attacker controlled the rate
-  of**, measured at ~20ms at 1,000 tenants. The widened trust pool is now
-  cached for 2 seconds, invalidated immediately on a CA create/rotation
-  (`SetKeyBProvider`/`SetClusterCA`), cutting the measured cost to ~20µs.
-- **`IsTenantIssuer` and `CACertPEMs` could create certificate authority
-  material as a side effect of being asked about it.** `IsTenantIssuer`
-  called the built-in per-tenant provider's `Certificate` directly, which
-  auto-initializes a brand-new CA key via `cakey.SoftwareProvider.material`
-  on first use -- so an authentication-path probe for a tenant that had
-  never established a CA (including a nonexistent tenant named by a
-  presented leaf) minted one. `IsTenantIssuer` is now load-only: a tenant
-  with no established CA answers `false`, never creating one.
-  `Initialize`/`Unseal`/`getCAMaterial`'s own auto-init path is now
-  serialized per tenant for the same reason: two callers racing the
-  first-ever issuance for a brand-new tenant could both observe "nothing
-  exists" and both generate and persist a CA key, with whichever write
-  landed last silently winning over the other caller's already-cached,
-  now-orphaned in-memory key.
-
-### Fixed
-
-- **The documented Key B authentication parity gap is closed.** A Key
-  B-issued login certificate now authenticates on the client-facing
-  listeners of both the qrdbd daemon composer and an `sdk/go/node`-embedded
-  one that supplies its own TLS config via `server.WithTLS`. Proven directly
-  for all five remote transports in
-  `sdk/go/conformance/key_b_login_test.go`.
-- **A latent QUIC ALPN-negotiation bug the dynamic trust pool would have
-  triggered in production is fixed before it shipped.** `pkg/api/quic/
-  server.go` clones the shared TLS config and pins its own ALPN protocol,
-  but `Clone()` copies a `GetConfigForClient` closure's reference, not its
-  effect: the closure still cloned from the PRE-pin config, so any QUIC
-  connection that took the dynamic (Key B) path would have been served the
-  wrong ALPN list and failed the handshake. The listener now wraps the
-  dynamic hook and re-pins its ALPN list on whatever config the hook returns.
-- **The same closure-replacement hazard existed on REST, gRPC, Unix and
-  MCP's TLS 1.3 `MinVersion` floor**, not only QUIC's ALPN pin: each
-  `WithTLS` cloned and mutated the supplied config directly, so a
-  connection taking the dynamic trust-pool path would have been served
-  whatever `MinVersion` the pre-override config carried -- measured as a
-  TLS 1.2 downgrade. All four now compose with the same
-  `clienttrust.ReassertListenerTLS` helper QUIC's ALPN pin uses.
-- **`getCAMaterial` and `ExportPKCS12` could mix up two tenants' CA
-  certificates under concurrent calls.** Both read back the single
-  process-wide `p.caCertPEM`/`p.caCert` cache after resolving a specific
-  tenant's provider, so a second tenant's concurrent call landing in
-  between could hand the first tenant's caller the SECOND tenant's CA
-  certificate. Both now resolve and return the specific tenant's own
-  certificate directly from its `cakey.Provider`, never through the shared
-  cache.
-- **`TestGuardedVerbConformanceMatrix`'s leased-transaction-write assertion
-  was pinning behavior the product had already and deliberately stopped
-  having.** "statemachine: the KV state machines keep durable leases" gave
-  every KV-family `raft.sm_type` (`memory`/`standard`, `fast`, `disk`, and
-  their siblings) a real lease table, so a transaction write naming a lease
-  the state machine actually granted now binds its key to it; only the
-  legacy `regular` type still refuses one outright. The conformance test
-  still asserted a blanket capability refusal for every non-default
-  `sm_type`, which that change made false without updating it. The
-  assertion now grants a real lease and expects the bound write to succeed,
-  and separately proves an unknown lease ID is still refused with
-  `*transport.LeaseNotFoundError` -- not a capability refusal, since the
-  capability is present and only the named lease is missing.
-  `docs/transactions/architecture.md` and `docs/key-value/engineering.md`
-  carried the same stale claim and are corrected alongside it.
-- **`ExecuteTransaction` and `ExecuteBatch` mapped every remote transport's
-  "lease not found" refusal to a generic not-found error instead of
-  `*transport.LeaseNotFoundError`**, on gRPC, Unix, QUIC, MCP and REST. Each
-  transport's generic not-found mapping has no way to know a NotFound
-  response is about a lease rather than a key -- unlike the dedicated
-  lease-by-ID RPCs, which already carry this disambiguation because the
-  caller supplies the lease ID being asked about. `checkResultError`'s only
-  NotFound-classed outcome for a transaction or batch command is exactly
-  this refusal, so each transport now reconstructs the typed error from the
-  lease ID already present in the request's own ops, the same structural
-  certainty the lease-by-ID endpoints already relied on, rather than
-  guessing from the server's message text (the substring classification
-  go-qrdb#289 deleted). The embedded transport was unaffected: it decodes
-  `service.LeaseNotFoundError` directly instead of going through a shared
-  status code.
-
 
 ## [0.41.0-alpha] - 2026-10-04
 
