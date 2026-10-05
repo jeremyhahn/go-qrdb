@@ -180,17 +180,16 @@ a second, unrelated credential bound instead.
 | `MissingAdminCertPoolError` | `AdminCertPEM` without `AdminCertPool` | **yes** — an absent pool is refused, never treated as "trust anything" |
 | `AdminCertRejectedError` | parse failure, expired, or no chain to the pool | **yes** |
 | `NotLeader` | a follower attempted creation | n/a — it waits for replication |
-| `AdminCertBindingRequiredError` | `MTLSBindingPolicy` is `required` and the admin could not log in by certificate: `Reason` is one of `AdminBindingNoBinder`, `AdminBindingNoCertPath`, `AdminBindingNone`, `AdminBindingAllExpired`, `AdminBindingMissing`, `AdminBindingCannotAuthenticate` (lifecycle forbids login), `AdminBindingMTLSNotPermitted` (method policy excludes mtls), `AdminBindingUnverifiable` | **only `AdminBindingNoBinder`, and only when a credential path IS otherwise configured** (a wiring bug: nothing would ever bind the certificate a path would issue) — see below |
+| `AdminCertBindingRequiredError` | `MTLSBindingPolicy` is `required` and the admin could not log in by certificate: `Reason` is one of `AdminBindingNoBinder`, `AdminBindingNone`, `AdminBindingAllExpired`, `AdminBindingMissing`, `AdminBindingCannotAuthenticate` (lifecycle forbids login), `AdminBindingMTLSNotPermitted` (method policy excludes mtls), `AdminBindingUnverifiable` | **only `AdminBindingNoBinder`, and only when a credential path IS otherwise configured** (a wiring bug: nothing would ever bind the certificate a path would issue) — see below |
 | `AdminLookupError` | the admin could not be read while checking that posture | **yes** — no verdict is not a pass |
 
 Only ONE of these reasons still refuses before any write:
 `AdminBindingNoBinder`, and only when a credential path (a CA, a Signer with
 an admin CSR, or an adopted certificate) is ALSO configured — a composer that
 wired a way to issue a certificate but not a way to bind it is a wiring bug,
-caught before any side effect (`checkBindingPosture`). `AdminBindingNoCertPath`
-is retained on the type for source compatibility but is no longer produced:
-a `CertBinder` with nothing to bind is the ordinary case this doc's "awaiting
-admin credential" state exists for, not a refusal.
+caught before any side effect (`checkBindingPosture`). A `CertBinder` with
+nothing to bind is the ordinary case this doc's "awaiting admin credential"
+state exists for, not a refusal.
 Every other reason — no credential path configured at all, a missing admin,
 or all bindings expired — no longer refuses `Initialize` pre-flight or its
 post-run outcome check (`verifyRequiredOutcome`) either: the admin is

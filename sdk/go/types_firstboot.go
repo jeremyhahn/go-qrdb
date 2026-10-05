@@ -65,7 +65,6 @@ type (
 // The AdminCertBindingReason values.
 const (
 	AdminBindingNoBinder     = firstboot.AdminBindingNoBinder
-	AdminBindingNoCertPath   = firstboot.AdminBindingNoCertPath
 	AdminBindingNone         = firstboot.AdminBindingNone
 	AdminBindingAllExpired   = firstboot.AdminBindingAllExpired
 	AdminBindingMissing      = firstboot.AdminBindingMissing

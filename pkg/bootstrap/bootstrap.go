@@ -164,12 +164,14 @@ type SystemConfig struct {
 
 	// AdminCSRPEM, when non-empty, selects the admin-mTLS CSR-sign path
 	// (Path B) for the system admin: the admin's CSR is signed via the
-	// Signer seam. When empty, Path A (generate-and-distribute via CA) is used.
+	// Signer seam. When empty, Path A (generate-and-distribute via CA) is
+	// used.
 	//
-	// Deprecated for go-qrdb's own compositions (go-qrdb#548): qrdbd and
-	// sdk/go/node no longer sign a CSR here -- the ceremony already issued the
-	// admin's certificate during Initialize, and AdminCertPEM carries the
-	// result. Retained for a composer that still drives CA/Signer directly.
+	// go-qrdb's own compositions (qrdbd, sdk/go/node) no longer set this:
+	// the ceremony already issued the admin's certificate during
+	// Initialize, and AdminCertPEM carries the result. It remains the
+	// correct field for a composer that drives CA/Signer directly instead
+	// of going through the ceremony.
 	AdminCSRPEM []byte
 
 	// AdminCertPEM is the bootstrap admin's certificate, already issued or

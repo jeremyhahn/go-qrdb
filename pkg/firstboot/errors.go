@@ -191,16 +191,6 @@ const (
 	// CertBinder wired, so the admin would hold no binding.
 	AdminBindingNoBinder AdminCertBindingReason = "first boot has no CertBinder wired, so the admin it creates would hold no certificate binding"
 
-	// AdminBindingNoCertPath: a CertBinder is wired but there is no
-	// certificate to bind -- no CA, no Signer with an admin CSR, and no
-	// adopted admin certificate.
-	//
-	// No longer produced by checkBindingPosture (go-qrdb#560 review B2): a
-	// CertBinder with nothing to bind is now the ordinary "awaiting admin
-	// credential" case, not a boot refusal. Retained so an existing switch
-	// or comparison against this value keeps compiling.
-	AdminBindingNoCertPath AdminCertBindingReason = "first boot has no admin certificate path wired (a CA, a Signer with an admin CSR, or an adopted admin certificate), so there is no certificate to bind"
-
 	// AdminBindingNone: the admin exists and has no certificate binding.
 	AdminBindingNone AdminCertBindingReason = "the admin account has no certificate binding"
 
