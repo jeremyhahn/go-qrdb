@@ -169,6 +169,18 @@ type Pool struct {
 	// tenant's CA certificate), not each issue their own (go-qrdb#591's
 	// review, non-blocking). The zero value is ready to use.
 	keyBGroup singleflight.Group
+
+	// keyBGeneration closes a race between an eviction (SetKeyBProvider,
+	// or the OnInvalidate callback it subscribes) and a refresh already
+	// in flight (go-qrdb#591's review, non-blocking): CACertPEMs can take
+	// long enough that an eviction clearing keyBCache happens WHILE a
+	// refresh started before it is still waiting on that same call, and
+	// without this, the refresh's own store afterward would silently
+	// resurrect the pre-eviction data the eviction just cleared.
+	// Incremented on every eviction; refreshKeyBOnlyCache captures it
+	// before calling CACertPEMs and discards its result, rather than
+	// storing it, if the generation moved on while it was in flight.
+	keyBGeneration atomic.Int64
 }
 
 type providerBox struct{ prov cert.CertProvider }
@@ -241,10 +253,12 @@ func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 	p.provider.Store(&providerBox{prov: prov})
 	p.cache.Store(nil)
 	p.keyBCache.Store(nil)
+	p.keyBGeneration.Add(1)
 	if inv, ok := prov.(InvalidationSource); ok {
 		inv.OnInvalidate(func() {
 			p.cache.Store(nil)
 			p.keyBCache.Store(nil)
+			p.keyBGeneration.Add(1)
 		})
 	}
 }
@@ -730,7 +744,20 @@ func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
 		if cached := p.keyBCache.Load(); cached != nil && time.Since(cached.built) < poolCacheTTL {
 			return nil, nil
 		}
+		// Captured before the (potentially slow) CACertPEMs call, not
+		// after: an eviction (SetKeyBProvider, or the OnInvalidate
+		// callback it subscribes) landing WHILE this call is in flight
+		// bumps this, and the store below must then discard its result
+		// rather than resurrecting pre-eviction data the eviction already
+		// cleared (go-qrdb#591's review, non-blocking).
+		gen := p.keyBGeneration.Load()
 		pems, err := src.CACertPEMs(ctx)
+		if p.keyBGeneration.Load() != gen {
+			// An eviction already cleared keyBCache more recently than
+			// this call started; storing either outcome now would move
+			// backward in time. Leave it exactly as the eviction left it.
+			return nil, nil
+		}
 		if err != nil {
 			// Cleared, not left in place: a failure here (go-qrdb#591's
 			// review, blocker 2) means Key B must stop being trusted, not

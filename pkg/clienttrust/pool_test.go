@@ -1365,6 +1365,47 @@ func TestPool_RefreshKeyBOnlyCache_SingleflightsConcurrentRebuilds(t *testing.T)
 	}
 }
 
+// TestPool_RefreshKeyBOnlyCache_EvictionDuringFlightWins is go-qrdb#591's
+// review (non-blocking) red/green proof: an eviction (SetKeyBProvider, or
+// the OnInvalidate callback it subscribes -- here, firing the SAME way a
+// watched tenant deletion would) landing WHILE a refresh's own CACertPEMs
+// call is still in flight must not be undone by that refresh's store once
+// it finally returns. Without the generation counter, the refresh's own
+// (now stale, pre-eviction) result would silently resurrect exactly what
+// the eviction just cleared.
+func TestPool_RefreshKeyBOnlyCache_EvictionDuringFlightWins(t *testing.T) {
+	keyBPEM, _ := genCAPEM(t)
+	prov := &fakeInvalidatingCertProvider{
+		fakeCertProvider: fakeCertProvider{pems: [][]byte{keyBPEM}, blockUntil: make(chan struct{})},
+	}
+	pool := New()
+	pool.SetKeyBProvider(prov)
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		pool.refreshKeyBOnlyCache(context.Background())
+	}()
+
+	// Wait for the refresh to actually be inside the blocking CACertPEMs
+	// call before evicting, so the eviction genuinely lands mid-flight.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&prov.blockingCalls) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the refresh to enter CACertPEMs")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	prov.fire() // the eviction: clears keyBCache and bumps keyBGeneration.
+	close(prov.blockUntil)
+	<-refreshDone
+
+	if cached := pool.keyBCache.Load(); cached != nil {
+		t.Fatalf("expected the in-flight refresh's stale result to be discarded after an eviction mid-flight, got a cache built at %v with %d cert(s)", cached.built, len(cached.pems))
+	}
+}
+
 // TestPool_Reseal_DropsKeyBTrust is go-qrdb#591's review (blocker 2) red/
 // green proof: docs/certificate-authority/architecture.md promises that a
 // runtime reseal makes the dynamic trust pool drop Key B, bounded only by
