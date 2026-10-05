@@ -72,14 +72,21 @@ var DAOWithShard, DAOWithCodec, DAOWithTimeout, DAOWithPartition, DAOWithDatabas
 const DAOCodecJSON, DAOCodecMsgPack, DAOCodecCBOR
 const DAOSortAscending, DAOSortDescending
 type DAOUnitOfWork, DAOTransactional[E], DAOVersioned, DAOTimestamped
+func NewDAOUnitOfWork, RegisterDAOSave[E], RegisterDAODelete[E], WithDAOUnitOfWorkTimeout
+type DAOAtomicBatchUnsupportedError
 
-// DAOUnitOfWork.Commit uses kvstore.MultiGuardedBatchKVStore when the
-// underlying store offers it: every queued save/delete lands as ONE
-// guarded batch proposal (unconditional -- no guards -- but still atomic),
-// instead of the sequential apply-and-compensate path, which is NOT atomic
-// against a concurrent reader. This closes the move/rename case: a delete
-// and a put in the same UnitOfWork now commit together or not at all over
-// a store that supports it.
+// DAOUnitOfWork.Commit REQUIRES the underlying store to implement
+// kvstore.MultiGuardedBatchKVStore: every queued save/delete lands as ONE
+// guarded batch proposal (unconditional -- no guards -- but still atomic).
+// A store that does not offer the capability is refused with
+// *DAOAtomicBatchUnsupportedError -- there is no sequential
+// apply-and-compensate fallback; that path was removed because it was NOT
+// atomic against a concurrent reader. This closes the move/rename case: a
+// delete and a put in the same UnitOfWork commit together or not at all,
+// never partially. NewDAOUnitOfWork, RegisterDAOSave and RegisterDAODelete
+// are the generic functions a DAOUnitOfWork needs to be constructed and
+// populated from outside the module; the type alias alone cannot cross a
+// generic function boundary.
 //
 // FieldHashGenerator and DynamicFieldHashGenerator hash a natural key with
 // FNV-1a, which has no resistance to a deliberately engineered collision.

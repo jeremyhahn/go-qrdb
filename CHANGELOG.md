@@ -11,6 +11,29 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **The embedded transport cannot be used to set a tenant's own plan
+  (go-qrdb#574).** `tenants:create`, `tenants:set_quotas`,
+  `tenants:set_entitlements` and an isolation-tier change are
+  platform-operator-only (ScopeCross) on every network transport, enforced
+  by `AuthMiddleware`'s entry check before the request reaches the tenant
+  service. The embedded transport runs no `AuthMiddleware` and had no
+  equivalent check at all: `Transport.CreateTenant`, `UpdateTenantQuotas`
+  and `UpdateTenantEntitlements` called straight into the `TenantServicer`,
+  so an embedder presenting a tenant-scoped `auth.Identity` on the context
+  (as `sdk/go/node` does under request authentication) could create tenants
+  or raise its own plan's quotas and entitlements. New
+  `tenant.RequirePlatformOperator` enforces the identical rule directly
+  (typed `*tenant.PlatformOperatorRequiredError`, mapped to
+  `PermissionDenied`); `Transport.UpdateTenant` calls it only when the
+  patch also changes `IsolationType`, mirroring
+  `AuthMiddleware.AuthorizeTenantUpdate`. An embedded caller with no bound
+  identity -- a trusted in-process host with no auth wired up, the
+  existing default -- resolves to the system tenant exactly as `tenant.Confine`
+  already treats it for certificates and audit queries, so this adds no
+  new restriction for that case.
+
 ### Fixed
 
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
@@ -36,6 +59,7 @@ are not reconstructed here — their history is in the git log.
   cross-linked to the Share-holder verbs section.
 - **Integration coverage: membership, join tokens and cluster unseal.** `admin member add/remove` now adds and removes real spare nodes, since the `guarded-writes` gate correctly refuses an address that is not advertising. `admin join-token mint` is proven single-use on every transport, with the typed refusal on BYO-TLS nodes. `barrier cluster-unseal` runs a full seal, restart and unseal cycle through the CLI on every transport.
 - **MCP `qrdb_ceremony_sign_csr` returns the signed certificate.** The handler marshalled the internal result type, whose fields carry no JSON tags, instead of the wire `SignCSRInitResponse`. So `qrdb ceremony sign-csr` over MCP exited 0 with an empty certificate. The other transports were unaffected.
+- **Verified: `qrdb audit query --tenant-id` is confined to the caller's own tenant on every transport (go-qrdb#572).** The server-side confinement (`tenant.ConfineAuditFilter`) already covered REST, gRPC, Unix, QUIC, MCP and the embedded client; added a CLI-driven, real-daemon integration test (`TestAudit_CLI_TenantConfinement_PerProtocol`) proving a foreign `--tenant-id` is refused and the caller's own (or an omitted one) succeeds through the real client binary on all five network transports.
 - **Integration coverage: every system-scope `barrier` passphrase and Shamir verb runs on all five transports.** This covers officer register, list, claim and claim-begin/complete; quorum seal, unseal and root-token; rekey; the recovery domain; `ceremony sign-csr`; `batch import`; `audit verify`; node and database compaction. The CLI test binary is now built with the daemon's full tag set, so the SQL protocol surface is actually exercised.
 - **The standalone integration stage's Docker image baked `qrdbd` and `qrdb` from a literal, narrower tag list than `BUILD_TAGS`** (`'codec_json raft qrdb_ts qrdb_vector'` for `qrdbd`, `'qrdb_ts qrdb_vector'` for `qrdb`), so the server and the CLI driving it had each compiled a different, incomplete feature set — fourteen standalone tests failed on "unknown flag" for `--sql-concurrency`, `--etcd`, `--mysql`, `--postgresql`. `.devcontainer/Dockerfile`'s integration stage now takes a `QRDB_BUILD_TAGS` build ARG that `make integration-image` overrides with `BUILD_TAGS` itself, and a new buildgate (`test/buildgates/docker_build_tags_test.go`) asserts the ARG's default stays byte-for-byte equal to `make -s print-build-tags` so the two cannot drift apart silently again.
 - **The standalone Shamir server's bootstrap entrypoint signed the bare claim nonce instead of the domain-separated claim message** `pkg/ceremony/claim_message.go`'s `verifyShareClaim` checks against, so every officer's `claim/complete` failed "nonce signature verification failed" and the holders file the standalone Shamir CLI tests depend on came up with zero holders every run. The entrypoint (`test/integration/api/docker-compose.yml`) now signs `ShareClaimMessage`, the same message the product's own claim verification expects.
@@ -402,9 +426,26 @@ are not reconstructed here — their history is in the git log.
   `CompareAndSwap` and `DeleteIfMatch`, both single guarded store
   operations rather than `SaveWithCondition`'s read-then-write.
   `kvstore.KV` gains a `Delete` field so a guarded batch can remove one key
-  and write others in the same atomic step, and `UnitOfWork.Commit` uses
-  `MultiGuardedBatchKVStore` when the store offers it instead of its
-  sequential compensating apply. `kvstore.CompareAndSwapWithCurrent` returns
+  and write others in the same atomic step. **The guarded multi-record
+  batch write now reaches every transport and the Go SDK.**
+  `sdk.Client.KVStore()`'s adapter implements
+  `kvstore.MultiGuardedBatchKVStore` (`PutAllIfUnchanged` /
+  `PutAllIfAllUnchanged`) by translating guards into `Compare`s and writes
+  into `Op`s and issuing exactly one `ExecuteTransaction` call -- the same
+  RPC `TransactionClient` already carries on REST, gRPC, QUIC, Unix, MCP
+  and embedded, as one atomic Raft/MVCC transaction end to end. No new
+  proto message or per-transport wire verb was added: duplicating
+  `ExecuteTransaction` under a new name would not reach anywhere it
+  cannot already go. **BREAKING:**
+  `UnitOfWork.Commit` now REQUIRES the store to implement
+  `MultiGuardedBatchKVStore` and refuses with `*AtomicBatchUnsupportedError`
+  otherwise; the sequential apply-with-best-effort-compensation fallback is
+  removed entirely (coordinator ruling) because it was not atomic against a
+  concurrent reader. `sdk/go` gains `NewDAOUnitOfWork`, `RegisterDAOSave`,
+  `RegisterDAODelete` and `WithDAOUnitOfWorkTimeout` -- the generic
+  functions a `DAOUnitOfWork` needs to be constructed and populated from
+  outside the module, which the existing type-only re-export could not
+  reach. `kvstore.CompareAndSwapWithCurrent` returns
   the current value on a failed compare. `dao.CryptoFieldHashGenerator` /
   `CryptoDynamicFieldHashGenerator` hash a natural key with SHA-256 instead
   of FNV-1a, and `dao.VerifyNaturalKey` detects a collision on read;

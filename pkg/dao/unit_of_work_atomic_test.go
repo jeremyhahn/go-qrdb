@@ -141,11 +141,14 @@ func TestUnitOfWork_Commit_AtomicBatchFailureLeavesNothingApplied(t *testing.T) 
 	}
 }
 
-// TestUnitOfWork_Commit_FallsBackWithoutGuardedBatch proves a store that
-// does NOT implement kvstore.MultiGuardedBatchKVStore still commits, via
-// the sequential compensating path -- no behavior change for a store that
-// offers nothing better.
-func TestUnitOfWork_Commit_FallsBackWithoutGuardedBatch(t *testing.T) {
+// TestUnitOfWork_Commit_RefusesWithoutGuardedBatch proves a store that does
+// NOT implement kvstore.MultiGuardedBatchKVStore is refused outright --
+// *AtomicBatchUnsupportedError, nothing written -- rather than falling back
+// to a sequential, non-atomic apply. go-qrdb#589's coordinator ruling
+// removed that fallback entirely: a store that cannot do atomic batches must
+// say so, not emulate one with a compensating rollback that leaves a window
+// where a concurrent reader can observe a partially-applied batch.
+func TestUnitOfWork_Commit_RefusesWithoutGuardedBatch(t *testing.T) {
 	store := newMemoryKVStore() // pkg/dao's own local double: KVStore only.
 	ctx := context.Background()
 
@@ -162,10 +165,20 @@ func TestUnitOfWork_Commit_FallsBackWithoutGuardedBatch(t *testing.T) {
 	if err := RegisterSave(uow, userDAO, &TestEntity{ID: 1, Name: "Alice"}); err != nil {
 		t.Fatalf("RegisterSave: %v", err)
 	}
-	if err := uow.Commit(ctx); err != nil {
-		t.Fatalf("Commit: %v", err)
+	err = uow.Commit(ctx)
+	var unsupported *AtomicBatchUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Commit over a non-guarded store = %v (%T), want *AtomicBatchUnsupportedError", err, err)
 	}
-	if got, err := userDAO.Get(ctx, 1); err != nil || got.Name != "Alice" {
-		t.Fatalf("Get(1) = (%+v, %v), want Alice", got, err)
+	if !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("Commit's refusal does not match kvstore.ErrAtomicWriteUnsupported: %v", err)
+	}
+	if !uow.IsClosed() {
+		t.Fatal("a refused Commit must still close the UnitOfWork")
+	}
+
+	var notFound NotFoundError
+	if _, err := userDAO.Get(ctx, 1); !errors.As(err, &notFound) {
+		t.Fatalf("Get(1) after a refused Commit = %v, want NotFoundError (nothing applied)", err)
 	}
 }

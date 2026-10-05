@@ -184,6 +184,31 @@ func (e *CrossTenantDeniedError) Error() string {
 		" is not permitted to " + e.Op + " in tenant " + e.RequestedTenantID
 }
 
+// PlatformOperatorRequiredError is returned when a caller not bound to the
+// system tenant attempts a platform-operator-only tenant provisioning
+// operation: creating a tenant, or changing its quotas, entitlements or
+// isolation tier. These are ScopeCross permissions in the RBAC layer
+// (pkg/permission/tenant_provisioning_scope.go) and every network transport
+// refuses them before the request reaches the tenant service, because its
+// entry check runs AuthMiddleware. The embedded transport runs no
+// AuthMiddleware in front of it, so RequirePlatformOperator enforces the
+// identical rule directly: it does not matter which tenant the request
+// names, only whether the caller is the system tenant. It maps to 403
+// Forbidden / PermissionDenied wherever a network transport's error
+// translation sees it, exactly like *CrossTenantDeniedError.
+type PlatformOperatorRequiredError struct {
+	// IdentityTenantID is the caller's authenticated (or, with none bound,
+	// implicit system-tenant) tenant.
+	IdentityTenantID string
+	// Op names the attempted operation, e.g. "create a tenant", "set quotas".
+	Op string
+}
+
+func (e *PlatformOperatorRequiredError) Error() string {
+	return "tenant: caller in tenant " + e.IdentityTenantID +
+		" is not the platform operator and cannot " + e.Op
+}
+
 // QuotaExceededError is returned by IncrementQuotaUsage when adding delta
 // would cause the tenant's current usage to exceed the configured limit.
 type QuotaExceededError struct {

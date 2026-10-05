@@ -24,6 +24,43 @@ type BatchClient interface {
 }
 ```
 
+### `kvstore.MultiGuardedBatchKVStore` over `Client.KVStore()`
+
+`sdk.Client.KVStore()`'s adapter implements `kvstore.MultiGuardedBatchKVStore`
+(`PutAllIfUnchanged` / `PutAllIfAllUnchanged`) on every transport by
+translating the call into exactly one `ExecuteTransaction` request and
+reading `TransactionResponse.Succeeded` back as `applied`:
+
+- Each `kvstore.Guard{Key, Value: nil}` ("must be absent") becomes one
+  `Compare{Target: CompareVersion, Result: CompareEqual, Version: 0}`.
+- Each `kvstore.Guard{Key, Value: v}` ("must be present and equal to `v`")
+  becomes TWO compares — `{Target: CompareVersion, Result: CompareGreater,
+  Version: 0}` (exists) plus `{Target: CompareValue, Result: CompareEqual,
+  Value: v}` — because a value compare alone cannot distinguish an absent
+  key from one whose stored value happens to be empty.
+- Each `kvstore.KV{Delete: true}` becomes an `OpDelete`; otherwise an `OpPut`.
+
+This is the identical translation `pkg/server/lifecycle.ExecuteGuardedBatch`
+performs on the node side of the same `service.TransactionServicer.Execute`
+call (`guardCompares`), so the guard/write encoding cannot drift between the
+two ends of the wire. **No new RPC, proto message, or per-transport wire
+plumbing was added for this**: `ExecuteTransaction` already carries
+arbitrary compares plus put/delete ops as one atomic Raft/MVCC transaction on
+every transport (REST, gRPC, QUIC, Unix, MCP, embedded) and every
+`raft.sm_type`, which is exactly what `PutAllIfAllUnchanged`'s contract
+needs. Adding a second, parallel verb that expressed the identical
+guarantee under a different name would duplicate this RPC rather than reach
+anywhere it cannot, so the capability is reached by composition at the SDK
+boundary instead. `pkg/dao.UnitOfWork.Commit` (re-exported as
+`sdk.NewDAOUnitOfWork`) requires this capability unconditionally and refuses
+with `*dao.AtomicBatchUnsupportedError` otherwise -- there is no sequential,
+non-atomic fallback -- so an embedder's cross-DAO move or rename reaches
+this path too. The transport conformance matrix
+(`sdk/go/conformance`) proves the translation atomic — a move lands as a
+whole, and a failed guard applies neither write — on every engine, mode and
+transport cell, through `sdk.NewKVStoreAdapter` exactly as a consumer
+reaches it.
+
 ### Types
 
 ```go

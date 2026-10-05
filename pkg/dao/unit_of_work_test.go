@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // OrderEntity is a second entity type for cross-DAO UnitOfWork tests.
@@ -41,7 +41,7 @@ func (o *OrderEntity) SetEntityID(id uint64) { o.ID = id }
 
 func TestUnitOfWork_CrossDAOSave(t *testing.T) {
 	t.Run("CommitsSavesAcrossMultipleDAOs", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -84,7 +84,7 @@ func TestUnitOfWork_CrossDAOSave(t *testing.T) {
 
 func TestUnitOfWork_CrossDAOSaveAndDelete(t *testing.T) {
 	t.Run("CommitsMixedSaveAndDeleteOperations", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -186,7 +186,7 @@ func TestUnitOfWork_Rollback(t *testing.T) {
 
 func TestUnitOfWork_CommitOnClosedUoW(t *testing.T) {
 	t.Run("CommitAfterCommitReturnsError", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		uow := NewUnitOfWork(store)
@@ -286,7 +286,7 @@ func TestUnitOfWork_RegisterDeleteWithZeroID(t *testing.T) {
 
 func TestUnitOfWork_AutoIDGeneration(t *testing.T) {
 	t.Run("AutoGeneratesIDForNewEntities", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -328,92 +328,46 @@ func TestUnitOfWork_WithTimeout(t *testing.T) {
 	})
 }
 
-func TestUnitOfWork_CommitWithPartialFailure(t *testing.T) {
-	t.Run("CompensatesSaveOnSubsequentSaveFailure", func(t *testing.T) {
-		innerStore := newMemoryKVStore()
-		ctx := context.Background()
+// TestUnitOfWork_CommitRefusesOverANonGuardedStoreEvenMidSequence proves
+// Commit refuses a multi-op batch outright -- *AtomicBatchUnsupportedError,
+// nothing written -- the moment the store does not implement
+// kvstore.MultiGuardedBatchKVStore. Before go-qrdb#589's coordinator ruling
+// this scenario (a save followed by another op) exercised a
+// sequential-apply-and-compensate fallback instead; that path is removed
+// entirely, so there is nothing left to compensate -- see
+// unit_of_work_atomic_test.go for the atomic-store failure mode (a
+// mid-batch unique-index collision) that replaces it.
+func TestUnitOfWork_CommitRefusesOverANonGuardedStoreEvenMidSequence(t *testing.T) {
+	store := newMemoryKVStore()
+	ctx := context.Background()
 
-		// The failOnKeyStore fails Put on the specific key "orders/100"
-		store := &failOnKeyStore{
-			inner:      innerStore,
-			failPutKey: "orders/100",
-		}
+	userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
+	require.NoError(t, err)
+	orderDAO, err := New[*OrderEntity](store, "orders", func() *OrderEntity { return &OrderEntity{} })
+	require.NoError(t, err)
 
-		userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
-		require.NoError(t, err)
+	existingUser := &TestEntity{ID: 1, Name: "Alice", Email: "alice@test.com"}
+	require.NoError(t, userDAO.Save(ctx, existingUser))
 
-		orderDAO, err := New[*OrderEntity](store, "orders", func() *OrderEntity { return &OrderEntity{} })
-		require.NoError(t, err)
+	uow := NewUnitOfWork(store)
+	require.NoError(t, RegisterDelete(uow, userDAO, existingUser))
+	require.NoError(t, RegisterSave(uow, orderDAO, &OrderEntity{ID: 100, UserID: 1, Amount: 50.00}))
 
-		user := &TestEntity{ID: 1, Name: "Alice", Email: "alice@test.com"}
-		order := &OrderEntity{ID: 100, UserID: 1, Amount: 99.99}
+	err = uow.Commit(ctx)
+	var unsupported *AtomicBatchUnsupportedError
+	require.ErrorAs(t, err, &unsupported)
 
-		uow := NewUnitOfWork(store)
-
-		err = RegisterSave(uow, userDAO, user)
-		require.NoError(t, err)
-		err = RegisterSave(uow, orderDAO, order)
-		require.NoError(t, err)
-
-		err = uow.Commit(ctx)
-		require.Error(t, err)
-		assert.True(t, IsUnitOfWorkCommitError(err))
-
-		// The first save (users/1) should have been compensated (rolled back).
-		_, getErr := innerStore.Get(ctx, "users/1")
-		require.Error(t, getErr, "compensated user should not exist in store")
-	})
-}
-
-func TestUnitOfWork_CommitCompensatesDeleteOnFailure(t *testing.T) {
-	t.Run("RestoresDeletedEntityOnSubsequentFailure", func(t *testing.T) {
-		innerStore := newMemoryKVStore()
-		ctx := context.Background()
-
-		// Pre-populate a user that will be deleted
-		userDAO, err := New[*TestEntity](innerStore, "users", func() *TestEntity { return &TestEntity{} })
-		require.NoError(t, err)
-
-		existingUser := &TestEntity{ID: 1, Name: "Alice", Email: "alice@test.com"}
-		err = userDAO.Save(ctx, existingUser)
-		require.NoError(t, err)
-
-		// failOnKeyStore fails Put on "orders/100", so the delete (first op)
-		// succeeds but the save (second op) fails.
-		store := &failOnKeyStore{
-			inner:      innerStore,
-			failPutKey: "orders/100",
-		}
-
-		userDAOFailing, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
-		require.NoError(t, err)
-
-		orderDAO, err := New[*OrderEntity](store, "orders", func() *OrderEntity { return &OrderEntity{} })
-		require.NoError(t, err)
-
-		uow := NewUnitOfWork(store)
-
-		err = RegisterDelete(uow, userDAOFailing, existingUser)
-		require.NoError(t, err)
-
-		order := &OrderEntity{ID: 100, UserID: 1, Amount: 50.00}
-		err = RegisterSave(uow, orderDAO, order)
-		require.NoError(t, err)
-
-		err = uow.Commit(ctx)
-		require.Error(t, err)
-		assert.True(t, IsUnitOfWorkCommitError(err))
-
-		// The deleted user should be restored by compensation
-		restored, getErr := innerStore.Get(ctx, "users/1")
-		require.NoError(t, getErr)
-		require.NotNil(t, restored, "deleted user should be restored after failed commit")
-	})
+	// Neither queued operation reached the store.
+	restored, getErr := store.Get(ctx, "users/1")
+	require.NoError(t, getErr)
+	require.NotNil(t, restored, "a refused Commit must not have deleted the user")
+	_, getErr = store.Get(ctx, "orders/100")
+	require.Error(t, getErr, "a refused Commit must not have saved the order")
 }
 
 func TestUnitOfWork_TransactionalDAOExtraction(t *testing.T) {
 	t.Run("WorksWithTransactionalDAO", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		txDAO, err := NewTransactional[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -436,7 +390,7 @@ func TestUnitOfWork_TransactionalDAOExtraction(t *testing.T) {
 
 func TestUnitOfWork_MultipleSavesAndDeletes(t *testing.T) {
 	t.Run("HandlesManyOperations", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		userDAO, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -660,60 +614,3 @@ func TestUnitOfWorkCommitError(t *testing.T) {
 	})
 }
 
-// --- Test helpers ---
-
-// failOnKeyStore wraps a KVStore and fails Put operations for a specific key.
-// All other operations (including Put for other keys) are delegated to the inner store.
-type failOnKeyStore struct {
-	inner      kvstore.KVStore
-	failPutKey string // Put fails for this specific key
-}
-
-func (f *failOnKeyStore) Put(ctx context.Context, key string, value []byte) error {
-	if key == f.failPutKey {
-		return errors.New("simulated put failure for key: " + key)
-	}
-	return f.inner.Put(ctx, key, value)
-}
-
-func (f *failOnKeyStore) Get(ctx context.Context, key string) ([]byte, error) {
-	return f.inner.Get(ctx, key)
-}
-
-func (f *failOnKeyStore) Delete(ctx context.Context, key string) error {
-	return f.inner.Delete(ctx, key)
-}
-
-func (f *failOnKeyStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
-	return f.inner.Scan(ctx, prefix, fn)
-}
-
-func (f *failOnKeyStore) List(ctx context.Context, prefix string) ([]string, error) {
-	return f.inner.List(ctx, prefix)
-}
-
-func (f *failOnKeyStore) Exists(ctx context.Context, key string) (bool, error) {
-	return f.inner.Exists(ctx, key)
-}
-
-func (f *failOnKeyStore) RegisterEntityIndexes(entityType string, indexes []kvstore.EntityIndex) error {
-	return f.inner.RegisterEntityIndexes(entityType, indexes)
-}
-
-func (f *failOnKeyStore) QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
-	return f.inner.QueryIndex(ctx, indexName, value)
-}
-
-func (f *failOnKeyStore) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
-	return f.inner.ScanIndex(ctx, indexName, start, end)
-}
-
-func (f *failOnKeyStore) QueryCompoundIndex(ctx context.Context, indexName string, values [][]byte) ([][]byte, error) {
-	return f.inner.QueryCompoundIndex(ctx, indexName, values)
-}
-
-func (f *failOnKeyStore) ScanCompoundIndex(ctx context.Context, indexName string, prefixValues [][]byte, rangeStart, rangeEnd []byte) (map[string][][]byte, error) {
-	return f.inner.ScanCompoundIndex(ctx, indexName, prefixValues, rangeStart, rangeEnd)
-}
-
-var _ kvstore.KVStore = (*failOnKeyStore)(nil)

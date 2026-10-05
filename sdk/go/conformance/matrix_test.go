@@ -18,6 +18,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -80,8 +82,104 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 
 	assertSingleKeyGuardedVerbsWork(t, cl)
 	assertTransactionsWork(t, c, cl)
+	assertGuardedBatchMoveIsAtomic(t, cl)
 	if c.mode == raft && c.smType != "" {
 		assertLeasedWriteBindsAndRefusesUnknownLease(t, c, cl)
+	}
+}
+
+// assertGuardedBatchMoveIsAtomic proves kvstore.MultiGuardedBatchKVStore --
+// reached here exactly as an SDK consumer reaches it, through
+// sdk.NewKVStoreAdapter over cl.kv -- is one atomic step on every cell
+// (go-qrdb#589): a move (delete the old key, put the new one) guarded on the
+// old key's value lands as a whole, and a batch whose guard does not hold
+// applies NEITHER of its writes. The underlying ExecuteTransaction RPC's own
+// atomicity is already the subject of assertTransactionsWork above; what this
+// adds is proof that kvStoreAdapter's guard/write translation (Guard ->
+// Compare, KV.Delete -> OpDelete) is correct end to end, on the real wire,
+// on every engine, mode and transport this matrix covers.
+func assertGuardedBatchMoveIsAtomic(t *testing.T, cl clients) {
+	t.Helper()
+	ctx := boundedCtx(t)
+
+	idx, ok := cl.kv.(transport.IndexClient)
+	if !ok {
+		t.Fatalf("the matrix's KV client does not implement transport.IndexClient")
+	}
+	store, err := sdk.NewKVStoreAdapter(cl.kv, idx)
+	if err != nil {
+		t.Fatalf("NewKVStoreAdapter: %v", err)
+	}
+	batch, ok := store.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		t.Fatalf("the matrix's kvStoreAdapter does not implement kvstore.MultiGuardedBatchKVStore")
+	}
+
+	if err := cl.kv.Put(ctx, "batch/old", []byte("payload")); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+	if err := cl.kv.Put(ctx, "batch/untouched", []byte("still-here")); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	// The guard holds: the move lands as one step. Both writes must be
+	// visible together -- there is no window where the old key is gone and
+	// the new one is not yet there, or the reverse.
+	applied, err := batch.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "batch/old", Value: []byte("payload")}},
+		[]kvstore.KV{
+			{Key: "batch/old", Delete: true},
+			{Key: "batch/new", Value: []byte("payload")},
+		})
+	if err != nil {
+		t.Fatalf("PutAllIfAllUnchanged(guard holds): %v", err)
+	}
+	if !applied {
+		t.Fatal("a move whose guard holds must report applied=true")
+	}
+	assertKeyAbsent(t, cl, "batch/old", "a successful move left the old key behind")
+	if got, err := cl.kv.Get(ctx, "batch/new"); err != nil || string(got) != "payload" {
+		t.Fatalf("batch/new after the move = %q err=%v; want %q", got, err, "payload")
+	}
+
+	// The guard fails: NEITHER write lands, not even the delete.
+	applied, err = batch.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "batch/new", Value: []byte("STALE")}},
+		[]kvstore.KV{
+			{Key: "batch/untouched", Delete: true},
+			{Key: "batch/should-not-exist", Value: []byte("x")},
+		})
+	if err != nil {
+		t.Fatalf("PutAllIfAllUnchanged(guard fails): %v", err)
+	}
+	if applied {
+		t.Fatal("a batch whose guard fails must report applied=false")
+	}
+	if got, err := cl.kv.Get(ctx, "batch/untouched"); err != nil || string(got) != "still-here" {
+		t.Fatalf("batch/untouched after a refused batch = %q err=%v; want %q (the delete must not have landed)",
+			got, err, "still-here")
+	}
+	assertKeyAbsent(t, cl, "batch/should-not-exist", "the put half of a refused batch landed anyway")
+
+	// An absent-guard batch creates a brand-new pair of keys atomically too,
+	// covering the nil-Value guard translation (version-equals-zero) the
+	// present-value branch above does not exercise.
+	applied, err = batch.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: "batch/fresh-a", Value: nil}, {Key: "batch/fresh-b", Value: nil}},
+		[]kvstore.KV{
+			{Key: "batch/fresh-a", Value: []byte("a")},
+			{Key: "batch/fresh-b", Value: []byte("b")},
+		})
+	if err != nil {
+		t.Fatalf("PutAllIfAllUnchanged(absent guards): %v", err)
+	}
+	if !applied {
+		t.Fatal("a batch guarded on two absent keys must report applied=true")
+	}
+	for k, want := range map[string]string{"batch/fresh-a": "a", "batch/fresh-b": "b"} {
+		if got, err := cl.kv.Get(ctx, k); err != nil || string(got) != want {
+			t.Errorf("%s = %q err=%v; want %q", k, got, err, want)
+		}
 	}
 }
 

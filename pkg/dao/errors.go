@@ -273,3 +273,42 @@ func (e *AtomicWriteUnsupportedError) Is(target error) bool {
 
 // Unwrap returns the store's refusal, if any.
 func (e *AtomicWriteUnsupportedError) Unwrap() error { return e.Err }
+
+// AtomicBatchUnsupportedError is UnitOfWork.Commit's refusal when the
+// underlying store cannot apply the queued operations as one atomic batch,
+// for either of the two reasons a store can have: its type offers no
+// kvstore.MultiGuardedBatchKVStore at all (Err is nil), or it offers one and
+// the backing state machine refused the proposal at call time (Err is that
+// refusal, typically a *kvstore.GuardedBatchUnsupportedError).
+//
+// It is a refusal, not a fallback. Before go-qrdb#589's coordinator ruling,
+// Commit degraded to a sequential apply with a best-effort compensating
+// rollback on failure when the store offered no batch primitive -- NOT
+// atomic against a concurrent reader, since a mid-batch failure could leave
+// a move half-applied (the delete landed, the put did not, or the reverse)
+// for exactly as long as compensation takes to run, visible the whole time.
+// A caller that needs the guarantee now fails closed instead of silently
+// getting a weaker one.
+type AtomicBatchUnsupportedError struct {
+	// Err is the store's own refusal, or nil when the store has no atomic
+	// batch primitive at all.
+	Err error
+}
+
+// Error returns a human-readable description of the refused capability.
+func (e *AtomicBatchUnsupportedError) Error() string {
+	msg := "dao: unit of work: underlying store does not support atomic multi-key batches"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Is reports the canonical kvstore.ErrAtomicWriteUnsupported marker, and
+// kvstore.ErrNotApplied: the refusal happened before anything was written.
+func (e *AtomicBatchUnsupportedError) Is(target error) bool {
+	return target == kvstore.ErrAtomicWriteUnsupported || target == kvstore.ErrNotApplied
+}
+
+// Unwrap returns the store's refusal, if any.
+func (e *AtomicBatchUnsupportedError) Unwrap() error { return e.Err }

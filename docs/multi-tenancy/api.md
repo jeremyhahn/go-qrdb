@@ -51,7 +51,15 @@ tenant, and these rules are what keep a tenant's Admin inside its own tenant.
   built-in Admin role carries them in every tenant, as it carries its other
   cross-scope grants, so only Admin in the `system` tenant can use them. A
   tenant's Admin cannot raise its own quotas, grant itself entitlements, change
-  its own isolation tier, or create tenants.
+  its own isolation tier, or create tenants. The embedded transport runs no
+  AuthMiddleware, so it enforces this rule itself
+  (`tenant.RequirePlatformOperator`): `CreateTenant`, `UpdateTenantQuotas`,
+  `UpdateTenantEntitlements`, and an isolation-tier change through
+  `UpdateTenant`, are refused with `*tenant.PlatformOperatorRequiredError`
+  for a caller whose context identity is not in the `system` tenant. A
+  context with no identity bound at all (a trusted in-process host with no
+  auth wired up) resolves to the `system` tenant, as it already does for
+  `tenant.Confine`.
 - **Get, update and delete are authorized against the tenant they name.** A
   tenant's Admin may read, rename and delete its own tenant and no other; the
   platform operator may act on any tenant. Deleting its own tenant is
@@ -85,8 +93,10 @@ tenant, and these rules are what keep a tenant's Admin inside its own tenant.
   when RBAC cannot, but a refusal from a rate-limit policy (for example on
   `tenant_barrier:unseal`) is final: 429 / `RESOURCE_EXHAUSTED`.
 
-The embedded transport (`Client.Tenants()`) runs in the caller's process and is
-not covered by this section.
+The embedded transport (`Client.Tenants()`) runs in the caller's process and
+runs no AuthMiddleware, so most of this section's per-route checks do not
+apply to it; the platform-operator rule above is the exception it enforces
+directly.
 
 ## Capability matrix — per-tenant barrier
 

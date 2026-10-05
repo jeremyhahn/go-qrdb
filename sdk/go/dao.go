@@ -15,6 +15,8 @@
 package sdk
 
 import (
+	"time"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -95,6 +97,44 @@ func NewDAO[E dao.Entity](store KVStore, entityType string, newEntity func() E, 
 // IsDAONotFound returns true if the error indicates an entity was not found.
 func IsDAONotFound(err error) bool {
 	return dao.IsNotFound(err)
+}
+
+// ---------------------------------------------------------------------------
+// DAOUnitOfWork re-exports
+//
+// DAOUnitOfWork itself (types_dao.go) is a type alias, but dao.RegisterSave,
+// dao.RegisterDelete and dao.NewUnitOfWork are GENERIC functions, which Go
+// cannot re-export as a `var` the way a non-generic func is re-exported --
+// only a wrapper function, declared with its own type parameter, crosses
+// the boundary. Without these an SDK consumer could name *sdk.DAOUnitOfWork
+// (the existing alias) but never construct or populate one.
+// ---------------------------------------------------------------------------
+
+// DAOUnitOfWorkOption configures a DAOUnitOfWork at construction time.
+type DAOUnitOfWorkOption = dao.UnitOfWorkOption
+
+// NewDAOUnitOfWork creates a new DAOUnitOfWork backed by the given KVStore.
+// The unit of work collects operations from multiple DAOs and commits them
+// as one atomic batch; see DAOUnitOfWork.Commit's doc (dao.UnitOfWork) for
+// what store that requires.
+func NewDAOUnitOfWork(store KVStore, opts ...DAOUnitOfWorkOption) *DAOUnitOfWork {
+	return dao.NewUnitOfWork(store, opts...)
+}
+
+// WithDAOUnitOfWorkTimeout sets the commit timeout for a DAOUnitOfWork.
+func WithDAOUnitOfWorkTimeout(d time.Duration) DAOUnitOfWorkOption {
+	return dao.WithUnitOfWorkTimeout(d)
+}
+
+// RegisterDAOSave queues a typed entity save operation within uow. The
+// entity is serialized immediately; if it has no ID, one is auto-generated.
+func RegisterDAOSave[E dao.Entity](uow *DAOUnitOfWork, d GenericDAO[E], entity E) error {
+	return dao.RegisterSave(uow, d, entity)
+}
+
+// RegisterDAODelete queues a typed entity delete operation within uow.
+func RegisterDAODelete[E dao.Entity](uow *DAOUnitOfWork, d GenericDAO[E], entity E) error {
+	return dao.RegisterDelete(uow, d, entity)
 }
 
 // ---------------------------------------------------------------------------

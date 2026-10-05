@@ -58,6 +58,24 @@ func Confine(ctx context.Context, requested, op string) (string, error) {
 	return caller, nil
 }
 
+// RequirePlatformOperator refuses op for every caller except the system
+// tenant, regardless of which tenant the request names. Creating a tenant
+// and changing its quotas, entitlements or isolation tier are
+// platform-operator-only (ScopeCross in pkg/permission); unlike Confine --
+// which admits a caller acting on its OWN tenant -- these operations admit
+// nobody but the system tenant, including when a tenant Admin names its own
+// tenant. On the network transports the RBAC entry check (AuthMiddleware)
+// already enforces this before the request reaches the tenant service; the
+// embedded transport runs no AuthMiddleware, so it calls this directly. op
+// names the attempted operation for the error message.
+func RequirePlatformOperator(ctx context.Context, op string) error {
+	caller := CallerTenant(ctx)
+	if !tenantid.IsSystem(caller) {
+		return &PlatformOperatorRequiredError{IdentityTenantID: caller, Op: op}
+	}
+	return nil
+}
+
 // ConfineAuditFilter confines an audit query to the caller's own tenant. It
 // is the one tenancy rule every transport applies to an audit query before
 // the query reaches a logger, because the loggers are node-local and hold

@@ -276,6 +276,15 @@ type DAOUnitOfWorkClosedError = dao.UnitOfWorkClosedError
 // DAOUnitOfWorkCommitError is returned when a unit of work commit fails.
 type DAOUnitOfWorkCommitError = dao.UnitOfWorkCommitError
 
+// DAOAtomicBatchUnsupportedError is DAOUnitOfWork.Commit's refusal when the
+// underlying store cannot apply the queued operations as one atomic batch:
+// either its type offers no kvstore.MultiGuardedBatchKVStore at all, or it
+// offers one and the backing state machine refused the proposal at call
+// time (then reachable through Unwrap). There is no fallback: a store that
+// cannot do atomic multi-key batches must say so, not emulate one with a
+// non-atomic sequential apply.
+type DAOAtomicBatchUnsupportedError = dao.AtomicBatchUnsupportedError
+
 // IsDAOTransactionClosed reports whether the error is a TransactionClosedError.
 var IsDAOTransactionClosed = dao.IsTransactionClosed
 

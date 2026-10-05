@@ -750,6 +750,7 @@ type mockTenantService struct {
 	deleteFn        func(ctx context.Context, id string) error
 	updateFn        func(ctx context.Context, id string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
 	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
+	updateEntFn     func(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error)
 	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, shares int) error
 	barrierUnsealFn func(ctx context.Context, id string, key []byte) error
 	barrierSealFn   func(ctx context.Context, id string) error
@@ -807,6 +808,9 @@ func (m *mockTenantService) UpdateQuotas(ctx context.Context, id string, q *quot
 }
 
 func (m *mockTenantService) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	if m.updateEntFn != nil {
+		return m.updateEntFn(ctx, id, e)
+	}
 	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 

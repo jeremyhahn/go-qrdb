@@ -239,3 +239,32 @@ func TestSDK_SaveIfAbsentRefusalIsTestableByConsumers(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, stored)
 }
+
+// TestSDK_UnitOfWorkRefusalIsTestableByConsumers covers go-qrdb#589's
+// coordinator ruling: DAOUnitOfWork.Commit no longer degrades to a
+// sequential, non-atomic apply-and-compensate when the store cannot do
+// atomic multi-key batches -- it refuses, and a consumer must be able to
+// test for and name that refusal through the SDK alone, without reaching
+// for pkg/kvstore/kvstoretest. sdk.NewMemoryKVStore() implements
+// sdk.AtomicKVStore (single-key) but not the multi-key batch capability
+// Commit requires, so it is this refusal's own fixture.
+func TestSDK_UnitOfWorkRefusalIsTestableByConsumers(t *testing.T) {
+	var _ error = (*sdk.DAOAtomicBatchUnsupportedError)(nil)
+
+	ctx := context.Background()
+	store := sdk.NewMemoryKVStore()
+	d, err := sdk.NewDAO(store, "member", func() *reexportMember { return &reexportMember{} })
+	require.NoError(t, err)
+
+	uow := sdk.NewDAOUnitOfWork(store)
+	require.NoError(t, sdk.RegisterDAOSave(uow, d, &reexportMember{ID: 1, Name: "ada", Team: "alpha"}))
+
+	err = uow.Commit(ctx)
+	var refusal *sdk.DAOAtomicBatchUnsupportedError
+	require.ErrorAs(t, err, &refusal)
+	require.ErrorIs(t, err, sdk.ErrKVAtomicWriteUnsupported, "the refusal matches the canonical marker")
+
+	_, getErr := d.Get(ctx, 1)
+	var notFound sdk.DAONotFoundError
+	require.ErrorAs(t, getErr, &notFound, "a refused Commit must not reach the store")
+}

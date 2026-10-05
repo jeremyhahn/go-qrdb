@@ -70,6 +70,7 @@ type kvStoreAdapter struct {
 // capability it forwards to.
 var _ kvstore.KVStore = (*kvStoreAdapter)(nil)
 var _ kvstore.AtomicKVStore = (*kvStoreAdapter)(nil)
+var _ kvstore.MultiGuardedBatchKVStore = (*kvStoreAdapter)(nil)
 
 // Put stores a key-value pair by delegating to the transport's KVClient.
 func (a *kvStoreAdapter) Put(ctx context.Context, key string, value []byte) error {
@@ -150,6 +151,81 @@ func (a *kvStoreAdapter) CompareAndSwap(ctx context.Context, key string, expecte
 		return false, kvstore.ErrAtomicWriteUnsupported
 	}
 	return guarded.CompareAndSwap(ctx, key, expected, next)
+}
+
+// PutAllIfUnchanged applies every write atomically, and only while guardKey
+// still holds guardValue: PutAllIfAllUnchanged with a single guard. See
+// PutAllIfAllUnchanged for the capability this delegates to.
+func (a *kvStoreAdapter) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return a.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
+}
+
+// PutAllIfAllUnchanged applies every write atomically, and only while EVERY
+// guard's key still holds its expected value (go-qrdb#589), by delegating
+// to the transport's TransactionClient capability -- the SAME
+// ExecuteTransaction RPC every production transport (REST, gRPC, QUIC,
+// Unix, MCP, embedded) already carries, translating guards into compares
+// and writes into ops exactly as pkg/server/lifecycle.ExecuteGuardedBatch
+// does on the node side of the same wire contract (guardCompares: a nil
+// Guard.Value becomes a version-equals-zero compare, a non-nil one becomes
+// an exists compare plus a value compare). Reusing ExecuteTransaction
+// instead of adding a second, parallel wire verb that would carry the
+// identical guarantee under a different name is deliberate: the RPC is
+// already one atomic Raft/MVCC transaction end to end on every transport, so
+// a dedicated PutAllIfAllUnchanged opcode would duplicate it rather than
+// reach somewhere it cannot.
+//
+// A KV with Delete set becomes an OpDelete; otherwise an OpPut -- so a batch
+// can remove one key and write others in the same atomic step a move/rename
+// needs. See PutIfAbsent for why the capability type-assertion cannot fail
+// in practice and what it reports when it does.
+func (a *kvStoreAdapter) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	tx, ok := a.kv.(transport.TransactionClient)
+	if !ok {
+		return false, kvstore.ErrAtomicWriteUnsupported
+	}
+
+	compares := make([]transport.Compare, 0, len(guards)*2)
+	for _, g := range guards {
+		if g.Value == nil {
+			compares = append(compares, transport.Compare{
+				Key:     []byte(g.Key),
+				Target:  transport.CompareVersion,
+				Result:  transport.CompareEqual,
+				Version: 0,
+			})
+			continue
+		}
+		compares = append(compares,
+			transport.Compare{
+				Key:     []byte(g.Key),
+				Target:  transport.CompareVersion,
+				Result:  transport.CompareGreater,
+				Version: 0,
+			},
+			transport.Compare{
+				Key:    []byte(g.Key),
+				Target: transport.CompareValue,
+				Result: transport.CompareEqual,
+				Value:  g.Value,
+			},
+		)
+	}
+
+	ops := make([]transport.Op, len(writes))
+	for i, w := range writes {
+		if w.Delete {
+			ops[i] = transport.Op{Type: transport.OpDelete, Key: []byte(w.Key)}
+			continue
+		}
+		ops[i] = transport.Op{Type: transport.OpPut, Key: []byte(w.Key), Value: w.Value}
+	}
+
+	resp, err := tx.ExecuteTransaction(ctx, &transport.TransactionRequest{Compares: compares, SuccessOps: ops})
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
 }
 
 // Scan iterates over key-value pairs with the given prefix, invoking fn

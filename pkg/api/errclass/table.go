@@ -158,6 +158,12 @@ var dominantRules = []rule{
 	// A normal tenant caller named a tenant other than its own.
 	as(&tenant.CrossTenantDeniedError{}, PermissionDenied),
 
+	// A caller outside the system tenant attempted a platform-operator-only
+	// tenant provisioning operation (create, set quotas, set entitlements,
+	// set isolation tier) directly against the tenant service -- the check
+	// the embedded transport makes itself, since it runs no AuthMiddleware.
+	as(&tenant.PlatformOperatorRequiredError{}, PermissionDenied),
+
 	// A login-index rollback FAILED. It unwraps to the conflict that caused
 	// it, so it must be matched before every row that could be its cause:
 	// reporting the cause would drop the fact that secondary state may now be

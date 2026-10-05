@@ -87,6 +87,8 @@ func WithTenantService(svc tenant.TenantServicer) Option {
 }
 
 // CreateTenant creates a new tenant by delegating to the TenantServicer.
+// Minting a tenant is platform-operator-only (tenant.RequirePlatformOperator)
+// exactly as on every network transport, where tenants:create is ScopeCross.
 func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenantRequest) (*transport.CreateTenantResponse, error) {
 	if err := t.gate("CreateTenant"); err != nil {
 		return nil, err
@@ -96,6 +98,9 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := tenant.RequirePlatformOperator(ctx, "create a tenant"); err != nil {
+		return nil, err
 	}
 
 	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal)}
@@ -231,6 +236,11 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 
 // UpdateTenant applies a partial update to an existing tenant by delegating
 // to the TenantServicer. Non-empty patch fields replace the stored value.
+// Renaming a tenant is self-service, but a patch that also changes the
+// isolation tier is platform-operator-only
+// (tenant.RequirePlatformOperator), exactly as AuthMiddleware.
+// AuthorizeTenantUpdate re-checks tenants:set_isolation on every network
+// transport.
 func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
 	if err := t.gate("UpdateTenant"); err != nil {
 		return nil, err
@@ -240,6 +250,11 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if req.IsolationType != "" {
+		if err := tenant.RequirePlatformOperator(ctx, "set a tenant's isolation tier"); err != nil {
+			return nil, err
+		}
 	}
 
 	patch := tenant.TenantPatch{
@@ -257,7 +272,10 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 }
 
 // UpdateTenantQuotas updates the resource quotas for a tenant by
-// delegating to the TenantServicer.
+// delegating to the TenantServicer. A tenant's quotas are its plan, set by
+// the platform operator only (tenant.RequirePlatformOperator), exactly as
+// tenants:set_quotas is ScopeCross on every network transport: a tenant
+// Admin cannot raise its own limits.
 func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.UpdateTenantQuotasRequest) (*transport.UpdateTenantQuotasResponse, error) {
 	if err := t.gate("UpdateTenantQuotas"); err != nil {
 		return nil, err
@@ -267,6 +285,9 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := tenant.RequirePlatformOperator(ctx, "set a tenant's quotas"); err != nil {
+		return nil, err
 	}
 
 	q := &quota.Quotas{
@@ -299,7 +320,10 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 }
 
 // UpdateTenantEntitlements updates the feature entitlements for a tenant by
-// delegating to the TenantServicer.
+// delegating to the TenantServicer. A tenant's entitlements are its plan,
+// set by the platform operator only (tenant.RequirePlatformOperator),
+// exactly as tenants:set_entitlements is ScopeCross on every network
+// transport: a tenant Admin cannot grant itself entitlements.
 func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
 	if err := t.gate("UpdateTenantEntitlements"); err != nil {
 		return nil, err
@@ -309,6 +333,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := tenant.RequirePlatformOperator(ctx, "set a tenant's entitlements"); err != nil {
+		return nil, err
 	}
 
 	e := &quota.Entitlements{
