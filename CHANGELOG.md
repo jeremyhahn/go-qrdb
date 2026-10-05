@@ -84,6 +84,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **An embedded node on operator-supplied TLS has the operator's CA as its
+  cluster CA, as `qrdbd` does (ruling 5).** A clustered `sdk/go/node` node
+  handed its cluster identity (`WithRaftMTLS`) and no cluster CA key of its
+  own self-issued a cluster CA anyway, so after the issuer-tenant binding
+  landed no peer -- every node certificate issued by the operator's CA --
+  could forward to it on a caller's behalf, and the operator's own client
+  certificates no longer authenticated for the system tenant. Such a node is
+  now BYO-TLS (`lifecycle.Infra.NoClusterCAKey`), and its trust pool's cluster
+  CA is resolved by `lifecycle.TrustPoolClusterCA`, extracted from `qrdbd`
+  and shared. As on a BYO-TLS `qrdbd` node, verbs that sign with the cluster
+  CA refuse until the node is given a cluster CA key.
 - **A clustered embedded node is a full member of `raft` tenant isolation.**
   `sdk/go/node` built the tenant infrastructure but none of the multi-node
   half `qrdbd` composed in `cmd/qrdbd`, so on an embedded node a raft

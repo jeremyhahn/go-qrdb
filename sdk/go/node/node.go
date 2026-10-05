@@ -1700,6 +1700,11 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		ClusterCAKeyProvider: n.clusterCAKeyProvider,
 		ClusterCACertPEM:     n.clusterCACertPEM,
 		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
+		// A node handed its cluster identity with no cluster CA key of its
+		// own runs on operator-supplied TLS: it holds no Key A, exactly as
+		// qrdbd with --tls-ca-file/--tls-cert-file/--tls-key-file. See
+		// byoTLS.
+		NoClusterCAKey: n.byoTLS(),
 		// The CA mints its client certificates under the same trust domain
 		// the mTLS authenticator pins, so the pin is exercised by the
 		// certificates this node issues (go-qrdb#519).
@@ -2995,11 +3000,20 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// this check unenforced" cases (clienttrust.Pool.SetClusterCA/
 	// SetKeyBProvider), not errors.
 	n.trustPool = clienttrust.New()
-	var clusterCA ceremony.CeremonyCA
-	if coreSvc, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
-		clusterCA = coreSvc.CA()
+	// The cluster CA is what qrdbd resolves it to, through the same code:
+	// the node's own Key A when it holds one, else -- on operator-supplied
+	// TLS (byoTLS) -- the operator's peer CA, the anchor its cluster
+	// identity was issued under (owner ruling 5). Unresolvable is logged and
+	// leaves no cluster CA wired, as on qrdbd.
+	var identityCA []byte
+	if n.clusterIdentity != nil {
+		identityCA = n.clusterIdentity.CACert
 	}
-	n.trustPool.SetClusterCA(clusterCA)
+	if clusterCA, caErr := lifecycle.TrustPoolClusterCA(svcNode.ClusterCAProv, n.byoTLS(), identityCA); caErr != nil {
+		n.logger.Warn("node: trust pool cluster CA unresolved; no cluster CA is wired", slog.Any("error", caErr))
+	} else if clusterCA != nil {
+		n.trustPool.SetClusterCA(clusterCA)
+	}
 	n.trustPool.SetKeyBProvider(svcNode.CertProv)
 
 	// n.trustPool is ALWAYS handed to the auth layer as the enforcement

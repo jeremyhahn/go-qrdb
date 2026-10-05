@@ -201,6 +201,16 @@ n, err := node.NewClusteredNode(ctx, cfg, members, nil,
 )
 ```
 
+A node handed its cluster identity with `WithRaftMTLS` and no cluster CA key
+of its own (neither `WithClusterCAKeyProvider` nor `WithClusterCAMaterial`)
+runs on operator-supplied TLS, exactly as `qrdbd` does with `--tls-ca-file`,
+`--tls-cert-file` and `--tls-key-file`: it holds no self-issued cluster CA,
+and the CA its identity was issued under is its cluster CA -- the anchor that
+decides which peers may forward on a caller's behalf and which certificates
+authenticate for any tenant. Verbs that sign with the cluster CA (ceremony
+CSR signing, officer registration, join tokens) refuse on such a node, as on a
+BYO-TLS `qrdbd` node; give the node a cluster CA key to use them.
+
 A multi-node Raft transport requires mTLS material (`WithRaftMTLS`) and the
 member identities: go-quicraft admits a member by its identity alone, and a
 founding node missing one is refused at start. See

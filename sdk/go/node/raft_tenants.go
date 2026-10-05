@@ -69,3 +69,13 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 	}
 	return lifecycle.ComposeRaftTenantCluster(c).ServerOptions()
 }
+
+// byoTLS reports whether this node runs on operator-supplied cluster TLS: a
+// clustered node handed its cluster identity (WithRaftMTLS) and no cluster CA
+// key of its own (neither WithClusterCAKeyProvider nor WithClusterCAMaterial)
+// -- the embedded counterpart of qrdbd's --tls-ca-file, --tls-cert-file and
+// --tls-key-file. Such a node holds no Key A, and the CA its identity was
+// issued under is the cluster CA (owner ruling 5).
+func (n *Node) byoTLS() bool {
+	return n.clusterIdentity != nil && n.clusterCAKeyProvider == nil && len(n.clusterCACertPEM) == 0
+}

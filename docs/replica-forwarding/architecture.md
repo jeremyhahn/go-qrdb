@@ -182,7 +182,9 @@ holds no data for it.
   SAN, and -- with an issuer verifier wired -- a chain the cluster CA did not
   issue (`IssuerVerifier.IsClusterCA`). On a node with operator-supplied TLS
   (BYO-TLS), the operator's peer CA is the cluster CA for this check (owner
-  ruling 5). A tenant's per-tenant CA is trusted on the same listener, so a
+  ruling 5); an embedded node handed its cluster identity and no cluster CA
+  key is a BYO-TLS node, and `lifecycle.TrustPoolClusterCA` resolves its
+  cluster CA as it does `qrdbd`'s. A tenant's per-tenant CA is trusted on the same listener, so a
   leaf it issued with a forged node SAN would otherwise speak as the cluster.
 - **The assertion carries identity, never authority.** The target re-resolves
   the caller's roles and scope from its own replicated data and authorizes

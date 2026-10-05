@@ -2361,7 +2361,7 @@ func runStart(f *startFlags) (err error) {
 			// to anything; what it adds is the cluster CA's own membership
 			// and exemption (go-qrdb#560 review, B2-2).
 			//
-			// resolveTrustPoolClusterCA is DELIBERATELY independent of
+			// lifecycle.TrustPoolClusterCA is DELIBERATELY independent of
 			// ceremonyCA's own nil-ness above (go-qrdb#591's review, B4):
 			// ceremonyCA is resolved once, from the TLS bundle's own
 			// CAKeyPEM/CACertPEM, BEFORE BuildServices runs, and is nil on
@@ -2375,7 +2375,7 @@ func runStart(f *startFlags) (err error) {
 			// cakey.Provider BuildServices wires regardless of ceremonyCA, is
 			// the correct, always-live source once a node has ever completed
 			// first boot.
-			if trustPoolClusterCA, caErr := resolveTrustPoolClusterCA(svcNode.ClusterCAProv, bundle.ExplicitTLS, bundle.CACertPEM); caErr != nil {
+			if trustPoolClusterCA, caErr := lifecycle.TrustPoolClusterCA(svcNode.ClusterCAProv, bundle.ExplicitTLS, bundle.CACertPEM); caErr != nil {
 				slog.Error("the dynamic trust pool's cluster-CA exemption and on-behalf forwarding will not work", slog.Any("error", caErr))
 			} else if trustPoolClusterCA != nil {
 				bundle.SetClusterCA(trustPoolClusterCA)
