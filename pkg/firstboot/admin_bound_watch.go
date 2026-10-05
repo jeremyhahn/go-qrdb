@@ -20,10 +20,18 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
+
+// adminBoundWatchRetryCap bounds the exponential backoff WatchForAdminBound
+// uses between retries of a lookup that fails for any reason other than
+// "no admin account yet" -- the same cap VerifyAdminCertBindingWithin uses,
+// so a degraded store delays this watch's start the same way it delays the
+// boot-time check, never longer.
+const adminBoundWatchRetryCap = time.Second
 
 // AdminRecordWatcher is the narrow Watch surface WatchForAdminBound needs:
 // a single-key watch over the replicated store the bootstrap admin's user
@@ -49,21 +57,46 @@ type AdminRecordWatcher interface {
 // probe AwaitingAdminCredentialProbe replaced, go-qrdb#560 review B1) is an
 // event-driven watch on the replicated record itself.
 //
-// It resolves the admin's user ID once via lookup, then watches
-// user.PrimaryRecordKey(id) for the life of ctx (or until the first live
-// binding is observed). Every delivered event is decoded as a user.User and
-// judged by the SAME verifyAdminBindings predicate the boot-time check
-// applies; the first one that resolves to a live binding fires
-// notifier.AdminBound() and the watch stops -- matching
-// AwaitingAdminCredentialProbe.AdminBound's own "permanent for the life of
-// this probe" contract, so a later expiry of that binding never re-arms
-// the watch.
+// It resolves the admin's user ID via lookup, then watches the EXACT key the
+// real user store reads and writes the record under: a tenant-scoped store
+// (every production composer's, qrdb's own and a higher-level IAM stack's
+// adapter alike) namespaces every key by tenant.IdentityNamespace(tenantID)
+// before it ever reaches the replicated KV plane, so the record this watch
+// must see land is tenant.IdentityNamespace(tenantid.System) +
+// user.PrimaryRecordKey(id), NOT the bare, un-namespaced PrimaryRecordKey a
+// watch registered directly against the replicated hub would otherwise wait
+// on forever.
+//
+// Because the lookup (step one) and the watch registration (step two) are
+// two separate calls, a bind committed in between them would otherwise be
+// missed: a watch started AFTER the bind would never see it as an event,
+// and nothing else re-checks. So after the watch is registered, this
+// re-reads the SAME record once more; if it already carries a live binding
+// by then, notifier.AdminBound() fires immediately without waiting on an
+// event at all. That the watch is registered before this re-check (not
+// after) is what closes the gap: any bind that lands between the two reads
+// either already committed by the time the re-check runs, or lands after
+// the watch was already live to see it as an event -- there is no ordering
+// left in which a bind is invisible to both.
+//
+// Every delivered event is decoded as a user.User and judged by the SAME
+// verifyAdminBindings predicate the boot-time check applies; the first one
+// that resolves to a live binding fires notifier.AdminBound() and the
+// watch stops -- matching AwaitingAdminCredentialProbe.AdminBound's own
+// "permanent for the life of this probe" contract, so a later expiry of
+// that binding never re-arms the watch.
 //
 // A lookup that finds no admin account yet is not an error here: nothing
 // to watch exists until first boot creates the account, and entry into
 // "awaiting" is decided once, at boot, from that same account's state --
 // not by this watch, which only ever narrows exit. WatchForAdminBound
-// returns nil immediately in that case.
+// returns nil immediately in that case. A lookup that fails for any OTHER
+// reason -- a degraded store, no leader yet -- retries with the same
+// exponential backoff VerifyAdminCertBindingWithin uses (capped at
+// adminBoundWatchRetryCap) rather than ending the watch: a transient fault
+// at the moment this goroutine starts must not permanently strand the node
+// in "awaiting" for lack of a watch that would otherwise have told it the
+// node left that state.
 //
 // The caller runs this in its own goroutine; it blocks for the life of the
 // watch (until ctx is canceled, the admin binds, or the watch itself
@@ -71,7 +104,7 @@ type AdminRecordWatcher interface {
 // AwaitingAdminCredentialProbe already reports awaiting at boot -- a node
 // that is not awaiting has nothing this watch would change.
 func WatchForAdminBound(ctx context.Context, lookup AdminLookup, watcher AdminRecordWatcher, notifier AdminBoundNotifier) error {
-	u, err := lookup.GetUserByUsername(ctx, tenantid.System, adminUsername)
+	u, err := lookupAdminRetrying(ctx, lookup)
 	if err != nil {
 		var unf *user.UserNotFoundError
 		if errors.As(err, &unf) {
@@ -80,11 +113,21 @@ func WatchForAdminBound(ctx context.Context, lookup AdminLookup, watcher AdminRe
 		return err
 	}
 
-	w, err := watcher.Watch(ctx, user.PrimaryRecordKey(u.ID))
+	key := tenant.IdentityNamespace(tenantid.System) + user.PrimaryRecordKey(u.ID)
+	w, err := watcher.Watch(ctx, key)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = w.Close() }()
+
+	// Re-check: close the gap between the lookup above and this watch's
+	// own registration (see the doc comment).
+	if u2, err := lookup.GetUserByUsername(ctx, tenantid.System, adminUsername); err == nil {
+		if verifyAdminBindings(u2, time.Now().UTC()) == nil {
+			notifier.AdminBound()
+			return nil
+		}
+	}
 
 	for {
 		select {
@@ -98,6 +141,33 @@ func WatchForAdminBound(ctx context.Context, lookup AdminLookup, watcher AdminRe
 				notifier.AdminBound()
 				return nil
 			}
+		}
+	}
+}
+
+// lookupAdminRetrying resolves the bootstrap admin's user record, retrying
+// any failure other than "no admin account yet" with exponential backoff
+// (50ms, doubling, capped at adminBoundWatchRetryCap) until ctx ends,
+// rather than returning the first transient error and ending the watch
+// that is meant to run for the life of the node.
+func lookupAdminRetrying(ctx context.Context, lookup AdminLookup) (*user.User, error) {
+	backoff := 50 * time.Millisecond
+	for {
+		u, err := lookup.GetUserByUsername(ctx, tenantid.System, adminUsername)
+		if err == nil {
+			return u, nil
+		}
+		var unf *user.UserNotFoundError
+		if errors.As(err, &unf) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > adminBoundWatchRetryCap {
+			backoff = adminBoundWatchRetryCap
 		}
 	}
 }

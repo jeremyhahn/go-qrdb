@@ -203,3 +203,72 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 func ceremonyHandoffLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
+
+// TestNode_FirstBootWithCeremony_FreshUnboundNodeEntersAwaitingWithoutRestart
+// is the go-qrdb#560 re-review item 4 regression test for the probe's
+// decision ordering: wireClientAndServer (inside NewStandaloneNode) decides
+// n's "awaiting admin credential" probe BEFORE first boot has ever run, so
+// on a truly fresh node -- no admin user yet -- that decision always finds
+// "nothing to lock out" and leaves the probe not-awaiting. Without
+// FirstBootWithCeremony re-deciding it afterward
+// (reconcileAwaitingAdminCredential), a first boot that creates the admin
+// with NO certificate to bind would leave the node reporting not-awaiting
+// anyway -- wrong, and only correctable by a restart, which is exactly what
+// this fix removes the need for.
+func TestNode_FirstBootWithCeremony_FreshUnboundNodeEntersAwaitingWithoutRestart(t *testing.T) {
+	ctx := context.Background()
+
+	certDir := t.TempDir()
+	serverCA, err := qrdbdharness.NewCA(certDir)
+	require.NoError(t, err)
+	serverKP, err := serverCA.Issue(certDir, qrdbdharness.WithSubject("node", ""), qrdbdharness.WithServerAuth())
+	require.NoError(t, err)
+	serverCert, err := serverKP.TLSCertificate()
+	require.NoError(t, err)
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		MinVersion:   tls.VersionTLS13,
+	}
+
+	nodeCfg := qrdbconfig.DefaultConfig()
+	nodeCfg.Raft.DataDir = t.TempDir()
+	nodeCfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	nodeCfg.Protocols.REST = true
+	nodeCfg.Protocols.GRPC = false
+	nodeCfg.Protocols.QUIC = false
+	nodeCfg.Protocols.Unix = false
+	nodeCfg.Protocols.MCP = false
+	nodeCfg.Server.Host = "127.0.0.1"
+	nodeCfg.Server.AdminPort = freeTCPPort(t)
+
+	n, err := NewStandaloneNode(ctx, nodeCfg, []server.ServerOption{server.WithTLS(tlsCfg)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	// wireClientAndServer's own decision, made before first boot has ever
+	// run: no admin exists yet, so it correctly finds "not awaiting" --
+	// but that is this fix's precondition, not its assertion.
+	require.NotNil(t, n.awaitingAdminCredentialProbe)
+	require.False(t, n.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"a node with no admin user yet must not report awaiting before first boot has run")
+
+	// No pending-admin-cert record was ever written, and deps configures no
+	// credential path at all -- the ordinary "ceremony never ran on this
+	// node" case ResolveAdminCertForFirstBoot tolerates (NoPendingAdminCredentialError)
+	// by proceeding with no certificate to bind.
+	store := PendingAdminCertStore(n.Services().KV)
+	result, err := n.FirstBootWithCeremony(ctx, store, nil, 200*time.Millisecond, firstboot.Dependencies{
+		Tenants:      n.Services().Tenant,
+		Users:        n.UserService(),
+		Roles:        n.Services().Role,
+		RoleResolver: n.Services().Role,
+		Logger:       ceremonyHandoffLogger(),
+	})
+	require.NoError(t, err)
+	require.True(t, result.AdminCreated)
+
+	// The decision this fix adds: re-run immediately after first boot, in
+	// the SAME call, with no restart in between.
+	require.True(t, n.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"a fresh node whose first boot just created an unbound admin must report awaiting without a restart")
+}

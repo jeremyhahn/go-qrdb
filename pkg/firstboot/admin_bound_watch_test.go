@@ -17,6 +17,7 @@ package firstboot
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -49,6 +51,37 @@ var _ kvstore.AtomicKVStore = (*hubNotifyingKVStore)(nil)
 
 func newHubNotifyingKVStore(hub *watch.Hub) *hubNotifyingKVStore {
 	return &hubNotifyingKVStore{MemoryKVStore: kvstore.NewMemoryKVStore(), hub: hub}
+}
+
+// newSystemUserStore builds a user.UserServicer over the SAME
+// tenant.IdentityNamespace(tenantid.System) confinement every production
+// composer puts between the replicated KV plane and the user store
+// (cmd/qrdbd/start.go's systemStore, sdk/go/node's identical construction)
+// -- NOT the bare store a watch key built directly from
+// user.PrimaryRecordKey would otherwise match by coincidence. The earlier
+// shape of this fixture handed user.NewStore the un-namespaced hub store
+// directly, which is exactly the bug WatchForAdminBound shipped with
+// (go-qrdb#560 re-review item 4): a real namespaced store's writes commit
+// under "system/" + the record key, which an un-namespaced test double
+// can never expose. Returns the hub-notifying store too, so a caller that
+// wants the raw commit-order guarantees (none of these tests currently
+// do) still has it.
+func newSystemUserStore(t *testing.T, hub *watch.Hub) (user.UserServicer, *hubNotifyingKVStore) {
+	t.Helper()
+	raw := newHubNotifyingKVStore(hub)
+	namespaced, err := kvstore.NewNamespacedKVStore(raw, tenant.IdentityNamespace(tenantid.System))
+	if err != nil {
+		t.Fatalf("NewNamespacedKVStore: %v", err)
+	}
+	idgen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	userSvc, err := user.NewStore(namespaced, idgen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	return userSvc, raw
 }
 
 func (s *hubNotifyingKVStore) Put(ctx context.Context, key string, value []byte) error {
@@ -95,15 +128,7 @@ func TestWatchForAdminBound_RealHubObservesAddCertBinding(t *testing.T) {
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
 
-	store := newHubNotifyingKVStore(hub)
-	idgen, err := dao.NewSnowflakeGenerator(1)
-	if err != nil {
-		t.Fatalf("NewSnowflakeGenerator: %v", err)
-	}
-	userSvc, err := user.NewStore(store, idgen)
-	if err != nil {
-		t.Fatalf("user.NewStore: %v", err)
-	}
+	userSvc, _ := newSystemUserStore(t, hub)
 
 	created, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
 		Username:             user.BootstrapAdminUsername,
@@ -160,15 +185,7 @@ func TestWatchForAdminBound_NoAdminYetIsANoOp(t *testing.T) {
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
 
-	store := newHubNotifyingKVStore(hub)
-	idgen, err := dao.NewSnowflakeGenerator(1)
-	if err != nil {
-		t.Fatalf("NewSnowflakeGenerator: %v", err)
-	}
-	userSvc, err := user.NewStore(store, idgen)
-	if err != nil {
-		t.Fatalf("user.NewStore: %v", err)
-	}
+	userSvc, _ := newSystemUserStore(t, hub)
 
 	notifier := &capturingAdminBoundNotifier{}
 	if err := WatchForAdminBound(ctx, userSvc, hub, notifier); err != nil {
@@ -186,15 +203,7 @@ func TestWatchForAdminBound_ContextCanceledReturnsNil(t *testing.T) {
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
 
-	store := newHubNotifyingKVStore(hub)
-	idgen, err := dao.NewSnowflakeGenerator(1)
-	if err != nil {
-		t.Fatalf("NewSnowflakeGenerator: %v", err)
-	}
-	userSvc, err := user.NewStore(store, idgen)
-	if err != nil {
-		t.Fatalf("user.NewStore: %v", err)
-	}
+	userSvc, _ := newSystemUserStore(t, hub)
 
 	ctx := context.Background()
 	if _, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
@@ -264,15 +273,7 @@ func threeNodeAwaitingClusterFixture(t *testing.T) (userSvc user.UserServicer, h
 	hub = watch.NewHub()
 	t.Cleanup(hub.Close)
 
-	store := newHubNotifyingKVStore(hub)
-	idgen, err := dao.NewSnowflakeGenerator(1)
-	if err != nil {
-		t.Fatalf("NewSnowflakeGenerator: %v", err)
-	}
-	userSvc, err = user.NewStore(store, idgen)
-	if err != nil {
-		t.Fatalf("user.NewStore: %v", err)
-	}
+	userSvc, _ = newSystemUserStore(t, hub)
 
 	created, err := userSvc.CreateUser(context.Background(), &user.CreateUserRequest{
 		Username:             user.BootstrapAdminUsername,
@@ -411,4 +412,193 @@ func TestThreeNodeCluster_LeaderChange_RemainingNodesLeaveAwaitingViaWatch(t *te
 	// both only ever learn of the bind through their own watch.
 	awaitNotAwaiting(t, node1, 5*time.Second)
 	awaitNotAwaiting(t, node2, 5*time.Second)
+}
+
+// ===========================================================================
+// go-qrdb#560 re-review item 4: the lookup/watch-registration race, and a
+// failed lookup retrying rather than ending the watch.
+// ===========================================================================
+
+// bindsOnSecondLookup is an AdminLookup that delegates to real, except that
+// its SECOND call binds the admin (via bind) as a side effect BEFORE
+// delegating -- simulating a bind that commits in the exact gap between
+// WatchForAdminBound's initial lookup (resolving the ID, call 1) and its
+// own post-registration re-check (call 2), so the test controls precisely
+// when the race window closes.
+type bindsOnSecondLookup struct {
+	real  AdminLookup
+	bind  func(ctx context.Context) error
+	calls atomic.Int32
+}
+
+func (l *bindsOnSecondLookup) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
+	if l.calls.Add(1) == 2 {
+		if err := l.bind(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return l.real.GetUserByUsername(ctx, tenantID, username)
+}
+
+// neverDeliveringWatcher is a watch.Watcher whose Events channel never
+// receives anything: a caller that only reacted to delivered events would
+// block on it forever.
+type neverDeliveringWatcher struct {
+	events chan watch.WatchResponse
+}
+
+func newNeverDeliveringWatcher() *neverDeliveringWatcher {
+	return &neverDeliveringWatcher{events: make(chan watch.WatchResponse)}
+}
+func (w *neverDeliveringWatcher) Events() <-chan watch.WatchResponse { return w.events }
+func (w *neverDeliveringWatcher) WatchID() int64                     { return 1 }
+func (w *neverDeliveringWatcher) Close() error                       { return nil }
+func (w *neverDeliveringWatcher) Err() error                         { return nil }
+
+// neverDeliveringAdminWatcher implements AdminRecordWatcher by registering
+// a neverDeliveringWatcher, so the ONLY way WatchForAdminBound's caller can
+// observe a bind through this double is the post-registration re-check,
+// never an event.
+type neverDeliveringAdminWatcher struct{}
+
+func (neverDeliveringAdminWatcher) Watch(context.Context, string, ...watch.WatchOption) (watch.Watcher, error) {
+	return newNeverDeliveringWatcher(), nil
+}
+
+// TestWatchForAdminBound_BindBetweenLookupAndWatchIsCaughtByRecheck is the
+// go-qrdb#560 re-review item 4 regression test: a bind that commits in the
+// gap between WatchForAdminBound's initial lookup and its own watch
+// registration must still be observed. The watcher double here never
+// delivers a single event, so a pass is only possible through the
+// post-registration re-check this fix added, not the watch loop.
+func TestWatchForAdminBound_BindBetweenLookupAndWatchIsCaughtByRecheck(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	created, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	lookup := &bindsOnSecondLookup{
+		real: userSvc,
+		bind: func(ctx context.Context) error {
+			_, err := userSvc.AddCertBinding(ctx, created.ID, validSPKIThumbprintForTest(), 0)
+			return err
+		},
+	}
+	notifier := &capturingAdminBoundNotifier{}
+	done := make(chan error, 1)
+	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WatchForAdminBound returned an error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchForAdminBound never returned; the post-registration re-check did not catch the bind")
+	}
+	if notifier.calls.Load() != 1 {
+		t.Fatalf("AdminBound called %d times, want 1", notifier.calls.Load())
+	}
+}
+
+// failsNTimesThenSucceeds is an AdminLookup that fails every call until its
+// internal counter reaches zero, then delegates to real -- simulating a
+// transient store fault (no leader yet, a degraded shard) at the exact
+// moment WatchForAdminBound starts.
+type failsNTimesThenSucceeds struct {
+	real   AdminLookup
+	remain atomic.Int32
+	fail   error
+	calls  atomic.Int32
+}
+
+func (l *failsNTimesThenSucceeds) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
+	l.calls.Add(1)
+	if l.remain.Add(-1) >= 0 {
+		return nil, l.fail
+	}
+	return l.real.GetUserByUsername(ctx, tenantID, username)
+}
+
+// transientLookupFault is the sentinel failsNTimesThenSucceeds returns: any
+// error other than *user.UserNotFoundError is a transient fault
+// WatchForAdminBound must retry rather than treat as "nothing to watch."
+var transientLookupFault = errors.New("firstboot_test: simulated transient store fault")
+
+// TestWatchForAdminBound_TransientLookupFailureRetries is the go-qrdb#560
+// re-review item 4 regression test for the other half of the fix: a
+// lookup failure that is NOT "no admin account yet" must retry rather
+// than end the watch. Without the fix, WatchForAdminBound returns the
+// first such error immediately; this test proves it instead keeps trying
+// until the lookup succeeds and the watch it registers afterward observes
+// the bind.
+func TestWatchForAdminBound_TransientLookupFailureRetries(t *testing.T) {
+	ctx := context.Background()
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+	userSvc, _ := newSystemUserStore(t, hub)
+
+	created, err := userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             user.BootstrapAdminUsername,
+		TenantID:             tenantid.System,
+		System:               true,
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup.remain.Store(3)
+	notifier := &capturingAdminBoundNotifier{}
+	done := make(chan error, 1)
+	go func() { done <- WatchForAdminBound(ctx, lookup, hub, notifier) }()
+
+	// A watch without the fix ends (returns the transient error) on the
+	// very first failed lookup; assert it has NOT ended well before the
+	// 3 retries (50ms, 100ms, 200ms backoff) could possibly have run out.
+	select {
+	case err := <-done:
+		t.Fatalf("WatchForAdminBound ended early on a transient lookup failure instead of retrying: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The retries exhaust well within this wait; the lookup then succeeds,
+	// the watch registers, and the bind below must be observed exactly as
+	// the real-hub evidence test proves for a lookup that never failed.
+	deadline := time.Now().Add(5 * time.Second)
+	for hub.WatchCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("WatchForAdminBound never registered a watcher after its retries succeeded")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := userSvc.AddCertBinding(ctx, created.ID, validSPKIThumbprintForTest(), 0); err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WatchForAdminBound returned an error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchForAdminBound never observed the binding event after its retries succeeded")
+	}
+	if notifier.calls.Load() != 1 {
+		t.Fatalf("AdminBound called %d times, want 1", notifier.calls.Load())
+	}
+	if lookup.calls.Load() < 4 {
+		t.Fatalf("lookup called %d times, want at least 4 (3 failures + 1 success)", lookup.calls.Load())
+	}
 }

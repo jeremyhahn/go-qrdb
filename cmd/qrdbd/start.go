@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -2046,6 +2047,15 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				defer func() { _ = authResult.auditLogger.Close() }()
+				// Waited on before auditLogger closes (LIFO: deferred after
+				// it, so it runs first) -- the watch goroutine, when one was
+				// started, logs through resources this shutdown path is
+				// about to tear down, and ctx (sigCtx) already cancels it,
+				// so this only waits for the exit it was already told to
+				// make.
+				if authResult.adminWatchWG != nil {
+					defer authResult.adminWatchWG.Wait()
+				}
 				authMethods.Bind(authResult.authMW)
 			} else {
 				slog.Warn("authentication disabled: all endpoints accessible without credentials")
@@ -3623,6 +3633,12 @@ type authBootstrapResult struct {
 	// certificate binds -- at which point the SAME probe reports
 	// not-awaiting and every transport serves normally, with no restart.
 	awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
+
+	// adminWatchWG tracks the firstboot.WatchForAdminBound goroutine, when
+	// one was started, so runStart's shutdown path can wait for it to
+	// actually exit instead of leaving it to be reaped by process exit
+	// alone.
+	adminWatchWG *sync.WaitGroup
 }
 
 // bootstrapUserRoleStores initializes the user and role stores unconditionally.
@@ -3918,6 +3934,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // quicbaasd) enforce authn/authz identically.
 func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
 	_ = node
+	var adminWatchWG sync.WaitGroup
 
 	// The custodian service store, reused from mgmt.legacyFactorStore rather
 	// than built again here: bootstrapUserRoleStores already constructed it
@@ -4047,7 +4064,9 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// probe's AdminBound is permanent for the life of the probe, so a
 		// later binding expiry never needs to re-arm it.
 		if watchSvc != nil && awaitingAdminCredentialProbe.AwaitingAdminCredential() {
+			adminWatchWG.Add(1)
 			go func() {
+				defer adminWatchWG.Done()
 				if werr := firstboot.WatchForAdminBound(ctx, mgmt.userSvc, watchSvc, awaitingAdminCredentialProbe); werr != nil && ctx.Err() == nil {
 					slog.Warn("watch for the bootstrap admin's certificate binding ended unexpectedly; "+
 						"this node stays in \"awaiting admin credential\" until a restart or a local reissue",
@@ -4109,6 +4128,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		authMW:                       authMW,
 		soAuthenticator:              soAuthenticator,
 		awaitingAdminCredentialProbe: awaitingAdminCredentialProbe,
+		adminWatchWG:                 &adminWatchWG,
 	}, nil
 }
 

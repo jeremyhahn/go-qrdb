@@ -740,6 +740,26 @@ type Node struct {
 	// to the same posture.
 	bindingPolicy atomic.Int32
 
+	// awaitingAdminCredentialProbe is the "awaiting admin credential" gate
+	// wireClientAndServer constructs, stored here so FirstBootWithCeremony
+	// can re-decide it AFTER first boot runs (reconcileAwaitingAdminCredential):
+	// wireClientAndServer's own decision runs before any embedder has called
+	// FirstBoot/FirstBootWithCeremony, so on a FRESH node -- no admin user
+	// yet -- it always finds "no admin to lock out" and leaves the probe
+	// reporting not-awaiting, even when first boot is about to create one
+	// unbound. nil on a node that never reached that decision (auth
+	// disabled, or "enrolled"/"optional").
+	awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
+
+	// adminWatchStarted guards firstboot.WatchForAdminBound against being
+	// started twice: wireClientAndServer starts it when ITS OWN decision
+	// already finds the node awaiting; reconcileAwaitingAdminCredential
+	// (called again after FirstBoot/FirstBootWithCeremony) starts it when
+	// THAT later decision is the one that first finds the node awaiting
+	// instead. Exactly one of those ever needs to start it for a given
+	// node's lifetime, since AdminBound is permanent for the probe's life.
+	adminWatchStarted atomic.Bool
+
 	srv    atomic.Pointer[server.Server]
 	client atomic.Pointer[sdk.Client]
 	// featureClient is the node's own in-process client for its feature
@@ -2870,6 +2890,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// whenever the policy is not "required" or auth is disabled, it
 	// reports not-awaiting, a harmless no-op target for AdminBound.
 	awaitingAdminCredentialProbe := firstboot.NewAwaitingAdminCredentialProbe()
+	n.awaitingAdminCredentialProbe = awaitingAdminCredentialProbe
 	ceremonySvc := svcNode.Ceremony
 	if core, ok := service.CeremonyServiceCore(ceremonySvc); ok {
 		if hostSvc, hostOK := n.host.(service.Host); hostOK {
@@ -3013,54 +3034,16 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
-		verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout)
-		if verr != nil {
-			slog.Warn(`node: auth.mtls_binding_policy is "required" and the bootstrap admin holds no live certificate binding; `+
-				`booting into "awaiting admin credential"`,
-				slog.String("error", verr.Error()))
-		}
-		// A failed lookup (as opposed to a verdict) is NOT "awaiting"
-		// (go-qrdb#560 review B1): Initialize returns it here as a typed
-		// error so it is logged, while the probe itself is left reporting
-		// not-awaiting -- an infrastructure fault distinct from the
-		// admin's own binding state must not additionally lock the node
-		// down to the two ceremony verbs this boot state serves.
-		if initErr := awaitingAdminCredentialProbe.Initialize(bindingPolicy, verr); initErr != nil {
-			slog.Warn(`node: auth.mtls_binding_policy is "required" but the bootstrap admin's binding could not be verified; `+
-				`serving normally rather than locking the node down over this fault alone`,
-				slog.String("error", initErr.Error()))
-		}
+		// First decision: at this point no embedder has called FirstBoot or
+		// FirstBootWithCeremony yet, so a FRESH node's admin does not exist
+		// at all -- isAwaitingAdminCredential's own documented carve-out
+		// reports that as "not awaiting," correctly, for THIS instant.
+		// reconcileAwaitingAdminCredential (called again after first boot
+		// runs, from FirstBoot/FirstBootWithCeremony) is what catches a
+		// fresh node whose first boot just created that admin unbound,
+		// without which it would stay "not awaiting" until a restart.
+		n.reconcileAwaitingAdminCredential(ctx, svcNode.User, svcNode.Watch)
 		embeddedOpts = append(embeddedOpts, embedded.WithAwaitingAdminCredentialProbe(awaitingAdminCredentialProbe))
-
-		// Entry into "awaiting admin credential" was decided above, once, at
-		// boot; EXIT is driven by the replicated store on every node, not
-		// only the one that performs the reissue (go-qrdb#560 review A).
-		// CeremonyServiceWithAdminRebind's AdminBound call only reaches this
-		// probe when THIS node ran the reissue -- ordinarily the Raft
-		// leader, since that retry is leader-gated. A follower learns the
-		// admin bound only once the write replicates, so it watches the
-		// admin's own user record for the first live binding and tells the
-		// SAME probe, with no restart and no per-request re-read.
-		//
-		// Runs on n.background(), NOT ctx: ctx is this boot call's own
-		// request context, cancelled the moment Unseal/New returns, which
-		// would stop the watch moments after the node came up. Started only
-		// when this boot actually decided "awaiting" -- a node that never
-		// entered that state has nothing for this watch to change, and the
-		// probe's AdminBound is permanent for the life of the probe, so a
-		// later binding expiry never needs to re-arm it.
-		if svcNode.Watch != nil && awaitingAdminCredentialProbe.AwaitingAdminCredential() {
-			bgCtx := n.background()
-			n.bgWG.Add(1)
-			go func() {
-				defer n.bgWG.Done()
-				if werr := firstboot.WatchForAdminBound(bgCtx, svcNode.User, svcNode.Watch, awaitingAdminCredentialProbe); werr != nil && bgCtx.Err() == nil {
-					slog.Warn("node: watch for the bootstrap admin's certificate binding ended unexpectedly; "+
-						"this node stays in \"awaiting admin credential\" until a restart or a local reissue",
-						slog.String("error", werr.Error()))
-				}
-			}()
-		}
 	}
 	// A self-issued cluster's cakey.Provider (svcNode.ClusterCAProv) must be
 	// ESTABLISHED before the trust pool below ever resolves it: the trust
