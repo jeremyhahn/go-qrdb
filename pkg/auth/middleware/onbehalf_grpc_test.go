@@ -78,7 +78,15 @@ func runGRPCOnBehalf(t *testing.T, ctx context.Context, req any, authn *mockAuth
 		stored = &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
 	}
 	authz := &capturingAuthorizer{}
-	m := New(authz, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}))
+	// This file is about on-behalf forwarding, not auth.mtls_binding_policy
+	// (go-qrdb#517/#548): the stored users here carry no enrolled
+	// certificate binding, and under the default MTLSBindingRequired that
+	// refuses every cert login for them, including the ordinary
+	// (non-forwarded) chain some of these tests also exercise.
+	// MTLSBindingEnrolled is the documented explicit opt-out for an
+	// account policy was never meant to gate here.
+	m := New(authz, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: stored}),
+		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	var ran bool
 	var seen *auth.Identity
 	_, err := m.UnaryInterceptor()(ctx, req, &grpc.UnaryServerInfo{FullMethod: grpcOBMethod},

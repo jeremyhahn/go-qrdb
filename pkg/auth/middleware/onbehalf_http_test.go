@@ -28,7 +28,14 @@ import (
 
 func httpOBMiddleware(direct *mockAuthenticator) *AuthMiddleware {
 	stored := &user.User{Username: "alice", TenantID: "acme", Lifecycle: user.LifecycleActive, RoleIDs: []string{"kv-writer"}}
-	return New(&capturingAuthorizer{}, WithAuthenticator(direct), WithUserService(&mockUserServicer{user: stored}))
+	// This file is about on-behalf forwarding, not auth.mtls_binding_policy
+	// (go-qrdb#517/#548): alice has no enrolled certificate binding, and
+	// under the default MTLSBindingRequired that refuses every cert login
+	// for her, including the ordinary (non-forwarded) chain these tests
+	// also exercise. MTLSBindingEnrolled is the documented explicit
+	// opt-out for an account policy was never meant to gate here.
+	return New(&capturingAuthorizer{}, WithAuthenticator(direct), WithUserService(&mockUserServicer{user: stored}),
+		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 }
 
 // TestAuthenticateHTTP_ForwardedRequestIsTheCaller: a request a cluster node

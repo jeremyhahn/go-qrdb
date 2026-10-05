@@ -74,7 +74,14 @@ func TestAuthenticateCertificate(t *testing.T) {
 	other := replicaforwardtest.NewCA(t)
 	chain := callerChain(t, ca)
 	sum := sha256.Sum256(chain[0].Raw)
-	mtls := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(auth.NewMTLSAuthenticator()))
+	// This file is about caller authentication for replica forwarding, not
+	// auth.mtls_binding_policy (go-qrdb#517/#548): mtls has no user store
+	// wired at all, and under the default MTLSBindingRequired that refuses
+	// every certificate login as naming no account. MTLSBindingEnrolled is
+	// the documented explicit opt-out for a policy these subtests were
+	// never meant to exercise.
+	mtls := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
+		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	attested := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(attestedHost{thumbprint: hex.EncodeToString(sum[:])}))
 
 	for name, tc := range map[string]struct {
