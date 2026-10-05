@@ -67,6 +67,7 @@ services:
     volumes:
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
+      - qrdb-backup-keys:/backup-keys
     environment:
       - QRDB_CONFIG=/workspace/go-qrdb/test/integration/api/config.test.yaml
       - QRDB_LOG_LEVEL=debug
@@ -90,10 +91,17 @@ services:
         echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo "Warning: Could not set rmem_max"
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
         # Ensure directories exist
-        mkdir -p /var/run/qrdbd /data /app/build/bin
+        mkdir -p /var/run/qrdbd /data /app/build/bin /backup-keys
         # qrdbd is built into the image; container start is a server start.
+        # --backup-key-dir points at the SAME shared volume the
+        # integration-tests container mounts read-write at the same path
+        # (qrdb-backup-keys), so a key file cli_backup_test.go writes there
+        # is resolvable by the "software" key-wrap provider's bare-name
+        # KeyRef, exactly as a real deployment's own operator-managed key
+        # directory would be -- the server here is a separate container,
+        # not a subprocess of the test binary, so no other path is shared.
         echo "Starting qrdbd server..."
-        /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml &
+        /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml --backup-key-dir /backup-keys &
         QRDBD_PID=$!
         # Wait for the admin endpoint to come up so we can bootstrap the node.
         #
@@ -367,6 +375,7 @@ services:
       - qrdb-data:/data:ro
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
       - qrdb-shamir-data:/data-shamir:ro
+      - qrdb-backup-keys:/backup-keys
       - go-build-cache:/root/.cache/go-build
     environment:
       - CGO_ENABLED=1
@@ -379,6 +388,14 @@ services:
       - QRDB_TLS_CA=/data/raft/ca.pem
       - QRDB_TLS_CERT=/data/admin/admin.crt
       - QRDB_TLS_KEY=/data/admin/admin.key
+      # Shared with qrdbd's own --backup-key-dir (qrdb-backup-keys, mounted
+      # read-write here too): cli_backup_test.go's writeKeyFile writes an
+      # encryption/decryption key here under its bare name, which is all
+      # --encryption-key-file / --decryption-key-file ever sends the server
+      # -- the server resolves the name against this same volume from its
+      # side, since it is a separate container, not a subprocess of this
+      # test binary.
+      - QRDB_BACKUP_KEY_DIR=/backup-keys
       # Dedicated Shamir-seal server connection (mounted read-only at /data-shamir).
       - QRDB_SHAMIR_REST_URL=https://qrdbd-shamir:64002
       - QRDB_SHAMIR_GRPC_ADDR=qrdbd-shamir:64003
@@ -428,6 +445,8 @@ volumes:
   qrdb-shamir-data:
     driver: local
   qrdb-shamir-socket:
+    driver: local
+  qrdb-backup-keys:
     driver: local
   go-build-cache:
     driver: local

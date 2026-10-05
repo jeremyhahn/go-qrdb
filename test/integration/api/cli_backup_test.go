@@ -11,25 +11,47 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
-// writeKeyFile writes a fresh 32-byte key file under t.TempDir() and
-// returns its path, for use as --encryption-key-file /
-// --decryption-key-file: the server under test here is a real subprocess
-// on this same machine, so a temp file written by the test is exactly what
-// its "software" keywrap provider reads.
+// backupKeyDir returns the directory --encryption-key-file /
+// --decryption-key-file names resolve against on the server under test.
+// The server here is a SEPARATE docker-compose container, not a
+// subprocess of this test binary (unlike test/integration's self-spawned
+// cluster stage), so a key file is only resolvable on both sides from a
+// volume both containers mount -- QRDB_BACKUP_KEY_DIR, wired to qrdbd's
+// --backup-key-dir and mounted read-write into this container too.
+func backupKeyDir(t *testing.T) string {
+	t.Helper()
+	dir := os.Getenv("QRDB_BACKUP_KEY_DIR")
+	if dir == "" {
+		t.Fatalf("QRDB_BACKUP_KEY_DIR is not set; the compose stack must mount a shared backup-key volume into both qrdbd and this runner")
+	}
+	return dir
+}
+
+// keyFileSeq disambiguates key files written by concurrent/repeated calls
+// into the one shared backupKeyDir, now that it is not a fresh t.TempDir()
+// per call.
+var keyFileSeq atomic.Uint64
+
+// writeKeyFile writes a fresh 32-byte key file into backupKeyDir and
+// returns its BARE NAME -- never a path, matching --encryption-key-file's
+// own documented contract ("the server never reads a path a client
+// supplies"): the server resolves the name against its own
+// --backup-key-dir, which is this same shared volume from its side.
 func writeKeyFile(t *testing.T, fill byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup.key")
+	name := fmt.Sprintf("backup-%d.key", keyFileSeq.Add(1))
 	data := make([]byte, 32)
 	for i := range data {
 		data[i] = fill + byte(i)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(backupKeyDir(t), name), data, 0o600); err != nil {
 		t.Fatalf("writeKeyFile: %v", err)
 	}
-	return path
+	return name
 }
 
 // ---------------------------------------------------------------------------
@@ -386,13 +408,13 @@ func TestCLIMultiProtocolBackupRestoreEncryptedNeedsNoKeyByDefault(t *testing.T)
 
 			ensureShardSnapshot(t, cfg, proto)
 
-			keyPath := writeKeyFile(t, 0x20)
+			keyName := writeKeyFile(t, 0x20)
 			destination := fmt.Sprintf("/tmp/qrdb-backups/enc-%s-%d", proto, testTimestamp())
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
 				"--output", "json", "backup", "create",
 				"--destination", destination,
 				"--encryption", "aes256",
-				"--encryption-key-file", keyPath,
+				"--encryption-key-file", keyName,
 			)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -425,9 +447,9 @@ func TestCLIMultiProtocolBackupRestoreEncryptedNeedsNoKeyByDefault(t *testing.T)
 
 			// A WRONG --decryption-key-file override IS refused with a
 			// decryption error -- the override is honored, not ignored.
-			wrongKeyPath := writeKeyFile(t, 0x30)
+			wrongKeyName := writeKeyFile(t, 0x30)
 			_, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"backup", "restore", "--id", info.ID, "--decryption-key-file", wrongKeyPath,
+				"backup", "restore", "--id", info.ID, "--decryption-key-file", wrongKeyName,
 			)
 			assertError(t, err, fmt.Sprintf("[%s] restoring with the wrong key file override should error", proto))
 			assertContains(t, stderr, "decryption",
