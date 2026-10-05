@@ -1,6 +1,6 @@
 # Transactions and Batch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
 
 ## Exported surface
 

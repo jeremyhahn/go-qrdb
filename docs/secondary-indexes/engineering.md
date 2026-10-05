@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
 
 ## Exported surface
 
@@ -37,13 +37,17 @@ func CompareAndSwapWithCurrent(ctx context.Context, store AtomicKVStore, key str
 // FencedCreator is kvstore.FencedCreator's alias, for an embedder holding a
 // kvstore.KVStore it did not get from Client.KVStore() (a custom
 // seal.StorageBackend composition, for one) and needs to assert for the
-// same capability AtomicKVStore above is exported for. Neither it nor
-// kvstore.MultiGuardedBatchKVStore (the real atomic multi-key write
-// primitive pkg/dao.UnitOfWork uses when available) has a wire-level
-// implementation on any sdk/go/transport client today, so the type alias
-// does not make either capability newly reachable through
+// same capability AtomicKVStore above is exported for. It has no
+// wire-level implementation on any sdk/go/transport client today, so the
+// type alias does not make the capability newly reachable through
 // Client.KVStore() -- only through a store the caller built or received
 // some other way.
+//
+// kvstore.MultiGuardedBatchKVStore (the real atomic multi-key write
+// primitive pkg/dao.UnitOfWork REQUIRES, with no fallback) is different:
+// the store Client.KVStore() returns now satisfies it too, by composing
+// the transport's TransactionClient -- see
+// ../transactions/engineering.md#kvstoremultiguardedbatchkvstore-over-clientkvstore.
 type FencedCreator = kvstore.FencedCreator
 
 // DAO.SaveIfAbsent's refusal when the store cannot write atomically, whether

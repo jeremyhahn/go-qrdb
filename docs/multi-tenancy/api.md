@@ -1,6 +1,6 @@
 # Multi-Tenancy — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
 
 Two gRPC services: tenant lifecycle and governance on
 `qrdb.v1.QRDBService`, and the per-tenant barrier on the dedicated
