@@ -308,14 +308,17 @@ set over every network transport -- REST, gRPC, QUIC, MCP and the Unix socket:**
 
 The same suite on a BYO-TLS cluster lands with the Key B lane (decision D2).
 
-The embedded multi-node case -- an embedded node holding no replica forwards
-as its configured caller, a caller without the permission is refused by the
-replica, and a node with no caller is refused with `NotAReplicaError` -- needs
-an embedded node that holds a raft tenant's key without having created it.
-An embedded clustered node does not yet compose the tenant key transport, the
-follower admission and the rebalance dependencies `qrdbd` composes, so that
-case lands with them; until then the embedded path is proven by the unit
-tests above.
+- four embedded nodes (`replica_forwarding_embedded_test.go`), a raft tenant
+  whose key the cluster key plane delivered to every node: an embedded node
+  holding no replica forwards as its configured writer and the write lands on
+  the replica; a node configured with a reader forwards its read and the
+  replica refuses its write; a node with no caller is refused with
+  `NotAReplicaError` and nothing is written;
+- a mixed cluster of two `qrdbd` nodes and one embedded node
+  (`replica_forwarding_mixed_test.go`): placed as a replica, the embedded node
+  receives the tenant's key from a `qrdbd` node and its client reads a
+  `qrdbd` node's write from its own replica; holding no replica, it forwards
+  its client's write to a `qrdbd` replica as its configured caller.
 
 ## Observability
 

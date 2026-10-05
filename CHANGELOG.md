@@ -71,9 +71,7 @@ are not reconstructed here — their history is in the git log.
   refused with `NotAReplicaError`. Streams are not forwarded. New surface:
   `embedded.WithReplicaForwarding` and `embedded.ReplicaForwarder`,
   `quic.NewFrameTransport` (SDK), `quic.FrameForwarder` (`pkg/api/quic`),
-  `Server.ReplicaForwarder` and `Server.AuthenticateCertificate`. An
-  embedded node does not yet take part in the tenant key transport, so it
-  forwards only for a tenant whose key it holds.
+  `Server.ReplicaForwarder` and `Server.AuthenticateCertificate`.
 - `lifecycle.Node.PlacementChanges`, the placement table's change feed: every
   placement written or deleted, as the node applies it. Replica forwarding
   invalidates its leader cache from it. `Node.PlacementStore` keeps no feed,
@@ -81,6 +79,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A clustered embedded node is a full member of `raft` tenant isolation.**
+  `sdk/go/node` built the tenant infrastructure but none of the multi-node
+  half `qrdbd` composed in `cmd/qrdbd`, so on an embedded node a raft
+  tenant's key never arrived from a peer (every request for the tenant was
+  "tenant not found"), its databases' followers were never added, and a
+  dedicated tenant MOVE had no key deliverer. That composition -- the cluster
+  key plane, the key distributor, the rebalance dependencies, the replica host
+  and the peer admin registry -- now lives in `pkg/server/lifecycle`
+  (`ComposeRaftTenantCluster`, `NewPeerAdminRegistry`), and `qrdbd` and
+  `sdk/go/node` both call it; the `qrdbd`-local copy is deleted. An embedded
+  node needs a REST listener for the key routes, as a `qrdbd` node does.
 - **A raft tenant's observer replica could be promoted before it existed.**
   The tenant shard reconciler took a replica whose shard had never started
   (its tenant key not yet delivered) for one that had finished joining,

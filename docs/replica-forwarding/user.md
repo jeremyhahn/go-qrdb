@@ -46,9 +46,9 @@ n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts, node.WithEmbedded
 - Forwarding goes to a replica's QUIC listener, so enable QUIC on the nodes
   that hold replicas.
 - The node must hold the tenant's key, as any node must to authenticate a
-  caller of that tenant on any transport. An embedded node does not yet take
-  part in the cluster's tenant key transport, so today it holds the key only
-  of a tenant it created itself.
+  caller of that tenant on any transport. An embedded node takes part in the
+  cluster's tenant key transport as a `qrdbd` node does, so give it a REST
+  listener and, when nodes share a host, `auth.peer_admin_urls`.
 
 ## Watches and other streams
 

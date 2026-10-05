@@ -224,7 +224,11 @@ n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts,
 ```
 
 Every forward authenticates that certificate as the node's QUIC listener
-authenticates a client's, and the replica authorizes that identity. Without
+authenticates a client's, and the replica authorizes that identity. The node
+must hold the tenant's key: a clustered embedded node takes part in the
+cluster's tenant key transport as `qrdbd` does, so enable REST (the key
+routes) and, when nodes share a host on distinct admin ports, set
+`auth.peer_admin_urls`. Without
 `WithEmbeddedCaller` such a call fails with `*placement.NotAReplicaError` and
 the replica set; the node never forwards as itself. `serverOpts` must carry
 the cluster CA (`server.WithCACertPool`) and the node's TLS identity, and the
