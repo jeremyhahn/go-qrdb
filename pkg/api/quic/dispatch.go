@@ -481,3 +481,20 @@ func (s *Server) assertMethodsAuthorized() {
 			len(missing), strings.Join(missing, ", ")))
 	}
 }
+
+// MethodPermissions returns a snapshot of the per-method permission table
+// this server's handlers declared at registration time (the s.handle,
+// s.handleIf and s.handleStreamOnly calls in buildHandlers, above). It
+// exists for cross-transport parity tests -- the embedded transport's own
+// operationPermissions table (sdk/go/transport/embedded) is a hand
+// transcription of this one, and a drift test needs a way to read QUIC's
+// copy from outside this package without duplicating buildHandlers'
+// construction. The entries cover every declared method regardless of
+// whether its backing service is wired (handleIf registers the permission
+// unconditionally), matching methodPerms' own "static table" contract.
+//
+// It is a read-only snapshot: mutating the returned map does not affect
+// this server's live registry.
+func (s *Server) MethodPermissions() map[string]permission.Permission {
+	return s.methodPerms.Entries()
+}

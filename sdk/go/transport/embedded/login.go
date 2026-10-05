@@ -241,6 +241,28 @@ func (c *loginClient) BeginLogin(ctx context.Context, req transport.BeginLoginRe
 	if !req.Type.IsValid() {
 		return nil, &transport.FactorTypeUnsupportedError{Type: string(req.Type)}
 	}
+	// A TENANT-WIDE throttle, not a per-hint one: req.Hint is
+	// caller-supplied and unverified at this point (BeginLogin runs before
+	// any proof is checked), so keying on it would let an attacker pick a
+	// fresh, unthrottled bucket for every nonce request by varying the
+	// hint. "begin-login" is a fixed principal shared by every attempt in
+	// the tenant, which is what makes this a defense against RAW
+	// volumetric nonce/challenge-issuance spam -- FinishLogin's own check,
+	// keyed by the RESOLVED principal, remains the defense against
+	// repeated guesses against one account.
+	//
+	// permission.LoginBeginAttempt, not UserAuthFactorsLogin: the two
+	// throttles are different threat models (volumetric challenge-issuance
+	// spam here vs. per-account brute force at FinishLogin) that need
+	// independently tunable ratelimit.Policy values. Sharing one Permission
+	// key would force one Policy to govern both bucket shapes; see
+	// permission.LoginBeginAttempt's doc comment for the collision that
+	// surfaced when this used UserAuthFactorsLogin.
+	if c.transport.authMW != nil {
+		if err := c.transport.authMW.CheckLoginRateLimit(ctx, req.TenantID, "begin-login", permission.LoginBeginAttempt); err != nil {
+			return nil, err
+		}
+	}
 	now := c.transport.nowFunc()
 
 	var (
@@ -345,12 +367,14 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	// proof is checked, so throttling by it would let repeated guesses
 	// against the SAME account each pick a fresh bucket by varying an
 	// irrelevant byte of the key. permission.UserAuthFactorsLogin is the
-	// same permission the network transports' login-factor verb carries;
-	// reusing it here, rather than a second login-specific permission,
-	// keeps one declared ratelimit.Policy governing both. A nil
-	// t.authMW or no declared policy is a no-op.
+	// same permission the network transports' login-factor verb carries,
+	// so this remains the per-account brute-force defense; BeginLogin's
+	// own throttle above is deliberately a separate Permission
+	// (permission.LoginBeginAttempt) so the two bucket shapes can be
+	// tuned independently. A nil t.authMW or no declared policy is a
+	// no-op.
 	if c.transport.authMW != nil {
-		if err := c.transport.authMW.CheckLoginRateLimit(principal.TenantID, principal.Username, permission.UserAuthFactorsLogin); err != nil {
+		if err := c.transport.authMW.CheckLoginRateLimit(ctx, principal.TenantID, principal.Username, permission.UserAuthFactorsLogin); err != nil {
 			return nil, err
 		}
 	}

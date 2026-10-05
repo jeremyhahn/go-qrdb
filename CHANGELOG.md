@@ -523,11 +523,13 @@ are not reconstructed here — their history is in the git log.
   the decision is audited with the caller's tenant. The per-tenant share-claim
   and quorum handshakes (`TenantBarrierShareClaimBegin/Complete`,
   `TenantBarrierQuorumBegin/Submit`) carry no RBAC permission of their own,
-  matching `permission.IdentityGated` on every network transport; the quorum
-  pair now also marks its context with the same holder provenance
-  (`claimContext`) the share-claim handshake already used, so a Security
-  Officer or custodian without an RBAC role is still authenticated through
-  the factor it presents.
+  matching `permission.IdentityGated` on every network transport, so a
+  Security Officer or custodian without an RBAC role is still authenticated
+  through the factor it presents — formalized as an explicit
+  `requireIdentity` check in the full-surface widening below, which also
+  retires the quorum pair's `claimContext` provenance marking as the no-op
+  it was (that marker's certificate-binding fallback is read only by the
+  share-CLAIM handshake, never by quorum).
   **BREAKING** for an embedder that composed the embedded transport with an
   `AuthMiddleware` and relied on this gap: a caller that previously reached
   another tenant's record or barrier now needs the system tenant (for the
@@ -557,11 +559,30 @@ are not reconstructed here — their history is in the git log.
   RBAC is configured) alongside the new RBAC grant check. `EmitAudit`
   stamps the caller's own tenant onto every event, overwriting whatever a
   caller supplied, unconditionally. `SealStore*`, which has no
-  network-exposed route and so no `pkg/permission` entry of its own, gets a
-  documented floor (an authenticated identity is required) rather than a
-  silent pass; `FactorClient`'s four methods (a different sub-client from
-  the one above) remain a documented, open gap pending an owner decision —
-  see the embedded-authorization report.
+  network-exposed route and so no `pkg/permission` entry of its own,
+  requires the new `seal:store_manage` permission (`ScopeCross`, like
+  every other node-barrier permission, so only a system-tenant identity
+  reaches it). `FactorClient`'s four methods (a different sub-client from
+  the one above) authorize against the tenant the named user belongs to,
+  with the same `user_authfactors` permissions the network's
+  `userauthfactor.*` route family checks for the identical underlying
+  service. `VolumePoolClient`, `PermissionClient`, and
+  `RBACClient.ListPermissions` are gated the same way as every other
+  `*Transport` method; `RBACClient.Authorize` is a policy-evaluation
+  primitive deciding about an explicit identity argument, never an
+  ambient caller identity, so it carries no permission of its own.
+  `Health` and the sealed-window bootstrap/unseal verbs
+  (`BarrierInitialize`, `BarrierUnseal`, `BarrierInitializeShamir`,
+  `OfficerRegister`, `RecoveryOfficerRegister`, `CeremonyInitialize`,
+  `CeremonySignCSR`) are public, matching every protocol's boot-time
+  sealed-window listener: an embedded node has no IAM store to
+  authenticate against while sealed, so the embedder must be able to
+  drive these in-process, gated instead by their own domain credential.
+  The share-claim and quorum handshakes (`ShareClaimBegin/Complete`,
+  `BarrierQuorumBegin/Submit`, and their `TenantBarrier*`/`DatabaseBarrier*`
+  siblings) are `IdentityGated`: an authenticated caller is required, rate
+  limited and audited, exactly as `permission.IdentityGated` is on every
+  network transport.
   **BREAKING** for an embedder that composed the embedded transport with an
   `AuthMiddleware`: a caller that previously reached KV, a user, a role, a
   certificate, or any other operation in this list without holding its
@@ -573,18 +594,41 @@ are not reconstructed here — their history is in the git log.
   every exported method of the concrete embedded `*Transport` type (not
   only `transport.Client`, which omits RAG, embedding, auth-factor, SQL,
   and the guarded-write KV verbs) and fails the build if any one of them —
-  present or future — has no declared authorization mechanism.
+  present or future — has no declared authorization mechanism, and a
+  sibling gate does the same over every sub-client's own concrete type
+  (`FactorClient`, `RBACClient`, `AuditClient`, `LoginClient`,
+  `SessionClient`, `VolumePoolClient`, `PermissionClient`), closing the
+  blind spot reflection over `*Transport` alone cannot see. A behavioral
+  gate (`TestAmbientOperations_DenyANoPermissionIdentity`) goes further
+  than declaration: it invokes every declared operation with a
+  no-permission identity and asserts a real denial, which is how two
+  pre-existing ordering bugs (`ResolvePermissions`,
+  `GetUserByCertThumbprint` checking a service-nil guard before
+  authorizing) were found and fixed. `operationPermissions` itself is now
+  checked against `pkg/api/quic`'s own method-permission table by
+  `transport_authz_quic_drift_test.go`, method by method, so it cannot
+  silently drift from what the network transports enforce.
   Login attempts (`LoginClient.BeginLogin`/`FinishLogin`, the embedded
   SDK's own pre-authentication ceremony) are now rate-limited through
   `AuthMiddleware.CheckLoginRateLimit` — a new, minimal seam in
   `pkg/auth/middleware` that reuses the exact rate-limit engine and
   `(tenant, subject, permission)` key `authorize()`'s own rate-limit step
-  uses for an authenticated caller, keyed instead by the login attempt's
-  RESOLVED principal (never the caller-supplied lookup key/hint, which is
-  attacker-controlled before any proof is checked), charged under
-  `permission.UserAuthFactorsLogin` — the same permission a network
-  transport's login-factor verb carries, so one declared
-  `ratelimit.Policy` governs both rather than a second, login-specific one.
+  uses for an authenticated caller, and now also audits a refusal the same
+  way `authorize()` audits every other decision. `FinishLogin` charges the
+  login attempt's RESOLVED principal (never the caller-supplied lookup
+  key/hint, which is attacker-controlled before any proof is checked)
+  under `permission.UserAuthFactorsLogin`, the same permission a network
+  transport's login-factor verb carries. `BeginLogin` charges a
+  tenant-wide, fixed-subject bucket under a SEPARATE sentinel permission,
+  `permission.LoginBeginAttempt` — deliberately not
+  `UserAuthFactorsLogin`: the two throttles are different threat models
+  (volumetric challenge-issuance spam at `BeginLogin` vs. per-account
+  brute force at `FinishLogin`) that need independently tunable
+  `ratelimit.Policy` values, and sharing one `Permission` key makes that
+  impossible to tune in production, not only in a test. Like
+  `permission.IdentityGated`, `LoginBeginAttempt` is deliberately not
+  registered in the permission catalog: it is a rate-limit dimension key,
+  never an RBAC grant.
 
 ### Added
 

@@ -15,6 +15,8 @@
 package middleware
 
 import (
+	"context"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
@@ -108,10 +110,26 @@ func (m *AuthMiddleware) checkRateLimit(identity *auth.Identity, perm permission
 //
 // A nil receiver, no limiter, no declared policies, or no Policy registered
 // for perm is a no-op, exactly like checkRateLimit.
-func (m *AuthMiddleware) CheckLoginRateLimit(tenantID, principal string, perm permission.Permission) error {
+//
+// A refusal is audited -- the same compliance property authorize() gives
+// every other decision (go-qrdb#335): a login rate-limit refusal is itself
+// a security-relevant event (credential-stuffing, a compromised account
+// being hammered), and leaving it unrecorded was the one authorize()-style
+// decision in this package with no audit trail at all. The nil-identity
+// guard mirrors authorize()'s own: identity is never nil here (it is
+// constructed two lines above), but auditDecision's contract is checked at
+// its call site, not assumed.
+func (m *AuthMiddleware) CheckLoginRateLimit(ctx context.Context, tenantID, principal string, perm permission.Permission) error {
 	if m == nil {
 		return nil
 	}
 	identity := &auth.Identity{Subject: principal, TenantID: tenantid.Normalize(tenantID)}
-	return m.checkRateLimit(identity, perm)
+	err := m.checkRateLimit(identity, perm)
+	if err == nil {
+		return nil
+	}
+	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+		return auditErr
+	}
+	return err
 }

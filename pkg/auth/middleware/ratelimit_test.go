@@ -112,14 +112,14 @@ func TestCheckRateLimit_DeniesOverBurst(t *testing.T) {
 
 func TestCheckLoginRateLimit_NilReceiverIsANoOp(t *testing.T) {
 	var m *AuthMiddleware
-	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("a nil AuthMiddleware must authorize everything, got %v", err)
 	}
 }
 
 func TestCheckLoginRateLimit_NoOpWhenNotConfigured(t *testing.T) {
 	m := New(&mockAuthorizer{})
-	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("want no error when rate limiting is not wired, got %v", err)
 	}
 }
@@ -131,10 +131,10 @@ func TestCheckLoginRateLimit_DeniesOverBurst(t *testing.T) {
 	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
-	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("want the first attempt within burst allowed, got %v", err)
 	}
-	err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin)
+	err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin)
 	var rl *RateLimitedError
 	if !asRateLimited(err, &rl) {
 		t.Fatalf("want a *RateLimitedError, got %T: %v", err, err)
@@ -151,13 +151,13 @@ func TestCheckLoginRateLimit_DistinctPrincipalsAreIndependent(t *testing.T) {
 	policies.Register(permission.UserAuthFactorsLogin, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
 	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
 
-	if err := m.CheckLoginRateLimit("acme", "alice", permission.UserAuthFactorsLogin); err != nil {
+	if err := m.CheckLoginRateLimit(context.Background(), "acme", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("alice's first attempt: %v", err)
 	}
-	if err := m.CheckLoginRateLimit("acme", "bob", permission.UserAuthFactorsLogin); err != nil {
+	if err := m.CheckLoginRateLimit(context.Background(), "acme", "bob", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("bob's own bucket must be untouched by alice's attempt, got %v", err)
 	}
-	if err := m.CheckLoginRateLimit("globex", "alice", permission.UserAuthFactorsLogin); err != nil {
+	if err := m.CheckLoginRateLimit(context.Background(), "globex", "alice", permission.UserAuthFactorsLogin); err != nil {
 		t.Fatalf("alice in a different tenant must be a different bucket, got %v", err)
 	}
 }

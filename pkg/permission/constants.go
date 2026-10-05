@@ -520,6 +520,32 @@ const (
 // UI catalog, and grant-validation paths reject it as unregistered.
 const IdentityGated Permission = "identity:gated"
 
+// LoginBeginAttempt is a sentinel permission used ONLY as a ratelimit.Policy
+// dimension key for the tenant-wide BeginLogin challenge-issuance throttle
+// (sdk/go/transport/embedded/login.go). It is never checked by RBAC and
+// never charged to an identity's own grants: BeginLogin runs before any
+// proof is checked, so there is no resolved account to authorize against,
+// only a volumetric-abuse concern to throttle.
+//
+// It is a distinct Permission from UserAuthFactorsLogin specifically so the
+// two can be declared with independent ratelimit.Policy values — a BeginLogin
+// challenge-issuance ceiling and a FinishLogin per-account brute-force
+// ceiling are different threat models with different natural rates, and an
+// operator who shares one Policy between them cannot tune one without
+// retuning the other (confirmed by the bucket collision in
+// TestLoginClient_FinishLogin_RateLimitsRepeatedAttemptsOnTheResolvedPrincipal,
+// where a single declared Policy exhausted BOTH the tenant-wide "begin-login"
+// bucket and the per-principal bucket, since they share one Permission key).
+//
+// LoginBeginAttempt is deliberately NOT registered in the permission
+// registry, exactly like IdentityGated: it can never be granted to a role,
+// never appears in All(), ByResource, or the UI catalog, and grant-validation
+// paths reject it as unregistered. An embedder who wants BeginLogin's
+// throttle active declares a ratelimit.Policy for it directly; with none
+// declared, checkRateLimit is a no-op for this key exactly as it is for
+// every other permission with no registered Policy.
+const LoginBeginAttempt Permission = "login:begin_attempt"
+
 // ---------------------------------------------------------------------------
 // Audit permissions
 // ---------------------------------------------------------------------------

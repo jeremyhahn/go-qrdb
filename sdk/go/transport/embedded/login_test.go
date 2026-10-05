@@ -842,3 +842,48 @@ func TestLoginClient_FinishLogin_RateLimitsRepeatedAttemptsOnTheResolvedPrincipa
 		t.Fatalf("second attempt over burst: err = %v, want *authmw.RateLimitedError", err)
 	}
 }
+
+// TestLoginClient_BeginLogin_RateLimitsTenantWideChallengeIssuance proves
+// BeginLogin's own tenant-wide throttle fires independently of
+// FinishLogin's per-principal throttle (permission.LoginBeginAttempt is a
+// distinct Permission from permission.UserAuthFactorsLogin specifically so
+// the two don't share one bucket -- see LoginBeginAttempt's doc comment).
+// Declaring a Policy ONLY for LoginBeginAttempt here, with none for
+// UserAuthFactorsLogin, isolates the assertion to BeginLogin's check: were
+// the two throttles still sharing one Permission key, this test would
+// equally fail to distinguish which check fired.
+func TestLoginClient_BeginLogin_RateLimitsTenantWideChallengeIssuance(t *testing.T) {
+	svc := newMemUserAuthFactorService()
+	cred := []byte("cred-2")
+	enrolledFactor(t, svc, 1, auth.AuthFactorFIDO2, cred)
+	lookup := &memUserLookup{principals: map[uint64]*auth.Principal{
+		1: {ID: 1, Username: "bob", TenantID: "acme", Roles: []string{"User"}, Active: true},
+	}}
+	resolver := auth.NewLoginResolver(svc, lookup)
+
+	limiter := ratelimit.NewTokenBucketLimiter()
+	t.Cleanup(func() { _ = limiter.Close() })
+	policies := ratelimit.NewRegistry()
+	policies.Register(permission.LoginBeginAttempt, ratelimit.Policy{RatePerSecond: 1.0 / 3600, Burst: 1})
+	mw := authmw.New(rbac.New(&mockRoleServicer{}), authmw.WithRateLimiter(limiter), authmw.WithRateLimitPolicies(policies))
+
+	tr, err := New(newMockKVService(), &mockAdminService{},
+		WithUserAuthFactorService(svc),
+		WithLoginResolver(resolver),
+		WithSessionIssuer(newMemSessionIssuer()),
+		WithAuthMiddleware(mw),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lc := tr.LoginClient()
+
+	if _, err := lc.BeginLogin(context.Background(), transport.BeginLoginRequest{Type: transport.FactorTypeFIDO2}); err != nil {
+		t.Fatalf("first BeginLogin within burst: %v", err)
+	}
+	_, err = lc.BeginLogin(context.Background(), transport.BeginLoginRequest{Type: transport.FactorTypeFIDO2})
+	var limited *authmw.RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("second BeginLogin over burst: err = %v, want *authmw.RateLimitedError", err)
+	}
+}
