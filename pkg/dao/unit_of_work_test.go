@@ -613,4 +613,3 @@ func TestUnitOfWorkCommitError(t *testing.T) {
 		assert.False(t, IsUnitOfWorkCommitError(errors.New("other")))
 	})
 }
-
