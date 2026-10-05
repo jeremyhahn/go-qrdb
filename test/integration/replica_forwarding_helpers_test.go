@@ -16,21 +16,29 @@
 
 package integration_test
 
-// The replica-forwarding suites' cluster: real qrdbd nodes, one raft tenant
-// whose key every node holds, and callers authenticated as that tenant.
+// The replica-forwarding suites' cluster: real qrdbd nodes -- or, where a
+// suite asks, embedded nodes in this process -- one raft tenant whose key
+// every node holds, and callers authenticated as that tenant.
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -44,9 +52,11 @@ const (
 	fwdNoKV   = "lister"
 )
 
-// fwdNode is one running node.
+// fwdNode is one running node: a qrdbd process, or an embedded node in this
+// process.
 type fwdNode struct {
 	cmd      *exec.Cmd
+	embedded *qrdbnode.Node
 	raftAddr string
 	admin    int
 	grpc     int
@@ -75,11 +85,24 @@ type fwdCluster struct {
 	tenant                *http.Client
 }
 
-// startFwdCluster starts and unseals n nodes, creates the raft tenant with a
-// writer and a caller without key permissions, and places one database on
-// every node so every node holds the tenant's key and can authenticate its
+// startFwdCluster starts and unseals n qrdbd nodes, creates the raft tenant
+// with a writer and a caller without key permissions, and places one database
+// on every node so every node holds the tenant's key and can authenticate its
 // callers.
 func startFwdCluster(t *testing.T, n int) *fwdCluster {
+	t.Helper()
+	return startFwdClusterWith(t, n, nil)
+}
+
+// fwdEmbedded makes a node of the cluster an embedded node (sdk/go/node) in
+// this process instead of a qrdbd process; it returns the node options beyond
+// the cluster's own that the node is built with.
+type fwdEmbedded func(ca *testCA) []qrdbnode.NodeOption
+
+// startFwdClusterWith is startFwdCluster with the nodes embedded names built
+// in this process: the same configuration a qrdbd node runs with, its seal of
+// strategy none.
+func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwdCluster {
 	t.Helper()
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
@@ -99,7 +122,18 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
 	}
 
+	var peerAdmin []qrdbconfig.PeerAdminEntry
+	for raftAddr, adminURL := range peerAdminURLs {
+		peerAdmin = append(peerAdmin, qrdbconfig.PeerAdminEntry{RaftAddr: raftAddr, AdminURL: adminURL})
+	}
+	members := make(map[uint64]string, n)
+	for i := range n {
+		members[uint64(i+1)] = fmt.Sprintf("127.0.0.1:%d", raftPorts[i])
+	}
+
 	c := &fwdCluster{ca: ca}
+	var embeddedWG sync.WaitGroup
+	embeddedErrs := make([]error, n)
 	dataDirs := make([]string, n)
 	for i := range n {
 		dataDirs[i] = t.TempDir()
@@ -111,6 +145,22 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 		t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
 		node := &fwdNode{raftAddr: fmt.Sprintf("127.0.0.1:%d", raftPorts[i]), admin: adminPorts[i], grpc: grpcPorts[i], quic: quicPorts[i], mcp: mcpPorts[i],
 			unix: filepath.Join(sockDir, "qrdbd.sock")}
+		if extra, ok := embedded[i]; ok {
+			c.nodes = append(c.nodes, node)
+			cfg := fwdEmbeddedConfig(t, node, i, dataDirs[i], quicPorts[i], peerAdmin, embeddedPeerIdentities(t, i, nodeCerts))
+			opts, serverOpts := fwdEmbeddedOptions(t, ca, nodeCerts[i], nodeKeys[i], extra)
+			embeddedWG.Add(1)
+			go func() {
+				defer embeddedWG.Done()
+				node.embedded, embeddedErrs[i] = qrdbnode.NewClusteredNode(context.Background(), cfg, members, serverOpts, opts...)
+			}()
+			t.Cleanup(func() {
+				if node.embedded != nil && !node.stopped {
+					_ = node.embedded.Close()
+				}
+			})
+			continue
+		}
 		node.cmd = exec.Command(bin,
 			"start",
 			"--config", writeIsolationRaftConfig(t, t.TempDir(), peerAdminURLs),
@@ -151,8 +201,11 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(n)
 	for i := range n {
+		if _, ok := embedded[i]; ok {
+			continue
+		}
+		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
@@ -160,8 +213,16 @@ func startFwdCluster(t *testing.T, n int) *fwdCluster {
 		}(i)
 	}
 	wg.Wait()
+	embeddedWG.Wait()
+	for i, err := range embeddedErrs {
+		if err != nil {
+			t.Fatalf("embedded node %d: %v", i+1, err)
+		}
+	}
 	for i, dir := range dataDirs {
-		waitForHealthy(t, dir, 60*time.Second)
+		if _, ok := embedded[i]; !ok {
+			waitForHealthy(t, dir, 60*time.Second)
+		}
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
@@ -339,13 +400,99 @@ func (c *fwdCluster) nonReplicas(p shardPlacement) []int {
 	return out
 }
 
-// stop kills node i, as a crash.
+// stop kills node i, as a crash; an embedded node is closed.
 func (c *fwdCluster) stop(t *testing.T, i int) {
 	t.Helper()
 	n := c.nodes[i]
+	if n.embedded != nil {
+		_ = n.embedded.Close()
+		n.stopped = true
+		return
+	}
 	if err := n.cmd.Process.Signal(syscall.SIGKILL); err != nil {
 		t.Fatalf("kill node %d: %v", i+1, err)
 	}
 	_ = n.cmd.Wait()
 	n.stopped = true
+}
+
+// fwdEmbeddedConfig is an embedded node's configuration: what
+// writeIsolationRaftConfig and the qrdbd flags give a qrdbd node of the
+// cluster, with a seal of strategy none, and the API listeners the suite
+// reaches it on.
+func fwdEmbeddedConfig(t *testing.T, n *fwdNode, i int, dataDir string, quicPort int, peerAdmin []qrdbconfig.PeerAdminEntry, memberIdentities string) *qrdbconfig.Config {
+	t.Helper()
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = dataDir
+	cfg.Raft.ReplicaID = uint64(i + 1)
+	cfg.Raft.RaftAddress = n.raftAddr
+	cfg.Raft.ListenAddress = n.raftAddr
+	cfg.Raft.MemberIdentities = memberIdentities
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "none"
+	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}, Strategy: "round_robin"}}
+	cfg.Tenant.DefaultEntitlements.AllowedIsolationModes = []string{"prefix", "raft"}
+	cfg.Tenant.DefaultEntitlements.AllowDedicatedRaft = true
+	cfg.Tenant.DefaultEntitlements.AllowSystemManagedBarrier = true
+	cfg.Tenant.DefaultEntitlements.AllowDedicatedWAL = true
+	cfg.Tenant.DefaultQuotas.MaxDatabases = -1
+	cfg.Tenant.DefaultQuotas.MaxRaftGroups = -1
+	cfg.Tenant.DefaultQuotas.MaxReplicasPerGroup = -1
+	cfg.Tenant.DefaultQuotas.MaxTotalReplicas = -1
+	cfg.Tenant.DefaultQuotas.MaxDedicatedWALGroups = -1
+	cfg.Auth.PeerAdminURLs = peerAdmin
+	cfg.Auth.ClusterTrustDomain = fwdTrustDomain
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.AdminPort = n.admin
+	cfg.Server.GRPCPort = n.grpc
+	cfg.Server.QUICPort = quicPort
+	cfg.Protocols.REST = true
+	cfg.Protocols.GRPC = true
+	cfg.Protocols.QUIC = true
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+	return cfg
+}
+
+// fwdEmbeddedOptions returns an embedded node's node and server options: its
+// node certificate as its Raft and API identity, the cluster CA, raft tenant
+// isolation, and extra's.
+func fwdEmbeddedOptions(t *testing.T, ca *testCA, certPath, keyPath string, extra fwdEmbedded) ([]qrdbnode.NodeOption, []server.ServerOption) {
+	t.Helper()
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := os.ReadFile(ca.CertPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := append([]qrdbnode.NodeOption{
+		qrdbnode.WithRaftMTLS(&qrdbnode.RaftMTLSConfig{CACert: caPEM, Cert: certPEM, Key: keyPEM}),
+		qrdbnode.WithTenantIsolation(),
+		qrdbnode.WithNoSyncWrites(),
+	}, extra(ca)...)
+	serverOpts := []server.ServerOption{
+		server.WithTLS(&tls.Config{Certificates: []tls.Certificate{pair}, ClientCAs: ca.Pool, RootCAs: ca.Pool,
+			ClientAuth: tls.VerifyClientCertIfGiven, MinVersion: tls.VersionTLS13}),
+		server.WithCACertPool(ca.Pool),
+	}
+	return opts, serverOpts
+}
+
+// embeddedPeerIdentities is an embedded node's raft.member_identities: every
+// other member's identity, derived from its certificate.
+func embeddedPeerIdentities(t *testing.T, self int, certPaths []string) string {
+	t.Helper()
+	all := strings.Split(memberIdentitiesFlag(t, certPaths), ",")
+	return strings.Join(append(all[:self:self], all[self+1:]...), ",")
 }
