@@ -21,6 +21,7 @@ import (
 	"encoding/pem"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -70,6 +71,12 @@ type compactionCell struct {
 	// the context's tenant scopes; remote, one dialled with the tenant's
 	// certificate.
 	base map[string]*sdk.Client
+	// roles is each tenant's compaction role id, created on every cell
+	// (embedded included): the embedded cell authenticates nothing on its
+	// own, so on binds one into its own context as the identity the role
+	// grants, the in-process equivalent of what a remote cell's client
+	// certificate authenticates as.
+	roles map[string]string
 }
 
 // handle is a client acting as one tenant on one database.
@@ -90,8 +97,15 @@ func (c *compactionCell) on(t *testing.T, tenantID, db string) handle {
 	ctx := boundedCtx(t)
 	if !c.tk.remote() {
 		// In process: the context's tenant selects the namespace, through the
-		// node's per-(tenant, database) registry.
-		ctx = tenant.WithTenantID(ctx, tenantID)
+		// node's per-(tenant, database) registry, and the bound identity is
+		// what RBAC now also requires on every embedded operation (the
+		// full-surface widening) -- the same compaction role a remote cell's
+		// client certificate authenticates as.
+		ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+			Subject:  "compactor",
+			TenantID: tenantID,
+			Roles:    []string{c.roles[tenantID]},
+		}), tenantID)
 	}
 	return handle{mvcc: scoped.MVCC(), kv: scoped.KV(), ctx: ctx}
 }
@@ -148,18 +162,26 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 		}
 	}
 
-	out := &compactionCell{node: n, tk: tk, base: map[string]*sdk.Client{}}
+	out := &compactionCell{node: n, tk: tk, base: map[string]*sdk.Client{}, roles: map[string]string{}}
 	for _, id := range append([]string{tenantid.System}, compactionTenants...) {
 		db := compactionDatabase(id)
 		if _, err := n.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, id),
 			database.DatabaseConfig{Name: db, Engine: database.EngineKV, Backend: database.BackendPebble}); err != nil {
 			t.Fatalf("create database %s for %s: %v", db, id, err)
 		}
+		// Every cell, embedded included, needs the role: the embedded
+		// identity `on` binds names it, and a remote cell's client
+		// certificate authenticates as the user holding it. The user id
+		// is needed too, on the remote path only: under the default
+		// auth.mtls_binding_policy "required", a certificate matching no
+		// enrolled binding authenticates as no one, regardless of CN/OU
+		// match, so dialAsTenant must bind the minted certificate to it.
+		roleID, userID := seedCompactionIdentity(t, n, id)
+		out.roles[id] = roleID
 		if !tk.remote() {
 			out.base[id] = n.Client()
 			continue
 		}
-		userID := seedCompactionIdentity(t, n, id)
 		out.base[id] = dialAsTenant(t, tk, n, ca, id, userID)
 	}
 	return out
@@ -167,11 +189,12 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 
 // seedCompactionIdentity creates, in tenantID, a role holding
 // compactionPermissions and the user its client certificate names. It
-// returns the created user's ID so dialAsTenant can bind the certificate it
-// mints to it: under the default auth.mtls_binding_policy "required", a
-// certificate matching no enrolled binding authenticates as no one,
-// regardless of CN/OU match.
-func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) uint64 {
+// returns both the created role's id (the embedded cell's `on` binds this
+// into its own context as the identity the role grants) and the user's id
+// (so dialAsTenant can bind the certificate it mints to it: under the
+// default auth.mtls_binding_policy "required", a certificate matching no
+// enrolled binding authenticates as no one, regardless of CN/OU match).
+func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) (roleID string, userID uint64) {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -192,7 +215,7 @@ func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) uint64 
 	if err != nil {
 		t.Fatalf("create user in %s: %v", tenantID, err)
 	}
-	return u.ID
+	return r.ID, u.ID
 }
 
 // dialAsTenant connects an SDK client whose certificate authenticates as the

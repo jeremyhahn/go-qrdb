@@ -91,6 +91,13 @@ func newRaftIsolationConfig(t *testing.T) *qrdbconfig.Config {
 	cfg.Protocols.QUIC = false
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
+	// NOT disabled here, unlike sealedStandaloneConfig/newTenantIsolationConfig:
+	// cluster_formation_test.go's TestClusteredNode_UnsealRetriesAfterACancelledBoot_*
+	// also builds its config from this helper and is SPECIFICALLY about
+	// auth-method rebinding across a retried boot (WithAuthenticators).
+	// A caller that does not care about auth (e.g.
+	// TestClusteredNode_EmbeddedClientServesTheRaftOnlyFamilies) disables
+	// it itself, at the call site, rather than here.
 	return cfg
 }
 

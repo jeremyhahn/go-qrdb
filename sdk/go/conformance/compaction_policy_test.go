@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -30,7 +31,11 @@ func (c *compactionCell) setPolicy(t *testing.T, tenantID, db string, policy *tr
 	t.Helper()
 	ctx := boundedCtx(t)
 	if !c.tk.remote() {
-		ctx = tenant.WithTenantID(ctx, tenantID)
+		ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+			Subject:  "compactor",
+			TenantID: tenantID,
+			Roles:    []string{c.roles[tenantID]},
+		}), tenantID)
 	}
 	return c.base[tenantID].Database().UpdateDatabaseCompaction(ctx, transport.UpdateDatabaseCompactionRequest{Name: db, Compaction: policy})
 }

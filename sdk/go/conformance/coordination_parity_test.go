@@ -21,10 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -71,13 +73,19 @@ var coordinationPermissions = []permission.Permission{
 	permission.AdminHealth, permission.AdminStatus,
 }
 
-// seedCoordinationIdentity grants the remote "matrix" identity the verbs the
-// suite calls, so a failure is the node's and never the authorizer's.
-func seedCoordinationIdentity(t *testing.T, n *node.Node) {
+// seedCoordinationIdentity grants a role the verbs the suite calls, so a
+// failure is the node's and never the authorizer's, and returns its id.
+//
+// It does NOT create the "matrix" user remote cells authenticate as -- that
+// is createMatrixUser's job, separated out because the identity STORE on the
+// objstore backend rejects the user record's generated key (null bytes;
+// go-objstore's own validation, independent of these families), so no
+// objstore node can create a user on any transport. A role alone has no such
+// problem and is what the embedded cell needs: its identity is bound
+// directly via auth.WithIdentity, with no user lookup at all.
+func seedCoordinationIdentity(t *testing.T, n *node.Node) string {
 	t.Helper()
-	svc := n.Services()
-	ctx := boundedCtx(t)
-	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
+	r, err := n.Services().Role.CreateRole(boundedCtx(t), &role.CreateRoleRequest{
 		Name:        "coordination-matrix",
 		TenantID:    tenantid.System,
 		Permissions: coordinationPermissions,
@@ -85,19 +93,32 @@ func seedCoordinationIdentity(t *testing.T, n *node.Node) {
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+	return r.ID
+}
+
+// createMatrixUser creates the "matrix" user a remote cell's client
+// certificate authenticates as, holding roleID. See seedCoordinationIdentity
+// for why this is never called for the embedded cell.
+func createMatrixUser(t *testing.T, n *node.Node, roleID string) {
+	t.Helper()
+	if _, err := n.Services().User.CreateUser(boundedCtx(t), &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             "matrix",
 		TenantID:             tenantid.System,
-		RoleIDs:              []string{r.ID},
+		RoleIDs:              []string{roleID},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 }
 
 // bootClient brings the cell up and returns an SDK client that reaches it
-// over the cell's transport.
-func (c cell) bootClient(t *testing.T) *sdk.Client {
+// over the cell's transport, and the context every call in the suite must
+// use: for the embedded cell, which authenticates nothing on its own, an
+// identity holding coordinationPermissions, paired with tenant.WithTenantID
+// (the convention every embedded authorization gate reads); for a remote
+// cell, the client certificate it dials with already carries it, so the
+// context is unmodified.
+func (c cell) bootClient(t *testing.T) (*sdk.Client, context.Context) {
 	t.Helper()
 	cfg := c.config(t)
 
@@ -123,11 +144,21 @@ func (c cell) bootClient(t *testing.T) *sdk.Client {
 	if c.mode == raft {
 		awaitWritable(t, c, n.Client().KV())
 	}
+	roleID := seedCoordinationIdentity(t, n)
 	if !c.transport.remote() {
-		return n.Client()
+		ctx := tenant.WithTenantID(auth.WithIdentity(boundedCtx(t), &auth.Identity{
+			Subject:  "matrix",
+			TenantID: tenantid.System,
+			Roles:    []string{roleID},
+		}), tenantid.System)
+		return n.Client(), ctx
 	}
 
-	seedCoordinationIdentity(t, n)
+	// auth.mtls_binding_policy defaults to "required": creating the user
+	// alone is not enough, since an account with no live binding admits no
+	// certificate at all, CN/OU match or not -- enrollMatrixCert binds the
+	// one clientKP carries before it is ever dialled with.
+	createMatrixUser(t, n, roleID)
 	enrollMatrixCert(t, n, tenantid.System, clientKP)
 	clientCert, err := clientKP.TLSCertificate()
 	if err != nil {
@@ -147,28 +178,27 @@ func (c cell) bootClient(t *testing.T) *sdk.Client {
 	if err := client.Connect(boundedCtx(t)); err != nil {
 		t.Fatalf("%s connect: %v", c.transport, err)
 	}
-	return client
+	return client, boundedCtx(t)
 }
 
 // TestCoordinationFamilies_SameOnStandaloneAndRaft is the parity suite.
 func TestCoordinationFamilies_SameOnStandaloneAndRaft(t *testing.T) {
 	for _, c := range coordinationCells() {
 		t.Run(c.name(), func(t *testing.T) {
-			client := c.bootClient(t)
-			t.Run("lease", func(t *testing.T) { assertLeaseLifecycle(t, client) })
-			t.Run("lease-expiry", func(t *testing.T) { assertLeaseExpiryDeletesKeys(t, client) })
-			t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, client) })
-			t.Run("watch-resume", func(t *testing.T) { assertWatchResumesFromRevision(t, client) })
-			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, client) })
-			t.Run("lock", func(t *testing.T) { assertLockLifecycle(t, client) })
+			client, ctx := c.bootClient(t)
+			t.Run("lease", func(t *testing.T) { assertLeaseLifecycle(t, ctx, client) })
+			t.Run("lease-expiry", func(t *testing.T) { assertLeaseExpiryDeletesKeys(t, ctx, client) })
+			t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, ctx, client) })
+			t.Run("watch-resume", func(t *testing.T) { assertWatchResumesFromRevision(t, ctx, client) })
+			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, ctx, client) })
+			t.Run("lock", func(t *testing.T) { assertLockLifecycle(t, ctx, client) })
 		})
 	}
 }
 
 // assertLeaseLifecycle: grant, attach, time-to-live, keep-alive, list,
 // revoke -- and the revoke deletes the attached key.
-func assertLeaseLifecycle(t *testing.T, c *sdk.Client) {
-	ctx := boundedCtx(t)
+func assertLeaseLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 	l, err := c.Lease().LeaseGrant(ctx, 30)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -212,8 +242,7 @@ func assertLeaseLifecycle(t *testing.T, c *sdk.Client) {
 // assertLeaseExpiryDeletesKeys: a lease nobody keeps alive expires and its
 // key goes with it. This is the property a host's leader election rests on,
 // and it holds only when the node runs the expiry sweeper.
-func assertLeaseExpiryDeletesKeys(t *testing.T, c *sdk.Client) {
-	ctx := boundedCtx(t)
+func assertLeaseExpiryDeletesKeys(t *testing.T, ctx context.Context, c *sdk.Client) {
 	l, err := c.Lease().LeaseGrant(ctx, 1)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -273,8 +302,8 @@ func (s *eventStream) next(t *testing.T, ctx context.Context, write func()) *tra
 }
 
 // assertPrefixWatch: a prefix watch sees a put and a delete under its prefix.
-func assertPrefixWatch(t *testing.T, c *sdk.Client) {
-	ctx, cancel := context.WithCancel(boundedCtx(t))
+func assertPrefixWatch(t *testing.T, parent context.Context, c *sdk.Client) {
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	ch, err := c.Watch().WatchPrefix(ctx, "cp/watch/", transport.WatchOptions{})
 	if err != nil {
@@ -305,8 +334,8 @@ func assertPrefixWatch(t *testing.T, c *sdk.Client) {
 
 // assertWatchResumesFromRevision: a watch opened at a past revision replays
 // the history from that revision before it goes live.
-func assertWatchResumesFromRevision(t *testing.T, c *sdk.Client) {
-	ctx, cancel := context.WithCancel(boundedCtx(t))
+func assertWatchResumesFromRevision(t *testing.T, parent context.Context, c *sdk.Client) {
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	if err := c.KV().Put(ctx, "cp/resume/one", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
@@ -332,8 +361,8 @@ func assertWatchResumesFromRevision(t *testing.T, c *sdk.Client) {
 }
 
 // assertWatchEndsOnCancel: cancelling the caller's context ends the stream.
-func assertWatchEndsOnCancel(t *testing.T, c *sdk.Client) {
-	ctx, cancel := context.WithCancel(boundedCtx(t))
+func assertWatchEndsOnCancel(t *testing.T, parent context.Context, c *sdk.Client) {
+	ctx, cancel := context.WithCancel(parent)
 	ch, err := c.Watch().WatchPrefix(ctx, "cp/cancel/", transport.WatchOptions{})
 	if err != nil {
 		cancel()
@@ -355,8 +384,7 @@ func assertWatchEndsOnCancel(t *testing.T, c *sdk.Client) {
 
 // assertLockLifecycle: acquire, refuse a second holder, report status,
 // extend and release -- after which the second holder acquires it.
-func assertLockLifecycle(t *testing.T, c *sdk.Client) {
-	ctx := boundedCtx(t)
+func assertLockLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 	held, err := c.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{Key: "cp/lock/scheduler", HolderID: "a", TTL: 30})
 	if err != nil {
 		t.Fatalf("try-lock: %v", err)
@@ -411,15 +439,14 @@ func TestCoordinationFamilies_FileBackendServesWatchOnly(t *testing.T) {
 	for _, c := range cells {
 		tk := c.transport
 		t.Run(c.name(), func(t *testing.T) {
-			client := c.bootClient(t)
+			client, ctx := c.bootClient(t)
 			if tk == mcpTransport {
-				t.Run("watch-refused", func(t *testing.T) { assertWatchRefusedForNoRevisions(t, client) })
+				t.Run("watch-refused", func(t *testing.T) { assertWatchRefusedForNoRevisions(t, ctx, client) })
 			} else {
-				t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, client) })
+				t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, ctx, client) })
 			}
-			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, client) })
+			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, ctx, client) })
 
-			ctx := boundedCtx(t)
 			refused := map[string]error{}
 			_, refused["lease"] = client.Lease().LeaseGrant(ctx, 5)
 			_, refused["lock"] = client.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{Key: "cp/file/lock", HolderID: "a", TTL: 5})
@@ -455,8 +482,8 @@ func TestCoordinationFamilies_FileBackendServesWatchOnly(t *testing.T) {
 // assertWatchRefusedForNoRevisions: once the polling client has seen a change
 // it needs replay from that revision, and the watch ends with the typed
 // refusal a store without revision history gives -- never a silent gap.
-func assertWatchRefusedForNoRevisions(t *testing.T, c *sdk.Client) {
-	ctx, cancel := context.WithCancel(boundedCtx(t))
+func assertWatchRefusedForNoRevisions(t *testing.T, parent context.Context, c *sdk.Client) {
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	ch, err := c.Watch().WatchPrefix(ctx, "cp/norev/", transport.WatchOptions{})
 	tick := time.NewTicker(500 * time.Millisecond)

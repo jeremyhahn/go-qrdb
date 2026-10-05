@@ -38,6 +38,11 @@ func bootStandaloneNode(t *testing.T) *sdk.Coordinator {
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
+	// This suite is about the coordination surface (Get/Put/CAS/lease/watch
+	// served identically in both modes), not authorization; see
+	// sdk/go/transport/embedded's probe tests and sdk/go/node's
+	// auth_middleware_test.go for dedicated auth-enabled coverage.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false

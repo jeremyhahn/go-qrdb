@@ -21,9 +21,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -33,10 +38,22 @@ import (
 // embedded transport used to call the system-scoped Create, which neither
 // scoped the database to the caller's tenant nor checked either
 // provisioning permission.
+//
+// This test is specifically about the PROVISIONING layer
+// (service.NewProvisioningAuthorizedDatabaseService), which only wraps the
+// database service when auth is enabled -- so, unlike most of this
+// package's fixtures (see testhelpers_test.go's sealedStandaloneConfig),
+// it keeps auth ON and grants the caller the GENERIC databases:create (the
+// embedded transport's own, newer entry check) without the
+// provisioning-specific databases:create_volume, so the provisioning
+// wrapper's denial is reached and observed on its own, rather than being
+// pre-empted by the entry check denying everyone with no identity at all.
 func TestEmbedded_CreateDatabaseChecksProvisioning(t *testing.T) {
 	ctx := context.Background()
-	n, err := NewStandaloneNode(ctx, newTenantIsolationConfig(t), nil,
-		WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
+	cfg := newTenantIsolationConfig(t)
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(true)
+	n, err := NewStandaloneNode(ctx, cfg,
+		nil, WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
 	_, err = n.Services().Tenant.CreateTenant(ctx, "vol", "vol", tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
@@ -44,17 +61,34 @@ func TestEmbedded_CreateDatabaseChecksProvisioning(t *testing.T) {
 	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "acme", tenant.IsolationPrefix)
 	require.NoError(t, err)
 
+	// A system-tenant identity holding ONLY the generic databases:create
+	// grant: enough to pass the embedded transport's own entry check for
+	// EVERY tenant (ScopeSelf's system-tenant lift), but not the
+	// provisioning-specific databases:create_volume the wrapper below
+	// additionally requires for a volume-isolated tenant.
+	createRole, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{
+		Name:        "db-create-only",
+		TenantID:    tenantid.System,
+		Permissions: []permission.Permission{permission.DatabasesCreate},
+	})
+	require.NoError(t, err)
+	callerCtx := auth.WithIdentity(ctx, &auth.Identity{
+		Subject:  "db-creator",
+		TenantID: tenantid.System,
+		Roles:    []string{createRole.ID},
+	})
+
 	req := transport.CreateDatabaseRequest{Name: "vault", Engine: string(database.EngineKV), Backend: string(database.BackendPebble)}
-	_, err = n.Client().Database().CreateDatabase(tenant.WithTenantID(ctx, "vol"), req)
+	_, err = n.Client().Database().CreateDatabase(tenant.WithTenantID(callerCtx, "vol"), req)
 	var denied *service.ProvisioningDeniedError
-	require.Truef(t, errors.As(err, &denied), "create for a volume tenant with no identity = %v, want *service.ProvisioningDeniedError", err)
+	require.Truef(t, errors.As(err, &denied), "create for a volume tenant holding only databases:create = %v, want *service.ProvisioningDeniedError", err)
 	require.Equal(t, "databases:create_volume", string(denied.Permission))
 	_, getErr := n.dbManager.Get("vault")
 	require.Error(t, getErr, "a refused create reached the catalog")
 
 	// An ordinary database of a shared tenant needs no provisioning
 	// permission, and is owned by the caller's tenant.
-	_, err = n.Client().Database().CreateDatabase(tenant.WithTenantID(ctx, "acme"),
+	_, err = n.Client().Database().CreateDatabase(tenant.WithTenantID(callerCtx, "acme"),
 		transport.CreateDatabaseRequest{Name: "ledger", Engine: string(database.EngineKV), Backend: string(database.BackendMemory)})
 	require.NoError(t, err)
 	db, err := n.dbManager.Get("ledger")

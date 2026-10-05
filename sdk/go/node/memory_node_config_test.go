@@ -39,5 +39,10 @@ func newMemoryNodeCfg(t *testing.T) *qrdbconfig.Config {
 	cfg.Protocols.QUIC = false
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
+	// NOT disabled here: auth_method_vocabulary_test.go also builds its
+	// config from this helper and is SPECIFICALLY about the authenticator
+	// method vocabulary an AuthMiddleware carries, which needs one built.
+	// newMemoryNodeWithServerOpts (authfactor_wiring_test.go), the other
+	// caller, disables it itself at the call site instead.
 	return cfg
 }

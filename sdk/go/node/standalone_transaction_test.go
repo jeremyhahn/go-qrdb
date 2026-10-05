@@ -36,6 +36,7 @@ func newStandaloneNodeForTX(t *testing.T) *Node {
 func newStandaloneNodeOnBackend(t *testing.T, backend database.BackendType) *Node {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(backend)}}
 	cfg.Seal.Enabled = true

@@ -17,8 +17,10 @@ package conformance
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -27,8 +29,10 @@ import (
 
 // seedDatabaseCreateIdentity grants the matrix's client certificate exactly
 // the permission "database create" needs, the same shape
-// seedGuardedIdentity (harness_test.go) uses for the guarded KV plane.
-func seedDatabaseCreateIdentity(t *testing.T, n *node.Node) {
+// seedGuardedIdentity (harness_test.go) uses for the guarded KV plane. It
+// returns the role id so the embedded cell, which authenticates nothing on
+// its own, can bind the same identity into its own context.
+func seedDatabaseCreateIdentity(t *testing.T, n *node.Node) (roleID string) {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -48,6 +52,7 @@ func seedDatabaseCreateIdentity(t *testing.T, n *node.Node) {
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	return r.ID
 }
 
 // TestDatabaseCreate_WithEtcd_EveryTransport is the conformance check for a
@@ -73,8 +78,21 @@ func seedDatabaseCreateIdentity(t *testing.T, n *node.Node) {
 func TestDatabaseCreate_WithEtcd_EveryTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			client := bootAuthorizedCell(t, tk, func(n *node.Node) { seedDatabaseCreateIdentity(t, n) })
+			var roleID string
+			client := bootAuthorizedCell(t, tk, func(n *node.Node) { roleID = seedDatabaseCreateIdentity(t, n) })
 			ctx := boundedCtx(t)
+			if tk == embeddedTransport {
+				// The embedded transport authenticates nothing on its own;
+				// bind the same identity and tenant the remote cells
+				// authenticate as via their client certificate (the pair
+				// every embedded authorization gate reads: auth.WithIdentity
+				// paired with tenant.WithTenantID).
+				ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+					Subject:  "matrix",
+					TenantID: tenantid.System,
+					Roles:    []string{roleID},
+				}), tenantid.System)
+			}
 
 			info, err := client.Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
 				Name:    "etcd-" + string(tk),

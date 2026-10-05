@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -300,6 +301,11 @@ type holderE2E struct {
 	n         *node.Node
 	holders   map[string]*e2eHolder
 	adminTLS  *tls.Config
+	// adminRoleID is the holder-administration role every transport's admin
+	// identity holds. The embedded cell authenticates nothing on its own and
+	// binds it directly via adminCtx; the remote cells authenticate it from
+	// the admin certificate adminClient issues.
+	adminRoleID string
 	// pins is the barrier PIN backend the composer injects, with the SO PIN
 	// e2eSOPIN provisioned: rekey and revocation present it.
 	pins pin.PINBackend
@@ -463,27 +469,20 @@ func (e *holderE2E) holderClient(h *e2eHolder, sealed bool) (holderAPI, context.
 // test, seeding the admin identity with the holder-administration grants.
 func (e *holderE2E) adminClient() transport.BarrierClient {
 	e.t.Helper()
+	e.ensureAdminRole()
 	if e.tk == embeddedTransport {
 		return e.n.Client().Barrier()
 	}
 	if e.adminTLS == nil {
 		svc := e.n.Services()
 		ctx := boundedCtx(e.t)
-		r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
-			Name:     "conformance-holder-admin",
-			TenantID: tenantid.System,
-			Permissions: []permission.Permission{
-				permission.SealOfficerList, permission.SealOfficerRevoke, permission.SealRekey,
-				permission.SealStatus, permission.AdminHealth, permission.AdminStatus,
-			},
-		})
-		if err != nil {
-			e.t.Fatalf("create role: %v", err)
-		}
+		// The role is ensureAdminRole's (called above), shared with the
+		// embedded cell's bound identity -- not recreated here, which
+		// would collide on the role's own unique name.
 		adminUser, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 			Username: "holder-admin",
 			TenantID: tenantid.System,
-			RoleIDs:  []string{r.ID},
+			RoleIDs:  []string{e.adminRoleID},
 		})
 		if err != nil {
 			e.t.Fatalf("create user: %v", err)
@@ -511,6 +510,47 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		e.adminTLS = &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: e.pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS13}
 	}
 	return e.dial(e.adminTLS).Barrier()
+}
+
+// ensureAdminRole creates the holder-administration role once, in the system
+// tenant, so both the remote certificate identity and the embedded cell's
+// bound identity hold the same grants.
+func (e *holderE2E) ensureAdminRole() {
+	e.t.Helper()
+	if e.adminRoleID != "" {
+		return
+	}
+	r, err := e.n.Services().Role.CreateRole(boundedCtx(e.t), &role.CreateRoleRequest{
+		Name:     "conformance-holder-admin",
+		TenantID: tenantid.System,
+		Permissions: []permission.Permission{
+			permission.SealOfficerList, permission.SealOfficerRevoke, permission.SealRekey,
+			permission.SealStatus, permission.AdminHealth, permission.AdminStatus,
+		},
+	})
+	if err != nil {
+		e.t.Fatalf("create role: %v", err)
+	}
+	e.adminRoleID = r.ID
+}
+
+// adminCtx returns the context to call the admin client with: for the
+// embedded cell, which authenticates nothing on its own, an identity bound
+// to the holder-administration role (paired with tenant.WithTenantID, the
+// convention every embedded authorization gate reads); for the remote
+// cells, the client certificate adminClient dialled already carries it.
+func (e *holderE2E) adminCtx() context.Context {
+	e.t.Helper()
+	ctx := boundedCtx(e.t)
+	if e.tk != embeddedTransport {
+		return ctx
+	}
+	e.ensureAdminRole()
+	return tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+		Subject:  "holder-admin",
+		TenantID: tenantid.System,
+		Roles:    []string{e.adminRoleID},
+	}), tenantid.System)
 }
 
 // enrolAndInitialize has the admin enrol every holder and initialize 3-of-5
@@ -670,9 +710,9 @@ func (e *holderE2E) restartSealed() <-chan error {
 }
 
 // holderStillEnrolled reports whether name is on the unseal roster.
-func holderStillEnrolled(t *testing.T, admin transport.BarrierClient, name string) bool {
+func holderStillEnrolled(t *testing.T, ctx context.Context, admin transport.BarrierClient, name string) bool {
 	t.Helper()
-	officers, err := admin.OfficerList(boundedCtx(t))
+	officers, err := admin.OfficerList(ctx)
 	if err != nil {
 		t.Fatalf("officer list: %v", err)
 	}
@@ -737,7 +777,8 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 
 			// --- Revoking a holder is a quorum-gated rekey. ------------------------
 			admin := e.adminClient()
-			round, err := admin.BarrierOfficerRevoke(boundedCtx(t), &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "cust-erin", SOPin: e2eSOPIN})
+			adminCtx := e.adminCtx()
+			round, err := admin.BarrierOfficerRevoke(adminCtx, &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "cust-erin", SOPin: e2eSOPIN})
 			if err != nil {
 				t.Fatalf("revoke: %v", err)
 			}
@@ -749,13 +790,13 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 			}
 			e.mustSubmit("so-alice", transport.OpRekey, "", false)
 			e.mustSubmit("so-bob", transport.OpRekey, "", false)
-			if !holderStillEnrolled(t, admin, "cust-erin") {
+			if !holderStillEnrolled(t, adminCtx, admin, "cust-erin") {
 				t.Fatal("revocation took effect before M holders submitted")
 			}
 			if out := e.mustSubmit("cust-carol", transport.OpRekey, "", false); !out.Complete || out.TotalShares != e2eTotal-1 {
 				t.Fatalf("revocation rekey outcome = %+v", out)
 			}
-			if holderStillEnrolled(t, admin, "cust-erin") {
+			if holderStillEnrolled(t, adminCtx, admin, "cust-erin") {
 				t.Fatal("the revoked holder is still on the roster")
 			}
 			e.claimAll("cust-carol", "cust-dave", "so-alice", "so-bob")
@@ -764,7 +805,7 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 			}
 
 			// --- A rekey to the any-enrolled policy. ------------------------------
-			if _, err := admin.BarrierRekeyStart(boundedCtx(t), &transport.RekeyStartRequest{
+			if _, err := admin.BarrierRekeyStart(adminCtx, &transport.RekeyStartRequest{
 				Domain: transport.DomainUnseal, Threshold: e2eThreshold, Policy: transport.PolicyAnyEnrolled, SOPin: e2eSOPIN,
 			}); err != nil {
 				t.Fatalf("rekey start: %v", err)

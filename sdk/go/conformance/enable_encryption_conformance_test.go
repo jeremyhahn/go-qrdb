@@ -20,28 +20,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// seedBarrierIdentity grants the matrix's client certificate exactly the
-// permission BarrierEnableEncryption needs, mirroring seedGuardedIdentity's
-// role/user shape for the barrier surface instead of the guarded KV plane.
-func seedBarrierIdentity(t *testing.T, n *node.Node) {
+// seedBarrierIdentity grants a role exactly the permission
+// BarrierEnableEncryption/BarrierStatus need, mirroring seedGuardedIdentity's
+// role shape for the barrier surface instead of the guarded KV plane, and
+// returns its id. It no longer also creates the "matrix" user: that is only
+// needed for a remote cell's client certificate (createMatrixUser, shared
+// with harness_test.go/coordination_parity_test.go's identical convention),
+// and waitForRootStrategy below needs the role bound for every cell,
+// embedded included, since it polls through the node's own embedded client
+// regardless of which transport is under test.
+func seedBarrierIdentity(t *testing.T, n *node.Node) string {
 	t.Helper()
-	svc := n.Services()
-	ctx := boundedCtx(t)
-
-	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
+	r, err := n.Services().Role.CreateRole(boundedCtx(t), &role.CreateRoleRequest{
 		Name:        "conformance-barrier",
 		TenantID:    tenantid.System,
 		Permissions: []permission.Permission{permission.SealEnableEncryption, permission.SealStatus},
@@ -49,13 +53,7 @@ func seedBarrierIdentity(t *testing.T, n *node.Node) {
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
-		Username: "matrix",
-		TenantID: tenantid.System,
-		RoleIDs:  []string{r.ID},
-	}); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	return r.ID
 }
 
 // bootBarrierNode starts a real standalone node -- seal enabled, strategy
@@ -74,7 +72,7 @@ func seedBarrierIdentity(t *testing.T, n *node.Node) {
 // canonicalRootKeyStrategy's now-interface-typed, nil-checked read
 // (go-qrdb#550) never segfaults on any backend rather than merely on the one
 // that happened to reproduce it first.
-func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendType) (transport.BarrierClient, *node.Node) {
+func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendType) (transport.BarrierClient, *node.Node, string) {
 	t.Helper()
 	c := cell{backend: backend, mode: standalone, transport: tk, want: fullPassage}
 	cfg := c.config(t)
@@ -92,11 +90,20 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	}
 	t.Cleanup(func() { _ = n.Close() })
 
+	// Every cell needs the role, embedded included: waitForRootStrategy
+	// polls through the node's own embedded client regardless of which
+	// transport is under test.
+	roleID := seedBarrierIdentity(t, n)
+
 	if !tk.remote() {
-		return n.Client().Barrier(), n
+		return n.Client().Barrier(), n, roleID
 	}
 
-	seedBarrierIdentity(t, n)
+	// auth.mtls_binding_policy defaults to "required": creating the user
+	// alone is not enough, since an account with no live binding admits no
+	// certificate at all, CN/OU match or not -- enrollMatrixCert binds the
+	// one clientKP carries before it is ever dialled with.
+	createMatrixUser(t, n, roleID)
 	enrollMatrixCert(t, n, tenantid.System, clientKP)
 
 	clientCert, err := clientKP.TLSCertificate()
@@ -119,21 +126,30 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	if err := sdkClient.Connect(boundedCtx(t)); err != nil {
 		t.Fatalf("%s connect: %v", tk, err)
 	}
-	return sdkClient.Barrier(), n
+	return sdkClient.Barrier(), n, roleID
 }
 
 // waitForRootStrategy polls until the node's root barrier strategy becomes
-// want, always through the node's OWN embedded client rather than the
-// transport under test.
+// want, always through the node's OWN BarrierServicer rather than the
+// transport under test or even the embedded TRANSPORT client.
 //
-// Polling through the embedded client specifically -- rather than through
-// the remote SDK client that issued the request -- sidesteps a question this
-// test does not need to answer: whether a REMOTE transport's persistent
-// connection survives a system-scope migration's server recycle (it may need
-// to redial; that is a property of each transport's own reconnect behavior,
-// not of enable-encryption reaching the node). n.Client() tolerates the
-// recycle's nil window the same way sdk/go/node's own
-// TestNode_EnableEncryption_ViaEmbeddedTransport does.
+// The service layer, not the embedded transport, is deliberate and is no
+// longer merely a convenience. A system-scope migration on the memory
+// backend REBUILDS the data plane under the reopened barrier
+// (nodeMigrationProvider.Reopen -> completeStandaloneBoot), and a memory
+// backend keeps nothing durable to rebuild FROM -- so any role created
+// before the migration (as the embedded transport's RBAC now requires for
+// BarrierStatus) is gone by the time this polls, on every cell, remote
+// transports included, since they also only ever polled through n.Client().
+// The service layer carries no RBAC gate at all (enforcement lives in the
+// transport/handler layer, exactly as crossTenantRefusals' and
+// clusterJoinTokenRefusals' doc comments establish for every other
+// AdminServicer-shaped verb), so it answers correctly through the rebuild
+// with no identity to lose. n.Services() reflects the rebuilt barrier
+// service the same way n.Client() does (both read from the atomically
+// swapped lifecycle.Node), so this polls the SAME migration completion the
+// transport-level read would, just through the layer unaffected by the
+// data-plane rebuild's identity loss.
 //
 // Waiting for the real migration to finish here, rather than returning as
 // soon as BarrierEnableEncryption's synchronous response comes back, is not
@@ -145,11 +161,12 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 // while claiming to pin the REAL, end-to-end migration promise.
 func waitForRootStrategy(t *testing.T, n *node.Node, want seal.StrategyID) {
 	t.Helper()
+	ctx := boundedCtx(t)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		client := n.Client()
-		if client != nil {
-			if status, err := client.Barrier().BarrierStatus(boundedCtx(t)); err == nil && status.Strategy == string(want) {
+		svc := n.Services()
+		if svc != nil && svc.Barrier != nil {
+			if status, err := svc.Barrier.BarrierStatus(ctx); err == nil && status.Strategy == string(want) {
 				return
 			}
 		}
@@ -189,9 +206,10 @@ func waitForRootStrategy(t *testing.T, n *node.Node, want seal.StrategyID) {
 func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			barrier, n := bootBarrierNode(t, tk, database.BackendPebble)
+			barrier, n, roleID := bootBarrierNode(t, tk, database.BackendPebble)
+			ctx := barrierCallerCtx(boundedCtx(t), tk, roleID)
 
-			resp, err := barrier.BarrierEnableEncryption(boundedCtx(t), &transport.BarrierEnableEncryptionRequest{
+			resp, err := barrier.BarrierEnableEncryption(ctx, &transport.BarrierEnableEncryptionRequest{
 				Strategy:   string(seal.StrategyPassphrase),
 				Passphrase: []byte("conformance-enable-encryption-passphrase"),
 			})
@@ -208,6 +226,20 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 			waitForRootStrategy(t, n, seal.StrategyPassphrase)
 		})
 	}
+}
+
+// barrierCallerCtx binds the barrier role into ctx for the embedded cell,
+// which authenticates nothing on its own; a remote cell's client certificate
+// already carries it.
+func barrierCallerCtx(ctx context.Context, tk transportKind, roleID string) context.Context {
+	if tk != embeddedTransport {
+		return ctx
+	}
+	return tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+		Subject:  "matrix",
+		TenantID: tenantid.System,
+		Roles:    []string{roleID},
+	}), tenantid.System)
 }
 
 // TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport_MemoryBackend is
@@ -244,9 +276,10 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport_MemoryBackend(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			barrier, n := bootBarrierNode(t, tk, database.BackendMemory)
+			barrier, n, roleID := bootBarrierNode(t, tk, database.BackendMemory)
+			ctx := barrierCallerCtx(boundedCtx(t), tk, roleID)
 
-			resp, err := barrier.BarrierEnableEncryption(boundedCtx(t), &transport.BarrierEnableEncryptionRequest{
+			resp, err := barrier.BarrierEnableEncryption(ctx, &transport.BarrierEnableEncryptionRequest{
 				Strategy:   string(seal.StrategyPassphrase),
 				Passphrase: []byte("conformance-enable-encryption-passphrase-memory"),
 			})

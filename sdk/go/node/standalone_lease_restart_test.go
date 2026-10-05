@@ -31,6 +31,7 @@ import (
 // one's restart.
 func standaloneRestartConfig(dataDir string) *qrdbconfig.Config {
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = dataDir
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Protocols.REST = false

@@ -15,6 +15,7 @@
 package conformance
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -64,9 +65,9 @@ const (
 // call — which is what the first run of this suite did, on all five remote
 // transports at once. The subject of the withdrawal is a bystander account,
 // exactly as it is in an operator's use of the verb.
-func newBindingTarget(t *testing.T, c userClients, name string) uint64 {
+func newBindingTarget(t *testing.T, ctx context.Context, c userClients, name string) uint64 {
 	t.Helper()
-	u, err := c.users.CreateUser(boundedCtx(t), &transport.CreateUserRequest{
+	u, err := c.users.CreateUser(ctx, &transport.CreateUserRequest{
 		Username:             name,
 		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
@@ -84,8 +85,8 @@ func TestCertBindingWithdrawal_ReachableOnEveryTransport(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
-			ctx := boundedCtx(t)
-			target := newBindingTarget(t, c, "reachable")
+			ctx := c.callerCtx(t, tk)
+			target := newBindingTarget(t, ctx, c, "reachable")
 
 			for _, tp := range []string{withdrawnThumbprint, retainedThumbprint} {
 				if _, err := c.users.AddCertBinding(ctx, target, tp, 0); err != nil {
@@ -142,8 +143,8 @@ func TestCertBindingWithdrawal_UnheldBindingIsNotFoundOnEveryTransport(t *testin
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
-			ctx := boundedCtx(t)
-			target := newBindingTarget(t, c, "unheld")
+			ctx := c.callerCtx(t, tk)
+			target := newBindingTarget(t, ctx, c, "unheld")
 
 			if _, err := c.users.AddCertBinding(ctx, target, retainedThumbprint, 0); err != nil {
 				t.Fatalf("%s: AddCertBinding: %v", tk, err)
@@ -180,8 +181,8 @@ func TestCertBindingWithdrawal_LastBindingEmptiesTheSet(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
-			ctx := boundedCtx(t)
-			target := newBindingTarget(t, c, "lastbinding")
+			ctx := c.callerCtx(t, tk)
+			target := newBindingTarget(t, ctx, c, "lastbinding")
 
 			if _, err := c.users.AddCertBinding(ctx, target, withdrawnThumbprint, 0); err != nil {
 				t.Fatalf("%s: AddCertBinding: %v", tk, err)
@@ -227,8 +228,8 @@ func TestCertBindings_ListedOnEveryTransport(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
-			ctx := boundedCtx(t)
-			target := newBindingTarget(t, c, "listed")
+			ctx := c.callerCtx(t, tk)
+			target := newBindingTarget(t, ctx, c, "listed")
 
 			// Before any enrolment nothing is listed.
 			fresh, err := c.users.GetUser(ctx, target)

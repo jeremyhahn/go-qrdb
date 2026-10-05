@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -87,7 +88,12 @@ var _ authfactors.Factor = (*nodeTestFactor)(nil)
 // are disabled.
 func newMemoryNodeWithServerOpts(t *testing.T, svrOpts ...server.ServerOption) *Node {
 	t.Helper()
-	n, err := NewStandaloneNode(context.Background(), newMemoryNodeCfg(t), svrOpts)
+	cfg := newMemoryNodeCfg(t)
+	// This suite exercises the AuthFactorService wiring and lifecycle
+	// (enroll/challenge/verify), not RBAC; see testhelpers_test.go's
+	// sealedStandaloneConfig comment.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
+	n, err := NewStandaloneNode(context.Background(), cfg, svrOpts)
 	require.NoError(t, err)
 	require.NotNil(t, n)
 	t.Cleanup(func() { _ = n.Close() })

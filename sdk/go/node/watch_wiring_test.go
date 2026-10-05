@@ -89,6 +89,9 @@ func TestStandaloneNode_WatchServedAndReported(t *testing.T) {
 	cfg.Protocols.QUIC = false
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
+	// Not an authorization test; see testhelpers_test.go's
+	// sealedStandaloneConfig comment.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 
 	n, err := NewStandaloneNode(ctx, cfg, nil)
 	require.NoError(t, err)

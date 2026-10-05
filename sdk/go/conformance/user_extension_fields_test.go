@@ -157,7 +157,7 @@ func TestUserExtensionFields_RealFactorMetadataAndMFAAcrossEveryTransport(t *tes
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
-			ctx := boundedCtx(t)
+			ctx := c.callerCtx(t, tk)
 
 			created, err := c.users.CreateUser(ctx, &transport.CreateUserRequest{
 				Username:             "real-factor-" + string(tk),

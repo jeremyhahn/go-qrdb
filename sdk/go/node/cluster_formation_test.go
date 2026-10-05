@@ -36,10 +36,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -93,6 +96,7 @@ func newFormationReplicas(t *testing.T, n int) (*qrdbdharness.CA, []formationRep
 func formationConfig(t *testing.T, r formationReplica, memberIdentities string) *qrdbconfig.Config {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Raft.ReplicaID = r.id
 	cfg.Raft.RaftAddress = r.addr
@@ -917,6 +921,27 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	if client == nil {
 		t.Fatal("Client() must be non-nil once the retried boot completes")
 	}
+	// The data-plane probe below is unrelated to the auth-rebinding
+	// assertion above; it still needs a caller holding
+	// lease:grant/mvcc:put_with_lease/kv:get, now that auth is enabled for
+	// this config (newRaftIsolationConfig; see its own comment on why it
+	// is not disabled here). The role is created directly rather than
+	// relied on as pre-seeded, since this test's cancelled-then-retried
+	// boot path is not the ordinary one built-in role reconciliation runs
+	// on.
+	leaseRole, rerr := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{
+		Name:        "lease-probe",
+		TenantID:    tenantid.System,
+		Permissions: []permission.Permission{permission.LeaseGrant, permission.MVCCPutWithLease, permission.KVGet},
+	})
+	if rerr != nil {
+		t.Fatalf("CreateRole: %v", rerr)
+	}
+	ctx = auth.WithIdentity(ctx, &auth.Identity{
+		Subject:  "lease-probe",
+		TenantID: tenantid.System,
+		Roles:    []string{leaseRole.ID},
+	})
 	leaseInfo, lerr := client.Lease().LeaseGrant(ctx, 1)
 	if lerr != nil {
 		t.Fatalf("LeaseGrant: %v", lerr)

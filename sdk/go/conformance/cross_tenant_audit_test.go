@@ -118,11 +118,19 @@ func bootConfinedCell(t *testing.T, tk transportKind, callerTenant string) confi
 
 	ctx := boundedCtx(t)
 	if tk == embeddedTransport {
-		ctx = auth.WithIdentity(ctx, &auth.Identity{
+		// Both auth.WithIdentity and tenant.WithTenantID: the same pair every
+		// network transport's auth pipeline binds together before a handler
+		// runs, and the convention sdk/go/transport/embedded's own authz
+		// tests encode (identityCtx, ctxFor). AuthMiddleware.ResolveTarget's
+		// self-target default reads tenant.FromContext, not the identity, so
+		// binding identity alone leaves the self-scope check comparing the
+		// identity's tenant against the unbound default (tenantid.System)
+		// instead of callerTenant.
+		ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
 			Subject:  "matrix",
 			TenantID: callerTenant,
 			Roles:    []string{adminID},
-		})
+		}), callerTenant)
 	}
 	return confinedCell{client: c, node: booted, ctx: ctx, callerTenant: callerTenant}
 }

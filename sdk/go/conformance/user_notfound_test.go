@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -239,7 +240,7 @@ func TestUserNotFound_Matrix(t *testing.T) {
 			c := bootUserCell(t, tk)
 			for _, call := range singleSubjectCalls {
 				t.Run(call.name, func(t *testing.T) {
-					err := call.call(boundedCtx(t), c)
+					err := call.call(c.callerCtx(t, tk), c)
 					if err == nil {
 						t.Fatalf("%s/%s: a lookup of a user that does not exist returned no error", tk, call.name)
 					}
@@ -435,16 +436,19 @@ type userClients struct {
 // "matrix" identity seedIdentityFixtures grants c.roleID. The embedded
 // transport authenticates nothing on its own, but sdk/go/node hands it the
 // same AuthMiddleware the remote cells enforce with, so its context carries
-// an identity holding the same role.
+// an identity holding the same role -- paired with tenant.WithTenantID, the
+// same convention sdk/go/transport/embedded's own authz tests encode
+// (identityCtx, ctxFor), since AuthMiddleware.ResolveTarget's self-target
+// default reads tenant.FromContext rather than the identity.
 func (c userClients) callerCtx(t *testing.T, tk transportKind) context.Context {
 	t.Helper()
 	ctx := boundedCtx(t)
 	if tk == embeddedTransport {
-		ctx = auth.WithIdentity(ctx, &auth.Identity{
+		ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
 			Subject:  "conformance-embedded",
 			TenantID: tenantid.System,
 			Roles:    []string{c.roleID},
-		})
+		}), tenantid.System)
 	}
 	return ctx
 }

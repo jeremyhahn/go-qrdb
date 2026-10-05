@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -32,7 +33,14 @@ import (
 // wiring-defect error in the one mode that serves locks.
 func TestClusteredNode_EmbeddedClientServesTheRaftOnlyFamilies(t *testing.T) {
 	ctx := context.Background()
-	n, err := NewClusteredNode(ctx, newRaftIsolationConfig(t), raftMembers(), nil, WithNoSyncWrites())
+	cfg := newRaftIsolationConfig(t)
+	// This test is about which service families the embedded transport
+	// wires on a raft node, not about RBAC; disabled HERE rather than in
+	// newRaftIsolationConfig itself, which cluster_formation_test.go's
+	// auth-method-rebinding test also builds its config from and needs
+	// auth ENABLED for.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
+	n, err := NewClusteredNode(ctx, cfg, raftMembers(), nil, WithNoSyncWrites())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
 	awaitWritable(ctx, t, n)

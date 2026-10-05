@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -278,20 +279,30 @@ func TestMintJoinToken_ExplicitTenantGrantStillRefused(t *testing.T) {
 
 // TestMintJoinToken_EmbeddedCapabilityExists proves the capability itself --
 // the verb is callable and configured -- on the embedded transport too, the
-// sixth of "every capability on all six transports". It does NOT assert a
-// ScopeCross refusal for a tenant caller, because none of the other
-// AdminServicer verbs enforce one on this transport either (see
-// clusterJoinTokenRefusals's doc comment): asserting a refusal here would
-// pass only by `service.AdminService.MintJoinToken` gaining a permission
-// check no sibling verb has, which is a broader change than this test's
-// job to make. What this DOES prove: embedded is not silently missing the
-// verb, and a caller presumed privileged (an in-process embedder is its own
-// admission control, same as for AddMember) can use it.
+// sixth of "every capability on all six transports".
+//
+// This no longer skips RBAC the way the other AdminServicer verbs (AddMember,
+// RemoveMember, Drain, ...) still do on this transport (see
+// clusterJoinTokenRefusals's doc comment, which remains accurate for THEM):
+// MintJoinToken is one of the operations the full-surface embedded
+// authorization widening routed through the same AuthorizeTarget/ScopeCross
+// decision the network transports make, so a caller must hold
+// cluster:join_token in the system tenant exactly as it must over REST/gRPC/
+// QUIC/unix/MCP. The identity bound below is the embedded equivalent of the
+// client certificate bootJoinTokenCell's remote cells authenticate as: the
+// system tenant's built-in Owner, the same role seedJoinTokenFixtures grants
+// it.
 func TestMintJoinToken_EmbeddedCapabilityExists(t *testing.T) {
 	client := bootJoinTokenCell(t, embeddedTransport, tenantid.System, role.RoleNameOwner)
 	minter := requireMinter(t, embeddedTransport, client)
 
-	resp, err := minter.MintJoinToken(boundedCtx(t), &transport.MintJoinTokenRequest{NodeID: "node-embedded"})
+	ctx := tenant.WithTenantID(auth.WithIdentity(boundedCtx(t), &auth.Identity{
+		Subject:  "matrix",
+		TenantID: tenantid.System,
+		Roles:    []string{role.SystemRoleID(tenantid.System, role.RoleNameOwner)},
+	}), tenantid.System)
+
+	resp, err := minter.MintJoinToken(ctx, &transport.MintJoinTokenRequest{NodeID: "node-embedded"})
 	if err != nil {
 		t.Fatalf("embedded: MintJoinToken: %v", err)
 	}

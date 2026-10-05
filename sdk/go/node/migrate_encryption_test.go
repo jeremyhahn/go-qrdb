@@ -47,6 +47,7 @@ func noSealStoreNode(t *testing.T) *Node {
 	ctx := context.Background()
 
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
@@ -126,6 +127,7 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
@@ -186,7 +188,8 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 	require.NoError(t, n.Close())
 
 	cfg2 := qrdbconfig.DefaultConfig()
-	cfg2.Raft.DataDir = cfg.Raft.DataDir // same data dir
+	cfg2.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+	cfg2.Raft.DataDir = cfg.Raft.DataDir          // same data dir
 	cfg2.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg2.Seal.Enabled = true
 	cfg2.Seal.Strategy = "none" // unchanged on disk — the node must self-heal
@@ -229,6 +232,7 @@ func TestNode_EnableEncryption_ViaEmbeddedTransport(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
@@ -282,6 +286,7 @@ func TestNode_EnableEncryption_ViaEmbeddedTransport(t *testing.T) {
 func TestNode_EnableEncryption_InPlaceMechanism(t *testing.T) {
 	ctx := context.Background()
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
@@ -337,6 +342,7 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
@@ -445,6 +451,7 @@ func TestNode_EnableEncryption_SystemShamirInsufficientOfficers(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true

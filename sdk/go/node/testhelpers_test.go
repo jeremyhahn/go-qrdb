@@ -62,6 +62,15 @@ func sealedStandaloneConfig(t *testing.T, dataDir string) *qrdbconfig.Config {
 	cfg.Protocols.QUIC = false
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
+	// This fixture is consumed by functional tests (seal lifecycle, barrier
+	// behavior) that drive the node through its embedded client with no
+	// identity bound to ctx; none of them is ABOUT authorization. Auth off
+	// here is the documented, unaffected case (an embedder that installs no
+	// AuthMiddleware), matching the config an operator who disables RBAC
+	// runs with -- not a weakening of the embedded-authorization fix, which
+	// has its own dedicated, auth-ENABLED coverage in
+	// sdk/go/transport/embedded and node/auth_middleware_test.go.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	return cfg
 }
 
@@ -106,6 +115,9 @@ func newTenantIsolationConfig(t *testing.T) *qrdbconfig.Config {
 	cfg.Protocols.QUIC = false
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
+	// See sealedStandaloneConfig's comment: this fixture's callers test
+	// tenant data isolation, not RBAC.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	return cfg
 }
 

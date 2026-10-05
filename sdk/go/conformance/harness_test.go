@@ -44,11 +44,13 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -435,8 +437,14 @@ func (c cell) boot(t *testing.T) clients {
 		awaitWritable(t, c, embeddedKV)
 	}
 
+	roleID := seedGuardedIdentity(t, n)
 	if c.transport.remote() {
-		seedGuardedIdentity(t, n)
+		// auth.mtls_binding_policy defaults to "required": creating the
+		// user alone is not enough, since an account with no live binding
+		// admits no certificate at all, CN/OU match or not --
+		// enrollMatrixCert binds the one clientKP carries before it is
+		// ever dialled with.
+		createMatrixUser(t, n, roleID)
 		enrollMatrixCert(t, n, tenantid.System, clientKP)
 		return dialRemote(t, c, n, ca, clientKP)
 	}
@@ -445,7 +453,112 @@ func (c cell) boot(t *testing.T) clients {
 	if !ok {
 		t.Fatalf("%s: the embedded KV client does not implement transport.GuardedKVClient", c.name())
 	}
-	return clients{kv: embeddedKV, guarded: guarded, txn: n.Client().Transaction(), lease: n.Client().Lease()}
+	identity := &auth.Identity{Subject: "matrix", TenantID: tenantid.System, Roles: []string{roleID}}
+	return clients{
+		kv:      authInjectingKV{inner: guarded, identity: identity},
+		guarded: authInjectingKV{inner: guarded, identity: identity},
+		txn:     authInjectingTxn{inner: n.Client().Transaction(), identity: identity},
+		lease:   authInjectingLease{inner: n.Client().Lease(), identity: identity},
+	}
+}
+
+// authInjectingKV wraps a transport.GuardedKVClient to bind an identity into
+// every call's context before delegating -- the embedded cell's way of
+// presenting the same authenticated caller a remote cell's client
+// certificate authenticates as. The embedded transport takes its identity
+// from the context rather than from a handshake, so without this every
+// battery in matrix_test.go and concurrency_test.go would need to build its
+// own identity-bound context at each of its dozens of call sites instead of
+// calling boundedCtx(t) as they already do.
+type authInjectingKV struct {
+	inner    transport.GuardedKVClient
+	identity *auth.Identity
+}
+
+var _ transport.GuardedKVClient = authInjectingKV{}
+
+func (a authInjectingKV) bind(ctx context.Context) context.Context {
+	return tenant.WithTenantID(auth.WithIdentity(ctx, a.identity), a.identity.TenantID)
+}
+
+func (a authInjectingKV) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
+	return a.inner.Put(a.bind(ctx), key, value, opts...)
+}
+
+func (a authInjectingKV) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
+	return a.inner.Get(a.bind(ctx), key, opts...)
+}
+
+func (a authInjectingKV) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
+	return a.inner.Delete(a.bind(ctx), key, opts...)
+}
+
+func (a authInjectingKV) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
+	return a.inner.List(a.bind(ctx), prefix, opts...)
+}
+
+func (a authInjectingKV) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
+	return a.inner.Scan(a.bind(ctx), prefix, opts...)
+}
+
+func (a authInjectingKV) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
+	return a.inner.Exists(a.bind(ctx), key, opts...)
+}
+
+func (a authInjectingKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return a.inner.PutIfAbsent(a.bind(ctx), key, value)
+}
+
+func (a authInjectingKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return a.inner.CompareAndDelete(a.bind(ctx), key, expected)
+}
+
+func (a authInjectingKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return a.inner.CompareAndSwap(a.bind(ctx), key, expected, next)
+}
+
+// authInjectingTxn is authInjectingKV's counterpart for TransactionClient.
+type authInjectingTxn struct {
+	inner    transport.TransactionClient
+	identity *auth.Identity
+}
+
+var _ transport.TransactionClient = authInjectingTxn{}
+
+func (a authInjectingTxn) ExecuteTransaction(ctx context.Context, req *transport.TransactionRequest, opts ...transport.WriteOption) (*transport.TransactionResponse, error) {
+	return a.inner.ExecuteTransaction(tenant.WithTenantID(auth.WithIdentity(ctx, a.identity), a.identity.TenantID), req, opts...)
+}
+
+// authInjectingLease is authInjectingKV's counterpart for LeaseClient.
+type authInjectingLease struct {
+	inner    transport.LeaseClient
+	identity *auth.Identity
+}
+
+var _ transport.LeaseClient = authInjectingLease{}
+
+func (a authInjectingLease) bind(ctx context.Context) context.Context {
+	return tenant.WithTenantID(auth.WithIdentity(ctx, a.identity), a.identity.TenantID)
+}
+
+func (a authInjectingLease) LeaseGrant(ctx context.Context, ttl int64) (*transport.LeaseInfo, error) {
+	return a.inner.LeaseGrant(a.bind(ctx), ttl)
+}
+
+func (a authInjectingLease) LeaseRevoke(ctx context.Context, leaseID int64) error {
+	return a.inner.LeaseRevoke(a.bind(ctx), leaseID)
+}
+
+func (a authInjectingLease) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transport.LeaseInfo, error) {
+	return a.inner.LeaseKeepAlive(a.bind(ctx), leaseID)
+}
+
+func (a authInjectingLease) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transport.LeaseInfo, error) {
+	return a.inner.LeaseTimeToLive(a.bind(ctx), leaseID)
+}
+
+func (a authInjectingLease) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, error) {
+	return a.inner.LeaseList(a.bind(ctx))
 }
 
 // remoteServerTLS builds the mTLS material a remote listener needs. Every qrdb
@@ -486,15 +599,20 @@ func remoteServerTLS(t *testing.T, clientTenant string) (*qrdbdharness.CA, *qrdb
 	return ca, clientKP, []server.ServerOption{server.WithTLS(tlsCfg)}
 }
 
-// seedGuardedIdentity grants the matrix's client certificate exactly the
-// permissions the guarded plane needs, and nothing else.
+// seedGuardedIdentity grants a role exactly the permissions the guarded plane
+// needs, and nothing else, and returns its id. For a remote cell it also
+// creates the "matrix" user the client certificate authenticates as; the
+// embedded cell binds the role directly into its own context instead (see
+// authInjectingKV/authInjectingTxn), since the embedded transport takes its
+// identity from the context rather than a handshake and has no user to
+// authenticate against.
 //
 // Running the remote cells through real mTLS and real RBAC is deliberate. The
 // guarded verbs are reachable over gRPC with ordinary kv:put / kv:delete, and
 // that reachability is precisely what made go-qrdb#129 severe rather than
 // theoretical; a matrix that bypassed authorization would not be testing the
 // path a consumer actually uses.
-func seedGuardedIdentity(t *testing.T, n *node.Node) {
+func seedGuardedIdentity(t *testing.T, n *node.Node) string {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -504,7 +622,7 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 		TenantID: tenantid.System,
 		Permissions: []permission.Permission{
 			permission.KVPut, permission.KVGet, permission.KVDelete,
-			permission.KVList, permission.KVExists,
+			permission.KVList, permission.KVRange, permission.KVExists,
 			permission.TransactionExecute,
 			permission.LeaseGrant, permission.LeaseRevoke,
 			permission.AdminHealth, permission.AdminStatus,
@@ -513,14 +631,13 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
-		Username: "matrix",
-		TenantID: tenantid.System,
-		RoleIDs:  []string{r.ID},
-	}); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	return r.ID
 }
+
+// createMatrixUser (defined in coordination_parity_test.go, shared by every
+// suite built on the "matrix" identity convention) creates the user a remote
+// cell's client certificate authenticates as, holding roleID. It must run
+// before enrollMatrixCert, below, which looks that user up by username.
 
 // enrollMatrixCert binds clientKP's certificate to the "matrix" account in
 // clientTenant via the canonical users:add_cert_binding verb -- the same way

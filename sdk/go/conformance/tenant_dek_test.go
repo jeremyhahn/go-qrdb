@@ -19,8 +19,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -37,8 +39,10 @@ import (
 // stops decrypting, the rewrapped one does not), plus the three refusals —
 // a mismatched AAD, retiring the current version, and naming another tenant.
 
-// seedDEKIdentity grants the "matrix" identity the keyring permissions.
-func seedDEKIdentity(t *testing.T, n *node.Node) {
+// seedDEKIdentity grants the "matrix" identity the keyring permissions and
+// returns the role id so the embedded cell, which authenticates nothing on
+// its own, can bind the same identity into its own context.
+func seedDEKIdentity(t *testing.T, n *node.Node) (roleID string) {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -62,13 +66,22 @@ func seedDEKIdentity(t *testing.T, n *node.Node) {
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	return r.ID
 }
 
 func TestTenantDEK_LifecycleOnEveryTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootAuthorizedCell(t, tk, func(n *node.Node) { seedDEKIdentity(t, n) }).DEK()
+			var roleID string
+			c := bootAuthorizedCell(t, tk, func(n *node.Node) { roleID = seedDEKIdentity(t, n) }).DEK()
 			ctx := boundedCtx(t)
+			if tk == embeddedTransport {
+				ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{
+					Subject:  "matrix",
+					TenantID: tenantid.System,
+					Roles:    []string{roleID},
+				}), tenantid.System)
+			}
 			aad := []byte("system/app/secret/v1")
 
 			enc, err := c.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
