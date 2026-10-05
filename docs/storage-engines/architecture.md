@@ -51,6 +51,63 @@ tenantEngine := namespace.New(base, "tenant-a")
 // List(nil)         →  filtered to the "tenant-a/" prefix
 ```
 
+### The file engine: one directory per key, not one file per key (BREAKING)
+
+**On-disk layout changed; no migration.** A security and availability probe
+found that writing a key and then a `/` prefix of that key, in either order,
+could kill the shard. The file engine used
+to map each key to a single file: '/' bytes delimited directory levels, so a
+key that was a '/' prefix of another key resolved under the SAME path as that
+other key's parent directory. Writing `dir/child` and then `dir` is Set
+colliding with a directory it had itself just created, and PebbleDB and
+in-memory storage have no such path at all — two ordinary byte-string keys,
+never a filesystem collision. The failure mode this produced was `SM.Apply`
+returning a genuine (if misleading) error from the storage layer: go-quicraft
+treats any non-nil `Update` error as fatal and halts `lastApplied` on that
+replica, so an ordinary pair of client writes could take the whole shard down
+with it. Because the system database lives on the system shard, that included
+authentication.
+
+The fix changes WHAT a key maps to, not whether '/' is read as a hierarchy:
+every key maps to a **directory**, and its value lives in a sentinel file
+(`.kv`) inside that directory. A key and every key for which it is a '/'
+prefix each get their own directory and their own `.kv`; one directory
+holding both its own sentinel file and a subdirectory for a longer key is
+ordinary filesystem structure, not a collision. `pkg/storage/file/keyenc.go`
+also closes a second, narrower gap in the same codec: a leading, trailing, or
+doubled '/' in a key used to produce an empty path segment that
+`filepath.Clean` silently collapsed into its neighbour (`"a/"` and `"a"` named
+the same directory); those three cases are now escaped rather than read as
+separators, so the key-to-path mapping is a true bijection over every byte
+string, not only over "ordinarily shaped" ones.
+
+This is a **breaking on-disk format change**. Per the project's
+no-backward-compatibility policy there is no migration code: a data directory
+written by the old layout is not read by the new one. Start the replica over
+raft's restore or backup/restore path, or reseed `sm_storage: file` from a
+backup, rather than upgrading the directory in place.
+
+A key whose encoded path would contain a '/'-delimited segment this
+filesystem cannot name as one path component (NAME_MAX, 255 bytes on every
+filesystem this engine targets) is refused with
+`file.KeySegmentTooLongError` — a declared refusal (see
+[key-value/engineering.md](../key-value/engineering.md#refusal-and-fault-at-the-apply-seam)),
+never a storage fault, so it cannot halt Apply either. This is scoped to the
+file backend alone: PebbleDB and in-memory storage have no path-component
+limit, so the same key that is refused under `sm_storage: file` is accepted
+under the `pebble` default.
+
+Deleting a key removes only its `.kv` sentinel; the directory itself is left
+in place even when nothing else remains in it. This is deliberate, not an
+oversight: `storage.Storage` carries no promise that `Set` and `Delete` on
+DIFFERENT keys are serialized against each other, and the `fast` state
+machine's write-through issues them from concurrent per-shard workers,
+ordered only per key. Removing a directory on the strength of one
+point-in-time "is it empty" check would race a concurrent `Set` of a key for
+which the deleted one is a '/' prefix, between that check and the `Set`'s own
+`MkdirAll`. A harmless leftover empty directory is the tradeoff for not
+having that race at all.
+
 ### Alternatives rejected
 
 - **One engine.** Rejected: memory is required for tests to be fast and

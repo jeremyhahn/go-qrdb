@@ -430,18 +430,18 @@ func TestGet_OSError(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	// Store a key so the backing file and directory exist.
+	// Store a key so its value sentinel and directory exist.
 	if err := eng.Set([]byte("secret/data"), []byte("value")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	// Replace the data file with a directory of the same name.
+	// Replace the value sentinel with a directory of the same name.
 	// os.ReadFile on a directory always fails, regardless of user.
-	filePath := filepath.Join(base, "secret", "data")
-	if err := os.Remove(filePath); err != nil {
+	valueFile := filepath.Join(base, "secret", "data", valueFileName)
+	if err := os.Remove(valueFile); err != nil {
 		t.Fatalf("setup: Remove: %v", err)
 	}
-	if err := os.Mkdir(filePath, 0o700); err != nil {
+	if err := os.Mkdir(valueFile, 0o700); err != nil {
 		t.Fatalf("setup: Mkdir: %v", err)
 	}
 
@@ -488,13 +488,18 @@ func TestDelete_OSError(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	// Place a non-empty directory where the engine would expect a regular file key.
+	// Place a non-empty directory at the key's value-sentinel path, instead
+	// of the ordinary file Set would have written there.
 	// os.Remove on a non-empty directory returns ENOTEMPTY, which is not os.IsNotExist.
 	dirKey := filepath.Join(base, "nonemptydir")
 	if err := os.Mkdir(dirKey, 0o700); err != nil {
 		t.Fatalf("setup: Mkdir: %v", err)
 	}
-	childFile := filepath.Join(dirKey, "child")
+	valueFile := filepath.Join(dirKey, valueFileName)
+	if err := os.Mkdir(valueFile, 0o700); err != nil {
+		t.Fatalf("setup: Mkdir value sentinel: %v", err)
+	}
+	childFile := filepath.Join(valueFile, "child")
 	if err := os.WriteFile(childFile, []byte("data"), 0o600); err != nil {
 		t.Fatalf("setup: WriteFile child: %v", err)
 	}

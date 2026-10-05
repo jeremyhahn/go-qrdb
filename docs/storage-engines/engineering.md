@@ -205,10 +205,21 @@ an error value, so an unchecked call panics rather than failing cleanly.
 
 ## Persistence
 
-- **File engine**: key-to-path filesystem mapping, with atomic
-  temp-file + rename + fsync writes and an all-or-nothing commit journal
-  replayed at open (`pkg/storage/file/journal.go`), plus the `storage.Syncer`
-  seam. That durability is why it is permitted as a hot apply path.
+- **File engine**: one directory per key — holding a `.kv` sentinel file for
+  the key's own value, and room for a subdirectory per key for which this one
+  is a `/` prefix — with atomic temp-file + rename + fsync writes and an
+  all-or-nothing commit journal replayed at open
+  (`pkg/storage/file/journal.go`), plus the `storage.Syncer` seam. That
+  durability is why it is permitted as a hot apply path. The directory-per-key
+  layout, and why it replaced one-file-per-key, is a breaking on-disk format
+  change with no migration — see
+  [architecture.md](architecture.md#the-file-engine-one-directory-per-key-not-one-file-per-key-breaking).
+  `Delete` removes only the sentinel, never the directory, for
+  a reason that doc also gives: concurrent per-key workers (the `fast` state
+  machine's write-through) make removing it on a point-in-time emptiness
+  check a race. A key whose encoded `/`-delimited segment exceeds this
+  filesystem's NAME_MAX is refused with `file.KeySegmentTooLongError` — a
+  declared refusal, not a storage fault, so it cannot halt Apply.
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.
 - **Namespace engine**: no storage of its own; it rewrites keys.
@@ -220,6 +231,18 @@ an error value, so an unchecked call panics rather than failing cleanly.
 - **Namespace wrapper**: prefixing on write, prefix filtering on `List`, and
   that a second tenant's keys are invisible.
 - **File engine journal**: crash-mid-write replay at open.
+- **File engine prefix collisions**: both write orders of a key
+  and a key for which it is a `/` prefix, both orders of delete, trailing /
+  leading / doubled `/` keys staying distinct, and a fuzz test
+  (`FuzzFileEngine_PrefixKeysNeverCollide`) over arbitrary byte strings split
+  into such a pair — all at the storage level
+  (`pkg/storage/file/prefix_collision_test.go`). The same property is pinned
+  one layer up, through `Update`, on every storage-generic state machine over
+  both `file` and `pebble` `sm_storage`
+  (`pkg/statemachine/prefix_property_test.go`) and on `pebble`/`mvcc`
+  (`pkg/store/prefix_property_test.go`), and at the disk state machine level
+  specifically for the two cases the original report named
+  (`pkg/statemachine/disk_prefix_collision_test.go`).
 - **Volume pool**: `LocalOnly` refusing a non-local backend, and `Pick`
   returning a usable local path.
 - **Error tests** per function, happy path plus error path.

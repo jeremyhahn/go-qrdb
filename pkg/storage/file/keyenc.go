@@ -16,13 +16,20 @@ package file
 
 import "strings"
 
-// The file backend maps each key to a path under the engine directory. Keys
-// are arbitrary []byte per the storage.Storage contract — the same contract
-// the memory and raft backends honour — so they may contain bytes that are not
-// valid in a filesystem path (NUL, control bytes, high bytes) or that collide
-// with path semantics ("." / ".." segments). Storing such a key verbatim
-// (the historical behaviour) produced "invalid argument" on open — e.g. a
-// uint64 identity key like `__sys:users/id/\x00\x00\x00\x00\x00\x00\x10\x01`.
+// The file backend maps each key to a directory under the engine directory,
+// holding a sentinel file (valueFileName) that carries the value (see
+// file.go). Keys are arbitrary []byte per the storage.Storage contract — the
+// same contract the memory and raft backends honour — so they may contain
+// bytes that are not valid in a filesystem path (NUL, control bytes, high
+// bytes), that collide with path semantics ("." / ".." segments), or that
+// collide with ANOTHER key's path once '/' is read as a directory separator
+// (a key "dir" and a key "dir/child" both name something under "dir").
+// Storing a key verbatim as a single file (the historical behaviour)
+// produced "invalid argument" on open for the first class — e.g. a uint64
+// identity key like `__sys:users/id/\x00\x00\x00\x00\x00\x00\x10\x01` — and a
+// rename failure for the second: "dir" and "dir/child" both resolve under
+// "dir", and whichever is written second collides with what the first
+// created there (go-qrdb#592).
 //
 // encodeKeyToPath / decodePathToKey are an exact bijection between key bytes
 // and a '/'-delimited relative path:
@@ -34,6 +41,25 @@ import "strings"
 //     bytes of a segment are escaped (`%00%00%00%00%00%00%10%01`).
 //   - Every other byte, plus '%' (the escape marker) and a leading '.' of any
 //     segment (so no segment is "." or ".."), is percent-encoded as %XX.
+//   - A '/' byte is escaped, rather than read as a directory separator, when
+//     treating it as one would produce an EMPTY segment: a leading '/' (the
+//     first byte of the key), a trailing '/' (the last byte of the key), or a
+//     second consecutive '/'. filepath.Clean collapses an empty segment into
+//     its neighbour — "a/" and "a" would name the identical directory — which
+//     is exactly the kind of collision this codec exists to rule out. Escaping
+//     it removes the empty segment from the path syntax entirely, so Clean has
+//     nothing to collapse.
+//
+// Because every segment this codec ever emits is non-empty and never "." or
+// "..", filepath.Join(root, encodeKeyToPath(key)) never invokes any of
+// filepath.Clean's normalisation rules — it is exactly root + "/" + the
+// encoded string. That, together with encode being decode's left inverse
+// (proven by TestKeyPathCodecRoundTrip over arbitrary byte strings), is what
+// makes the mapping from distinct keys to distinct directories total: two
+// different keys can never name the same path, so file.go's "one directory
+// per key, holding both this key's value and its children's subdirectories"
+// layout (go-qrdb#592) never collides regardless of which keys share a '/'
+// prefix relationship or in which order they are written.
 //
 // The mapping is deterministic and order-independent of the on-disk layout:
 // the iterator sorts by the decoded key bytes, not by directory order.
@@ -56,7 +82,11 @@ func encodeKeyToPath(key []byte) string {
 	for i := 0; i < len(key); i++ {
 		c := key[i]
 		switch {
-		case c == '/':
+		case c == '/' && i != 0 && i != len(key)-1 && key[i+1] != '/':
+			// A real separator: it is not the first or last byte of the key,
+			// and it is not immediately followed by another '/'. Every one of
+			// those three cases would otherwise produce an empty path segment
+			// — see the package doc.
 			b.WriteByte('/')
 			segStart = true
 			continue

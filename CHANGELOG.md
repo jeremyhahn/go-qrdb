@@ -185,6 +185,32 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
 
 ### Fixed
 
+- **A `Put` of a key followed by a `Put` of a `/` prefix of that key (either
+  order) could kill the shard on `raft.sm_storage: file`, including
+  `sm_type: disk` — a security and availability bug a probe found.** The file
+  backend mapped each key to a single file, with `/` bytes read as directory
+  levels, so a key that is a `/` prefix of another resolved under the exact
+  path that other key's parent directory needed. Writing both collided —
+  `SM.Apply` returned a genuine storage-layer error, which go-quicraft treats
+  as fatal: `lastApplied` stops advancing on that replica, and the shard goes
+  dark for every subsequent linearizable read. Because the system database
+  lives on the system shard, that took authentication down with it. An
+  empty-key batch tripped the identical failure mode before go-qrdb#136's
+  classification fix landed; this closes the other half the same probe
+  surfaced. The file backend's key-to-path mapping now maps every key to its
+  own **directory**, holding a `.kv` sentinel file for its value — a key and
+  any key for which it is a `/` prefix each get their own directory, and one
+  holding both its own sentinel and a subdirectory for a longer key is
+  ordinary filesystem structure, never a collision. The codec also now
+  escapes a leading, trailing, or doubled `/` — which `filepath.Clean` used
+  to collapse into an empty segment, silently merging `"a/"` into the same
+  directory as `"a"` — so the mapping is a true bijection over every byte
+  string. A key whose encoded path would need a `/`-delimited segment longer
+  than this filesystem's path-component limit is now refused with the typed,
+  declared `file.KeySegmentTooLongError` before any path is opened, so it is
+  classified as a refusal and can never halt Apply either. See
+  [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-one-directory-per-key-not-one-file-per-key-breaking)
+  (go-qrdb#592).
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled
   (the default) — a 501 `Unimplemented` ("database share holders service is

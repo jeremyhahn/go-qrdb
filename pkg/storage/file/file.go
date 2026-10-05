@@ -33,9 +33,13 @@ var (
 	_ storage.Syncer  = (*Engine)(nil)
 )
 
-// Engine is a file-based storage engine that stores each key-value pair
-// as a separate file under a base directory. Keys containing "/" are
-// mapped to subdirectories.
+// Engine is a file-based storage engine that maps each key to a directory
+// under a base directory, holding the key's value in a sentinel file
+// (valueFileName) inside it. Keys containing "/" are mapped to nested
+// subdirectories, so a key and every key for which it is a '/' prefix share a
+// directory tree without colliding — see keyenc.go for why that mapping is
+// collision-free for ANY two distinct keys, regardless of their '/'
+// structure or the order they are written in (go-qrdb#592).
 type Engine struct {
 	dir    string
 	closed atomic.Bool
@@ -45,6 +49,19 @@ type Engine struct {
 	// interleave publish/apply/clear.
 	journalMu sync.Mutex
 }
+
+// valueFileName is the sentinel file holding a key's value, inside the
+// directory encodeKeyToPath maps the key to. No encoded key segment can ever
+// be named this: encodeKeyToPath escapes a leading '.' in every segment it
+// emits (see keyenc.go), so a real key segment never starts with '.' and
+// this name can never collide with one.
+const valueFileName = ".kv"
+
+// maxEncodedSegmentLen bounds a single '/'-delimited segment of an encoded
+// key to this filesystem's path-component limit. 255 bytes (NAME_MAX) is the
+// floor across ext4, xfs, btrfs and APFS; 200 leaves margin without
+// depending on exactly which filesystem backs raft.data_dir.
+const maxEncodedSegmentLen = 200
 
 // New creates a new file-based storage engine rooted at dir. The
 // directory is created if it does not exist. An interrupted batch commit
@@ -65,8 +82,32 @@ func New(dir string) (*Engine, error) {
 	return e, nil
 }
 
-func (e *Engine) keyPath(key []byte) string {
-	return filepath.Join(e.dir, filepath.FromSlash(encodeKeyToPath(key)))
+// keyDir returns the directory key maps to: key's own value lives in
+// valueFileName inside it, and any key for which this one is a '/' prefix
+// lives in a subdirectory beside that file. The two never collide — see the
+// keyenc.go package doc.
+//
+// Every encoded segment is checked against this filesystem's path-component
+// limit here, before any path derived from it is opened, so an oversized
+// segment is refused as KeySegmentTooLongError (a declared refusal, not a
+// storage fault) rather than reaching the OS as ENAMETOOLONG.
+func (e *Engine) keyDir(key []byte) (string, error) {
+	encoded := encodeKeyToPath(key)
+	for _, seg := range strings.Split(encoded, "/") {
+		if len(seg) > maxEncodedSegmentLen {
+			return "", &KeySegmentTooLongError{Segment: seg}
+		}
+	}
+	return filepath.Join(e.dir, filepath.FromSlash(encoded)), nil
+}
+
+// valuePath returns the path of the sentinel file holding key's value.
+func (e *Engine) valuePath(key []byte) (string, error) {
+	dir, err := e.keyDir(key)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, valueFileName), nil
 }
 
 // Get retrieves the value for the given key. Returns nil, nil when the
@@ -78,7 +119,11 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, storage.ErrEmptyKey
 	}
-	data, err := os.ReadFile(e.keyPath(key))
+	path, err := e.valuePath(key)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -89,11 +134,18 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 }
 
 // Set durably stores a key-value pair as a file on disk: the value is
-// written to a temp file in the destination directory, fsynced, and
-// atomically renamed into place, then the parent directory is fsynced. A
-// crash therefore leaves either the old value or the new value, never a
-// torn file — the durability contract the raft state-machine storage
-// seam (raft.sm_storage: file) relies on.
+// written to a temp file in the key's own directory (created if absent),
+// fsynced, and atomically renamed into place as valueFileName, then that
+// directory is fsynced. A crash therefore leaves either the old value or the
+// new value, never a torn file — the durability contract the raft
+// state-machine storage seam (raft.sm_storage: file) relies on.
+//
+// The directory MkdirAll creates here is exactly the one keyDir names: it
+// may already exist, either because this key was set before or because an
+// unrelated key for which this one is a '/' prefix created it first. Either
+// way the directory is only ever a container for this key's value file and
+// its children's subdirectories, never a file itself, so the two kinds of
+// key can never contend for the same path (go-qrdb#592).
 func (e *Engine) Set(key, value []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
@@ -101,8 +153,10 @@ func (e *Engine) Set(key, value []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
-	path := e.keyPath(key)
-	dir := filepath.Dir(path)
+	dir, err := e.keyDir(key)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -133,6 +187,7 @@ func (e *Engine) Set(key, value []byte) error {
 	// temp file and the target share dir, so it is synced exactly once -- the
 	// same work the separate os.Rename + directory-fsync pair did, with no second
 	// place for the pairing to be got wrong (go-qrdb#268).
+	path := filepath.Join(dir, valueFileName)
 	if err := fsync.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
@@ -141,6 +196,23 @@ func (e *Engine) Set(key, value []byte) error {
 }
 
 // Delete removes a key from storage.
+//
+// Only the value sentinel is removed; the key's directory is left in place,
+// deliberately, even when nothing else is left in it. Two things depend on
+// that:
+//
+//   - A key for which this one is a '/' prefix may have its own subdirectory
+//     there, and removing the directory would delete that key's data too.
+//   - storage.Storage carries no promise that Set and Delete on DIFFERENT
+//     keys are serialized against each other — FastBackend's write-through
+//     deliberately issues them from concurrent per-shard workers, ordered
+//     only per key — so two keys that share a directory because one is a
+//     '/' prefix of the other can have their Set and Delete in flight at
+//     once. Removing a directory on the strength of a single point-in-time
+//     "is it empty" check would race a concurrent Set for the other key
+//     between that check and its own MkdirAll, which depends on the
+//     directory continuing to exist. Never removing it trades a harmless
+//     leftover empty directory for not having that race at all.
 func (e *Engine) Delete(key []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
@@ -148,17 +220,20 @@ func (e *Engine) Delete(key []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
-	path := e.keyPath(key)
-	err := os.Remove(path)
+	dir, err := e.keyDir(key)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-	// Make the removal durable: fsync the parent directory so a crash
-	// cannot resurrect the deleted key.
-	return fsync.Dir(filepath.Dir(path))
+	path := filepath.Join(dir, valueFileName)
+	if rmErr := os.Remove(path); rmErr != nil {
+		if os.IsNotExist(rmErr) {
+			return nil
+		}
+		return rmErr
+	}
+	// Make the removal durable: fsync the directory so a crash cannot
+	// resurrect the deleted value.
+	return fsync.Dir(dir)
 }
 
 // List returns all keys matching the given prefix.
@@ -171,19 +246,10 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		key, isValue := decodeValueFilePath(e.dir, path, info)
+		if !isValue {
 			return nil
 		}
-		// Skip the commit journal and temp files (dot-prefixed; no
-		// encoded key segment can start with '.').
-		if strings.HasPrefix(info.Name(), ".") {
-			return nil
-		}
-		rel, relErr := filepath.Rel(e.dir, path)
-		if relErr != nil {
-			return relErr
-		}
-		key := decodePathToKey(filepath.ToSlash(rel))
 		if bytes.HasPrefix(key, prefix) {
 			keys = append(keys, key)
 		}
@@ -203,7 +269,11 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
-	_, err := os.Stat(e.keyPath(key))
+	path, err := e.valuePath(key)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -211,6 +281,30 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// decodeValueFilePath reports whether path (walked under root, described by
+// info) is a key's value sentinel, and when it is, the key it decodes to.
+//
+// Every other file under root -- the commit journal, its temp files, and any
+// in-flight ".tmp-set-*" write -- is dot-prefixed and is not named
+// valueFileName, so excluding everything but an exact valueFileName match
+// also excludes all of them without needing to enumerate them here. A
+// directory is never a key by itself; only the sentinel inside it is.
+func decodeValueFilePath(root, path string, info os.FileInfo) ([]byte, bool) {
+	if info.IsDir() || info.Name() != valueFileName {
+		return nil, false
+	}
+	rel, err := filepath.Rel(root, filepath.Dir(path))
+	if err != nil || rel == "." {
+		// rel == "." means the sentinel sits directly in the engine root,
+		// which only an empty-key Set could produce -- refused before it
+		// reaches here (see Engine.Set) -- so this is unreachable from this
+		// engine's own writes. Treated as "not a key" rather than panicking
+		// on a hand-placed file.
+		return nil, false
+	}
+	return decodePathToKey(filepath.ToSlash(rel)), true
 }
 
 // Batch creates a new write batch for atomic multi-key operations. A closed

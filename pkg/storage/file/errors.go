@@ -41,3 +41,34 @@ func (e *JournalWriteError) Error() string {
 func (e *JournalWriteError) Unwrap() error {
 	return e.Err
 }
+
+// KeySegmentTooLongError refuses a key whose encoded form contains a
+// '/'-delimited segment too long for this filesystem to name as a single
+// path component (NAME_MAX is 255 bytes on every filesystem this engine
+// targets; see maxEncodedSegmentLen). It is a property of the KEY, detected
+// before any path is opened, never a fault from the filesystem itself — the
+// distinction a storage fault and a refused request need (see
+// protocol.RefusalError, which this satisfies by having the same method
+// shape without importing that package: pkg/storage is a cross-repo,
+// protocol-agnostic contract, and must stay one).
+type KeySegmentTooLongError struct {
+	// Segment is the oversized encoded segment, truncated for the message so
+	// a pathological key cannot make the error itself unbounded.
+	Segment string
+}
+
+// Error returns a human-readable description of the refused key.
+func (e *KeySegmentTooLongError) Error() string {
+	seg := e.Segment
+	if len(seg) > 64 {
+		seg = seg[:64] + "..."
+	}
+	return "file storage: key segment too long for this filesystem (encoded: " + seg + ")"
+}
+
+// Refusal declares this a refusal of the request on its merits, not a
+// storage fault — see protocol.RefusalError. A caller one layer up classifies
+// through the method shape alone; pkg/storage does not import pkg/protocol.
+func (e *KeySegmentTooLongError) Refusal() string {
+	return "key segment exceeds this filesystem's path component limit"
+}
