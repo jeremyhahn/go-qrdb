@@ -3201,6 +3201,25 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (auth disabled) leaves the built-in tokens.
 	n.authMethods.Bind(authMW)
 
+	// featureClient (built below) is node machinery, not a caller surface --
+	// its own field doc says as much, and it is already exempted from the
+	// node's seal probe for the identical reason. It is built from a
+	// snapshot of embeddedOpts taken BEFORE WithAuthMiddleware is appended,
+	// the same way it already excludes the seal-probe/seal-stream options
+	// appended further below: those exclusions are "not yet appended when
+	// this snapshot was taken", not a deliberate per-option filter, and this
+	// one follows the same rule.
+	//
+	// Without the snapshot, the embedded-authorization widening
+	// (19a7daf5a) requires an identity on every call this client makes --
+	// including the node's own member-record publish/watch
+	// (startMemberRecord, pkg/replicaforward's membership feed) -- and
+	// nothing ever binds one to n.background(), so a real cluster with auth
+	// enabled (the default) could never keep its replica-forwarding leader
+	// cache warm: TestClusteredNode_PublishesItsMemberRecord caught this
+	// against dev/main itself, not merely this branch's own tree.
+	featureClientOpts := append([]embedded.Option(nil), embeddedOpts...)
+
 	if authMW != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithAuthMiddleware(authMW))
 	}
@@ -3219,7 +3238,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		embeddedOpts = append(embeddedOpts, embedded.WithPINBackend(pinBackend))
 	}
 
-	featureClient, err := newConnectedEmbeddedClient(ctx, svcNode, embeddedOpts)
+	featureClient, err := newConnectedEmbeddedClient(ctx, svcNode, featureClientOpts)
 	if err != nil {
 		return err
 	}
