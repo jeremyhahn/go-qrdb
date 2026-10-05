@@ -15,6 +15,7 @@
 package keywrap
 
 import (
+	"log/slog"
 	"sort"
 	"sync"
 )
@@ -127,7 +128,13 @@ func (r *DefaultRegistry) LookupFactory(id string) (ProviderFactory, error) {
 	defer r.mu.RUnlock()
 	f, ok := r.factories[id]
 	if !ok {
-		return nil, &ProviderNotRegisteredError{ID: id, Available: r.listAvailableLocked()}
+		available := r.listAvailableLocked()
+		// Full detail (the registered set) is logged on the server only;
+		// ProviderNotRegisteredError.Error() never renders it to a
+		// caller that may be probing a remote KeyProviderID one request
+		// at a time (go-qrdb security review, backup-encrypt-default).
+		slog.Error("keywrap: provider not registered", "id", id, "available", joinStrings(available))
+		return nil, &ProviderNotRegisteredError{ID: id, Available: available}
 	}
 	return f, nil
 }

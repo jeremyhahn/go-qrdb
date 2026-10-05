@@ -87,16 +87,25 @@ func (e *ProviderAlreadyRegisteredError) Error() string {
 
 // ProviderNotRegisteredError is returned by LookupFactory/Lookup when the
 // requested id has no registered factory. Available carries the
-// lexicographically-sorted set of registered ids so callers can surface a
-// useful error.
+// lexicographically-sorted set of registered ids for the SERVER's own log
+// (LookupFactory logs it via slog at the point of construction) -- never
+// rendered by Error() itself. id is whatever the caller asked to resolve
+// (BackupOptions.KeyProviderID, submitted over the wire) and is safe to
+// echo back since the caller already supplied it, but the registered SET
+// is server configuration a remote caller does not otherwise learn; this
+// package's own Registry is exactly the seam a caller probes a
+// KeyProviderID value against, one request at a time, so rendering
+// Available here would hand back the full list of what else to try
+// (go-qrdb security review, backup-encrypt-default).
 type ProviderNotRegisteredError struct {
 	ID        string
 	Available []string
 }
 
-// Error returns a human-readable description.
+// Error returns a human-readable description naming the requested id, but
+// never the registered set -- see the type's own doc comment for why.
 func (e *ProviderNotRegisteredError) Error() string {
-	return "keywrap: provider not registered: " + e.ID + " (available: " + joinStrings(e.Available) + ")"
+	return "keywrap: provider not registered: " + e.ID
 }
 
 // WrapFailedError is returned when constructing the AEAD cipher over an

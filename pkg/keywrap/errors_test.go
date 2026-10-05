@@ -60,11 +60,23 @@ func TestProviderAlreadyRegisteredError_Error(t *testing.T) {
 	}
 }
 
-func TestProviderNotRegisteredError_Error(t *testing.T) {
+// TestProviderNotRegisteredError_ErrorNamesRequestButNotTheRegisteredSet
+// proves Error() echoes the requested id -- the caller already supplied
+// it, so there is nothing to protect by withholding it -- but never the
+// registered set: id is reachable from a remote caller
+// (BackupOptions.KeyProviderID), and rendering Available would hand that
+// caller the full list of what else to try, one request at a time
+// (go-qrdb security review, backup-encrypt-default). The Available field
+// itself still carries the set for the server's own log
+// (DefaultRegistry.LookupFactory logs it via slog).
+func TestProviderNotRegisteredError_ErrorNamesRequestButNotTheRegisteredSet(t *testing.T) {
 	err := &ProviderNotRegisteredError{ID: "aws-kms", Available: []string{"software"}}
 	msg := err.Error()
-	if !strings.Contains(msg, "aws-kms") || !strings.Contains(msg, "software") {
-		t.Fatalf("Error() = %q, want it to mention both the missing id and the available set", msg)
+	if !strings.Contains(msg, "aws-kms") {
+		t.Fatalf("Error() = %q, want it to mention the requested id", msg)
+	}
+	if strings.Contains(msg, "software") {
+		t.Fatalf("Error() = %q, must NOT mention the registered set", msg)
 	}
 }
 

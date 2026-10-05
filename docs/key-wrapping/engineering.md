@@ -211,7 +211,11 @@ not work, not a server-side failure.
   indirection, not an assertion on process memory.
 - **Unit, `pkg/keywrap`**: `DefaultRegistry.Register` refuses a duplicate
   ID; `LookupFactory`/`Lookup` on an unregistered ID returns
-  `*ProviderNotRegisteredError` naming the registered set;
+  `*ProviderNotRegisteredError` naming the requested id -- its `Error()`
+  never renders the registered set, which is logged on the server only
+  (`LookupFactory`'s own `slog.Error`), since `id` is reachable from a
+  remote caller (`BackupOptions.KeyProviderID`) and the set is server
+  configuration a prober should not learn one request at a time;
   `NewDefaultRegistry()` has exactly `"software"` registered.
 - **Unit, `pkg/keywrap`**: a `fakeHardwareProvider` test double, registered
   through `Registry.Register` exactly as a real go-xkms provider would be,
