@@ -11,27 +11,6 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-## [0.42.0-alpha] - 2026-10-05
-
-The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This release contains BREAKING changes; see the entries below. Highlights:
-
-- **Tenant login CA (Key B).**
-  - Client listeners trust each tenant's login CA through `pkg/clienttrust.Pool`; peer and Raft trust only the cluster CA.
-  - No CA names are advertised, and chains are verified in `VerifyConnection`.
-  - Key B fails closed on its own, without affecting cluster-CA or operator-CA logins, and a reseal drops Key B trust.
-  - Client certificates require ClientAuth EKU.
-- **Per-tenant key providers.** `cert.WithKeyProviderFactory` and `server.WithCertKeyProviderFactory` take a `cakey.ProviderFactory`, so go-xkms HSM/KMS providers hold one key per tenant.
-- **Security fixes.**
-  - Tenant admins can no longer change their own quotas or entitlements on the embedded transport.
-  - Audit queries are confined to the caller's tenant.
-  - Pre-auth message, stream and connection limits.
-- **SDK additions for embedders.**
-  - Guarded DAO writes and an atomic multi-record batch over every transport.
-  - UnitOfWork's non-atomic fallback is removed.
-  - Collision-safe deterministic IDs (SHA-256 truncation, create-if-absent, natural-key verification).
-  - The secure atomic file writer and rate limiting are exported.
-  - In-memory nodes no longer need a data directory.
-
 ### Fixed
 
 - **First boot could crash a node with `register role <name> failed: role: id
@@ -67,6 +46,30 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   `TestReconcileBuiltInRoles_ConcurrentCallersConverge`,
   `TestProvisionTenant_ConcurrentCallersConverge`) and with
   `TestClusterEnableEncryption_TenantScope_RF3 -count=10`.
+
+## [0.42.0-alpha] - 2026-10-05
+
+The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Tenant login CA (Key B).**
+  - Client listeners trust each tenant's login CA through `pkg/clienttrust.Pool`; peer and Raft trust only the cluster CA.
+  - No CA names are advertised, and chains are verified in `VerifyConnection`.
+  - Key B fails closed on its own, without affecting cluster-CA or operator-CA logins, and a reseal drops Key B trust.
+  - Client certificates require ClientAuth EKU.
+- **Per-tenant key providers.** `cert.WithKeyProviderFactory` and `server.WithCertKeyProviderFactory` take a `cakey.ProviderFactory`, so go-xkms HSM/KMS providers hold one key per tenant.
+- **Security fixes.**
+  - Tenant admins can no longer change their own quotas or entitlements on the embedded transport.
+  - Audit queries are confined to the caller's tenant.
+  - Pre-auth message, stream and connection limits.
+- **SDK additions for embedders.**
+  - Guarded DAO writes and an atomic multi-record batch over every transport.
+  - UnitOfWork's non-atomic fallback is removed.
+  - Collision-safe deterministic IDs (SHA-256 truncation, create-if-absent, natural-key verification).
+  - The secure atomic file writer and rate limiting are exported.
+  - In-memory nodes no longer need a data directory.
+
+### Fixed
+
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled
   (the default) — a 501 `Unimplemented` ("database share holders service is
