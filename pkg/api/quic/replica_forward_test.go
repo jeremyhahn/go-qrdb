@@ -394,20 +394,19 @@ func TestReplicaForwardQUIC_EveryReplicaRefusingIsTheRefusal(t *testing.T) {
 	}
 }
 
-// TestReplicaForwarder_NoCallerAndAClosedForwarderForwardNothing.
-func TestReplicaForwarder_NoCallerAndAClosedForwarderForwardNothing(t *testing.T) {
+// TestFrameForwarder_NoCallerAndAClosedForwarderForwardNothing.
+func TestFrameForwarder_NoCallerAndAClosedForwarderForwardNothing(t *testing.T) {
 	ca := replicaforwardtest.NewCA(t)
 	b := startQUICTarget(t, ca, "node-1", "raft-b")
 	members := replicaforwardtest.Members{{NodeID: 1, Address: "raft-b", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolQUIC: b.addr}}}
-	f := newReplicaForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool}, ca.TLS(t, "node-a"))
+	f := NewFrameForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool}, ca.TLS(t, "node-a"))
 	refusal := &placement.NotAReplicaError{TenantID: "acme", Database: "orders", ShardID: 1, LeaderReplicaID: 1, Replicas: []placement.Replica{{ReplicaID: 1, RaftAddr: "raft-b"}}}
 
-	if _, _, ok := f.forward(context.Background(), "kv.Put", "orders", nil, refusal); ok {
+	if _, _, ok := f.Forward(context.Background(), nil, "kv.Put", "orders", nil, refusal); ok {
 		t.Fatal("a request with no authenticated caller was forwarded")
 	}
-	f.close()
-	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
-	if _, _, ok := f.forward(ctx, "kv.Put", "orders", nil, refusal); ok || b.calls.Load() != 0 {
+	f.Close()
+	if _, _, ok := f.Forward(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"}, "kv.Put", "orders", nil, refusal); ok || b.calls.Load() != 0 {
 		t.Fatalf("a closed forwarder forwarded (%d target calls)", b.calls.Load())
 	}
 }

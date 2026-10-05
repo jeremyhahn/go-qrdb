@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -143,7 +144,7 @@ type Server struct {
 	// refuses as a non-replica (WithReplicaForwarding); forwarder is built
 	// from it at Start, over the listener's TLS identity, and closed at Stop.
 	replicaForwarding *replicaforward.Config
-	forwarder         *replicaForwarder
+	forwarder         *FrameForwarder
 
 	closed atomic.Bool
 	wg     sync.WaitGroup
@@ -538,7 +539,7 @@ func (s *Server) Start() error {
 	}
 
 	if s.replicaForwarding != nil {
-		s.forwarder = newReplicaForwarder(*s.replicaForwarding, s.tlsConfig)
+		s.forwarder = NewFrameForwarder(*s.replicaForwarding, s.tlsConfig)
 	}
 
 	tlsCfg := quicOnlyTLSConfig(s.tlsConfig)
@@ -694,7 +695,7 @@ func (s *Server) Stop() {
 	s.closed.Store(true)
 	_ = s.listener.Close()
 	if s.forwarder != nil {
-		s.forwarder.close()
+		s.forwarder.Close()
 	}
 
 	// Close stream admission BEFORE waiting: handleConnection's Add-then-spawn
@@ -964,7 +965,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	if handlerErr != nil {
 		if s.forwarder != nil && onBehalf == nil {
 			if refusal, ok := errors.AsType[*placement.NotAReplicaError](handlerErr); ok {
-				if st, body, forwarded := s.forwarder.forward(ctx, method, database, payload, refusal); forwarded {
+				if st, body, forwarded := s.forwarder.Forward(ctx, auth.IdentityFromContext(ctx), method, database, payload, refusal); forwarded {
 					_ = s.writeResponse(stream, requestID, st, body)
 					s.logRequest(method, requestID, st, start)
 					return

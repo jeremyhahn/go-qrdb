@@ -46,10 +46,12 @@ func WithReplicaForwarding(cfg replicaforward.Config) ServerOption {
 	}
 }
 
-// replicaForwarder forwards a QUIC request this node refused with
+// FrameForwarder forwards a QUIC request frame a node refused with
 // NotAReplica to a replica, carrying a signed assertion of the caller, and
-// relays the replica's answer frame.
-type replicaForwarder struct {
+// returns the replica's answer frame. A QUIC listener forwards with one, and
+// the embedded transport forwards its calls with the node's (docs/replica-
+// forwarding: embedded forwards over QUIC). It is safe for concurrent use.
+type FrameForwarder struct {
 	cfg       replicaforward.Config
 	key       crypto.Signer
 	nodeID    string
@@ -107,12 +109,12 @@ func (c connectedPacketConn) SetDeadline(t time.Time) error             { return
 func (c connectedPacketConn) SetReadDeadline(t time.Time) error         { return c.udp.SetReadDeadline(t) }
 func (c connectedPacketConn) SetWriteDeadline(t time.Time) error        { return c.udp.SetWriteDeadline(t) }
 
-// newReplicaForwarder returns the forwarder for a listener serving nodeTLS:
-// its certificate is the client certificate a forward presents and its key
-// signs the caller assertion.
-func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replicaForwarder {
+// NewFrameForwarder returns a forwarder for the node whose TLS identity is
+// nodeTLS: its certificate is the client certificate a forward presents and
+// its key signs the caller assertion.
+func NewFrameForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *FrameForwarder {
 	key, nodeID := forward.NodeIdentity(nodeTLS)
-	return &replicaForwarder{
+	return &FrameForwarder{
 		cfg:    cfg,
 		key:    key,
 		nodeID: nodeID,
@@ -127,8 +129,9 @@ func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replic
 	}
 }
 
-// close closes every target connection.
-func (f *replicaForwarder) close() {
+// Close closes every target connection; a forward after Close is never
+// sent.
+func (f *FrameForwarder) Close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed = true
@@ -138,12 +141,14 @@ func (f *replicaForwarder) close() {
 	}
 }
 
-// forward forwards method on database with payload for the caller in ctx,
-// and returns the frame a replica answered. It returns false when no replica
-// served it -- the caller is then answered the refusal, never a local answer.
-// A failure after the request reached a replica is that failure's frame.
-func (f *replicaForwarder) forward(ctx context.Context, method, database string, payload []byte, refusal *placement.NotAReplicaError) (uint16, []byte, bool) {
-	assertion, sig, err := forward.SignCaller(auth.IdentityFromContext(ctx), forward.RPCBinding("quic", method, payload), f.key, f.nodeID, time.Now())
+// Forward forwards method on database with payload, as caller, after this
+// node refused it with refusal, and returns the status and payload of the
+// frame a replica answered. It returns false when no replica served it -- no
+// caller, no signing identity, no target -- and the caller is then answered
+// the refusal, never a local answer. A failure after the request reached a
+// replica is that failure's frame.
+func (f *FrameForwarder) Forward(ctx context.Context, caller *auth.Identity, method, database string, payload []byte, refusal *placement.NotAReplicaError) (uint16, []byte, bool) {
+	assertion, sig, err := forward.SignCaller(caller, forward.RPCBinding("quic", method, payload), f.key, f.nodeID, time.Now())
 	if err != nil {
 		slog.Warn("replicaforward: not forwarded", "protocol", cluster.APIProtocolQUIC, "tenant", refusal.TenantID, "database", refusal.Database, "error", err)
 		return 0, nil, false
@@ -200,7 +205,7 @@ func (f *replicaForwarder) forward(ctx context.Context, method, database string,
 // stream opens a request stream to endpoint, dialing when there is no live
 // connection. It returns false when none could be opened: the request then
 // never left this node.
-func (f *replicaForwarder) stream(ctx context.Context, endpoint string) (*quicgo.Stream, bool) {
+func (f *FrameForwarder) stream(ctx context.Context, endpoint string) (*quicgo.Stream, bool) {
 	if cc, ok := f.cached(endpoint); ok {
 		if s, err := cc.conn.OpenStreamSync(ctx); err == nil {
 			return s, true
@@ -222,7 +227,7 @@ func (f *replicaForwarder) stream(ctx context.Context, endpoint string) (*quicgo
 // dial opens a connection to endpoint over a socket connected to it. It gets
 // half the forward's budget, so a target that never answers the handshake
 // leaves time for the one retry.
-func (f *replicaForwarder) dial(ctx context.Context, endpoint string) (*targetConn, bool) {
+func (f *FrameForwarder) dial(ctx context.Context, endpoint string) (*targetConn, bool) {
 	raddr, err := net.ResolveUDPAddr("udp", endpoint)
 	if err != nil {
 		return nil, false
@@ -244,7 +249,7 @@ func (f *replicaForwarder) dial(ctx context.Context, endpoint string) (*targetCo
 }
 
 // cached returns the live connection to endpoint.
-func (f *replicaForwarder) cached(endpoint string) (*targetConn, bool) {
+func (f *FrameForwarder) cached(endpoint string) (*targetConn, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cc, ok := f.conns[endpoint]
@@ -256,7 +261,7 @@ func (f *replicaForwarder) cached(endpoint string) (*targetConn, bool) {
 
 // keep records cc as endpoint's connection, replacing any other. A closed
 // forwarder keeps nothing and closes cc.
-func (f *replicaForwarder) keep(endpoint string, cc *targetConn) bool {
+func (f *FrameForwarder) keep(endpoint string, cc *targetConn) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
@@ -271,7 +276,7 @@ func (f *replicaForwarder) keep(endpoint string, cc *targetConn) bool {
 }
 
 // drop closes cc and forgets it, if it is still endpoint's connection.
-func (f *replicaForwarder) drop(endpoint string, cc *targetConn) {
+func (f *FrameForwarder) drop(endpoint string, cc *targetConn) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.conns[endpoint] == cc {
