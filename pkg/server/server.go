@@ -134,6 +134,10 @@ type Server struct {
 	// without a CA pool to verify a replica with.
 	forwardingUntrusted sync.Once
 
+	// inProcess is the embedded transport's replica forwarder; see
+	// ReplicaForwarder.
+	inProcess inProcessForwarding
+
 	config      *config.Config
 	kvSvc       service.KVServicer
 	adminSvc    service.AdminServicer
@@ -1489,6 +1493,7 @@ func (s *Server) Stop() {
 	s.stopGRPC()
 	s.stopREST()
 	s.stopModules()
+	s.stopReplicaForwarder()
 	s.wg.Wait()
 	s.logger.Info("server orchestrator stopped")
 }
