@@ -470,7 +470,13 @@ are not reconstructed here — their history is in the git log.
   before returning it, in one call that cannot be split apart and only
   have half of it remembered; it refuses with
   `*dao.UnsupportedIDGeneratorError` when the configured generator is not
-  deterministic.
+  deterministic. **An empty key in a guarded batch now refuses with the
+  typed `kvstore.EmptyKeyError`** (`sdk.KVEmptyKeyError`) instead of a
+  generic error reconstructed from an RPC transport's wire response:
+  `sdk.KVStoreAdapter.PutAllIfAllUnchanged`, `pkg/server/lifecycle`'s
+  `ExecuteGuardedBatch`, and all four of `pkg/kvstore`'s namespaced guarded
+  wrappers check every guard's and write's key before forwarding, so the
+  refusal matches what an embedded, same-process caller already got.
 
 ## [0.41.0-alpha] - 2026-10-04
 
