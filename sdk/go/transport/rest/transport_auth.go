@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -59,24 +60,49 @@ func userNotFound(id uint64, err error) error {
 	return err
 }
 
+// leaseNotFoundServerMessagePrefix is service.LeaseNotFoundError's own
+// Error() prefix, reproduced here rather than imported: sdk/go is a
+// standalone client module that does not import the server's pkg/service,
+// the same reason sdk/go/conformance's own confinement tests name a
+// wire-level string directly rather than importing the constant it
+// mirrors. Used ONLY to confirm a REST 404 is specifically this condition
+// before mapOpsNotFoundError trusts it -- see that function's own doc
+// comment for why REST, alone among the five remote transports, needs
+// this extra check.
+const leaseNotFoundServerMessagePrefix = "service: lease not found: "
+
 // mapOpsNotFoundError is userNotFound for ExecuteTransaction and
 // ExecuteBatch: checkResultError's only not-found-classed outcome for a
-// transaction or batch command is a write naming a lease the state machine
-// does not hold, so a 404 here is unambiguous too, and the offending lease
-// ID is read back out of the SAME ops the caller sent (success ops before
-// failure ops) rather than guessed from the server's message text. See
-// sdk/go/transport/grpc's copy of this function for the full rationale,
-// including the known limitation when success and failure branches each
-// name a different lease.
+// transaction or batch command is a write naming a lease the state
+// machine does not hold, so the same structural argument gRPC, Unix,
+// QUIC and MCP's copies of this function rely on holds here too -- but
+// REST's 404 is, uniquely among the five, HTTP's own generic status, the
+// same one a reverse proxy, load balancer or misrouted path returns for
+// reasons that have nothing to do with this service at all. A bare
+// status-code check would mis-type an unrelated infrastructure 404 as a
+// lease refusal merely because the request happened to name a lease, so
+// REST additionally confirms the server's own message is specifically
+// this condition before trusting it (go-qrdb#591's review, non-blocking)
+// -- not the substring classification go-qrdb#289 deleted, which guessed
+// WHICH SUBJECT a shared code was about; this call site already knows
+// the subject (a lease, from its own request) and is only confirming the
+// server agrees, against a message this codebase's own typed error
+// generates deterministically, never a human-authored string.
+//
+// The offending lease ID itself still comes from the SAME ops the caller
+// sent (transport.FirstLeaseID: success ops before failure ops), never
+// parsed back out of the message, matching every other transport's copy
+// of this function.
 func mapOpsNotFoundError(ops []transport.Op, err error) error {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotFound {
 		return err
 	}
-	for _, op := range ops {
-		if op.LeaseID != 0 {
-			return &transport.LeaseNotFoundError{LeaseID: op.LeaseID}
-		}
+	if reqErr.Err == nil || !strings.HasPrefix(reqErr.Err.Error(), leaseNotFoundServerMessagePrefix) {
+		return err
+	}
+	if id, found := transport.FirstLeaseID(ops); found {
+		return &transport.LeaseNotFoundError{LeaseID: id}
 	}
 	return err
 }

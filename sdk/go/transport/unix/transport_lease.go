@@ -63,10 +63,8 @@ func mapOpsNotFoundError(method string, ops []transport.Op, err error) error {
 	if !ok || st.Code() != codes.NotFound {
 		return mapGRPCError(method, err)
 	}
-	for _, op := range ops {
-		if op.LeaseID != 0 {
-			return &transport.LeaseNotFoundError{LeaseID: op.LeaseID}
-		}
+	if id, found := transport.FirstLeaseID(ops); found {
+		return &transport.LeaseNotFoundError{LeaseID: id}
 	}
 	return mapGRPCError(method, err)
 }

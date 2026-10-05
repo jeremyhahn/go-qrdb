@@ -191,10 +191,8 @@ func mapOpsNotFoundError(ops []transport.Op, err error) error {
 	if !isToolNotFound(err) {
 		return err
 	}
-	for _, op := range ops {
-		if op.LeaseID != 0 {
-			return &transport.LeaseNotFoundError{LeaseID: op.LeaseID}
-		}
+	if id, found := transport.FirstLeaseID(ops); found {
+		return &transport.LeaseNotFoundError{LeaseID: id}
 	}
 	return err
 }
