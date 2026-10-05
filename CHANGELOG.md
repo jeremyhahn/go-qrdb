@@ -161,30 +161,6 @@ are not reconstructed here — their history is in the git log.
   `TestReconcileBuiltInRoles_ConcurrentCallersConverge`,
   `TestProvisionTenant_ConcurrentCallersConverge`) and with
   `TestClusterEnableEncryption_TenantScope_RF3 -count=10`.
-
-## [0.42.0-alpha] - 2026-10-05
-
-The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This release contains BREAKING changes; see the entries below. Highlights:
-
-- **Tenant login CA (Key B).**
-  - Client listeners trust each tenant's login CA through `pkg/clienttrust.Pool`; peer and Raft trust only the cluster CA.
-  - No CA names are advertised, and chains are verified in `VerifyConnection`.
-  - Key B fails closed on its own, without affecting cluster-CA or operator-CA logins, and a reseal drops Key B trust.
-  - Client certificates require ClientAuth EKU.
-- **Per-tenant key providers.** `cert.WithKeyProviderFactory` and `server.WithCertKeyProviderFactory` take a `cakey.ProviderFactory`, so go-xkms HSM/KMS providers hold one key per tenant.
-- **Security fixes.**
-  - Tenant admins can no longer change their own quotas or entitlements on the embedded transport.
-  - Audit queries are confined to the caller's tenant.
-  - Pre-auth message, stream and connection limits.
-- **SDK additions for embedders.**
-  - Guarded DAO writes and an atomic multi-record batch over every transport.
-  - UnitOfWork's non-atomic fallback is removed.
-  - Collision-safe deterministic IDs (SHA-256 truncation, create-if-absent, natural-key verification).
-  - The secure atomic file writer and rate limiting are exported.
-  - In-memory nodes no longer need a data directory.
-
-### Fixed
-
 - **A `Put` of a key followed by a `Put` of a `/` prefix of that key (either
   order) could kill the shard on `raft.sm_storage: file`, including
   `sm_type: disk` — a security and availability bug a probe found, with two
@@ -222,17 +198,7 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   check, not migration code, that also refuses the superseded
   one-directory-per-key layout in place. Every directory `MkdirAll` creates
   now has its parent fsynced immediately, and `FastBackend`'s async-write
-  failure logs no longer include the raw key. A global maximum key length
-  of 65,535 bytes is now enforced identically on every replica regardless of
-  its `sm_storage`, in `pkg/statemachine`'s `validateClientKey` and in every
-  wire encoder whose key field could otherwise describe a longer one
-  (`protocol.EncodeOp`, `protocol.EncodeCompare`); the ones already bounded
-  to the identical value by their own two-byte key frame
-  (`protocol.EncodeCompareAndSwap`/`EncodeCompareAndDelete`,
-  go-quicraft's `kv.EncodePut`/`EncodePutIfAbsent`/`EncodeDelete`) were left
-  as is, and a pre-existing, independently-defined duplicate of the same
-  65,535-byte cap in the batch-import path now references the one canonical
-  constant. See
+  failure logs no longer include the raw key. See
   [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)
   (go-qrdb#592).
 - **A 65,534- or 65,535-byte key panicked `Apply` on every replica and every
@@ -262,6 +228,15 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   two replicas running different binary versions during a rolling
   upgrade. A key already committed to the log, however long, applies
   identically on every replica and every `sm_type`, including on replay.
+  A global maximum key length of 65,535 bytes is enforced at PROPOSAL
+  time on every wire encoder whose key field could otherwise describe a
+  longer one (`protocol.CheckKeyLen` inside `EncodeOp`, `EncodeCompare`);
+  the ones already bounded to the identical value by their own two-byte
+  key frame (`protocol.EncodeCompareAndSwap`/`EncodeCompareAndDelete`,
+  go-quicraft's `kv.EncodePut`/`EncodePutIfAbsent`/`EncodeDelete`) were
+  left as is, and a pre-existing, independently-defined duplicate of the
+  same 65,535-byte cap in the batch-import path now references the one
+  canonical constant.
 - **A concurrent `Set` or `Delete` to an unrelated key could abort an
   iterator scan or `List` entirely, or make `Snapshot` return a silently
   truncated result with a nil error, on `raft.sm_storage: file`
@@ -311,11 +286,62 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   first and skips `mkdirAllDurable` entirely on a hit, so only the FIRST
   `Set` into any given shard directory pays the cost. `New` also removes
   any `.tmp-set-*` crash leftovers from an interrupted `Set` under the
-  engine root at Open, and the CHANGELOG and `docs/storage-engines` wording
-  that described this layout change as replacing two PRIOR RELEASES is
+  engine root at Open, and the `docs/storage-engines` wording that
+  described this layout change as replacing two PRIOR RELEASES is
   corrected: the intermediate one-directory-per-key design never shipped —
-  it existed only between
-  commits of this same unreleased change.
+  it existed only between commits of this same unreleased change.
+
+### Changed — BREAKING
+
+- **BREAKING: the file storage engine's on-disk layout changed; no
+  migration (go-qrdb#592).** `raft.sm_storage: file` (used by `sm_type:
+  disk` and `fast`) used to map each key to a single file, with `/` bytes
+  read as directory levels; it now maps each key to a record named by the
+  hex SHA-256 digest of the key, sharded two directory levels deep,
+  holding `[keyLen:4 BE][key][value]`. This is wider than
+  `raft.sm_storage: file` alone: `file.New` also backs `BackendFile`
+  databases, every database's barrier-metadata store regardless of that
+  database's own configured backend, partitions, and the repository
+  `qrdbd restore --backup-dir` reads from. A data directory written by
+  the one-file-per-key layout this replaces — the only layout that has
+  ever shipped; an intermediate one-directory-per-key design existed only
+  between commits of this same unreleased change and was never in a
+  release — is not read by this one; `New` refuses it with a typed error
+  naming the format rather than misreading it, and ignores `lost+found`
+  (the directory `mkfs`/`fsck` creates at a mount root) when deciding
+  whether a directory is fresh. There is no migration code, per the
+  project's no-backward-compatibility policy: start the replica over
+  raft's restore or backup/restore path, or reseed from a backup, rather
+  than upgrading the directory in place. A backup taken before this
+  change cannot be restored into a binary that carries it, for the
+  identical reason: the backup's bytes are the old layout, and the
+  restoring binary opens them as data directories under the new one. See
+  [docs/storage-engines/architecture.md](docs/storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking)
+  and [docs/backup-restore/user.md](docs/backup-restore/user.md).
+
+## [0.42.0-alpha] - 2026-10-05
+
+The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Tenant login CA (Key B).**
+  - Client listeners trust each tenant's login CA through `pkg/clienttrust.Pool`; peer and Raft trust only the cluster CA.
+  - No CA names are advertised, and chains are verified in `VerifyConnection`.
+  - Key B fails closed on its own, without affecting cluster-CA or operator-CA logins, and a reseal drops Key B trust.
+  - Client certificates require ClientAuth EKU.
+- **Per-tenant key providers.** `cert.WithKeyProviderFactory` and `server.WithCertKeyProviderFactory` take a `cakey.ProviderFactory`, so go-xkms HSM/KMS providers hold one key per tenant.
+- **Security fixes.**
+  - Tenant admins can no longer change their own quotas or entitlements on the embedded transport.
+  - Audit queries are confined to the caller's tenant.
+  - Pre-auth message, stream and connection limits.
+- **SDK additions for embedders.**
+  - Guarded DAO writes and an atomic multi-record batch over every transport.
+  - UnitOfWork's non-atomic fallback is removed.
+  - Collision-safe deterministic IDs (SHA-256 truncation, create-if-absent, natural-key verification).
+  - The secure atomic file writer and rate limiting are exported.
+  - In-memory nodes no longer need a data directory.
+
+### Fixed
+
 - **`database barrier-officer`/`barrier-init-shamir`/`barrier-quorum`/
   `barrier-rekey` were non-functional on every real boot with auth enabled
   (the default) — a 501 `Unimplemented` ("database share holders service is
