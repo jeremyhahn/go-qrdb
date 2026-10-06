@@ -284,9 +284,17 @@ func (s *BatchService) ImportBegin(ctx context.Context, opts ImportOptions) (str
 		TenantID:    callerTenant,
 	})
 	if err != nil {
-		// The lease was granted but never bound to anything; revoke it
-		// rather than leaving an empty lease to expire on its own.
-		_ = s.leaseService().Revoke(ctx, granted.ID)
+		// An outcome-unknown proposal (ErrOutcomeUnknown) may have actually
+		// bound this lease to a committed session record -- go-quicraft
+		// committed the SetMeta entry and only failed to deliver the
+		// response. Revoking here would destroy a session this call cannot
+		// prove never existed, so leave it for its own TTL to reclaim
+		// instead, exactly like ImportCommit's best-effort release does.
+		// Only a proven refusal (the lease was granted but never bound to
+		// anything) is safe to revoke outright.
+		if !errors.Is(err, ErrOutcomeUnknown) {
+			_ = s.leaseService().Revoke(ctx, granted.ID)
+		}
 		return "", err
 	}
 

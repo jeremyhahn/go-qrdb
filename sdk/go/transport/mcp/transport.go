@@ -460,8 +460,9 @@ func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, erro
 	}
 
 	return &transport.HealthResponse{
-		Status:   raw.Status,
-		IsLeader: raw.Leader,
+		Status:             raw.Status,
+		IsLeader:           raw.Leader,
+		DiagnosticsDropped: raw.DiagnosticsDropped,
 	}, nil
 }
 
@@ -783,8 +784,9 @@ var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
 
 // serverHealthStatus mirrors service.HealthStatus for JSON decoding.
 type serverHealthStatus struct {
-	Status string `json:"Status"`
-	Leader bool   `json:"Leader"`
+	Status             string `json:"Status"`
+	Leader             bool   `json:"Leader"`
+	DiagnosticsDropped uint64 `json:"DiagnosticsDropped"`
 }
 
 // serverStatusInfo mirrors service.StatusInfo for JSON decoding.

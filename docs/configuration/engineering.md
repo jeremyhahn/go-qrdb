@@ -142,6 +142,14 @@ Viper-bound, equivalent to their flags:
 | `--compaction-overhead`         | `raft.compaction_overhead`         |
 | `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
 | `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
+
+go-quicraft's `TransportConfig` carries other resource knobs (snapshot
+receive rate/memory, connection caps, the inbound message-receive budget);
+`buildHostConfig` sets only `MTLSConfig` on it, so those run at go-quicraft's
+defaults and have no entry in this table. See `../configuration/cli.md` for
+the 0.18.0 message-receive-budget default change
+(`DefaultMaxMessageReceiveMemory` removed; now derived from
+`MessageReceiveBudgetFrames`).
 | `--sm`                          | `raft.sm_type` (`pebble` default; every registered type starts — see `../run-modes/architecture.md`) |
 | `--tls-ca-file`                 | `tls.ca_file`                      |
 | `--tls-cert-file`               | `tls.cert_file`                    |

@@ -22,8 +22,9 @@ import "time"
 
 // HealthResponse is returned by the health check endpoint.
 type HealthResponse struct {
-	Status   string `json:"status"`
-	IsLeader bool   `json:"is_leader"`
+	Status             string `json:"status"`
+	IsLeader           bool   `json:"is_leader"`
+	DiagnosticsDropped uint64 `json:"diagnostics_dropped"`
 }
 
 // StatusResponse provides detailed host and shard status information.

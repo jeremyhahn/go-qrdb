@@ -6296,11 +6296,17 @@ func (x *TSListMetricsResponse) GetMetrics() []string {
 
 // HealthResponse is the response payload for Health.
 type HealthResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	Leader        bool                   `protobuf:"varint,2,opt,name=leader,proto3" json:"leader,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Status string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Leader bool                   `protobuf:"varint,2,opt,name=leader,proto3" json:"leader,omitempty"`
+	// diagnostics_dropped is the process-wide count of go-quicraft library
+	// log records dropped since the process started because the slog
+	// handler was not keeping up with its bounded diagnostics queue. A
+	// rising count means the handler is blocking or far slower than the
+	// process logs.
+	DiagnosticsDropped uint64 `protobuf:"varint,3,opt,name=diagnostics_dropped,json=diagnosticsDropped,proto3" json:"diagnostics_dropped,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *HealthResponse) Reset() {
@@ -6345,6 +6351,13 @@ func (x *HealthResponse) GetLeader() bool {
 		return x.Leader
 	}
 	return false
+}
+
+func (x *HealthResponse) GetDiagnosticsDropped() uint64 {
+	if x != nil {
+		return x.DiagnosticsDropped
+	}
+	return 0
 }
 
 // StatusResponse is the response payload for Status.
@@ -29683,10 +29696,11 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12;\n" +
 	"\vconsistency\x18\x03 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\"1\n" +
 	"\x15TSListMetricsResponse\x12\x18\n" +
-	"\ametrics\x18\x01 \x03(\tR\ametrics\"@\n" +
+	"\ametrics\x18\x01 \x03(\tR\ametrics\"q\n" +
 	"\x0eHealthResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x16\n" +
-	"\x06leader\x18\x02 \x01(\bR\x06leader\"\xc8\x01\n" +
+	"\x06leader\x18\x02 \x01(\bR\x06leader\x12/\n" +
+	"\x13diagnostics_dropped\x18\x03 \x01(\x04R\x12diagnosticsDropped\"\xc8\x01\n" +
 	"\x0eStatusResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12!\n" +
 	"\fraft_address\x18\x02 \x01(\tR\vraftAddress\x12\x1b\n" +

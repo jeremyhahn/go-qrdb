@@ -483,8 +483,44 @@ Compliance credentials, tenant onboarding, replica forwarding, chunked import, v
   replaces the issuer-only form; the issuer is `chain[1]`, and failing the
   cluster-CA, static and Key B checks the chain may contain one of the
   tenant's registered trust anchors at any depth above the leaf.
+- **go-quicraft bumped to v0.18.0** (root, `sdk/go`, `sdk/go/gorm/conformance`).
+  `DefaultMaxMessageReceiveMemory` is removed upstream; the inbound
+  message-receive budget is now derived from `MessageReceiveBudgetFrames`
+  (default 4, 512 MiB at the defaults, was a fixed 256 MiB). go-qrdb never
+  set the old constant or field, so this needed no code change; the Raft
+  host's `TransportConfig` still carries only `MTLSConfig` from
+  `buildHostConfig` and runs every other go-quicraft transport default
+  unmodified (documented in `docs/configuration/cli.md` and
+  `docs/configuration/engineering.md`; see `docs/12-configuration.md`).
+  Every proposal, config change and session failure after the Raft
+  hand-off now reports `quicraft.MaybeApplied(err) == true`; every
+  service-layer propose helper already defaulted an unrecognized
+  post-hand-off failure to `service.ErrOutcomeUnknown` (only
+  `*quicraft.NotLeaderError`, a pre-hand-off refusal, maps to
+  `service.ErrNotStored`), so that classification needed no change.
+  `HealthStatus.DiagnosticsDropped` (the process-wide count of go-quicraft
+  diagnostics a blocked log handler has dropped) is now surfaced through
+  `service.HealthStatus`, the admin Health RPC/response on every transport
+  (REST, gRPC, QUIC, the Unix socket, MCP, embedded), and the Go SDK's
+  `transport.HealthResponse`. `OnShardFailed` firing exactly once per shard
+  instance and `SnapshotRecoveryExhaustedError` have no existing go-qrdb
+  consumer (go-qrdb registers no `quicraft.EventListener` today), so there
+  was nothing to audit for correctness there.
 
 ### Fixed
+
+- **Two lease-backed compensation paths could destroy a write that had
+  actually committed.** `lock.Service.TryLock` and
+  `BatchService.ImportBegin` each grant a lease, then propose a write bound
+  to it; both used to revoke the lease unconditionally on ANY propose
+  error, including `service.ErrOutcomeUnknown` -- which go-quicraft 0.18
+  now reports for a far wider set of post-hand-off failures. Revoking in
+  that case deletes every key bound to the lease, including one the
+  ambiguous write may have just durably created. `TryLock` now re-reads the
+  key and recovers the lock when it finds the lease it just granted;
+  `ImportBegin` now skips the revoke on `errors.Is(err, ErrOutcomeUnknown)`
+  and leaves the session for its own TTL, exactly like `ImportCommit`'s
+  existing best-effort release.
 
 - **A restarted self-issued-CA node no longer exits right after its
   unseal.** The boot's cluster-CA check read the CA record from the system

@@ -33,7 +33,7 @@ require (
 	github.com/jeremyhahn/go-enclave v0.7.0-alpha
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.43.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.17.0
+	github.com/jeremyhahn/go-quicraft v0.18.0
 	github.com/jeremyhahn/go-truststrap v0.4.0-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0

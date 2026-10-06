@@ -52,8 +52,9 @@ func (s *Server) handleHealth(ctx context.Context, _ []byte) ([]byte, error) {
 	}
 
 	resp, err := proto.Marshal(&pb.HealthResponse{
-		Status: info.Status,
-		Leader: info.Leader,
+		Status:             info.Status,
+		Leader:             info.Leader,
+		DiagnosticsDropped: info.DiagnosticsDropped,
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}

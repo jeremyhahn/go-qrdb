@@ -666,3 +666,49 @@ func TestImportCommit_ProposalFaultMidImport_LeavesSessionRetryable(t *testing.T
 		t.Error("k3 (the row in the faulted chunk) was written despite the fault")
 	}
 }
+
+// TestImportBegin_ProposalFault_MaybeApplied_DoesNotRevokeLease covers the
+// outcome-unknown case go-quicraft 0.18 widened to every post-hand-off
+// proposal failure: the SetMeta proposal actually commits (binding the
+// granted lease to a staged session record) but ImportBegin only sees the
+// response-delivery failure. ImportBegin must report the error without
+// revoking the lease -- revoking it here would delete the session record
+// that may have just been durably written (go-qrdb#601).
+func TestImportBegin_ProposalFault_MaybeApplied_DoesNotRevokeLease(t *testing.T) {
+	host, st := newImportSessionHostWithStore()
+	svc := NewBatchService(host, 1)
+	ctx := withCaller(context.Background(), "acme", "alice")
+
+	real := host.syncProposeFn
+	host.syncProposeFn = func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+		decoded, derr := protocol.DecodeCommand(cmd)
+		if derr == nil && decoded.Op == protocol.OpImportStage {
+			// Let the real fake commit the SetMeta write first, then
+			// report the failure as if delivering the response were what
+			// failed -- the committed-but-unacknowledged shape MaybeApplied
+			// exists to describe.
+			if _, realErr := real(ctx, shardID, cmd); realErr != nil {
+				return sm.Result{}, realErr
+			}
+			return sm.Result{}, errors.New("simulated response-delivery fault")
+		}
+		return real(ctx, shardID, cmd)
+	}
+
+	_, err := svc.ImportBegin(ctx, ImportOptions{Format: "ndjson", KeyField: "id", ValueMode: "row"})
+	if err == nil {
+		t.Fatal("expected ImportBegin to report the injected fault")
+	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Errorf("ImportBegin error = %v, want errors.Is(err, ErrOutcomeUnknown)", err)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.revoked) != 0 {
+		t.Fatalf("lease was revoked despite the maybe-applied fault: %+v", st.revoked)
+	}
+	if len(st.staged) == 0 {
+		t.Fatal("the SetMeta write that actually committed is gone -- the session was destroyed")
+	}
+}

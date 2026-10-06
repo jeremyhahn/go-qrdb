@@ -373,6 +373,11 @@ omitted. Ignored for a single-node cluster.
 - Setting `snapshot_entries` to `0` disables automatic snapshots.
 - Setting `compaction_overhead` to `0` uses the system default of 5000 entries.
 - Setting `max_in_mem_log_size` or `max_total_in_mem_log_size` to `0` uses the system defaults.
+- go-quicraft's own `TransportConfig` (stream pool sizing, snapshot receive
+  limits, and the inbound message-receive budget) has no field here:
+  `buildHostConfig` sets only the mTLS material, so those knobs run at
+  go-quicraft's built-in defaults. See `docs/configuration/cli.md` for the
+  0.18.0 message-receive-budget default change.
 - With non-static discovery methods and no config file, `replica_id` is auto-generated from `crypto/rand` (48-bit) and `data_dir` is suffixed with the replica ID to avoid collisions.
 
 ---

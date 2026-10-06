@@ -417,8 +417,9 @@ func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, erro
 	}
 
 	return &transport.HealthResponse{
-		Status:   resp.GetStatus(),
-		IsLeader: resp.GetLeader(),
+		Status:             resp.GetStatus(),
+		IsLeader:           resp.GetLeader(),
+		DiagnosticsDropped: resp.GetDiagnosticsDropped(),
 	}, nil
 }
 

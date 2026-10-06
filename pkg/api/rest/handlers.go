@@ -87,8 +87,9 @@ type peerInfo struct {
 
 // healthResponse is the JSON payload returned by GET /health.
 type healthResponse struct {
-	Status   string `json:"status"`
-	IsLeader bool   `json:"is_leader"`
+	Status             string `json:"status"`
+	IsLeader           bool   `json:"is_leader"`
+	DiagnosticsDropped uint64 `json:"diagnostics_dropped"`
 }
 
 // capabilitiesResponse is the JSON payload returned by GET /capabilities.
@@ -263,8 +264,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, healthResponse{
-		Status:   info.Status,
-		IsLeader: info.Leader,
+		Status:             info.Status,
+		IsLeader:           info.Leader,
+		DiagnosticsDropped: info.DiagnosticsDropped,
 	})
 }
 

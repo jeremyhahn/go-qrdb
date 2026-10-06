@@ -2161,6 +2161,13 @@ message TSListMetricsResponse {
 message HealthResponse {
     string status = 1;
     bool leader = 2;
+
+    // diagnostics_dropped is the process-wide count of go-quicraft library
+    // log records dropped since the process started because the slog
+    // handler was not keeping up with its bounded diagnostics queue. A
+    // rising count means the handler is blocking or far slower than the
+    // process logs.
+    uint64 diagnostics_dropped = 3;
 }
 
 // StatusResponse is the response payload for Status.

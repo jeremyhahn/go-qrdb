@@ -70,6 +70,19 @@ config: unknown key "storage.cach_size" in /etc/qrdb/qrdb.yaml:14
 | `--auth-enabled` | `auth.enabled` |
 | `--debug-raft` | *(forces `logging.level: debug`)* |
 
+`buildHostConfig` (`cmd/qrdbd/start.go`) sets only `MTLSConfig` on the
+go-quicraft `TransportConfig` it builds for the Raft host transport; every
+other field — stream pool sizing, snapshot receive rate/memory, connection
+caps, and the inbound message-receive budget — is left at go-quicraft's own
+default and has no `qrdbd` flag or YAML key. go-quicraft 0.18.0 changed that
+last default: the receive budget used to be a fixed `DefaultMaxMessageReceiveMemory`
+(256 MiB, removed in 0.18.0); it is now `MessageReceiveBudgetFrames`
+(default 4) maximum-size frame charges, 512 MiB at the defaults. An operator
+needing a different value must set `TransportConfig.MessageReceiveBudgetFrames`
+or `TransportConfig.MaxMessageReceiveMemory` directly in a composing layer
+that builds the `HostConfig` itself (e.g. go-quicbaas); go-qrdb does not
+surface it.
+
 Feature-specific flags are documented in their own folders: `--mode`
 ([../run-modes/cli.md](../run-modes/cli.md)), `--enable-mysql` /
 `--enable-pgsql` / `--sql-database` ([../sql/cli.md](../sql/cli.md)),

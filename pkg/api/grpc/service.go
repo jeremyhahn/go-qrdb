@@ -507,8 +507,9 @@ func (s *qrdbServiceServer) Health(ctx context.Context, _ *emptypb.Empty) (*pb.H
 		return nil, mapServiceError(err)
 	}
 	return &pb.HealthResponse{
-		Status: info.Status,
-		Leader: info.Leader,
+		Status:             info.Status,
+		Leader:             info.Leader,
+		DiagnosticsDropped: info.DiagnosticsDropped,
 	}, nil
 }
 

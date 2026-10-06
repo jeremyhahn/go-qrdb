@@ -291,8 +291,8 @@ github.com/jeremyhahn/go-enclave v0.7.0-alpha h1:bJPQ6W2K3l8rZAu07a371m2S1x4xul5
 github.com/jeremyhahn/go-enclave v0.7.0-alpha/go.mod h1:ne9kCKe2/sihKoYNqX4EJjIeaM8LgQOlaTU3cIWl0I8=
 github.com/jeremyhahn/go-objstore v0.3.0-alpha h1:G/KiZBLcojP9rFnH+UuqyTk1CM8ogM2ZRfrt0Ps3WcI=
 github.com/jeremyhahn/go-objstore v0.3.0-alpha/go.mod h1:bLqSB64gltrsEsxMx7DyNjjxcHXz82grpkyZJ0gv+tw=
-github.com/jeremyhahn/go-quicraft v0.17.0 h1:kNWikafWNcrlwIiVtj9lgcgFWJsYaDYVLsqDxM3afJA=
-github.com/jeremyhahn/go-quicraft v0.17.0/go.mod h1:Z6ll9+DwSOtbKS+qa6uy+C//gCiLkBFrikWB5l+JN1E=
+github.com/jeremyhahn/go-quicraft v0.18.0 h1:QBDLCPive7Q8XUibhjpE1TeElqMfYDbYG3mYLI/004g=
+github.com/jeremyhahn/go-quicraft v0.18.0/go.mod h1:Z6ll9+DwSOtbKS+qa6uy+C//gCiLkBFrikWB5l+JN1E=
 github.com/jeremyhahn/go-truststrap v0.4.0-alpha h1:aPIdCkQHq46lhhV7BbGYbEAa055Bx3xmd3hJMDT53Ns=
 github.com/jeremyhahn/go-truststrap v0.4.0-alpha/go.mod h1:+rRL4vynf2D1jh5PzesnjvdD3LPO89w4ENhvwastKwE=
 github.com/jeroenrinzema/psql-wire v0.18.0 h1:w8VZLCbyzx5UHQb3zojTBWYuOd9L2TlgrboD5jpsC4E=

@@ -259,6 +259,15 @@ type HealthStatus struct {
 
 	// Leader is true when the local replica is the leader for any shard.
 	Leader bool
+
+	// DiagnosticsDropped is the process-wide count of go-quicraft library
+	// log records dropped since the process started because the slog
+	// handler installed through slog.SetDefault was not keeping up with
+	// the library's bounded diagnostics queue (go-quicraft 0.18's fix for
+	// a blocking handler costing a goroutine per record). A rising count
+	// means the handler is blocking or far slower than the process logs;
+	// it does not affect Status.
+	DiagnosticsDropped uint64
 }
 
 // HealthStatusSealed is the canonical HealthStatus.Status verdict reported
@@ -1155,8 +1164,9 @@ func (s *AdminService) Health(_ context.Context) (*HealthStatus, error) {
 	}
 
 	return &HealthStatus{
-		Status: hs.Status,
-		Leader: isLeader,
+		Status:             hs.Status,
+		Leader:             isLeader,
+		DiagnosticsDropped: hs.DiagnosticsDropped,
 	}, nil
 }
 

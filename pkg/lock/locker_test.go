@@ -884,6 +884,87 @@ func TestTryLock_TransactionError(t *testing.T) {
 	}
 }
 
+// TestTryLock_TransactionError_MaybeApplied_LockActuallyCommitted covers the
+// outcome-unknown case go-quicraft 0.18 widened: Execute fails, but the PUT
+// it proposed actually committed under the lease this attempt just granted.
+// TryLock must recover the acquired lock from the re-read rather than
+// revoking the lease that backs it and reporting failure (go-qrdb#601).
+func TestTryLock_TransactionError_MaybeApplied_LockActuallyCommitted(t *testing.T) {
+	txErr := errors.New("tx error: outcome unknown")
+	tx := &mockTransactionService{
+		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
+			return nil, txErr
+		},
+	}
+	revoked := false
+	ls := &mockLeaseService{
+		revokeFn: func(_ context.Context, _ int64) error {
+			revoked = true
+			return nil
+		},
+	}
+	kvs := &mockMVCCKVService{
+		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
+			return &kv.KeyValue{
+				Value:       encodeLockValue(t, lockValue{HolderID: "h", LeaseID: 1, TTL: 1, AcquiredAt: time.Now().Unix()}),
+				LeaseID:     1, // the lease mockLeaseService.Grant assigns by default
+				ModRevision: 42,
+			}, nil
+		},
+	}
+	svc := mustNewLocker(t, tx, ls, &mockWatchService{}, kvs)
+
+	lock, err := svc.TryLock(context.Background(), LockOptions{Key: "k", HolderID: "h", TTL: time.Second})
+	if err != nil {
+		t.Fatalf("expected TryLock to recover the maybe-applied acquire, got error: %v", err)
+	}
+	if lock == nil || lock.FencingToken != 42 || lock.LeaseID != 1 {
+		t.Fatalf("expected recovered lock with fencing token 42 and lease 1, got %+v", lock)
+	}
+	if revoked {
+		t.Fatal("must not revoke a lease that the maybe-applied transaction actually bound")
+	}
+}
+
+// TestTryLock_TransactionError_AmbiguousReadFinds_DifferentLease covers the
+// re-read observing a DIFFERENT lease than the one this attempt granted
+// (someone else's lock, or a lease ID coincidence): the original ambiguous
+// error must still be reported, and the lease revoked, exactly as for any
+// other proven-not-applied propose failure.
+func TestTryLock_TransactionError_AmbiguousReadFinds_DifferentLease(t *testing.T) {
+	txErr := errors.New("tx error: outcome unknown")
+	tx := &mockTransactionService{
+		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
+			return nil, txErr
+		},
+	}
+	revoked := false
+	ls := &mockLeaseService{
+		revokeFn: func(_ context.Context, _ int64) error {
+			revoked = true
+			return nil
+		},
+	}
+	kvs := &mockMVCCKVService{
+		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
+			return &kv.KeyValue{
+				Value:       encodeLockValue(t, lockValue{HolderID: "other", LeaseID: 999, TTL: 1, AcquiredAt: time.Now().Unix()}),
+				LeaseID:     999,
+				ModRevision: 7,
+			}, nil
+		},
+	}
+	svc := mustNewLocker(t, tx, ls, &mockWatchService{}, kvs)
+
+	_, err := svc.TryLock(context.Background(), LockOptions{Key: "k", HolderID: "h", TTL: time.Second})
+	if !errors.Is(err, txErr) {
+		t.Fatalf("expected the original ambiguous error, got: %v", err)
+	}
+	if !revoked {
+		t.Fatal("expected the lease to be revoked when the re-read shows a different owner")
+	}
+}
+
 func TestTryLock_CASFails_GetRevisionError(t *testing.T) {
 	getErr := errors.New("read error")
 	tx := &mockTransactionService{

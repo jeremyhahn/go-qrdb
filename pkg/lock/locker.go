@@ -161,6 +161,28 @@ func (s *Service) TryLock(ctx context.Context, opts LockOptions) (*Lock, error) 
 
 	resp, err := s.txSvc.Execute(ctx, compares, successOps, nil)
 	if err != nil {
+		// The transaction's outcome may be unknown (go-quicraft committed
+		// the proposal and then failed to deliver the response): revoking
+		// the lease here would destroy a lock this attempt may have
+		// actually acquired. Re-read the key first -- if it is now bound to
+		// exactly the lease this attempt just granted, the PUT committed
+		// despite the error, and the lock is genuinely held, so return it
+		// instead of revoking and reporting failure. Anything else (a read
+		// failure, a different lease, no key at all) leaves the original
+		// error as the honest answer, matching the pattern
+		// PromoteJoinIdentityAdmitted uses for the identical ambiguity.
+		if current, getErr := s.kvSvc.GetRevision(ctx, lockKey(opts.Key)); getErr == nil && current.LeaseID == lease.ID {
+			return &Lock{
+				Key:          opts.Key,
+				FencingToken: current.ModRevision,
+				LeaseID:      lease.ID,
+				HolderID:     opts.HolderID,
+				Reentrant:    opts.Reentrant,
+				AcquireCount: 1,
+				TTL:          ttlSecs,
+				AcquiredAt:   now,
+			}, nil
+		}
 		_ = s.leaseSvc.Revoke(ctx, lease.ID)
 		return nil, err
 	}

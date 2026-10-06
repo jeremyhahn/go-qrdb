@@ -807,8 +807,9 @@ func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, erro
 		return nil, translateError(err)
 	}
 	return &transport.HealthResponse{
-		Status:   status.Status,
-		IsLeader: status.Leader,
+		Status:             status.Status,
+		IsLeader:           status.Leader,
+		DiagnosticsDropped: status.DiagnosticsDropped,
 	}, nil
 }
 
