@@ -11,6 +11,30 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.44.0-alpha] - 2026-10-06
+
+### Highlights
+
+- **Member-side cluster enrolment.** Join tokens, a join-request approval
+  queue (`qrdb admin join-request list|approve|reject`), renewal of lapsed
+  admissions, retirement of join identities, and pre-membership feature
+  advertisement, so a CSR-enrolled node is admissible once a cluster
+  feature has activated.
+- **Invitation self-enrolment.** `users:invite` and an unauthenticated,
+  throttled, single-use redemption with optional key pinning, on every
+  transport (`qrdb users invite`, `qrdb enroll`).
+- **Promote member.** An observer is promoted to a voter in place on every
+  transport (`qrdb admin member promote`, `add-observer`).
+- **Tenant Shamir inline roster.** `tenant barrier-init --strategy shamir
+  --officers/--custodians`. Re-initialization is refused, and a data race on
+  the per-barrier Shamir configuration is fixed.
+- **Replicated audit chain, phase 1** (`OpAuditAppend`, feature-gated).
+- **Replicated vector index, phases 1–2.**
+- Removed the pre-catalog `seal.AbsoluteDataRootRecordError` and
+  `seal.TenantRootUnresolvedError`.
+
+Full detail for each item follows in the sections below.
+
 ### Removed
 
 - **`seal.AbsoluteDataRootRecordError` and `seal.TenantRootUnresolvedError`.**
