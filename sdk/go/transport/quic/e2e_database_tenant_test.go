@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -182,21 +184,40 @@ func TestE2E_UpdateDatabaseConnection_HappyPath(t *testing.T) {
 // Tenant (proto + JSON for barrier methods)
 // ---------------------------------------------------------------------------
 
+// TestE2E_CreateTenant_HappyPath's responder decodes the request into gotReq
+// on the server's own goroutine; the test used to read gotReq again after
+// CreateTenant returned, relying on the round-trip itself to imply a
+// synchronization edge, which the race detector does not credit (go-qrdb
+// security review B3). A buffered channel hands the decoded request off with
+// an explicit, correct edge instead.
 func TestE2E_CreateTenant_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("tenant.Create", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.TenantResponse{
-			Id: "t1", Name: "tenant-1", IsolationType: "isolated",
+	gotReqCh := make(chan *pb.TenantCreateRequest, 1)
+	srv.SetResponder("tenant.Create", func(payload []byte) (uint16, []byte) {
+		var req pb.TenantCreateRequest
+		_ = proto.Unmarshal(payload, &req)
+		gotReqCh <- &req
+		return wire.StatusOK, mustMarshal(&pb.TenantCreateResponse{
+			Tenant: &pb.TenantResponse{Id: "t1", Name: "tenant-1", IsolationType: "isolated"},
+			Admin:  &pb.TenantAdminCredential{UserId: 7, Username: "admin", CertPem: "cert", Thumbprint: "thumb-1"},
 		})
 	})
 	resp, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
 		ID: "t1", Name: "tenant-1", IsolationType: transport.TenantIsolationBarrier,
+		AdminUsername: "admin", AdminCSRPEM: "csr-pem",
 	})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 	if resp.Tenant.ID != "t1" {
 		t.Fatalf("resp = %+v", resp)
+	}
+	if resp.Admin.Username != "admin" || resp.Admin.Thumbprint != "thumb-1" {
+		t.Fatalf("admin = %+v", resp.Admin)
+	}
+	gotReq := <-gotReqCh
+	if gotReq.GetAdminUsername() != "admin" || gotReq.GetAdminCsrPem() != "csr-pem" {
+		t.Fatalf("server received %+v; want adminUsername=admin adminCsrPem=csr-pem", gotReq)
 	}
 }
 

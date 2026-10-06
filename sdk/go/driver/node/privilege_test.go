@@ -19,8 +19,9 @@ package node
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"testing"
+
+	gomysql "github.com/go-sql-driver/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
@@ -179,8 +180,8 @@ func assertAccessDenied(t *testing.T, err error) {
 	if err == nil {
 		t.Fatal("statement succeeded, want an access-denied refusal")
 	}
-	var stateErr *qrdbdriver.SQLStateError
-	if !errors.As(err, &stateErr) {
+	stateErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
 		t.Fatalf("refusal carried no MySQL error code: %T %v", err, err)
 	}
 	switch stateErr.Number {

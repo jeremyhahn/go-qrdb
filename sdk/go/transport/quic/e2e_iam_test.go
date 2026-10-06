@@ -19,6 +19,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -270,35 +273,173 @@ func TestE2E_ListPermissions_HappyPath(t *testing.T) {
 // Certs
 // ---------------------------------------------------------------------------
 
-func TestE2E_GenerateCert_HappyPath(t *testing.T) {
+func TestE2E_IssueCert_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("cert.Generate", func(_ []byte) (uint16, []byte) {
-		b, _ := json.Marshal(certBundleWireResponse{CertPEM: "cert", KeyPEM: "key", Serial: "abc"})
+	gotReq := make(chan map[string]any, 1)
+	srv.SetResponder("cert.Issue", func(payload []byte) (uint16, []byte) {
+		var req map[string]any
+		_ = json.Unmarshal(payload, &req)
+		gotReq <- req
+		b, _ := json.Marshal(transport.EnrolledCert{
+			UserID: 7, Username: "alice", TenantID: "t1", CertPEM: "cert",
+			Serial: "abc", Thumbprint: "thumb-abc",
+		})
 		return wire.StatusOK, b
 	})
-	resp, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{Username: "alice"})
+	resp, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr-bytes", TTL: "1h"})
 	if err != nil {
-		t.Fatalf("GenerateCert: %v", err)
+		t.Fatalf("IssueCert: %v", err)
 	}
-	if resp.Serial != "abc" {
+	if resp.Serial != "abc" || resp.Thumbprint != "thumb-abc" {
 		t.Fatalf("resp = %+v", resp)
+	}
+	// The responder hands its decoded request off over gotReq rather than a
+	// shared variable the test reads after the RPC returns: the client
+	// receiving the response only proves the server wrote the response
+	// bytes, not that the race detector observed a synchronization edge
+	// back to the responder's own write, so a bare shared variable here
+	// raced under -race when run alongside this file's other e2e tests,
+	// even though it read safely in isolation.
+	req := <-gotReq
+	if req["username"] != "alice" || req["csrPEM"] != "csr-bytes" || req["ttl"] != "1h" {
+		t.Fatalf("server received %+v; want username=alice csrPEM=csr-bytes ttl=1h", req)
 	}
 }
 
-func TestE2E_ExportCert_HappyPath(t *testing.T) {
+func TestE2E_IssueCert_ServerError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("cert.Export", func(_ []byte) (uint16, []byte) {
-		b, _ := json.Marshal(exportCertWireResponse{PKCS12: "base64-pkcs12"})
+	srv.SetResponder("cert.Issue", func(_ []byte) (uint16, []byte) {
+		return wire.StatusError, []byte("ca unavailable")
+	})
+	if _, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestE2E_EnrollCert_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	gotReq := make(chan map[string]any, 1)
+	srv.SetResponder("cert.Enroll", func(payload []byte) (uint16, []byte) {
+		var req map[string]any
+		_ = json.Unmarshal(payload, &req)
+		gotReq <- req
+		b, _ := json.Marshal(transport.EnrolledCert{
+			Username: "alice", TenantID: "t1", CertPEM: "leaf-pem", Thumbprint: "thumb-byoc",
+		})
 		return wire.StatusOK, b
 	})
-	resp, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM: "cert", KeyPEM: "key", Passphrase: "p",
-	})
+	resp, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{Username: "alice", CertPEM: "leaf-pem", ChainPEM: "chain-pem"})
 	if err != nil {
-		t.Fatalf("ExportCert: %v", err)
+		t.Fatalf("EnrollCert: %v", err)
 	}
-	if resp.PKCS12 == "" {
+	if resp.Serial != "" || resp.Thumbprint != "thumb-byoc" {
+		t.Fatalf("resp = %+v; want empty Serial and Thumbprint=thumb-byoc", resp)
+	}
+	// See TestE2E_IssueCert_HappyPath for why this hands off over a channel
+	// rather than reading a variable the responder wrote.
+	req := <-gotReq
+	if req["certPEM"] != "leaf-pem" || req["chainPEM"] != "chain-pem" {
+		t.Fatalf("server received %+v; want certPEM=leaf-pem chainPEM=chain-pem", req)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trust anchors
+// ---------------------------------------------------------------------------
+
+func TestE2E_AddTrustAnchors_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	gotReq := make(chan *pb.TrustAnchorAddRequest, 1)
+	srv.SetResponder("tenant.TrustAnchorAdd", func(payload []byte) (uint16, []byte) {
+		req := &pb.TrustAnchorAddRequest{}
+		_ = proto.Unmarshal(payload, req)
+		gotReq <- req
+		resp := &pb.TrustAnchorListResponse{Anchors: []*pb.TrustAnchor{{
+			Fingerprint: "fp1", Subject: "CN=ca",
+			NotBefore: "2026-01-01T00:00:00Z", NotAfter: "2027-01-01T00:00:00Z",
+			CertPem: "ca-pem", AddedAt: "2026-06-01T00:00:00Z",
+		}}}
+		b, _ := proto.Marshal(resp)
+		return wire.StatusOK, b
+	})
+	resp, err := tr.AddTrustAnchors(context.Background(), &transport.AddTrustAnchorsRequest{TenantID: "t1", CertsPEM: "bundle-pem"})
+	if err != nil {
+		t.Fatalf("AddTrustAnchors: %v", err)
+	}
+	if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" || resp.Anchors[0].CertPEM != "ca-pem" {
 		t.Fatalf("resp = %+v", resp)
+	}
+	// See TestE2E_IssueCert_HappyPath for why this hands off over a channel
+	// rather than reading a variable the responder wrote.
+	req := <-gotReq
+	if req.GetTenantId() != "t1" || req.GetCertsPem() != "bundle-pem" {
+		t.Fatalf("server received %+v; want tenantId=t1 certsPem=bundle-pem", req)
+	}
+}
+
+func TestE2E_AddTrustAnchors_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("tenant.TrustAnchorAdd", func(_ []byte) (uint16, []byte) {
+		return wire.StatusInvalidArgument, []byte("invalid PEM")
+	})
+	if _, err := tr.AddTrustAnchors(context.Background(), &transport.AddTrustAnchorsRequest{TenantID: "t1", CertsPEM: "bad"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestE2E_ListTrustAnchors_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	gotReq := make(chan *pb.TrustAnchorListRequest, 1)
+	srv.SetResponder("tenant.TrustAnchorList", func(payload []byte) (uint16, []byte) {
+		req := &pb.TrustAnchorListRequest{}
+		_ = proto.Unmarshal(payload, req)
+		gotReq <- req
+		resp := &pb.TrustAnchorListResponse{Anchors: []*pb.TrustAnchor{{Fingerprint: "fp1", Subject: "CN=ca"}}}
+		b, _ := proto.Marshal(resp)
+		return wire.StatusOK, b
+	})
+	resp, err := tr.ListTrustAnchors(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("ListTrustAnchors: %v", err)
+	}
+	if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+		t.Fatalf("resp = %+v", resp)
+	}
+	// See TestE2E_IssueCert_HappyPath for why this hands off over a channel
+	// rather than reading a variable the responder wrote.
+	req := <-gotReq
+	if req.GetTenantId() != "t1" {
+		t.Fatalf("server received tenantId=%q, want t1", req.GetTenantId())
+	}
+}
+
+func TestE2E_RemoveTrustAnchor_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	gotReq := make(chan *pb.TrustAnchorRemoveRequest, 1)
+	srv.SetResponder("tenant.TrustAnchorRemove", func(payload []byte) (uint16, []byte) {
+		req := &pb.TrustAnchorRemoveRequest{}
+		_ = proto.Unmarshal(payload, req)
+		gotReq <- req
+		return wire.StatusOK, nil
+	})
+	if err := tr.RemoveTrustAnchor(context.Background(), "t1", "fp1"); err != nil {
+		t.Fatalf("RemoveTrustAnchor: %v", err)
+	}
+	// See TestE2E_IssueCert_HappyPath for why this hands off over a channel
+	// rather than reading a variable the responder wrote.
+	req := <-gotReq
+	if req.GetTenantId() != "t1" || req.GetFingerprint() != "fp1" {
+		t.Fatalf("server received %+v; want tenantId=t1 fingerprint=fp1", req)
+	}
+}
+
+func TestE2E_RemoveTrustAnchor_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("tenant.TrustAnchorRemove", func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, []byte("no such anchor")
+	})
+	if err := tr.RemoveTrustAnchor(context.Background(), "t1", "nope"); err == nil {
+		t.Fatal("expected error")
 	}
 }
 

@@ -85,7 +85,9 @@ func (r *embeddedRows) Next(dest []driver.Value) error {
 		return io.EOF
 	}
 	if err != nil {
-		return err
+		// An engine failure mid-iteration is reported the same way as one
+		// at execution: a classified one as *mysql.MySQLError.
+		return engineError(err, keepTyped)
 	}
 	// database/sql sizes dest from Columns(). A row of any other width would
 	// either index past it or leave the previous row's values in the slots

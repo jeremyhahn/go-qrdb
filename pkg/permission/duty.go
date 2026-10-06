@@ -136,9 +136,11 @@ func (d Duty) Valid() bool {
 //   - "seal" / "unseal" — the barrier's seal:seal / seal:unseal are the
 //     Security Officer's FIPS-assigned module-lifecycle duty, not key use on
 //     a requester's behalf. They are declared DutyGovernance.
-//   - "generate" — certs:generate is CA issuance governance;
-//     passwords:generate and dynamic_secrets:generate mint credentials.
-//     None is a primitive invoked on caller-supplied input.
+//   - "generate" — passwords:generate and dynamic_secrets:generate mint
+//     credentials. Neither is a primitive invoked on caller-supplied input.
+//   - "issue" — certs:issue is CA issuance governance: the tenant's CA
+//     certifies a requester's key for an account. It is deliberately not
+//     spelled "sign", which this table holds to key use.
 var cryptoPrimitiveActions = map[string]struct{}{
 	"sign":    {},
 	"encrypt": {},

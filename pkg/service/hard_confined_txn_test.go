@@ -17,11 +17,7 @@ package service
 import (
 	"context"
 	"errors"
-	"io"
-	"strings"
 	"testing"
-
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -70,7 +66,7 @@ func (f *fakeBatch) ExecuteEntity(_ context.Context, _ *BatchEntityRequest) (*Ba
 	return &BatchEntityResponse{}, nil
 }
 
-func (f *fakeBatch) Import(_ context.Context, _ io.Reader, _ ImportOptions) (*ImportResult, error) {
+func (f *fakeBatch) ImportCommit(_ context.Context, _ string) (*ImportResult, error) {
 	f.called = true
 	return &ImportResult{}, nil
 }
@@ -272,26 +268,39 @@ func TestHardConfinedBatch_ExecuteEntityRefusesTheConfinedEntity(t *testing.T) {
 	}
 }
 
+// importCommitViaSession drives a chunked import session (ImportBegin, one
+// ImportAppend carrying the whole payload, ImportCommit) against batch, so
+// these tests exercise the row-key guard through the SAME path a real
+// caller reaches it by -- ImportCommit, not the retired single-message
+// Import -- without each test managing session plumbing by hand.
+func importCommitViaSession(t *testing.T, batch BatchServicer, data string, opts ImportOptions) (*ImportResult, error) {
+	t.Helper()
+	ctx := context.Background()
+	sessionID, err := batch.ImportBegin(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := batch.ImportAppend(ctx, sessionID, 0, []byte(data)); err != nil {
+		_ = batch.ImportAbort(ctx, sessionID)
+		return nil, err
+	}
+	return batch.ImportCommit(ctx, sessionID)
+}
+
 // TestHardConfinedBatch_ImportRefusesARowNamingTheConfinedKey is go-qrdb#555's
-// B2b regression proof for Import: it parses a caller-supplied file and
-// proposes the resulting ops directly, never calling Execute, so a row
+// B2b regression proof for ImportCommit: it parses a caller-supplied file
+// and proposes the resulting ops directly, never calling Execute, so a row
 // naming the confined key had no interception point before
 // NewHardConfinedBatch started installing a row-key guard on the wrapped
 // *BatchService. This uses the REAL BatchService, not a fake: the guard is
 // wired by type-asserting the wrapped value, which a fake does not satisfy.
 func TestHardConfinedBatch_ImportRefusesARowNamingTheConfinedKey(t *testing.T) {
-	var proposed bool
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			proposed = true
-			return sm.Result{Value: 1}, nil
-		},
-	}
+	host, store := newImportSessionHostWithStore()
 	raw := NewBatchService(host, 1)
 	batch := NewHardConfinedBatch(raw)
 
 	csvData := "key,value\n" + confinedKey + ",overwrite\n"
-	result, err := batch.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := importCommitViaSession(t, batch, csvData, ImportOptions{
 		Format:     "csv",
 		KeyField:   "key",
 		ValueMode:  "field",
@@ -299,31 +308,27 @@ func TestHardConfinedBatch_ImportRefusesARowNamingTheConfinedKey(t *testing.T) {
 		SkipHeader: true,
 	})
 	if err != nil {
-		t.Fatalf("Import: %v", err)
+		t.Fatalf("ImportCommit: %v", err)
 	}
 	if result.Total != 1 || result.Failed != 1 || result.Succeeded != 0 {
-		t.Fatalf("Import result = %+v, want the confined row refused as failed, not succeeded", result)
+		t.Fatalf("ImportCommit result = %+v, want the confined row refused as failed, not succeeded", result)
 	}
-	if proposed {
-		t.Fatal("Import proposed a write for the confined key despite the row-key guard")
+	if store.has(confinedKey) {
+		t.Fatal("ImportCommit wrote the confined key despite the row-key guard")
 	}
 }
 
 // TestHardConfinedBatch_ImportTransactionalAbortsOnTheConfinedKey proves a
 // transactional import aborts the whole import (ImportTransactionAbortedError)
 // rather than recording a per-row failure, matching every other per-row
-// validation Import already enforces (key/value size limits).
+// validation ImportCommit already enforces (key/value size limits).
 func TestHardConfinedBatch_ImportTransactionalAbortsOnTheConfinedKey(t *testing.T) {
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Value: 1}, nil
-		},
-	}
+	host := newImportSessionHost()
 	raw := NewBatchService(host, 1)
 	batch := NewHardConfinedBatch(raw)
 
 	csvData := "key,value\n" + confinedKey + ",overwrite\n"
-	_, err := batch.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := importCommitViaSession(t, batch, csvData, ImportOptions{
 		Format:        "csv",
 		KeyField:      "key",
 		ValueMode:     "field",
@@ -333,25 +338,19 @@ func TestHardConfinedBatch_ImportTransactionalAbortsOnTheConfinedKey(t *testing.
 	})
 	var aborted *ImportTransactionAbortedError
 	if !errors.As(err, &aborted) {
-		t.Fatalf("transactional Import of a confined row = %v, want *ImportTransactionAbortedError", err)
+		t.Fatalf("transactional ImportCommit of a confined row = %v, want *ImportTransactionAbortedError", err)
 	}
 }
 
 // TestHardConfinedBatch_ImportOrdinaryRowsPassThrough proves an ordinary
 // import is unaffected by the guard.
 func TestHardConfinedBatch_ImportOrdinaryRowsPassThrough(t *testing.T) {
-	var proposed bool
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			proposed = true
-			return sm.Result{Value: 1}, nil
-		},
-	}
+	host, store := newImportSessionHostWithStore()
 	raw := NewBatchService(host, 1)
 	batch := NewHardConfinedBatch(raw)
 
 	csvData := "key,value\nordinary-1,v1\n"
-	result, err := batch.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := importCommitViaSession(t, batch, csvData, ImportOptions{
 		Format:     "csv",
 		KeyField:   "key",
 		ValueMode:  "field",
@@ -359,20 +358,20 @@ func TestHardConfinedBatch_ImportOrdinaryRowsPassThrough(t *testing.T) {
 		SkipHeader: true,
 	})
 	if err != nil {
-		t.Fatalf("Import: %v", err)
+		t.Fatalf("ImportCommit: %v", err)
 	}
 	if result.Succeeded != 1 || result.Failed != 0 {
-		t.Fatalf("Import result = %+v, want the ordinary row to succeed", result)
+		t.Fatalf("ImportCommit result = %+v, want the ordinary row to succeed", result)
 	}
-	if !proposed {
-		t.Fatal("Import did not propose the ordinary row's write")
+	if !store.has("ordinary-1") {
+		t.Fatal("ImportCommit did not write the ordinary row")
 	}
 }
 
 // fakeBatchWithOwnGuard is a BatchServicer double that implements
 // ImportKeyGuardSetter itself, standing in for a future alternate
-// BatchServicer implementation (not *BatchService) that wants Import
-// confined. It records the installed guard and applies it to every
+// BatchServicer implementation (not *BatchService) that wants its import
+// commit confined. It records the installed guard and applies it to every
 // imported row, proving NewHardConfinedBatch's installation path works
 // through the INTERFACE, not a concrete-type assertion.
 type fakeBatchWithOwnGuard struct {
@@ -384,7 +383,7 @@ func (f *fakeBatchWithOwnGuard) SetImportKeyGuard(guard func(key string) error) 
 	f.guard = guard
 }
 
-func (f *fakeBatchWithOwnGuard) Import(_ context.Context, _ io.Reader, _ ImportOptions) (*ImportResult, error) {
+func (f *fakeBatchWithOwnGuard) ImportCommit(_ context.Context, _ string) (*ImportResult, error) {
 	if f.guard == nil {
 		return nil, errors.New("no guard installed")
 	}
@@ -406,35 +405,32 @@ func TestHardConfinedBatch_InstallsTheGuardThroughTheInterface(t *testing.T) {
 	if fake.guard == nil {
 		t.Fatal("NewHardConfinedBatch did not install a guard on a BatchServicer satisfying ImportKeyGuardSetter")
 	}
-	if _, err := batch.Import(context.Background(), strings.NewReader(""), ImportOptions{}); err != nil {
-		t.Fatalf("Import: %v", err)
+	if _, err := batch.ImportCommit(context.Background(), "arbitrary-session"); err != nil {
+		t.Fatalf("ImportCommit: %v", err)
 	}
 }
 
 // TestHardConfinedBatch_ImportRefusesWhenTheGuardCouldNotBeInstalled is the
 // non-blocking review item: when the wrapped BatchServicer is not a
 // *BatchService, NewHardConfinedBatch cannot install the row-key guard
-// Import relies on, and Import must refuse outright rather than import
-// unguarded -- a fake (or a future alternate BatchServicer implementation)
-// gets a typed refusal, not silent, unconfined passthrough.
+// ImportCommit relies on, and ImportCommit must refuse outright rather than
+// commit unguarded -- a fake (or a future alternate BatchServicer
+// implementation) gets a typed refusal, not silent, unconfined passthrough.
+// The refusal happens before sessionID is ever looked up, so this reaches
+// ImportCommit directly rather than driving a whole session through
+// ImportBegin/ImportAppend first.
 func TestHardConfinedBatch_ImportRefusesWhenTheGuardCouldNotBeInstalled(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeBatch{}
 	batch := NewHardConfinedBatch(fake)
 
-	_, err := batch.Import(ctx, strings.NewReader("key,value\nordinary-1,v1\n"), ImportOptions{
-		Format:     "csv",
-		KeyField:   "key",
-		ValueMode:  "field",
-		ValueField: "value",
-		SkipHeader: true,
-	})
+	_, err := batch.ImportCommit(ctx, "arbitrary-session")
 	var guardErr *HardConfinedImportGuardUnavailableError
 	if !errors.As(err, &guardErr) {
-		t.Fatalf("Import on a non-*BatchService wrapped value = %v, want *HardConfinedImportGuardUnavailableError", err)
+		t.Fatalf("ImportCommit on a non-*BatchService wrapped value = %v, want *HardConfinedImportGuardUnavailableError", err)
 	}
 	if fake.called {
-		t.Fatal("Import reached the underlying servicer despite the refusal")
+		t.Fatal("ImportCommit reached the underlying servicer despite the refusal")
 	}
 }
 

@@ -392,9 +392,9 @@ func TestValidateVolumePools_EmptySlice(t *testing.T) {
 func TestValidateVolumePools_Valid(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "alpha", Paths: []string{"/data/a", "/data/b"}, Strategy: "round_robin"},
-		{Name: "beta", Paths: []string{"/data/c"}, Strategy: "least_utilization"},
-		{Name: "gamma", Paths: []string{"/data/d"}, Strategy: ""},
+		{Name: "alpha", Path: "/data/a", Provider: "dir"},
+		{Name: "beta", Path: "/data/b", Provider: "luks2", Options: map[string]string{"device": "/dev/nvme1n1"}},
+		{Name: "gamma", Path: "/data/c"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid pool list, got %v", err)
@@ -406,7 +406,7 @@ func TestValidateVolumePools_Valid(t *testing.T) {
 func TestValidateVolumePools_EmptyName(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "", Paths: []string{"/data/x"}},
+		{Name: "", Path: "/data/x"},
 	}
 	err := cfg.Validate()
 	if err == nil {
@@ -426,8 +426,8 @@ func TestValidateVolumePools_EmptyName(t *testing.T) {
 func TestValidateVolumePools_DuplicateName(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "shared", Paths: []string{"/data/1"}},
-		{Name: "shared", Paths: []string{"/data/2"}},
+		{Name: "shared", Path: "/data/1"},
+		{Name: "shared", Path: "/data/2"},
 	}
 	err := cfg.Validate()
 	if err == nil {
@@ -442,112 +442,104 @@ func TestValidateVolumePools_DuplicateName(t *testing.T) {
 	}
 }
 
-// TestValidateVolumePools_NoPaths verifies that a pool with no paths is
-// rejected.
-func TestValidateVolumePools_NoPaths(t *testing.T) {
-	cfg := validConfig()
-	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "empty", Paths: nil},
-	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for pool with no paths, got nil")
-	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
-	}
-	if ve.Field != "storage.volume_pools[empty].paths" {
-		t.Errorf("Field: got %q, want storage.volume_pools[empty].paths", ve.Field)
-	}
-}
-
-// TestValidateVolumePools_EmptyPath verifies that a pool containing an empty
-// path string is rejected. The error field encodes the path index using
-// the local itoa helper.
+// TestValidateVolumePools_EmptyPath verifies that a pool with an empty path
+// is rejected.
 func TestValidateVolumePools_EmptyPath(t *testing.T) {
 	cfg := validConfig()
-	// Put an empty path at index 0 to exercise itoa(0).
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "bad", Paths: []string{""}},
+		{Name: "empty", Path: ""},
 	}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty path at index 0, got nil")
+		t.Fatal("expected error for pool with empty path, got nil")
 	}
 	var ve *ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 	}
-	if ve.Field != "storage.volume_pools[bad].paths[0]" {
-		t.Errorf("Field: got %q, want storage.volume_pools[bad].paths[0]", ve.Field)
+	if ve.Field != "storage.volume_pools[empty].path" {
+		t.Errorf("Field: got %q, want storage.volume_pools[empty].path", ve.Field)
 	}
 }
 
-// TestValidateVolumePools_EmptyPathAtNonZeroIndex exercises itoa with a
-// non-zero index to cover the multi-digit and single-digit non-zero path.
-func TestValidateVolumePools_EmptyPathAtNonZeroIndex(t *testing.T) {
+// TestValidateVolumePools_RelativePath verifies that a pool path that is
+// not absolute is rejected.
+func TestValidateVolumePools_RelativePath(t *testing.T) {
 	cfg := validConfig()
-	// Path index 1 is empty; exercises itoa(1) and the loop path.
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "mixed", Paths: []string{"/data/ok", ""}},
+		{Name: "bad", Path: "relative/path"},
 	}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty path at index 1, got nil")
+		t.Fatal("expected error for relative path, got nil")
 	}
 	var ve *ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 	}
-	if ve.Field != "storage.volume_pools[mixed].paths[1]" {
-		t.Errorf("Field: got %q, want storage.volume_pools[mixed].paths[1]", ve.Field)
+	if ve.Field != "storage.volume_pools[bad].path" {
+		t.Errorf("Field: got %q, want storage.volume_pools[bad].path", ve.Field)
 	}
 }
 
-// TestValidateVolumePools_EmptyPathAtDoubleDigitIndex exercises itoa with an
-// index >= 10 to cover the multi-digit loop in itoa.
-func TestValidateVolumePools_EmptyPathAtDoubleDigitIndex(t *testing.T) {
-	paths := make([]string, 12)
-	for i := range paths {
-		paths[i] = "/data/ok"
-	}
-	paths[10] = "" // itoa(10) exercises the multi-digit branch
-
+// TestValidateVolumePools_OverlappingPaths verifies that two pools whose
+// paths overlap are rejected.
+func TestValidateVolumePools_OverlappingPaths(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "large", Paths: paths},
+		{Name: "fast", Path: "/mnt/vol"},
+		{Name: "bulk", Path: "/mnt/vol/sub"},
 	}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty path at index 10, got nil")
+		t.Fatal("expected error for overlapping pool paths, got nil")
 	}
 	var ve *ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 	}
-	if ve.Field != "storage.volume_pools[large].paths[10]" {
-		t.Errorf("Field: got %q, want storage.volume_pools[large].paths[10]", ve.Field)
+	if ve.Field != "storage.volume_pools[fast].path" {
+		t.Errorf("Field: got %q, want storage.volume_pools[fast].path", ve.Field)
 	}
 }
 
-// TestValidateVolumePools_InvalidStrategy verifies that an unsupported
-// strategy value is rejected.
-func TestValidateVolumePools_InvalidStrategy(t *testing.T) {
+// TestValidateVolumePools_InsideDataDir verifies that a pool path inside
+// the node's Raft data directory is rejected.
+func TestValidateVolumePools_InsideDataDir(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.VolumePools = []VolumePoolConfig{
-		{Name: "pool1", Paths: []string{"/data/x"}, Strategy: "random"},
+		{Name: "nested", Path: cfg.Raft.DataDir + "/pool"},
 	}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error for invalid pool strategy, got nil")
+		t.Fatal("expected error for pool path inside data dir, got nil")
 	}
 	var ve *ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 	}
-	if ve.Field != "storage.volume_pools[pool1].strategy" {
-		t.Errorf("Field: got %q, want storage.volume_pools[pool1].strategy", ve.Field)
+	if ve.Field != "storage.volume_pools[nested].path" {
+		t.Errorf("Field: got %q, want storage.volume_pools[nested].path", ve.Field)
+	}
+}
+
+// TestValidateVolumePools_ContainsDataDir verifies that a pool path that
+// contains the node's Raft data directory is rejected.
+func TestValidateVolumePools_ContainsDataDir(t *testing.T) {
+	cfg := validConfig()
+	cfg.Storage.VolumePools = []VolumePoolConfig{
+		{Name: "parent", Path: "/tmp"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for pool path containing data dir, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if ve.Field != "storage.volume_pools[parent].path" {
+		t.Errorf("Field: got %q, want storage.volume_pools[parent].path", ve.Field)
 	}
 }
 

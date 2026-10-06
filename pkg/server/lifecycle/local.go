@@ -122,8 +122,17 @@ func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (
 // the engine rebuilds the durable leases into it on open, and an engine whose
 // lessor nothing sweeps grants leases whose keys are never deleted. The file
 // and objstore engines keep no leases and ignore it.
+// LocalEngineKeepsLeases reports whether the engine NewLocalEngine composes
+// for backendType keeps leases. File and objstore compose the plain KV
+// engine, which keeps none: a lease grant or a lease-bound write on it is
+// refused. A composer starts nothing lease-backed -- the volume-pool health
+// Reporter among them -- over an engine for which this is false.
+func LocalEngineKeepsLeases(backendType database.BackendType) bool {
+	return backendType != database.BackendFile && backendType != database.BackendObjstore
+}
+
 func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
-	if backendType == database.BackendFile || backendType == database.BackendObjstore {
+	if !LocalEngineKeepsLeases(backendType) {
 		kvOpts := []engine.KVOption{}
 		if hub != nil {
 			kvOpts = append(kvOpts, engine.WithKVWatchHub(hub))

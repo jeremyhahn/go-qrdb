@@ -21,16 +21,21 @@
 package lifecycle_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -98,6 +103,76 @@ func TestNewLocalStorage_UnsupportedBackend(t *testing.T) {
 				t.Error("a refused backend must return no storage and no handle")
 			}
 		})
+	}
+}
+
+// TestNewLocalStorage_OpenFailureNamesTheBackend: a backend that cannot open
+// its store reports *LocalStorageError naming WHICH backend failed, wrapping
+// the cause, and hands back no storage -- an operator reading the boot error
+// learns the backend without guessing from a bare filesystem message.
+func TestNewLocalStorage_OpenFailureNamesTheBackend(t *testing.T) {
+	// A data directory that is a regular file: neither the file backend nor
+	// pebble can create its store directory under it.
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tests := []struct {
+		backend database.BackendType
+		dataDir string
+		objCfg  qrdbconfig.ObjstoreConfig
+	}{
+		{backend: database.BackendFile, dataDir: notADir},
+		{backend: database.BackendPebble, dataDir: notADir},
+		{backend: database.BackendObjstore, dataDir: t.TempDir(), objCfg: qrdbconfig.ObjstoreConfig{Provider: "no-such-provider"}},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.backend), func(t *testing.T) {
+			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, tc.dataDir, nil, tc.objCfg)
+			var target *lifecycle.LocalStorageError
+			if !asError(err, &target) {
+				t.Fatalf("error = %T (%v), want *LocalStorageError", err, err)
+			}
+			if target.Backend != tc.backend {
+				t.Errorf("LocalStorageError.Backend = %q, want %q", target.Backend, tc.backend)
+			}
+			if target.Err == nil {
+				t.Error("LocalStorageError carries no cause")
+			}
+			if stg != nil || pdb != nil {
+				t.Error("a failed open must return no storage and no handle")
+			}
+		})
+	}
+}
+
+// TestNewLocalStorage_PebbleRoutesThroughTheDataPlaneFS: when the caller
+// supplies a data-plane filesystem (the seal barrier's encfs in production),
+// every pebble file goes through it -- nothing is written to the real disk at
+// <dataDir>/pebble, which is what keeps an encrypted node's store off the
+// plaintext filesystem.
+func TestNewLocalStorage_PebbleRoutesThroughTheDataPlaneFS(t *testing.T) {
+	dataDir := t.TempDir()
+	memFS := vfs.NewMem()
+
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendPebble, dataDir, memFS, qrdbconfig.ObjstoreConfig{})
+	if err != nil {
+		t.Fatalf("NewLocalStorage(pebble, memFS): %v", err)
+	}
+	t.Cleanup(func() { _ = stg.Close() })
+	if pdb == nil {
+		t.Fatal("pebble backend returned no *pebble.DB handle")
+	}
+
+	if _, err := os.Stat(filepath.Join(dataDir, "pebble")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pebble wrote to the real disk despite a data-plane FS (stat err = %v)", err)
+	}
+	entries, err := memFS.List(filepath.Join(dataDir, "pebble"))
+	if err != nil {
+		t.Fatalf("data-plane FS has no pebble directory: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("data-plane FS holds no pebble files")
 	}
 }
 
@@ -207,6 +282,53 @@ func TestNewLocalEngine_EngineBoundary(t *testing.T) {
 			case !tc.wantMVCC && !isKV:
 				t.Errorf("%s composed %T, want *engine.KVEngine (the documented engine "+
 					"boundary, pkg/engine/kv_engine.go)", tc.backend, eng)
+			}
+		})
+	}
+}
+
+// TestLocalEngineKeepsLeases_MatchesTheComposedEngine pins the predicate to
+// what the engine NewLocalEngine composes actually does with a lease grant:
+// a composer that trusted it while it disagreed would either start the
+// lease-backed volume-pool Reporter on an engine that refuses every grant
+// (the file backend's boot logged exactly that refusal) or skip it on one
+// that would have served it.
+func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
+	for _, tc := range []struct {
+		backend database.BackendType
+		want    bool
+	}{
+		{database.BackendMemory, true},
+		{database.BackendPebble, true},
+		{database.BackendFile, false},
+		{database.BackendObjstore, false},
+	} {
+		t.Run(string(tc.backend), func(t *testing.T) {
+			if got := lifecycle.LocalEngineKeepsLeases(tc.backend); got != tc.want {
+				t.Fatalf("LocalEngineKeepsLeases(%s) = %v; want %v", tc.backend, got, tc.want)
+			}
+			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+			if err != nil {
+				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
+			}
+			t.Cleanup(func() { _ = stg.Close() })
+			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, watch.NewHub(), lease.NewLessor())
+			if err != nil {
+				t.Fatalf("NewLocalEngine(%s): %v", tc.backend, err)
+			}
+
+			grant, err := protocol.EncodeLeaseGrant(60)
+			if err != nil {
+				t.Fatalf("EncodeLeaseGrant: %v", err)
+			}
+			results := make([]sm.Result, 1)
+			if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grant}}, results); err != nil {
+				t.Fatalf("Update(lease grant): %v", err)
+			}
+			_, refused := protocol.DecodeAppError(results[0].Data)
+			if granted := !refused && results[0].Value != 0; granted != tc.want {
+				t.Fatalf("the %s engine granted a lease = %v (result %+v); LocalEngineKeepsLeases says %v",
+					tc.backend, granted, results[0], tc.want)
 			}
 		})
 	}

@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	_ "github.com/jeremyhahn/go-qrdb/sdk/go/driver/node"
@@ -57,10 +56,7 @@ type concUser struct {
 }
 
 func TestConcurrentMany2ManyAssociation_Pessimistic(t *testing.T) {
-	db, err := gorm.Open(New(Config{DSN: "node://memory?database=concassoc&concurrency=pessimistic"}), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open: %v", err)
-	}
+	db := openGORM(t, "node://memory?database=concassoc&concurrency=pessimistic")
 	if err := db.AutoMigrate(&concLanguage{}, &concUser{}); err != nil {
 		t.Fatalf("AutoMigrate: %v", err)
 	}

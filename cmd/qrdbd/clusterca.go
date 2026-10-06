@@ -28,11 +28,12 @@ import (
 
 const (
 	// clusterCAPersistRetryDeadline bounds how long confirmClusterCAPersisted
-	// retries a transient *service.NotLeaderError before giving up. Right
-	// after waitForLeaderElection returns, the system shard's leader has
-	// been observed, but this node's own read of it can still race a brief
-	// settling window -- even on a single-node shard -- so the first
-	// answer this node sees can be "not leader, leader unknown". Bounded
+	// retries a transient not-leader or read-index-not-ready read before
+	// giving up. Right after waitForLeaderElection returns, the system
+	// shard's leader has been observed, but this node's own read of it can
+	// still race a brief settling window -- even on a single-node shard --
+	// so the first answer this node sees can be "not leader, leader
+	// unknown", or a new leader's ReadIndex warm-up. Bounded
 	// so a genuinely stuck shard still fails the boot instead of hanging
 	// it forever.
 	clusterCAPersistRetryDeadline = 30 * time.Second

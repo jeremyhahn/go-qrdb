@@ -129,8 +129,10 @@ import type {
     ListPermissionsResponse,
 
     // Cert
-    CertBundle,
-    GenerateCertRequest,
+    IssueCertRequest,
+    EnrollCertRequest,
+    EnrolledCert,
+    IssuedCertWithKey,
     ExportCertRequest,
     ExportCertResponse,
     ListCertsResponse,
@@ -209,6 +211,16 @@ import type {
     UpdateTenantQuotasResponse,
     UpdateTenantEntitlementsRequest,
     UpdateTenantEntitlementsResponse,
+    TrustAnchorList,
+
+    // Volume pool
+    VolumePool,
+    VolumePoolDetail,
+    ListVolumePoolsResponse,
+    CreateVolumePoolRequest,
+    UpdateVolumePoolRequest,
+    ListVolumePoolTenantsRequest,
+    ListVolumePoolTenantsResponse,
 
     // Server config
     ConfigInitializedResponse,
@@ -1208,12 +1220,40 @@ export interface RoleClient {
  */
 export interface CertClient {
     /**
-     * Creates a client certificate signed by the internal CA.
+     * Issues a certificate from a certificate signing request, for an
+     * EXISTING account of the caller's own tenant, signed by that tenant's
+     * own CA, and binds it to the account. The caller keeps its private
+     * key: the server only ever sees the CSR.
      *
-     * @param req - Certificate generation parameters.
-     * @returns The PEM-encoded certificate bundle.
+     * @param req - Username and CSR to issue a certificate for.
+     * @returns The issued certificate, now bound to the account.
      */
-    generate(req: GenerateCertRequest): Promise<CertBundle>;
+    issueCert(req: IssueCertRequest): Promise<EnrolledCert>;
+
+    /**
+     * Enrolls a bring-your-own certificate on an EXISTING account of the
+     * caller's own tenant, after verifying it chains to one of the
+     * tenant's registered trust anchors and authenticates as exactly that
+     * account.
+     *
+     * @param req - Username, certificate, and optional intermediate chain.
+     * @returns The enrolled certificate, now bound to the account.
+     */
+    enrollCert(req: EnrollCertRequest): Promise<EnrolledCert>;
+
+    /**
+     * Generates a client key pair on this machine and issues a certificate
+     * for it in one step, returning the generated private key alongside the
+     * issued certificate. The key is generated locally; the server only
+     * ever sees the resulting CSR. Desktop (Wails) transport only — the
+     * REST transport has no local keypair generation capability and throws
+     * DesktopOnlyError.
+     *
+     * @param username - Account to issue the certificate for.
+     * @param ttl - Certificate validity duration (e.g. "8760h"); empty uses the issuer's default.
+     * @returns The issued certificate and its freshly generated private key (PEM).
+     */
+    issueCertWithLocalKey(username: string, ttl?: string): Promise<IssuedCertWithKey>;
 
     /**
      * Exports a certificate and key as a PKCS#12 archive for browser
@@ -1929,6 +1969,101 @@ export interface TenantClient {
      * @returns The updated tenant.
      */
     updateEntitlements(req: UpdateTenantEntitlementsRequest): Promise<UpdateTenantEntitlementsResponse>;
+
+    /**
+     * Registers every CA certificate in `certsPem` as a trust anchor of
+     * `tenantId`, which must be the caller's own tenant.
+     *
+     * @param tenantId - Tenant identifier.
+     * @param certsPem - PEM bundle of CA certificates to register.
+     * @returns The tenant's trust anchors after the addition.
+     */
+    addTrustAnchors(tenantId: string, certsPem: string): Promise<TrustAnchorList>;
+
+    /**
+     * Lists tenantId's trust anchors (the caller's own).
+     *
+     * @param tenantId - Tenant identifier.
+     * @returns The tenant's trust anchors.
+     */
+    listTrustAnchors(tenantId: string): Promise<TrustAnchorList>;
+
+    /**
+     * Withdraws one of tenantId's trust anchors (the caller's own).
+     *
+     * @param tenantId - Tenant identifier.
+     * @param fingerprint - Lowercase hex SHA-256 fingerprint of the anchor to remove.
+     */
+    removeTrustAnchor(tenantId: string, fingerprint: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Volume pool operations (docs/volume-pools/api.md). Every capability is
+// ScopeCross: only an identity in the system tenant may exercise it.
+// ---------------------------------------------------------------------------
+
+/**
+ * VolumePoolClient provides volume pool management: list, inspect, create,
+ * update and delete a pool, and list a pool's assigned tenants.
+ */
+export interface VolumePoolClient {
+    /**
+     * Lists every pool in the catalog with its capacity, reservation,
+     * usage, tenant count and a per-node health summary. Not paginated: a
+     * cluster has a handful of pools.
+     *
+     * @returns Every pool in the catalog.
+     */
+    list(): Promise<ListVolumePoolsResponse>;
+
+    /**
+     * Inspects one pool, with one row per node: whether the node maps the
+     * pool, the provider state, size, free space, how long ago the node
+     * reported, and the provider's detail text.
+     *
+     * @param pool - The pool name.
+     * @returns The pool's summary plus its per-node reports.
+     */
+    get(pool: string): Promise<VolumePoolDetail>;
+
+    /**
+     * Adds a pool to the catalog. The pool is not served until each node
+     * maps it in its own configuration and restarts or reloads.
+     *
+     * @param req - Pool creation parameters.
+     * @returns The created pool.
+     */
+    create(req: CreateVolumePoolRequest): Promise<VolumePool>;
+
+    /**
+     * Changes a pool's description, capacity or overcommit. The provider
+     * is immutable. Lowering capacity below the current reservation is
+     * refused.
+     *
+     * @param pool - The pool name.
+     * @param req  - Fields to update (undefined fields are left unchanged).
+     * @returns The updated pool.
+     */
+    update(pool: string, req: UpdateVolumePoolRequest): Promise<VolumePool>;
+
+    /**
+     * Removes a pool from the catalog. Refused while any tenant is
+     * assigned to it; the error names the tenants. Changes nothing on
+     * disk.
+     *
+     * @param pool - The pool name.
+     */
+    delete(pool: string): Promise<void>;
+
+    /**
+     * Lists the tenants assigned to a pool, with each one's reservation
+     * and measured use.
+     *
+     * @param pool - The pool name.
+     * @param req  - Pagination parameters.
+     * @returns One page of the pool's assigned tenants.
+     */
+    listTenants(pool: string, req?: ListVolumePoolTenantsRequest): Promise<ListVolumePoolTenantsResponse>;
 }
 
 // ---------------------------------------------------------------------------
@@ -2302,6 +2437,9 @@ export interface Client {
 
     /** Multi-tenant lifecycle management. */
     readonly tenants: TenantClient;
+
+    /** Volume pool management (docs/volume-pools/api.md). */
+    readonly volumePools: VolumePoolClient;
 
     /** Cluster backup and restore operations. */
     readonly backups: BackupClient;

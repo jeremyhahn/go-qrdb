@@ -80,6 +80,9 @@ var tenantClientAuthorizationSurface = map[string]string{
 	"TenantBarrierQuorumSubmit":       "holder provenance (claimContext)",
 	"TenantBarrierRekeyStart":         "target: " + string(permission.TenantBarrierRekey),
 	"TenantBarrierOfficerRevoke":      "target: " + string(permission.TenantBarrierOfficerRevoke),
+	"AddTrustAnchors":                 "target: " + string(permission.TrustAnchorsAdd),
+	"ListTrustAnchors":                "target: " + string(permission.TrustAnchorsList),
+	"RemoveTrustAnchor":               "target: " + string(permission.TrustAnchorsRemove),
 }
 
 // TestTenantClientAuthorizationSurface_CoversEveryMethod is the build gate:
@@ -393,7 +396,8 @@ func TestEmbeddedTenant_CrossScopeOperations_SystemOnly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &mockTenantService{}
-			tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newGrantingAuthMW(tc.perm)))
+			onboarding := &mockOnboarding{}
+			tr := newExtTransport(t, WithTenantService(svc), WithTenantOnboarding(onboarding), WithAuthMiddleware(newGrantingAuthMW(tc.perm)))
 
 			// A tenant-local caller holding the permission is still denied:
 			// ScopeCross ignores the grant for anyone outside the system

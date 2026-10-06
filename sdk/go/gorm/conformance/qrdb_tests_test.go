@@ -94,8 +94,8 @@ var (
 type target string
 
 const (
-	// targetNode drives the native sdk/go/gorm dialector directly
-	// in-process, over node://memory — a complete in-process qrdb node
+	// targetNode drives the stock gorm.io/driver/mysql dialector over qrdb's
+	// in-process database/sql driver, over node://memory — a complete in-process qrdb node
 	// (Raft state machine, service registry, relational table catalog,
 	// interactive transactions) with every protocol server disabled. No
 	// qrdbd subprocess, no network, no TLS.
@@ -131,10 +131,22 @@ var openers = map[target]func(*gorm.Config) (*gorm.DB, error){
 	targetPgSQL: openPgSQL,
 }
 
+// sqlConcurrency is the SQL concurrency mode every target runs the suite
+// under (docs/row-locking). Pessimistic, because the upstream suite includes
+// TestConcurrentMany2ManyAssociation: concurrent Appends to one user's
+// many2many association all rewrite that user's row, and under the default
+// optimistic mode all but one of them can lose their commit with MySQL 1213
+// (GORM's Append does not retry), so a language goes missing. Measured on the
+// node target with -count=30: optimistic failed 30 of 30, pessimistic passed
+// 30 of 30, and the rest of the suite passes unchanged under pessimistic.
+// The wire targets create their database with it (--sql-concurrency); the
+// node target sets it on every connection through its DSN.
+const sqlConcurrency = "pessimistic"
+
 // nodeDSN is the in-process node the node target runs against: a complete
 // qrdb node (Raft state machine, service registry, relational table catalog,
 // interactive transactions) with every protocol server disabled.
-const nodeDSN = "node://memory?database=gorm"
+const nodeDSN = "node://memory?database=gorm&concurrency=" + sqlConcurrency
 
 // nodeConnector is the ONE in-process qrdb node the node target runs
 // against, opened by TestMain. Every openNode call wraps it in its own
@@ -182,16 +194,17 @@ func (c sharedNodeConnector) Connect(ctx context.Context) (driver.Conn, error) {
 // Driver returns the underlying driver.
 func (c sharedNodeConnector) Driver() driver.Driver { return c.inner.Driver() }
 
-// openNode opens a *gorm.DB through qrdb's native dialector (sdk/go/gorm)
-// against the shared in-process node — no qrdbd subprocess, no network, no
-// TLS. The node:// scheme is registered by the blank import above.
+// openNode opens a *gorm.DB through the stock gorm.io/driver/mysql dialector,
+// configured for qrdb by sdk/go/gorm's NewConfig, against the shared
+// in-process node — no qrdbd subprocess, no network, no TLS. The node://
+// scheme is registered by the blank import above.
 func openNode(cfg *gorm.Config) (*gorm.DB, error) {
 	if nodeConnector == nil {
 		return nil, &nodeNotOpenedError{}
 	}
-	return gorm.Open(qrdbgorm.New(qrdbgorm.Config{
-		Conn: sql.OpenDB(sharedNodeConnector{inner: nodeConnector}),
-	}), cfg)
+	dialectorCfg := qrdbgorm.NewConfig()
+	dialectorCfg.Conn = sql.OpenDB(sharedNodeConnector{inner: nodeConnector})
+	return gorm.Open(mysql.New(dialectorCfg), cfg)
 }
 
 // nodeNotOpenedError reports an openNode call made before TestMain opened the

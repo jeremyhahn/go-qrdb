@@ -56,6 +56,7 @@ func TestEmbedded_CreateDatabaseChecksProvisioning(t *testing.T) {
 		nil, WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
+	createDefaultPool(t, n)
 	_, err = n.Services().Tenant.CreateTenant(ctx, "vol", "vol", tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err)
 	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "acme", tenant.IsolationPrefix)

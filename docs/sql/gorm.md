@@ -1,24 +1,33 @@
 # GORM
 
-QRDB ships a first-class [GORM](https://gorm.io) dialector at `sdk/go/gorm`. It
-plugs QRDB into GORM the same way `gorm.io/driver/mysql` plugs in a real MySQL
-server: through `sdk/go/driver`, QRDB's `database/sql` driver (registered as
-`qrdb`).
+QRDB runs under [GORM](https://gorm.io) through the **stock**
+`gorm.io/driver/mysql` dialector. QRDB ships no dialector of its own. Its SQL
+surface is go-mysql-server, which speaks MySQL, and `sdk/go/driver`, QRDB's
+`database/sql` driver (registered as `qrdb`), returns the same
+`*mysql.MySQLError` a MySQL wire client gets. So the stock dialector's clause
+rewriting, migrator and error translation apply unchanged, in-process and over
+the wire port alike.
+
+`sdk/go/gorm` holds only the QRDB half of the stock dialector's configuration:
+
+- the `qrdb` driver name;
+- a DSN check that refuses the transports GORM cannot run over;
+- the string-size and datetime-precision defaults QRDB is measured against.
 
 ```
-GORM ──▶ sdk/go/gorm (Dialector, Migrator) ──▶ sdk/go/driver ("qrdb")
-                                                    │
-                                    node:// ────────┴──────── embedded://
-                                 full in-process stack      KV-only stack
-                                 (Raft, registry,           (no relational
-                                  relational tables,         catalog)
-                                  transactions)
+GORM ──▶ gorm.io/driver/mysql ──▶ sdk/go/driver ("qrdb")
+         (configured by                 │
+          sdk/go/gorm)  node:// ────────┴──────── embedded://
+                     full in-process stack      KV-only stack
+                     (Raft, registry,           (no relational
+                      relational tables,         catalog)
+                      transactions)
 ```
 
-The SQL surface underneath is go-mysql-server, so everything in
-[README.md](architecture.md) — the relational table catalog, DML, secondary indexes,
-foreign keys, interactive transactions — is what GORM is driving. Read that
-document for the engine's semantics; this one covers the dialector.
+Everything in [architecture.md](architecture.md) is what GORM is driving: the
+relational table catalog, DML, secondary indexes, foreign keys and interactive
+transactions. Read that document for the engine's semantics. This one covers
+running GORM on top of it.
 
 ## Getting started
 
@@ -41,7 +50,11 @@ type User struct {
 }
 
 func main() {
-	db, err := gorm.Open(qrdbgorm.Open("node://memory?database=app"), &gorm.Config{})
+	dialector, err := qrdbgorm.Open("node://memory?database=app")
+	if err != nil {
+		log.Fatal(err)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{TranslateError: true})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,12 +75,17 @@ func main() {
 }
 ```
 
-The import is aliased because this package's own name (`gorm`), like every other
-GORM dialector's, collides with `gorm.io/gorm`.
+`qrdbgorm.Open` returns gorm.io/driver/mysql's `*mysql.Dialector`. Its `Config`
+belongs to you, so you can adjust it before `gorm.Open`. The import is aliased
+because the package name (`gorm`) collides with `gorm.io/gorm`.
 
-The blank import of `sdk/go/driver/node` is what registers the `node://` scheme.
-`sdk/go/gorm` already imports `sdk/go/driver` itself, so no separate blank
-import is needed for `embedded://`, `rest://` or `grpc://`.
+The blank import of `sdk/go/driver/node` registers the `node://` scheme.
+`sdk/go/gorm` imports `sdk/go/driver` itself, so `embedded://` needs no separate
+import.
+
+`TranslateError: true` is what turns engine errors into GORM sentinels. GORM
+calls the dialector's translator only when that option is set. See
+[Error handling](#error-handling).
 
 ## DSN forms — and which one you want
 
@@ -80,7 +98,7 @@ same database, and choosing the wrong one is the single most common way to see
 | `node://memory?database=app` | A complete in-process QRDB node (`sdk/go/node.NewStandaloneNode`) with every protocol server disabled: Raft state machine, service registry, relational catalog, sequences | **Yes** | Almost always. This is the GORM path. |
 | `node:///var/lib/qrdb?backend=pebble&database=app` | Same, persisted to disk | **Yes** | A durable single-process application. |
 | `embedded://memory?database=app` | A storage backend plus the KV / entity / collection tables. No Raft, no `service.Registry` | **No** — `CREATE TABLE` fails with `*provider.RelationalCatalogUnavailableError` | You want only the KV surface and the fastest possible open. |
-| `rest://host:port/db`, `grpc://host:port/db` | The network SQL API | **Refused at `Initialize`** | Never, for GORM. |
+| `rest://host:port/db`, `grpc://host:port/db` | The network SQL API | **Refused by `qrdbgorm.Open`** | Never, for GORM. |
 
 `embedded://` failing `CREATE TABLE` is **by design**, not a gap: it has no
 `TransactionServicer`/`MVCCKVServicer`, which the catalog and sequences require,
@@ -95,12 +113,13 @@ Raft, Pebble, the seal subsystem, the volume-pool subsystem, the whole service
 graph. Making every `embedded://` and `rest://` user link all of that to reach a
 scheme they will never open would be an unreasonable tax.
 
-`rest://` and `grpc://` are rejected by `Dialector.Initialize` with
-`*qrdbgorm.UnsupportedTransportError` *before* `sql.Open` is attempted. The
-network SQL API accepts one statement per request with no field for bind
-parameters, no session affinity for transactions, and no typed result metadata —
-so the connection is refused rather than opened and left to fail on the first
-parameterized query.
+`qrdbgorm.Open` parses the DSN before it builds the dialector. It refuses
+`rest://` and `grpc://` with `*qrdbgorm.UnsupportedTransportError`, and reports
+a malformed DSN or an unregistered scheme with the driver's own
+`*driver.DSNParseError` or `*driver.UnsupportedSchemeError`. The network SQL
+API accepts one statement per request. It has no field for bind parameters, no
+session affinity for transactions and no typed result metadata. So the DSN is
+refused rather than opened and left to fail on the first parameterized query.
 
 ### DSN parameters
 
@@ -128,98 +147,53 @@ for the same storage locks, exactly as two processes would.
 
 ### Over the wire instead
 
-To reach a running `qrdbd` over its MySQL wire port, use the **stock**
-`gorm.io/driver/mysql` with mTLS — not this dialector. QRDB's MySQL listener
+To reach a running `qrdbd` over its MySQL wire port, use
+`gorm.io/driver/mysql`'s own `mysql.Open` with a go-sql-driver DSN and mTLS,
+not `qrdbgorm.Open`, which serves only the in-process schemes. It is the same
+dialector either way. QRDB's MySQL listener
 speaks MySQL, and its authentication is mTLS-only (CN maps to the username, OU
-to the tenant); see [README.md](architecture.md#authentication). The same applies to
+to the tenant); see [architecture.md](architecture.md#authentication). The same applies to
 `gorm.io/driver/postgres` against the PostgreSQL listener.
-
-## Why `Dialector.Name()` reports `"mysql"`
-
-`Name()` returns `"mysql"` by default, not `"qrdb"`. That is deliberate, and it
-is the most load-bearing decision in the package:
-
-1. **QRDB's SQL surface *is* go-mysql-server.** MySQL is not an approximation
-   QRDB happens to resemble — it is QRDB's actual, only SQL dialect. Reporting
-   anything else would be reporting the wrong dialect, not a neutral one.
-2. **GORM's own test suite branches on `Dialector.Name()` in thirteen files**,
-   almost all of the form "if not `mysql`, assume PostgreSQL-flavored defaults".
-   There is no generic fallback path. Reporting `"qrdb"` would route every one
-   of those tests into the Postgres branch, where they would keep passing while
-   testing nothing.
-3. **Third-party GORM plugins** (`gorm.io/plugin/dbresolver`, `gorm.io/gen`)
-   switch on `Name()` for the same reason.
-
-Set `Config.DialectName` if you need a different reported name — to
-disambiguate multiple dialectors in logs, for instance. Be aware that doing so
-changes which code paths GORM and its plugins take.
 
 ## Configuration
 
-`qrdbgorm.Open(dsn)` is shorthand for `qrdbgorm.New(Config{DSN: dsn})`. Both
-fill in the documented defaults for every field left unset.
+`qrdbgorm.Open(dsn)` builds the stock dialector from `qrdbgorm.NewConfig()`
+with the DSN filled in. `NewConfig` returns a `gorm.io/driver/mysql` `Config`
+with three fields set:
+
+| Field | Value | Why |
+|---|---|---|
+| `DriverName` | `"qrdb"` | The `database/sql` driver the dialector opens the DSN with. |
+| `DefaultStringSize` | `256` | Width for a `string` field with no `gorm:"size:N"` tag. Without it the stock dialector maps such a field to `longtext`, which cannot be indexed or given a default. |
+| `DefaultDatetimePrecision` | `6` | Microseconds, the most `DATETIME` offers and what QRDB stores at that width. It also sets the precision of the `NowFunc` the dialector installs. The stock default of 3 lets two writes close together round to the same instant, so a caller asking whether `UpdatedAt` changed is told no. |
+
+Every other field is gorm.io/driver/mysql's and keeps its stock meaning. When
+you open the pool yourself, for example from a shared `driver.Connector`, set
+`Conn` on a `NewConfig()` value and pass it to `mysql.New`:
 
 ```go
-db, err := gorm.Open(qrdbgorm.New(qrdbgorm.Config{
-	DSN:                      "node://memory?database=app",
-	DefaultStringSize:        256,  // varchar width for an untagged string field
-	DisableDatetimePrecision: false,
-	SkipInitializeWithVersion: false,
-}), &gorm.Config{})
+cfg := qrdbgorm.NewConfig()
+cfg.Conn = sql.OpenDB(connector)
+db, err := gorm.Open(mysql.New(cfg), &gorm.Config{TranslateError: true})
 ```
 
-| Field | Default | Notes |
-|---|---|---|
-| `DriverName` | `"qrdb"` | The `database/sql` driver name passed to `sql.Open`. |
-| `DSN` | — | Ignored when `Conn` is set. |
-| `Conn` | `nil` | A pre-opened `gorm.ConnPool`. When set, the DSN scheme check does not apply — choosing a usable transport becomes the caller's responsibility. |
-| `DialectName` | `"mysql"` | See above. |
-| `DefaultStringSize` | `256` | Width for a `string` field with no `gorm:"size:N"` tag. |
-| `DefaultDatetimePrecision` | `3` | Also drives the `NowFunc` installed by `Apply`. |
-| `DisableDatetimePrecision` | `false` | Omit fractional seconds from `DATETIME` columns entirely. |
-| `DontSupportRenameIndex` | `false` | QRDB genuinely accepts `ALTER TABLE ... RENAME INDEX`; set true only to reproduce older-MySQL behaviour deliberately, which makes `Migrator.RenameIndex` return `*RenameIndexNotSupportedError`. |
-| `DontSupportRenameColumn` | `false` | True issues MySQL's pre-8.0 `ALTER TABLE ... CHANGE`; both spellings are accepted by the engine. |
-| `DontSupportNullAsDefaultValue` | `false` | Clears a reported default of the literal string `"NULL"`. |
-| `SkipInitializeWithVersion` | `false` | Skips the `SELECT VERSION()` connectivity probe. The result is never used to branch dialect behaviour — QRDB's engine is uniformly go-mysql-server — so the probe exists only to fail `Initialize` fast on a bad DSN instead of deferring that to the first real query. |
+A `Conn` bypasses `qrdbgorm.Open`'s DSN check, so choosing a transport GORM
+can use is then up to you.
 
-`Apply` installs a `NowFunc` that rounds to `DefaultDatetimePrecision` unless
-the caller supplied one. Without it, a freshly-set `time.Time` compares unequal
-to the same value read back from a `datetime(3)` column, on sub-millisecond
-remainders the column truncated away on write.
+During `Initialize` the stock dialector reads `SELECT VERSION()` and switches
+features off for 5.x and MariaDB servers. QRDB reports an 8.0 version, so
+`RENAME COLUMN`, `RENAME INDEX`, `FOR SHARE` and `DATETIME` precision all stay
+on. A test pins that.
 
-## Column types
+`Name()` reports `"mysql"`, because the dialector *is* gorm.io/driver/mysql's.
+GORM, its own test suite and third-party plugins such as
+`gorm.io/plugin/dbresolver` take their MySQL code paths. Those paths match
+QRDB's actual SQL dialect.
 
-`DataTypeOf` maps GORM's `schema.DataType` to MySQL types:
+## Column types and migrations
 
-| Go / GORM type | SQL column |
-|---|---|
-| `bool` | `boolean` |
-| `int*` / `uint*` | `tinyint` / `smallint` / `mediumint` / `int` / `bigint` by `size`, ` unsigned` for unsigned, ` AUTO_INCREMENT` when tagged |
-| `float*` | `decimal(p,s)` when `precision` is tagged, else `float` (size ≤ 32) or `double` |
-| `string` | `varchar(n)`, `mediumtext` (≥ 64 KiB), or `longtext` |
-| `time.Time` | `datetime(p)`, plus ` NULL` unless the field is `NotNull` or a primary key |
-| `[]byte` | `varbinary(n)`, `mediumblob`, or `longblob` |
-| anything else | the literal `gorm:"type:..."` tag, or the empty string |
-
-An untagged `string` field that is a primary key, unique, indexed, or has a
-default is sized `varchar(191)` rather than left unbounded — `TEXT` columns
-cannot be indexed or given a default in MySQL. (191 is 767 / 4, the utf8mb4
-characters that fit MySQL's default index-prefix limit.)
-
-A field with no recognized data type and no `type` tag yields an empty type,
-which flows into the DDL and is rejected by the engine with a syntax error
-naming the column. `DataTypeOf` deliberately does not panic: it runs inside your
-process, and a mis-tagged struct field is not an unrecoverable condition.
-
-## Migrations
-
-`AutoMigrate` and the rest of `gorm.Migrator` work. The QRDB `Migrator` embeds
-`gorm.io/gorm/migrator.Migrator` for everything whose default SQL the engine
-already accepts, and overrides the `information_schema`-backed introspection
-(`CurrentDatabase`, `HasTable`, `GetTables`, `TableType`, `HasColumn`,
-`ColumnTypes`, `HasIndex`, `GetIndexes`, `HasConstraint`) plus the statements
-whose MySQL shape differs (`AlterColumn` → `MODIFY COLUMN`, `RenameColumn`,
-`DropIndex`, `DropConstraint`, `GetTypeAliases`, `DropTable`).
+Column types, `AutoMigrate` and the rest of `gorm.Migrator` are the stock
+dialector's. QRDB accepts the SQL it emits.
 
 ```go
 type Company struct {
@@ -239,35 +213,32 @@ err := db.AutoMigrate(&Company{}, &Employee{})
 
 Worth knowing:
 
-- **Foreign keys need no special handling.** QRDB's relational tables implement
-  `sql.ForeignKeyTable`, so `ADD`/`DROP FOREIGN KEY` is an ordinary statement
-  the engine resolves and enforces. GORM's
-  `gorm.Config.DisableForeignKeyConstraintWhenMigrating` may be left at its
-  default (`false`), and relationship-derived constraints are created.
-- **`DropTable` disables foreign key checking** on a *pinned* connection for the
-  duration (`SET FOREIGN_KEY_CHECKS = 0`), because the engine refuses to drop a
-  table another table still references, exactly as MySQL does — which makes a
-  set containing a reference cycle undroppable one statement at a time in any
-  order. The check is restored even when a drop fails. (`foreign_key_checks` is
-  session-scoped; setting it on one pooled connection and dropping on another
-  would leave it on, hence the pin.)
-- **`DropConstraint` drops a `UNIQUE` constraint as an index.** go-mysql-server
-  cannot resolve a bare `DROP CONSTRAINT` against these tables — it dispatches
-  to the check-constraint path, which they do not implement — so the Migrator
-  issues `ALTER TABLE ... DROP INDEX` against the unique index that *is* the
-  constraint. A name matching no index is a no-op, not an error.
-- **`RenameIndex` is real** (`ALTER TABLE ... RENAME INDEX`), unlike
-  `gorm.io/driver/mysql`, which has to emulate it on older servers.
-- **Type aliases prevent a re-`ALTER` loop.** `GetTypeAliases` treats
-  `bool`/`tinyint`, `int`/`integer`, `bigint`/`int8`, `varchar`/`char`/`text`,
-  `datetime`/`timestamp`, `blob`/`binary`/`varbinary` and `decimal`/`numeric` as
-  the same type. Without it, `AutoMigrate` would re-`MODIFY` every `BOOLEAN`
-  column (reported back as `tinyint`) on every single run.
-- **`ColumnTypes` always returns a non-nil slice**, even on error, and its live
-  `SELECT ... LIMIT 1` probe error is returned — `information_schema.columns`
-  alone reports zero rows for a nonexistent table exactly as it does for one
-  with no readable columns, so swallowing the probe error would make
-  `ColumnTypes` report success for a table that was never created.
+- **Foreign keys need no special handling.** QRDB's relational tables
+  implement `sql.ForeignKeyTable`, so `ADD` and `DROP FOREIGN KEY` are ordinary
+  statements the engine resolves and enforces. Leave
+  `gorm.Config.DisableForeignKeyConstraintWhenMigrating` at its default
+  (`false`), and relationship-derived constraints are created.
+- **`RenameIndex` is real** (`ALTER TABLE ... RENAME INDEX`).
+- **`DropTable` turns foreign key checks off for the drop.** It issues
+  `SET FOREIGN_KEY_CHECKS = 0` on a pinned connection, drops the tables, then
+  turns the checks back on. If a drop fails, the stock migrator returns before
+  it turns them back on -- but the driver's own `ResetSession` restores every
+  session variable a caller changed, FOREIGN_KEY_CHECKS included, when that
+  connection goes back to the pool and is checked out again, so the setting
+  never reaches a later caller. If the driver cannot restore a variable, it
+  discards the connection rather than reuse it. See
+  [engineering.md](engineering.md).
+- **A `decimal` field declared with `precision`/`scale` tags is re-`MODIFY`d
+  on every `AutoMigrate`.** For `gorm:"precision:10;scale:2"` the stock
+  dialector writes the type as `decimal(10, 2)`, with a space. GORM's
+  migrator then checks the column's reported precision against the prefix
+  `decimal(10,2)`, without one, so the check never matches and the column is
+  altered again on each run. QRDB reports the column exactly as MySQL 8 does
+  (`column_type` `decimal(10,2)`, `numeric_precision` 10, `numeric_scale` 2,
+  `datetime_precision` NULL), and the same tag re-alters on a real MySQL
+  server. The redundant statement is accepted. To make `AutoMigrate`
+  idempotent, declare the type instead: `gorm:"type:decimal(10,2)"` issues no
+  `ALTER` on a second run, and a test pins that.
 
 ## Transactions
 
@@ -284,15 +255,22 @@ The whole transaction is buffered and committed as **one** MVCC compare-and-swap
 against the Raft group. Reads inside it are served from a pinned snapshot
 overlaid with the transaction's own writes; conflicts are resolved
 first-committer-wins. The full model, including savepoint semantics and the
-write-set size ceilings, is in [README.md](architecture.md#transaction-control).
+write-set size ceilings, is in [architecture.md](architecture.md#transaction-control).
 
-**Nested transactions use savepoints.** `Dialector` implements
-`gorm.SavePointerDialectorInterface`, so GORM's nested `db.Transaction(...)`
-calls issue `SAVEPOINT` / `ROLLBACK TO SAVEPOINT`. GORM generates names of the
-form `sp1`; a caller (or plugin) supplying its own name must match
-`^[A-Za-z_][A-Za-z0-9_]*$` or get `*InvalidSavePointNameError` — these
-statements carry no bind parameter for the name, so an unvalidated name would be
-an injection surface.
+**Nested transactions use savepoints.** The stock dialector implements
+`gorm.SavePointerDialectorInterface`, so a nested `db.Transaction(...)` issues
+`SAVEPOINT` and `ROLLBACK TO SAVEPOINT`. GORM generates the savepoint names
+itself, as `sp` followed by digits.
+
+**Never pass an untrusted string to `SavePoint` or `RollbackTo`.** The stock
+dialector concatenates the name into the statement text without checking it,
+and these statements have no bind parameter for the name. A name you supply
+must be a plain identifier you chose, such as `^[A-Za-z_][A-Za-z0-9_]*$`.
+A crafted name cannot add a second statement. The in-process driver refuses
+text holding more than one statement, and a MySQL wire connection accepts
+it only when the client sets `CLIENT_MULTI_STATEMENTS`, which go-sql-driver
+does only for `multiStatements=true`. Leave that option off. Tests pin both
+refusals. A crafted name can still change the one statement it is part of.
 
 **GORM wraps every single write in a transaction by default.** That means each
 `Create`/`Update`/`Delete` is an explicit transaction (a snapshot read, then
@@ -306,15 +284,15 @@ implicitly commits any pending write-set first, exactly as in MySQL.
 
 ## Error handling
 
-`Dialector` implements `gorm.ErrorTranslator`, so engine errors arrive as GORM
-sentinels you can compare with `errors.Is`:
+With `gorm.Config{TranslateError: true}`, the stock dialector's translator
+turns these engine errors into GORM sentinels you can compare with
+`errors.Is`:
 
 | MySQL error | GORM sentinel |
 |---|---|
 | 1062 duplicate entry | `gorm.ErrDuplicatedKey` |
 | 1451 `ER_ROW_IS_REFERENCED_2` | `gorm.ErrForeignKeyViolated` |
 | 1452 `ER_NO_REFERENCED_ROW_2` | `gorm.ErrForeignKeyViolated` |
-| 3819 check constraint violated | `gorm.ErrCheckConstraintViolated` |
 
 ```go
 if err := db.Create(&User{Email: "alice@example.com"}).Error; err != nil {
@@ -329,33 +307,43 @@ if err := db.Create(&User{Email: "alice@example.com"}).Error; err != nil {
 }
 ```
 
-These numbers are byte-identical to `go-gorm/mysql`'s own table, and identical
-to what `go-sql-driver/mysql` surfaces as `*mysql.MySQLError` for the same
-statement over QRDB's MySQL wire port — so one translation table serves the
-in-process engine and the wire protocol, and a divergence between them is a bug
-rather than a special case.
+The translator recognises an error only when the error *is* a go-sql-driver
+`*mysql.MySQLError`; it uses a type assertion, not `errors.As`. `sdk/go/driver`
+returns exactly that type for every engine error go-mysql-server classifies,
+so the in-process connection and the MySQL wire port translate identically.
+Any other classified error passes through as the `*mysql.MySQLError` itself.
+See
+[engineering.md](engineering.md#what-the-in-process-driver-returns-for-an-engine-error)
+for which failures are classified.
 
-**1146 (unknown table) is deliberately *not* mapped.** GORM already produces
-`gorm.ErrRecordNotFound` from a zero-row `First`; mapping a missing table onto
-that sentinel would hide a real bug — a typo, a migration that never ran —
-behind the error a caller expects for "no rows matched".
+**3819 (check constraint violated) is not translated.** QRDB's own dialector
+used to map it to `gorm.ErrCheckConstraintViolated`; the stock dialector does
+not. It surfaces as a `*mysql.MySQLError` with `Number == 3819`, and you match
+on the number. It rarely matters in practice: QRDB's relational tables refuse
+`ADD CONSTRAINT ... CHECK`, so a relational table has no CHECK constraint to
+violate.
+
+**1146 (unknown table) is not translated either.** GORM produces
+`gorm.ErrRecordNotFound` from a zero-row `First`. Mapping a missing table onto
+that sentinel would hide a real bug, such as a typo or a migration that never
+ran, behind the error a caller expects for "no rows matched".
 
 ### Retrying a conflicted transaction (1213)
 
 A transaction that loses its commit-time compare-and-swap surfaces as **MySQL
 1213 / SQLSTATE 40001** (`ER_LOCK_DEADLOCK`). GORM has no sentinel for it, so it
-passes through untranslated and you match on the code. In-process it arrives as
-a `*driver.SQLStateError` (reachable with `errors.As` through the wrapping
-`*driver.QueryExecError`); over the MySQL wire port it arrives as
-`*mysql.MySQLError`. Both carry `Number == 1213`.
+passes through untranslated and you match on the code. It arrives as
+go-sql-driver/mysql's `*mysql.MySQLError` with `Number == 1213`, in-process and
+over the MySQL wire port alike (see
+[engineering.md](engineering.md#what-the-in-process-driver-returns-for-an-engine-error)).
 
 ```go
-import qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
+import gomysql "github.com/go-sql-driver/mysql"
 
 // retryable reports whether err is a serialization conflict worth retrying.
 func retryable(err error) bool {
-	var sqlState *qrdbdriver.SQLStateError
-	return errors.As(err, &sqlState) && sqlState.Number == 1213
+	var mysqlErr *gomysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1213
 }
 
 func transfer(db *gorm.DB, from, to uint64, amount int64) error {
@@ -393,15 +381,16 @@ each other instead of one failing at commit. The scenario of GORM's own
 
 ## Known limitations
 
-Every item here is a property of the engine or the dialector confirmed in code,
-not a list of "not tested yet".
+Every item here is a property of the engine or of the stock dialector,
+confirmed in code, not a list of "not tested yet".
 
 | Limitation | Detail |
 |---|---|
 | `embedded://` cannot create tables | By design; use `node://`. See above. |
-| `rest://` / `grpc://` cannot back a GORM connection | Refused at `Initialize` with `*UnsupportedTransportError`. |
+| `rest://` / `grpc://` cannot back a GORM connection | Refused by `qrdbgorm.Open` with `*UnsupportedTransportError`. |
 | `UPDATE ... JOIN` on a table with no primary key | Rejected by go-mysql-server itself (`sql/analyzer/assign_update_join.go`, gated on `sql.IsKeyless`), not by QRDB. `DELETE ... JOIN` is unaffected. Give the model a primary key if you need it. |
-| CHECK constraints | QRDB's relational tables implement no `sql.CheckAlterableTable`, so the engine refuses `ADD CONSTRAINT ... CHECK`. `DropConstraint` still routes a CHECK name to `ALTER TABLE ... DROP CHECK`, whose acceptance is likewise the engine's call. |
+| CHECK constraints | QRDB's relational tables implement no `sql.CheckAlterableTable`, so the engine refuses `ADD CONSTRAINT ... CHECK`. A 3819 is therefore not expected from a relational table, and the stock dialector would not translate one. |
+| Caller-supplied savepoint names are not validated | The stock `SavePoint` and `RollbackTo` concatenate the name into the statement. GORM's own generated names are safe; never pass an untrusted name. See [Transactions](#transactions). |
 | Schema-qualified and cross-database foreign keys | Refused at store time with a typed error, never persisted. Every catalog, row and index key is scoped to one database, so there is no read path a parent-row check in another database could use. |
 | Cross-database transactions | A single CAS commit targets one Raft shard; a write to a second database inside an open transaction is refused (`CrossDatabaseTransactionError`). |
 | Generated (virtual / stored-expression) columns | Rejected at DDL time — the persisted `TableDef` has no way to represent the generation expression, and silently dropping it would leave an unpopulatable column. |
@@ -417,8 +406,8 @@ not a list of "not tested yet".
 ## Conformance
 
 `sdk/go/gorm/conformance` runs **GORM's own upstream test suite** against QRDB
-over three surfaces: the native dialector on `node://`, `gorm.io/driver/mysql`
-over the MySQL wire port, and `gorm.io/driver/postgres` over the PostgreSQL wire
+over three surfaces: `gorm.io/driver/mysql` on `node://` in process, the same
+dialector over the MySQL wire port, and `gorm.io/driver/postgres` over the PostgreSQL wire
 port. It is a separate Go module, so `go test ./...` at the repository root and
 `make test` never touch it.
 
@@ -446,13 +435,20 @@ something:
   fails the shared tables stay dropped. These are exempt from the stale-pass
   check because a passing run says nothing about them either.
 
-Current measurements (2026-08-14), each verified stable across repeated runs:
+Measurements, by date:
 
-| target | pass | expected-fail | skip | excluded |
-|---|---:|---:|---:|---:|
-| node (native dialector) | 371 | 6 | 18 | 3 |
-| mysql wire | 373 | 6 | 18 | 1 |
-| pgsql wire | 255 | 119 | 17 | 7 |
+| target | measured | pass | expected-fail | skip | excluded |
+|---|---|---:|---:|---:|---:|
+| node (stock MySQL dialector, in process) | 2026-10-01 | 382 | 0 | 18 | 0 |
+| mysql wire | 2026-08-14 | 373 | 6 | 18 | 1 |
+| pgsql wire | 2026-08-14 | 255 | 119 | 17 | 7 |
+
+The harness runs every target in pessimistic SQL concurrency
+([row locking](../row-locking/)): the node target through its DSN
+(`concurrency=pessimistic`), the wire targets by creating their database with
+`--sql-concurrency pessimistic`. Under it `TestConcurrentMany2ManyAssociation`
+passes on all three, where the default optimistic mode failed it 30 times in
+30 on the node target, so it is no longer allowlisted.
 
 Over half the PostgreSQL failures are two defects in go-mysql-server's
 RETURNING support; see [upstream-gaps.md](upstream-gaps.md).
@@ -467,11 +463,9 @@ that file is the source of truth and is updated with each measurement.
 
 | Topic | Source |
 |---|---|
-| Dialector, `Config`, savepoints | `sdk/go/gorm/qrdb.go` |
-| Why `Name()` is `"mysql"` | `sdk/go/gorm/doc.go` |
-| Error translation | `sdk/go/gorm/error_translator.go` |
-| Migrator | `sdk/go/gorm/migrator.go` |
-| Column type mapping | `sdk/go/gorm/datatype.go` |
+| `Open`, `NewConfig`, the defaults | `sdk/go/gorm/qrdb.go` |
+| The error type the driver returns | `sdk/go/driver/engine_errors.go` |
+| Dialector, migrator, error translation | `gorm.io/driver/mysql` |
 | DSN grammar and schemes | `sdk/go/driver/dsn.go`, `sdk/go/driver/driver.go` |
 | `node://` connector | `sdk/go/driver/node/node.go` |
-| Engine semantics | [README.md](architecture.md) |
+| Engine semantics | [architecture.md](architecture.md) |

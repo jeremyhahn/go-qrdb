@@ -83,8 +83,410 @@ are not reconstructed here — their history is in the git log.
   so the tenant shard reconciler's convergence is unchanged.
 - **`--backup-key-dir`** (`qrdbd start`): the directory the built-in `"software"` key-wrap provider's key files must live inside. Required to create or restore an encrypted backup with the built-in provider; kept outside `--data-dir`/`--backup-dir` on purpose, so a backup made with a key from this directory is still restorable after `--data-dir` is lost entirely. `--restore-decryption-key-file`'s value is now a bare file NAME inside this directory, never a path.
 - **`server.WithKeyDir`** mirrors `--backup-key-dir` for every embedder that composes through `pkg/server`/`sdk/go/node` (both the seal-enabled and seal-disabled construction paths) rather than `cmd/qrdbd` directly, forwarded via the same `ResolveCryptoOptions`/`lifecycle.Infra.KeyDir` path `WithStrategyRegistry` already uses.
+- **Tenant onboarding with the first admin.** A tenant is created together
+  with its first admin's login credential, or not at all:
+  `service.TenantOnboardingServicer.OnboardTenant`, wired with
+  `server.WithTenantOnboarding` and reached by tenant create on every
+  transport. The request names `admin_username` and exactly one of
+  `admin_csr_pem` (signed by the new tenant's own login CA, Key B, through
+  `bootstrap.KeyBSigner`) or `admin_cert_pem` (+ optional `admin_chain_pem`),
+  which must chain to `trust_anchors_pem` registered in the same call, carry
+  the admin username as its CN and name the new tenant. The response carries
+  the admin's certificate, serial and SPKI thumbprint, never a private key.
+  Every refusable input is judged before anything is written, because a
+  deleted tenant id is retired; a failure after the first write is undone in
+  reverse (`bootstrap.ProvisioningUndoneError`, whose `UndoFailures` lists any
+  undo step that failed). CLI: `qrdb tenant create --admin-username U
+  (--admin-csr F | --admin-cert F [--admin-chain F]) [--trust-anchors F]
+  [--out DIR]`.
+- **Pending tenant admins** (`pkg/tenantadmin`). A `barrier`, `volume` or
+  `raft` tenant keeps its accounts behind its own barrier, which does not
+  exist at creation, so its first admin's certificate is issued or verified
+  and recorded as the tenant's pending admin, and the response reports
+  `awaits_barrier_init`. The account is created, granted the tenant's Admin
+  role and bound by `bootstrap.CompletePendingTenantAdmin`, which qrdb's
+  composers register as the tenant service's barrier-ready hook
+  (`tenant.WithBarrierReadyHook`): it runs after the barrier is initialized,
+  after each unseal, and on each status read that finds it unsealed, and is
+  idempotent. `middleware.WithPendingTenantAdmins` and
+  `wiring.AuthMiddlewareConfig.PendingTenantAdmins` give the trust-on-first-init
+  window the record (see Security).
+- **Certificate issue and enrolment for existing accounts.**
+  `service.CertEnrollmentServicer` (`SignCertificate`, `EnrollCertificate`),
+  wired with `server.WithCertEnrollment`, behind new verbs on all six
+  transports: REST `POST /certs/issue` and `POST /certs/enroll`, gRPC
+  `IssueCert` and `EnrollCert`, QUIC `cert.Issue` and `cert.Enroll`, MCP
+  `qrdb_cert_issue` and `qrdb_cert_enroll`, and the Go SDK's
+  `CertClient.IssueCert` and `CertClient.EnrollCert` (`IssueCertRequest`,
+  `EnrollCertRequest`, `EnrolledCert`). Issue signs a CSR with the caller's
+  own tenant's Key B CA; enrol verifies a bring-your-own certificate against
+  the tenant's trust anchors and that it authenticates as exactly that
+  account. Both act only on an existing account of the caller's own tenant
+  (`*user.UserNotFoundError` otherwise) and bind the certificate's SPKI to it
+  in the same call; if the binding fails after signing, the serial is revoked
+  (`service.CertBindingFailedError`). New permissions `certs:issue` and
+  `certs:enroll`, `ScopeSelfStrict`, held by the built-in SO and Admin roles.
+  CLI: `qrdb ca issue --username U [--csr F] [--ttl D] [--out DIR]` (without
+  `--csr` the key is generated locally and written with the certificate to
+  `--out`), `qrdb ca enroll --username U --cert F [--chain F]`, and
+  `qrdb ca csr --username U --out DIR`, which makes a key and a CSR locally.
+- `cert.ParseCSR` and `cert.CheckClientKey` (`*cert.InvalidCSRError`): a CSR's
+  signature must verify, and the key must be ECDSA P-256, P-384 or P-521, RSA
+  of at least 2048 bits, or Ed25519. Only the CSR's key is used. `pkg/certenroll`
+  holds the shared issue-from-CSR and bring-your-own verification steps.
+  `pkg/cert/certtest` is a test helper that generates a key locally and calls
+  `IssueClientCert`.
+- **Per-tenant trust anchors** (`pkg/trustanchor`): CA certificates a tenant
+  registers so its users can bring certificates from their own CA, at most
+  `trustanchor.MaxAnchorsPerTenant` (32) per tenant. Verbs on all six
+  transports: REST `GET|POST /v1/tenants/{id}/trust-anchors` and
+  `DELETE /v1/tenants/{id}/trust-anchors/{fingerprint}`, gRPC
+  `TrustAnchorAdd`/`TrustAnchorList`/`TrustAnchorRemove`, QUIC
+  `tenant.TrustAnchorAdd`/`TrustAnchorList`/`TrustAnchorRemove`, MCP
+  `qrdb_trust_anchor_add`/`_list`/`_remove`, and the Go SDK's
+  `TenantClient.AddTrustAnchors`/`ListTrustAnchors`/`RemoveTrustAnchor`.
+  Permissions `trust_anchors:add`, `trust_anchors:list` and
+  `trust_anchors:remove`, `ScopeSelfStrict`. CLI: `qrdb tenant trust-anchors
+  add|list|remove`. The built-in store (`trustanchor.NewKVRegistry`) can be
+  replaced with `server.WithTrustAnchors`, which `sdk/go/node` and the
+  `qrdb_embedded` binding (`EmbeddedServerBinding.SetTrustAnchors`) forward.
+- `cert.WithNewCAHook`: run when a `DefaultCertProvider` first comes to hold
+  a login CA (a tenant's Key B minted on its first issuance, or loaded after a
+  restart). The lifecycle wires it, with every trust-anchor change, into
+  `lifecycle.Node.ClientTrustChanges`, which `Node.WireTrustAnchors`
+  subscribes the client trust pool's `Invalidate` to: a tenant onboarded a
+  moment ago logs in on that node at once instead of after the pool's
+  two-second cache. `server.WithTrustAnchors` injects an embedder's trust
+  store (resolved by `server.ResolveCryptoOptions`).
+- TypeScript SDK: `certs.issueCert`, `certs.enrollCert`,
+  `certs.issueCertWithLocalKey` (desktop transport only; the REST transport
+  throws `DesktopOnlyError`), and `tenants.addTrustAnchors`,
+  `tenants.listTrustAnchors`, `tenants.removeTrustAnchor`. Desktop bindings:
+  `CertBinding.Issue` and `CertBinding.Enroll`, and `TenantBinding`'s
+  trust-anchor methods.
+
+### Security
+
+- **BREAKING: every API transport now applies one small pre-auth message
+  cap, instead of a transport-specific limit sized for a single-request
+  bulk import.** Before this change, gRPC and Unix accepted a 101 MiB
+  message, QUIC's wire protocol allocated up to 64 MiB for a single
+  stream's declared payload length *before checking who was asking* (and
+  with up to 1000 concurrent streams per connection, before this change,
+  that multiplies), REST had no body cap at all, and MCP's cap was sized
+  to carry a base64-encoded import file. Any TLS peer that never
+  authenticates could force these allocations. Every transport now shares
+  one configurable cap, `transport.max_message_bytes`, defaulting to 4 MiB
+  (`config.DefaultTransportMaxMessageBytes`) with no larger-message
+  opt-in: REST's request body (`http.MaxBytesReader`, the outermost
+  middleware layer, ahead of authentication, CORS and routing), gRPC's and
+  Unix's `MaxRecvMsgSize`/`MaxSendMsgSize`, QUIC's wire frame payload
+  (`wire.ReadRequestLimited`, which checks the frame's declared length
+  against the cap *before* allocating a buffer for it), and MCP's
+  JSON-RPC request body. A caller with a larger payload (bulk import)
+  uses the chunked import session API below instead of a single oversized
+  request.
+- **New per-peer connection caps on every TCP AND QUIC listener.**
+  `transport.max_conns_per_peer` (default 256) bounds how many concurrent
+  connections a single remote IP may hold open against REST's HTTP/2
+  listener, gRPC, MCP, native QUIC, and REST's own HTTP/3 (QUIC) listener
+  -- the same configured value, enforced by the same accounting on all
+  five. Previously none of them bounded this at all — on MCP the only
+  thing standing in a single peer's way was the process's
+  open-file-descriptor limit, a GLOBAL budget one peer could exhaust on
+  behalf of every other caller. `pkg/api/connlimit.Counter` is the shared
+  primitive: `connlimit.Listener` applies it on REST's, gRPC's and MCP's
+  raw TCP accept, ahead of TLS negotiation; `connlimit.QUICListener`
+  applies the identical accounting to native QUIC's `*quic.Transport`
+  listener and to the `*quic.Listener` REST's HTTP/3 server serves via
+  `http3.Server.ServeListener` (rather than handing it a bare
+  `net.PacketConn` via `Serve`, which has no listener to wrap). A
+  connection over its peer's cap is refused at `Accept` -- closed with
+  `connlimit.QUICOverCapErrorCode` on QUIC/HTTP-3, before any stream
+  exists on it -- and its slot is released when the connection's own
+  context ends (`context.AfterFunc(conn.Context(), release)`), covering
+  every way a QUIC connection ends (idle timeout, either side's
+  `CloseWithError`, a transport error) without this package needing to
+  know which. The Unix domain socket has no remote-IP concept and is
+  unaffected. QUIC additionally has `transport.max_streams_per_conn`
+  (default 128, down from a fixed 1000), bounding concurrent streams per
+  connection (go-qrdb#576).
+- New config section `transport` (`pkg/config.TransportConfig`):
+  `max_message_bytes`, `max_conns_per_peer`, `max_streams_per_conn`. See
+  `docs/12-configuration.md`.
+- **Fixed: the gRPC and Unix servers no longer cap their own RESPONSES at
+  the pre-auth receive cap.** Both used to set `grpc.MaxSendMsgSize` to the
+  same `transport.max_message_bytes` bound as `grpc.MaxRecvMsgSize`, so an
+  ordinary `kv range`/`scan` whose matches exceeded 4 MiB failed with
+  `codes.ResourceExhausted` on the SERVER side regardless of what the
+  caller was willing to receive — the pre-auth exposure this cap exists for
+  is entirely about an unauthenticated peer forcing an allocation on
+  RECEIVE, and says nothing about a response the server itself chooses to
+  send. `MaxSendMsgSize` is no longer set (grpc-go's own server-side
+  default is effectively unbounded); the Go SDK's gRPC and Unix clients
+  correspondingly raise their own `MaxCallRecvMsgSize` past grpc-go's 4 MiB
+  CLIENT default (`transport.DefaultClientMaxRecvMessageBytes`), so neither
+  side truncates a response the other was willing to send.
+- **BREAKING: the single-message `BatchImport` RPC is deleted outright, no
+  compat, replaced by a chunked import session** (`ImportBegin`/
+  `ImportAppend`/`ImportCommit`/`ImportAbort`) identical on every
+  transport (REST, gRPC, Unix, QUIC, MCP, embedded), both SDKs, and the
+  CLI. A session carries a dataset of any size as many small, ordinary,
+  authenticated calls instead of one message no transport's pre-auth cap
+  can admit: each chunk is staged as replicated, lease-bound state under a
+  reserved raw key range (`\x00qrdb.import/`, `pkg/importstage`) written
+  only through a dedicated Raft command, never through the MVCC store or
+  the KV engine's own `Put` path — on every `raft.sm_type`, not only
+  `mvcc` — exactly like the lease table's own storage, so a staged record
+  is structurally unreachable from a client's `Get`/`Range`/`Put` of the
+  same literal key, not merely hidden from enumeration. It is bound to the
+  caller's (tenant, identity) at `ImportBegin` and re-checked on every
+  subsequent call against the SAME (tenant, database) namespace
+  `ImportBegin` was called through — a session begun on one database can no
+  longer be appended to, committed, or aborted through a different
+  namespaced database wrapper of the same tenant — and reclaimed by the
+  ordinary lease-expiry cascade if abandoned. `ImportCommit` parses and
+  applies every staged chunk, at most 8 MiB of encoded rows per Raft
+  proposal (`--transactional` above that ceiling is refused outright, with
+  no non-atomic fallback); a proposal whose outcome is genuinely ambiguous
+  aborts the whole commit without revoking the session, so it stays
+  retryable, rather than silently reporting success as it could before.
+  - `qrdb batch import` keeps its existing flags and output; it now
+    drives the session transparently through the Go SDK's
+    `transport.ImportFileChunked` helper. Every transport but MCP chunks
+    at `transport.max_message_bytes`; MCP, whose JSON-RPC body carries a
+    chunk as base64 text, chunks smaller
+    (`transport.DefaultMCPImportChunkBytes`) so the base64-encoded chunk
+    plus its envelope still fits the same cap — a 3 MiB chunk previously
+    encoded to exactly the cap's size, leaving no room for the envelope
+    around it, and every MCP import above roughly 3 MiB failed outright.
+    There is no longer a maximum import file size on any transport.
+  - The Go SDK's `transport.BatchClient` gains `ImportBegin`/
+    `ImportAppend`/`ImportCommit`/`ImportAbort`; `ImportFile` is
+    unchanged at the call site but now drives the session underneath.
+  - The desktop app and the TypeScript SDK's Wails binding inherit the
+    chunked session transparently (they call the same Go SDK
+    `ImportFile`); the TypeScript SDK's REST client does not implement
+    batch import at all, unaffected by this change.
+  - `import_session:` (`pkg/config.ImportSessionConfig`) is now actually
+    wired into every composer that builds a `BatchServicer` — the shared
+    system shard (`pkg/server/lifecycle`), the per-tenant `IsolationVolume`
+    and `IsolationRaft` hosts (`pkg/server`), and the embedded transport
+    (`sdk/go/transport/embedded`) — instead of silently running every
+    session at the package defaults regardless of configuration.
+  - See `docs/transactions/` ("Import session") for the full design.
+
+- **Volume pool management is now Tier 1: every capability on all six
+  transports** (docs/volume-pools/api.md). `volume.Service` (list, inspect,
+  create, update, delete a pool, list a pool's assigned tenants) is wired
+  into REST (`/v1/volume-pools...`), gRPC (`VolumePool*` RPCs on
+  `qrdb.v1.QRDBService`, regenerated proto), Unix (the same gRPC wire over a
+  UDS), QUIC (`volumepool.*` frame methods), MCP (`qrdb_volume_pool_*`
+  tools), and the embedded transport, all sourced from the SAME catalog
+  instance already attached to the barrier registry
+  (`seal.BarrierRegistry.VolumeService`) -- no composer needs a second copy.
+  Adds the Go SDK's `Client.VolumePools()` (replacing the removed in-process
+  `VolumePoolClient`, decision D8), the TypeScript SDK's `VolumePoolClient`
+  (REST-backed; not yet implemented in desktop/Wails mode), and the CLI's
+  `qrdb volume-pool` command group (list/get/create/update/delete/tenants).
+  Every capability is `ScopeCross`-gated behind the renamed
+  `volume_pools:{list,read,create,update,delete}` permissions (previously
+  dead, pre-catalog `volumepool:*` placeholders); `pkg/api/errclass` gains a
+  `volumeRules` block classifying every `pkg/volume` typed error by cause
+  (`PoolNotFoundError` -> NotFound, `PoolCapacityExceededError` ->
+  ResourceExhausted, ...), checked ahead of `tenant.VolumePoolReserveError`'s
+  own catch-all.
+- The tenant surface gains `volume_pool`/`refusal` (`TenantRefusal`:
+  `pool_unavailable` | `provider_missing`) and
+  `TenantEntitlements.allowed_volume_pools` on every transport and the CLI's
+  `tenant set-entitlement --allowed-volume-pools`; `pkg/tenant.RefusalOf`
+  classifies a `ListTenants` refusal into its wire form once, reused by
+  every transport. `pkg/volume`'s wire-facing catalog types (`Pool`,
+  `Assignment`, `PoolView`, `PoolDetail`, ...) gain the `camelCase` JSON
+  tags docs/volume-pools/api.md specifies.
+- `docs/volume-pools/`: the owner's ruling on named volume pools (2026-10-04)
+  is recorded as a "Decisions" section across all five documents, replacing
+  the prior "PROPOSED" status. Decision D6 (encrypted volumes and the
+  cluster seal) is replaced by a "seal-lifecycle volumes" design: LUKS is a
+  `VolumeProvider` concern, not a `SealStrategy`; the optional hook is
+  `volume.Lockable` (`Unlock(ctx, VolumeKey)` / `Lock(ctx)`); qrdb derives
+  the per-volume key from the unsealed system barrier with HKDF and never
+  persists it; ordering (unlock after unseal and before stores open, lock
+  after stores close and before the key wipe) is enforced by qrdb. Tenant
+  moves (D5) are deferred to a Phase 2 noted throughout the folder.
+- `pkg/volume`: the `VolumeProvider` seam -- `Provider`, `Volume`,
+  `Registry`, the dependency-free `dir` provider, and the `Lockable` /
+  `VolumeKey` / `DeriveVolumeKey` extension decision D6 rules. No catalog,
+  assignment or management-service implementation yet; that is the next
+  slice of the Phase 1 build.
+- `pkg/seal`: `StorageBarrier.OnSealing`, the sealing-side counterpart to
+  the existing `OnUnsealed` hook, and `VolumeLifecycle`, which tracks a
+  node's `Lockable` pool volumes and unlocks/locks them in step with the
+  system barrier's own unseal/seal, proven with a fake `Lockable` covering
+  the ordering and both failure paths.
+- `quota.Entitlements` gains `AllowedVolumePools` and the `AllowsVolumePool`
+  / `DefaultVolumePool` accessors, fail-closed on an empty list, ahead of
+  the volume-pools entitlement check at tenant create/move.
+- `placement.ReplicaFilter` gains the tenant id, and `WithReplicaFilter`
+  now ANDs filters attached by separate calls instead of the later call
+  overwriting the earlier one -- ahead of a volume-pools pool-health
+  filter composing alongside the existing feature-gate filter.
+- `pkg/volume`: `Catalog`, the replicated pool catalog, tenant assignments
+  and node health reports (`__sys:volumepool/{pools,assign,nodes}/`), with
+  no node-local file. It implements both `volume.Service` (the management
+  surface) and `volume.Allocator` (`Reserve`/`Resolve`/`Release`, the
+  narrower seam pkg/tenant and pkg/seal's `BarrierRegistry` depend on
+  instead). `Reserve`/`Release` use one Raft transaction each so a pool's
+  `ReservedBytes` and its tenant's `Assignment` move together.
+  `MoveTenant`/`GetMove` return `*volume.MoveNotImplementedError`: tenant
+  moves are Phase 2 (decision D5).
+- `pkg/seal`: `BarrierRegistry.HasVolumePool`, the single presence gate
+  ("a volume.Allocator AND a VolumeResolver are both attached") composition
+  layers (`pkg/server.TenantInfraConfig`, `cmd/qrdbd`, `sdk/go/node`) use in
+  place of the old "is a `*pool.VolumePoolSubsystem` configured" check, and
+  `BarrierRegistry.VolumeAllocator`, which returns the attached allocator so
+  `pkg/server/lifecycle.BuildServices` can forward it into the
+  `TenantService` it constructs.
+- `pkg/server/lifecycle`: `buildTenantServiceOpts` now wires
+  `tenant.WithVolumeAllocator` from `Infra.BarrierRegistry`, and
+  `NewVolumeCatalogKVServicer` adapts a `service.KVServicer` to
+  `volume.KVServicer` -- translating a miss into `(nil, nil)`, the contract
+  `volume.Catalog.Reserve`/`Resolve` require to recognize an absent
+  Assignment/Pool rather than treat `service.KVServicer`'s own typed
+  not-found error as a hard failure.
+- `cmd/qrdbd` and `sdk/go/node`: full volume-pools composition (Step 5).
+  Both daemon and embedded-node boot paths now: open every configured pool
+  through a `volume.Registry`, Track a `Lockable` volume on the node's
+  `seal.VolumeLifecycle` before any unseal attempt, attach
+  `seal.WithVolumeResolver` / `WithPerTenantRegistry` early, build the
+  replicated `volume.Catalog` directly over the node's own host (via
+  `NewVolumeCatalogKVServicer`) and attach it as `seal.WithVolumeAllocator`
+  BEFORE `lifecycle.BuildServices` -- the `TenantService` it constructs
+  needs the allocator at construction time -- and publish the node's
+  volume-pool health on a lease via `volume.Reporter` once the data-plane
+  services exist. `sdk/go/node.Node` gains `stopVolumeReporter`, called
+  before `svcNode`/`host` teardown on every close and failure-rollback path:
+  `volume.Reporter.Close` is synchronous, but its refresh goroutine calls
+  live data-plane services on every tick, so it must stop first.
+- **Certificate revocation is audited (FedRAMP AU-2, PCI DSS 10.2).**
+  `DefaultCertProvider.RevokeCert` now emits `cert.revoke` on the compliance
+  trail, including deny-by-serial (a serial this node holds no record for);
+  the event carries the serial, whether a local record was found, and the
+  record's own tenant when one exists. Wired via the new
+  `cert.WithAuditLogger` provider option; issuance and enrolment remain
+  audited one layer up, by `CertEnrollmentService` (`cert.issue`/
+  `cert.enroll`), since `certs:revoke` has no single caller every transport
+  funnels through the way issue and enrol do.
+- `users:add_cert_binding` is held to the certificate target guard on every
+  transport (`AuthMiddleware.AuthorizeCertBindingTarget`): it binds a
+  thumbprint to any account named, so it now refuses a Security Officer
+  account (their keys come only from the ceremony) and an Owner unless the
+  caller is one, exactly as `certs:issue` and `certs:enroll` do. The guard is
+  one instance per node (`lifecycle.Node.CertTargets`), reaching the
+  middleware through `wiring.AuthMiddlewareConfig.CertTargetGuard`; a
+  middleware built without one refuses the verb
+  (`*middleware.CertTargetGuardRequiredError`).
+- The built-in tenant Admin role is granted `users:add_cert_binding`: a
+  tenant Admin does everything in its tenant except Security Officer key
+  custody. The certificate target guard still refuses binding a key to an
+  SO, or (unless the caller is an Owner) an Owner. Existing deployments pick
+  the grant up through built-in role reconciliation.
+- Trust-anchor verbs are confined to the caller's own tenant in
+  `CertEnrollmentService` (`AddTrustAnchors`, `ListTrustAnchors`,
+  `RemoveTrustAnchor` apply `tenant.Confine`), so every transport inherits it
+  from one place. The REST handlers for `/v1/tenants/{id}/trust-anchors` also
+  run the `trust_anchors:*` tenancy gate themselves, as gRPC, QUIC and MCP
+  already did; before this they relied only on the route-level target, and a
+  tenant Admin could have added or removed another tenant's anchors -- and then
+  enrolled certificates that log in there -- once that target was removed.
+
+### Changed
+
+- A volume pool's catalog record (name, provider, capacity) is a
+  management-plane object an operator creates explicitly -- it is never
+  derived from a node's `storage.volume_pools` config, which only tells
+  THAT node which local directory or device to map a pool name onto. A
+  tenant create against an unregistered pool name now fails with
+  `*volume.PoolNotFoundError` rather than succeeding against an
+  implicitly-materialized pool.
+- **BREAKING: no client private key is generated on the server.**
+  `cert.CertProvider.GenerateClientCert(ctx, *GenerateRequest) (*CertBundle,
+  error)` is replaced by `IssueClientCert(ctx, *cert.IssueRequest{Username,
+  TenantID, PublicKey, TTL}) (*cert.IssuedCert{CertPEM, Serial, NotAfter},
+  error)`, which certifies a public key the requester supplies.
+  `cert.GenerateRequest` and `cert.CertBundle` are removed.
+- **BREAKING: certificate generation is removed from every surface.** REST
+  `POST /certs/generate`, gRPC `GenerateCert`, QUIC `cert.Generate`, MCP
+  `qrdb_cert_generate`, the Go SDK's `CertClient.GenerateCert`
+  (`GenerateCertRequest`, `CertBundle`), the TypeScript SDK's `certs.generate`
+  (`GenerateCertRequest`, `CertBundle`), the desktop `CertBinding.Generate`,
+  and the `certs:generate` permission (`permission.CertsGenerate`). Use the
+  issue and enrol verbs above.
+- **BREAKING: `qrdb ca issue` takes no `--tenant-id`.** Issuance always acts
+  on the caller's own tenant, and the account must already exist; the key is
+  made on the client, never on the server.
+- **BREAKING: tenant create requires the first admin.** `admin_username` and
+  exactly one of `admin_csr_pem` / `admin_cert_pem` are required on every
+  transport (`*service.TenantOnboardingFieldError`,
+  `*bootstrap.MissingAdminCredentialError`,
+  `*bootstrap.ConflictingAdminCredentialError`). gRPC `TenantCreate` returns
+  `TenantCreateResponse{tenant, admin}` instead of `TenantResponse`; the REST
+  response keeps the tenant's fields and adds `admin`; the Go SDK's
+  `CreateTenantResponse` gains `Admin` and `CreateTenantRequest` gains the
+  admin fields; the TypeScript SDK mirrors both. An empty isolation type over
+  the API still means `prefix`.
+- **BREAKING: `bootstrap.ProvisionTenant` no longer generates keys.** In cert
+  mode it takes exactly one of `AdminCSRPEM` (signed via `Dependencies.Signer`)
+  or `AdminCertPEM` (+ `AdminChainPEM`, verified against `TrustAnchorsPEM`) and
+  refuses neither with `MissingAdminCredentialError`; `Dependencies.CA` is no
+  longer used by it. `TenantProvisionResult.AdminKeyPEM` is removed;
+  `AdminCertSerial` and `AdminAwaitsBarrierInit` are added. New:
+  `TenantProvisionConfig.Exclusive`, `Dependencies.TrustAnchors`,
+  `Dependencies.PendingAdmins`, `Dependencies.TrustDomain`, `Dependencies.Now`.
+  An empty `Isolation` still defaults to `barrier` for a direct caller, so a
+  cert-mode call with no isolation now needs `Dependencies.PendingAdmins`
+  (`*bootstrap.MissingProvisioningSeamError` without it).
+- **BREAKING: `auth.IssuerVerifier.VerifyIssuer` takes the verified chain.**
+  `VerifyIssuer(ctx, tenantID string, chain []*x509.Certificate) error`
+  replaces the issuer-only form; the issuer is `chain[1]`, and failing the
+  cluster-CA, static and Key B checks the chain may contain one of the
+  tenant's registered trust anchors at any depth above the leaf.
 
 ### Fixed
+
+- **A restarted self-issued-CA node no longer exits right after its
+  unseal.** The boot's cluster-CA check read the CA record from the system
+  shard while a leader elected a moment earlier was still refusing
+  linearizable reads (`read index not ready`), and treated that as fatal, so
+  `qrdbd` exited with "cluster CA persistence check failed". The check now
+  waits out that warm-up, as it already did an election in progress, within
+  the same 30-second bound.
+
+- **A failed `DropTable` no longer leaves `FOREIGN_KEY_CHECKS` off for
+  whoever the connection pool hands that connection to next.** The stock
+  GORM migrator's `DropTable` sets it for the drop and restores it only once
+  every drop in the batch succeeds; on a failure it returns first. The
+  embedded driver's `ResetSession` now restores every session system
+  variable a caller changed back to this connection's own baseline --
+  `FOREIGN_KEY_CHECKS` included, and a connector option such as a DSN's
+  `concurrency=` left untouched -- when the connection is checked back out
+  of the pool, so the setting never reaches a later caller. A variable
+  `ResetSession` cannot read or restore fails the reset closed: the
+  connection is marked bad and discarded (`driver.ErrBadConn`), the same as
+  a transaction it cannot roll back, rather than going back to the pool
+  with that variable still at whatever the previous caller left it
+  (`sdk/go/driver/conn_embedded.go`'s `resetSessionVariables`,
+  `*driver.SessionVariableResetError`).
+
+- **The GORM conformance wire targets run again.** Their harness created the
+  certificate-only `gorm` user without an email login key, which `users
+  create` has refused since the key became required. The mysql and pgsql
+  targets therefore stopped before running a test. Expired allowlist entries
+  are deleted, not re-dated: pgsql's ten untriaged `pgsql-wire-gap` entries
+  and both TestSelectWithUpdate entries. The mysql target still fails
+  intermittently on TestSelectWithUpdate, a timestamp assertion that write
+  latency pushes across a second boundary
+  (`sdk/go/gorm/conformance/README.md`).
 
 - **An embedded node honours the configured tenant defaults, and composes
   member-side CSR join, as `qrdbd` does.** `sdk/go/node` ignored
@@ -292,8 +694,49 @@ are not reconstructed here — their history is in the git log.
   described this layout change as replacing two PRIOR RELEASES is
   corrected: the intermediate one-directory-per-key design never shipped —
   it existed only between commits of this same unreleased change.
+- Tenant onboarding refuses an admin username the CA could never certify
+  (one that does not survive the SPIFFE round trip under
+  `auth.spiffe_trust_domain`) before anything is written, instead of after
+  the tenant exists -- which would have retired its id.
+- Completing a pending tenant admin adopts an existing account of that name
+  only when it holds the tenant's Admin role; any other account is refused
+  (`*bootstrap.PendingAdminAccountConflictError`) and never bound to the
+  onboarded admin's key.
+- **BREAKING (Go API): a pending tenant admin is recorded create-if-absent.**
+  `tenantadmin.Store.Put` is replaced by `Create`, which writes atomically
+  (`kvstore.AtomicKVStore.PutIfAbsent`) and never replaces a record
+  (`*tenantadmin.AlreadyPendingError`), as `qrdb init` never replaces an
+  established first admin.
 
 ### Changed — BREAKING
+
+- **BREAKING: `sdk/go/driver`'s in-process MySQL dialect now returns
+  go-sql-driver's `*mysql.MySQLError` for every engine error GMS classifies
+  with a MySQL error number,** from `Exec`, `Query`, `Prepare`, row iteration
+  and `COMMIT`, instead of qrdb's own `*driver.SQLStateError`. A caller that
+  type-asserted `*driver.SQLStateError` must assert `*mysql.MySQLError`
+  (`Number`, `SQLState`, `Message`) instead; `*driver.SQLStateError` is
+  removed. A classified error is now that `*mysql.MySQLError` bare -- the
+  same type and values the identical statement produces over qrdb's MySQL
+  wire port -- with no wrapped error underneath, so it no longer unwraps to
+  qrdb's own `pkg/rowlock` or `pkg/sql/provider` error types the way
+  `*driver.SQLStateError` did; `errors.As` against those types stops
+  matching on a classified failure. An UNclassified failure (the engine's
+  1105 fallback, which is what a context cancellation or one of qrdb's own
+  typed errors becomes when GMS cannot assign it a number) is unaffected:
+  it keeps its typed chain inside `*driver.QueryExecError` /
+  `*driver.PrepareError`, so `errors.Is(err, context.Canceled)` and
+  `errors.As` against qrdb's error types still work there. The REST and
+  gRPC transports are unchanged.
+- **BREAKING: `sdk/go/gorm`'s own GORM dialector, migrator, data-type mapping,
+  clause builders and error translator are deleted.** `Open` and `NewConfig`
+  now build the stock `gorm.io/driver/mysql` dialector, configured with
+  qrdb's driver name and defaults; `DB.Dialector` is genuinely
+  `*mysql.Dialector`. Behaviour lost with the custom dialector: MySQL error
+  3819 no longer maps to `gorm.ErrCheckConstraintViolated`; caller-supplied
+  savepoint names are not validated before they are concatenated into
+  `SAVEPOINT`/`ROLLBACK TO SAVEPOINT`; the dialector's `Name()` cannot be
+  overridden. See `docs/sql/gorm.md`.
 
 - **BREAKING: the file storage engine's on-disk layout changed; no
   migration (go-qrdb#592).** `raft.sm_storage: file` (used by `sm_type:
@@ -378,6 +821,20 @@ are not reconstructed here — their history is in the git log.
   not a path and not a secret-bytes input. See
   [docs/key-wrapping/](docs/key-wrapping/architecture.md) and
   [docs/backup-restore/](docs/backup-restore/architecture.md).
+
+- **`tenant.default_entitlements.allowed_volume_pools` could not be set from
+  config, so every `volume`/`raft` tenant create was refused with
+  `volume_pool:<none>` on a freshly configured node.** The docs
+  (`docs/volume-pools/engineering.md`) always named this key, and
+  `quota.Entitlements.AllowedVolumePools` always existed and was fail-closed
+  on empty, but `config.TenantEntitlementDefaults` -- the YAML-loadable
+  struct `ToEntitlements` converts -- never had a matching field, so the
+  value loaded from every operator's `qrdbd.yaml` was silently discarded.
+  Found running this lane's volume/pool/tenant/restart integration slice
+  against a real daemon, not caught by any unit test because none builds a
+  `TenantEntitlementDefaults` from YAML and checks the resulting
+  `Entitlements.AllowedVolumePools` round-trips. Added the field and wired
+  it through `ToEntitlements`.
 
 - **`qrdb barrier seal --so-pin` sends the SO PIN.** The CLI parsed the flag
   and dropped it, so once `qrdb init` had provisioned an SO PIN every CLI seal
@@ -1271,6 +1728,16 @@ The tenant login CA ("Key B") and the go-xkms SDK and security fixes. This relea
   IAM store is reachable immediately); a dedicated-isolation tenant's own
   store may not exist or be unsealed yet, so it is still left to a later
   `roles reconcile`, unchanged from before.
+- **`data_root` is removed from the tenant surface**, replaced by
+  `volume_pool` per docs/volume-pools/api.md: `TenantCreateRequest`,
+  `TenantResponse`, and `DeletedTenant` reserve their old `data_root` field
+  numbers (5, 8, and 4 respectively) rather than reassign them; the Go SDK's
+  `CreateTenantRequest.DataRoot`, `TenantInfo.DataRoot`, and
+  `DeletedTenant.DataRoot` fields and the TS SDK's `dataRoot` fields are gone,
+  replaced by `VolumePool`/`volumePool`; the CLI's `tenant create --data-root`
+  flag is gone, replaced by `--pool`; and the desktop GUI's Data Root field is
+  gone, replaced by a Volume Pool field shown only for the volume/raft
+  isolation tiers.
 
 ### Security
 
@@ -1933,7 +2400,6 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   `--bootstrap-join-token-file` / `--bootstrap-join-token-env` flags are
   unchanged in shape; they now carry a minted single-use token instead of a
   static shared secret.
-
 
 ## [0.39.0-alpha] - 2026-10-04
 
@@ -7373,7 +7839,6 @@ go-xkms: the first closes a cross-tenant escalation on escrowed key material,
 and the second unblocks every password-change path in that project.
 
 ### Added
-
 
 - **`permission.ScopeSelfStrict` — a permission confined to the identity's own
   tenant for EVERY identity, the system tenant included.** `ScopeSelf` lifts the

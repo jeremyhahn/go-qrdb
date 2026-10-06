@@ -161,12 +161,12 @@ func clusterTests(t *testing.T, root string) map[string]string {
 func TestClusterTests_RespectsBuildConstraints(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "test", "integration")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	write := func(name, body string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}

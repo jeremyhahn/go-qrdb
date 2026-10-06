@@ -24,10 +24,26 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// mockOnboarding is a service.TenantOnboardingServicer double: CreateTenant
+// delegates to it exclusively (not to tenant.TenantServicer directly), so
+// the platform-operator confinement tests need one wired via
+// WithTenantOnboarding to ever reach the service layer at all.
+type mockOnboarding struct {
+	onboardFn func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error)
+}
+
+func (m *mockOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	if m.onboardFn != nil {
+		return m.onboardFn(ctx, req)
+	}
+	return &service.OnboardTenantResult{Tenant: &tenant.TenantInfo{ID: req.ID, Name: req.Name}}, nil
+}
 
 // The embedded half of the tenant-provisioning confinement the network
 // transports enforce through tenants:create, tenants:set_quotas,
@@ -80,11 +96,11 @@ func assertCrossScopeDenied(t *testing.T, verb string, err error) {
 
 func TestTenantProvisioning_CreateTenantIsPlatformOperatorOnly(t *testing.T) {
 	reached := false
-	svc := &mockTenantService{createFn: func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+	onboarding := &mockOnboarding{onboardFn: func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
 		reached = true
-		return &tenant.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
+		return &service.OnboardTenantResult{Tenant: &tenant.TenantInfo{ID: req.ID, Name: req.Name, IsolationType: req.IsolationType}}, nil
 	}}
-	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newProvisioningMiddleware(t)))
+	tr := newExtTransport(t, WithTenantOnboarding(onboarding), WithAuthMiddleware(newProvisioningMiddleware(t)))
 
 	_, err := tr.CreateTenant(acmeAdminCtx(), &transport.CreateTenantRequest{ID: "acme2", Name: "Acme"})
 	assertCrossScopeDenied(t, "a tenant admin minting a tenant", err)
@@ -108,11 +124,11 @@ func TestTenantProvisioning_CreateTenantIsPlatformOperatorOnly(t *testing.T) {
 // cover -- the two must not be collapsed into one behavior.
 func TestTenantProvisioning_NoMiddlewareAdmitsEverything(t *testing.T) {
 	reached := false
-	svc := &mockTenantService{createFn: func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+	onboarding := &mockOnboarding{onboardFn: func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
 		reached = true
-		return &tenant.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
+		return &service.OnboardTenantResult{Tenant: &tenant.TenantInfo{ID: req.ID, Name: req.Name, IsolationType: req.IsolationType}}, nil
 	}}
-	tr := newExtTransport(t, WithTenantService(svc))
+	tr := newExtTransport(t, WithTenantOnboarding(onboarding))
 
 	if _, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "globex", Name: "Globex"}); err != nil {
 		t.Fatalf("an unauthenticated embedder creating a tenant with no AuthMiddleware configured: %v", err)

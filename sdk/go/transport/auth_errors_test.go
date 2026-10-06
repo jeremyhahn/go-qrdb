@@ -40,11 +40,6 @@ func TestPhase3ErrorMessages(t *testing.T) {
 		{"invalid bearer empty", &InvalidBearerError{}, "invalid bearer"},
 		{"login session not found", &LoginSessionNotFoundError{SessionID: "sess-1"}, "sess-1"},
 		{"login session expired", &LoginSessionExpiredError{SessionID: "sess-1"}, "sess-1"},
-		{"pool not configured", &PoolNotConfiguredError{Name: "default"}, "default"},
-		{"pool empty", &PoolEmptyError{Name: "default"}, "default"},
-		{"pool backend not local", &PoolBackendNotLocalError{Name: "cloud"}, "cloud"},
-		{"pool already registered", &PoolAlreadyRegisteredError{Name: "default"}, "default"},
-		{"invalid pool strategy", &InvalidPoolStrategyError{Strategy: "weird"}, "weird"},
 	}
 
 	for _, tc := range cases {

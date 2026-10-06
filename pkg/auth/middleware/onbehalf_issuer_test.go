@@ -99,8 +99,11 @@ func (v clusterOnly) IsClusterCA(_ context.Context, issuer *x509.Certificate) bo
 	return issuer != nil && issuer.Equal(v.cluster)
 }
 
-func (v clusterOnly) VerifyIssuer(ctx context.Context, _ string, issuer *x509.Certificate) error {
-	if v.IsClusterCA(ctx, issuer) {
+func (v clusterOnly) VerifyIssuer(ctx context.Context, _ string, chain []*x509.Certificate) error {
+	if len(chain) < 2 {
+		return auth.ErrInvalidCertificate
+	}
+	if v.IsClusterCA(ctx, chain[1]) {
 		return nil
 	}
 	return auth.ErrInvalidCertificate

@@ -20,9 +20,38 @@ import (
 	"testing"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenant "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// onboardingFromTenant is a TenantOnboardingServicer that delegates straight
+// to svc.CreateTenant, so a test exercising CreateTenant's refusals against a
+// hand-built tenant.TenantServicer double does not need to assemble the
+// production onboarding service's full dependency graph (users, roles,
+// certs, trust anchors).
+func onboardingFromTenant(svc tenant.TenantServicer) *mockCertOnboardingSvc {
+	return &mockCertOnboardingSvc{
+		onboardFn: func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+			info, err := svc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+			if err != nil {
+				return nil, err
+			}
+			return &service.OnboardTenantResult{Tenant: info}, nil
+		},
+	}
+}
+
+// mockCertOnboardingSvc implements service.TenantOnboardingServicer.
+type mockCertOnboardingSvc struct {
+	onboardFn func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error)
+}
+
+func (m *mockCertOnboardingSvc) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	return m.onboardFn(ctx, req)
+}
+
+var _ service.TenantOnboardingServicer = (*mockCertOnboardingSvc)(nil)
 
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
@@ -64,6 +93,16 @@ func assertPartial(t *testing.T, resp *transport.ReconcileDeletedTenantsResponse
 	}
 	return re
 }
+
+// TestUnixRT_CreateTenant_DataRootOverlapIsAFailedPrecondition covered
+// CreateTenant's refusal of an explicit --data-root a retired tenant's
+// unreclaimed record still claimed, answered over the socket as
+// FailedPrecondition with the remedy. CreateTenant no longer accepts an
+// explicit disk path (a volume tenant's reserved path is always its own
+// tenant id), so two different tenant ids can never contend for the same
+// literal path through this API any more, and the error type itself
+// (*tenant.DataRootOverlapError) is gone; see the identical note on
+// pkg/tenant's deleted TestCreateTenant_RefusesARootAStaleRecordStillClaims.
 
 // TestUnixRT_ReconcileDeletedTenants_PartialFailureCarriesBoth: the response
 // carries the report and the failures, and the client returns both.

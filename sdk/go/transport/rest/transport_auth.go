@@ -107,6 +107,16 @@ func mapOpsNotFoundError(ops []transport.Op, err error) error {
 	return err
 }
 
+// userLookupNotFound is userNotFound for an account named by a non-numeric
+// key.
+func userLookupNotFound(lookup string, err error) error {
+	var reqErr *transport.RequestError
+	if errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusNotFound {
+		return &transport.UserNotFoundError{Lookup: lookup}
+	}
+	return err
+}
+
 // CreateUser creates a new passwordless user. Maps to POST /users.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
 	if t.closed.Load() {
@@ -628,32 +638,32 @@ func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermiss
 // CertClient implementation
 // ---------------------------------------------------------------------------
 
-// GenerateCert creates a client certificate signed by the internal CA.
-// Maps to POST /certs/generate.
-func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
+// IssueCert issues a certificate from a CSR for an existing account of the
+// caller's own tenant and binds it. Maps to POST /certs/issue.
+func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	var bundle transport.CertBundle
-	if err := t.postJSONDecode(ctx, "GenerateCert", "/certs/generate", req, &bundle); err != nil {
-		return nil, err
+	var out transport.EnrolledCert
+	if err := t.postJSONDecode(ctx, "IssueCert", "/certs/issue", req, &out); err != nil {
+		// The only thing IssueCert can fail to find is the account.
+		return nil, userLookupNotFound(req.Username, err)
 	}
-	return &bundle, nil
+	return &out, nil
 }
 
-// ExportCert exports a certificate and key as a PKCS#12 archive.
-// Maps to POST /certs/export.
-func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
+// EnrollCert binds a bring-your-own certificate to an existing account of the
+// caller's own tenant. Maps to POST /certs/enroll.
+func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	var exportResp transport.ExportCertResponse
-	if err := t.postJSONDecode(ctx, "ExportCert", "/certs/export", req, &exportResp); err != nil {
-		return nil, err
+	var out transport.EnrolledCert
+	if err := t.postJSONDecode(ctx, "EnrollCert", "/certs/enroll", req, &out); err != nil {
+		// The only thing EnrollCert can fail to find is the account.
+		return nil, userLookupNotFound(req.Username, err)
 	}
-	return &exportResp, nil
+	return &out, nil
 }
 
 // RevokeCert marks a certificate serial as revoked, and reports whether

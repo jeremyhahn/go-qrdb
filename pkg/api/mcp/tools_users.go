@@ -234,7 +234,7 @@ func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authm
 		{
 			Tool:    toolUserAddCertBinding(),
 			Perm:    permission.UsersAddCertBinding,
-			Handler: handleUserAddCertBinding(svc, factorSvc),
+			Handler: handleUserAddCertBinding(svc, factorSvc, authMW),
 		},
 		{
 			Tool:    toolUserRemoveCertBinding(),
@@ -525,7 +525,7 @@ func toolUserAddCertBinding() mcp.Tool {
 
 // handleUserAddCertBinding returns a tool handler that delegates to
 // svc.AddCertBinding.
-func handleUserAddCertBinding(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
+func handleUserAddCertBinding(svc user.UserServicer, factorSvc user.FactorLister, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userIDStr := mcp.ParseString(req, "user_id", "")
 		if userIDStr == "" {
@@ -544,6 +544,10 @@ func handleUserAddCertBinding(svc user.UserServicer, factorSvc user.FactorLister
 			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
 		}
 
+		// Binding a thumbprint binds a key: the certificate target rule applies.
+		if err := authMW.AuthorizeCertBindingTarget(ctx, svc, userID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}
+		}
 		u, err := svc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}

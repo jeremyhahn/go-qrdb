@@ -42,7 +42,7 @@ import (
 func newCACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ca",
-		Short: "CA operations (info, bundle, list, issue, revoke, export-bundle)",
+		Short: "CA operations (info, bundle, list, issue, enroll, csr, revoke, export-bundle)",
 		Long: `Post-init Certificate Authority operations.
 
 The ca command group is the canonical surface for CA management per
@@ -56,7 +56,12 @@ docs/08-bootstrap-auth-architecture.md §6. It replaces the legacy
                  CA+chain bundle export is not yet exposed through the
                  SDK; see newCACmd doc comment)
   list           List issued certificates
-  issue          Issue a new client certificate
+  issue          Issue a client certificate for an account of your tenant
+                 (from --csr, or a key generated here; the key never leaves
+                 this machine)
+  enroll         Enrol a bring-your-own certificate on an account of your
+                 tenant (it must chain to one of the tenant's trust anchors)
+  csr            Generate a key and a CSR locally (no server involved)
   revoke         Revoke an issued certificate by serial
   export-bundle  Export a cert+key bundle as PKCS#12`,
 	}
@@ -65,6 +70,8 @@ docs/08-bootstrap-auth-architecture.md §6. It replaces the legacy
 	cmd.AddCommand(newCABundleCmd())
 	cmd.AddCommand(newCAListCmd())
 	cmd.AddCommand(newCAIssueCmd())
+	cmd.AddCommand(newCAEnrollCmd())
+	cmd.AddCommand(newCACSRCmd())
 	cmd.AddCommand(newCARevokeCmd())
 	cmd.AddCommand(newCAExportBundleCmd())
 	return cmd
@@ -97,13 +104,19 @@ func newCAListCmd() *cobra.Command {
 	return cmd
 }
 
-// newCAIssueCmd is a thin alias for "certs generate" renamed to
-// the canonical "issue".
+// newCAIssueCmd is "certs issue" under the canonical group.
 func newCAIssueCmd() *cobra.Command {
-	cmd := newCertsGenerateCmd()
-	cmd.Use = "issue"
-	cmd.Short = "Issue a new client certificate"
-	return cmd
+	return newCertsIssueCmd()
+}
+
+// newCAEnrollCmd is "certs enroll" under the canonical group.
+func newCAEnrollCmd() *cobra.Command {
+	return newCertsEnrollCmd()
+}
+
+// newCACSRCmd is "certs csr" under the canonical group.
+func newCACSRCmd() *cobra.Command {
+	return newCertsCSRCmd()
 }
 
 // newCARevokeCmd is a thin alias for "certs revoke".

@@ -31,6 +31,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
@@ -50,6 +51,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // methodHandler is the function signature for QUIC method dispatch.
@@ -75,6 +77,8 @@ type Server struct {
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
+	certEnroll        service.CertEnrollmentServicer
+	onboarding        service.TenantOnboardingServicer
 	collectionSvc     service.CollectionServicer
 	databaseSvc       service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
@@ -83,6 +87,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	ceremonyCA        ceremony.CeremonyCA
 	tenantSvc         tenant.TenantServicer
+	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
 	embeddingSvc      service.EmbeddingServicer
@@ -124,8 +129,13 @@ type Server struct {
 
 	addr      string
 	tlsConfig *tls.Config
-	listener  *quicgo.Listener
-	handlers  map[string]methodHandler
+	// listener is connlimit.QUICAcceptor rather than *quicgo.Listener so
+	// that Start can wrap the raw listener in a connlimit.QUICListener
+	// when maxConnsPerPeer is enabled (go-qrdb#576); every call site below
+	// only needs Accept/Addr/Close, the same subset that interface
+	// declares.
+	listener connlimit.QUICAcceptor
+	handlers map[string]methodHandler
 
 	// udpConn and transport are the socket and the quic-go Transport the
 	// listener runs on. Start creates them itself rather than through
@@ -216,10 +226,83 @@ type Server struct {
 	// listener swap in pkg/server.ServeSealedWindow -- would stall for up
 	// to 30 seconds behind a single idle connection.
 	conns sync.Map
+
+	// maxPayloadBytes bounds a single request frame's payload this server
+	// will allocate a buffer for, checked against the frame's declared
+	// length BEFORE that buffer is allocated. Zero or negative resolves to
+	// DefaultMaxPayloadBytes. See WithMaxPayloadBytes.
+	maxPayloadBytes int
+
+	// maxStreamsPerConn bounds the number of concurrent streams a single
+	// QUIC connection may have open, passed to quic-go as
+	// quic.Config.MaxIncomingStreams. Zero or negative resolves to
+	// DefaultMaxStreamsPerConn. See WithMaxStreamsPerConn.
+	maxStreamsPerConn int
+
+	// maxConnsPerPeer bounds the number of concurrent QUIC connections a
+	// single remote IP may hold open against this listener (go-qrdb#576).
+	// Zero means unlimited. See WithMaxConnsPerPeer.
+	maxConnsPerPeer int
 }
+
+// DefaultMaxPayloadBytes is the per-request-frame payload cap applied when
+// no WithMaxPayloadBytes option is given. It is the same pre-auth cap
+// every other transport applies by default
+// (config.DefaultTransportMaxMessageBytes): wire.ReadRequestLimited checks
+// a frame's declared payload length against it before allocating a buffer
+// for that payload, so it bounds what an unauthenticated TLS peer can force
+// this server to allocate per stream, and with up to maxStreamsPerConn
+// concurrent streams, per connection (go-qrdb#576). A caller with a larger
+// payload (bulk import) uses the chunked import session API instead of a
+// single oversized message.
+const DefaultMaxPayloadBytes = 4 << 20
+
+// DefaultMaxStreamsPerConn is the per-connection concurrent QUIC stream cap
+// applied when no WithMaxStreamsPerConn option is given.
+const DefaultMaxStreamsPerConn = 128
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithMaxPayloadBytes bounds a single request frame's payload this server
+// will allocate a buffer for. n <= 0 resolves to DefaultMaxPayloadBytes at
+// Start; there is no way to request an unbounded payload.
+func WithMaxPayloadBytes(n int) ServerOption {
+	return func(s *Server) { s.maxPayloadBytes = n }
+}
+
+// WithMaxStreamsPerConn bounds the number of concurrent streams a single
+// QUIC connection may have open. n <= 0 resolves to
+// DefaultMaxStreamsPerConn at Start.
+func WithMaxStreamsPerConn(n int) ServerOption {
+	return func(s *Server) { s.maxStreamsPerConn = n }
+}
+
+// WithMaxConnsPerPeer bounds the number of concurrent QUIC connections a
+// single remote IP may hold open against this listener. n <= 0 means
+// unlimited. The caller resolves the configured default (or disables the
+// cap) before calling this, the same convention as REST, gRPC, and MCP's
+// WithMaxConnsPerPeer.
+func WithMaxConnsPerPeer(n int) ServerOption {
+	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// resolveMaxPayloadBytes returns n if positive, else DefaultMaxPayloadBytes.
+func resolveMaxPayloadBytes(n int) int {
+	if n <= 0 {
+		return DefaultMaxPayloadBytes
+	}
+	return n
+}
+
+// resolveMaxStreamsPerConn returns n if positive, else
+// DefaultMaxStreamsPerConn.
+func resolveMaxStreamsPerConn(n int) int {
+	if n <= 0 {
+		return DefaultMaxStreamsPerConn
+	}
+	return n
+}
 
 // WithTLS configures the QUIC server with TLS credentials.
 // TLS is mandatory for QUIC; this option allows overriding the default.
@@ -302,6 +385,17 @@ func WithSOGate(gate *authmw.SOGate) ServerOption {
 // WithCertProvider configures the QUIC server with a certificate provider.
 func WithCertProvider(prov cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = prov }
+}
+
+// WithCertEnrollment configures the certificate issue/enrol and trust-anchor
+// service behind cert.Issue, cert.Enroll and tenant.TrustAnchor*.
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
+	return func(s *Server) { s.certEnroll = svc }
+}
+
+// WithTenantOnboarding configures the service behind tenant.Create.
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
+	return func(s *Server) { s.onboarding = svc }
 }
 
 // WithCollectionService configures the QUIC server with a collection service.
@@ -409,6 +503,12 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 // WithTenantService configures the QUIC server with a tenant management service.
 func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithVolumeService configures the QUIC server with the volume pool
+// management surface (docs/volume-pools/api.md).
+func WithVolumeService(svc volume.Service) ServerOption {
+	return func(s *Server) { s.volumeSvc = svc }
 }
 
 // WithBackupService configures the QUIC server with a backup management service.
@@ -565,7 +665,7 @@ func (s *Server) Start() error {
 	quicCfg := &quicgo.Config{
 		MaxIdleTimeout:        30 * time.Second,
 		KeepAlivePeriod:       10 * time.Second,
-		MaxIncomingStreams:    1000,
+		MaxIncomingStreams:    int64(resolveMaxStreamsPerConn(s.maxStreamsPerConn)),
 		MaxIncomingUniStreams: 0,
 	}
 
@@ -586,7 +686,18 @@ func (s *Server) Start() error {
 	}
 	s.udpConn = udpConn
 	s.transport = tr
-	s.listener = ln
+
+	// Per-peer connection cap: without it, a single remote IP can open
+	// unlimited concurrent QUIC connections against this listener
+	// (go-qrdb#576). Wrapped around the raw quic-go listener, beneath
+	// everything else, so a refused connection is closed before any
+	// stream -- and therefore any request -- exists on it.
+	if s.maxConnsPerPeer > 0 {
+		s.listener = connlimit.NewQUICListener(ln, s.maxConnsPerPeer)
+	} else {
+		s.listener = ln
+	}
+
 	s.connObservers = apimodule.ConnObserversOf(s.modules)
 	s.stopping = make(chan struct{})
 
@@ -863,7 +974,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		}
 	}()
 
-	method, database, requestID, payload, err := wire.ReadRequest(stream)
+	method, database, requestID, payload, err := wire.ReadRequestLimited(stream, resolveMaxPayloadBytes(s.maxPayloadBytes))
 	if err != nil {
 		slog.Debug("quic: failed to read request", "error", err)
 		return

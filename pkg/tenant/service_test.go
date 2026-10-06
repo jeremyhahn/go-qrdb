@@ -19,18 +19,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
-
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // errStoreFault is a sentinel error used by failingBackend.
@@ -124,12 +121,21 @@ func testSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 	return s
 }
 
+// testVolumeAllocators maps a *seal.BarrierRegistry built by
+// newTestBarrierRegistry to the volume.Allocator backing it, so
+// newTestService / newTestServiceWithStore can wire WithVolumeAllocator
+// into NewTenantService without this file's many existing
+// "reg := newTestBarrierRegistry(t)" call sites having to carry a second
+// return value through to every one of them.
+var testVolumeAllocators sync.Map // *seal.BarrierRegistry -> volume.Allocator
+
 // newTestBarrierRegistry creates a BarrierRegistry with a system barrier
 // and a pool-driven per-tenant Pebble flow for tenant service tests.
-// Barrier-isolated tenants registered through RegisterTenantPooled get a
-// durable, independent per-tenant Pebble at a t-scoped temp directory, so
-// crypto/physical isolation can be exercised against a real seal backend
-// without modifying the host system.
+// Barrier-isolated tenants registered through RegisterTenantPooled, and
+// volume/raft tenants reserved via the returned registry's allocator (see
+// testVolumeAllocators), get a durable, independent per-tenant Pebble at a
+// t-scoped temp directory, so crypto/physical isolation can be exercised
+// against a real seal backend without modifying the host system.
 func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierRegistry {
 	t.Helper()
 	store := seal.NewMemoryBackend()
@@ -140,39 +146,21 @@ func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierReg
 		t.Fatalf("NewBarrier (system): %v", err)
 	}
 
-	// Single-path local volume pool backed by a t-scoped temp dir.
-	localStore := local.New()
-	if cfgErr := localStore.Configure(map[string]string{"path": t.TempDir()}); cfgErr != nil {
-		t.Fatalf("Configure local backend: %v", cfgErr)
-	}
-	mgr := objpool.NewManager()
-
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	rr := &objpool.RoundRobinStrategy{State: state}
-	if regErr := mgr.Register("default", []common.Storage{localStore}, rr); regErr != nil {
-		t.Fatalf("pool Register: %v", regErr)
-	}
-
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	opts := append([]seal.Option{
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	}, extra...)
-	reg, err := seal.NewBarrierRegistry(testLogger(), system, opts...)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+	reg, _, allocator := sealtest.PooledRegistry(t, system, extra...)
+	testVolumeAllocators.Store(reg, allocator)
+	t.Cleanup(func() { testVolumeAllocators.Delete(reg) })
 	return reg
+}
+
+// volumeAllocatorFor returns the volume.Allocator backing reg (built by
+// newTestBarrierRegistry), for a test that must Reserve a tenant directly.
+func volumeAllocatorFor(t *testing.T, reg *seal.BarrierRegistry) volume.Allocator {
+	t.Helper()
+	v, ok := testVolumeAllocators.Load(reg)
+	if !ok {
+		t.Fatal("volumeAllocatorFor: reg was not built by newTestBarrierRegistry")
+	}
+	return v.(volume.Allocator)
 }
 
 // newTestService creates a TenantService backed by in-memory storage and
@@ -181,7 +169,7 @@ func newTestService(t *testing.T) (*TenantService, *seal.BarrierRegistry) {
 	t.Helper()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	svc, err := NewTenantService(store, reg, testLogger())
+	svc, err := NewTenantService(store, reg, testLogger(), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -192,7 +180,7 @@ func newTestService(t *testing.T) (*TenantService, *seal.BarrierRegistry) {
 func newTestServiceWithStore(t *testing.T, store seal.StorageBackend) (*TenantService, *seal.BarrierRegistry) {
 	t.Helper()
 	reg := newTestBarrierRegistry(t)
-	svc, err := NewTenantService(store, reg, testLogger())
+	svc, err := NewTenantService(store, reg, testLogger(), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

@@ -43,6 +43,7 @@ import type {
     TransactionClient,
     UserClient,
     VectorClient,
+    VolumePoolClient,
     WatchClient,
     WatchHandle,
 } from './interfaces.js';
@@ -61,7 +62,10 @@ import type {
     CeremonySignCSRRequest,
     CeremonySignCSRResponse,
     CeremonyStatusResponse,
-    CertBundle,
+    IssueCertRequest,
+    EnrollCertRequest,
+    EnrolledCert,
+    IssuedCertWithKey,
     CompactNamespaceRequest,
     CompactNamespaceResponse,
     CompactionProgress,
@@ -99,7 +103,6 @@ import type {
     EnableEncryptionResponse,
     ExportCertRequest,
     ExportCertResponse,
-    GenerateCertRequest,
     GetCompactionProgressRequest,
     GetIndexStatsRequest,
     GetNamespaceInfoRequest,
@@ -191,6 +194,11 @@ import type {
     UpdateTenantQuotasResponse,
     UpdateTenantEntitlementsRequest,
     UpdateTenantEntitlementsResponse,
+    VolumePool,
+    VolumePoolDetail,
+    ListVolumePoolsResponse,
+    ListVolumePoolTenantsResponse,
+    TrustAnchorList,
     ConfigInitializedResponse,
     BackupRequest,
     BackupInfo,
@@ -1079,11 +1087,28 @@ export class WailsClient implements Client {
     get certs(): CertClient {
         const b = wrapBindings(getBindings().main.CertBinding);
         return {
-            generate: async (req: GenerateCertRequest): Promise<CertBundle> => {
-                return b.Generate(toSnake(req)) as Promise<CertBundle>;
+            issueCert: async (req: IssueCertRequest): Promise<EnrolledCert> => {
+                // IssueCertInput's wire tags (csrPEM, ttl) are literal
+                // camelCase, not the SDK's usual snake_case Wails IPC
+                // convention (cmd/qrdb/bindings_certs.go); send verbatim —
+                // toSnake() would mangle "csrPEM" into "csr_p_e_m".
+                return b.Issue({ username: req.username, csrPEM: req.csrPEM, ttl: req.ttl }) as Promise<EnrolledCert>;
+            },
+            enrollCert: async (req: EnrollCertRequest): Promise<EnrolledCert> => {
+                // Same literal-camelCase wire contract as issueCert above.
+                return b.Enroll({ username: req.username, certPEM: req.certPEM, chainPEM: req.chainPEM }) as Promise<EnrolledCert>;
+            },
+            issueCertWithLocalKey: async (username: string, ttl?: string): Promise<IssuedCertWithKey> => {
+                // Omitting csrPEM tells the desktop binding to generate a key
+                // pair LOCALLY and return it alongside the issued
+                // certificate; the server only ever sees the resulting CSR.
+                return b.Issue({ username, ttl }) as Promise<IssuedCertWithKey>;
             },
             export: async (req: ExportCertRequest): Promise<ExportCertResponse> => {
-                return b.Export(toSnake(req)) as Promise<ExportCertResponse>;
+                // certPEM/keyPEM are also literal camelCase on the wire; see
+                // issueCert above. toSnake() previously mangled them into
+                // "cert_p_e_m"/"key_p_e_m", silently breaking every export.
+                return b.Export(req) as Promise<ExportCertResponse>;
             },
             revoke: async (serial: string): Promise<void> => {
                 await b.Revoke(serial);
@@ -1359,6 +1384,51 @@ export class WailsClient implements Client {
             },
             updateEntitlements: async (req: UpdateTenantEntitlementsRequest): Promise<UpdateTenantEntitlementsResponse> => {
                 return b.UpdateEntitlements(toSnake(req)) as Promise<UpdateTenantEntitlementsResponse>;
+            },
+            addTrustAnchors: async (tenantId: string, certsPem: string): Promise<TrustAnchorList> => {
+                return b.AddTrustAnchors(tenantId, certsPem) as Promise<TrustAnchorList>;
+            },
+            listTrustAnchors: async (tenantId: string): Promise<TrustAnchorList> => {
+                return b.ListTrustAnchors(tenantId) as Promise<TrustAnchorList>;
+            },
+            removeTrustAnchor: async (tenantId: string, fingerprint: string): Promise<void> => {
+                await b.RemoveTrustAnchor(tenantId, fingerprint);
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Volume Pools
+    // -----------------------------------------------------------------------
+
+    /**
+     * @inheritdoc
+     *
+     * Not yet implemented in desktop (Wails) mode: there is no
+     * main.VolumePoolBinding counterpart to the remote transports' volume
+     * pool management surface (REST, gRPC, QUIC, Unix, MCP). Every method
+     * throws NotImplementedError, matching admin.mintJoinToken's existing
+     * desktop-mode gap above.
+     */
+    get volumePools(): VolumePoolClient {
+        return {
+            list: async (): Promise<ListVolumePoolsResponse> => {
+                throw new NotImplementedError('volumePools.list');
+            },
+            get: async (): Promise<VolumePoolDetail> => {
+                throw new NotImplementedError('volumePools.get');
+            },
+            create: async (): Promise<VolumePool> => {
+                throw new NotImplementedError('volumePools.create');
+            },
+            update: async (): Promise<VolumePool> => {
+                throw new NotImplementedError('volumePools.update');
+            },
+            delete: async (): Promise<void> => {
+                throw new NotImplementedError('volumePools.delete');
+            },
+            listTenants: async (): Promise<ListVolumePoolTenantsResponse> => {
+                throw new NotImplementedError('volumePools.listTenants');
             },
         };
     }

@@ -867,19 +867,6 @@ func (e *ImportArchiveError) Unwrap() error {
 	return e.Err
 }
 
-// ImportInputTooLargeError is returned when the raw bytes read from the
-// Import file argument exceed maxImportInputBytes. It is the service's own
-// defense-in-depth bound, enforced independently of whatever request-size
-// cap (if any) the calling transport applies.
-type ImportInputTooLargeError struct {
-	Max int
-}
-
-// Error returns a human-readable description.
-func (e *ImportInputTooLargeError) Error() string {
-	return "service: import input exceeds maximum size of " + strconv.Itoa(e.Max) + " bytes"
-}
-
 // ImportArchiveExpandedTooLargeError is returned when the cumulative
 // decompressed bytes produced while extracting a zip/tar/tar.gz archive
 // (summed across every member) exceed maxImportExpandedBytes. This guards
@@ -1215,4 +1202,82 @@ type ClientCertRequiredError struct{}
 // Error returns a human-readable description.
 func (e *ClientCertRequiredError) Error() string {
 	return "service: a verified client certificate is required"
+}
+
+// ---------------------------------------------------------------------------
+// Chunked import session errors
+// ---------------------------------------------------------------------------
+
+// ImportSessionNotFoundError is returned when ImportAppend, ImportCommit, or
+// ImportAbort names a session ID with no metadata record -- never created,
+// already committed or aborted (which releases the record), or expired
+// (the session's lease ran out and cascaded its deletion).
+type ImportSessionNotFoundError struct {
+	SessionID string
+}
+
+// Error returns a human-readable description.
+func (e *ImportSessionNotFoundError) Error() string {
+	return "service: import session " + strconv.Quote(e.SessionID) + " not found"
+}
+
+// ImportSessionOwnerError is returned when ImportAppend, ImportCommit, or
+// ImportAbort is called by a (tenant, identity) other than the one
+// ImportBegin recorded for the session. A session ID grants no authority of
+// its own; it is checked against the caller's authenticated identity every
+// time, never trusted merely for being hard to guess.
+type ImportSessionOwnerError struct {
+	SessionID string
+}
+
+// Error returns a human-readable description.
+func (e *ImportSessionOwnerError) Error() string {
+	return "service: import session " + strconv.Quote(e.SessionID) + " belongs to a different caller"
+}
+
+// ImportSequenceError is returned when ImportAppend's seq is neither the
+// next expected sequence nor an identical replay of the last one: a gap, a
+// regression, or a replay whose bytes do not match what was already staged.
+type ImportSequenceError struct {
+	SessionID string
+	Got       uint64
+	Want      uint64
+}
+
+// Error returns a human-readable description.
+func (e *ImportSequenceError) Error() string {
+	return "service: import session " + strconv.Quote(e.SessionID) + " got sequence " +
+		strconv.FormatUint(e.Got, 10) + ", want " + strconv.FormatUint(e.Want, 10) +
+		" or an identical replay of it"
+}
+
+// ImportQuotaExceededError is returned when ImportAppend would push a
+// session's staged bytes or chunk count over its configured quota, or when
+// ImportBegin would push a tenant's concurrent session count over its own.
+type ImportQuotaExceededError struct {
+	// Kind names which quota was exceeded: "bytes", "chunks", or "sessions".
+	Kind  string
+	Limit int64
+}
+
+// Error returns a human-readable description.
+func (e *ImportQuotaExceededError) Error() string {
+	return "service: import session " + e.Kind + " quota of " + strconv.FormatInt(e.Limit, 10) + " exceeded"
+}
+
+// ImportSessionCorruptError is returned when a session's metadata record, or
+// one of its staged chunks, cannot be read back the way it was written: a
+// metadata record that does not decode, or a chunk sequence the metadata
+// says was appended but storage does not hold. This should never happen
+// through the ImportBegin/ImportAppend API -- it indicates the hidden
+// records were altered outside it -- so it is reported rather than silently
+// worked around.
+type ImportSessionCorruptError struct {
+	SessionID string
+	Reason    string
+}
+
+// Error returns a human-readable description.
+func (e *ImportSessionCorruptError) Error() string {
+	return "service: import session " + strconv.Quote(e.SessionID) + " is corrupt: " + e.Reason
 }

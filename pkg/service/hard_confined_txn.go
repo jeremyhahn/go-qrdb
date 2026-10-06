@@ -16,7 +16,6 @@ package service
 
 import (
 	"context"
-	"io"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -241,18 +240,42 @@ func (h *hardConfinedBatch) ExecuteEntity(ctx context.Context, req *BatchEntityR
 	return h.BatchServicer.ExecuteEntity(ctx, req)
 }
 
-// Import is declared explicitly rather than relying on promotion through
-// embedding: the actual confinement for Import happens one layer down, via
+// ImportBegin, ImportAppend and ImportAbort are declared explicitly rather
+// than relying on promotion through embedding -- but unlike ImportCommit
+// below, none of the three needs importGuardInstalled: they only ever
+// write to the hidden \x00qrdb.import/ session namespace
+// (batch_import_session.go), never to a caller-chosen key, so there is
+// nothing for the row-key guard to confine here. They are still declared
+// directly so a reviewer -- and TestHardConfinedDecorators_OverrideEveryInterfaceMethod
+// -- sees that absence stated, not merely inferred from its being missing.
+func (h *hardConfinedBatch) ImportBegin(ctx context.Context, opts ImportOptions) (string, error) {
+	return h.BatchServicer.ImportBegin(ctx, opts)
+}
+
+func (h *hardConfinedBatch) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	return h.BatchServicer.ImportAppend(ctx, sessionID, seq, chunk)
+}
+
+func (h *hardConfinedBatch) ImportAbort(ctx context.Context, sessionID string) error {
+	return h.BatchServicer.ImportAbort(ctx, sessionID)
+}
+
+// ImportCommit is declared explicitly rather than relying on promotion
+// through embedding: the actual confinement happens one layer down, via
 // the row-key guard NewHardConfinedBatch installs on a wrapped
 // *BatchService (see above), so this delegates straight through ONLY when
 // that guard was actually installed. When it was not -- the wrapped value
 // is some other BatchServicer, a test double or a future alternate
-// implementation -- there is no confinement for Import to rely on at all,
-// and importing anyway would silently let a row naming the cluster CA's
-// key material through, so this refuses instead.
-func (h *hardConfinedBatch) Import(ctx context.Context, file io.Reader, opts ImportOptions) (*ImportResult, error) {
+// implementation -- there is no confinement for ImportCommit to rely on at
+// all, and committing anyway would silently let a row naming the cluster
+// CA's key material through, so this refuses instead. ImportCommit ends by
+// calling the same importRecords path a single-message import once did
+// (the session's staged chunks, concatenated, stand in for that one file),
+// proposing rows directly rather than through Execute, which is why it
+// needs this guard and the three verbs above do not.
+func (h *hardConfinedBatch) ImportCommit(ctx context.Context, sessionID string) (*ImportResult, error) {
 	if !h.importGuardInstalled {
 		return nil, &HardConfinedImportGuardUnavailableError{}
 	}
-	return h.BatchServicer.Import(ctx, file, opts)
+	return h.BatchServicer.ImportCommit(ctx, sessionID)
 }

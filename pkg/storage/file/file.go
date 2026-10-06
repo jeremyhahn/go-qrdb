@@ -287,7 +287,7 @@ func isHashFileName(name string) bool {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -312,7 +312,7 @@ func isShardDirName(name string) bool {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -335,7 +335,7 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	_, path := e.recordPaths(key)
-	record, err := os.ReadFile(path)
+	record, err := os.ReadFile(path) // #nosec G304 -- path is e.dir joined with the SHA-256 hex digest of key, never a caller-supplied path
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -463,7 +463,7 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		if info.IsDir() || !isHashFileName(info.Name()) {
 			return nil
 		}
-		record, rerr := os.ReadFile(path)
+		record, rerr := os.ReadFile(path) // #nosec G304 -- path comes from walking this engine's own root directory, filtered to isHashFileName entries
 		if rerr != nil {
 			if os.IsNotExist(rerr) {
 				return nil
@@ -637,7 +637,7 @@ func (e *Engine) ensureFormatMarker() error {
 	}
 
 	markerPath := filepath.Join(e.dir, formatMarkerFileName)
-	data, err := os.ReadFile(markerPath)
+	data, err := os.ReadFile(markerPath) // #nosec G304 -- markerPath is e.dir joined with a constant filename
 	switch {
 	case err == nil:
 		if string(data) != formatVersion {

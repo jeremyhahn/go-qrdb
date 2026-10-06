@@ -20,6 +20,17 @@ import {
   injectError,
   clearError,
 } from "./fixtures/wails-mock.ts";
+import {
+  waitForConnectionManager,
+  waitForDashboard,
+  openEmbeddedWizard,
+  stepName,
+  stepMode,
+  stepBarrier,
+  stepAdminCredential,
+  waitForSummary,
+  createServer,
+} from "./fixtures/embedded-wizard-steps.ts";
 import type { Page } from "@playwright/test";
 
 const TIMEOUT = 10_000;
@@ -27,12 +38,6 @@ const TIMEOUT = 10_000;
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-async function waitForDashboard(page: Page): Promise<void> {
-  await expect(
-    page.locator(".breadcrumbs").getByText("Dashboard"),
-  ).toBeVisible({ timeout: TIMEOUT });
-}
 
 async function navigateToDatabases(page: Page): Promise<void> {
   await page.goto("/");
@@ -73,9 +78,7 @@ test.describe("Scenario A - duplicate data directory rejection", () => {
     page,
   }) => {
     await page.goto("/");
-    await expect(
-      page.getByRole("heading", { name: "No servers configured", exact: true }),
-    ).toBeVisible({ timeout: TIMEOUT });
+    await waitForConnectionManager(page);
 
     // Override SaveProfile to reject duplicate dataDir on second call
     await page.evaluate(() => {
@@ -105,22 +108,13 @@ test.describe("Scenario A - duplicate data directory rejection", () => {
     });
 
     // Complete the first server creation via wizard
-    await page.getByRole("button", { name: "Create Embedded Server" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Create Embedded Server" }),
-    ).toBeVisible({ timeout: TIMEOUT });
-
-    await page.locator("#emb-name").fill("Server A");
-    await page.getByRole("button", { name: "Next" }).click();
-    await page.locator("button").filter({ hasText: "Standalone" }).first().click();
-    await page.getByRole("button", { name: "Next" }).click();
-    await page.locator("button").filter({ hasText: "None" }).first().click();
-    await page.getByRole("button", { name: "Next" }).click();
-    await expect(
-      page.getByText("Review your server configuration before creating it."),
-    ).toBeVisible({ timeout: TIMEOUT });
-    await page.getByRole("button", { name: "Create Server" }).click();
-    await waitForDashboard(page);
+    await openEmbeddedWizard(page);
+    await stepName(page, "Server A");
+    await stepMode(page, "Standalone");
+    await stepBarrier(page, "None");
+    await stepAdminCredential(page);
+    await waitForSummary(page);
+    await createServer(page);
 
     // The mock now has the dataDir registered. A second profile with the same
     // dataDir should be rejected. We verify the guard logic is wired by

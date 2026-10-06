@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -521,5 +522,41 @@ func TestNewServer_BarrierInitializeAndUnseal(t *testing.T) {
 	}
 	if !status.Sealed {
 		t.Fatal("expected barrier to be sealed after BarrierSeal")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Import session config wiring
+// ---------------------------------------------------------------------------
+
+// TestNewServer_ImportSessionConfigWired proves ServerConfig.ImportSession
+// actually reaches the constructed batch service (go-qrdb#576: previously
+// nothing called service.WithImportSessionLimits in production, so
+// config.ImportSessionConfig did nothing on the embedded transport either).
+// A tenant limited to one concurrent session is refused a second
+// ImportBegin only when that limit was actually threaded through NewServer.
+func TestNewServer_ImportSessionConfigWired(t *testing.T) {
+	ctx := context.Background()
+	srv, err := NewServer(ctx, &ServerConfig{
+		Backend:       database.BackendMemory,
+		ImportSession: qrdbconfig.ImportSessionConfig{MaxSessionsPerTenant: 1},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() {
+		if err := srv.Shutdown(ctx); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	}()
+
+	batch := srv.Client().Batch()
+	opts := transport.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"}
+
+	if _, err := batch.ImportBegin(ctx, opts); err != nil {
+		t.Fatalf("first ImportBegin: %v", err)
+	}
+	if _, err := batch.ImportBegin(ctx, opts); err == nil {
+		t.Fatal("second ImportBegin succeeded; MaxSessionsPerTenant was not applied")
 	}
 }

@@ -431,13 +431,16 @@ func (s *wireServer) provision(cli string, admin *qrdbdharness.KeyPair) error {
 	if err != nil {
 		return err
 	}
+	// The gorm identity authenticates by its mTLS certificate alone, so it is
+	// a certificate-only user with no email login key.
 	if out, err := s.runCLI(cli, admin, "users", "create",
-		"--username", sqlUser, "--tenant-id", sqlTenant, "--roles", roleID); err != nil {
+		"--username", sqlUser, "--tenant-id", sqlTenant, "--roles", roleID,
+		"--without-email-login-key"); err != nil {
 		return &provisionError{Op: "users create " + sqlUser, Output: out, Err: err}
 	}
 
 	if out, err := s.runCLI(cli, s.client, "database", "create", sqlDatabase,
-		"--engine", "kv", "--backend", "pebble"); err != nil {
+		"--engine", "kv", "--backend", "pebble", "--sql-concurrency", sqlConcurrency); err != nil {
 		return &provisionError{Op: "database create " + sqlDatabase, Output: out, Err: err}
 	}
 	if out, err := s.runCLI(cli, s.client, "database", "update-protocol", sqlDatabase,

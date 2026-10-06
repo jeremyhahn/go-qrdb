@@ -233,21 +233,6 @@ var _ permission.Permission = permission.Permission("kv.read")
 // Cert service error paths
 // ===========================================================================
 
-func TestUnixRT_ExportCert_Error(t *testing.T) {
-	csvc := &mockCertProvider{exportFn: func(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
-		return nil, errServiceFailed
-	}}
-	tr, cleanup := startAuthServer(t, unixserver.WithCertProvider(csvc))
-	defer cleanup()
-
-	_, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM: "cert", KeyPEM: "key", Passphrase: "pass",
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestUnixRT_ListCerts_Error(t *testing.T) {
 	csvc := &mockCertProvider{listFn: func(_ context.Context, _ string) ([]*cert.CertRecord, error) {
 		return nil, errServiceFailed

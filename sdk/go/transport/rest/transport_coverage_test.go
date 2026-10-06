@@ -628,48 +628,48 @@ func TestRESTListPermissions_Closed(t *testing.T) {
 // Cert operations
 // ===========================================================================
 
-func TestRESTGenerateCert_Success(t *testing.T) {
+func TestRESTIssueCert_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/certs/generate"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, &transport.CertBundle{Serial: "001", CertPEM: "CERT"})
+	rs.handle(exactPath(http.MethodPost, "/certs/issue"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.EnrolledCert{Serial: "001", CertPEM: "CERT"})
 	})
-	bundle, err := rt.GenerateCert(context.Background(), &transport.GenerateCertRequest{Username: "alice"})
+	enrolled, err := rt.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr"})
 	if err != nil {
-		t.Fatalf("GenerateCert: %v", err)
+		t.Fatalf("IssueCert: %v", err)
 	}
-	if bundle.Serial != "001" {
-		t.Fatalf("Serial = %q", bundle.Serial)
+	if enrolled.Serial != "001" {
+		t.Fatalf("Serial = %q", enrolled.Serial)
 	}
 }
 
-func TestRESTGenerateCert_Closed(t *testing.T) {
+func TestRESTIssueCert_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
-	_, err := rt.GenerateCert(context.Background(), &transport.GenerateCertRequest{})
+	_, err := rt.IssueCert(context.Background(), &transport.IssueCertRequest{})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }
 
-func TestRESTExportCert_Success(t *testing.T) {
+func TestRESTEnrollCert_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/certs/export"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, &transport.ExportCertResponse{PKCS12: "BASE64"})
+	rs.handle(exactPath(http.MethodPost, "/certs/enroll"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.EnrolledCert{Thumbprint: "thumb-1", CertPEM: "CERT"})
 	})
-	resp, err := rt.ExportCert(context.Background(), &transport.ExportCertRequest{CertPEM: "CERT", KeyPEM: "KEY", Passphrase: "x"})
+	enrolled, err := rt.EnrollCert(context.Background(), &transport.EnrollCertRequest{Username: "alice", CertPEM: "CERT"})
 	if err != nil {
-		t.Fatalf("ExportCert: %v", err)
+		t.Fatalf("EnrollCert: %v", err)
 	}
-	if resp.PKCS12 != "BASE64" {
-		t.Fatalf("PKCS12Base64 = %q", resp.PKCS12)
+	if enrolled.Thumbprint != "thumb-1" {
+		t.Fatalf("Thumbprint = %q", enrolled.Thumbprint)
 	}
 }
 
-func TestRESTExportCert_Closed(t *testing.T) {
+func TestRESTEnrollCert_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
-	_, err := rt.ExportCert(context.Background(), &transport.ExportCertRequest{})
+	_, err := rt.EnrollCert(context.Background(), &transport.EnrollCertRequest{})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)

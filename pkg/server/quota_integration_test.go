@@ -37,16 +37,42 @@ type fakeTenantStore struct {
 	mockTenantServicer
 	mu      sync.Mutex
 	tenants map[string]*tenant.TenantInfo
+	// dataRoots carries the on-disk root a dedicated-volume tenant's
+	// reconciler walk measures. TenantInfo no longer carries a resolved
+	// path itself (only VolumePool, the pool's name), so this fake --
+	// which stands in for what seal.BarrierRegistry.LocalTenantDataRoot
+	// would otherwise resolve -- tracks it separately.
+	dataRoots map[string]string
 }
 
 func newFakeTenantStore() *fakeTenantStore {
-	return &fakeTenantStore{tenants: map[string]*tenant.TenantInfo{}}
+	return &fakeTenantStore{
+		tenants:   map[string]*tenant.TenantInfo{},
+		dataRoots: map[string]string{},
+	}
 }
 
 func (f *fakeTenantStore) add(info *tenant.TenantInfo) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tenants[info.ID] = info
+}
+
+// addWithDataRoot is add plus a resolved on-disk root for a dedicated-volume
+// tenant, for tests exercising the reconciler's on-disk usage walk.
+func (f *fakeTenantStore) addWithDataRoot(info *tenant.TenantInfo, dataRoot string) {
+	f.mu.Lock()
+	f.dataRoots[info.ID] = dataRoot
+	f.mu.Unlock()
+	f.add(info)
+}
+
+// dataRootOf returns the resolved on-disk root registered via
+// addWithDataRoot, or "" when none was.
+func (f *fakeTenantStore) dataRootOf(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dataRoots[id]
 }
 
 func (f *fakeTenantStore) current(id string) int64 {
@@ -163,7 +189,7 @@ func buildQuotaStack(t *testing.T, store *fakeTenantStore) (*restServiceRegistry
 				ti := &infos[i]
 				out = append(out, quota.StorageTenant{
 					ID:       ti.ID,
-					DataRoot: ti.DataRoot,
+					DataRoot: store.dataRootOf(ti.ID),
 					Volume:   ti.EffectiveIsolationType() == tenant.IsolationVolume,
 				})
 			}
@@ -240,12 +266,12 @@ func TestQuotaPhase3_EndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "data.bin"), make([]byte, 300), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store.add(&tenant.TenantInfo{
+	store.addWithDataRoot(&tenant.TenantInfo{
 		ID:            "vol",
 		IsolationType: tenant.IsolationVolume,
-		DataRoot:      root,
+		VolumePool:    "default",
 		Quotas:        &quota.Quotas{MaxStorageBytes: 1 << 20, CurrentStorageBytes: 99999}, // skewed
-	})
+	}, root)
 	rec.RunOnce(ctx)
 	if got := store.current("vol"); got != 300 {
 		t.Fatalf("(d) volume CurrentStorageBytes = %d, want 300 (reconciled to on-disk size)", got)

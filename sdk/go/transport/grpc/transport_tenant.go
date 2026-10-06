@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
@@ -37,18 +38,53 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &transport.ClosedError{}
 	}
 
-	resp, err := t.client.TenantCreate(ctx, &pb.TenantCreateRequest{
-		Id:                req.ID,
-		Name:              req.Name,
-		IsolationType:     string(req.IsolationType),
-		BarrierAutoUnseal: req.BarrierAutoUnseal,
-		DataRoot:          req.DataRoot,
-	})
+	resp, err := t.client.TenantCreate(ctx, enrollconv.TenantCreateRequest(req))
 	if err != nil {
 		return nil, mapGRPCError("CreateTenant", err)
 	}
 
-	return &transport.CreateTenantResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
+	return &transport.CreateTenantResponse{
+		Tenant: tenantconv.ToTenantInfo(resp.GetTenant()),
+		Admin:  enrollconv.AdminCredential(resp.GetAdmin()),
+	}, nil
+}
+
+// AddTrustAnchors registers trust anchors of req.TenantID via the
+// TrustAnchorAdd RPC.
+func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrustAnchorsRequest) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.TrustAnchorAdd(ctx, &pb.TrustAnchorAddRequest{TenantId: req.TenantID, CertsPem: req.CertsPEM})
+	if err != nil {
+		return nil, mapGRPCError("AddTrustAnchors", err)
+	}
+	return enrollconv.TrustAnchors(resp), nil
+}
+
+// ListTrustAnchors lists tenantID's trust anchors via the TrustAnchorList
+// RPC.
+func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.TrustAnchorList(ctx, &pb.TrustAnchorListRequest{TenantId: tenantID})
+	if err != nil {
+		return nil, mapGRPCError("ListTrustAnchors", err)
+	}
+	return enrollconv.TrustAnchors(resp), nil
+}
+
+// RemoveTrustAnchor withdraws one of tenantID's trust anchors via the
+// TrustAnchorRemove RPC.
+func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if _, err := t.client.TrustAnchorRemove(ctx, &pb.TrustAnchorRemoveRequest{TenantId: tenantID, Fingerprint: fingerprint}); err != nil {
+		return mapGRPCError("RemoveTrustAnchor", err)
+	}
+	return nil
 }
 
 // GetTenant retrieves a tenant by ID via the gRPC TenantGet RPC.
@@ -199,6 +235,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
 			AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
 			AllowDedicatedWal:         req.Entitlements.AllowDedicatedWAL,
+			AllowedVolumePools:        req.Entitlements.AllowedVolumePools,
 		},
 	})
 	if err != nil {

@@ -21,13 +21,14 @@
     TenantEntitlements,
     TenantIsolationType,
     TenantQuotas,
+    TrustAnchor,
     UpdateTenantEntitlementsRequest,
     UpdateTenantQuotasRequest,
     UpdateTenantRequest,
   } from "@qrdb/sdk";
   import { TransportError } from "@qrdb/sdk";
   import { onMount } from "svelte";
-  import { ChevronLeft } from "lucide-svelte";
+  import { ChevronLeft, Trash2 } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
 
   let {
@@ -118,6 +119,14 @@
    * defaults. */
   let allowedBarrierModes: string = $state("");
 
+  // Trust anchors: CAs that may vouch for this tenant's users'
+  // bring-your-own login certificates, and no other tenant's.
+  let trustAnchors: TrustAnchor[] = $state([]);
+  let trustAnchorsLoading: boolean = $state(true);
+  let newTrustAnchorsPem: string = $state("");
+  let addTrustAnchorLoading: boolean = $state(false);
+  let removingFingerprint: string = $state("");
+
   // ---------------------------------------------------------------------------
   // Data fetching
   // ---------------------------------------------------------------------------
@@ -204,6 +213,20 @@
       : [...allowedIsolationModes, mode];
   }
 
+  /** Loads this tenant's registered trust anchors. */
+  async function loadTrustAnchors(): Promise<void> {
+    try {
+      trustAnchorsLoading = true;
+      const resp = await client.tenants.listTrustAnchors(tenantId);
+      trustAnchors = [...resp.anchors];
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load trust anchors";
+      showToast("error", msg);
+    } finally {
+      trustAnchorsLoading = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
@@ -275,12 +298,48 @@
     }
   }
 
+  /** Registers the pasted CA certificate bundle as trust anchors. */
+  async function handleAddTrustAnchors(): Promise<void> {
+    if (newTrustAnchorsPem.trim() === "") {
+      showToast("warning", "Paste at least one CA certificate PEM.");
+      return;
+    }
+    try {
+      addTrustAnchorLoading = true;
+      const resp = await client.tenants.addTrustAnchors(tenantId, newTrustAnchorsPem.trim());
+      trustAnchors = [...resp.anchors];
+      newTrustAnchorsPem = "";
+      showToast("success", `Trust anchor(s) added for tenant "${tenantId}".`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to add trust anchors";
+      showToast("error", msg);
+    } finally {
+      addTrustAnchorLoading = false;
+    }
+  }
+
+  /** Withdraws a single trust anchor by its fingerprint. */
+  async function handleRemoveTrustAnchor(fingerprint: string): Promise<void> {
+    try {
+      removingFingerprint = fingerprint;
+      await client.tenants.removeTrustAnchor(tenantId, fingerprint);
+      trustAnchors = trustAnchors.filter((a) => a.fingerprint !== fingerprint);
+      showToast("success", "Trust anchor removed.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to remove trust anchor";
+      showToast("error", msg);
+    } finally {
+      removingFingerprint = "";
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
   onMount(() => {
     void loadTenant();
+    void loadTrustAnchors();
   });
 </script>
 
@@ -735,6 +794,89 @@
               <span class="loading loading-spinner loading-xs"></span>
             {/if}
             Save Entitlements
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trust anchors -->
+    <div class="card bg-base-200 shadow">
+      <div class="card-body gap-4">
+        <h3 class="card-title text-base">Trust Anchors</h3>
+        <p class="text-base-content/70 text-sm">
+          CAs that may vouch for this tenant's users' bring-your-own login
+          certificates, and no other tenant's.
+        </p>
+
+        {#if trustAnchorsLoading}
+          <div class="flex justify-center py-6">
+            <span class="loading loading-spinner loading-md"></span>
+          </div>
+        {:else if trustAnchors.length === 0}
+          <p class="text-base-content/50 text-sm">No trust anchors registered.</p>
+        {:else}
+          <div class="overflow-x-auto">
+            <table class="table table-sm w-full" data-testid="trust-anchors-table">
+              <thead>
+                <tr>
+                  <th>Fingerprint</th>
+                  <th>Subject</th>
+                  <th>Not Before</th>
+                  <th>Not After</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each trustAnchors as anchor (anchor.fingerprint)}
+                  <tr>
+                    <td class="font-mono text-xs">{anchor.fingerprint}</td>
+                    <td class="text-xs">{anchor.subject}</td>
+                    <td class="whitespace-nowrap text-xs">{anchor.notBefore}</td>
+                    <td class="whitespace-nowrap text-xs">{anchor.notAfter}</td>
+                    <td>
+                      <button
+                        class="btn btn-ghost btn-xs text-error"
+                        title="Withdraw this trust anchor"
+                        disabled={removingFingerprint === anchor.fingerprint}
+                        onclick={() => void handleRemoveTrustAnchor(anchor.fingerprint)}
+                      >
+                        {#if removingFingerprint === anchor.fingerprint}
+                          <span class="loading loading-spinner loading-xs"></span>
+                        {:else}
+                          <Trash2 class="h-3.5 w-3.5" />
+                        {/if}
+                      </button>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
+        <label class="form-control w-full">
+          <div class="label">
+            <span class="label-text font-semibold">Add Trust Anchors (PEM)</span>
+          </div>
+          <textarea
+            class="textarea textarea-bordered w-full font-mono text-xs"
+            rows="4"
+            placeholder="-----BEGIN CERTIFICATE-----"
+            data-testid="add-trust-anchors-input"
+            bind:value={newTrustAnchorsPem}
+          ></textarea>
+        </label>
+        <div class="flex gap-2 pt-1">
+          <button
+            class="btn btn-primary btn-sm"
+            data-testid="add-trust-anchors-btn"
+            onclick={() => void handleAddTrustAnchors()}
+            disabled={addTrustAnchorLoading || newTrustAnchorsPem.trim() === ""}
+          >
+            {#if addTrustAnchorLoading}
+              <span class="loading loading-spinner loading-xs"></span>
+            {/if}
+            Add Trust Anchors
           </button>
         </div>
       </div>

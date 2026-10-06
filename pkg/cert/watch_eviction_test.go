@@ -23,13 +23,12 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // ---------------------------------------------------------------------------
-// fakeWatchService: a minimal service.WatchServicer double. It hands back a
+// fakeWatchService: a minimal WatchPrefixer double. It hands back a
 // fakeWatcher per prefix and lets a test deliver synthetic events on it --
 // WatchForDeletions never cares HOW a delete or tombstone-put happened,
 // only that the watcher reported one, so this is enough to exercise it
@@ -157,16 +156,6 @@ func (s *fakeWatchService) callTimes() []time.Time {
 	return append([]time.Time(nil), s.calls...)
 }
 
-func (s *fakeWatchService) Watch(context.Context, string, ...watch.WatchOption) (watch.Watcher, error) {
-	return nil, errors.New("fakeWatchService: Watch not implemented")
-}
-func (s *fakeWatchService) WatchEntity(context.Context, *service.WatchEntityRequest) (<-chan service.WatchEntityEvent, error) {
-	return nil, errors.New("fakeWatchService: WatchEntity not implemented")
-}
-func (s *fakeWatchService) WatchEntityType(context.Context, *service.WatchEntityTypeRequest) (<-chan service.WatchEntityEvent, error) {
-	return nil, errors.New("fakeWatchService: WatchEntityType not implemented")
-}
-
 // watcherFor blocks briefly for WatchForDeletions' goroutine to have called
 // WatchPrefix for prefix, since that happens asynchronously relative to the
 // caller only in the sense that WatchForDeletions itself calls WatchPrefix
@@ -183,7 +172,7 @@ func (s *fakeWatchService) watcherFor(t *testing.T, prefix string) *fakeWatcher 
 	return w
 }
 
-var _ service.WatchServicer = (*fakeWatchService)(nil)
+var _ WatchPrefixer = (*fakeWatchService)(nil)
 
 // pollUntil retries check (returning true on success) up to 2 seconds,
 // so these tests wait for the watcher goroutine to process an already
@@ -228,7 +217,7 @@ func TestDefaultCertProvider_WatchForDeletions_EvictsOnMaterialDelete(t *testing
 	}
 	certCAWatcher := ws.watcherFor(t, prefixCertCA)
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert (first): %v", err)
 	}
 	_, originalCACert, err := p.getCAMaterial(ctx, "acme")
@@ -262,7 +251,7 @@ func TestDefaultCertProvider_WatchForDeletions_EvictsOnMaterialDelete(t *testing
 		return !stillCached
 	})
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert (second): %v", err)
 	}
 	_, freshCACert, err := p.getCAMaterial(ctx, "acme")
@@ -298,7 +287,7 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneEvictsAndInvalidates(t *
 	}
 	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "bob", TenantID: "globex"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "bob", TenantID: "globex"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	p.mu.RLock()
@@ -371,7 +360,7 @@ func TestDefaultCertProvider_WatchForDeletions_IgnoresUnrelatedKeys(t *testing.T
 	p, _, _ := newTestProvider(WithWatchService(ws))
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "carol", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "carol", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	if err := p.WatchForDeletions(ctx); err != nil {
@@ -415,7 +404,7 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishesClosedWatch(t *testi
 	if err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
-	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "dave", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "dave", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
@@ -531,7 +520,7 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishmentInvalidatesEveryth
 	if err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
-	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "erin", TenantID: "initech"}); err != nil {
+	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "erin", TenantID: "initech"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	p.mu.RLock()
@@ -731,7 +720,7 @@ func TestDefaultCertProvider_WatchForDeletions_ConsumeCertCADeletes_IgnoresNonMa
 	p, _, _ := newTestProvider(WithWatchService(ws))
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "frank", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "frank", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	if err := p.WatchForDeletions(ctx); err != nil {
@@ -777,7 +766,7 @@ func TestDefaultCertProvider_WatchForDeletions_ConsumeTombstonePuts_IgnoresNonMa
 	p, _, _ := newTestProvider(WithWatchService(ws))
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "grace", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "grace", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	if err := p.WatchForDeletions(ctx); err != nil {
@@ -828,7 +817,7 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneWatchReestablishesClosed
 	if err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
-	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "henry", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "henry", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 

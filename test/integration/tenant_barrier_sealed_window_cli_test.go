@@ -73,10 +73,24 @@ func testSealedWindowLifecycleOverProtocol(t *testing.T, node *multiProtoNode, p
 	// uninitialized. IsolationRaft (RegisterVolumeTenant) registers the
 	// full system strategy set, so the none strategy below is available;
 	// see the RF=3 cluster enable-encryption test for the same flow.
-	createTenant(t, node, proto, tenantID, "Sealed Window Tenant", "raft", false)
+	//
+	// createTenantWithAdminCert keeps the first admin's own onboarded
+	// certificate: trust-on-first-init's actual INITIALIZATION action
+	// admits only that exact certificate, never any other authenticated
+	// identity of the tenant (the security property this restricts, not a
+	// limitation of the test) -- see onboardedAdminCLI below.
+	adminCertPath, adminKeyPath := createTenantWithAdminCert(t, node, proto, tenantID, "Sealed Window Tenant", "raft", false, tenantID+"-admin")
+	onboardedAdminCLI := func(args ...string) (string, error) {
+		full := append(tenantCLIArgsForProto(node, proto, adminCertPath, adminKeyPath), args...)
+		return runCLI(t, node.cli, full...)
+	}
 
-	// The tenant's own mTLS identity. NO user or role exists for it yet —
-	// the whole point of the bootstrap windows under test.
+	// The tenant's own generic mTLS identity (CN=admin, OU=tenantID), used
+	// for everything the trust-on-first-init restriction does NOT cover:
+	// the sealed-window READ fallback (barrier-status), which admits any
+	// authenticated identity of the tenant regardless of account, and the
+	// post-init RBAC path once provisionTenantIdentity below creates a real
+	// "admin" account this certificate's CN resolves to.
 	certPath, keyPath := node.ca.generateClientCertForTenant(t, tenantID)
 	tenantCLI := func(args ...string) (string, error) {
 		full := append(tenantCLIArgsForProto(node, proto, certPath, keyPath), args...)
@@ -92,14 +106,15 @@ func testSealedWindowLifecycleOverProtocol(t *testing.T, node *multiProtoNode, p
 		t.Fatalf("[%s] pre-init barrier-status should report Initialized: false, got: %s", proto.name, out)
 	}
 
-	if out, err = tenantCLI("tenant", "barrier-init", "--id", tenantID, "--strategy", "none"); err != nil {
-		t.Fatalf("[%s] barrier-init by the tenant's own identity must succeed via trust-on-first-init: %v\noutput: %s", proto.name, err, out)
+	if out, err = onboardedAdminCLI("tenant", "barrier-init", "--id", tenantID, "--strategy", "none"); err != nil {
+		t.Fatalf("[%s] barrier-init by the onboarded admin's own certificate must succeed via trust-on-first-init: %v\noutput: %s", proto.name, err, out)
 	}
 
-	// The trust-on-first-init window has CLOSED: without any role, the same
-	// identity must now be refused by RBAC (the barrier is unsealed, so the
-	// sealed-window fallback is unavailable and re-init demands the grant).
-	if out, err = tenantCLI("tenant", "barrier-init", "--id", tenantID, "--strategy", "none"); err == nil {
+	// The trust-on-first-init window has CLOSED: without any role, the SAME
+	// onboarded admin identity that just succeeded must now be refused by
+	// RBAC (the barrier is unsealed, so the sealed-window fallback is
+	// unavailable and re-init demands the grant).
+	if out, err = onboardedAdminCLI("tenant", "barrier-init", "--id", tenantID, "--strategy", "none"); err == nil {
 		t.Fatalf("[%s] re-init after initialization without an RBAC grant must be refused, got success: %s", proto.name, out)
 	}
 

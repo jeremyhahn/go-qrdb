@@ -166,7 +166,7 @@ func TestHandleUserAddCertBinding_HijackAttemptIsAlreadyExists(t *testing.T) {
 			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
 		},
 	}
-	handler := handleUserAddCertBinding(svc, nil)
+	handler := handleUserAddCertBinding(svc, nil, nil)
 
 	_, err := handler(context.Background(),
 		buildCallToolRequest(t, "qrdb_user_add_cert_binding", map[string]any{
@@ -245,7 +245,7 @@ func TestHandleUserAddCertBinding_PastExpiryIsInvalidArgument(t *testing.T) {
 		},
 	}
 	const tool = "qrdb_user_add_cert_binding"
-	_, err := handleUserAddCertBinding(svc, nil)(context.Background(),
+	_, err := handleUserAddCertBinding(svc, nil, nil)(context.Background(),
 		buildCallToolRequest(t, tool, map[string]any{"user_id": "1001", "thumbprint": "AAAA", "not_after_unix": 1}))
 	var expired *user.CertBindingExpiredError
 	if !errors.As(err, &expired) {

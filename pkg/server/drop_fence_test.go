@@ -518,9 +518,34 @@ func TestDropFence_EveryWriteVerbCarriesTheGuard(t *testing.T) {
 				_, err := views.Batch.ExecuteEntity(ctx, &service.BatchEntityRequest{Ops: []service.BatchEntityOp{{Type: "put", EntityType: "widget", ID: "2", Data: []byte("v")}}})
 				return err
 			},
-			"Import": func() error {
-				_, err := views.Batch.Import(ctx, strings.NewReader(`[{"id":"i1","v":"x"}]`), service.ImportOptions{Format: "json", KeyField: "id", ValueMode: "row"})
+			"ImportBegin": func() error {
+				_, err := views.Batch.ImportBegin(ctx, service.ImportOptions{Format: "json", KeyField: "id", ValueMode: "row"})
 				return err
+			},
+			"ImportAppend": func() error {
+				sid, err := views.Batch.ImportBegin(ctx, service.ImportOptions{Format: "json", KeyField: "id", ValueMode: "row"})
+				if err != nil {
+					return err
+				}
+				return views.Batch.ImportAppend(ctx, sid, 0, []byte(`[{"id":"i2","v":"x"}]`))
+			},
+			"ImportCommit": func() error {
+				sid, err := views.Batch.ImportBegin(ctx, service.ImportOptions{Format: "json", KeyField: "id", ValueMode: "row"})
+				if err != nil {
+					return err
+				}
+				if err := views.Batch.ImportAppend(ctx, sid, 0, []byte(`[{"id":"i3","v":"x"}]`)); err != nil {
+					return err
+				}
+				_, err = views.Batch.ImportCommit(ctx, sid)
+				return err
+			},
+			"ImportAbort": func() error {
+				sid, err := views.Batch.ImportBegin(ctx, service.ImportOptions{Format: "json", KeyField: "id", ValueMode: "row"})
+				if err != nil {
+					return err
+				}
+				return views.Batch.ImportAbort(ctx, sid)
 			},
 		}},
 		{"Transaction", reflect.TypeOf((*service.TransactionServicer)(nil)).Elem(), map[string]func() error{

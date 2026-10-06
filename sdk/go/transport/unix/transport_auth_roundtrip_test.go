@@ -29,6 +29,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -206,30 +208,17 @@ var _ role.RoleServicer = (*mockRoleSvc)(nil)
 // ---------------------------------------------------------------------------
 
 type mockCertProvider struct {
-	generateFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
-	exportFn   func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeFn   func(ctx context.Context, serial string) (*cert.RevokeResult, error)
-	isRevoked  func(ctx context.Context, serial string) (bool, error)
-	listFn     func(ctx context.Context, tenant string) ([]*cert.CertRecord, error)
-	tenantFn   func(ctx context.Context, serial string) (string, bool, error)
+	revokeFn  func(ctx context.Context, serial string) (*cert.RevokeResult, error)
+	isRevoked func(ctx context.Context, serial string) (bool, error)
+	listFn    func(ctx context.Context, tenant string) ([]*cert.CertRecord, error)
+	tenantFn  func(ctx context.Context, serial string) (string, bool, error)
 }
 
-func (m *mockCertProvider) GenerateClientCert(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-	if m.generateFn != nil {
-		return m.generateFn(ctx, req)
-	}
-	return &cert.CertBundle{
+func (m *mockCertProvider) IssueClientCert(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	return &cert.IssuedCert{
 		CertPEM: []byte("-----BEGIN CERTIFICATE-----\n"),
-		KeyPEM:  []byte("-----BEGIN PRIVATE KEY-----\n"),
 		Serial:  "abc123",
 	}, nil
-}
-
-func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-	if m.exportFn != nil {
-		return m.exportFn(ctx, certPEM, keyPEM, passphrase)
-	}
-	return []byte("pkcs12-stub"), nil
 }
 
 func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
@@ -256,6 +245,55 @@ func (m *mockCertProvider) ListCerts(ctx context.Context, tenant string) ([]*cer
 func (m *mockCertProvider) CACertPEM() []byte { return []byte("ca-cert") }
 
 var _ cert.CertProvider = (*mockCertProvider)(nil)
+
+// ---------------------------------------------------------------------------
+// mockCertEnrollmentSvc — minimal service.CertEnrollmentServicer stub
+// ---------------------------------------------------------------------------
+
+type mockCertEnrollmentSvc struct {
+	signFn   func(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error)
+	enrollFn func(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error)
+	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
+	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
+	removeFn func(ctx context.Context, tenantID, fingerprint string) error
+}
+
+func (m *mockCertEnrollmentSvc) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	if m.signFn != nil {
+		return m.signFn(ctx, req)
+	}
+	return &service.EnrolledCertificate{Username: req.Username, TenantID: req.TenantID, CertPEM: []byte("-----BEGIN CERTIFICATE-----\n"), Serial: "abc123", Thumbprint: "thumb-abc123"}, nil
+}
+
+func (m *mockCertEnrollmentSvc) EnrollCertificate(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	if m.enrollFn != nil {
+		return m.enrollFn(ctx, req)
+	}
+	return &service.EnrolledCertificate{Username: req.Username, TenantID: req.TenantID, CertPEM: req.CertPEM, Thumbprint: "thumb-byoc"}, nil
+}
+
+func (m *mockCertEnrollmentSvc) AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+	if m.addFn != nil {
+		return m.addFn(ctx, tenantID, bundlePEM)
+	}
+	return []trustanchor.Anchor{{Fingerprint: "fp1", Subject: "CN=ca"}}, nil
+}
+
+func (m *mockCertEnrollmentSvc) ListTrustAnchors(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error) {
+	if m.listFn != nil {
+		return m.listFn(ctx, tenantID)
+	}
+	return []trustanchor.Anchor{{Fingerprint: "fp1", Subject: "CN=ca"}}, nil
+}
+
+func (m *mockCertEnrollmentSvc) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	if m.removeFn != nil {
+		return m.removeFn(ctx, tenantID, fingerprint)
+	}
+	return nil
+}
+
+var _ service.CertEnrollmentServicer = (*mockCertEnrollmentSvc)(nil)
 
 // ---------------------------------------------------------------------------
 // Server bootstrap
@@ -573,39 +611,185 @@ func TestUnixRT_UnassignRole(t *testing.T) {
 // Cert round-trips
 // ---------------------------------------------------------------------------
 
-func TestUnixRT_GenerateCert(t *testing.T) {
-	provider := &mockCertProvider{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCertProvider(provider))
+func TestUnixRT_IssueCert(t *testing.T) {
+	var gotReq *service.SignCertificateRequest
+	enroll := &mockCertEnrollmentSvc{
+		signFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+			gotReq = req
+			return &service.EnrolledCertificate{
+				UserID:     7,
+				Username:   req.Username,
+				TenantID:   req.TenantID,
+				CertPEM:    []byte("-----BEGIN CERTIFICATE-----\n"),
+				Serial:     "abc123",
+				Thumbprint: "thumb-abc123",
+				NotAfter:   time.Unix(1800000000, 0).UTC(),
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
 	defer cleanup()
 
-	got, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	got, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{
 		Username: "alice",
-		TenantID: "t1",
+		CSRPEM:   "csr-bytes",
 		TTL:      "1h",
 	})
 	if err != nil {
-		t.Fatalf("GenerateCert: %v", err)
+		t.Fatalf("IssueCert: %v", err)
 	}
 	if got == nil || got.Serial != "abc123" {
 		t.Errorf("got %+v, want Serial=abc123", got)
 	}
+	if got.Username != "alice" || got.Thumbprint != "thumb-abc123" {
+		t.Errorf("got %+v, want Username=alice Thumbprint=thumb-abc123", got)
+	}
+	if !got.NotAfter.Equal(time.Unix(1800000000, 0).UTC()) {
+		t.Errorf("NotAfter = %v, want %v", got.NotAfter, time.Unix(1800000000, 0).UTC())
+	}
+	if gotReq == nil || gotReq.Username != "alice" || string(gotReq.CSRPEM) != "csr-bytes" || gotReq.TTL != time.Hour {
+		t.Errorf("server received %+v; want Username=alice CSRPEM=csr-bytes TTL=1h", gotReq)
+	}
 }
 
-func TestUnixRT_ExportCert(t *testing.T) {
-	provider := &mockCertProvider{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCertProvider(provider))
+func TestUnixRT_EnrollCert(t *testing.T) {
+	var gotReq *service.EnrollCertificateRequest
+	enroll := &mockCertEnrollmentSvc{
+		enrollFn: func(_ context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+			gotReq = req
+			return &service.EnrolledCertificate{
+				Username:   req.Username,
+				TenantID:   req.TenantID,
+				CertPEM:    req.CertPEM,
+				Thumbprint: "thumb-byoc",
+				NotAfter:   time.Unix(1800000000, 0).UTC(),
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
 	defer cleanup()
 
-	got, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM:    "cert-data",
-		KeyPEM:     "key-data",
-		Passphrase: "secret",
+	got, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{
+		Username: "alice",
+		CertPEM:  "leaf-pem",
+		ChainPEM: "chain-pem",
 	})
 	if err != nil {
-		t.Fatalf("ExportCert: %v", err)
+		t.Fatalf("EnrollCert: %v", err)
 	}
-	if got == nil || len(got.PKCS12) == 0 {
-		t.Errorf("expected pkcs12 bytes, got %+v", got)
+	if got.Serial != "" {
+		t.Errorf("Serial = %q, want empty for a bring-your-own certificate", got.Serial)
+	}
+	if got.Thumbprint != "thumb-byoc" {
+		t.Errorf("Thumbprint = %q, want thumb-byoc", got.Thumbprint)
+	}
+	if gotReq == nil || string(gotReq.CertPEM) != "leaf-pem" || string(gotReq.ChainPEM) != "chain-pem" {
+		t.Errorf("server received %+v; want CertPEM=leaf-pem ChainPEM=chain-pem", gotReq)
+	}
+}
+
+func TestUnixRT_IssueCert_Error(t *testing.T) {
+	enroll := &mockCertEnrollmentSvc{
+		signFn: func(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+			return nil, &cert.CertGenerateError{Err: errors.New("CA key sealed")}
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	_, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trust anchor round-trips
+// ---------------------------------------------------------------------------
+
+func TestUnixRT_AddTrustAnchors(t *testing.T) {
+	var gotTenant, gotBundle string
+	enroll := &mockCertEnrollmentSvc{
+		addFn: func(_ context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+			gotTenant, gotBundle = tenantID, string(bundlePEM)
+			return []trustanchor.Anchor{{
+				Fingerprint: "fp1", Subject: "CN=ca",
+				NotBefore: time.Unix(1700000000, 0).UTC(), NotAfter: time.Unix(1800000000, 0).UTC(),
+				CertPEM: []byte("ca-pem"), AddedAt: time.Unix(1750000000, 0).UTC(),
+			}}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	resp, err := tr.AddTrustAnchors(context.Background(), &transport.AddTrustAnchorsRequest{
+		TenantID: "t1",
+		CertsPEM: "ca-bundle-pem",
+	})
+	if err != nil {
+		t.Fatalf("AddTrustAnchors: %v", err)
+	}
+	if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+		t.Fatalf("got %+v, want one anchor fp1", resp.Anchors)
+	}
+	if resp.Anchors[0].CertPEM != "ca-pem" || !resp.Anchors[0].NotAfter.Equal(time.Unix(1800000000, 0).UTC()) {
+		t.Errorf("anchor = %+v; want CertPEM=ca-pem NotAfter=1800000000", resp.Anchors[0])
+	}
+	if gotBundle != "ca-bundle-pem" {
+		t.Errorf("server received CertsPEM=%q, want ca-bundle-pem", gotBundle)
+	}
+	if gotTenant != "t1" {
+		t.Errorf("server received TenantID=%q, want t1", gotTenant)
+	}
+}
+
+func TestUnixRT_ListTrustAnchors(t *testing.T) {
+	enroll := &mockCertEnrollmentSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	resp, err := tr.ListTrustAnchors(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("ListTrustAnchors: %v", err)
+	}
+	if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+		t.Fatalf("got %+v, want one anchor fp1", resp.Anchors)
+	}
+}
+
+func TestUnixRT_RemoveTrustAnchor(t *testing.T) {
+	var gotTenant, gotFingerprint string
+	enroll := &mockCertEnrollmentSvc{
+		removeFn: func(_ context.Context, tenantID, fingerprint string) error {
+			gotTenant, gotFingerprint = tenantID, fingerprint
+			return nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	if err := tr.RemoveTrustAnchor(context.Background(), "t1", "fp1"); err != nil {
+		t.Fatalf("RemoveTrustAnchor: %v", err)
+	}
+	if gotFingerprint != "fp1" {
+		t.Errorf("server received fingerprint=%q, want fp1", gotFingerprint)
+	}
+	if gotTenant != "t1" {
+		t.Errorf("server received TenantID=%q, want t1", gotTenant)
+	}
+}
+
+func TestUnixRT_RemoveTrustAnchor_Error(t *testing.T) {
+	enroll := &mockCertEnrollmentSvc{
+		removeFn: func(context.Context, string, string) error {
+			return errors.New("no such anchor")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	if err := tr.RemoveTrustAnchor(context.Background(), "t1", "nope"); err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
@@ -644,9 +828,12 @@ func TestUnixRT_CertOps_NotConfigured(t *testing.T) {
 	tr, cleanup := startAuthServer(t)
 	defer cleanup()
 
-	_, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{Username: "alice"})
+	_, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice"})
 	if err == nil {
-		t.Error("expected error when cert provider is not configured")
+		t.Error("expected error when cert enrollment is not configured")
+	}
+	if _, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{Username: "alice", CertPEM: "pem"}); err == nil {
+		t.Error("expected error when cert enrollment is not configured for enroll")
 	}
 	if _, err := tr.RevokeCert(context.Background(), "s1"); err == nil {
 		t.Error("expected error when cert provider is not configured for revoke")

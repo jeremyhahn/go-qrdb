@@ -50,8 +50,8 @@ func as(id *auth.Identity) context.Context {
 func allTenants() []tenant.TenantInfo {
 	return []tenant.TenantInfo{
 		{ID: tenantid.System},
-		{ID: "acme", DataRoot: "/srv/acme"},
-		{ID: "globex", DataRoot: "/srv/globex"},
+		{ID: "acme", VolumePool: "fast"},
+		{ID: "globex", VolumePool: "fast"},
 	}
 }
 
@@ -197,11 +197,11 @@ func TestFilterTenantList_SealedIdentityIsRefused(t *testing.T) {
 }
 
 // oneTokenMiddleware rate-limits perm to a single token over the real roles.
-func oneTokenMiddleware(t *testing.T, perm permission.Permission) *AuthMiddleware {
+func oneTokenMiddleware(t *testing.T, perm permission.Permission, opts ...Option) *AuthMiddleware {
 	t.Helper()
 	l := ratelimit.NewTokenBucketLimiter()
 	t.Cleanup(func() { _ = l.Close() })
-	return builtInMiddleware(t, WithRateLimiter(l), WithRateLimitPolicies(authtest.OneToken(perm)))
+	return builtInMiddleware(t, append([]Option{WithRateLimiter(l), WithRateLimitPolicies(authtest.OneToken(perm))}, opts...)...)
 }
 
 // TestAuthorizeTenantBarrierSealedOp_RateLimitIsNotOverriddenByTheWindow: the
@@ -234,7 +234,11 @@ func TestAuthorizeTenantBarrierSealedOp_OtherPermissionsKeepTheirOwnBucket(t *te
 // TestAuthorizeTenantBarrierInit_RateLimitIsNotOverriddenByTheWindow is the
 // trust-on-first-init half of the same defect.
 func TestAuthorizeTenantBarrierInit_RateLimitIsNotOverriddenByTheWindow(t *testing.T) {
-	m := oneTokenMiddleware(t, permission.TenantBarrierInit)
+	// This test exercises the rate limiter's precedence over the window, not
+	// the separate first-admin-onboarding gate (see first_init_gate_test.go),
+	// so it runs under the "enrolled" posture, which skips that gate when the
+	// tenant has no pending-admin record.
+	m := oneTokenMiddleware(t, permission.TenantBarrierInit, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	// A role-less identity: RBAC refuses, so only the window can admit it.
 	ctx := as(&auth.Identity{Subject: "acme-admin", TenantID: "acme"})
 	status := &fakeBarrierStatusReader{initialized: false}

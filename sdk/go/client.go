@@ -242,6 +242,15 @@ func (c *Client) Tenants() transport.TenantClient {
 	return capability[transport.TenantClient](c, "Tenants")
 }
 
+// VolumePools returns a VolumePoolClient for volume pool management
+// (docs/volume-pools/api.md): list, inspect, create, update, delete a
+// pool, and list a pool's assigned tenants. Replaces the removed
+// in-process VolumePoolClient (decision D8); every transport implements
+// this one.
+func (c *Client) VolumePools() transport.VolumePoolClient {
+	return capability[transport.VolumePoolClient](c, "VolumePools")
+}
+
 // WithTenant returns a KVClient that automatically prefixes all keys
 // with the given tenant ID for multi-tenant isolation.
 func (c *Client) WithTenant(tenantID string) (transport.KVClient, error) {
@@ -356,19 +365,6 @@ func (c *Client) Sessions() transport.SessionClient {
 	}
 	if p, ok := c.transport.(transport.SessionProvider); ok {
 		return p.SessionClient()
-	}
-	return nil
-}
-
-// VolumePools returns a VolumePoolClient that wraps the configured
-// objstore pool.Manager. List / Pick are read operations; RegisterPool
-// is admin-gated upstream by the volumepool:create permission.
-func (c *Client) VolumePools() transport.VolumePoolClient {
-	if c.closed.Load() {
-		return nil
-	}
-	if p, ok := c.transport.(transport.VolumePoolProvider); ok {
-		return p.VolumePoolClient()
 	}
 	return nil
 }

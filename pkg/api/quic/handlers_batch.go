@@ -15,7 +15,6 @@
 package quic
 
 import (
-	"bytes"
 	"context"
 
 	"google.golang.org/protobuf/proto"
@@ -60,20 +59,15 @@ func (s *Server) handleBatch(ctx context.Context, payload []byte) ([]byte, error
 	return resp, nil
 }
 
-// handleBatchImport parses and imports key-value pairs from the file carried
-// in the request. It resolves the batch service through the SAME
-// per-(tenant, database) scope as handleBatch, so the namespaced wrapper's
-// KeyPrefix is applied to every imported key exactly as it is for every
-// other write to the database. The file must fit within the wire protocol's
-// MaxPayloadSize (see wire.MaxPayloadSize), which ReadRequest enforces
-// before this handler ever runs.
-func (s *Server) handleBatchImport(ctx context.Context, payload []byte) ([]byte, error) {
+// handleImportBegin starts a chunked import session. See
+// docs/transactions/architecture.md ("Import session").
+func (s *Server) handleImportBegin(ctx context.Context, payload []byte) ([]byte, error) {
 	batchSvc, svcErr := s.batchSvcFor(ctx)
 	if svcErr != nil {
 		return nil, svcErr
 	}
 
-	var req pb.BatchImportRequest
+	var req pb.ImportBeginRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
@@ -88,7 +82,55 @@ func (s *Server) handleBatchImport(ctx context.Context, payload []byte) ([]byte,
 		Transactional: req.GetTransactional(),
 	}
 
-	result, err := batchSvc.Import(ctx, bytes.NewReader(req.GetFile()), opts)
+	sessionID, err := batchSvc.ImportBegin(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.ImportBeginResponse{SessionId: sessionID})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleImportAppend stages a chunk of a chunked import session.
+func (s *Server) handleImportAppend(ctx context.Context, payload []byte) ([]byte, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.ImportAppendRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := batchSvc.ImportAppend(ctx, req.GetSessionId(), req.GetSeq(), req.GetChunk()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.ImportAppendResponse{})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleImportCommit applies every staged chunk of a chunked import
+// session atomically.
+func (s *Server) handleImportCommit(ctx context.Context, payload []byte) ([]byte, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.ImportCommitRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	result, err := batchSvc.ImportCommit(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +144,36 @@ func (s *Server) handleBatchImport(ctx context.Context, payload []byte) ([]byte,
 		}
 	}
 
-	resp, err := proto.Marshal(&pb.BatchImportResponse{
+	resp, err := proto.Marshal(&pb.ImportCommitResponse{
 		Total:     int32(result.Total),
 		Succeeded: int32(result.Succeeded),
 		Failed:    int32(result.Failed),
 		Errors:    errs,
 	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleImportAbort discards a chunked import session without applying
+// anything.
+func (s *Server) handleImportAbort(ctx context.Context, payload []byte) ([]byte, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.ImportAbortRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := batchSvc.ImportAbort(ctx, req.GetSessionId()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.ImportAbortResponse{})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

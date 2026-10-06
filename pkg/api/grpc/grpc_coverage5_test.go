@@ -709,18 +709,20 @@ func TestMapCredentialError_AllBranches(t *testing.T) {
 
 func TestTenant_Create_Mini_Success(t *testing.T) {
 	tenantSvc := newMockTenantBarrierOnlySvc()
-	client, cleanup := startTestServerFull(t, WithTenantService(tenantSvc))
+	client, cleanup := startTestServerFull(t, WithTenantService(tenantSvc), WithTenantOnboarding(&fakeTenantOnboarding{}))
 	defer cleanup()
 
 	resp, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
-		Id:   "acme",
-		Name: "ACME Corp",
+		Id:            "acme",
+		Name:          "ACME Corp",
+		AdminUsername: "alice",
+		AdminCsrPem:   "csr",
 	})
 	if err != nil {
 		t.Fatalf("TenantCreate failed: %v", err)
 	}
-	if resp.GetId() != "acme" {
-		t.Fatalf("expected id 'acme', got %q", resp.GetId())
+	if resp.GetTenant().GetId() != "acme" || resp.GetAdmin().GetUsername() != "alice" {
+		t.Fatalf("expected tenant acme with admin alice, got %+v", resp)
 	}
 }
 

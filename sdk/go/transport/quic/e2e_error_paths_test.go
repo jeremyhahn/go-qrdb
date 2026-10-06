@@ -231,12 +231,23 @@ func TestE2E_ListPermissions_UnmarshalError(t *testing.T) {
 	}
 }
 
-func TestE2E_GenerateCert_UnmarshalError(t *testing.T) {
+func TestE2E_IssueCert_UnmarshalError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("cert.Generate", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("cert.Issue", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageJSON
 	})
-	_, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{Username: "alice"})
+	_, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr"})
+	if err == nil {
+		t.Fatal("expected unmarshal error")
+	}
+}
+
+func TestE2E_EnrollCert_UnmarshalError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("cert.Enroll", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, garbageJSON
+	})
+	_, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{Username: "alice", CertPEM: "pem"})
 	if err == nil {
 		t.Fatal("expected unmarshal error")
 	}

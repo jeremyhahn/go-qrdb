@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // byoTLSConfig returns a CeremonyConfig carrying the server-cert/client-CA
@@ -142,10 +144,12 @@ func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) 
 	barrier := testBarrier(t)
 	svc := newTestCeremonyService(t, cfg, barrier)
 
+	secretBuf, err := secure.NewBufferFromBytes([]byte("test-master-password"))
+	require.NoError(t, err)
 	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		Secret:       []byte("test-master-password"),
+		Secret:       secretBuf,
 		AdminCertPEM: adminLeaf.CertPEM,
 	})
 	var noCert *NoServerCertificateError

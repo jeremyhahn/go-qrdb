@@ -216,7 +216,7 @@ func (f *ReplicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.Cli
 			grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoff.Config{
 				BaseDelay: 100 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 2 * time.Second,
 			}}),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(DefaultMaxRecvMsgSize), grpc.MaxCallSendMsgSize(DefaultMaxRecvMsgSize)),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(DefaultMaxMessageBytes), grpc.MaxCallSendMsgSize(DefaultMaxMessageBytes)),
 		)
 		if err != nil {
 			f.mu.Unlock()

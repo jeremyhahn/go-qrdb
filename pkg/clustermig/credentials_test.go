@@ -18,6 +18,7 @@ package clustermig
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -335,10 +336,19 @@ func TestLocalCredentials_UnreadableDirectoryIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeCredential(t, locked, "system", "pass", 0o600)
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Fatal(err)
+
+	// chmod 0 does not make a directory unreadable to the uid that owns it
+	// when that uid is root -- DAC_OVERRIDE bypasses the exact permission
+	// check this test exists to prove, and root is the uid the CI runner
+	// executes tests as. The fault is injected directly at the seam
+	// openDir() opens the directory through instead of relying on chmod, so
+	// the refusal is proven under any uid, including root.
+	orig := openCredentialDir
+	openCredentialDir = func(string) (*os.File, error) {
+		return nil, &os.PathError{Op: "open", Path: locked, Err: fs.ErrPermission}
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) // #nosec G302 -- restores the temp directory's search bit so t.TempDir can remove it
+	t.Cleanup(func() { openCredentialDir = orig })
+
 	_, err := credentialOf(t, NewLocalCredentials(locked), systemMigration(1))
 	var fe *MigrationCredentialFileError
 	if !errors.As(err, &fe) {

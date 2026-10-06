@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +43,7 @@ func TestBatchService_Import_FieldMode_MissingValueField(t *testing.T) {
 	// CSV where keyField="id" and valueMode="field" but valueField="value"
 	// not present in all rows.
 	csvData := "id,name\n1,Alice\n2,Bob\n"
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -65,7 +64,7 @@ func TestBatchService_Import_TransactionalAbort_OnMissingValue(t *testing.T) {
 	svc := NewBatchService(host, 1)
 
 	csvData := "id,name\n1,Alice\n"
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",

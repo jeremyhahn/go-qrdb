@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
@@ -48,7 +49,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -100,16 +103,22 @@ type Dependencies struct {
 	// then used automatically.
 	UserResolver firstboot.UserResolver
 
-	// CA issues certificates via the generate-and-distribute path (Path A).
-	// Optional: used when no CSR PEM is supplied.
+	// CA issues the SYSTEM bootstrap admin's certificate through first boot
+	// (BootstrapSystem). ProvisionTenant never uses it: a tenant admin's key
+	// is never generated for it.
 	CA firstboot.CertProvider
 
-	// Signer signs an admin-supplied CSR (Path B). Used when a CSR PEM is
-	// supplied. Optional.
+	// Signer signs an admin-supplied CSR. ProvisionTenant requires it for
+	// TenantProvisionConfig.AdminCSRPEM; qrdb's own transports pass
+	// KeyBSigner (the tenant's own Key B CA). When it also implements
+	// RevokeCert, an exclusive provisioning that is undone revokes what it
+	// signed.
 	Signer firstboot.CertSigner
 
-	// Binder pins an issued certificate's SPKI thumbprint to its user record.
-	// Optional: when nil, certs are issued but not bound (caller binds).
+	// Binder pins a certificate's SPKI thumbprint to its user record. A
+	// tenant admin's certificate is bound through Users' own AddCertBinding
+	// when Users provides it (the binding then carries the certificate's
+	// expiry); Binder is the fallback for a Users seam that does not.
 	Binder firstboot.CertBinder
 
 	// AdminFactors is the canonical auth-factor query seam
@@ -125,6 +134,27 @@ type Dependencies struct {
 	// (system barrier) and InitializeTenantBarrier (tenant barriers). Unused
 	// by ProvisionTenant.
 	Barriers *seal.BarrierRegistry
+
+	// TrustAnchors registers a tenant's trust anchors
+	// (TenantProvisionConfig.TrustAnchorsPEM). Required by ProvisionTenant
+	// when anchors are supplied.
+	TrustAnchors trustanchor.Registry
+
+	// PendingAdmins records the first admin of a tenant whose identity
+	// records live behind its own barrier (tenant.IAMBehindTenantBarrier)
+	// until that barrier is initialized; CompletePendingTenantAdmin then
+	// creates the account. Required by ProvisionTenant in cert mode for such
+	// a tenant.
+	PendingAdmins tenantadmin.Store
+
+	// TrustDomain is the SPIFFE trust domain the node's mTLS authenticator
+	// pins, so a bring-your-own admin certificate's identity is read exactly
+	// as a login will read it. Empty accepts any, as the authenticator does.
+	TrustDomain string
+
+	// Now is ProvisionTenant's clock for certificate and anchor validity.
+	// Nil is time.Now.
+	Now func() time.Time
 
 	// Logger receives structured progress events. Required.
 	Logger *slog.Logger
@@ -337,9 +367,11 @@ type AdminEnrollmentMode string
 
 const (
 	// AdminEnrollCert enrolls the tenant admin's mTLS certificate during
-	// provisioning via the firstboot seams (Path A generate via CA, or
-	// Path B CSR-sign via Signer). This is the default; an empty
-	// AdminEnrollmentMode selects it.
+	// provisioning: the admin's CSR, signed via Signer, or the admin's own
+	// certificate, verified against the tenant's trust anchors -- exactly
+	// one, and bound to the admin's account. No key is ever generated for
+	// the admin. This is the default; an empty AdminEnrollmentMode selects
+	// it.
 	AdminEnrollCert AdminEnrollmentMode = "cert"
 
 	// AdminEnrollDeferred creates the tenant record, seeds the tenant
@@ -367,13 +399,38 @@ type TenantProvisionConfig struct {
 	// AdminUsername is the tenant-admin login name. Empty defaults to "admin".
 	AdminUsername string
 
-	// AdminCSRPEM, when non-empty, selects the CSR-sign path (Path B) for the
-	// tenant admin: the admin's CSR is signed via the Signer seam. When empty,
-	// Path A (generate-and-distribute via CA) is used. When neither path is
-	// configured, no cert is enrolled. Only meaningful in cert mode;
-	// combining it with AdminEnrollDeferred is a
-	// ConflictingAdminEnrollmentError.
+	// AdminCSRPEM is the tenant admin's certificate signing request: the
+	// admin keeps its key, and the CSR is signed via the Signer seam (qrdb's
+	// own transports: the tenant's Key B CA, KeyBSigner). In cert mode exactly
+	// one of AdminCSRPEM and AdminCertPEM is required; combining either with
+	// AdminEnrollDeferred is a ConflictingAdminEnrollmentError.
 	AdminCSRPEM []byte
+
+	// AdminCertPEM is the tenant admin's own (bring-your-own) certificate,
+	// leaf first. It must chain to one of TrustAnchorsPEM for client
+	// authentication and authenticate as AdminUsername in TenantID.
+	AdminCertPEM []byte
+
+	// AdminChainPEM holds intermediates for AdminCertPEM's chain. Optional.
+	AdminChainPEM []byte
+
+	// TrustAnchorsPEM registers the tenant's trust anchors (pkg/trustanchor)
+	// as part of its creation. Optional, and required for AdminCertPEM.
+	TrustAnchorsPEM []byte
+
+	// CreateOptions are applied to the tenant record's creation.
+	CreateOptions []tenant.CreateTenantOption
+
+	// Exclusive makes provisioning a creation rather than a convergence: an
+	// existing tenant is refused (TenantRecordCreationError wrapping
+	// tenant.ErrTenantAlreadyExists), and a failure after the tenant record
+	// is created undoes everything this call created, the tenant record
+	// last (ProvisioningUndoneError). Undoing a tenant deletes it, which
+	// retires its id. Every input that can be refused is judged before the
+	// record is created, so only an infrastructure failure gets that far.
+	// qrdb's transports provision exclusively; a composer re-running
+	// first-boot style provisioning does not.
+	Exclusive bool
 
 	// AdminEnrollment selects the tenant-admin enrollment mode. Empty
 	// defaults to AdminEnrollCert (existing behavior); any other value than
@@ -392,18 +449,27 @@ type TenantProvisionResult struct {
 	// AdminUsername is the created tenant-admin username.
 	AdminUsername string
 
-	// AdminCertPEM holds the issued tenant-admin certificate (PEM). Nil when
-	// no cert path was configured.
+	// AdminCertPEM is the tenant admin's certificate: the one signed from
+	// AdminCSRPEM, or the bring-your-own one as enrolled. Nil in deferred
+	// mode and on an idempotent re-run that found the admin already present.
+	// There is never a private key: the admin keeps its own.
 	AdminCertPEM []byte
 
-	// AdminKeyPEM holds the tenant-admin private key (PEM). Nil for the
-	// CSR-sign path (admin keeps their key) and when no cert was issued.
-	AdminKeyPEM []byte
+	// AdminCertSerial is the signed certificate's serial; empty for a
+	// bring-your-own certificate, which this cluster did not issue.
+	AdminCertSerial string
 
-	// AdminCertThumbprint is the SPKI SHA-256 thumbprint of the issued
-	// tenant-admin certificate, bound to the admin user. Empty when no cert
-	// was issued.
+	// AdminCertThumbprint is the SPKI SHA-256 thumbprint of the admin's
+	// certificate, bound to the admin's account.
 	AdminCertThumbprint string
+
+	// AdminAwaitsBarrierInit reports that the tenant keeps its identity
+	// records behind its own barrier (tenant.IAMBehindTenantBarrier), so the
+	// admin's account does not exist yet: the certificate is bound in a
+	// pending record (pkg/tenantadmin) that admits only it to initialize the
+	// tenant barrier, and the account is created when it is
+	// (CompletePendingTenantAdmin). AdminUserID is then zero.
+	AdminAwaitsBarrierInit bool
 
 	// AdminRoleID is the tenant-scoped Admin role identifier the tenant-admin
 	// user is bound to. In deferred mode it is, with AdminUserID, what the
@@ -420,24 +486,41 @@ type TenantProvisionResult struct {
 
 // ProvisionTenant performs MINIMAL control-plane provisioning of a new tenant:
 //
-//  1. Create the tenant record.
+//  1. Create the tenant record, and register its trust anchors when
+//     cfg.TrustAnchorsPEM supplies them.
 //  2. Seed the tenant-scoped built-in roles (so a tenant-scoped admin role
 //     exists for the tenant).
 //  3. Create the tenant-admin user bound to that tenant-scoped admin role.
-//  4. Establish the admin credential per cfg.AdminEnrollment: cert mode
-//     (default) enrolls the tenant admin's cert via the SAME admin-mTLS seams
-//     used by first-boot (Path A generate or Path B CSR-sign) and binds the
-//     SPKI thumbprint; deferred mode creates the admin PENDING (disabled,
+//  4. Establish the admin credential per cfg.AdminEnrollment. Cert mode
+//     (default) takes exactly one of the admin's CSR -- signed via Signer --
+//     or the admin's own certificate -- verified against the trust anchors --
+//     and binds its SPKI thumbprint to the admin; no key is ever generated
+//     for the admin. Deferred mode creates the admin PENDING (disabled,
 //     nothing issued) so the consumer can attach an invitation whose
 //     redemption binds the first auth factor and activates the account.
 //
+// For a tenant that keeps its identity records behind its own barrier
+// (tenant.IAMBehindTenantBarrier), steps 2 and 3 cannot run until that
+// barrier exists. In cert mode the admin's certificate is issued or verified
+// all the same and recorded as the tenant's pending admin
+// (Dependencies.PendingAdmins); the barrier's trust-on-first-init window then
+// admits only that certificate, and the account is created from the record
+// when the barrier is initialized (CompletePendingTenantAdmin). The result
+// reports AdminAwaitsBarrierInit.
+//
+// Every input that can be refused -- the anchors, the CSR, the bring-your-own
+// certificate's chain and identity -- is judged before the tenant record is
+// created. With cfg.Exclusive a failure after that undoes what this call
+// created.
+//
 // It deliberately does NOT initialize a tenant barrier: the system admin holds
 // no tenant key. The tenant admin self-bootstraps their barrier later via
-// InitializeTenantBarrier. Deferred mode preserves that invariant a fortiori:
-// no usable tenant credential exists at all until the invited admin redeems.
+// InitializeTenantBarrier.
 //
-// Uses: Tenants/Users/Roles (required), Logger (required), CA/Signer/Binder
-// (optional, tenant-admin cert enrollment). Barriers is unused.
+// Uses: Tenants/Users/Roles (required), Logger (required); Signer for a CSR;
+// TrustAnchors for anchors; Users with AddCertBinding, or Binder, for the
+// binding; PendingAdmins for a tenant whose identity records are behind its
+// barrier. Barriers and CA are unused.
 func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies) (*TenantProvisionResult, error) {
 	if deps.Logger == nil {
 		return nil, &MissingLoggerError{}
@@ -458,10 +541,10 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		if cfg.TenantID == tenantid.System {
 			return nil, &SystemTenantDeferredEnrollmentError{}
 		}
-		// A CSR alongside deferred mode is refused rather than silently
-		// discarded: honoring the CSR would contradict the requested
+		// A credential alongside deferred mode is refused rather than
+		// silently discarded: honoring it would contradict the requested
 		// deferral, and dropping it would strand the admin's keypair.
-		if len(cfg.AdminCSRPEM) > 0 {
+		if len(cfg.AdminCSRPEM) > 0 || len(cfg.AdminCertPEM) > 0 {
 			return nil, &ConflictingAdminEnrollmentError{}
 		}
 		// The canonical factor store is consulted before any invitation
@@ -495,10 +578,44 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	if adminUsername == "" {
 		adminUsername = "admin"
 	}
+	behindBarrier := tenant.IAMBehindTenantBarrier(isolation)
 
-	// Step 1: tenant record. Already-exists is idempotent success.
-	if _, err := deps.Tenants.CreateTenant(ctx, cfg.TenantID, displayName, isolation); err != nil {
-		if !errors.Is(err, tenant.ErrTenantAlreadyExists) {
+	plan, err := planAdmin(cfg, deps, mode, adminUsername)
+	if err != nil {
+		return nil, err
+	}
+	if mode == AdminEnrollCert {
+		if behindBarrier && deps.PendingAdmins == nil {
+			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.PendingAdmins for a tenant whose identity records are behind its own barrier"}
+		}
+		if _, ok := deps.Users.(certBindingAdder); !ok && deps.Binder == nil {
+			return nil, &MissingProvisioningSeamError{Seam: "a certificate binder (Dependencies.Users with AddCertBinding, or Dependencies.Binder)"}
+		}
+	}
+	var undo undoStack
+	if cfg.Exclusive {
+		if _, ok := deps.Tenants.(tenantDeleter); !ok {
+			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Tenants with DeleteTenant, to undo an exclusive provisioning"}
+		}
+		if _, ok := deps.Users.(userDeleter); !ok {
+			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.Users with DeleteUser, to undo an exclusive provisioning"}
+		}
+	}
+	fail := func(cause error) (*TenantProvisionResult, error) {
+		if !cfg.Exclusive || len(undo.steps) == 0 {
+			return nil, cause
+		}
+		return nil, &ProvisioningUndoneError{
+			TenantID:     cfg.TenantID,
+			Cause:        cause,
+			UndoFailures: undo.run(ctx, deps.Logger, cfg.TenantID),
+		}
+	}
+
+	// Step 1: tenant record. Already-exists is idempotent success, unless
+	// this provisioning is exclusive.
+	if _, err := deps.Tenants.CreateTenant(ctx, cfg.TenantID, displayName, isolation, cfg.CreateOptions...); err != nil {
+		if cfg.Exclusive || !errors.Is(err, tenant.ErrTenantAlreadyExists) {
 			return nil, &TenantRecordCreationError{Cause: err}
 		}
 		deps.Logger.Debug("bootstrap: tenant already exists",
@@ -507,14 +624,45 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		deps.Logger.Info("bootstrap: tenant record created",
 			slog.String("tenant", cfg.TenantID),
 			slog.String("isolation", string(isolation)))
+		undo.push("delete tenant", func(ctx context.Context) error {
+			// planAdmin refused the request up front when Exclusive and
+			// the seam was missing; this is the same check, not a new one.
+			d, ok := deps.Tenants.(tenantDeleter)
+			if !ok {
+				return &MissingProvisioningSeamError{Seam: "Tenants.DeleteTenant"}
+			}
+			return d.DeleteTenant(ctx, cfg.TenantID)
+		})
+	}
+
+	// Step 1b: trust anchors, before any credential that may depend on them.
+	if len(plan.anchors) > 0 {
+		added, err := deps.TrustAnchors.Add(ctx, cfg.TenantID, cfg.TrustAnchorsPEM)
+		if err != nil {
+			return fail(&TrustAnchorRegistrationError{Cause: err})
+		}
+		for _, a := range added {
+			fp := a.Fingerprint
+			undo.push("remove trust anchor "+fp, func(ctx context.Context) error {
+				return deps.TrustAnchors.Remove(ctx, cfg.TenantID, fp)
+			})
+		}
+	}
+
+	if behindBarrier && mode == AdminEnrollCert {
+		return provisionPendingAdmin(ctx, cfg, deps, plan, adminUsername, &undo, fail)
 	}
 
 	// Step 2: tenant-scoped built-in roles (tolerates already-exists).
 	if _, err := seedTenantRoles(ctx, deps, cfg.TenantID); err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	// Step 3: tenant-admin user bound to the tenant-scoped admin role.
+	// System roles are undeletable and name-immutable (no-compat-cleanup
+	// deleted the UUIDv5->UUIDv8 dual-read compatibility), so the role id is
+	// always its canonical derivation -- no resolver, no store lookup, no
+	// legacy fallback.
 	adminRoleID := role.SystemRoleID(cfg.TenantID, role.RoleNameAdmin)
 	adminUser, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
 		// The bootstrap admin authenticates by certificate, not by an email login
@@ -536,8 +684,8 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	})
 	if err != nil {
 		var exists *user.UsernameExistsError
-		if !errors.As(err, &exists) {
-			return nil, &TenantAdminUserCreationError{Cause: err}
+		if cfg.Exclusive || !errors.As(err, &exists) {
+			return fail(&TenantAdminUserCreationError{Cause: err})
 		}
 		deps.Logger.Debug("bootstrap: tenant-admin user already exists",
 			slog.String("tenant", cfg.TenantID),
@@ -547,6 +695,14 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 			slog.String("tenant", cfg.TenantID),
 			slog.String("username", adminUsername),
 			slog.String("role_id", adminRoleID))
+		createdID := adminUser.ID
+		undo.push("delete tenant admin", func(ctx context.Context) error {
+			d, ok := deps.Users.(userDeleter)
+			if !ok {
+				return &MissingProvisioningSeamError{Seam: "Users.DeleteUser"}
+			}
+			return d.DeleteUser(ctx, createdID)
+		})
 	}
 
 	// Deferred mode must hand the consumer the admin's user id even on an
@@ -560,14 +716,14 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		if adminUser == nil {
 			resolved, resolveErr := resolveExistingTenantAdmin(ctx, deps, cfg.TenantID, adminUsername, adminRoleID)
 			if resolveErr != nil {
-				return nil, resolveErr
+				return fail(resolveErr)
 			}
 			adminUser = resolved
 		} else if validateErr := validatePendingAdmin(adminUser, cfg.TenantID, adminUsername, adminRoleID); validateErr != nil {
-			return nil, validateErr
+			return fail(validateErr)
 		}
 		if factorErr := ensureNoActiveFactors(ctx, deps, cfg.TenantID, adminUsername, adminUser.ID); factorErr != nil {
-			return nil, factorErr
+			return fail(factorErr)
 		}
 	}
 
@@ -581,15 +737,27 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		result.AdminUserID = adminUser.ID
 	}
 
-	// Step 4: tenant-admin cert enrollment via the firstboot seams. Only in
-	// cert mode, and only when the admin was newly created in this run (so a
-	// re-run does not rotate the tenant admin's key material). Deferred mode
-	// issues nothing: the pending admin's first credential is bound by the
-	// consumer's invitation-redemption flow.
+	// Step 4: tenant-admin certificate. Only in cert mode, and only when the
+	// admin was newly created in this run (so a re-run does not rotate the
+	// tenant admin's credential). Deferred mode issues nothing: the pending
+	// admin's first credential is bound by the consumer's
+	// invitation-redemption flow.
 	if adminUser != nil && mode == AdminEnrollCert {
-		if certErr := enrollAdminCert(ctx, deps, cfg.TenantID, adminUsername, cfg.AdminCSRPEM, adminUser, result); certErr != nil {
-			return nil, certErr
+		c, err := plan.issue(ctx, deps, cfg.TenantID, adminUsername)
+		if err != nil {
+			return fail(err)
 		}
+		pushRevoke(&undo, deps, c)
+		if err := bindAdmin(ctx, deps, cfg.TenantID, adminUser, c); err != nil {
+			return fail(err)
+		}
+		result.AdminCertPEM = c.certPEM
+		result.AdminCertSerial = c.serial
+		result.AdminCertThumbprint = c.thumbprint
+		deps.Logger.Info("bootstrap: tenant-admin cert bound",
+			slog.String("tenant", cfg.TenantID),
+			slog.Uint64("user_id", adminUser.ID),
+			slog.Bool("csr_signed", len(plan.csrPEM) > 0))
 	}
 
 	deps.Logger.Info("bootstrap: tenant provisioned",
@@ -597,6 +765,97 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		slog.String("admin", adminUsername))
 
 	return result, nil
+}
+
+// provisionPendingAdmin finishes cert-mode provisioning of a tenant whose
+// identity records are behind its own barrier: the admin's certificate is
+// issued (or the bring-your-own one taken) now and recorded as the tenant's
+// pending admin; the account comes when the barrier is initialized.
+func provisionPendingAdmin(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies, plan *adminPlan, adminUsername string, undo *undoStack, fail func(error) (*TenantProvisionResult, error)) (*TenantProvisionResult, error) {
+	// Validated HERE, before anything is signed: this path's username goes
+	// straight into a certificate's Subject CN and a PendingAdmins record,
+	// with no later user-store validation to catch a malformed one -- the
+	// non-pending path's CreateUser runs in the same call, this one does
+	// not run until the tenant's barrier is initialized, possibly long
+	// after an unforgeable certificate for the bad name already exists.
+	if !validAdminUsername(adminUsername) {
+		return fail(&InvalidAdminUsernameError{Username: adminUsername})
+	}
+	existing, err := deps.PendingAdmins.Get(ctx, cfg.TenantID)
+	if err != nil {
+		return fail(&PendingTenantAdminError{Op: "read", Cause: err})
+	}
+	if existing != nil && !cfg.Exclusive {
+		// A re-run of a provisioning whose admin is already pending: keep the
+		// recorded credential rather than rotating it.
+		return &TenantProvisionResult{
+			TenantID:               cfg.TenantID,
+			AdminUsername:          existing.Username,
+			AdminCertThumbprint:    existing.Thumbprint,
+			AdminCertSerial:        existing.Serial,
+			AdminAwaitsBarrierInit: true,
+		}, nil
+	}
+	c, err := plan.issue(ctx, deps, cfg.TenantID, adminUsername)
+	if err != nil {
+		return fail(err)
+	}
+	pushRevoke(undo, deps, c)
+	if err := deps.PendingAdmins.Create(ctx, cfg.TenantID, pendingFrom(adminUsername, c)); err != nil {
+		return fail(&PendingTenantAdminError{Op: "record", Cause: err})
+	}
+	undo.push("delete pending admin", func(ctx context.Context) error {
+		return deps.PendingAdmins.Delete(ctx, cfg.TenantID)
+	})
+	deps.Logger.Info("bootstrap: tenant provisioned; admin awaits the tenant barrier",
+		slog.String("tenant", cfg.TenantID),
+		slog.String("admin", adminUsername))
+	return &TenantProvisionResult{
+		TenantID:               cfg.TenantID,
+		AdminUsername:          adminUsername,
+		AdminCertPEM:           c.certPEM,
+		AdminCertSerial:        c.serial,
+		AdminCertThumbprint:    c.thumbprint,
+		AdminAwaitsBarrierInit: true,
+	}, nil
+}
+
+// maxAdminUsernameLen bounds an admin username signed into a certificate's
+// Subject CN on the pending-admin path.
+const maxAdminUsernameLen = 64
+
+// validAdminUsername reports whether name is safe to sign into a
+// certificate's Subject CN: 1..64 characters from [A-Za-z0-9._@-].
+func validAdminUsername(name string) bool {
+	if name == "" || len(name) > maxAdminUsernameLen {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '@', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// pushRevoke records the revocation of a certificate this provisioning
+// signed, when the Signer can revoke it.
+func pushRevoke(undo *undoStack, deps Dependencies, c *adminCredential) {
+	if c.serial == "" {
+		return
+	}
+	revoker, ok := deps.Signer.(certRevoker)
+	if !ok {
+		return
+	}
+	serial := c.serial
+	undo.push("revoke admin certificate "+serial, func(ctx context.Context) error {
+		_, err := revoker.RevokeCert(ctx, serial)
+		return err
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -661,7 +920,7 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strategy seal
 		// volume-pool / per-tenant Pebble allocation — the same mechanism
 		// RegisterTenantPooledWithStrategy uses — so embedders get
 		// persistence by default. If the registry was not constructed with
-		// a volume pool (see seal.WithVolumePool / WithPerTenantRegistry),
+		// a volume allocator (see seal.WithVolumeAllocator / WithPerTenantRegistry),
 		// RegisterTenant fails closed with ErrPoolNotConfigured /
 		// ErrPerTenantRegistryNotConfigured rather than silently degrading
 		// to a non-durable backend.
@@ -932,65 +1191,4 @@ func tenantRoleResolver(deps Dependencies) role.NameResolver {
 		return r
 	}
 	return nil
-}
-
-// enrollAdminCert issues, thumbprints, and binds a tenant-admin certificate
-// via the firstboot admin-mTLS seams. It selects Path B (CSR-sign) when a CSR
-// PEM is supplied and a Signer is configured, else Path A (generate) via the
-// CA. When neither path is configured, it is a no-op.
-func enrollAdminCert(ctx context.Context, deps Dependencies, tenantID, subject string, csrPEM []byte, adminUser *user.User, result *TenantProvisionResult) error {
-	var (
-		certPEM []byte
-		keyPEM  []byte
-	)
-	switch {
-	case len(csrPEM) > 0 && deps.Signer != nil:
-		signed, err := deps.Signer.SignAdminCSR(ctx, tenantID, subject, csrPEM)
-		if err != nil {
-			return &TenantAdminCertError{Cause: err}
-		}
-		certPEM = signed
-	case deps.CA != nil:
-		c, k, err := deps.CA.GenerateAdminCert(ctx, tenantID, subject)
-		if err != nil {
-			return &TenantAdminCertError{Cause: err}
-		}
-		certPEM, keyPEM = c, k
-	default:
-		return nil
-	}
-
-	if len(certPEM) == 0 {
-		return nil
-	}
-
-	thumbprint, err := spkiThumbprintFromCertPEM(certPEM)
-	if err != nil {
-		return &TenantAdminCertError{Cause: err}
-	}
-	result.AdminCertPEM = certPEM
-	result.AdminKeyPEM = keyPEM
-	result.AdminCertThumbprint = thumbprint
-
-	if deps.Binder != nil && adminUser != nil {
-		if bindErr := deps.Binder.BindAdminCert(ctx, tenantID, adminUser.ID, thumbprint); bindErr != nil {
-			return &TenantAdminCertError{Cause: bindErr}
-		}
-		deps.Logger.Info("bootstrap: tenant-admin cert bound",
-			slog.String("tenant", tenantID),
-			slog.Uint64("user_id", adminUser.ID))
-	}
-	deps.Logger.Info("bootstrap: tenant-admin cert issued",
-		slog.String("tenant", tenantID),
-		slog.String("subject", subject),
-		slog.Bool("csr_signed", len(csrPEM) > 0))
-
-	return nil
-}
-
-// spkiThumbprintFromCertPEM parses a PEM certificate and returns its
-// canonical SPKI thumbprint. Delegates to the one stack-wide implementation,
-// user.ComputeSPKIThumbprintFromCertPEM.
-func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
-	return user.ComputeSPKIThumbprintFromCertPEM(certPEM)
 }

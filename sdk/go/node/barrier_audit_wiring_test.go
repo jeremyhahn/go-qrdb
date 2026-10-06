@@ -36,7 +36,7 @@ func TestBuildNodeSealSubsystem_BarriersRecordOnTheCallersTrail(t *testing.T) {
 	cfg.Seal.RootKeyPath = "root-key"
 	trail := audit.NewRingBuffer(32)
 
-	sub, err := buildNodeSealSubsystem(ctx, cfg, t.TempDir(), slog.Default(), nil, false, trail)
+	sub, err := buildNodeSealSubsystem(ctx, cfg, t.TempDir(), slog.Default(), nil, trail)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,7 +33,6 @@ package embedded
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -558,12 +557,36 @@ func (s *scopedBatch) ExecuteWithMode(ctx context.Context, a1 []service.Op, a2 w
 	return svc.ExecuteWithMode(ctx, a1, a2)
 }
 
-func (s *scopedBatch) Import(ctx context.Context, a1 io.Reader, a2 service.ImportOptions) (*service.ImportResult, error) {
+func (s *scopedBatch) ImportAbort(ctx context.Context, a1 string) error {
+	svc, err := s.scope.registry.BatchService(s.scope.tenant(ctx), s.scope.database)
+	if err != nil {
+		return err
+	}
+	return svc.ImportAbort(ctx, a1)
+}
+
+func (s *scopedBatch) ImportAppend(ctx context.Context, a1 string, a2 uint64, a3 []byte) error {
+	svc, err := s.scope.registry.BatchService(s.scope.tenant(ctx), s.scope.database)
+	if err != nil {
+		return err
+	}
+	return svc.ImportAppend(ctx, a1, a2, a3)
+}
+
+func (s *scopedBatch) ImportBegin(ctx context.Context, a1 service.ImportOptions) (string, error) {
+	svc, err := s.scope.registry.BatchService(s.scope.tenant(ctx), s.scope.database)
+	if err != nil {
+		return "", err
+	}
+	return svc.ImportBegin(ctx, a1)
+}
+
+func (s *scopedBatch) ImportCommit(ctx context.Context, a1 string) (*service.ImportResult, error) {
 	svc, err := s.scope.registry.BatchService(s.scope.tenant(ctx), s.scope.database)
 	if err != nil {
 		return nil, err
 	}
-	return svc.Import(ctx, a1, a2)
+	return svc.ImportCommit(ctx, a1)
 }
 
 // scopedWatch resolves the service.WatchServicer for the caller's (tenant, database) on

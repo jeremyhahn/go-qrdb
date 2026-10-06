@@ -60,6 +60,10 @@ type TenantEntitlements struct {
 	// AllowDedicatedWAL permits a tenant to opt a dedicated-raft database into
 	// a dedicated WAL group (requires AllowDedicatedRaft).
 	AllowDedicatedWAL bool `json:"allow_dedicated_wal,omitempty"`
+	// AllowedVolumePools lists the named volume pools a volume/raft tenant
+	// may be placed on; the first entry is its default. Fail-closed: empty
+	// entitles no pool.
+	AllowedVolumePools []string `json:"allowed_volume_pools,omitempty"`
 }
 
 // TenantIsolationType controls the data isolation strategy for a tenant.
@@ -80,14 +84,25 @@ type TenantInfo struct {
 	ID            string              `json:"id"`
 	Name          string              `json:"name"`
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
-	// DataRoot is the dedicated filesystem root for an IsolationVolume /
-	// IsolationRaft tenant, whether pool-allocated or pinned via
-	// CreateTenantRequest.DataRoot. Empty for prefix/barrier tenants.
-	DataRoot     string              `json:"data_root,omitempty"`
+	// VolumePool is the named volume pool for an IsolationVolume /
+	// IsolationRaft tenant. Empty for prefix/barrier tenants.
+	VolumePool   string              `json:"volume_pool,omitempty"`
 	Quotas       *TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements *TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAt    time.Time           `json:"created_at"`
 	UpdatedAt    time.Time           `json:"updated_at"`
+	// Refusal is set when the answering node will not serve this tenant's
+	// data; nil otherwise. Another node may still serve it.
+	Refusal *TenantRefusal `json:"refusal,omitempty"`
+}
+
+// TenantRefusal is the answering node's own view of why it will not serve
+// a tenant's dedicated-isolation data (pkg/tenant.Refusal's wire form).
+type TenantRefusal struct {
+	// Code is stable: "pool_unavailable" | "provider_missing".
+	Code string `json:"code"`
+	// Message is the typed error's text, for display only -- never parsed.
+	Message string `json:"message"`
 }
 
 // CreateTenantRequest contains parameters for creating a tenant.
@@ -99,11 +114,26 @@ type CreateTenantRequest struct {
 	// the system-managed auto-unseal key-management mode (entitlement-gated).
 	// The default (false) is the secure self-managed mode.
 	BarrierAutoUnseal bool `json:"barrier_auto_unseal,omitempty"`
-	// DataRoot pins an IsolationVolume/IsolationRaft tenant's dedicated
-	// filesystem DataRoot to this operator-supplied absolute path instead of
-	// pool allocation. Empty (the default) allocates from the configured
-	// volume pool. Rejected for prefix/barrier isolation.
-	DataRoot string `json:"data_root,omitempty"`
+	// VolumePool names the volume pool an IsolationVolume/IsolationRaft
+	// tenant is placed on. Empty (the default) uses the tenant's default
+	// pool, the first entry of its AllowedVolumePools. Rejected for
+	// prefix/barrier isolation.
+	VolumePool string `json:"volume_pool,omitempty"`
+
+	// AdminUsername is the tenant's first admin. Required: a tenant is
+	// created with its first admin's login credential, or not at all.
+	AdminUsername string `json:"admin_username"`
+	// AdminCSRPEM is the admin's certificate signing request, signed by the
+	// tenant's own CA; the admin keeps its key. Exactly one of this and
+	// AdminCertPEM.
+	AdminCSRPEM string `json:"admin_csr_pem,omitempty"`
+	// AdminCertPEM is the admin's own certificate, leaf first; it must chain
+	// to one of TrustAnchorsPEM.
+	AdminCertPEM string `json:"admin_cert_pem,omitempty"`
+	// AdminChainPEM holds intermediates for AdminCertPEM.
+	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
+	// TrustAnchorsPEM registers the tenant's trust anchors with it.
+	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
 }
 
 // UpdateTenantRequest contains the mutable fields for updating a tenant.
@@ -122,6 +152,54 @@ type UpdateTenantResponse struct {
 // CreateTenantResponse contains the created tenant.
 type CreateTenantResponse struct {
 	Tenant TenantInfo `json:"tenant"`
+
+	// Admin is the tenant's first admin as onboarding left it.
+	Admin TenantAdminCredential `json:"admin"`
+}
+
+// TenantAdminCredential is a tenant's first admin and the login certificate
+// bound to it. There is never a private key: the admin keeps its own.
+type TenantAdminCredential struct {
+	// UserID is zero while AwaitsBarrierInit.
+	UserID   uint64 `json:"user_id,omitempty,string"`
+	Username string `json:"username"`
+	// CertPEM is the admin's certificate: signed from the CSR, or the
+	// bring-your-own one as enrolled.
+	CertPEM string `json:"cert_pem"`
+	// Serial is empty for a bring-your-own certificate.
+	Serial     string `json:"serial,omitempty"`
+	Thumbprint string `json:"thumbprint"`
+	// AwaitsBarrierInit: the tenant keeps its identity records behind its own
+	// barrier, so the admin's account is created when the admin initializes
+	// it -- which only this certificate may do.
+	AwaitsBarrierInit bool `json:"awaits_barrier_init,omitempty"`
+}
+
+// TrustAnchor is one of a tenant's registered trust anchors: a CA that may
+// vouch for that tenant's users' bring-your-own login certificates, and no
+// other tenant's.
+type TrustAnchor struct {
+	// Fingerprint is the lowercase hex SHA-256 of the certificate's DER;
+	// RemoveTrustAnchor takes it.
+	Fingerprint string    `json:"fingerprint"`
+	Subject     string    `json:"subject"`
+	NotBefore   time.Time `json:"not_before"`
+	NotAfter    time.Time `json:"not_after"`
+	CertPEM     string    `json:"cert_pem"`
+	// AddedAt is zero for an anchor store that does not record it.
+	AddedAt time.Time `json:"added_at,omitzero"`
+}
+
+// AddTrustAnchorsRequest registers every CA certificate in CertsPEM as a
+// trust anchor of TenantID, which must be the caller's own tenant.
+type AddTrustAnchorsRequest struct {
+	TenantID string `json:"-"`
+	CertsPEM string `json:"certs_pem"`
+}
+
+// TrustAnchorList is a tenant's trust anchors.
+type TrustAnchorList struct {
+	Anchors []TrustAnchor `json:"anchors"`
 }
 
 // GetTenantResponse contains a tenant.
@@ -144,9 +222,9 @@ type DeletedTenant struct {
 	Name string `json:"name,omitempty"`
 	// IsolationType is the isolation the deleted tenant used.
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
-	// DataRoot is the dedicated filesystem root the deleted tenant occupied on
-	// the node that deleted it; empty for prefix and barrier isolation.
-	DataRoot string `json:"data_root,omitempty"`
+	// VolumePool is the named volume pool the deleted tenant was placed on;
+	// empty for prefix and barrier isolation.
+	VolumePool string `json:"volume_pool,omitempty"`
 	// CreatedAt is when the deleted tenant was created; zero when unrecorded.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// DeletedAt is when the id was retired; zero when the record could not be

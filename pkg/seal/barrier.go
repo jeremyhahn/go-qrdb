@@ -138,6 +138,13 @@ type StorageBarrier struct {
 	unsealedMu        sync.Mutex
 	unsealedObservers []func(context.Context)
 
+	// sealingObservers run once, synchronously, at the start of each call to
+	// Seal, before the EpochBarrier zeroes the root key (OnSealing). A
+	// failing observer is folded into Seal's returned error but never
+	// prevents the wipe: see notifySealing.
+	sealingMu        sync.Mutex
+	sealingObservers []func(context.Context) error
+
 	// state: 0 = sealed, 1 = unsealed
 	state atomic.Int32
 
@@ -639,6 +646,12 @@ func (b *StorageBarrier) Seal() error {
 		return nil // already sealed, idempotent
 	}
 
+	// Run the sealing observers (e.g. a VolumeLifecycle locking this node's
+	// pool volumes) while the root key is still live, and BEFORE the
+	// EpochBarrier zeroes it below. A failing observer is reported to the
+	// caller but never blocks the wipe: see notifySealing.
+	sealingErr := b.notifySealing(context.Background())
+
 	// Seal the EpochBarrier (zeroes root key and DEKs).
 	_ = b.barrier.Seal()
 
@@ -648,7 +661,7 @@ func (b *StorageBarrier) Seal() error {
 		"allow", nil)
 
 	b.logger.Info("barrier sealed")
-	return nil
+	return sealingErr
 }
 
 // IsSealed reports whether the barrier is in sealed state.
@@ -1324,4 +1337,41 @@ func (b *StorageBarrier) notifyUnsealed(ctx context.Context) {
 	for _, fn := range observers {
 		fn(ctx)
 	}
+}
+
+// OnSealing registers fn to run each time this barrier seals -- explicitly
+// or through SealAll -- before the EpochBarrier zeroes the root key. The
+// barrier registry's VolumeLifecycle uses it on the system barrier to lock
+// this node's pool volumes while they can still be told to, after their
+// stores have been closed by the rest of the seal path and before this
+// barrier's own key material is wiped.
+//
+// A registered fn that returns an error does not stop the seal: the error
+// is folded into Seal's return value (and audited) so the failure is
+// visible to the caller and to the cluster-wide seal aggregation in
+// pkg/service, but the root key is wiped regardless. Seal always completes.
+func (b *StorageBarrier) OnSealing(fn func(context.Context) error) {
+	b.sealingMu.Lock()
+	b.sealingObservers = append(b.sealingObservers, fn)
+	b.sealingMu.Unlock()
+}
+
+// notifySealing runs the OnSealing observers and joins their errors. Each
+// failing observer is also audited individually so the record names which
+// one failed, since errors.Join's combined message does not preserve that
+// by itself for every renderer.
+func (b *StorageBarrier) notifySealing(ctx context.Context) error {
+	b.sealingMu.Lock()
+	observers := slices.Clone(b.sealingObservers)
+	b.sealingMu.Unlock()
+
+	var joined error
+	for _, fn := range observers {
+		if err := fn(ctx); err != nil {
+			emitAudit(b.config.AuditLogger, "seal", "barrier", b.config.RootKeyPath,
+				"deny", map[string]string{"error": err.Error(), "phase": "sealing-observer"})
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
 }

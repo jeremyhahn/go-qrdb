@@ -16,32 +16,46 @@ package quic
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
 // Cert wire types
 // ---------------------------------------------------------------------------
 
-// generateCertWireRequest is the JSON wire payload for cert.Generate.
-type generateCertWireRequest struct {
+// issueCertWireRequest is the JSON wire payload for cert.Issue: a CSR for an
+// existing account of the caller's own tenant.
+type issueCertWireRequest struct {
 	Username string `json:"username"`
-	TenantID string `json:"tenantID"`
-	TTL      string `json:"ttl"`
+	CSRPEM   string `json:"csrPEM"`
+	TTL      string `json:"ttl,omitempty"`
 }
 
-// exportCertWireRequest is the JSON wire payload for cert.Export. The client
-// must supply the PEM-encoded certificate and key received from the generate
-// endpoint, as the server does not retain private keys.
-type exportCertWireRequest struct {
-	CertPEM    string `json:"certPEM"`
-	KeyPEM     string `json:"keyPEM"`
-	Passphrase string `json:"passphrase"`
+// enrollCertWireRequest is the JSON wire payload for cert.Enroll: a
+// bring-your-own certificate (leaf first) and optional intermediates.
+type enrollCertWireRequest struct {
+	Username string `json:"username"`
+	CertPEM  string `json:"certPEM"`
+	ChainPEM string `json:"chainPEM,omitempty"`
+}
+
+// enrolledCertWireResponse is a certificate now bound to an account. There is
+// no key: the requester keeps its own.
+type enrolledCertWireResponse struct {
+	UserID     uint64    `json:"userID,string"`
+	Username   string    `json:"username"`
+	TenantID   string    `json:"tenantID"`
+	CertPEM    string    `json:"certPEM"`
+	Serial     string    `json:"serial,omitempty"`
+	Thumbprint string    `json:"thumbprint"`
+	NotAfter   time.Time `json:"notAfter"`
 }
 
 // revokeCertWireRequest is the JSON wire payload for cert.Revoke.
@@ -61,21 +75,6 @@ type revokeCertWireResponse struct {
 // listCertsWireRequest is the JSON wire payload for cert.List.
 type listCertsWireRequest struct {
 	TenantID string `json:"tenantID"`
-}
-
-// certBundleWireResponse is the JSON wire representation of a generated
-// certificate bundle containing the PEM-encoded certificate, key, and
-// serial number.
-type certBundleWireResponse struct {
-	CertPEM string `json:"certPEM"`
-	KeyPEM  string `json:"keyPEM"`
-	Serial  string `json:"serial"`
-}
-
-// exportCertWireResponse is the JSON wire representation of a PKCS#12
-// export. The PKCS12 field contains the base64-encoded archive bytes.
-type exportCertWireResponse struct {
-	PKCS12 string `json:"pkcs12"`
 }
 
 // certRecordWireResponse is the JSON wire representation of an issued
@@ -128,47 +127,22 @@ func (s *Server) authorizeCertRevoke(ctx context.Context, serial string) error {
 	return s.authMW.AuthorizeCertRevoke(ctx, serial, s.certProv)
 }
 
-// handleGenerateCert unmarshals a JSON generate cert request, creates a
-// client certificate signed by the internal CA, and returns a serialized
-// JSON certificate bundle response.
-func (s *Server) handleGenerateCert(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.certProv == nil {
-		return nil, &ServiceNotConfiguredError{Service: "cert"}
-	}
+// callerTenant is the tenant every certificate enrolment verb acts on: the
+// caller's own. The certs verbs are ScopeSelfStrict, so no request names
+// another.
+func callerTenant(ctx context.Context) string {
+	return tenantid.Normalize(tenant.FromContext(ctx))
+}
 
-	var req generateCertWireRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
-		return nil, &UnmarshalError{Err: err}
-	}
-
-	genReq := &cert.GenerateRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-	}
-
-	if req.TTL != "" {
-		ttl, err := time.ParseDuration(req.TTL)
-		if err != nil {
-			return nil, &InvalidTTLError{Value: req.TTL, Err: err}
-		}
-		genReq.TTL = ttl
-	}
-
-	// The request's tenantID becomes the certificate's Subject OU, and the
-	// mTLS authenticator derives an identity's tenant from that OU.
-	if err := s.authorizeCertTenant(ctx, genReq.TenantID, permission.CertsGenerate); err != nil {
-		return nil, err
-	}
-
-	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
-	if err != nil {
-		return nil, err
-	}
-
-	out, err := json.Marshal(certBundleWireResponse{
-		CertPEM: string(bundle.CertPEM),
-		KeyPEM:  string(bundle.KeyPEM),
-		Serial:  bundle.Serial,
+func marshalEnrolled(e *service.EnrolledCertificate) ([]byte, error) {
+	out, err := json.Marshal(enrolledCertWireResponse{
+		UserID:     e.UserID,
+		Username:   e.Username,
+		TenantID:   e.TenantID,
+		CertPEM:    string(e.CertPEM),
+		Serial:     e.Serial,
+		Thumbprint: e.Thumbprint,
+		NotAfter:   e.NotAfter,
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
@@ -176,37 +150,65 @@ func (s *Server) handleGenerateCert(ctx context.Context, payload []byte) ([]byte
 	return out, nil
 }
 
-// handleExportCert unmarshals a JSON export cert request, exports the
-// certificate and private key as a PKCS#12 archive for browser import,
-// and returns a serialized JSON response containing the base64-encoded
-// archive.
-func (s *Server) handleExportCert(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.certProv == nil {
-		return nil, &ServiceNotConfiguredError{Service: "cert"}
+// handleIssueCert issues a certificate from a CSR for an existing account of
+// the caller's own tenant, signed by that tenant's own Key B CA, and binds
+// it. The requester keeps its private key.
+func (s *Server) handleIssueCert(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.certEnroll == nil {
+		return nil, &ServiceNotConfiguredError{Service: "cert enrollment"}
 	}
-
-	var req exportCertWireRequest
+	var req issueCertWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-
-	p12Bytes, err := s.certProv.ExportPKCS12(
-		ctx,
-		[]byte(req.CertPEM),
-		[]byte(req.KeyPEM),
-		req.Passphrase,
-	)
+	var ttl time.Duration
+	if req.TTL != "" {
+		d, err := time.ParseDuration(req.TTL)
+		if err != nil {
+			return nil, &InvalidTTLError{Value: req.TTL, Err: err}
+		}
+		ttl = d
+	}
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsIssue); err != nil {
+		return nil, err
+	}
+	enrolled, err := s.certEnroll.SignCertificate(ctx, &service.SignCertificateRequest{
+		TenantID: tenantID,
+		Username: req.Username,
+		CSRPEM:   []byte(req.CSRPEM),
+		TTL:      ttl,
+	})
 	if err != nil {
 		return nil, err
 	}
+	return marshalEnrolled(enrolled)
+}
 
-	out, err := json.Marshal(exportCertWireResponse{
-		PKCS12: base64.StdEncoding.EncodeToString(p12Bytes),
+// handleEnrollCert binds a bring-your-own certificate to an existing account
+// of the caller's own tenant, verified against the tenant's trust anchors.
+func (s *Server) handleEnrollCert(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.certEnroll == nil {
+		return nil, &ServiceNotConfiguredError{Service: "cert enrollment"}
+	}
+	var req enrollCertWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsEnroll); err != nil {
+		return nil, err
+	}
+	enrolled, err := s.certEnroll.EnrollCertificate(ctx, &service.EnrollCertificateRequest{
+		TenantID: tenantID,
+		Username: req.Username,
+		CertPEM:  []byte(req.CertPEM),
+		ChainPEM: []byte(req.ChainPEM),
 	})
 	if err != nil {
-		return nil, &MarshalError{Err: err}
+		return nil, err
 	}
-	return out, nil
+	return marshalEnrolled(enrolled)
 }
 
 // handleRevokeCert unmarshals a JSON revoke cert request, marks the

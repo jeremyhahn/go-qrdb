@@ -151,9 +151,10 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 	// nobody decided about.
 	copied := map[string]bool{}
 	for _, n := range []string{"kvSvc", "adminSvc", "mvccSvc", "txSvc", "batchSvc", "watchSvc", "leaseSvc",
-		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "certProv", "dbSvc", "barrierSvc", "pinBackend",
+		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "certProv", "certEnroll", "onboarding",
+		"dbSvc", "barrierSvc", "pinBackend",
 		"dekSvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",
-		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "lockSvc", "custodianGroupSvc", "shareSvc",
+		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "volumeSvc", "lockSvc",
 		"authFactorSvc", "auditLogger", "encMigrator", "registry", "rbacAuthz", "authMW", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",
 		"nowFunc", "standalone", "sealProbe", "awaitingAdminCredentialProbe", "sealStreams", "forwarding"} {

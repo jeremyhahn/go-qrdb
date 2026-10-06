@@ -1,6 +1,6 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Issuing, exporting and revoking the client certificates that authenticate every
 caller. Authentication is mTLS throughout the store, so this is the feature that
@@ -19,7 +19,8 @@ implementation**, and a composition seam for a real one.
 
 ```go
 type CertProvider interface {
-	GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error)
+	// IssueClientCert certifies req.PublicKey; it never generates a key.
+	IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error)
 	// ExportPKCS12 refuses with *CertRevokedError when certPEM's serial is revoked.
 	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
 	// RevokeCert reports what it found through RevokeResult, not the error
@@ -43,6 +44,31 @@ HSM-backed CA keys (TPM2, PKCS#11, cloud KMS), extended certificate profiles,
 certificate transparency logging — injected through `WithCertProvider`. **The
 `CertProvider` interface is the boundary; go-qrdb never depends on go-xkms
 directly.**
+
+### No private key leaves the server, because none is made there
+
+Every client certificate the issuance verbs and tenant onboarding produce is
+for a key its holder generated:
+
+- **Issue** (`certs:issue`) signs a certificate signing request. The CSR's own
+  signature proves the requester holds the key; nothing else in it is used —
+  the certificate's Subject and SAN name the account the issuer names.
+- **Enrol** (`certs:enroll`) takes a certificate the requester already holds,
+  issued by an outside CA the tenant registered as a trust anchor (see
+  [../trust-anchors/](../trust-anchors/architecture.md)), and verifies it
+  chains there and names exactly that account.
+- **A tenant's first admin** supplies one of the two at tenant creation (see
+  [../multi-tenancy/](../multi-tenancy/architecture.md)).
+
+Both verbs act on an **existing** account of the caller's own tenant and bind
+the certificate's SPKI thumbprint to it in the same call, so an issued
+certificate is never left bound to nobody: if the binding fails after a
+certificate was signed, that serial is revoked.
+
+**BREAKING:** this replaces `GenerateClientCert` and `certs:generate`, which
+generated the client's private key on the server and returned it alongside the
+certificate. A server that generates keys holds every key it hands out, if only
+for an instant, and a response that carries one is a credential in transit.
 
 ### Alternatives rejected
 
@@ -230,33 +256,40 @@ what bounds a namespace that would otherwise only grow.
 
 A permission answers "may this caller do this kind of thing". It does **not**
 answer "to whose certificates", and on this surface those are different
-questions, because one process-wide `CertProvider` serves every tenant. Three
-of the four certs verbs name their target **in the request**:
+questions, because one process-wide `CertProvider` serves every tenant. Where
+the target comes from differs per verb:
 
 | Verb | Where the target tenant comes from | Gate |
 |---|---|---|
-| `certs:generate` | the request's `tenantID` | authorized against that tenant |
+| `certs:issue`, `certs:enroll` | **the caller's own tenant** — no request names one | authorized against it |
 | `certs:list` | the request's `tenantID` | authorized against that tenant |
 | `certs:revoke` | **resolved from the serial** | authorized against the owning tenant |
 | `certs:export` | nowhere — none is named | none needed (see below) |
 
-`certs:generate` and `certs:list` are checked against the tenant the request
-names, not the tenant the caller is in. `certs:generate` matters most: the
-`tenantID` becomes the certificate's Subject **OU**, and the mTLS authenticator
-derives an identity's tenant from exactly that OU, so an unchecked cross-tenant
-mint would hand the caller a CA-signed credential for another tenant rather
-than merely misfiling a record.
+`certs:list` is checked against the tenant the request names, not the tenant
+the caller is in. Issuance takes no tenant at all: the tenant becomes the
+certificate's Subject **OU**, and the mTLS authenticator derives an identity's
+tenant from exactly that OU, so a cross-tenant mint would hand the caller a
+CA-signed credential for another tenant rather than merely misfiling a record.
+`certs:issue` and `certs:enroll` therefore always act on the caller's own
+tenant, and the account they name must exist there.
+
+**BREAKING:** `certs:generate` took the target tenant from the request
+(`tenantID`, `--tenant-id`) and re-checked the permission against it. That
+field and flag are gone with the verb.
 
 **The target must be the caller's own tenant, for every caller.** The `certs:*`
 verbs are `ScopeSelfStrict` (see
 [../identity-rbac/engineering.md](../identity-rbac/engineering.md)): the
-system-tenant rule does **not** lift them. A system-tenant Admin generates,
+system-tenant rule does **not** lift them. A system-tenant Admin issues,
 lists and revokes the system tenant's certificates and no one else's; a
 certificate it minted for another tenant's user would authenticate as that
-user. There is no platform provisioning path that mints for a tenant — each
-tenant's own Admin issues its own users' certificates. The embedded transport,
-which runs no authorization middleware, applies the same rule to the caller in
-its context (`tenant.Confine`).
+user. The one platform path that certifies a key for another tenant is tenant
+creation, and only for that tenant's first admin, from the admin's own CSR or
+certificate (see [../multi-tenancy/](../multi-tenancy/architecture.md)); after
+that, each tenant's own Admin issues its own users' certificates. The embedded
+transport, which runs no authorization middleware, applies the same rule to the
+caller in its context (`tenant.Confine`).
 
 **BREAKING:** before this rule, `certs:generate`, `certs:list` and
 `certs:revoke` were `ScopeSelf`, and a system-tenant identity could act on any
@@ -271,10 +304,11 @@ issued for a different key does not authenticate as it, whatever this CA
 signed. That is what keeps the severity of a future unguarded issuance path at
 "a bad certificate exists" rather than "an identity was handed out".
 
-It holds only for enrolled accounts, which is why **issuing a client
-certificate and enrolling it are two steps and both are the operator's**.
-`GenerateClientCert` writes no binding: `POST /users/{id}/cert-bindings` does,
-and until it runs the certificate authenticates on its CN and OU alone.
+It holds only for enrolled accounts. The issue and enrol verbs write the
+binding themselves, in the same call. `IssueClientCert` — the provider
+primitive, which an embedder may call directly — writes none: a certificate
+issued that way authenticates on its CN and OU alone until
+`POST /users/{id}/cert-bindings` binds it.
 
 **Revocation does not unenrol a key, and is not meant to.** A binding is over
 the `SubjectPublicKeyInfo`, so it outlives every certificate issued for that
@@ -343,7 +377,7 @@ cross-tenant request.
 | Property | Value |
 |---|---|
 | CA key algorithm | ECDSA P-256 |
-| Client key algorithm | ECDSA P-256 |
+| Client key | the requester's own: ECDSA P-256/384/521, RSA of at least 2048 bits, or Ed25519 (`cert.CheckClientKey`); the CLI generates ECDSA P-256 |
 | CA validity | 10 years |
 | Default client validity | 1 year |
 | Client `ExtKeyUsage` | **ClientAuth only** |
@@ -403,12 +437,12 @@ The certificate **is** the identity:
   domain — present only when `auth.spiffe_trust_domain` is set.
 - The **SPKI thumbprint** is what a user record binds to.
 
-### Which derivation a generated certificate uses
+### Which derivation an issued certificate uses
 
 The mTLS authenticator derives a tenant from the tenant-scoped SPIFFE URI SAN
 (`spiffe://<trust-domain>/tenant/<tenant>/<kind>/<name>`) when one is present,
 with the configured trust domain **pinned**, and from the first Subject OU
-otherwise. What `GenerateClientCert` emits decides which of the two resolves
+otherwise. What `IssueClientCert` emits decides which of the two resolves
 the certificates this CA issues:
 
 | `auth.spiffe_trust_domain` | Certificate carries | Tenant resolves through |
@@ -428,11 +462,11 @@ separate shape (`spiffe://<trust-domain>/node/<id>`) minted by the daemon's
 node-certificate path and never by this one.
 
 **Neither of qrdb's CAs mints a certificate whose SAN and OU disagree.** The
-built-in CA's `GenerateClientCert` refuses one, and the ceremony CA's `SignCSR`
+built-in CA's `IssueClientCert` refuses one, and the ceremony CA's `SignCSR`
 signs no SAN at all; a certificate issued by a CA outside qrdb is outside this
 guarantee, and
 the authenticator's trust-domain pin is what bounds those. For
-`GenerateClientCert` the SAN is built,
+`IssueClientCert` the SAN is built,
 then parsed back with the same parser the authenticator applies to a presented
 certificate, and it must return exactly the tenant, kind and name that were
 asked for — before the CA key is touched. A path separator in the tenant or the
@@ -495,9 +529,9 @@ keeps authenticating when it is re-issued with the SAN added.
 `auth.spiffe_trust_domain`; a node whose CA minted under one domain while its
 authenticator pinned another would refuse every certificate it issued.
 
-The OU line is why `certs:generate` is gated on the tenant the request names
-rather than on the caller's own: minting a certificate for a tenant is minting
-a credential that authenticates as that tenant. See
+The OU line is why issuance acts only on the caller's own tenant: minting a
+certificate for a tenant is minting a credential that authenticates as that
+tenant. See
 [Which tenant a certs call may act on](#which-tenant-a-certs-call-may-act-on).
 
 That is why issuance is a privileged operation and why revocation matters: there
@@ -543,10 +577,9 @@ Seal
   ├─ nil CA key reference (the cached certificate, public data, is NOT cleared)
   └─ All operations return BarrierSealedError
 
-Generate Certificate (barrier unsealed)
+Issue Certificate (barrier unsealed)
   ├─ getCAMaterial() → this tenant's own crypto.Signer + cert, resolved fresh
-  ├─ Generate ECDSA P-256 client key pair
-  ├─ x509.CreateCertificate(CA signs client)
+  ├─ x509.CreateCertificate(CA signs the requester's public key)
   ├─ Persist CertRecord to KVStore
 
 ## The CA key provider seam (`pkg/cakey`)
@@ -573,7 +606,7 @@ type Provider interface {
 
 This is the minimum every existing signing seam in this repository already
 needs: `ceremony.CeremonyCA`'s `SignCSR`/`IssueCertificate`, `cert.CertProvider`'s
-`GenerateClientCert`, and `clustertls`'s node-leaf issuance all reduce to "get
+`IssueClientCert`, and `clustertls`'s node-leaf issuance all reduce to "get
 a signer, get the CA cert, call `x509.CreateCertificate`." Three separate
 paths converge on it rather than growing a fourth:
 
@@ -1001,6 +1034,12 @@ the other:
      with no established CA answers false, never auto-creating one just to
      answer the probe).
 
+  Failing those, the chain may contain one of **that tenant's registered
+  trust anchors** at any depth above the leaf, which is why
+  `VerifyIssuer(ctx, tenantID, chain)` takes the whole verified chain rather
+  than the issuer alone (**BREAKING** for an `auth.IssuerVerifier`
+  implementer). See [../trust-anchors/engineering.md](../trust-anchors/engineering.md).
+
   A mismatch is `*auth.IssuerTenantMismatchError`, matching
   `ErrInvalidCertificate` like `CertificateTenantError`.
 - `AuthMiddleware.authenticateOnBehalf` calls `IsClusterCA` directly against
@@ -1038,7 +1077,7 @@ provider.
 - **`getCAMaterial()` resolves the SPECIFIC tenant's CA directly** through
   the `cakey.Provider` it just resolved (`prov.Signer`/`prov.Certificate`),
   never through any shared, process-wide cache. Two different tenants'
-  calls can interleave — `getCAMaterial` is called from `GenerateClientCert`
+  calls can interleave — `getCAMaterial` is called from `IssueClientCert`
   and `ExportPKCS12`, neither of which holds any lock across the call — so
   returning anything other than THIS resolution's own answer would risk
   handing one tenant's caller a different tenant's CA certificate.
@@ -1061,14 +1100,15 @@ provider.
   that makes "does it already exist" and "write it" one indivisible step,
   so two callers racing the first-ever issuance for a brand-new tenant
   converge on exactly one CA rather than each writing its own candidate.
-- **Client private key DER is wiped immediately after PEM encoding.**
+- **No client private key exists on the server.** `IssueClientCert` is handed
+  a public key; the private half never reaches it.
 - **`CACertPEMs()` checks the barrier explicitly** and refuses with
   `BarrierSealedError` while sealed: outside Raft mode the plaintext
   records are reachable even while sealed, and a runtime reseal must make
   the dynamic client-auth trust pool drop Key B immediately, not merely
   whenever the underlying store happens to become unreadable.
-- Issuance, revocation and listing are separately permissioned
-  (`certs:generate`, `certs:revoke`, `certs:list`).
+- Issuance, enrolment, revocation and listing are separately permissioned
+  (`certs:issue`, `certs:enroll`, `certs:revoke`, `certs:list`).
 - **An injected `cakey.ProviderFactory` (`WithKeyProviderFactory` /
   `WithCertKeyProviderFactory`) replaces the built-in per-tenant default
   one tenant at a time, never with one shared CA** (owner ruling — this

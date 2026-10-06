@@ -3,7 +3,8 @@
 This directory runs [go-gorm/gorm](https://github.com/go-gorm/gorm)'s own
 upstream test suite against qrdb, over three surfaces:
 
-- **node** — qrdb's native GORM dialector (`sdk/go/gorm`) over a complete
+- **node** — the stock [`gorm.io/driver/mysql`](https://gorm.io/driver/mysql)
+  dialector, configured by `sdk/go/gorm`'s `NewConfig`, over a complete
   in-process qrdb node (`node://`, registered by `sdk/go/driver/node`):
   Raft state machine, service registry, relational table catalog, interactive
   transactions, every protocol server disabled. No `qrdbd` subprocess.
@@ -115,8 +116,9 @@ exercised a specific target.
 
 `GORM_SUITE.lock` pins `v1.31.2` — the latest `gorm.io/gorm` tag at the time
 this harness was built, and deliberately the *exact* version `sdk/go/go.mod`
-already requires for the dialector itself. Testing against any other gorm
-version would exercise a combination no qrdb consumer actually runs.
+already requires for `sdk/go/gorm`, which configures the stock dialector.
+Testing against any other gorm version would exercise a combination no qrdb
+consumer actually runs.
 
 `gorm.io/gorm/tests` is not a resolvable Go module path (it nests its own
 `go.mod`, so `go get`/`go list -m` 404 on it) and the `gorm.io/gorm` module
@@ -198,6 +200,76 @@ test (`TestOpen`) and temporarily removing a real failing entry
 non-zero exit before being reverted.
 
 ## Observed results
+
+### node on the stock dialector — 382 / 0 / 18 (2026-10-01)
+
+Since 2026-10-01 the node target runs the stock `gorm.io/driver/mysql`
+dialector over the in-process driver; qrdb's own dialector is gone. `make
+conformance-test-gorm-node` reported:
+
+```
+gorm-conformance[node]: ran=400 passed=382 expected-fail=0 unexpected-fail=0 skipped=18 abort-skipped=0 unstable-passed=0 stale=0 budget=0/0
+```
+
+`TestGenericsPreloads` and `TestGenericsNestedPreloads` now pass, because
+`DB.Dialector` genuinely is `*mysql.Dialector`, and the whole suite runs with
+no `-skip`.
+
+**Every target runs in pessimistic SQL concurrency** (`sqlConcurrency` in
+`qrdb_tests_test.go`; `docs/row-locking`): the node target through its DSN,
+the wire targets by creating the `gorm` database with
+`--sql-concurrency pessimistic`. `TestConcurrentMany2ManyAssociation` appends
+to one user's many2many association from several goroutines; each Append
+rewrites that user's row, and under optimistic concurrency all but one can
+lose their commit with MySQL 1213, which GORM's Append does not retry. On the
+node target, `-count=30` of that test failed 30 of 30 optimistic and passed
+30 of 30 pessimistic, and the whole node suite passes unchanged (382 / 0 /
+18). It passed on every wire run too, so it has no allowlist entry on any
+target.
+
+Pessimistic mode is slower on the wire targets: a whole mysql suite took
+278 s against 197-206 s optimistic, and the timestamp-sensitive tests below
+(`TestSelectWithUpdate`, `TestUpdateMany2ManyAssociations`) took 3-5 s
+in-suite against about 1 s. That widens the window in which their
+assertion to the second fails. In isolation the same tests take 0.27 s
+pessimistic against 0.18 s optimistic.
+
+### Wire targets — 2026-10-01
+
+The wire targets had not reached a run since `users create` began requiring
+an email login key. The harness now creates the certificate-only gorm user
+with `--without-email-login-key`. Runs on 2026-10-01, on a host with
+sustained CPU contention:
+
+| run | mysql failures | pgsql failures |
+|---|---|---|
+| 1 | TestConcurrentMany2ManyAssociation, TestSelectWithUpdate, TestBelongsToAssociation | TestConcurrentMany2ManyAssociation, TestMigrateArrayTypeModel |
+| 2 | TestConcurrentMany2ManyAssociation | TestConcurrentMany2ManyAssociation, TestMigrateArrayTypeModel, TestBelongsToAssociation, TestHasManyAssociation, TestPolymorphicHasManyAssociation |
+| 3 | TestConcurrentMany2ManyAssociation, TestSelectWithUpdate | TestMigrateArrayTypeModel (runner: ratchet holds) |
+| 4 | TestConcurrentMany2ManyAssociation, TestSelectWithUpdate (runner) | |
+
+Every intermittent failure in that table (TestSelectWithUpdate,
+TestBelongsToAssociation, TestHasManyAssociation,
+TestPolymorphicHasManyAssociation) failed the same way, and all of them pass
+in isolation: `utils.AssertEqual` compares two `time.Time` values rounded or
+truncated to the second. One value is stamped before a sequence of writes and
+one after. The assertion holds only if the sequence finishes inside the same
+second. On these runs single statements took hundreds of milliseconds (the
+slowest-statement median was 386-667 ms on pgsql), so a sequence often
+crosses a second boundary. Making the wire targets reliable means cutting
+that write latency. Row locking does not change it: TestSelectWithUpdate
+issues no `FOR UPDATE`.
+
+The pgsql target's ten untriaged `pgsql-wire-gap` entries and its
+TestSelectWithUpdate entry passed in every run and are deleted. The mysql
+TestSelectWithUpdate entry also reached its Retire date. It is deleted rather
+than re-dated, so the mysql target fails whenever that test does.
+
+The sections below are the historical 2026-08-13 measurements, kept for the
+reasoning they record. Where they describe the node target's own dialector,
+they describe code that no longer exists.
+
+### 2026-08-13, all three targets
 
 Measured **2026-08-13**, all three targets, against the pinned `v1.31.2`
 suite. Every number below came from a run that was allowed to reach process
@@ -282,7 +354,7 @@ The MySQL wire target is the **best** of the three, which is the expected
 shape rather than a surprise: it drives the stock, unmodified
 `gorm.io/driver/mysql` against qrdb's MySQL wire protocol server, so gorm
 emits exactly the SQL it emits for a real MySQL server and every dialector
-quirk qrdb's native dialector has to approximate simply is not in the
+quirk qrdb's own dialector (since deleted) had to approximate was not in the
 picture. Two consequences worth naming:
 
 - `TestGenericsPreloads` and `TestGenericsNestedPreloads` **pass** here

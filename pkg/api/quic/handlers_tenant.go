@@ -25,6 +25,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -38,8 +39,8 @@ func (e *tenantQuotaError) Error() string {
 
 // handleTenantCreate creates a new tenant and returns its metadata.
 func (s *Server) handleTenantCreate(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tenantSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	if s.onboarding == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant onboarding"}
 	}
 
 	var req pb.TenantCreateRequest
@@ -47,17 +48,33 @@ func (s *Server) handleTenantCreate(ctx context.Context, payload []byte) ([]byte
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal())}
-	if dataRoot := req.GetDataRoot(); dataRoot != "" {
-		opts = append(opts, tenant.WithDataRoot(dataRoot))
-	}
-
-	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()), opts...)
+	result, err := s.onboarding.OnboardTenant(ctx, &service.OnboardTenantRequest{
+		ID:                req.GetId(),
+		Name:              req.GetName(),
+		IsolationType:     tenant.IsolationType(req.GetIsolationType()),
+		BarrierAutoUnseal: req.GetBarrierAutoUnseal(),
+		VolumePool:        req.GetVolumePool(),
+		AdminUsername:     req.GetAdminUsername(),
+		AdminCSRPEM:       []byte(req.GetAdminCsrPem()),
+		AdminCertPEM:      []byte(req.GetAdminCertPem()),
+		AdminChainPEM:     []byte(req.GetAdminChainPem()),
+		TrustAnchorsPEM:   []byte(req.GetTrustAnchorsPem()),
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := proto.Marshal(tenantInfoToProto(info))
+	resp, err := proto.Marshal(&pb.TenantCreateResponse{
+		Tenant: tenantInfoToProto(result.Tenant),
+		Admin: &pb.TenantAdminCredential{
+			UserId:            result.Admin.UserID,
+			Username:          result.Admin.Username,
+			CertPem:           string(result.Admin.CertPEM),
+			Serial:            result.Admin.Serial,
+			Thumbprint:        result.Admin.Thumbprint,
+			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
+		},
+	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -299,6 +316,7 @@ func (s *Server) handleTenantUpdateEntitlements(ctx context.Context, payload []b
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 		AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+		AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 	}
 
 	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsSetEntitlements); err != nil {
@@ -326,9 +344,12 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 		Id:            info.ID,
 		Name:          info.Name,
 		IsolationType: string(info.EffectiveIsolationType()),
-		DataRoot:      info.DataRoot,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
+		VolumePool:    info.VolumePool,
+	}
+	if refusal := tenant.RefusalOf(info.Refusal); refusal != nil {
+		resp.Refusal = &pb.TenantRefusal{Code: refusal.Code, Message: refusal.Message}
 	}
 	if info.Quotas != nil {
 		resp.Quotas = &pb.TenantQuotas{
@@ -358,6 +379,7 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 			AllowSystemManagedBarrier: info.Entitlements.AllowSystemManagedBarrier,
 			AllowedBarrierModes:       info.Entitlements.AllowedBarrierModes,
 			AllowDedicatedWal:         info.Entitlements.AllowDedicatedWAL,
+			AllowedVolumePools:        info.Entitlements.AllowedVolumePools,
 		}
 	}
 	return resp

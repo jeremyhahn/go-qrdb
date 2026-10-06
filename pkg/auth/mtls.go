@@ -108,10 +108,13 @@ type IssuerVerifier interface {
 	// a match: fail closed.
 	IsClusterCA(ctx context.Context, issuer *x509.Certificate) bool
 
-	// VerifyIssuer reports whether issuer may authenticate as tenantID: the
-	// cluster CA (any tenant, via IsClusterCA) or tenantID's registered Key
-	// B CA.
-	VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error
+	// VerifyIssuer reports whether a verified chain (leaf first) may
+	// authenticate as tenantID: its direct issuer, chain[1], is the cluster
+	// CA (any tenant, via IsClusterCA) or tenantID's registered Key B CA, or
+	// the chain contains one of tenantID's registered trust anchors above
+	// the leaf. It takes the whole chain because an anchor -- an enterprise
+	// root, typically -- may stand several intermediates above the leaf.
+	VerifyIssuer(ctx context.Context, tenantID string, chain []*x509.Certificate) error
 }
 
 // WithIssuerVerifier enables the issuer-tenant binding check: see
@@ -364,19 +367,18 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	return id, nil
 }
 
-// verifyIssuer checks every verified chain against a.issuerVerifier, using
-// EACH chain's DIRECT issuer (chain[1], the certificate that signed the
-// leaf) rather than whatever happens to be the last entry -- today's CAs
-// are all self-signed roots so the two coincide, but the direct issuer is
-// the precise thing being asked about. Succeeds if ANY verified chain
-// satisfies the binding; a TLS stack can present more than one verified
-// chain when multiple roots in the pool could validate the same leaf.
+// verifyIssuer checks every verified chain against a.issuerVerifier, handing
+// it the WHOLE chain: Key A and Key B are judged on the leaf's DIRECT issuer
+// (chain[1]), a registered trust anchor on any certificate above the leaf.
+// Succeeds if ANY verified chain satisfies the binding; a TLS stack can
+// present more than one verified chain when multiple roots in the pool could
+// validate the same leaf.
 func (a *MTLSAuthenticator) verifyIssuer(ctx context.Context, tenantID string, chains [][]*x509.Certificate) error {
 	for _, chain := range chains {
 		if len(chain) < 2 {
 			continue
 		}
-		if err := a.issuerVerifier.VerifyIssuer(ctx, tenantID, chain[1]); err == nil {
+		if err := a.issuerVerifier.VerifyIssuer(ctx, tenantID, chain); err == nil {
 			return nil
 		}
 	}

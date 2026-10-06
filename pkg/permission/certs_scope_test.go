@@ -69,7 +69,10 @@ func TestCertsRevokeCross_IsRegisteredAndGranted(t *testing.T) {
 // future reader of that permission inherits a scope that was stated rather than
 // defaulted into.
 func TestCertsPermissions_AreSelfStrict(t *testing.T) {
-	for _, p := range []Permission{CertsGenerate, CertsExport, CertsRevoke, CertsList, CertsRead} {
+	for _, p := range []Permission{
+		CertsIssue, CertsEnroll, CertsRevoke, CertsList, CertsRead,
+		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
+	} {
 		if got := mustScope(t, p); got != ScopeSelfStrict {
 			t.Errorf("LookupScope(%s) = %v, want ScopeSelfStrict", p, got)
 		}

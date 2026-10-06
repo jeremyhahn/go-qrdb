@@ -51,6 +51,7 @@ func TestNode_EnableEncryption_TenantScope_AfterSystemRecycle(t *testing.T) {
 	t.Cleanup(func() { _ = n.Close() })
 	require.NotNil(t, n.tenantHosts, "tenantHosts must be wired when WithTenantIsolation() is set")
 
+	createDefaultPool(t, n)
 	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "Acme Corp",
 		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err)

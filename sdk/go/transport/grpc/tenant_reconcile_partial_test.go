@@ -23,9 +23,33 @@ import (
 	googlegrpc "google.golang.org/grpc"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// onboardingFromTenant is a TenantOnboardingServicer that delegates straight
+// to svc.CreateTenant, so a test exercising CreateTenant's refusals against a
+// hand-built tenant.TenantServicer double does not need to assemble the
+// production onboarding service's full dependency graph (users, roles,
+// certs, trust anchors).
+type onboardingFromTenantSvc struct {
+	tenants tenant.TenantServicer
+}
+
+func onboardingFromTenant(svc tenant.TenantServicer) *onboardingFromTenantSvc {
+	return &onboardingFromTenantSvc{tenants: svc}
+}
+
+func (o *onboardingFromTenantSvc) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	info, err := o.tenants.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+	if err != nil {
+		return nil, err
+	}
+	return &service.OnboardTenantResult{Tenant: info}, nil
+}
+
+var _ service.TenantOnboardingServicer = (*onboardingFromTenantSvc)(nil)
 
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
@@ -72,7 +96,10 @@ func assertPartial(t *testing.T, resp *transport.ReconcileDeletedTenantsResponse
 func startReconcilePartialServer(t *testing.T, svc tenant.TenantServicer) *Transport {
 	t.Helper()
 	srv := googlegrpc.NewServer()
-	grpcpkg.RegisterService(srv, nil, nil, grpcpkg.WithRegisterTenantService(svc))
+	grpcpkg.RegisterService(srv, nil, nil,
+		grpcpkg.WithRegisterTenantService(svc),
+		grpcpkg.WithRegisterTenantOnboarding(onboardingFromTenant(svc)),
+	)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -83,6 +110,16 @@ func startReconcilePartialServer(t *testing.T, svc tenant.TenantServicer) *Trans
 	t.Cleanup(cleanup)
 	return tr
 }
+
+// TestGRPCTenant_CreateTenant_DataRootOverlapIsAFailedPrecondition covered
+// CreateTenant's refusal of an explicit --data-root a retired tenant's
+// unreclaimed record still claimed, answered over the wire as
+// FailedPrecondition with the remedy. CreateTenant no longer accepts an
+// explicit disk path (a volume tenant's reserved path is always its own
+// tenant id), so two different tenant ids can never contend for the same
+// literal path through this API any more, and the error type itself
+// (*tenant.DataRootOverlapError) is gone; see the identical note on
+// pkg/tenant's deleted TestCreateTenant_RefusesARootAStaleRecordStillClaims.
 
 // TestGRPCTenant_ReconcileDeletedTenants_PartialFailureCarriesBoth: the
 // response carries the report and the failures, and the client returns both.

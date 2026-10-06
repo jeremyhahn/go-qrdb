@@ -17,9 +17,11 @@
 package node
 
 import (
+	"context"
 	"database/sql"
-	"errors"
 	"testing"
+
+	gomysql "github.com/go-sql-driver/mysql"
 
 	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
 )
@@ -28,8 +30,8 @@ import (
 // FOREIGN KEY over the node:// DSN, through database/sql.
 //
 // Everything below is asserted at the level a real client sees it: a
-// *SQLStateError carrying a MySQL error number. That number is the contract,
-// not a detail -- sdk/go/gorm's error translator maps 1451 and 1452 to
+// *mysql.MySQLError carrying a MySQL error number. That number is the contract,
+// not a detail -- gorm.io/driver/mysql's error translator maps 1451 and 1452 to
 // gorm.ErrForeignKeyViolated, so a violation that surfaced with any other
 // number would reach a GORM caller as an unrecognized driver error.
 //
@@ -39,16 +41,16 @@ import (
 // far enough to declare a constraint.
 // ---------------------------------------------------------------------------
 
-// mysqlErrNo asserts err reached the caller as a *SQLStateError and returns
+// mysqlErrNo asserts err reached the caller as a *mysql.MySQLError and returns
 // its MySQL error number.
 func mysqlErrNo(t *testing.T, err error) uint16 {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	var stateErr *qrdbdriver.SQLStateError
-	if !errors.As(err, &stateErr) {
-		t.Fatalf("error = %v (%T), want *SQLStateError", err, err)
+	stateErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want *mysql.MySQLError", err, err)
 	}
 	return stateErr.Number
 }
@@ -217,5 +219,54 @@ func TestNode_ForeignKeySurvivesReconnect(t *testing.T) {
 	}
 	if _, err := second.Exec("INSERT INTO users VALUES (1, 'bob', 1)"); err != nil {
 		t.Errorf("valid INSERT over a fresh connection: %v", err)
+	}
+}
+
+// TestNode_ResetSessionRestoresForeignKeyChecksAfterFailedDropTable pins one
+// connection, as the stock GORM migrator's DropTable does, and leaves
+// FOREIGN_KEY_CHECKS off on it by failing before the SET that would have
+// turned it back on -- a real DROP TABLE failure stops at exactly the same
+// place (docs/sql/gorm.md). Returning that connection to the pool and taking
+// it back out, which is what calls (*embeddedConn).ResetSession, must not
+// hand the next caller a connection that skips foreign key enforcement.
+func TestNode_ResetSessionRestoresForeignKeyChecksAfterFailedDropTable(t *testing.T) {
+	db := openNode(t, "node://memory?database=fkresetsession")
+	db.SetMaxOpenConns(1) // only one physical connection can ever exist
+
+	createFKSchema(t, db, "")
+	if _, err := db.Exec("INSERT INTO companies VALUES (1, 'acme')"); err != nil {
+		t.Fatalf("INSERT parent: %v", err)
+	}
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		t.Fatalf("SET FOREIGN_KEY_CHECKS = 0: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "DROP TABLE does_not_exist_xyz"); err == nil {
+		t.Fatal("DROP TABLE does_not_exist_xyz: want an error, got nil")
+	}
+	// Close returns the pinned connection to the pool without running the
+	// restoring SET -- the same thing a failed DropTable leaves behind.
+	if err := conn.Close(); err != nil {
+		t.Fatalf("conn.Close: %v", err)
+	}
+
+	// MaxOpenConns(1) guarantees this checks the connection above back out
+	// of the pool, which is what calls ResetSession.
+	_, err = db.Exec("INSERT INTO users VALUES (2, 'eve', 99)")
+	if got := mysqlErrNo(t, err); got != 1452 {
+		t.Errorf("error number on the reused connection = %d, want 1452 (ER_NO_REFERENCED_ROW_2) -- foreign key checks were not restored; err = %v", got, err)
+	}
+
+	var count int64
+	if err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		t.Fatalf("SELECT COUNT: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("user count = %d, want 0 (the rejected row must not have been written)", count)
 	}
 }

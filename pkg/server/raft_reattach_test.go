@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -41,13 +42,31 @@ const (
 // unsealed.
 func newRaftReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry) {
 	t.Helper()
-	_, reg := newReattachFixture(t)
+
+	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("raft-reattach-system-pass"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	system, err := seal.NewStorageBarrier(reattachTestLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, sysStrat)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := system.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("system Initialize: %v", err)
+	}
+
+	reg, _, allocator := sealtest.PooledRegistry(t, system)
+
 	raftSvc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, reattachTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 			AllowDedicatedRaft:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService(raft): %v", err)
 	}
@@ -89,9 +108,12 @@ func TestReattachRaftTenants_AutoStartsShard_SelfStaysSealed(t *testing.T) {
 		t.Fatalf("CreateTenant(self raft): %v", err)
 	}
 
-	rauto, err := svc.GetTenant(ctx, "rauto")
-	if err != nil {
+	if _, err := svc.GetTenant(ctx, "rauto"); err != nil {
 		t.Fatalf("GetTenant(rauto): %v", err)
+	}
+	rautoDataRoot, err := reg.LocalTenantDataRoot(ctx, "rauto")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(rauto): %v", err)
 	}
 
 	// Populate the database manager with a dedicated-raft database for the
@@ -104,7 +126,7 @@ func TestReattachRaftTenants_AutoStartsShard_SelfStaysSealed(t *testing.T) {
 		Engine:  database.EngineKV,
 		Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal},
-		DataDir: filepath.Join(rauto.DataRoot, "databases", "app"),
+		DataDir: filepath.Join(rautoDataRoot, "databases", "app"),
 	}
 	if _, err := mgr.CreateForTenant(autoCtx, cfg); err != nil {
 		t.Fatalf("CreateForTenant(raft db): %v", err)

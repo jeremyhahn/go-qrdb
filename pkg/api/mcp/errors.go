@@ -16,7 +16,6 @@ package mcp
 
 import (
 	"crypto/tls"
-	"strconv"
 )
 
 // StartError is returned when the MCP server fails to start listening
@@ -137,8 +136,8 @@ func (e *RequiredParameterError) Error() string {
 	return "mcp: " + e.Parameter + " is required"
 }
 
-// ImportFileDecodeError is returned when the qrdb_batch_import "file"
-// argument cannot be base64-decoded.
+// ImportFileDecodeError is returned when a chunked import session tool's
+// base64-encoded "file" or "chunk" argument cannot be decoded.
 type ImportFileDecodeError struct {
 	Err error
 }
@@ -171,22 +170,6 @@ func (e *ValueDecodeError) Error() string {
 // Unwrap returns the underlying error.
 func (e *ValueDecodeError) Unwrap() error {
 	return e.Err
-}
-
-// ImportFileTooLargeError is returned when the qrdb_batch_import "file"
-// argument is too large, either because its base64-encoded form exceeds
-// maxEncodedImportFileSize (checked before decoding) or because it decodes
-// to more than maxImportFileSize bytes (checked after decoding, as defense
-// in depth). Size and Max are in whichever of those two units triggered
-// the error.
-type ImportFileTooLargeError struct {
-	Size int
-	Max  int
-}
-
-// Error returns a human-readable description.
-func (e *ImportFileTooLargeError) Error() string {
-	return "mcp: import file too large: " + strconv.Itoa(e.Size) + " bytes exceeds max " + strconv.Itoa(e.Max) + " bytes"
 }
 
 // ToolArgumentError reports a tool argument whose SHAPE is wrong — an array

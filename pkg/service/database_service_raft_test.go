@@ -40,6 +40,32 @@ func (f *fakeTenantInfoLookup) GetTenant(_ context.Context, id string) (*tenant.
 	return nil, tenant.ErrTenantNotFound
 }
 
+// fakeDataRootResolver is a TenantDataRootResolver test double that returns
+// a fixed local path per tenant ID -- the test-side stand-in for
+// seal.BarrierRegistry.LocalTenantDataRoot, since TenantInfo itself no
+// longer carries a resolved path (only VolumePool, the pool's name).
+type fakeDataRootResolver struct {
+	roots map[string]string
+}
+
+func (f *fakeDataRootResolver) LocalTenantDataRoot(_ context.Context, tenantID string) (string, error) {
+	root, ok := f.roots[tenantID]
+	if !ok {
+		return "", &fakeDataRootNotFoundError{TenantID: tenantID}
+	}
+	return root, nil
+}
+
+// fakeDataRootNotFoundError is returned by fakeDataRootResolver for a
+// tenant ID it was not configured with.
+type fakeDataRootNotFoundError struct {
+	TenantID string
+}
+
+func (e *fakeDataRootNotFoundError) Error() string {
+	return "fakeDataRootResolver: no root configured for tenant " + e.TenantID
+}
+
 // recordingQuotaUsage records raft-group increments/decrements.
 type recordingQuotaUsage struct {
 	inc int64
@@ -65,9 +91,10 @@ func (r *recordingQuotaUsage) DecrementQuotaUsage(_ context.Context, _ string, r
 }
 
 // newRaftTenantDatabaseService builds a DatabaseService whose Manager has a
-// shard-ID claimer (so raft databases get a cluster-issued shard ID) and is wired with
-// the given tenant-info lookup and raft-group usage recorder.
-func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, rec QuotaUsageRecorder) (DatabaseServicer, *database.Manager) {
+// shard-ID claimer (so raft databases get a cluster-issued shard ID) and is
+// wired with the given tenant-info lookup, a TenantDataRootResolver that
+// resolves info.ID to dataRoot, and raft-group usage recorder.
+func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, dataRoot string, rec QuotaUsageRecorder) (DatabaseServicer, *database.Manager) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := claimingManager(t, logger, t.TempDir())
@@ -75,6 +102,7 @@ func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, rec Quo
 	opts := []DatabaseServiceOption{
 		WithEntitlementChecker(&mockEntitlementChecker{}),
 		WithTenantInfoLookup(&fakeTenantInfoLookup{info: info}),
+		WithTenantDataRootResolver(&fakeDataRootResolver{roots: map[string]string{info.ID: dataRoot}}),
 	}
 	if rec != nil {
 		opts = append(opts, WithQuotaUsageRecorder(rec))
@@ -88,9 +116,9 @@ func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, rec Quo
 // the tenant's DataRoot. It also verifies the raft-group counter is incremented.
 func TestCreateForTenant_Raft_RoutesDataDirAndForcesBackend(t *testing.T) {
 	dataRoot := t.TempDir()
-	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, DataRoot: dataRoot}
+	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, VolumePool: "default"}
 	rec := &recordingQuotaUsage{}
-	svc, _ := newRaftTenantDatabaseService(t, info, rec)
+	svc, _ := newRaftTenantDatabaseService(t, info, dataRoot, rec)
 
 	ctx := tenant.WithTenantID(context.Background(), "racme")
 	// The caller did not specify the raft backend; the IsolationRaft routing
@@ -118,9 +146,9 @@ func TestCreateForTenant_Raft_RoutesDataDirAndForcesBackend(t *testing.T) {
 // underlying create fails, a reserved raft-group slot is rolled back (decremented).
 func TestCreateForTenant_Raft_QuotaReservationRollback(t *testing.T) {
 	dataRoot := t.TempDir()
-	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, DataRoot: dataRoot}
+	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, VolumePool: "default"}
 	rec := &recordingQuotaUsage{}
-	svc, mgr := newRaftTenantDatabaseService(t, info, rec)
+	svc, mgr := newRaftTenantDatabaseService(t, info, dataRoot, rec)
 
 	ctx := tenant.WithTenantID(context.Background(), "racme")
 	// Pre-create a database with the same name so the second create fails.
@@ -142,9 +170,9 @@ func TestCreateForTenant_Raft_QuotaReservationRollback(t *testing.T) {
 // database releases (decrements) the tenant's raft-group counter.
 func TestDropForTenant_Raft_ReleasesQuota(t *testing.T) {
 	dataRoot := t.TempDir()
-	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, DataRoot: dataRoot}
+	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, VolumePool: "default"}
 	rec := &recordingQuotaUsage{}
-	svc, _ := newRaftTenantDatabaseService(t, info, rec)
+	svc, _ := newRaftTenantDatabaseService(t, info, dataRoot, rec)
 
 	ctx := tenant.WithTenantID(context.Background(), "racme")
 	if _, err := svc.CreateForTenant(ctx, testDBConfig("gone")); err != nil {
@@ -162,7 +190,7 @@ func TestDropForTenant_Raft_ReleasesQuota(t *testing.T) {
 // enforces the dedicated-raft entitlement before creating.
 func TestCreateForTenant_Raft_EntitlementRejected(t *testing.T) {
 	dataRoot := t.TempDir()
-	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, DataRoot: dataRoot}
+	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, VolumePool: "default"}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
@@ -179,6 +207,7 @@ func TestCreateForTenant_Raft_EntitlementRejected(t *testing.T) {
 	svc := NewDatabaseService(mgr,
 		WithEntitlementChecker(ent),
 		WithTenantInfoLookup(&fakeTenantInfoLookup{info: info}),
+		WithTenantDataRootResolver(&fakeDataRootResolver{roots: map[string]string{info.ID: dataRoot}}),
 	)
 
 	ctx := tenant.WithTenantID(context.Background(), "racme")

@@ -23,10 +23,42 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
+
+// ---------------------------------------------------------------------------
+// Mock tenant onboarding service
+// ---------------------------------------------------------------------------
+
+// mockTenantOnboarding implements service.TenantOnboardingServicer. The
+// embedded transport's CreateTenant delegates to exactly this interface
+// (not tenant.TenantServicer), so this is the double "tenant create"
+// CLI/binding tests exercise.
+type mockTenantOnboarding struct {
+	onboardFn func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error)
+}
+
+var _ service.TenantOnboardingServicer = (*mockTenantOnboarding)(nil)
+
+func (m *mockTenantOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	if m.onboardFn != nil {
+		return m.onboardFn(ctx, req)
+	}
+	now := time.Now()
+	return &service.OnboardTenantResult{
+		Tenant: &tenant.TenantInfo{ID: req.ID, Name: req.Name, CreatedAt: now, UpdatedAt: now},
+		Admin: service.TenantAdminCredential{
+			UserID:     1001,
+			Username:   req.AdminUsername,
+			CertPEM:    []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"),
+			Serial:     "SERIAL-ADMIN",
+			Thumbprint: "mock-admin-thumbprint",
+		},
+	}, nil
+}
 
 // ---------------------------------------------------------------------------
 // Mock tenant service
@@ -226,15 +258,28 @@ func newTestTenantBinding(t *testing.T, svc tenant.TenantServicer) *TenantBindin
 	return NewTenantBinding(testLogger(t), conn)
 }
 
+// newTestTenantBindingWithOnboarding wires the embedded transport's
+// CreateTenant path, which delegates to service.TenantOnboardingServicer
+// rather than tenant.TenantServicer (sdk/go/transport/embedded/tenant.go).
+func newTestTenantBindingWithOnboarding(t *testing.T, onboarding service.TenantOnboardingServicer) *TenantBinding {
+	t.Helper()
+	conn := newTestConnectionBinding(
+		t,
+		&noopKVService{},
+		newMockAdminService(),
+		embedded.WithTenantOnboarding(onboarding),
+	)
+	return NewTenantBinding(testLogger(t), conn)
+}
+
 // ---------------------------------------------------------------------------
 // TenantBinding.Create tests
 // ---------------------------------------------------------------------------
 
 func TestTenantBinding_Create_Success(t *testing.T) {
-	svc := &mockTenantService{}
-	b := newTestTenantBinding(t, svc)
+	b := newTestTenantBindingWithOnboarding(t, &mockTenantOnboarding{})
 
-	resp, err := b.Create(&transport.CreateTenantRequest{ID: "tenant-001", Name: "Alpha"})
+	resp, err := b.Create(&transport.CreateTenantRequest{ID: "tenant-001", Name: "Alpha", AdminUsername: "admin1", AdminCSRPEM: "csr"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -244,17 +289,20 @@ func TestTenantBinding_Create_Success(t *testing.T) {
 	if resp.Tenant.Name != "Alpha" {
 		t.Fatalf("expected tenant name Alpha, got %s", resp.Tenant.Name)
 	}
+	if resp.Admin.Username != "admin1" {
+		t.Fatalf("expected admin username admin1, got %s", resp.Admin.Username)
+	}
 }
 
 func TestTenantBinding_Create_ServiceError(t *testing.T) {
-	svc := &mockTenantService{
-		createFn: func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+	onboarding := &mockTenantOnboarding{
+		onboardFn: func(_ context.Context, _ *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
 			return nil, tenant.ErrTenantAlreadyExists
 		},
 	}
-	b := newTestTenantBinding(t, svc)
+	b := newTestTenantBindingWithOnboarding(t, onboarding)
 
-	_, err := b.Create(&transport.CreateTenantRequest{ID: "dup", Name: "Duplicate"})
+	_, err := b.Create(&transport.CreateTenantRequest{ID: "dup", Name: "Duplicate", AdminUsername: "admin1", AdminCSRPEM: "csr"})
 	if err == nil {
 		t.Fatal("expected error for duplicate tenant")
 	}

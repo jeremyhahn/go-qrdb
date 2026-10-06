@@ -26,7 +26,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -38,14 +40,78 @@ import (
 // configurable function field so each test controls the returned
 // ImportResult/error. Every other method is inherited from the embedded
 // nil interface and panics if invoked, keeping the mock honest about what
-// 'batch import' actually calls.
+// 'batch import' actually calls. 'batch import' drives Import through the
+// chunked session (ImportBegin/ImportAppend/ImportCommit), so this double
+// stages ImportAppend's chunks per session and hands the assembled file to
+// importFn from ImportCommit, exactly as the real session does.
 type fnBatchService struct {
 	service.BatchServicer
 	importFn func(ctx context.Context, data io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+
+	mu          sync.Mutex
+	sessions    map[string]*fnImportSession
+	nextSession int
+}
+
+// fnImportSession accumulates the chunks ImportAppend stages for a session
+// started by ImportBegin.
+type fnImportSession struct {
+	opts service.ImportOptions
+	buf  []byte
 }
 
 func (m *fnBatchService) Import(ctx context.Context, data io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
 	return m.importFn(ctx, data, opts)
+}
+
+func (m *fnBatchService) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sessions == nil {
+		m.sessions = make(map[string]*fnImportSession)
+	}
+	m.nextSession++
+	sessionID := strconv.Itoa(m.nextSession)
+	m.sessions[sessionID] = &fnImportSession{opts: opts}
+	return sessionID, nil
+}
+
+func (m *fnBatchService) ImportAppend(_ context.Context, sessionID string, _ uint64, chunk []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	sess.buf = append(sess.buf, chunk...)
+	return nil
+}
+
+func (m *fnBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	m.mu.Lock()
+	sess, ok := m.sessions[sessionID]
+	if ok {
+		delete(m.sessions, sessionID)
+	}
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	return m.importFn(ctx, bytes.NewReader(sess.buf), sess.opts)
+}
+
+func (m *fnBatchService) ImportAbort(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.sessions[sessionID]; !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	delete(m.sessions, sessionID)
+	return nil
 }
 
 // SetImportKeyGuard satisfies service.ImportKeyGuardSetter as a no-op:

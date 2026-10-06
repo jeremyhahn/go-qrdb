@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
 
 // envPrefix is the environment-variable prefix for config overrides. Nested
@@ -70,23 +71,190 @@ type Config struct {
 	// node holds no replica of to a node that does.
 	ReplicaForwarding ReplicaForwardingConfig `yaml:"replica_forwarding"`
 
-	MVCC        MVCCConfig        `yaml:"mvcc"`
-	Watch       WatchConfig       `yaml:"watch"`
-	Lease       LeaseConfig       `yaml:"lease"`
-	Index       IndexConfig       `yaml:"index"`
-	TimeSeries  TimeSeriesConfig  `yaml:"timeseries"`
-	WriteMode   WriteModeConfig   `yaml:"write_mode"`
-	Auth        AuthConfig        `yaml:"auth"`
-	CORS        CORSConfig        `yaml:"cors"`
-	SQL         SQLConfig         `yaml:"sql"`
-	Codec       CodecConfig       `yaml:"codec"`
-	Seal        SealConfig        `yaml:"seal"`
-	Bootstrap   BootstrapConfig   `yaml:"bootstrap"`
-	ClusterJoin ClusterJoinConfig `yaml:"cluster_join"`
-	Databases   []DatabaseConfig  `yaml:"databases,omitempty" json:"databases,omitempty"`
-	Embedding   EmbeddingConfig   `yaml:"embedding"`
-	RAG         RAGConfig         `yaml:"rag"`
-	Tenant      TenantConfig      `yaml:"tenant"`
+	MVCC          MVCCConfig          `yaml:"mvcc"`
+	Watch         WatchConfig         `yaml:"watch"`
+	Lease         LeaseConfig         `yaml:"lease"`
+	Index         IndexConfig         `yaml:"index"`
+	TimeSeries    TimeSeriesConfig    `yaml:"timeseries"`
+	WriteMode     WriteModeConfig     `yaml:"write_mode"`
+	Auth          AuthConfig          `yaml:"auth"`
+	CORS          CORSConfig          `yaml:"cors"`
+	SQL           SQLConfig           `yaml:"sql"`
+	Codec         CodecConfig         `yaml:"codec"`
+	Seal          SealConfig          `yaml:"seal"`
+	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
+	ClusterJoin   ClusterJoinConfig   `yaml:"cluster_join"`
+	Databases     []DatabaseConfig    `yaml:"databases,omitempty" json:"databases,omitempty"`
+	Embedding     EmbeddingConfig     `yaml:"embedding"`
+	RAG           RAGConfig           `yaml:"rag"`
+	Tenant        TenantConfig        `yaml:"tenant"`
+	Transport     TransportConfig     `yaml:"transport"`
+	ImportSession ImportSessionConfig `yaml:"import_session"`
+}
+
+// TransportConfig bounds resources every API transport (REST, gRPC, the
+// Unix domain socket, native QUIC, MCP) admits to an unauthenticated TLS
+// peer, before any identity is established. Without it, a peer that never
+// authenticates can still force the server to allocate up to whatever a
+// transport's own framing allows -- 64 MiB per QUIC stream with up to 1000
+// concurrent streams per connection, in one documented case (go-qrdb#576) --
+// and open unlimited concurrent connections. These apply identically on
+// every transport; there is no larger-message opt-in. A caller with more
+// data than MaxMessageBytes splits it across multiple calls (see the
+// chunked import session API, docs/transactions).
+type TransportConfig struct {
+	// MaxMessageBytes bounds a single request or response message any
+	// transport accepts or produces: the REST request body
+	// (http.MaxBytesReader, applied before routing), the gRPC and Unix
+	// MaxRecvMsgSize, the QUIC wire frame payload (validated against this
+	// bound before the frame's declared length is used to allocate a
+	// buffer), and the MCP JSON-RPC request body. Default:
+	// DefaultTransportMaxMessageBytes.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+
+	// MaxConnsPerPeer bounds the number of concurrent TCP connections a
+	// single remote IP may hold open against a TCP listener: the gRPC
+	// data-plane listener and the MCP HTTP listener. The Unix domain
+	// socket and the native QUIC transport (which bounds concurrent
+	// streams per connection instead, see MaxStreamsPerConn) are
+	// unaffected. Zero means "unconfigured" and resolves to
+	// DefaultTransportMaxConnsPerPeer; a negative value is an explicit
+	// opt-out and means unlimited.
+	MaxConnsPerPeer int `yaml:"max_conns_per_peer"`
+
+	// MaxStreamsPerConn bounds the number of concurrent streams a single
+	// QUIC connection may have open against the native QUIC transport.
+	// Zero means "unconfigured" and resolves to
+	// DefaultTransportMaxStreamsPerConn; a negative value is an explicit
+	// opt-out and means unlimited.
+	MaxStreamsPerConn int `yaml:"max_streams_per_conn"`
+}
+
+// DefaultTransportMaxMessageBytes is the pre-auth per-message cap applied
+// identically across every transport when TransportConfig.MaxMessageBytes
+// is unset. 4 MiB comfortably carries any single unary KV, batch, or admin
+// request; a caller with a larger payload (bulk import) uses the chunked
+// session API instead of a single oversized message.
+const DefaultTransportMaxMessageBytes = 4 << 20
+
+// DefaultTransportMaxConnsPerPeer is the per-remote-IP concurrent
+// connection cap applied to the gRPC and MCP TCP listeners when
+// TransportConfig.MaxConnsPerPeer is unset.
+const DefaultTransportMaxConnsPerPeer = 256
+
+// DefaultTransportMaxStreamsPerConn is the per-QUIC-connection concurrent
+// stream cap applied when TransportConfig.MaxStreamsPerConn is unset.
+const DefaultTransportMaxStreamsPerConn = 128
+
+// ResolvedMaxMessageBytes returns the configured pre-auth message cap, or
+// DefaultTransportMaxMessageBytes when unset (zero). Callers use this
+// instead of reading MaxMessageBytes directly so a Config built without
+// going through DefaultConfig (as most unit tests do) still carries the
+// production bound rather than silently admitting unbounded messages.
+func (t TransportConfig) ResolvedMaxMessageBytes() int {
+	if t.MaxMessageBytes <= 0 {
+		return DefaultTransportMaxMessageBytes
+	}
+	return t.MaxMessageBytes
+}
+
+// ResolvedMaxConnsPerPeer returns the configured per-peer connection cap,
+// or DefaultTransportMaxConnsPerPeer when unset (zero). A negative value
+// is an explicit "unlimited" and passes through unchanged.
+func (t TransportConfig) ResolvedMaxConnsPerPeer() int {
+	if t.MaxConnsPerPeer == 0 {
+		return DefaultTransportMaxConnsPerPeer
+	}
+	return t.MaxConnsPerPeer
+}
+
+// ResolvedMaxStreamsPerConn returns the configured per-connection QUIC
+// stream cap, or DefaultTransportMaxStreamsPerConn when unset (zero). A
+// negative value is an explicit "unlimited" and passes through unchanged.
+func (t TransportConfig) ResolvedMaxStreamsPerConn() int {
+	if t.MaxStreamsPerConn == 0 {
+		return DefaultTransportMaxStreamsPerConn
+	}
+	return t.MaxStreamsPerConn
+}
+
+// ImportSessionConfig bounds a chunked bulk-import session
+// (ImportBegin/ImportAppend/ImportCommit/ImportAbort; see
+// docs/transactions/), independently of the per-call
+// TransportConfig.MaxMessageBytes cap every individual chunk is also
+// subject to. See docs/transactions/engineering.md for the full design.
+type ImportSessionConfig struct {
+	// MaxSessionBytes bounds the total staged bytes a single session may
+	// accumulate across all its chunks. Zero or negative resolves to
+	// DefaultImportSessionMaxBytes.
+	MaxSessionBytes int64 `yaml:"max_session_bytes"`
+
+	// MaxChunksPerSession bounds the chunk count of a single session.
+	// Zero or negative resolves to DefaultImportSessionMaxChunks.
+	MaxChunksPerSession int `yaml:"max_chunks_per_session"`
+
+	// MaxSessionsPerTenant bounds the number of concurrent (not yet
+	// committed, aborted, or expired) sessions a tenant may hold open at
+	// once. Zero or negative resolves to DefaultImportSessionsPerTenant.
+	MaxSessionsPerTenant int `yaml:"max_sessions_per_tenant"`
+
+	// SessionTTLSeconds is the session's lease TTL in seconds, renewed on
+	// every ImportAppend so only an abandoned session ever expires. Zero
+	// or negative resolves to DefaultImportSessionTTLSeconds.
+	SessionTTLSeconds int64 `yaml:"session_ttl_seconds"`
+}
+
+// DefaultImportSessionMaxBytes is the per-session total staged-bytes cap
+// applied when ImportSessionConfig.MaxSessionBytes is unset.
+const DefaultImportSessionMaxBytes int64 = 64 << 20
+
+// DefaultImportSessionMaxChunks is the per-session chunk-count cap applied
+// when ImportSessionConfig.MaxChunksPerSession is unset.
+const DefaultImportSessionMaxChunks = 16384
+
+// DefaultImportSessionsPerTenant is the per-tenant concurrent-session cap
+// applied when ImportSessionConfig.MaxSessionsPerTenant is unset.
+const DefaultImportSessionsPerTenant = 16
+
+// DefaultImportSessionTTLSeconds is the session lease TTL applied when
+// ImportSessionConfig.SessionTTLSeconds is unset.
+const DefaultImportSessionTTLSeconds int64 = 3600
+
+// ResolvedMaxSessionBytes returns the configured per-session byte budget,
+// or DefaultImportSessionMaxBytes when unset (non-positive).
+func (c ImportSessionConfig) ResolvedMaxSessionBytes() int64 {
+	if c.MaxSessionBytes <= 0 {
+		return DefaultImportSessionMaxBytes
+	}
+	return c.MaxSessionBytes
+}
+
+// ResolvedMaxChunksPerSession returns the configured per-session chunk
+// count ceiling, or DefaultImportSessionMaxChunks when unset (non-positive).
+func (c ImportSessionConfig) ResolvedMaxChunksPerSession() int {
+	if c.MaxChunksPerSession <= 0 {
+		return DefaultImportSessionMaxChunks
+	}
+	return c.MaxChunksPerSession
+}
+
+// ResolvedMaxSessionsPerTenant returns the configured per-tenant
+// concurrent-session ceiling, or DefaultImportSessionsPerTenant when unset
+// (non-positive).
+func (c ImportSessionConfig) ResolvedMaxSessionsPerTenant() int {
+	if c.MaxSessionsPerTenant <= 0 {
+		return DefaultImportSessionsPerTenant
+	}
+	return c.MaxSessionsPerTenant
+}
+
+// ResolvedSessionTTLSeconds returns the configured session lease TTL, or
+// DefaultImportSessionTTLSeconds when unset (non-positive).
+func (c ImportSessionConfig) ResolvedSessionTTLSeconds() int64 {
+	if c.SessionTTLSeconds <= 0 {
+		return DefaultImportSessionTTLSeconds
+	}
+	return c.SessionTTLSeconds
 }
 
 // TenantConfig configures tenant isolation behaviour.
@@ -175,6 +343,13 @@ type TenantEntitlementDefaults struct {
 	// strategy id). Empty permits the built-in software defaults and fail-closes
 	// hardware modes.
 	AllowedBarrierModes []string `yaml:"allowed_barrier_modes"`
+	// AllowedVolumePools lists the named volume pools (pkg/volume's
+	// catalog) a "volume" or "raft" tenant may be placed on; the first
+	// entry is the tenant's default pool. Fail-closed like
+	// AllowedIsolationModes: empty entitles no pool, so an operator
+	// running storage.volume_pools must also grant this to create any
+	// IsolationVolume/IsolationRaft tenant.
+	AllowedVolumePools []string `yaml:"allowed_volume_pools"`
 }
 
 // ToEntitlements converts the config defaults into a quota.Entitlements value.
@@ -190,6 +365,7 @@ func (d TenantEntitlementDefaults) ToEntitlements() *quota.Entitlements {
 		AllowSystemManagedBarrier: d.AllowSystemManagedBarrier,
 		AllowDedicatedWAL:         d.AllowDedicatedWAL,
 		AllowedBarrierModes:       d.AllowedBarrierModes,
+		AllowedVolumePools:        d.AllowedVolumePools,
 	}
 }
 
@@ -485,11 +661,12 @@ type StorageConfig struct {
 	// 0 uses the PebbleDB default.
 	MaxOpenFiles int `yaml:"max_open_files"`
 
-	// VolumePools defines named multi-path placement pools that
-	// barrier-mode tenants draw from when assigning their per-tenant
-	// Pebble. Each path becomes a local-filesystem objstore Backend
-	// wrapped in pool.LocalOnly. An empty list disables the pooled
-	// barrier-mode flow — keyspace-mode tenants are unaffected.
+	// VolumePools maps this node's local mounts to catalog pool names.
+	// Each entry must name a pool that already exists in the replicated
+	// catalog (decision D2) to be served; node configuration carries only
+	// the name-to-mount mapping, never the catalog itself. An empty list
+	// disables volume-pool placement on this node — keyspace-mode tenants
+	// are unaffected.
 	VolumePools []VolumePoolConfig `yaml:"volume_pools,omitempty"`
 
 	// Objstore configures the object-storage key-value backend, used when
@@ -513,22 +690,30 @@ type ObjstoreConfig struct {
 	Settings map[string]string `yaml:"settings,omitempty"`
 }
 
-// VolumePoolConfig defines one named volume pool.
+// VolumePoolConfig maps one catalog pool name to this node's local mount
+// (or directory) and the provider that opens it. The catalog (pkg/volume),
+// not this struct, is the authority on pool existence (invariant 8); a name
+// with no catalog entry is reported in this node's health report as
+// "unknown pool" and never served, without failing boot.
 type VolumePoolConfig struct {
-	// Name is the pool's unique identifier within a daemon. The
-	// pool referenced by self-service registration is "default".
+	// Name must match a pool already created in the replicated catalog
+	// (decision D2) to be served on this node.
 	Name string `yaml:"name"`
 
-	// Paths is the ordered list of local-filesystem roots eligible
-	// for placement. Each path must already exist (or be creatable)
-	// and be writable by the daemon process.
-	Paths []string `yaml:"paths"`
+	// Path is the mount point ("luks2") or directory ("dir") this pool
+	// resolves to on this node. Must be an absolute path.
+	Path string `yaml:"path"`
 
-	// Strategy selects the placement strategy: "round_robin"
-	// (default) or "least_utilization" (interface only; concrete
-	// impl is post-MVP and currently returns
-	// pool.ErrStrategyNotImplemented).
-	Strategy string `yaml:"strategy,omitempty"`
+	// Provider selects the volume.Provider that opens Path: "dir"
+	// (default) or a provider registered by composition (e.g. "luks2").
+	// Must equal the catalog's provider for this pool; a mismatch is a
+	// runtime refusal, not a load error, because the catalog is not
+	// readable at load time.
+	Provider string `yaml:"provider,omitempty"`
+
+	// Options carries provider-specific configuration, e.g. for "luks2":
+	// {"device": "/dev/nvme1n1"}.
+	Options map[string]string `yaml:"options,omitempty"`
 }
 
 // TLSConfig configures TLS for all server protocols.
@@ -1440,6 +1625,17 @@ func DefaultConfig() *Config {
 			MaxDocumentSize:      0,
 			DefaultTopK:          5,
 		},
+		Transport: TransportConfig{
+			MaxMessageBytes:   DefaultTransportMaxMessageBytes,
+			MaxConnsPerPeer:   DefaultTransportMaxConnsPerPeer,
+			MaxStreamsPerConn: DefaultTransportMaxStreamsPerConn,
+		},
+		ImportSession: ImportSessionConfig{
+			MaxSessionBytes:      DefaultImportSessionMaxBytes,
+			MaxChunksPerSession:  DefaultImportSessionMaxChunks,
+			MaxSessionsPerTenant: DefaultImportSessionsPerTenant,
+			SessionTTLSeconds:    DefaultImportSessionTTLSeconds,
+		},
 	}
 }
 
@@ -1599,23 +1795,18 @@ var validBackends = map[string]struct{}{
 // validVolumePoolStrategies contains the accepted volume-pool
 // strategy strings. round_robin is implemented; least_utilization is
 // declared so YAML configs can reference it, but the strategy itself
-// returns pool.ErrStrategyNotImplemented at Pick time until the
-// concrete impl ships post-MVP.
-var validVolumePoolStrategies = map[string]struct{}{
-	"":                  {}, // empty defaults to round_robin
-	"round_robin":       {},
-	"least_utilization": {},
-}
-
-// validateVolumePools verifies pool names are unique, non-empty, and
-// every pool has at least one path. Strategy values are validated
-// against validVolumePoolStrategies.
-func validateVolumePools(pools []VolumePoolConfig) error {
+// validateVolumePools verifies pool names are unique and non-empty, every
+// pool has an absolute, non-empty path, no two pools' paths overlap, and no
+// pool path is inside dataDir or contains it (a volume pool and the node's
+// own data directory must stay disjoint). Provider and Options are
+// node-local and carry no validity constraint here; a provider mismatch
+// with the catalog is a runtime refusal (engineering.md: "Configuration").
+func validateVolumePools(pools []VolumePoolConfig, dataDir string) error {
 	if len(pools) == 0 {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(pools))
-	for i, p := range pools {
+	for _, p := range pools {
 		if p.Name == "" {
 			return &ValidationError{
 				Field:  "storage.volume_pools[].name",
@@ -1629,27 +1820,34 @@ func validateVolumePools(pools []VolumePoolConfig) error {
 			}
 		}
 		seen[p.Name] = struct{}{}
-		if len(p.Paths) == 0 {
+		if p.Path == "" {
 			return &ValidationError{
-				Field:  "storage.volume_pools[" + p.Name + "].paths",
-				Reason: "must contain at least one path",
+				Field:  "storage.volume_pools[" + p.Name + "].path",
+				Reason: "must not be empty",
 			}
 		}
-		for j, path := range p.Paths {
-			if path == "" {
+		if !strings.HasPrefix(p.Path, "/") {
+			return &ValidationError{
+				Field:  "storage.volume_pools[" + p.Name + "].path",
+				Reason: "must be an absolute path",
+			}
+		}
+		if dataDir != "" && validation.PathsOverlap(p.Path, dataDir) {
+			return &ValidationError{
+				Field:  "storage.volume_pools[" + p.Name + "].path",
+				Reason: "must not be inside, or contain, the node's data directory",
+			}
+		}
+	}
+	for i := range pools {
+		for j := i + 1; j < len(pools); j++ {
+			if validation.PathsOverlap(pools[i].Path, pools[j].Path) {
 				return &ValidationError{
-					Field:  "storage.volume_pools[" + p.Name + "].paths[" + itoa(j) + "]",
-					Reason: "must not be empty",
+					Field:  "storage.volume_pools[" + pools[i].Name + "].path",
+					Reason: "overlaps storage.volume_pools[" + pools[j].Name + "].path",
 				}
 			}
 		}
-		if _, ok := validVolumePoolStrategies[p.Strategy]; !ok {
-			return &ValidationError{
-				Field:  "storage.volume_pools[" + p.Name + "].strategy",
-				Reason: "must be one of: round_robin, least_utilization (or empty for round_robin default)",
-			}
-		}
-		_ = i
 	}
 	return nil
 }
@@ -1760,6 +1958,16 @@ func (c *Config) Validate() error {
 		return &ValidationError{Field: "server.secure_memory_budget_mib", Reason: "too large: converting to bytes would overflow"}
 	}
 
+	if c.Transport.MaxMessageBytes < 0 {
+		// Zero means "unconfigured": ResolvedMaxMessageBytes resolves it to
+		// DefaultTransportMaxMessageBytes, the same "0 derives the
+		// production default" convention as
+		// Server.SecureMemoryBudgetMiB. A negative value has no meaning of
+		// its own and must fail closed here rather than be silently
+		// resolved to a cap, which would reopen go-qrdb#576.
+		return &ValidationError{Field: "transport.max_message_bytes", Reason: "must not be negative"}
+	}
+
 	if c.Raft.DataDir == "" {
 		return &ValidationError{Field: "raft.data_dir", Reason: "must not be empty"}
 	}
@@ -1811,7 +2019,7 @@ func (c *Config) Validate() error {
 	if c.Storage.MaxOpenFiles < 0 {
 		return &ValidationError{Field: "storage.max_open_files", Reason: "must not be negative"}
 	}
-	if err := validateVolumePools(c.Storage.VolumePools); err != nil {
+	if err := validateVolumePools(c.Storage.VolumePools, c.Raft.DataDir); err != nil {
 		return err
 	}
 

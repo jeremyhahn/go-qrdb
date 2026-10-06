@@ -19,27 +19,25 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // freshRegistryFixture holds the persistent boot resources needed to rebuild a
-// BarrierRegistry across a simulated restart: the same system barrier and
-// volume pool survive, while a fresh per-tenant Pebble registry is opened so
-// the per-tenant barriers must be re-attached from their persisted data roots.
+// BarrierRegistry across a simulated restart: the same system barrier, volume
+// allocator and resolver survive, while a fresh per-tenant Pebble registry is
+// opened so the per-tenant barriers must be re-attached from their persisted
+// catalog Assignment.
 type freshRegistryFixture struct {
-	svc    *tenant.TenantService
-	system *seal.StorageBarrier
-	mgr    objpool.Manager
-	state  objpool.StateStore
+	svc       *tenant.TenantService
+	system    *seal.StorageBarrier
+	allocator volume.Allocator
+	resolver  seal.VolumeResolver
 }
 
 // newFreshRegistryFixture builds the first-boot resources and a registry, plus
@@ -48,25 +46,6 @@ type freshRegistryFixture struct {
 // registry over the same volume — exactly what a daemon restart does.
 func newFreshRegistryFixture(t *testing.T, ent *quota.Entitlements) (*freshRegistryFixture, *seal.BarrierRegistry, pebblestore.PerTenantRegistry) {
 	t.Helper()
-
-	dir := t.TempDir()
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": dir}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
 
 	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("fresh-system-pass"))
 	if err != nil {
@@ -81,9 +60,12 @@ func newFreshRegistryFixture(t *testing.T, ent *quota.Entitlements) (*freshRegis
 		t.Fatalf("system Initialize: %v", err)
 	}
 
+	allocator, resolver, _ := sealtest.ShareableVolumeComponents(t)
+
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	reg, err := seal.NewBarrierRegistry(reattachTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
+		seal.WithVolumeAllocator(allocator),
+		seal.WithVolumeResolver(resolver),
 		seal.WithPerTenantRegistry(perTenantReg),
 	)
 	if err != nil {
@@ -91,24 +73,28 @@ func newFreshRegistryFixture(t *testing.T, ent *quota.Entitlements) (*freshRegis
 	}
 
 	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, reattachTestLogger(),
-		tenant.WithDefaultEntitlements(ent))
+		tenant.WithDefaultEntitlements(ent),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
 
-	return &freshRegistryFixture{svc: svc, system: system, mgr: mgr, state: state}, reg, perTenantReg
+	return &freshRegistryFixture{svc: svc, system: system, allocator: allocator, resolver: resolver}, reg, perTenantReg
 }
 
 // rebuildRegistry simulates a daemon restart: the per-tenant Pebble registry is
-// fresh (knows no tenants), while the surviving system barrier and volume pool
-// are reused. The returned registry therefore has no per-tenant barriers in
-// memory, forcing reattach to re-register each volume tenant from disk.
+// fresh (knows no tenants), while the surviving system barrier, volume
+// allocator and resolver are reused. The returned registry therefore has no
+// per-tenant barriers in memory, forcing reattach to re-register each volume
+// tenant from disk.
 func (f *freshRegistryFixture) rebuildRegistry(t *testing.T) *seal.BarrierRegistry {
 	t.Helper()
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 	reg, err := seal.NewBarrierRegistry(reattachTestLogger(), f.system,
-		seal.WithVolumePool(f.mgr, f.state, "default"),
+		seal.WithVolumeAllocator(f.allocator),
+		seal.WithVolumeResolver(f.resolver),
 		seal.WithPerTenantRegistry(perTenantReg),
 	)
 	if err != nil {
@@ -127,6 +113,7 @@ func TestReattachVolumeTenants_FreshRegistryReRegisters(t *testing.T) {
 		AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 		AllowVolumeStorage:        true,
 		AllowSystemManagedBarrier: true,
+		AllowedVolumePools:        []string{"default"},
 	})
 	ctx := context.Background()
 
@@ -185,15 +172,16 @@ func TestReattachRaftTenants_FreshRegistryReRegisters(t *testing.T) {
 		AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 		AllowDedicatedRaft:        true,
 		AllowSystemManagedBarrier: true,
+		AllowedVolumePools:        []string{"default"},
 	})
 	ctx := context.Background()
 
 	if _, err := fx.svc.CreateTenant(ctx, "rfresh", "Fresh Raft", tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true)); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	rt, err := fx.svc.GetTenant(ctx, "rfresh")
+	rtDataRoot, err := reg1.LocalTenantDataRoot(ctx, "rfresh")
 	if err != nil {
-		t.Fatalf("GetTenant: %v", err)
+		t.Fatalf("LocalTenantDataRoot: %v", err)
 	}
 
 	// Populate the database manager with a dedicated-raft database for the
@@ -206,7 +194,7 @@ func TestReattachRaftTenants_FreshRegistryReRegisters(t *testing.T) {
 		Engine:  database.EngineKV,
 		Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal},
-		DataDir: filepath.Join(rt.DataRoot, "databases", "app"),
+		DataDir: filepath.Join(rtDataRoot, "databases", "app"),
 	}
 	if _, err := mgr.CreateForTenant(tctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)

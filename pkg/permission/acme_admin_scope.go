@@ -88,7 +88,7 @@ const (
 const (
 	// CACreate grants access to create a certificate authority in the
 	// hierarchy — a root CA or an intermediate CA. Strictly more privileged
-	// than CertsGenerate, which issues leaf certificates from an existing CA.
+	// than CertsIssue, which issues leaf certificates from an existing CA.
 	CACreate Permission = "ca:create"
 	// CARead grants read access to a certificate authority's metadata and to
 	// the hierarchy's status.

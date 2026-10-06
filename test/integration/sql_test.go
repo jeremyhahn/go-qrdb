@@ -31,7 +31,7 @@ import (
 
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -105,6 +105,65 @@ func startSingleNodeSQL(t *testing.T, stateMachine string) (adminPort, mysqlPort
 func startSingleNodeWithSQLMVCC(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
 	t.Helper()
 	return startSingleNodeSQL(t, "mvcc")
+}
+
+// startSingleNodeWithSQLOnboarding is startSingleNodeWithSQL plus a seal
+// barrier (strategy "none", via writeNoneSealConfig), kept as its own
+// dedicated fixture rather than a change to startSingleNodeSQL so the many
+// other SQL tests sharing that helper are not put through an extra
+// sealed-window boot phase they do not need. TestSQL_MultiTenant_Isolation
+// needs it because the tenant-onboarding REST surface it drives (POST
+// /v1/tenants) is wired up only when the node has a BarrierRegistry (see
+// pkg/server/lifecycle.buildSealServices / buildEnrollmentServices): a
+// barrier-less node never constructs a CertProv, and therefore never
+// constructs TenantOnboarding, leaving that endpoint a 501.
+func startSingleNodeWithSQLOnboarding(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
+	t.Helper()
+
+	bin := buildBinary(t)
+	ca = generateTestCA(t)
+	raftPorts := allocatePorts(t, 1)
+	adminPorts := allocateTCPPorts(t, 1)
+	grpcPorts := allocateTCPPorts(t, 1)
+	mysqlPorts := allocateTCPPorts(t, 1)
+	pgsqlPorts := allocateTCPPorts(t, 1)
+	dataDir := t.TempDir()
+	cfgPath := writeNoneSealConfig(t)
+
+	args := []string{
+		"start",
+		"--config", cfgPath,
+		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
+		"--data-dir", dataDir,
+		"--sm", "mvcc",
+		"--discovery", "static",
+		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
+		"--shard-id", "1",
+		"--replica-id", "1",
+		"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
+		"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
+		"--enable-mysql",
+		"--mysql-port", fmt.Sprintf("%d", mysqlPorts[0]),
+		"--enable-pgsql",
+		"--pgsql-port", fmt.Sprintf("%d", pgsqlPorts[0]),
+		"--sql-database", "qrdb",
+	}
+	args = append(args, ca.tlsFlags(t)...)
+
+	startNode(t, bin, args, "[sql-onboarding-node] ")
+
+	// Sealed-window: initialize the none barrier (empty secret) so the
+	// daemon proceeds to full serving, including CertProv/TenantOnboarding.
+	waitForBarrierStatusReachable(t, ca, adminPorts[0], 90*time.Second)
+	initAndUnsealBarrier(t, ca, adminPorts[0], "")
+
+	waitForHealthy(t, dataDir, 30*time.Second)
+	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
+	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
+	warmupWrite(t, ca, adminPorts[0], 15*time.Second)
+
+	return adminPorts[0], mysqlPorts[0], pgsqlPorts[0], ca
 }
 
 // ---------------------------------------------------------------------------
@@ -676,7 +735,7 @@ func TestSQL_PgSQL_SelectAll(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSQL_MultiTenant_Isolation(t *testing.T) {
-	adminPort, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+	adminPort, mysqlPort, _, ca := startSingleNodeWithSQLOnboarding(t)
 
 	// Provision both tenants end-to-end first, exactly as production
 	// would: the data plane requires the tenant named by the certificate
@@ -695,12 +754,24 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 		{"tenant-a", "user-a", certA},
 		{"tenant-b", "user-b", certB},
 	} {
+		// Tenant creation requires an admin_username/admin_csr_pem pair
+		// (the onboarding trust-on-first-init flow). This test never uses
+		// the onboarded admin identity: its mTLS identities are the
+		// separately created role+user below, matching
+		// provisionTenantWithSQLReader's identical pattern in
+		// sql_query_tenant_scope_test.go.
+		_, adminCSRPEM, err := certtest.NewCSR(tc.tenantID + "-admin")
+		if err != nil {
+			t.Fatalf("certtest.NewCSR for %s: %v", tc.tenantID, err)
+		}
 		body, status := iraftAPIPost(t, sysClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort),
 			map[string]interface{}{
 				"id":             tc.tenantID,
 				"name":           tc.tenantID,
 				"isolation_type": "prefix",
+				"admin_username": tc.tenantID + "-admin",
+				"admin_csr_pem":  string(adminCSRPEM),
 			},
 		)
 		if status != http.StatusCreated && status != http.StatusOK {

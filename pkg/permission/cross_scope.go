@@ -82,24 +82,26 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	// VolumePoolCreate grants access to register a new volume pool.
-	VolumePoolCreate Permission = "volumepool:create"
+	// VolumePoolCreate grants access to register a new volume pool in the
+	// replicated catalog (docs/volume-pools/api.md).
+	VolumePoolCreate Permission = "volume_pools:create"
 
-	// VolumePoolList grants access to list configured volume pools.
-	VolumePoolList Permission = "volumepool:list"
+	// VolumePoolList grants access to list every pool in the catalog.
+	VolumePoolList Permission = "volume_pools:list"
 
-	// VolumePoolRead grants access to read the configuration and
-	// utilization metrics of a single volume pool.
-	VolumePoolRead Permission = "volumepool:read"
+	// VolumePoolRead grants access to inspect one pool's configuration,
+	// aggregate usage and per-node health, and to list its assigned
+	// tenants (docs/volume-pools/api.md's "Inspect a pool" and "List a
+	// pool's tenants" rows share this one permission).
+	VolumePoolRead Permission = "volume_pools:read"
 
-	// VolumePoolUpdate grants access to mutate a volume pool's backend set
-	// or strategy.
-	VolumePoolUpdate Permission = "volumepool:update"
+	// VolumePoolUpdate grants access to change a pool's description,
+	// capacity or overcommit factor. The provider is immutable.
+	VolumePoolUpdate Permission = "volume_pools:update"
 
-	// VolumePoolDelete grants access to remove a volume pool. Tenants
-	// referencing the pool must be re-homed first; the operation rejects
-	// when references remain.
-	VolumePoolDelete Permission = "volumepool:delete"
+	// VolumePoolDelete grants access to remove a pool from the catalog.
+	// Refused while any tenant is assigned to it.
+	VolumePoolDelete Permission = "volume_pools:delete"
 )
 
 // ---------------------------------------------------------------------------

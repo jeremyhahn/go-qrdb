@@ -141,7 +141,7 @@ func (e *StoreError) Unwrap() error {
 	return e.Err
 }
 
-// SPIFFEIdentityError is returned by GenerateClientCert when the provider has
+// SPIFFEIdentityError is returned by IssueClientCert when the provider has
 // a trust domain configured and the tenant-scoped SPIFFE SAN it would emit
 // does not parse back to the same trust domain, tenant and username the
 // certificate's Subject names (go-qrdb#519).
@@ -173,3 +173,23 @@ type ValidationError struct {
 func (e *ValidationError) Error() string {
 	return "qrdb/cert: invalid " + e.Field + ": " + e.Reason
 }
+
+// InvalidCSRError is returned when a certificate signing request cannot be
+// issued for: it does not parse, its self-signature does not verify, or its
+// key is not one a client certificate is issued for.
+type InvalidCSRError struct {
+	Reason string
+	Err    error
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *InvalidCSRError) Error() string {
+	msg := "qrdb/cert: invalid certificate signing request: " + e.Reason
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the parse or verification cause.
+func (e *InvalidCSRError) Unwrap() error { return e.Err }

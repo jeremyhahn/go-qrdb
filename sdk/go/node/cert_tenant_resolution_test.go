@@ -24,7 +24,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -55,8 +55,8 @@ func mintBoundUser(ctx context.Context, t *testing.T, n *Node, tenantID, usernam
 
 	prov := n.Services().CertProv
 	require.NotNil(t, prov, "a sealed-capable node carries the certificate provider")
-	bundle, err := prov.GenerateClientCert(tctx, &cert.GenerateRequest{Username: username, TenantID: tenantID})
-	require.NoError(t, err, "GenerateClientCert")
+	bundle, err := certtest.Generate(tctx, prov, &certtest.Request{Username: username, TenantID: tenantID})
+	require.NoError(t, err, "certtest.Generate")
 	block, _ := pem.Decode(bundle.CertPEM)
 	require.NotNil(t, block, "provider returned no PEM certificate")
 	c, err := x509.ParseCertificate(block.Bytes)

@@ -29,13 +29,22 @@ import (
 // TestE2E_CreateCollection_CarriesIndexes covers go-qrdb#414 on the QUIC
 // client: the definitions and the codec are encoded on the wire, and the
 // state and definitions the server answers with are decoded.
+//
+// The responder decodes the request into sent on the server's own goroutine;
+// the test used to read sent again after CreateCollection returned, relying
+// on the round-trip itself to imply a synchronization edge, which the race
+// detector does not credit (go-qrdb security review B3: caught nine times
+// under -race -count=10 before this). gotReq, handed off over a buffered
+// channel, gives the detector an explicit, correct edge instead.
 func TestE2E_CreateCollection_CarriesIndexes(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	var sent pb.CreateCollectionRequest
+	gotReq := make(chan *pb.CreateCollectionRequest, 1)
 	srv.SetResponder("collection.Create", func(payload []byte) (uint16, []byte) {
+		var sent pb.CreateCollectionRequest
 		if err := proto.Unmarshal(payload, &sent); err != nil {
 			return wire.StatusInvalidArgument, nil
 		}
+		gotReq <- &sent
 		return wire.StatusOK, mustMarshal(&pb.CollectionInfoResponse{
 			Name: sent.GetName(), Database: sent.GetDatabase(), StorageCodec: sent.GetStorageCodec(),
 			Indexes: sent.GetIndexes(), State: "dropping", StateSince: "2026-09-25T12:00:00Z",
@@ -49,8 +58,9 @@ func TestE2E_CreateCollection_CarriesIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateCollection: %v", err)
 	}
+	sent := <-gotReq
 	if len(sent.GetIndexes()) != 1 || sent.GetIndexes()[0].GetFieldName() != "email" || sent.GetStorageCodec() != "json" {
-		t.Fatalf("wire request: %+v", &sent)
+		t.Fatalf("wire request: %+v", sent)
 	}
 	if !reflect.DeepEqual(info.Indexes, defs) || info.State != transport.CollectionStateDropping || info.StateSince == "" {
 		t.Fatalf("client received %+v", info)

@@ -288,22 +288,16 @@ var (
 	ErrUnsealKeyMismatch = errors.New("qrdb/seal: reconstructed unseal key failed to decrypt the wrapped root key (wrong shares, or shares revoked by a prior rekey)")
 
 	// ErrPoolNotConfigured is returned by RegisterTenant when called
-	// with a nil StorageBackend on a registry that has no volume pool
-	// attached. Callers must either supply a backend explicitly or
-	// configure the registry with WithVolumePool.
+	// with a nil StorageBackend on a registry that has no volume
+	// allocator/resolver attached. Callers must either supply a backend
+	// explicitly or configure the registry with WithVolumeAllocator and
+	// WithVolumeResolver.
 	ErrPoolNotConfigured = errors.New("qrdb/seal: volume pool not configured on barrier registry")
 
-	// ErrPoolBackendNotLocal is returned by RegisterTenant when the
-	// volume pool returns a backend that does not satisfy the
-	// common.PathAccessor interface. Per-tenant Pebble instances must
-	// run on a real local filesystem path; cloud backends are rejected
-	// here (or earlier by the LocalOnly wrapper).
-	ErrPoolBackendNotLocal = errors.New("qrdb/seal: volume pool returned a non-local backend")
-
 	// ErrPerTenantRegistryNotConfigured is returned by RegisterTenant
-	// when called with a nil StorageBackend on a registry that has a
-	// volume pool but no PerTenantRegistry attached. Both must be
-	// configured for the pooled-tenant flow to work.
+	// when called with a nil StorageBackend on a registry that has no
+	// PerTenantRegistry attached. It must be configured for the
+	// pooled-tenant flow to work.
 	ErrPerTenantRegistryNotConfigured = errors.New("qrdb/seal: per-tenant pebble registry not configured")
 
 	// ErrTenantPathEscapesPool is returned when a tenant id, used as a
@@ -312,13 +306,6 @@ var (
 	// rejects such ids at creation; this is the fail-closed defense at
 	// the filesystem sink.
 	ErrTenantPathEscapesPool = errors.New("qrdb/seal: tenant path escapes volume pool root")
-
-	// ErrPoolSlotUnresolved is returned internally when a recorded
-	// cluster-wide relative slot cannot be mapped to a local pool candidate
-	// (the pool is missing, or the slot index is out of range for this node's
-	// candidate set). It signals the pooled-allocation path to fall back to a
-	// fresh node-local Pick; it is not surfaced to API callers.
-	ErrPoolSlotUnresolved = errors.New("qrdb/seal: recorded volume-pool slot cannot be resolved to a local candidate")
 
 	// --- Root-key import seam (multi-node tenant Raft groups) ---.
 
@@ -503,23 +490,6 @@ func (e *TenantStoreCloseError) Error() string {
 // Unwrap returns the underlying error.
 func (e *TenantStoreCloseError) Unwrap() error { return e.Err }
 
-// TenantRootPersistError is returned when a volume or raft tenant's
-// registration cannot write its tenant-root record. The record is what every
-// restart resolves the tenant from, so the registration is undone and fails
-// rather than serving a tenant the next restart would not find.
-type TenantRootPersistError struct {
-	TenantID string
-	Err      error
-}
-
-// Error returns a human-readable description of the record-write failure.
-func (e *TenantRootPersistError) Error() string {
-	return "qrdb/seal: persist tenant-root record for tenant " + e.TenantID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *TenantRootPersistError) Unwrap() error { return e.Err }
-
 // TenantRecordDeleteError is returned by DestroyTenant when one of the
 // durable records that would RESTORE a tenant barrier at boot -- its DataRoot
 // record or its volume-pool slot assignment -- could not be removed. Leaving
@@ -620,6 +590,38 @@ func (e *DataRootOutsideLocalRootsError) Error() string {
 
 // Unwrap returns why the path could not be resolved, if that is the reason.
 func (e *DataRootOutsideLocalRootsError) Unwrap() error { return e.Err }
+
+// TenantPathIsSymlinkError refuses a tenant directory operation (create,
+// open, reattach or delete) because the tenant's path under its pool root
+// is a symlink, or its fully symlink-resolved location does not land
+// EXACTLY at resolvedRoot/<Assignment.Path>. A pool root is validated once
+// at volume-open time (pkg/volume's "dir" provider), but the TENANT
+// directory under it is created later and is as writable as any other path
+// an operator (or a compromised writer) can reach; without this check, a
+// symlink planted there could redirect create/open/reattach/delete outside
+// the pool entirely, or onto a sibling tenant's directory (so deleting
+// tenant A, for instance, actually deletes tenant B). Error() never
+// includes the resolved path -- only the tenant id -- so a wire response
+// built on this error carries no node-local filesystem detail; the path is
+// available to the local log via Path.
+type TenantPathIsSymlinkError struct {
+	TenantID string
+	// Path is the tenant directory this node refused to use. Never put
+	// into a wire-facing message; log it locally only.
+	Path string
+	// Err, when set, is why the path could not be resolved.
+	Err error
+}
+
+// Error returns a human-readable description that names the tenant but
+// never the node-local path or Err's message (an os.PathError's message
+// embeds the very path this type exists to keep off the wire).
+func (e *TenantPathIsSymlinkError) Error() string {
+	return "qrdb/seal: tenant " + e.TenantID + "'s directory is a symlink or resolves outside its pool"
+}
+
+// Unwrap returns why the path could not be resolved, if that is the reason.
+func (e *TenantPathIsSymlinkError) Unwrap() error { return e.Err }
 
 // TenantRootUnresolvedError is returned when a tenant's recorded volume pool
 // and slot cannot be resolved to a directory on this node: the pool is not

@@ -16,7 +16,6 @@ package cert
 
 import (
 	"context"
-	"crypto/fips140"
 	"errors"
 	"testing"
 )
@@ -36,7 +35,7 @@ func TestDefaultCertProvider_RevokeCert_RecordUpdated(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "revoke-result-user", TenantID: "system"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "revoke-result-user", TenantID: "system"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -122,7 +121,7 @@ func TestDefaultCertProvider_RevokeCert_DistinguishesOutcomes(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "distinguish-user", TenantID: "system"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "distinguish-user", TenantID: "system"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -190,7 +189,7 @@ func TestDefaultCertProvider_RevokeCert_ScanError_ReturnsResultNil(t *testing.T)
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "scan-err-user", TenantID: "system"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "scan-err-user", TenantID: "system"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -223,88 +222,9 @@ func TestRevokeOutcome_String(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// ExportPKCS12 revocation check -- go-qrdb#287 defect 2: ExportPKCS12
-// packages a revoked certificate without checking.
-// ---------------------------------------------------------------------------
-
-func TestDefaultCertProvider_ExportPKCS12_RefusesRevokedCert(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "revoked-export-user", TenantID: "system"})
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
-		t.Fatalf("RevokeCert: %v", err)
-	}
-
-	// The caller already possesses certPEM and keyPEM -- this is an operator
-	// signal, not a containment control. The system must still refuse to
-	// package a credential it will not honour.
-	p12, err := p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")
-	if err == nil {
-		t.Fatal("expected error exporting a revoked certificate")
-	}
-	var revokedErr *CertRevokedError
-	if !errors.As(err, &revokedErr) {
-		t.Fatalf("expected *CertRevokedError, got %T: %v", err, err)
-	}
-	if revokedErr.Serial != bundle.Serial {
-		t.Errorf("CertRevokedError.Serial = %q, want %q", revokedErr.Serial, bundle.Serial)
-	}
-	if p12 != nil {
-		t.Error("no PKCS12 data should be returned when export is refused")
-	}
-}
-
-func TestDefaultCertProvider_ExportPKCS12_AllowsNonRevokedCert(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "clean-export-user", TenantID: "system"})
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-
-	p12, err := p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")
-	if fips140.Enforced() {
-		// See TestDefaultCertProvider_ExportPKCS12_Success: under strict FIPS
-		// mode the export is refused for an unrelated reason (the PKCS#12
-		// localKeyId SHA-1 fingerprint), so this test only asserts that the
-		// revocation check itself did not fire.
-		var revokedErr *CertRevokedError
-		if errors.As(err, &revokedErr) {
-			t.Fatal("a non-revoked certificate must not be reported as revoked")
-		}
-		return
-	}
-	if err != nil {
-		t.Fatalf("ExportPKCS12: %v", err)
-	}
-	if len(p12) == 0 {
-		t.Error("PKCS12 data should not be empty")
-	}
-}
-
-func TestDefaultCertProvider_ExportPKCS12_IsRevokedStoreError(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "store-err-user", TenantID: "system"})
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-
-	p.kvStore = &errorKVStore{err: errors.New("disk read failed")}
-
-	_, err = p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")
-	if err == nil {
-		t.Fatal("expected error when the revocation lookup fails")
-	}
-	var se *StoreError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *StoreError (fail closed), got %T: %v", err, err)
-	}
-}
+// Note: there is no server-side ExportPKCS12 any more (go-qrdb security
+// review: no private key may reach a node to be packaged), so the
+// revocation-gated export checks go-qrdb#287 added here no longer apply --
+// EncodePKCS12 is a pure, local, no-store encoder with nothing to check
+// against. The revocation record itself is still exercised by RevokeCert's
+// own tests elsewhere in this package.

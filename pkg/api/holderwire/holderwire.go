@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -205,7 +206,16 @@ func RoundTo(r *seal.QuorumRoundInfo) *transport.QuorumRound {
 // CeremonyInitFrom converts a ceremony initialization request. An empty holder
 // list stays nil, so the service's "non-empty overrides the configured value"
 // precedence applies unchanged.
-func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.CeremonyInitializeOptions {
+//
+// req.Secret, when non-empty, is consumed into a *secure.Buffer (secure
+// analyzer rule 3: service.CeremonyInitializeOptions.Secret is protected
+// memory, not a wire []byte) -- secure.NewBufferFromBytes wipes req.Secret's
+// backing array as a side effect, so a caller no longer needs its own
+// defer secure.Wipe(req.Secret). The returned Buffer is BORROWED by
+// CeremonyInitialize exactly as the field it populates documents; the caller
+// of CeremonyInitFrom owns it and must Destroy it once the ceremony call
+// returns.
+func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) (*service.CeremonyInitializeOptions, error) {
 	var holders []service.CeremonyOfficerConfig
 	if len(req.Officers) > 0 {
 		holders = make([]service.CeremonyOfficerConfig, len(req.Officers))
@@ -221,6 +231,14 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.Ceremon
 			}
 		}
 	}
+	var secretBuf *secure.Buffer
+	if len(req.Secret) > 0 {
+		var err error
+		secretBuf, err = secure.NewBufferFromBytes(req.Secret)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &service.CeremonyInitializeOptions{
 		SOPin:                  req.SOPin,
 		UserPin:                req.UserPin,
@@ -234,11 +252,8 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.Ceremon
 		AdminCertPEM:           req.AdminCertPEM,
 		AdminCertPoolPEM:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
-		// transport.CeremonyInitializeRequest.Secret is now []byte end to
-		// end (go-qrdb#560 review item 7, follow-up): a direct assignment,
-		// not a copy.
-		Secret: req.Secret,
-	}
+		Secret:                 secretBuf,
+	}, nil
 }
 
 // CeremonyInitTo converts a ceremony initialization result, including the

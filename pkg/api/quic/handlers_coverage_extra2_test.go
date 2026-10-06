@@ -171,7 +171,9 @@ func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _,
 }
 
 func newTenantServer() *Server {
-	return newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantSvc{}))
+	svc := &mockTenantSvc{}
+	return newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(svc), WithTenantOnboarding(&fakeTenantOnboarding{tenants: svc}))
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +197,12 @@ func TestHandleTenantCreate_Success_Extra(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var out pb.TenantResponse
+	var out pb.TenantCreateResponse
 	if err := proto.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.GetId() != "acme" {
-		t.Errorf("expected id 'acme', got %q", out.GetId())
+	if out.GetTenant().GetId() != "acme" {
+		t.Errorf("expected id 'acme', got %q", out.GetTenant().GetId())
 	}
 }
 
@@ -211,7 +213,8 @@ func TestHandleTenantCreate_ServiceError_Extra(t *testing.T) {
 			return nil, svcErr
 		},
 	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+	srv := newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(svc), WithTenantOnboarding(&fakeTenantOnboarding{tenants: svc}))
 	payload, _ := proto.Marshal(&pb.TenantCreateRequest{Id: "dup", Name: "Dup"})
 	_, err := srv.handleTenantCreate(context.Background(), payload)
 	if !errors.Is(err, svcErr) {

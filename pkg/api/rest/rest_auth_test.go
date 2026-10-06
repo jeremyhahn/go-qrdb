@@ -16,7 +16,6 @@ package rest
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -29,6 +28,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -201,25 +203,17 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 // ---------------------------------------------------------------------------
 
 type mockCertProvider struct {
-	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
-	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
-	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
-	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
-	tenantForSerialFn    func(ctx context.Context, serial string) (string, bool, error)
-	caCertPEMVal         []byte
+	issueClientCertFn func(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error)
+	revokeCertFn      func(ctx context.Context, serial string) (*cert.RevokeResult, error)
+	isRevokedFn       func(ctx context.Context, serial string) (bool, error)
+	listCertsFn       func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
+	tenantForSerialFn func(ctx context.Context, serial string) (string, bool, error)
+	caCertPEMVal      []byte
 }
 
-func (m *mockCertProvider) GenerateClientCert(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-	if m.generateClientCertFn != nil {
-		return m.generateClientCertFn(ctx, req)
-	}
-	return nil, nil
-}
-
-func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-	if m.exportPKCS12Fn != nil {
-		return m.exportPKCS12Fn(ctx, certPEM, keyPEM, passphrase)
+func (m *mockCertProvider) IssueClientCert(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	if m.issueClientCertFn != nil {
+		return m.issueClientCertFn(ctx, req)
 	}
 	return nil, nil
 }
@@ -304,6 +298,66 @@ func newAuthServer(userSvc user.UserServicer, roleSvc role.RoleServicer, certPro
 		opts = append(opts, WithCertProvider(certProv))
 	}
 	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", opts...)
+}
+
+// ---------------------------------------------------------------------------
+// fakeCertEnroll: service.CertEnrollmentServicer double for REST handler
+// tests (handleIssueCert, handleEnrollCert, the trust-anchor handlers).
+// ---------------------------------------------------------------------------
+
+type fakeCertEnroll struct {
+	signFn   func(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error)
+	enrollFn func(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error)
+	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
+	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
+	removeFn func(ctx context.Context, tenantID, fingerprint string) error
+}
+
+var _ service.CertEnrollmentServicer = (*fakeCertEnroll)(nil)
+
+func (f *fakeCertEnroll) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	return f.signFn(ctx, req)
+}
+
+func (f *fakeCertEnroll) EnrollCertificate(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	return f.enrollFn(ctx, req)
+}
+
+func (f *fakeCertEnroll) AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+	return f.addFn(ctx, tenantID, bundlePEM)
+}
+
+func (f *fakeCertEnroll) ListTrustAnchors(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error) {
+	return f.listFn(ctx, tenantID)
+}
+
+func (f *fakeCertEnroll) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	return f.removeFn(ctx, tenantID, fingerprint)
+}
+
+// newEnrollAuthServer builds a Server with ce wired as the sole
+// CertEnrollmentServicer, matching newAuthServer's minimal posture.
+func newEnrollAuthServer(ce service.CertEnrollmentServicer) *Server {
+	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithCertEnrollment(ce))
+}
+
+// fakeTenantOnboarding adapts tenant.TenantServicer.CreateTenant to
+// service.TenantOnboardingServicer for handler tests that exercise
+// handleCreateTenant's request/response mapping rather than the onboarding
+// business rules (first-admin credential issuance), which pkg/service and
+// pkg/bootstrap test directly against the real TenantOnboardingService.
+type fakeTenantOnboarding struct {
+	tenants tenant.TenantServicer
+}
+
+var _ service.TenantOnboardingServicer = (*fakeTenantOnboarding)(nil)
+
+func (f *fakeTenantOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	info, err := f.tenants.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+	if err != nil {
+		return nil, err
+	}
+	return &service.OnboardTenantResult{Tenant: info}, nil
 }
 
 func assertContentType(t *testing.T, rec *httptest.ResponseRecorder, want string) {
@@ -1861,160 +1915,165 @@ func TestHandleResolvePermissions_EmptyRoleIDs(t *testing.T) {
 // =========================================================================
 
 // ---------------------------------------------------------------------------
-// POST /certs/generate (GenerateCert)
+// POST /certs/issue (IssueCert)
 // ---------------------------------------------------------------------------
 
-func TestHandleGenerateCert_Success(t *testing.T) {
-	prov := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-			if req.Username != "alice" || req.TenantID != "tenant-1" {
+func TestHandleIssueCert_Success(t *testing.T) {
+	notAfter := testTime
+	ce := &fakeCertEnroll{
+		signFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+			if req.Username != "alice" {
 				t.Fatalf("unexpected request: %+v", req)
 			}
 			if req.TTL != 24*time.Hour {
 				t.Fatalf("ttl = %v, want 24h", req.TTL)
 			}
-			return &cert.CertBundle{
-				CertPEM: []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"),
-				KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----"),
-				Serial:  "AABBCCDD",
+			return &service.EnrolledCertificate{
+				UserID:     7,
+				Username:   "alice",
+				TenantID:   req.TenantID,
+				CertPEM:    []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"),
+				Serial:     "AABBCCDD",
+				Thumbprint: "thumb-1",
+				NotAfter:   notAfter,
 			}, nil
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"username":"alice","tenantID":"tenant-1","ttl":"24h"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem","ttl":"24h"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusCreated)
 	assertContentType(t, rec, "application/json")
 
-	var resp certBundleResponse
+	var resp enrolledCertResponse
 	decodeJSON(t, rec, &resp)
 	if resp.Serial != "AABBCCDD" {
 		t.Fatalf("serial = %q, want %q", resp.Serial, "AABBCCDD")
+	}
+	if resp.UserID != 7 {
+		t.Fatalf("userID = %d, want 7", resp.UserID)
+	}
+	if resp.Thumbprint != "thumb-1" {
+		t.Fatalf("thumbprint = %q, want %q", resp.Thumbprint, "thumb-1")
 	}
 	if !strings.Contains(resp.CertPEM, "BEGIN CERTIFICATE") {
 		t.Fatal("expected PEM certificate in response")
 	}
 }
 
-func TestHandleGenerateCert_NoTTL(t *testing.T) {
-	prov := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_NoTTL(t *testing.T) {
+	ce := &fakeCertEnroll{
+		signFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			if req.TTL != 0 {
 				t.Fatalf("ttl = %v, want 0 (default)", req.TTL)
 			}
-			return &cert.CertBundle{
-				CertPEM: []byte("cert"),
-				KeyPEM:  []byte("key"),
-				Serial:  "001",
-			}, nil
+			return &service.EnrolledCertificate{CertPEM: []byte("cert"), Serial: "001"}, nil
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusCreated)
 }
 
-func TestHandleGenerateCert_InvalidTTL(t *testing.T) {
-	prov := &mockCertProvider{}
-	srv := newAuthServer(nil, nil, prov)
+func TestHandleIssueCert_InvalidTTL(t *testing.T) {
+	srv := newEnrollAuthServer(&fakeCertEnroll{})
 
-	body := `{"username":"alice","tenantID":"tenant-1","ttl":"not-a-duration"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem","ttl":"not-a-duration"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleGenerateCert_ServiceError(t *testing.T) {
-	prov := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_ServiceError(t *testing.T) {
+	ce := &fakeCertEnroll{
+		signFn: func(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, &cert.CertGenerateError{Err: errors.New("CA key not loaded")}
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusInternalServerError)
 }
 
-func TestHandleGenerateCert_BarrierSealed(t *testing.T) {
-	prov := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_BarrierSealed(t *testing.T) {
+	ce := &fakeCertEnroll{
+		signFn: func(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, &cert.BarrierSealedError{}
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusServiceUnavailable)
 }
 
-func TestHandleGenerateCert_CAKeyNotAvailable(t *testing.T) {
-	prov := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_CAKeyNotAvailable(t *testing.T) {
+	ce := &fakeCertEnroll{
+		signFn: func(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, &cert.CAKeyNotAvailableError{}
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusServiceUnavailable)
 }
 
-func TestHandleGenerateCert_NilService(t *testing.T) {
+func TestHandleIssueCert_NilService(t *testing.T) {
 	srv := newAuthServer(nil, nil, nil)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
-func TestHandleGenerateCert_InvalidJSON(t *testing.T) {
-	prov := &mockCertProvider{}
-	srv := newAuthServer(nil, nil, prov)
+func TestHandleIssueCert_InvalidJSON(t *testing.T) {
+	srv := newEnrollAuthServer(&fakeCertEnroll{})
 
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader("{bad"))
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader("{bad"))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleGenerateCert_ValidationError(t *testing.T) {
-	prov := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
-			return nil, &cert.ValidationError{Field: "username", Reason: "must not be empty"}
+func TestHandleIssueCert_ValidationError(t *testing.T) {
+	ce := &fakeCertEnroll{
+		signFn: func(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+			return nil, &service.CertEnrollmentFieldError{Field: "csr_pem"}
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"username":"","tenantID":"tenant-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":""}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -2022,79 +2081,76 @@ func TestHandleGenerateCert_ValidationError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /certs/export (ExportCert)
+// POST /certs/enroll (EnrollCert)
 // ---------------------------------------------------------------------------
 
-func TestHandleExportCert_Success(t *testing.T) {
-	p12Data := []byte("fake-pkcs12-archive-bytes")
-	prov := &mockCertProvider{
-		exportPKCS12Fn: func(_ context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-			if string(certPEM) != "cert-pem" {
-				t.Fatalf("certPEM = %q, want %q", certPEM, "cert-pem")
+func TestHandleEnrollCert_Success(t *testing.T) {
+	ce := &fakeCertEnroll{
+		enrollFn: func(_ context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+			if req.Username != "dave" {
+				t.Fatalf("unexpected request: %+v", req)
 			}
-			if string(keyPEM) != "key-pem" {
-				t.Fatalf("keyPEM = %q, want %q", keyPEM, "key-pem")
-			}
-			if passphrase != "secret" {
-				t.Fatalf("passphrase = %q, want %q", passphrase, "secret")
-			}
-			return p12Data, nil
+			return &service.EnrolledCertificate{
+				Username:   "dave",
+				TenantID:   req.TenantID,
+				CertPEM:    []byte("-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----"),
+				Thumbprint: "thumb-2",
+			}, nil
 		},
 	}
-	srv := newAuthServer(nil, nil, prov)
+	srv := newEnrollAuthServer(ce)
 
-	body := `{"certPEM":"cert-pem","keyPEM":"key-pem","passphrase":"secret"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/export", strings.NewReader(body))
+	body := `{"username":"dave","certPEM":"leaf-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/enroll", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusOK)
-	assertContentType(t, rec, "application/json")
-
-	var resp exportCertResponse
+	assertStatus(t, rec, http.StatusCreated)
+	var resp enrolledCertResponse
 	decodeJSON(t, rec, &resp)
-	expected := base64.StdEncoding.EncodeToString(p12Data)
-	if resp.PKCS12 != expected {
-		t.Fatalf("pkcs12 = %q, want %q", resp.PKCS12, expected)
+	if resp.Thumbprint != "thumb-2" {
+		t.Fatalf("thumbprint = %q, want %q", resp.Thumbprint, "thumb-2")
+	}
+	if resp.Serial != "" {
+		t.Fatalf("serial = %q, want empty for a BYOC enrolment", resp.Serial)
 	}
 }
 
-func TestHandleExportCert_NilService(t *testing.T) {
+func TestHandleEnrollCert_ServiceError(t *testing.T) {
+	ce := &fakeCertEnroll{
+		enrollFn: func(context.Context, *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+			return nil, &trustanchor.NoAnchorsError{}
+		},
+	}
+	srv := newEnrollAuthServer(ce)
+
+	body := `{"username":"dave","certPEM":"leaf-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/enroll", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+func TestHandleEnrollCert_NilService(t *testing.T) {
 	srv := newAuthServer(nil, nil, nil)
 
-	body := `{"certPEM":"c","keyPEM":"k","passphrase":"p"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/export", strings.NewReader(body))
+	body := `{"username":"dave","certPEM":"leaf-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/enroll", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
-func TestHandleExportCert_InvalidJSON(t *testing.T) {
-	prov := &mockCertProvider{}
-	srv := newAuthServer(nil, nil, prov)
+func TestHandleEnrollCert_InvalidJSON(t *testing.T) {
+	srv := newEnrollAuthServer(&fakeCertEnroll{})
 
-	req := httptest.NewRequest(http.MethodPost, "/certs/export", strings.NewReader("{bad"))
+	req := httptest.NewRequest(http.MethodPost, "/certs/enroll", strings.NewReader("{bad"))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleExportCert_ServiceError(t *testing.T) {
-	prov := &mockCertProvider{
-		exportPKCS12Fn: func(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
-			return nil, &cert.CertExportError{Err: errors.New("export failed")}
-		},
-	}
-	srv := newAuthServer(nil, nil, prov)
-
-	body := `{"certPEM":"c","keyPEM":"k","passphrase":"p"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/export", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusInternalServerError)
 }
 
 // ---------------------------------------------------------------------------
@@ -2716,9 +2772,16 @@ func TestCertRoutes_RegisteredWhenProviderProvided(t *testing.T) {
 	prov := &mockCertProvider{}
 	srv := newAuthServer(nil, nil, prov)
 
-	for _, path := range []string{"/certs/generate", "/certs/export", "/certs/revoke", "/certs/list"} {
+	for _, path := range []string{"/certs/revoke", "/certs/list"} {
 		if _, ok := srv.routes[path]; !ok {
 			t.Fatalf("%s route should be registered when CertProvider is provided", path)
+		}
+	}
+	// Issuance and enrolment are a SEPARATE service (CertEnrollmentServicer,
+	// WithCertEnrollment): CertProvider alone must not register them.
+	for _, path := range []string{"/certs/issue", "/certs/enroll"} {
+		if _, ok := srv.routes[path]; ok {
+			t.Fatalf("%s route should NOT be registered without WithCertEnrollment", path)
 		}
 	}
 }
@@ -2726,9 +2789,19 @@ func TestCertRoutes_RegisteredWhenProviderProvided(t *testing.T) {
 func TestCertRoutes_NotRegisteredWithoutProvider(t *testing.T) {
 	srv := newAuthServer(nil, nil, nil)
 
-	for _, path := range []string{"/certs/generate", "/certs/export", "/certs/revoke", "/certs/list"} {
+	for _, path := range []string{"/certs/issue", "/certs/enroll", "/certs/revoke", "/certs/list"} {
 		if _, ok := srv.routes[path]; ok {
 			t.Fatalf("%s route should NOT be registered without CertProvider", path)
+		}
+	}
+}
+
+func TestCertRoutes_RegisteredWhenEnrollmentProvided(t *testing.T) {
+	srv := newEnrollAuthServer(&fakeCertEnroll{})
+
+	for _, path := range []string{"/certs/issue", "/certs/enroll"} {
+		if _, ok := srv.routes[path]; !ok {
+			t.Fatalf("%s route should be registered when CertEnrollmentServicer is provided", path)
 		}
 	}
 }
@@ -2759,11 +2832,10 @@ func TestDispatch_RoleCreate_WrongMethod(t *testing.T) {
 	assertStatus(t, rec, http.StatusMethodNotAllowed)
 }
 
-func TestDispatch_CertsGenerate_WrongMethod(t *testing.T) {
-	prov := &mockCertProvider{}
-	srv := newAuthServer(nil, nil, prov)
+func TestDispatch_CertsIssue_WrongMethod(t *testing.T) {
+	srv := newEnrollAuthServer(&fakeCertEnroll{})
 
-	req := httptest.NewRequest(http.MethodGet, "/certs/generate", nil)
+	req := httptest.NewRequest(http.MethodGet, "/certs/issue", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 

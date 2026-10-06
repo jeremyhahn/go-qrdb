@@ -1097,7 +1097,7 @@ _integration-server-logs:
 # These start their own qrdbd nodes and do not use the docker servers.
 #
 # INTEGRATION_RUN narrows the stage to a -run expression; empty (the default)
-# runs every test in the package, which is what the nightly does.
+# runs every test in the package, which is what CI's integration-cluster job does.
 INTEGRATION_RUN ?=
 .PHONY: integration-test-cluster
 integration-test-cluster: integration-image
@@ -1115,7 +1115,7 @@ integration-test-cluster: integration-image
 # Cluster tenancy stage: the multi-node tenant suites, run on EVERY push
 # (strict tenant isolation, plan phase 0; owner ruling 2026-10-02). It is the
 # cluster stage narrowed by CLUSTER_TENANCY_RUN, through the same compose path,
-# so a test behaves identically here and in the nightly full run.
+# so a test behaves identically here and in the full run.
 #
 # Measured before this was armed (2026-10-02, host load average 19-57 on a
 # shared host): the selection takes 3-4 minutes of test time. Before the fix
@@ -1274,7 +1274,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -3416,17 +3416,18 @@ coverage-vector-bloom: | _cover-dir ## Generate bloom filter coverage report
 # ============================================================================
 # GORM Conformance Suite
 # ============================================================================
-# sdk/go/gorm/conformance runs GORM's own upstream test suite against qrdb's
-# GORM dialector (sdk/go/gorm) and, over gorm.io/driver/mysql and
-# gorm.io/driver/postgres, qrdb's SQL wire protocol servers. It is a nested
+# sdk/go/gorm/conformance runs GORM's own upstream test suite against qrdb:
+# the stock gorm.io/driver/mysql dialector over the in-process driver (node),
+# and gorm.io/driver/mysql and gorm.io/driver/postgres over qrdb's SQL wire
+# protocol servers. It is a nested
 # Go module (its go.mod pulls in gorm.io/driver/{mysql,postgres,gaussdb},
 # lib/pq, and the upstream test fixtures — none of which belong in sdk/go's
 # own dependency graph) with its own build-tag-gated, ratcheted allowlist;
 # see sdk/go/gorm/conformance/README.md and GORM_SUITE.lock.
 #
 # This suite is INFRASTRUCTURE, not a gate: it is expected to fail a large,
-# tracked fraction of its tests until qrdb's Migrator/DDL support lands (see
-# sdk/go/gorm/migrator.go and pkg/sql/provider). conformance-test-gorm-* is
+# tracked fraction of its tests on the wire targets (see pkg/sql/provider and
+# the allowlist). conformance-test-gorm-* is
 # therefore never wired into `make test`, `make integration-test`, or `make
 # all` — a red run is the expected, tracked state rather than a
 # transient one.
@@ -3469,7 +3470,7 @@ gorm-suite-clean: ## Remove the materialized upstream GORM test suite
 	cd $(GORM_DIR) && go run sync.go -clean
 
 .PHONY: conformance-test-gorm-node
-conformance-test-gorm-node: gorm-suite-sync ## Run+reconcile the GORM suite against qrdb's native dialector over a complete in-process node
+conformance-test-gorm-node: gorm-suite-sync ## Run+reconcile the GORM suite with the stock MySQL dialector over a complete in-process node
 	cd $(GORM_DIR) && go run runner.go -target=node
 
 .PHONY: conformance-test-gorm-mysql

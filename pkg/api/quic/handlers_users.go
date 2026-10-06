@@ -338,6 +338,10 @@ func (s *Server) handleAddCertBinding(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	// Binding a thumbprint binds a key: the certificate target rule applies.
+	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, req.UserID); err != nil {
+		return nil, err
+	}
 	u, err := s.userSvc.AddCertBinding(ctx, req.UserID, req.Thumbprint, req.NotAfterUnix)
 	if err != nil {
 		return nil, err

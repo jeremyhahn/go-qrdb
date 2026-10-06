@@ -278,7 +278,8 @@ func newResolverFixtureFor(t *testing.T, ents *quota.Entitlements) (*memKVStore,
 	t.Helper()
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
-	svc, err := NewTenantService(store, reg, testLogger(), WithDefaultEntitlements(ents))
+	svc, err := NewTenantService(store, reg, testLogger(),
+		WithDefaultEntitlements(ents), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

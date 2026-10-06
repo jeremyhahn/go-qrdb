@@ -172,13 +172,6 @@ func (n *sealNode) initSystem(t *testing.T, cli string, extraArgs ...string) str
 		append([]string{"--admin-cert", n.adminCert}, extraArgs...)...)
 }
 
-// adoptIdentity carries a restarted node's CA handle and bootstrap admin
-// credential over from prev, the same node before its restart: `qrdb init`
-// bound prev's credential, and it is what authenticates after the restart.
-func (n *sealNode) adoptIdentity(prev *sealNode) {
-	n.ca, n.adminCert, n.adminKey = prev.ca, prev.adminCert, prev.adminKey
-}
-
 // waitForFullBoot blocks until the full RBAC-backed server (not the pre-host
 // sealed-window listener) serves on the admin port and the shard has a
 // leader.
@@ -216,8 +209,32 @@ func writeSealConfig(t *testing.T, strategy string, threshold, total int) string
 // material exists on disk -- written very early in boot, strictly before
 // the barrier is ever initialized -- and issues the bootstrap admin's
 // certificate from that CA for initSystem to bind. A restarted node adopts
-// its predecessor's identity (adoptIdentity) instead.
+// its predecessor's identity (restartSealNode) instead.
 func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort int) *sealNode {
+	t.Helper()
+	node := launchSealNode(t, binary, dataDir, configPath, raftPort, adminPort, grpcPort)
+	node.ca = loadDaemonCA(t, dataDir)
+	node.adminCert, node.adminKey = node.ca.boundAdminCert(t, t.TempDir())
+	return node
+}
+
+// restartSealNode restarts prev's node on the same data directory, config
+// and ports, and carries prev's CA handle and bootstrap admin credential
+// over: `qrdb init` bound prev's credential, and it is what authenticates
+// after the restart. It mints nothing -- by then the daemon has adopted its
+// CA key into the replicated store and deleted ca-key.pem
+// (confirmClusterCAPersisted), so the on-disk CA can no longer sign.
+func restartSealNode(t *testing.T, binary, configPath string, prev *sealNode, raftPort, grpcPort int) *sealNode {
+	t.Helper()
+	node := launchSealNode(t, binary, prev.dataDir, configPath, raftPort, prev.adminPort, grpcPort)
+	node.ca, node.adminCert, node.adminKey = prev.ca, prev.adminCert, prev.adminKey
+	return node
+}
+
+// launchSealNode starts the daemon for startSealNode and restartSealNode and
+// blocks until its CA certificate is on disk -- written very early in boot,
+// strictly before the barrier is ever initialized.
+func launchSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort int) *sealNode {
 	t.Helper()
 	args := []string{
 		"start",
@@ -238,8 +255,6 @@ func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, a
 
 	caPath := filepath.Join(dataDir, "ca.pem")
 	waitForNonEmptyFile(t, caPath, 30*time.Second)
-	ca := loadDaemonCA(t, dataDir)
-	adminCert, adminKey := ca.boundAdminCert(t, t.TempDir())
 
 	return &sealNode{
 		cmd:       cmd,
@@ -247,9 +262,6 @@ func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, a
 		adminPort: adminPort,
 		serverURL: fmt.Sprintf("https://127.0.0.1:%d", adminPort),
 		caFile:    caPath,
-		adminCert: adminCert,
-		adminKey:  adminKey,
-		ca:        ca,
 	}
 }
 
@@ -950,9 +962,7 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	// cached-certificate path (ca.pem/node-cert.pem/node-key.pem already
 	// present under dataDir) keeps the CA stable across the restart, and the
 	// admin credential `qrdb init` bound stays bound.
-	prev := node
-	node = startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
-	node.adoptIdentity(prev)
+	node = restartSealNode(t, binary, configPath, node, raftPorts[0], tcpPorts[1])
 	flags = node.adminFlags()
 	waitForBarrierReachable(t, cli, node.noAuthFlags(), 60*time.Second)
 
@@ -1445,7 +1455,7 @@ func testBarrierPassphraseLifecycleOverProtocol(t *testing.T, proto multiProtoco
 		t.Fatalf("[%s] kv get: expected value in output, got: %s", proto.name, stdout)
 	}
 
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y")...); err != nil {
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("[%s] barrier seal: %v\nstderr: %s", proto.name, err, stderr)
 	}
 	status = barrierStatus(t, cli, flags)

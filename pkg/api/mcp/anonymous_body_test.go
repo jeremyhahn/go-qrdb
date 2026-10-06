@@ -58,17 +58,22 @@ func TestMCP_AnonymousBodyCappedSmall(t *testing.T) {
 	}
 }
 
-// TestRequestBodyLimit: authenticated listeners get the batch-import bound;
-// a listener without authentication, or the sealed-window listener, gets the
-// anonymous bound.
+// TestRequestBodyLimit: authenticated listeners get defaultMaxRequestBodyBytes
+// (or the WithMaxBodyBytes override); a listener without authentication, or
+// the sealed-window listener, gets the anonymous bound.
 func TestRequestBodyLimit(t *testing.T) {
 	if got := (&Server{}).requestBodyLimit(); got != maxAnonymousRequestBodyBytes {
 		t.Errorf("no authentication: %d, want %d", got, maxAnonymousRequestBodyBytes)
 	}
 	authed := newBearerTestServer(t, "")
-	if got := authed.requestBodyLimit(); got != maxRequestBodyBytes {
-		t.Errorf("authenticated: %d, want %d", got, maxRequestBodyBytes)
+	if got := authed.requestBodyLimit(); got != defaultMaxRequestBodyBytes {
+		t.Errorf("authenticated: %d, want %d", got, defaultMaxRequestBodyBytes)
 	}
+	WithMaxBodyBytes(2 << 20)(authed)
+	if got := authed.requestBodyLimit(); got != 2<<20 {
+		t.Errorf("authenticated with WithMaxBodyBytes override: %d, want %d", got, 2<<20)
+	}
+	authed.maxBodyBytes = 0
 	WithSealedWindowListener(&fakeMCPSealedProbe{sealed: true})(authed)
 	if got := authed.requestBodyLimit(); got != maxAnonymousRequestBodyBytes {
 		t.Errorf("sealed-window listener: %d, want %d", got, maxAnonymousRequestBodyBytes)

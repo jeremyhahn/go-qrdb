@@ -23,8 +23,9 @@
  *   - A simple external connection form triggered by "Connect to Server".
  *
  * Embedded wizard step sequence:
- *   Standalone: name → mode → barrier → summary → applying → main app
- *   Raft:       name → mode → discovery → barrier → summary → applying → main app
+ *   Standalone: name → mode → barrier → admin → summary → applying → main app
+ *   Raft:       name → mode → discovery → barrier → admin → summary → applying → main app
+ * (officers is inserted between barrier and admin for a Shamir barrier.)
  */
 
 import {
@@ -35,7 +36,18 @@ import {
   injectError,
   clearError,
 } from "./fixtures/wails-mock.ts";
-import type { Page } from "@playwright/test";
+import {
+  waitForConnectionManager,
+  openEmbeddedWizard,
+  stepName,
+  stepMode,
+  stepDiscoveryMulticast,
+  stepBarrier,
+  stepAdminCredential,
+  waitForSummary,
+  createServer,
+  acknowledgeCeremonyResult,
+} from "./fixtures/embedded-wizard-steps.ts";
 
 /** Timeout for async step transitions. */
 const STEP_TIMEOUT = 10_000;
@@ -53,121 +65,6 @@ const firstRunState = {
 const configuredState = {
   ...secondLaunchEmbeddedState,
 };
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Waits for the Add Server modal to be visible. On first launch with no
- * profiles, the modal auto-opens. The ConnectionManager renders inside
- * the modal with its "No servers configured" card heading.
- */
-async function waitForConnectionManager(page: Page): Promise<void> {
-  await expect(
-    page.getByRole("heading", { name: "No servers configured", exact: true }),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-}
-
-/**
- * Opens the embedded server creation wizard by clicking
- * "Create Embedded Server" from within the Connection Manager modal.
- */
-async function openEmbeddedWizard(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Create Embedded Server" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Create Embedded Server" }),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-}
-
-/**
- * Fills the Name step and advances to the Mode step.
- * Clears the default value and types the provided name.
- */
-async function stepName(page: Page, name = "Test Server"): Promise<void> {
-  await expect(page.locator("#emb-name")).toBeVisible({ timeout: STEP_TIMEOUT });
-  await page.locator("#emb-name").fill(name);
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-/**
- * Selects a server mode card by label ("Standalone" or "Raft Cluster") and
- * advances to the next step.
- */
-async function stepMode(
-  page: Page,
-  mode: "Standalone" | "Raft Cluster",
-): Promise<void> {
-  await expect(
-    page.locator("button").filter({ hasText: mode }).first(),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-  await page.locator("button").filter({ hasText: mode }).first().click();
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-/**
- * Configures the Discovery step for multicast and advances.
- * Optionally fills in a multicast secret.
- */
-async function stepDiscoveryMulticast(
-  page: Page,
-  secret?: string,
-): Promise<void> {
-  // Multicast is the default selection; the input is already visible.
-  await expect(
-    page.locator("#emb-multicast-secret"),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-  if (secret !== undefined) {
-    await page.locator("#emb-multicast-secret").fill(secret);
-  }
-
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-/**
- * Selects a barrier mode card by label ("None", "Passphrase", or
- * "Shamir (M-of-N)") and advances to the next step. When mode is
- * "Passphrase", the caller must supply a matching passphrase string.
- */
-async function stepBarrier(
-  page: Page,
-  mode: "None" | "Passphrase" | "Shamir (M-of-N)",
-  passphrase?: string,
-): Promise<void> {
-  await expect(
-    page.locator("button").filter({ hasText: mode }).first(),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-  await page.locator("button").filter({ hasText: mode }).first().click();
-
-  if (mode === "Passphrase" && passphrase !== undefined) {
-    await page.locator("#emb-passphrase").fill(passphrase);
-    await page.locator("#emb-passphrase-confirm").fill(passphrase);
-  }
-
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-/** Waits for the Summary step. */
-async function waitForSummary(page: Page): Promise<void> {
-  await expect(
-    page.getByText("Review your server configuration before creating it."),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-}
-
-/**
- * Clicks "Create Server" on the Summary step and waits for the applying
- * phase to complete and the main app to load.
- */
-async function createServer(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Create Server" }).click();
-
-  // The applying step completes and transitions to the main application.
-  await expect(
-    page.locator(".breadcrumbs").getByText("Dashboard"),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-}
 
 // ---------------------------------------------------------------------------
 // 1. First-run detection
@@ -231,6 +128,9 @@ test.describe("Connection Manager - embedded wizard - standalone, no barrier", (
     // Step 3: Barrier — None
     await stepBarrier(page, "None");
 
+    // Step 3.5: Admin credential — Generate (dev/test only)
+    await stepAdminCredential(page);
+
     // Step 4: Summary — verify configuration rows
     await waitForSummary(page);
     await expect(page.getByText("My Local Server")).toBeVisible();
@@ -276,6 +176,9 @@ test.describe("Connection Manager - embedded wizard - standalone, passphrase", (
       page.getByRole("button", { name: "Next" }),
     ).not.toBeDisabled();
     await page.getByRole("button", { name: "Next" }).click();
+
+    // Admin credential — Generate (dev/test only)
+    await stepAdminCredential(page);
 
     // Summary shows Passphrase barrier mode.
     await waitForSummary(page);
@@ -387,6 +290,9 @@ test.describe("Connection Manager - embedded wizard - raft, multicast discovery"
 
     // Barrier step: None
     await stepBarrier(page, "None");
+
+    // Admin credential — Generate (dev/test only)
+    await stepAdminCredential(page);
 
     // Summary: verify raft settings are present
     await waitForSummary(page);
@@ -538,9 +444,17 @@ test.describe("Connection Manager - back navigation", () => {
     await stepName(page);
     await stepMode(page, "Standalone");
     await stepBarrier(page, "None");
+    await stepAdminCredential(page);
 
     // Now on Summary step.
     await waitForSummary(page);
+
+    await page.getByRole("button", { name: "Back" }).click();
+
+    // Back to the Admin Credential step — the step immediately before Summary.
+    await expect(
+      page.getByRole("heading", { name: "Bootstrap Admin Credential" }),
+    ).toBeVisible({ timeout: STEP_TIMEOUT });
 
     await page.getByRole("button", { name: "Back" }).click();
 
@@ -675,6 +589,7 @@ test.describe("Connection Manager - apply error handling", () => {
     await stepName(page);
     await stepMode(page, "Standalone");
     await stepBarrier(page, "None");
+    await stepAdminCredential(page);
     await waitForSummary(page);
 
     // Inject a failure on the health-check call.
@@ -702,6 +617,7 @@ test.describe("Connection Manager - apply error handling", () => {
     await stepName(page);
     await stepMode(page, "Standalone");
     await stepBarrier(page, "None");
+    await stepAdminCredential(page);
     await waitForSummary(page);
 
     await injectError(page, "AdminBinding.Status", "transient error");
@@ -717,7 +633,9 @@ test.describe("Connection Manager - apply error handling", () => {
 
     await page.getByRole("button", { name: "Retry" }).click();
 
-    // After a successful retry the main app loads.
+    // After a successful retry, acknowledge the ceremony-result panel and
+    // the main app loads.
+    await acknowledgeCeremonyResult(page);
     await expect(
       page.locator(".breadcrumbs").getByText("Dashboard"),
     ).toBeVisible({ timeout: STEP_TIMEOUT });

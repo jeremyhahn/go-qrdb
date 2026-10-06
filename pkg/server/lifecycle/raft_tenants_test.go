@@ -192,6 +192,36 @@ func TestComposeRaftTenantCluster_WithoutAPieceTheKeyPlaneIsOff(t *testing.T) {
 	}
 }
 
+// TestComposeRaftTenantCluster_WithoutARaftAddressTheKeyPlaneIsOff: the HPKE
+// receiver binds every delivered key to this node's raft address, so a node
+// that has none cannot receive -- the key plane is left off (no receiver, no
+// sender, no routes) instead of accepting deliveries addressed to nobody.
+func TestComposeRaftTenantCluster_WithoutARaftAddressTheKeyPlaneIsOff(t *testing.T) {
+	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
+	f.cfg.RaftAddr = ""
+
+	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
+	if got.KeyReceiver != nil || got.KeySender != nil {
+		t.Fatalf("composed %+v without a raft address; want the key plane off", got)
+	}
+	if opts := got.ServerOptions(); len(opts) != 0 {
+		t.Fatalf("ServerOptions = %d options without a receiver; want none", len(opts))
+	}
+}
+
+// TestComposeRaftTenantCluster_NilLoggerStillComposes: Logger is optional --
+// a composer that passes none gets the default logger, not a panic on the
+// first warning, and the key plane composes exactly as with one.
+func TestComposeRaftTenantCluster_NilLoggerStillComposes(t *testing.T) {
+	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
+	f.cfg.Logger = nil
+
+	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
+	if got.KeyReceiver == nil || got.KeySender == nil {
+		t.Fatalf("composed %+v with a nil logger; want a key receiver and sender", got)
+	}
+}
+
 // A nil composition has no server options.
 func TestRaftTenantCluster_NilHasNoServerOptions(t *testing.T) {
 	var c *lifecycle.RaftTenantCluster

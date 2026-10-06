@@ -68,6 +68,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 	leaderReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, leaderReg)
 
+	reserveTestVolumeTenant(t, leaderReg, "leader-tenant")
 	leaderDataRoot, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "leader-tenant", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(leader): %v", err)
@@ -86,6 +87,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 	// ---- Follower registry (distinct node) ----
 	followerReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, followerReg)
+	reserveTestVolumeTenant(t, followerReg, "replicated-tenant")
 
 	followerTB, err := followerReg.ImportTenant(ctx, "replicated-tenant", true, exported, nil)
 	if err != nil {
@@ -129,6 +131,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T
 	leaderReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, leaderReg)
 
+	reserveTestVolumeTenant(t, leaderReg, "dek-leader")
 	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "dek-leader", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(dek-leader): %v", err)
@@ -151,6 +154,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T
 
 	followerReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, followerReg)
+	reserveTestVolumeTenant(t, followerReg, "dek-follower")
 
 	followerTB, err := followerReg.ImportTenant(ctx, "dek-follower", true, exported, nil)
 	if err != nil {
@@ -177,6 +181,7 @@ func TestBarrierRegistry_ImportTenant_SelfManaged(t *testing.T) {
 	initSystemBarrierForImport(t, reg)
 
 	blob := buildValidSealedBlob(t)
+	reserveTestVolumeTenant(t, reg, "self-managed-tenant")
 
 	followerTB, err := reg.ImportTenant(ctx, "self-managed-tenant", false, nil, blob)
 	if err != nil {
@@ -203,6 +208,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_NilImportedKey(t *testing.T) {
 
 	reg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, reg)
+	reserveTestVolumeTenant(t, reg, "nil-key-tenant")
 
 	_, err := reg.ImportTenant(ctx, "nil-key-tenant", true, nil, nil)
 	if !errors.Is(err, ErrImportedKeyNil) {
@@ -217,6 +223,7 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_NilBlob(t *testing.T) {
 
 	reg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, reg)
+	reserveTestVolumeTenant(t, reg, "nil-blob-tenant")
 
 	_, err := reg.ImportTenant(ctx, "nil-blob-tenant", false, nil, nil)
 	if !errors.Is(err, ErrImportSealedBlobNil) {
@@ -233,10 +240,12 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 
 	reg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, reg)
+	reserveTestVolumeTenant(t, reg, "idem-tenant")
 
 	// Create a leader to get a valid exported key.
 	leaderReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, leaderReg)
+	reserveTestVolumeTenant(t, leaderReg, "idem-leader")
 	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "idem-leader", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(idem-leader): %v", err)

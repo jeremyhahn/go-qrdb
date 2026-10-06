@@ -62,6 +62,7 @@ import type {
     TransactionClient,
     UserClient,
     VectorClient,
+    VolumePoolClient,
     WatchClient,
     WatchHandle,
 } from './interfaces.js';
@@ -80,7 +81,10 @@ import type {
     CeremonySignCSRRequest,
     CeremonySignCSRResponse,
     CeremonyStatusResponse,
-    CertBundle,
+    IssueCertRequest,
+    EnrollCertRequest,
+    EnrolledCert,
+    IssuedCertWithKey,
     CompactNamespaceRequest,
     CompactNamespaceResponse,
     CompactionProgress,
@@ -120,7 +124,6 @@ import type {
     EnableEncryptionResponse,
     ExportCertRequest,
     ExportCertResponse,
-    GenerateCertRequest,
     GetCompactionProgressRequest,
     GetIndexStatsRequest,
     GetNamespaceInfoRequest,
@@ -216,6 +219,15 @@ import type {
     UpdateTenantQuotasResponse,
     UpdateTenantEntitlementsRequest,
     UpdateTenantEntitlementsResponse,
+    VolumePool,
+    VolumePoolDetail,
+    ListVolumePoolsResponse,
+    CreateVolumePoolRequest,
+    UpdateVolumePoolRequest,
+    ListVolumePoolTenantsRequest,
+    ListVolumePoolTenantsResponse,
+    TenantAdminCredential,
+    TrustAnchorList,
     ConfigInitializedResponse,
     BackupRequest,
     BackupInfo,
@@ -1659,18 +1671,42 @@ export class RestClient implements Client {
     /** @inheritdoc */
     get certs(): CertClient {
         return {
-            generate: async (req: GenerateCertRequest): Promise<CertBundle> => {
+            issueCert: async (req: IssueCertRequest): Promise<EnrolledCert> => {
                 this.ensureConnected();
-                return this.fetchJSON<CertBundle>('/certs/generate', {
+                // The Go wire tags for this family of requests (csrPEM, certPEM,
+                // chainPEM, userID, tenantID, notAfter) are literal camelCase with
+                // all-caps acronyms, NOT the SDK's usual snake_case-on-the-wire
+                // convention (sdk/go/transport/auth_types.go IssueCertRequest).
+                // jsonBody()'s deepCamelToSnake would mangle "csrPEM" into
+                // "csr_p_e_m", so send the body verbatim instead.
+                return this.fetchJSON<EnrolledCert>('/certs/issue', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
                 });
+            },
+            enrollCert: async (req: EnrollCertRequest): Promise<EnrolledCert> => {
+                this.ensureConnected();
+                // Same literal-camelCase wire contract as issueCert above.
+                return this.fetchJSON<EnrolledCert>('/certs/enroll', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
+                });
+            },
+            issueCertWithLocalKey: async (_username: string, _ttl?: string): Promise<IssuedCertWithKey> => {
+                throw new DesktopOnlyError('certs.issueCertWithLocalKey');
             },
             export: async (req: ExportCertRequest): Promise<ExportCertResponse> => {
                 this.ensureConnected();
+                // certPEM/keyPEM are also literal camelCase on the wire
+                // (ExportCertRequest); see issueCert above. Using jsonBody()
+                // here previously mangled them into "cert_p_e_m"/"key_p_e_m",
+                // silently breaking every export call.
                 return this.fetchJSON<ExportCertResponse>('/certs/export', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
                 });
             },
             revoke: async (serial: string): Promise<void> => {
@@ -2245,14 +2281,16 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateTenantRequest): Promise<CreateTenantResponse> => {
                 this.ensureConnected();
-                // The REST wire format returns the tenant object directly;
-                // wrap it to match the SDK contract (mirrors the Go REST
-                // transport's CreateTenant adaptation).
-                const tenant = await this.fetchJSON<TenantInfo>('/v1/tenants', {
+                // The REST wire format flattens the tenant's own fields at the
+                // top level and adds an "admin" key (the Go handler's
+                // createTenantResponse anonymously embeds *tenantResponse);
+                // split them apart to match the SDK's {tenant, admin} contract.
+                const raw = await this.fetchJSON<TenantInfo & { admin: TenantAdminCredential }>('/v1/tenants', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
-                return { tenant };
+                const { admin, ...tenant } = raw;
+                return { tenant, admin };
             },
             get: async (tenantId: string): Promise<GetTenantResponse> => {
                 this.ensureConnected();
@@ -2347,6 +2385,73 @@ export class RestClient implements Client {
                     { method: 'PATCH', ...jsonBody(req.entitlements) },
                 );
                 return { tenant };
+            },
+            addTrustAnchors: async (tenantId: string, certsPem: string): Promise<TrustAnchorList> => {
+                this.ensureConnected();
+                return this.fetchJSON<TrustAnchorList>(`/v1/tenants/${encodeURIComponent(tenantId)}/trust-anchors`,
+                    { method: 'POST', ...jsonBody({ certsPem }) },
+                );
+            },
+            listTrustAnchors: async (tenantId: string): Promise<TrustAnchorList> => {
+                this.ensureConnected();
+                return this.fetchJSON<TrustAnchorList>(`/v1/tenants/${encodeURIComponent(tenantId)}/trust-anchors`,
+                );
+            },
+            removeTrustAnchor: async (tenantId: string, fingerprint: string): Promise<void> => {
+                this.ensureConnected();
+                // DELETE /v1/tenants/{id}/trust-anchors/{fingerprint} responds
+                // 204 No Content.
+                await this.fetchVoid(`/v1/tenants/${encodeURIComponent(tenantId)}/trust-anchors/${encodeURIComponent(fingerprint)}`,
+                    { method: 'DELETE' },
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Volume Pools
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get volumePools(): VolumePoolClient {
+        return {
+            list: async (): Promise<ListVolumePoolsResponse> => {
+                this.ensureConnected();
+                return this.fetchJSON<ListVolumePoolsResponse>('/v1/volume-pools/list');
+            },
+            get: async (pool: string): Promise<VolumePoolDetail> => {
+                this.ensureConnected();
+                return this.fetchJSON<VolumePoolDetail>(`/v1/volume-pools/${encodeURIComponent(pool)}`);
+            },
+            create: async (req: CreateVolumePoolRequest): Promise<VolumePool> => {
+                this.ensureConnected();
+                // The wire schema is already camelCase
+                // (docs/volume-pools/api.md), unlike most of this REST
+                // surface's snake_case JSON tags; wireBody sends the
+                // request as given, without jsonBody's camel->snake pass.
+                return this.fetchJSON<VolumePool>('/v1/volume-pools', {
+                    method: 'POST',
+                    ...wireBody(req as unknown as Record<string, unknown>),
+                });
+            },
+            update: async (pool: string, req: UpdateVolumePoolRequest): Promise<VolumePool> => {
+                this.ensureConnected();
+                return this.fetchJSON<VolumePool>(`/v1/volume-pools/${encodeURIComponent(pool)}`, {
+                    method: 'PUT',
+                    ...wireBody(req as unknown as Record<string, unknown>),
+                });
+            },
+            delete: async (pool: string): Promise<void> => {
+                this.ensureConnected();
+                // DELETE /v1/volume-pools/{pool} responds 204 No Content.
+                await this.fetchVoid(`/v1/volume-pools/${encodeURIComponent(pool)}`, { method: 'DELETE' });
+            },
+            listTenants: async (pool: string, req?: ListVolumePoolTenantsRequest): Promise<ListVolumePoolTenantsResponse> => {
+                this.ensureConnected();
+                const query = buildQuery({ page_size: req?.pageSize, page_token: req?.pageToken });
+                return this.fetchJSON<ListVolumePoolTenantsResponse>(
+                    `/v1/volume-pools/${encodeURIComponent(pool)}/tenants${query}`,
+                );
             },
         };
     }

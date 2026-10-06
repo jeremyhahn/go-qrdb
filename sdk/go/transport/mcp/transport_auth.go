@@ -16,7 +16,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -140,20 +139,6 @@ type serverPermissionCategory struct {
 	Name        string   `json:"Name"`
 	Group       string   `json:"Group"`
 	Permissions []string `json:"Permissions"`
-}
-
-// serverCertBundle mirrors cert.CertBundle for JSON decoding. The server
-// uses []byte for CertPEM/KeyPEM which json.Marshal encodes as base64.
-type serverCertBundle struct {
-	CertPEM string `json:"CertPEM"`
-	KeyPEM  string `json:"KeyPEM"`
-	Serial  string `json:"Serial"`
-}
-
-// serverCertExportResponse mirrors the certExportResponse envelope used by
-// the qrdb_cert_export tool handler.
-type serverCertExportResponse struct {
-	P12Base64 string `json:"p12_base64"`
 }
 
 // serverCertRevokeResponse mirrors the certRevokeResponse envelope used by
@@ -830,73 +815,45 @@ func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermiss
 // CertClient implementation
 // ---------------------------------------------------------------------------
 
-// GenerateCert creates a client X.509 certificate signed by the internal
-// CA for mTLS authentication. Calls the qrdb_cert_generate MCP tool.
-func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
+// enrollTool calls an issue or enrol tool and decodes the bound certificate;
+// the tool's JSON is transport.EnrolledCert's.
+func (t *Transport) enrollTool(ctx context.Context, method, tool, username string, args map[string]any) (*transport.EnrolledCert, error) {
+	text, err := t.callTool(ctx, tool, args)
+	if err != nil {
+		// The only thing either tool can fail to find is the account.
+		return nil, mapUserLookupNotFound(username, err)
+	}
+	var out transport.EnrolledCert
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		return nil, &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &out, nil
+}
+
+// IssueCert issues a certificate from a CSR for an existing account of the
+// caller's own tenant and binds it. Calls the qrdb_cert_issue MCP tool.
+func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	args := map[string]any{
-		"username": req.Username,
-	}
-	if req.TenantID != "" {
-		args["tenant_id"] = req.TenantID
-	}
+	args := map[string]any{"username": req.Username, "csr_pem": req.CSRPEM}
 	if req.TTL != "" {
 		args["ttl"] = req.TTL
 	}
-
-	text, err := t.callTool(ctx, "qrdb_cert_generate", args)
-	if err != nil {
-		return nil, err
-	}
-
-	var raw serverCertBundle
-	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "GenerateCert", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	certPEM, decErr := base64.StdEncoding.DecodeString(raw.CertPEM)
-	if decErr != nil {
-		certPEM = []byte(raw.CertPEM)
-	}
-	keyPEM, decErr := base64.StdEncoding.DecodeString(raw.KeyPEM)
-	if decErr != nil {
-		keyPEM = []byte(raw.KeyPEM)
-	}
-
-	return &transport.CertBundle{
-		CertPEM: string(certPEM),
-		KeyPEM:  string(keyPEM),
-		Serial:  raw.Serial,
-	}, nil
+	return t.enrollTool(ctx, "IssueCert", "qrdb_cert_issue", req.Username, args)
 }
 
-// ExportCert exports a certificate and key as a PKCS#12 archive for
-// browser import. Calls the qrdb_cert_export MCP tool.
-func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
+// EnrollCert binds a bring-your-own certificate to an existing account of the
+// caller's own tenant. Calls the qrdb_cert_enroll MCP tool.
+func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	text, err := t.callTool(ctx, "qrdb_cert_export", map[string]any{
-		"cert_pem":   req.CertPEM,
-		"key_pem":    req.KeyPEM,
-		"passphrase": req.Passphrase,
-	})
-	if err != nil {
-		return nil, err
+	args := map[string]any{"username": req.Username, "cert_pem": req.CertPEM}
+	if req.ChainPEM != "" {
+		args["chain_pem"] = req.ChainPEM
 	}
-
-	var raw serverCertExportResponse
-	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "ExportCert", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &transport.ExportCertResponse{
-		PKCS12: raw.P12Base64,
-	}, nil
+	return t.enrollTool(ctx, "EnrollCert", "qrdb_cert_enroll", req.Username, args)
 }
 
 // RevokeCert marks a certificate serial as revoked, and reports whether

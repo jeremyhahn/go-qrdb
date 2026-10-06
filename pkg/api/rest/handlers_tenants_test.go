@@ -495,7 +495,7 @@ func testTenantInfo() *tenant.TenantInfo {
 func newTenantServer(svc tenant.TenantServicer) *Server {
 	var opts []ServerOption
 	if svc != nil {
-		opts = append(opts, WithTenantService(svc))
+		opts = append(opts, WithTenantService(svc), WithTenantOnboarding(&fakeTenantOnboarding{tenants: svc}))
 	}
 	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", opts...)
 }

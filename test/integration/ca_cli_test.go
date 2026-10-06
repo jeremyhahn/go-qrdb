@@ -16,9 +16,9 @@
 //go:build integration
 
 // ca_cli_test.go drives the `qrdb ca` COMMAND TREE (info, bundle, list,
-// issue, revoke, export-bundle) through the real client CLI binary
-// (cmd/qrdb), against every transport (REST, gRPC, QUIC, MCP, Unix) sharing
-// the multi_protocol_helpers_test.go harness.
+// issue, enroll, csr, revoke, export-bundle) through the real client CLI
+// binary (cmd/qrdb), against every transport (REST, gRPC, QUIC, MCP, Unix)
+// sharing the multi_protocol_helpers_test.go harness.
 //
 // The "ca" group is qrdb's canonical post-init CA surface backed by the
 // daemon's internal ceremony CA (pkg/cert.DefaultCertProvider, barrier-sealed
@@ -29,6 +29,13 @@
 // literally return newCertsListCmd() with the Use string renamed) pending
 // real per-CA introspection, so this file asserts that documented alias
 // behavior rather than distinct CA-metadata output.
+//
+// Server-side keygen is retired (go-qrdb tenant-onboarding refactor): "ca
+// issue" signs a CSR for an EXISTING account of the caller's own tenant and
+// never sees a private key. Every username this file issues for is created
+// first via "users create"; the CSR either comes from "ca csr" (the --csr
+// form) or is generated locally by "ca issue" itself when --csr is omitted
+// (the --out form, exercised for export-bundle's PEM inputs below).
 package integration_test
 
 import (
@@ -41,13 +48,18 @@ import (
 	"time"
 )
 
-// caCertBundleCLIJSON mirrors transport.CertBundle, decoded from the
-// unwrapped JSON `ca issue` print (cmd/qrdb/certs.go's printCertBundle
-// marshals the bare bundle) when --out is not supplied.
-type caCertBundleCLIJSON struct {
-	CertPEM string `json:"certPEM"`
-	KeyPEM  string `json:"keyPEM"`
-	Serial  string `json:"serial"`
+// caEnrolledCertCLIJSON mirrors transport.EnrolledCert, decoded from the
+// unwrapped JSON `ca issue`/`ca enroll` print (cmd/qrdb/certs.go's
+// printEnrolledCert marshals the bare value). There is no key: the server
+// never holds the caller's private key.
+type caEnrolledCertCLIJSON struct {
+	UserID     uint64 `json:"userID,string"`
+	Username   string `json:"username"`
+	TenantID   string `json:"tenantID"`
+	CertPEM    string `json:"certPEM"`
+	Serial     string `json:"serial,omitempty"`
+	Thumbprint string `json:"thumbprint"`
+	NotAfter   string `json:"notAfter"`
 }
 
 // caCertRecordCLIJSON mirrors transport.CertRecord.
@@ -85,22 +97,47 @@ func testCALifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 
 	username := fmt.Sprintf("cac-%s-%d", proto.name, time.Now().UnixNano())
 
-	// --- issue (JSON print form: no --out) ----------------------------------
-	out, err := runCLIProto(t, node, proto, "--output", "json", "ca", "issue",
+	// "ca issue" signs a CSR for an EXISTING account; the account must be
+	// created before anything is issued for it.
+	out, err := runCLIProto(t, node, proto, "users", "create", "--without-email-login-key", "--username", username)
+	if err != nil {
+		t.Fatalf("[%s] users create (%s): %v\noutput: %s", proto.name, username, err, out)
+	}
+
+	// --- csr: generate a key and CSR locally, no server involved -----------
+	csrDir := t.TempDir()
+	out, err = runCLIProto(t, node, proto, "ca", "csr", "--username", username, "--out", csrDir)
+	if err != nil {
+		t.Fatalf("[%s] ca csr: %v\noutput: %s", proto.name, err, out)
+	}
+	csrPath := filepath.Join(csrDir, "csr.pem")
+	if _, statErr := os.Stat(csrPath); statErr != nil {
+		t.Fatalf("[%s] ca csr did not write %s: %v", proto.name, csrPath, statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(csrDir, "key.pem")); statErr != nil {
+		t.Fatalf("[%s] ca csr did not write key.pem: %v", proto.name, statErr)
+	}
+
+	// --- issue (JSON print form: --csr, no --out) ---------------------------
+	out, err = runCLIProto(t, node, proto, "--output", "json", "ca", "issue",
 		"--username", username,
+		"--csr", csrPath,
 		"--ttl", "24h",
 	)
 	if err != nil {
 		t.Fatalf("[%s] ca issue (json): %v\noutput: %s", proto.name, err, out)
 	}
-	var bundle caCertBundleCLIJSON
-	if jerr := json.Unmarshal([]byte(out), &bundle); jerr != nil {
+	var enrolled caEnrolledCertCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &enrolled); jerr != nil {
 		t.Fatalf("[%s] decode ca issue JSON: %v\noutput: %s", proto.name, jerr, out)
 	}
-	if bundle.Serial == "" || !strings.Contains(bundle.CertPEM, "BEGIN CERTIFICATE") || !strings.Contains(bundle.KeyPEM, "PRIVATE KEY") {
-		t.Fatalf("[%s] ca issue (json) result = %+v, want non-empty serial and PEM cert/key", proto.name, bundle)
+	if enrolled.Serial == "" || !strings.Contains(enrolled.CertPEM, "BEGIN CERTIFICATE") {
+		t.Fatalf("[%s] ca issue (json) result = %+v, want non-empty serial and PEM cert", proto.name, enrolled)
 	}
-	serial := bundle.Serial
+	if enrolled.Username != username {
+		t.Fatalf("[%s] ca issue (json) username = %q, want %q", proto.name, enrolled.Username, username)
+	}
+	serial := enrolled.Serial
 
 	// --- list: the freshly-issued cert appears, not revoked ----------------
 	out, err = runCLIProto(t, node, proto, "--output", "json", "ca", "list")
@@ -131,10 +168,16 @@ func testCALifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 		}
 	}
 
-	// --- issue (file form: --out, for export-bundle's PEM inputs) -----------
+	// --- issue (file form: no --csr, --out, for export-bundle's PEM inputs)
+	// A fresh key is generated locally here; the account must exist first.
+	exportUsername := username + "-export"
+	out, err = runCLIProto(t, node, proto, "users", "create", "--without-email-login-key", "--username", exportUsername)
+	if err != nil {
+		t.Fatalf("[%s] users create (%s): %v\noutput: %s", proto.name, exportUsername, err, out)
+	}
 	outDir := t.TempDir()
 	out, err = runCLIProto(t, node, proto, "ca", "issue",
-		"--username", username+"-export",
+		"--username", exportUsername,
 		"--out", outDir,
 	)
 	if err != nil {

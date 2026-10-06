@@ -389,8 +389,18 @@ test.describe("Full Admin - Tenants", () => {
     await expect(page.locator("#tenant-id")).toBeVisible({ timeout: 5_000 });
     await page.locator("#tenant-id").fill("acme-corp");
     await page.locator("#tenant-name").fill("Acme Corp");
+    await main.getByTestId("create-tenant-admin-username").fill("acme-corp-admin");
+    await main.getByTestId("create-tenant-admin-csr").fill(
+      "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+    );
 
-    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await main.getByTestId("create-tenant-submit").click();
+
+    // Dismiss the admin-credential result panel to return to the list.
+    await expect(main.getByTestId("create-tenant-admin-result")).toBeVisible({
+      timeout: 5_000,
+    });
+    await main.getByTestId("create-tenant-admin-result-done").click();
 
     await expect(page.getByText("acme-corp").first()).toBeVisible({
       timeout: 5_000,
@@ -408,7 +418,11 @@ test.describe("Full Admin - Tenants", () => {
     await expect(page.locator("#tenant-id")).toBeVisible({ timeout: 3_000 });
     await page.locator("#tenant-id").fill("duplicate-tenant");
     await page.locator("#tenant-name").fill("Duplicate Tenant");
-    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await main.getByTestId("create-tenant-admin-username").fill("duplicate-tenant-admin");
+    await main.getByTestId("create-tenant-admin-csr").fill(
+      "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+    );
+    await main.getByTestId("create-tenant-submit").click();
     await expect(page.getByText("tenant already exists")).toBeVisible({
       timeout: 5_000,
     });

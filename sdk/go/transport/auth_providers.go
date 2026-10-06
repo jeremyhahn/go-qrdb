@@ -19,18 +19,17 @@ package transport
 // ---------------------------------------------------------------------------
 //
 // The Phase 3 auth/identity clients (Permissions, RBAC, Factors, Login,
-// Sessions, VolumePools) carry several method names that overlap with
-// existing data-plane methods (List, Lookup, Verify, Pick, Remove,
-// Revoke). To keep the embedded transport's flat method set unambiguous
-// and to give the SDK a stable hand-off point, each phase-3 client is
-// exposed via a provider accessor on the transport:
+// Sessions) carry several method names that overlap with existing
+// data-plane methods (List, Lookup, Verify, Remove, Revoke). To keep the
+// embedded transport's flat method set unambiguous and to give the SDK a
+// stable hand-off point, each phase-3 client is exposed via a provider
+// accessor on the transport:
 //
 //	type PermissionProvider interface { PermissionClient() PermissionClient }
 //	type RBACProvider       interface { RBACClient()       RBACClient }
 //	type FactorProvider     interface { FactorClient()     FactorClient }
 //	type LoginProvider      interface { LoginClient()      LoginClient }
 //	type SessionProvider    interface { SessionClient()    SessionClient }
-//	type VolumePoolProvider interface { VolumePoolClient() VolumePoolClient }
 //
 // SDK accessors type-assert the underlying transport against these
 // providers; transports that don't expose a given client return nil
@@ -72,13 +71,6 @@ type LoginProvider interface {
 // until Phase 4 lands.
 type SessionProvider interface {
 	SessionClient() SessionClient
-}
-
-// VolumePoolProvider yields a VolumePoolClient. The embedded transport
-// implements this; non-embedded transports return a notImpl wrapper
-// until Phase 4 lands.
-type VolumePoolProvider interface {
-	VolumePoolClient() VolumePoolClient
 }
 
 // AuditProvider yields an AuditClient that can emit and query

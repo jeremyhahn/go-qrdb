@@ -89,6 +89,16 @@ var barrierRoutedIsolation = map[IsolationType]struct{}{
 	IsolationRaft:    {},
 }
 
+// IAMBehindTenantBarrier reports whether a tenant of this isolation type keeps
+// its identity records (users, roles, bindings) behind its own barrier -- and
+// so cannot have any written before that barrier is initialized and unsealed.
+// It reads the same table the resolver routes by, so the two cannot disagree.
+func IAMBehindTenantBarrier(isolation IsolationType) bool {
+	info := TenantInfo{IsolationType: isolation}
+	_, routed := barrierRoutedIsolation[info.EffectiveIsolationType()]
+	return routed
+}
+
 // isolationLookup is the minimal slice of TenantServicer the resolver
 // needs: the persisted isolation type for a tenant. TenantService
 // satisfies it directly.

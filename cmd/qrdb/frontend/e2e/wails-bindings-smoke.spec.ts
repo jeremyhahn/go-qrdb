@@ -186,7 +186,7 @@ test.describe("Wails Binding Registration — method presence", () => {
 
   /** Binding name → array of method names that must be callable functions. */
   const BINDING_METHODS: Partial<Record<BindingName, readonly string[]>> = {
-    TenantBinding: ["List", "Get", "Create", "Delete", "UpdateQuotas"],
+    TenantBinding: ["List", "Get", "Create", "Delete", "UpdateQuotas", "AddTrustAnchors", "ListTrustAnchors", "RemoveTrustAnchor"],
     BackupBinding: ["List", "Create", "Get", "Delete", "Restore", "Verify"],
     RebalanceBinding: ["GetShardStats", "CreatePlan", "Execute", "GetImbalanceReport"],
     LockBinding: ["Acquire", "TryLock", "Release", "Extend", "Status", "List"],
@@ -205,7 +205,7 @@ test.describe("Wails Binding Registration — method presence", () => {
     AuditBinding: ["Query"],
     UserBinding: ["List", "Get", "Create", "Update", "Delete"],
     RoleBinding: ["List", "Get", "Create", "Update", "Delete"],
-    CertBinding: ["List", "Generate", "Revoke"],
+    CertBinding: ["List", "Issue", "Enroll", "Export", "Revoke"],
     DatabaseBinding: ["List", "Get", "Create", "Drop"],
     SealBinding: ["Status", "Initialize", "InitializeShamir", "Unseal", "Seal"],
     KVBinding: ["Get", "Put", "Delete", "List", "Exists"],

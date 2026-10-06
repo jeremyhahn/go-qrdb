@@ -55,8 +55,10 @@ func registerSOGrants() {
 		// Ceremony (SO-exclusive)
 		CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		// Certificate management
-		CertsGenerate, CertsExport, CertsRevoke,
+		CertsIssue, CertsEnroll, CertsRevoke,
 		CertsList, CertsRead,
+		// Trust anchors: which outside CAs vouch for this tenant's logins.
+		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		// Role management (SO-exclusive)
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
@@ -128,8 +130,10 @@ func registerAdminGrants() {
 		// tenant Admin escrows and recovers their OWN tenant's keys).
 		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Certificate management
-		CertsGenerate, CertsExport, CertsRevoke,
+		CertsIssue, CertsEnroll, CertsRevoke,
 		CertsList, CertsRead,
+		// Trust anchors: which outside CAs vouch for this tenant's logins.
+		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		// Hardware crypto backend inventory
 		BackendsList, BackendsRead,
 		// PKCS#11 PIN management and PIV slot administration (no crypto use)
@@ -164,10 +168,13 @@ func registerAdminGrants() {
 		// OWN tenant's barrier only).
 		TenantBarrierOfficerRegister, TenantBarrierOfficerList,
 		TenantBarrierOfficerRevoke, TenantBarrierRekey,
-		// User management
+		// User management. A tenant Admin does everything in its tenant
+		// except key custody, so it may bind a key to an account too; the
+		// certificate target guard still refuses Security Officer and (for
+		// a non-Owner) Owner targets, as it does for certs:issue.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
-		UsersDisable,
+		UsersDisable, UsersAddCertBinding,
 		// Role management (read/assign — cannot create/delete system roles)
 		RolesRead, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,

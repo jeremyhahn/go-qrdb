@@ -60,6 +60,7 @@ func raftEntitlements() *quota.Entitlements {
 		AllowedIsolationModes:     []string{quota.IsolationModeRaft},
 		AllowDedicatedRaft:        true,
 		AllowSystemManagedBarrier: true,
+		AllowedVolumePools:        []string{"default"},
 	}
 }
 
@@ -84,7 +85,7 @@ func newRaftIsolationConfig(t *testing.T) *qrdbconfig.Config {
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{
-		{Name: "default", Paths: []string{poolDir}},
+		{Name: "default", Path: poolDir},
 	}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
@@ -127,6 +128,10 @@ func TestNode_TenantIsolation_VolumeKV(t *testing.T) {
 
 	require.False(t, n.IsSealed(), "none-strategy node must boot unsealed")
 	require.NotNil(t, n.tenantHosts, "tenantHosts must be wired when WithTenantIsolation() is set")
+
+	// A pool record is a management-plane object an operator creates
+	// explicitly; it is not derived from storage.volume_pools.
+	createDefaultPool(t, n)
 
 	// Create an IsolationVolume tenant with auto-unseal (system-managed key).
 	// CreateTenant allocates the DataRoot from the pool, registers the barrier,
@@ -178,6 +183,8 @@ func TestNode_TenantIsolation_EnableEncryption(t *testing.T) {
 
 	require.NotNil(t, n.tenantHosts)
 	require.NotNil(t, n.encMigrator.Load(), "encMigrator must be built by wireClientAndServer")
+
+	createDefaultPool(t, n)
 
 	// Create the tenant.
 	_, err = n.Services().Tenant.CreateTenant(ctx, "beta", "Beta Inc",
@@ -254,6 +261,8 @@ func TestNode_TenantIsolation_RestartSurvival(t *testing.T) {
 
 	require.NotNil(t, n.tenantHosts)
 
+	createDefaultPool(t, n)
+
 	_, err = n.Services().Tenant.CreateTenant(ctx, "gamma", "Gamma LLC",
 		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err)
@@ -326,6 +335,8 @@ func TestNode_ClusteredIsolationRaft_KV(t *testing.T) {
 	require.False(t, n.IsSealed(), "none-strategy node must boot unsealed")
 	require.NotNil(t, n.raftBackend, "raftBackend must be wired when WithTenantIsolation() is set on a clustered node")
 
+	createDefaultPool(t, n)
+
 	// Create an IsolationRaft tenant with a system-managed auto-unseal barrier.
 	// CreateTenant allocates the DataRoot from the pool, registers the tenant
 	// barrier, and initializes it so the tenant is immediately ready for use.
@@ -397,6 +408,8 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 
 	require.NotNil(t, n.raftBackend)
 	require.NotNil(t, n.encMigrator.Load(), "encMigrator must be built by wireClientAndServer")
+
+	createDefaultPool(t, n)
 
 	// Create the tenant and a dedicated-raft database.
 	_, err = n.Services().Tenant.CreateTenant(ctx, "beta", "Beta Inc",

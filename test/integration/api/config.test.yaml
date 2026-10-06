@@ -50,6 +50,34 @@ seal:
   root_key_path: "__sys:seal/root_key"
   credential_strategy: "barrier"
 
+# A volume pool is required for ANY dedicated per-tenant barrier (not only
+# volume/raft isolation -- a plain "tenant barrier-init" on a prefix tenant
+# needs one too, see InitializeTenantBarrier's doc comment): without one,
+# RegisterTenant fails closed with "volume pool not configured on barrier
+# registry" rather than silently falling back to a non-durable backend.
+# "default" is the pool self-service tenant registration reads.
+storage:
+  volume_pools:
+    - name: default
+      path: /data/volumes/default
+
+# Isolation and barrier-mode entitlements for tenants created without an
+# explicit --allowed-isolation-modes override (TestCLIMultiProtocol
+# TenantIdentityBarrierFlow drives a full tenant create -> barrier-init
+# round trip and needs all four isolation modes and every barrier strategy
+# reachable from their defaults).
+tenant:
+  default_entitlements:
+    allowed_isolation_modes:
+      - prefix
+      - barrier
+      - volume
+      - raft
+    allowed_barrier_modes:
+      - none
+      - passphrase
+      - shamir
+
 # Codec disabled: the MVCC state machine manages its own serialization.
 # Enabling a codec creates a mismatch between KV and MVCC code paths.
 codec:

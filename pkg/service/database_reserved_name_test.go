@@ -41,9 +41,10 @@ func TestDatabaseService_VolumeTenant_ReservedHostDirectoryNames(t *testing.T) {
 			lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
 				ID:            "acme",
 				IsolationType: tenant.IsolationVolume,
-				DataRoot:      dataRoot,
+				VolumePool:    "default",
 			}}
-			svc := NewDatabaseService(mgr, WithTenantInfoLookup(lookup))
+			svc := NewDatabaseService(mgr, WithTenantInfoLookup(lookup),
+				WithTenantDataRootResolver(&fakeDataRootResolver{roots: map[string]string{"acme": dataRoot}}))
 			ctx := tenant.WithTenantID(context.Background(), "acme")
 
 			_, err := svc.CreateForTenant(ctx, testDBConfig(name))

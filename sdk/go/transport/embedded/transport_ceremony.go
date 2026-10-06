@@ -70,7 +70,16 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	// in-process call must not be able to lock out a REST or gRPC caller
 	// guessing from a different source, or vice versa.
 	ctx = auth.WithRemoteAddr(ctx, "embedded")
-	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, holderwire.CeremonyInitFrom(req))
+	// req.Secret is consumed into a *secure.Buffer by CeremonyInitFrom, which
+	// this transport owns and destroys once the ceremony call below has
+	// finished with it.
+	opts, err := holderwire.CeremonyInitFrom(req)
+	if err != nil {
+		return nil, delayed("CeremonyInitialize", err)
+	}
+	defer opts.Secret.Destroy()
+
+	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, opts)
 	if err != nil {
 		return nil, delayed("CeremonyInitialize", err)
 	}

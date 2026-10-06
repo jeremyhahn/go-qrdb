@@ -161,9 +161,13 @@ test.describe("Error Recovery", () => {
     // Fill in the required fields.
     await page.locator("#tenant-id").fill("test-tenant");
     await page.locator("#tenant-name").fill("Test Tenant");
+    await main.getByTestId("create-tenant-admin-username").fill("test-tenant-admin");
+    await main.getByTestId("create-tenant-admin-csr").fill(
+      "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+    );
 
     // Submit the form.
-    await main.locator(".card-body").getByRole("button", { name: "Create" }).click();
+    await main.getByTestId("create-tenant-submit").click();
 
     // Error toast must appear with the injected message.
     const alert = page.locator('[role="alert"]');

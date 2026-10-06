@@ -40,10 +40,6 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockCertProvider struct {
-	genResult    *cert.CertBundle
-	genErr       error
-	exportResult []byte
-	exportErr    error
 	revokeResult *cert.RevokeResult
 	revokeErr    error
 	isRevokedRes bool
@@ -53,18 +49,8 @@ type mockCertProvider struct {
 	caCertPEM    []byte
 }
 
-func (m *mockCertProvider) GenerateClientCert(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
-	if m.genErr != nil {
-		return nil, m.genErr
-	}
-	return m.genResult, nil
-}
-
-func (m *mockCertProvider) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
-	if m.exportErr != nil {
-		return nil, m.exportErr
-	}
-	return m.exportResult, nil
+func (m *mockCertProvider) IssueClientCert(_ context.Context, _ *cert.IssueRequest) (*cert.IssuedCert, error) {
+	return nil, errors.New("mockCertProvider: not implemented")
 }
 
 func (m *mockCertProvider) RevokeCert(_ context.Context, _ string) (*cert.RevokeResult, error) {
@@ -1494,146 +1480,6 @@ func TestGRPC_ResolveRolePermissions_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Certificate handler tests
 // ---------------------------------------------------------------------------
-
-func TestGRPC_GenerateCert_Success(t *testing.T) {
-	certProv := &mockCertProvider{
-		genResult: &cert.CertBundle{
-			CertPEM: []byte("cert-pem"),
-			KeyPEM:  []byte("key-pem"),
-			Serial:  "ABC123",
-		},
-	}
-	client, cleanup := startTestServerFull(t, WithCertProvider(certProv))
-	defer cleanup()
-
-	resp, err := client.GenerateCert(context.Background(), &pb.GenerateCertRequest{
-		Username: "alice", TenantId: "t1",
-	})
-	if err != nil {
-		t.Fatalf("GenerateCert failed: %v", err)
-	}
-	if resp.GetCertPem() != "cert-pem" {
-		t.Fatalf("expected cert PEM 'cert-pem', got %q", resp.GetCertPem())
-	}
-	if resp.GetSerial() != "ABC123" {
-		t.Fatalf("expected serial 'ABC123', got %q", resp.GetSerial())
-	}
-}
-
-func TestGRPC_GenerateCert_WithTTL(t *testing.T) {
-	certProv := &mockCertProvider{
-		genResult: &cert.CertBundle{
-			CertPEM: []byte("c"), KeyPEM: []byte("k"), Serial: "S",
-		},
-	}
-	client, cleanup := startTestServerFull(t, WithCertProvider(certProv))
-	defer cleanup()
-
-	resp, err := client.GenerateCert(context.Background(), &pb.GenerateCertRequest{
-		Username: "alice", Ttl: "24h",
-	})
-	if err != nil {
-		t.Fatalf("GenerateCert with TTL failed: %v", err)
-	}
-	if resp.GetSerial() != "S" {
-		t.Fatalf("expected serial 'S', got %q", resp.GetSerial())
-	}
-}
-
-func TestGRPC_GenerateCert_InvalidTTL(t *testing.T) {
-	certProv := &mockCertProvider{}
-	client, cleanup := startTestServerFull(t, WithCertProvider(certProv))
-	defer cleanup()
-
-	_, err := client.GenerateCert(context.Background(), &pb.GenerateCertRequest{
-		Username: "alice", Ttl: "bad-ttl",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid TTL, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestGRPC_GenerateCert_Error(t *testing.T) {
-	certProv := &mockCertProvider{
-		genErr: &cert.CertGenerateError{Err: errors.New("gen failed")},
-	}
-	client, cleanup := startTestServerFull(t, WithCertProvider(certProv))
-	defer cleanup()
-
-	_, err := client.GenerateCert(context.Background(), &pb.GenerateCertRequest{
-		Username: "alice",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_GenerateCert_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.GenerateCert(context.Background(), &pb.GenerateCertRequest{
-		Username: "alice",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_ExportCert_Success(t *testing.T) {
-	certProv := &mockCertProvider{
-		exportResult: []byte{0x01, 0x02, 0x03},
-	}
-	client, cleanup := startTestServerFull(t, WithCertProvider(certProv))
-	defer cleanup()
-
-	resp, err := client.ExportCert(context.Background(), &pb.ExportCertRequest{
-		CertPem: "cert", KeyPem: "key", Passphrase: "pass",
-	})
-	if err != nil {
-		t.Fatalf("ExportCert failed: %v", err)
-	}
-	if resp.GetPkcs12() == "" {
-		t.Fatal("expected non-empty PKCS12 base64")
-	}
-}
-
-func TestGRPC_ExportCert_Error(t *testing.T) {
-	certProv := &mockCertProvider{
-		exportErr: &cert.CertExportError{Err: errors.New("export")},
-	}
-	client, cleanup := startTestServerFull(t, WithCertProvider(certProv))
-	defer cleanup()
-
-	_, err := client.ExportCert(context.Background(), &pb.ExportCertRequest{
-		CertPem: "c", KeyPem: "k", Passphrase: "p",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_ExportCert_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.ExportCert(context.Background(), &pb.ExportCertRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
 
 func TestGRPC_RevokeCert_Success(t *testing.T) {
 	certProv := &mockCertProvider{}

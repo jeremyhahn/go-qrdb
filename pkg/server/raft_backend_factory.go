@@ -31,6 +31,7 @@ import (
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -259,6 +260,12 @@ type RaftBackendFactory struct {
 	// failure and exercise the crash-safe rollback path (staging removal, journal
 	// failure, barrier-untouched, shard re-attach). Production leaves it nil.
 	recodeOverride recodeFunc
+
+	// importSessionCfg bounds a chunked import session on every shard this
+	// factory builds (config.ImportSession, "import_session:" in YAML). The
+	// zero value resolves to the package defaults WithImportSessionLimits
+	// documents. See WithImportSessionConfig.
+	importSessionCfg qrdbconfig.ImportSessionConfig
 }
 
 // RaftBackendOption customizes a RaftBackendFactory.
@@ -271,6 +278,13 @@ type RaftBackendOption func(*RaftBackendFactory)
 // FeatureEnabled).
 func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.featureGate = gate }
+}
+
+// WithImportSessionConfig bounds a chunked import session on every shard
+// this factory builds. Omitting it leaves every shard at the package
+// defaults WithImportSessionLimits documents, not unbounded staging.
+func WithImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.importSessionCfg = cfg }
 }
 
 // WithMultiplexLogDB wires the shared host's multiplex LogDB so the factory can
@@ -955,7 +969,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,
-		services:     buildDataPlaneServices(f.adapter, shardID, hub, service.WithDedicatedKeyspace()),
+		services:     buildDataPlaneServices(f.adapter, shardID, hub, f.importSessionCfg, service.WithDedicatedKeyspace()),
 		cancel:       cancel,
 		dedicatedWAL: registeredWAL,
 
@@ -1090,7 +1104,7 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	// Delete only inside this node's own volume pool: a shard directory is
 	// resolved locally, so anything else is a path this node does not own,
 	// and is refused however the shard came to name it.
-	if err := f.barrierReg.RequireInsideLocalPool(context.Background(), rs.dataDir); err != nil {
+	if err := f.barrierReg.RequirePathInsideLocalPools(context.Background(), rs.dataDir); err != nil {
 		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-data-dir", Err: err}
 	}
 	if err := os.RemoveAll(rs.dataDir); err != nil {

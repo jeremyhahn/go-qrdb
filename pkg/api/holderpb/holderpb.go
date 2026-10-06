@@ -27,6 +27,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -253,6 +254,22 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) (*service.CeremonyIni
 			}
 		}
 	}
+	// req.Secret, when non-empty, is consumed into a *secure.Buffer (secure
+	// analyzer rule 3: service.CeremonyInitializeOptions.Secret is protected
+	// memory, not a wire []byte) -- secure.NewBufferFromBytes wipes req's
+	// Secret backing array as a side effect, so a caller no longer needs its
+	// own defer secure.Wipe(req.Secret). The returned Buffer is BORROWED by
+	// CeremonyInitialize exactly as the field it populates documents; the
+	// caller of CeremonyInitFromPB owns it and must Destroy it once the
+	// ceremony call returns.
+	var secretBuf *secure.Buffer
+	if len(req.GetSecret()) > 0 {
+		var err error
+		secretBuf, err = secure.NewBufferFromBytes(req.GetSecret())
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &service.CeremonyInitializeOptions{
 		SOPin:                  req.GetSoPin(),
 		UserPin:                req.GetUserPin(),
@@ -266,7 +283,7 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) (*service.CeremonyIni
 		AdminCertPEM:           req.GetAdminCertPem(),
 		AdminCertPoolPEM:       req.GetAdminCertPoolPem(),
 		AdminGenerate:          req.GetAdminGenerate(),
-		Secret:                 req.GetSecret(),
+		Secret:                 secretBuf,
 	}, nil
 }
 

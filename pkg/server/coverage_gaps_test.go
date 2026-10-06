@@ -17,8 +17,8 @@ package server
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -402,12 +402,13 @@ func TestQuotaTransactionService_ExecuteEntity_InnerErrorReleases(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// quota_batch.go — ExecuteWithMode, ExecuteEntity, Import
+// quota_batch.go — ExecuteWithMode, ExecuteEntity, ImportCommit
 // ---------------------------------------------------------------------------
 
 // cgCountingBatch is an inner BatchServicer that records reach-through and
-// implements Import so the passthrough can be verified. (Named distinctly from
-// the cgCountingBatch in quota_engines_test.go, which has a different shape.)
+// implements ImportCommit so the passthrough can be verified. (Named
+// distinctly from the cgCountingBatch in quota_engines_test.go, which has a
+// different shape.)
 type cgCountingBatch struct {
 	service.BatchServicer
 	execCalls   int
@@ -430,9 +431,21 @@ func (m *cgCountingBatch) ExecuteEntity(_ context.Context, _ *service.BatchEntit
 	return &service.BatchEntityResponse{}, m.err
 }
 
-func (m *cgCountingBatch) Import(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
+func (m *cgCountingBatch) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (m *cgCountingBatch) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (m *cgCountingBatch) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
 	m.importCalls++
 	return &service.ImportResult{}, m.err
+}
+
+func (m *cgCountingBatch) ImportAbort(_ context.Context, _ string) error {
+	return nil
 }
 
 // TestQuotaBatchService_ExecuteWithMode_AccountsAndEnforces verifies that
@@ -504,35 +517,132 @@ func TestQuotaBatchService_ExecuteEntity_NilReq(t *testing.T) {
 	}
 }
 
-// TestQuotaBatchService_Import_Passthrough verifies that Import is forwarded
-// to the inner service without quota accounting.
+// TestQuotaBatchService_ExecuteEntity_InnerErrorReleases verifies the
+// release-on-error path for ExecuteEntity: bytes reserved for an entity batch
+// the inner service then refused are returned to the tenant.
+func TestQuotaBatchService_ExecuteEntity_InnerErrorReleases(t *testing.T) {
+	inner := &cgCountingBatch{err: errBoom}
+	acct, _ := newTestAccountant(t, nil)
+	batch := newQuotaBatchService(inner, acct, "t1", 1000)
+
+	req := &service.BatchEntityRequest{Ops: []service.BatchEntityOp{{Type: "put", Data: make([]byte, 60)}}}
+	if _, err := batch.ExecuteEntity(context.Background(), req); !errors.Is(err, errBoom) {
+		t.Fatalf("ExecuteEntity err = %v, want errBoom", err)
+	}
+	if inner.execCalls != 1 {
+		t.Fatalf("inner execCalls = %d, want 1", inner.execCalls)
+	}
+	if got := acct.Usage("t1"); got != 0 {
+		t.Fatalf("usage after inner error = %d, want 0 (released)", got)
+	}
+}
+
+// importRecordingBatch records every chunked-import call it receives and
+// answers with fixed values, so a wrapper's forwarding can be checked
+// argument by argument.
+type importRecordingBatch struct {
+	service.BatchServicer
+	calls      []string
+	beginOpts  service.ImportOptions
+	appendSeq  uint64
+	appendData []byte
+}
+
+func (m *importRecordingBatch) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
+	m.calls = append(m.calls, "begin")
+	m.beginOpts = opts
+	return "sess-1", nil
+}
+
+func (m *importRecordingBatch) ImportAppend(_ context.Context, sessionID string, seq uint64, chunk []byte) error {
+	m.calls = append(m.calls, "append:"+sessionID)
+	m.appendSeq, m.appendData = seq, chunk
+	return nil
+}
+
+func (m *importRecordingBatch) ImportCommit(_ context.Context, sessionID string) (*service.ImportResult, error) {
+	m.calls = append(m.calls, "commit:"+sessionID)
+	return &service.ImportResult{}, nil
+}
+
+func (m *importRecordingBatch) ImportAbort(_ context.Context, sessionID string) error {
+	m.calls = append(m.calls, "abort:"+sessionID)
+	return errBoom
+}
+
+// TestQuotaBatchService_ChunkedImportForwardsUnmetered pins the documented
+// division of quotas: a chunked import session is bounded by its own session
+// limits inside BatchService, not by this wrapper's tenant storage-byte
+// quota. Every call reaches the inner service verbatim -- options, session
+// ID, sequence and chunk, and the inner error -- and a chunk far larger than
+// the tenant's remaining quota is neither refused nor charged here.
+func TestQuotaBatchService_ChunkedImportForwardsUnmetered(t *testing.T) {
+	inner := &importRecordingBatch{}
+	acct, _ := newTestAccountant(t, nil)
+	batch := newQuotaBatchService(inner, acct, "t1", 10)
+	ctx := context.Background()
+
+	opts := service.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row", KeyPrefix: "p/"}
+	sessionID, err := batch.ImportBegin(ctx, opts)
+	if err != nil || sessionID != "sess-1" {
+		t.Fatalf("ImportBegin = (%q, %v), want (sess-1, nil)", sessionID, err)
+	}
+	if inner.beginOpts != opts {
+		t.Fatalf("inner ImportBegin opts = %+v, want %+v", inner.beginOpts, opts)
+	}
+
+	chunk := make([]byte, 100) // ten times the tenant's whole quota
+	if err := batch.ImportAppend(ctx, sessionID, 7, chunk); err != nil {
+		t.Fatalf("ImportAppend: %v", err)
+	}
+	if inner.appendSeq != 7 || len(inner.appendData) != len(chunk) {
+		t.Fatalf("inner ImportAppend got seq=%d len=%d, want seq=7 len=%d", inner.appendSeq, len(inner.appendData), len(chunk))
+	}
+	if _, err := batch.ImportCommit(ctx, sessionID); err != nil {
+		t.Fatalf("ImportCommit: %v", err)
+	}
+	if err := batch.ImportAbort(ctx, sessionID); !errors.Is(err, errBoom) {
+		t.Fatalf("ImportAbort err = %v, want the inner service's error", err)
+	}
+
+	want := []string{"begin", "append:sess-1", "commit:sess-1", "abort:sess-1"}
+	if !slices.Equal(inner.calls, want) {
+		t.Fatalf("inner calls = %v, want %v", inner.calls, want)
+	}
+	if got := acct.Usage("t1"); got != 0 {
+		t.Fatalf("tenant storage usage = %d after an import session, want 0 (not metered by this wrapper)", got)
+	}
+}
+
+// TestQuotaBatchService_Import_Passthrough verifies that ImportCommit is
+// forwarded to the inner service without quota accounting.
 func TestQuotaBatchService_Import_Passthrough(t *testing.T) {
 	inner := &cgCountingBatch{}
 	acct, _ := newTestAccountant(t, nil)
 	batch := newQuotaBatchService(inner, acct, "t1", 100)
 	ctx := context.Background()
 
-	if _, err := batch.Import(ctx, nil, service.ImportOptions{}); err != nil {
-		t.Fatalf("Import: %v", err)
+	if _, err := batch.ImportCommit(ctx, "sess"); err != nil {
+		t.Fatalf("ImportCommit: %v", err)
 	}
 	if inner.importCalls != 1 {
 		t.Fatalf("inner importCalls = %d, want 1", inner.importCalls)
 	}
 	if acct.Usage("t1") != 0 {
-		t.Fatalf("Import must not account bytes (usage=%d)", acct.Usage("t1"))
+		t.Fatalf("ImportCommit must not account bytes (usage=%d)", acct.Usage("t1"))
 	}
 }
 
 // TestQuotaBatchService_Import_PropagatesError verifies that inner errors
-// are propagated correctly from Import.
+// are propagated correctly from ImportCommit.
 func TestQuotaBatchService_Import_PropagatesError(t *testing.T) {
 	inner := &cgCountingBatch{err: errBoom}
 	acct, _ := newTestAccountant(t, nil)
 	batch := newQuotaBatchService(inner, acct, "t1", 100)
 	ctx := context.Background()
 
-	if _, err := batch.Import(ctx, nil, service.ImportOptions{}); !errors.Is(err, errBoom) {
-		t.Fatalf("Import error = %v, want errBoom", err)
+	if _, err := batch.ImportCommit(ctx, "sess"); !errors.Is(err, errBoom) {
+		t.Fatalf("ImportCommit error = %v, want errBoom", err)
 	}
 }
 

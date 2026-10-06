@@ -206,7 +206,9 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		// Transaction
 		"tx.Transaction": true,
 		// Batch
-		"batch.Batch": true, "batch.Import": true,
+		"batch.Batch":       true,
+		"batch.ImportBegin": true, "batch.ImportAppend": true,
+		"batch.ImportCommit": true, "batch.ImportAbort": true,
 		// Watch
 		"watch.Watch": true, "watch.WatchPrefix": true,
 		// Lease
@@ -252,7 +254,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.ListPermissions": true, "role.ResolvePermissions": true,
 		"role.ReconcileBuiltIn": true,
 		// Certificate management
-		"cert.Generate": true, "cert.Export": true,
+		"cert.Issue": true, "cert.Enroll": true,
 		"cert.Revoke": true, "cert.List": true,
 		// Collection
 		"collection.Create": true, "collection.Drop": true,
@@ -294,6 +296,12 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"tenant.UpdateEntitlements": true,
 		"tenant.ListDeleted":        true,
 		"tenant.ReconcileDeleted":   true,
+		// Volume pool management (docs/volume-pools/api.md)
+		"volumepool.List": true, "volumepool.Get": true, "volumepool.Create": true,
+		"volumepool.Update": true, "volumepool.Delete": true, "volumepool.ListTenants": true,
+		"tenant.TrustAnchorAdd":    true,
+		"tenant.TrustAnchorList":   true,
+		"tenant.TrustAnchorRemove": true,
 	}
 
 	for method := range srv.handlers {
@@ -522,7 +530,7 @@ func TestBuildHandlers_RoleMethods(t *testing.T) {
 func TestBuildHandlers_CertMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	certMethods := []string{
-		"cert.Generate", "cert.Export", "cert.Revoke", "cert.List",
+		"cert.Issue", "cert.Enroll", "cert.Revoke", "cert.List",
 	}
 	for _, m := range certMethods {
 		if _, ok := srv.handlers[m]; !ok {

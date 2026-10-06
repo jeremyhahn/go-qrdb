@@ -18,9 +18,8 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -34,13 +33,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -83,16 +82,29 @@ type ProviderOption func(*providerOptions)
 // providerOptions holds the resolved provider configuration.
 type providerOptions struct {
 	defaultTTL         time.Duration
+	maxTTL             time.Duration
 	trustDomain        string
 	keyProviderFactory cakey.ProviderFactory
-	watchSvc           service.WatchServicer
+	watchSvc           WatchPrefixer
+	onNewCA            func()
+	audit              audit.AuditLogger
 }
 
 // WithDefaultTTL sets the default certificate validity period used when
-// GenerateRequest.TTL is zero.
+// IssueRequest.TTL is zero.
 func WithDefaultTTL(d time.Duration) ProviderOption {
 	return func(o *providerOptions) {
 		o.defaultTTL = d
+	}
+}
+
+// WithMaxTTL bounds every issued client certificate's validity period: a
+// requested IssueRequest.TTL longer than this is capped to it, same as the
+// issuing CA's own remaining validity always caps it. The zero value (the
+// default) means no configured cap beyond the CA's own.
+func WithMaxTTL(d time.Duration) ProviderOption {
+	return func(o *providerOptions) {
+		o.maxTTL = d
 	}
 }
 
@@ -127,17 +139,54 @@ func WithKeyProviderFactory(f cakey.ProviderFactory) ProviderOption {
 	}
 }
 
-// WithWatchService enables fast, event-driven cache eviction on a deleted
-// tenant's Key B CA: see WatchForDeletions, which the caller must still
-// call explicitly (this option only stores w; it starts nothing). A nil w
-// (the default) leaves eviction event-driven-off entirely -- the built-in
-// per-tenant cache (perTenant) still ages out on its own
-// (perTenantRevalidateTTL), independent of this option, but a deleted
-// tenant's CA then stays trusted for up to that TTL rather than being
-// dropped immediately.
-func WithWatchService(w service.WatchServicer) ProviderOption {
+// WithWatchService enables cache eviction on a deleted tenant's Key B CA:
+// see WatchForDeletions, which the caller must still call explicitly (this
+// option only stores w; it starts nothing). A nil w (the default) leaves
+// eviction entirely event-driven-off -- the built-in per-tenant cache
+// (perTenant) and any subscribed downstream cache (pkg/clienttrust.Pool,
+// via InvalidationSource) age out only by their own TTLs, same as before
+// this option existed.
+//
+// w is WatchPrefixer, not service.WatchServicer: this package depends only
+// on pkg/watch rather than the whole pkg/service, which itself depends on
+// pkg/bootstrap, which depends back on pkg/cert for the onboarding seam
+// (bootstrap.ProvisionTenant) -- an import cycle service.WatchServicer would
+// otherwise close. Any service.WatchServicer satisfies this implicitly.
+func WithWatchService(w WatchPrefixer) ProviderOption {
 	return func(o *providerOptions) {
 		o.watchSvc = w
+	}
+}
+
+// WithNewCAHook registers fn to run whenever this provider comes to hold a
+// login CA certificate it has not held before: a tenant's CA minted on its
+// first issuance, or loaded on first use after a restart. That is the moment
+// the set CACertPEMs reports grows, so a client-auth trust pool built from it
+// (pkg/clienttrust) must drop its cached widening: without the hook, a
+// tenant onboarded a moment ago could not log in with its brand-new
+// certificate until the pool's cache expired. fn runs outside the provider's
+// locks, after the CA is cached, and must not block.
+func WithNewCAHook(fn func()) ProviderOption {
+	return func(o *providerOptions) {
+		o.onNewCA = fn
+	}
+}
+
+// WithAuditLogger attaches a compliance-grade audit logger (FedRAMP AU-2,
+// PCI-DSS 10.2) so every revocation (RevokeCert) leaves an audit trail --
+// cert.revoke -- regardless of which transport or internal caller reaches
+// it; issuance (cert.issue) and enrolment (cert.enroll) are audited one
+// layer up, by CertEnrollmentService, since that is the one place every
+// transport's issue/enroll verb goes through. RevokeCert has no such single
+// caller (the certs:revoke verb calls it directly on every transport), so
+// this provider is where its own trail belongs. A nil logger disables
+// emission, so the option is safe to apply unconditionally; this is also how
+// a composer whose compliance sink does not exist yet at construction time
+// (lifecycle.BuildServices) wires one in without waiting -- pass an
+// audit.Deferred and Bind it later.
+func WithAuditLogger(logger audit.AuditLogger) ProviderOption {
+	return func(o *providerOptions) {
+		o.audit = logger
 	}
 }
 
@@ -171,6 +220,14 @@ func WithTrustDomain(trustDomain string) ProviderOption {
 // per tenant from an injected cakey.ProviderFactory, see
 // WithKeyProviderFactory) and calling its Signer.
 type DefaultCertProvider struct {
+	// heldCAs is the set of login CA certificates (by SHA-256 of their DER)
+	// this provider has cached; a certificate not yet in it fires onNewCA.
+	// Guarded by mu.
+	heldCAs map[[sha256.Size]byte]struct{}
+
+	// onNewCA is WithNewCAHook's fn, or nil.
+	onNewCA func()
+
 	kvStore kvstore.MultiGuardedBatchKVStore
 	barrier seal.EncryptionBarrier
 
@@ -200,6 +257,12 @@ type DefaultCertProvider struct {
 
 	defaultTTL time.Duration
 
+	// maxTTL bounds every issued client certificate's validity period,
+	// including an explicit IssueRequest.TTL: a leaf is never issued for
+	// longer than this regardless of what the caller asks for. See
+	// WithMaxTTL.
+	maxTTL time.Duration
+
 	// trustDomain, when non-empty, is the SPIFFE trust domain every issued
 	// client certificate's tenant SAN is minted under. See WithTrustDomain.
 	trustDomain string
@@ -214,7 +277,7 @@ type DefaultCertProvider struct {
 
 	// watchSvc, when non-nil (WithWatchService), is what WatchForDeletions
 	// watches __sys:cert_ca/ and the tenant tombstone prefix through.
-	watchSvc service.WatchServicer
+	watchSvc WatchPrefixer
 
 	// invalidateHooks are called, in order, whenever a watched deletion
 	// evicts a tenant's cached state (evictTenant's callers). Registered
@@ -223,6 +286,10 @@ type DefaultCertProvider struct {
 	// tenant immediately rather than waiting out poolCacheTTL. Guarded by
 	// mu, the same lock perTenant uses.
 	invalidateHooks []func()
+
+	// audit is the compliance audit sink RevokeCert records to
+	// (WithAuditLogger). Nil disables emission.
+	audit audit.AuditLogger
 }
 
 // SkippedTenantCACount returns how many tenants CACertPEMs has skipped,
@@ -253,8 +320,11 @@ func NewDefaultProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.E
 		barrier:            barrier,
 		keyProviderFactory: o.keyProviderFactory,
 		defaultTTL:         o.defaultTTL,
+		maxTTL:             o.maxTTL,
 		trustDomain:        o.trustDomain,
 		watchSvc:           o.watchSvc,
+		onNewCA:            o.onNewCA,
+		audit:              o.audit,
 	}
 }
 
@@ -283,11 +353,14 @@ func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 		if err := sp.Initialize(ctx); err != nil {
 			return mapProviderError(err)
 		}
-		return nil
-	}
-	if _, err := prov.Signer(ctx); err != nil {
+	} else if _, err := prov.Signer(ctx); err != nil {
 		return mapProviderError(err)
 	}
+	cert, err := prov.Certificate(ctx)
+	if err != nil {
+		return mapProviderError(err)
+	}
+	p.noteHeldCA(cert)
 	return nil
 }
 
@@ -312,11 +385,14 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 		if err := sp.Unseal(ctx); err != nil {
 			return mapProviderError(err)
 		}
-		return nil
-	}
-	if _, err := prov.Signer(ctx); err != nil {
+	} else if _, err := prov.Signer(ctx); err != nil {
 		return mapProviderError(err)
 	}
+	cert, err := prov.Certificate(ctx)
+	if err != nil {
+		return mapProviderError(err)
+	}
+	p.noteHeldCA(cert)
 	return nil
 }
 
@@ -328,6 +404,32 @@ func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 type perTenantEntry struct {
 	sp      *cakey.SoftwareProvider
 	builtAt time.Time
+}
+
+// noteHeldCA records that this provider now holds cert as a login CA, and
+// fires WithNewCAHook's fn the first time this exact certificate (keyed by
+// its SHA-256 DER fingerprint) is observed -- the moment a tenant's Key B CA,
+// freshly minted or loaded after a restart, must be reflected in a
+// client-facing trust pool (pkg/clienttrust). Deliberately caches no
+// certificate of its own: CACertPEMs reads every tenant's CA straight from
+// the store on every call (go-qrdb#560 review, non-blocking: a cached "most
+// recently resolved" certificate would miss a runtime reseal, and could hand
+// one tenant's caller a DIFFERENT tenant's certificate under concurrent
+// resolution), so this is purely a seen-before set for the hook.
+func (p *DefaultCertProvider) noteHeldCA(cert *x509.Certificate) {
+	fp := sha256.Sum256(cert.Raw)
+	p.mu.Lock()
+	_, known := p.heldCAs[fp]
+	if !known {
+		if p.heldCAs == nil {
+			p.heldCAs = make(map[[sha256.Size]byte]struct{})
+		}
+		p.heldCAs[fp] = struct{}{}
+	}
+	p.mu.Unlock()
+	if !known && p.onNewCA != nil {
+		p.onNewCA()
+	}
 }
 
 // resolveKeyProvider returns the cakey.Provider that signs Key B material
@@ -415,9 +517,10 @@ func (p *DefaultCertProvider) Seal() error {
 	return nil
 }
 
-// GenerateClientCert creates a client certificate signed by the CA.
-// The certificate uses ECDSA P-256, sets CN to req.Username and OU to
-// req.TenantID, and is valid only for client authentication.
+// IssueClientCert signs a client certificate for req.PublicKey with
+// req.TenantID's own Key B CA. It sets CN to req.Username and OU to
+// req.TenantID, and is valid only for client authentication. It never
+// generates or sees the client's private key.
 //
 // When the provider was built WithTrustDomain, the certificate also carries
 // the tenant-scoped SPIFFE URI SAN for the same tenant and username, so the
@@ -427,8 +530,8 @@ func (p *DefaultCertProvider) Seal() error {
 // or a trust domain that is not a bare host — is refused with
 // *SPIFFEIdentityError, because a certificate whose SAN and OU disagree
 // authenticates as different tenants depending on which node's pin is set.
-func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error) {
-	if err := validateGenerateRequest(req); err != nil {
+func (p *DefaultCertProvider) IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error) {
+	if err := validateIssueRequest(req); err != nil {
 		return nil, err
 	}
 
@@ -444,12 +547,6 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		return nil, err
 	}
 
-	// Generate client key pair.
-	clientPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, &CertGenerateError{Err: err}
-	}
-
 	serialNumber, err := generateSerial()
 	if err != nil {
 		return nil, &CertGenerateError{Err: err}
@@ -459,8 +556,18 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 	if ttl == 0 {
 		ttl = p.defaultTTL
 	}
+	// A leaf never outlives its issuer: the configured maximum (WithMaxTTL)
+	// and the CA's own remaining validity both cap it, whichever is
+	// shorter, regardless of what the caller asked for.
+	if p.maxTTL > 0 && ttl > p.maxTTL {
+		ttl = p.maxTTL
+	}
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Second)
+	notAfter := now.Add(ttl)
+	if notAfter.After(caCert.NotAfter) {
+		notAfter = caCert.NotAfter
+	}
 	clientTemplate := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -468,7 +575,7 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 			OrganizationalUnit: []string{req.TenantID},
 		},
 		NotBefore: now,
-		NotAfter:  now.Add(ttl),
+		NotAfter:  notAfter,
 		KeyUsage:  x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageClientAuth,
@@ -476,7 +583,7 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		URIs: uris,
 	}
 
-	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientPrivKey.PublicKey, caSigner)
+	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, req.PublicKey, caSigner)
 	if err != nil {
 		return nil, &CertGenerateError{Err: err}
 	}
@@ -486,17 +593,6 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		Type:  "CERTIFICATE",
 		Bytes: clientCertDER,
 	})
-
-	// Encode client key PEM.
-	clientKeyDER, err := x509.MarshalECPrivateKey(clientPrivKey)
-	if err != nil {
-		return nil, &CertGenerateError{Err: err}
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: clientKeyDER,
-	})
-	secure.Wipe(clientKeyDER)
 
 	serialHex := FormatSerial(serialNumber)
 
@@ -518,10 +614,10 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		return nil, &StoreError{Op: "put", Detail: recordKey, Err: err}
 	}
 
-	return &CertBundle{
-		CertPEM: certPEM,
-		KeyPEM:  keyPEM,
-		Serial:  serialHex,
+	return &IssuedCert{
+		CertPEM:  certPEM,
+		Serial:   serialHex,
+		NotAfter: clientTemplate.NotAfter,
 	}, nil
 }
 
@@ -536,21 +632,32 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 // about how url.URL escapes a path: the OU carries req.TenantID verbatim, so a
 // SAN that parses back to req.TenantID agrees with it by construction, and one
 // that does not is never signed.
-func (p *DefaultCertProvider) clientSPIFFEURIs(req *GenerateRequest) ([]*url.URL, error) {
-	if p.trustDomain == "" {
+func (p *DefaultCertProvider) clientSPIFFEURIs(req *IssueRequest) ([]*url.URL, error) {
+	return ClientSPIFFEURIs(p.trustDomain, req.TenantID, req.Username)
+}
+
+// ClientSPIFFEURIs is the URI SANs a client certificate for username in
+// tenantID would carry under trustDomain, or *SPIFFEIdentityError when the
+// identity cannot survive the SPIFFE round trip -- in which case the
+// provider would refuse to sign it. A caller that is about to write state on
+// the strength of a later signature (tenant onboarding) asks it first, so a
+// name that can never be certified is refused before anything is written.
+// An empty trustDomain admits every name and returns none.
+func ClientSPIFFEURIs(trustDomain, tenantID, username string) ([]*url.URL, error) {
+	if trustDomain == "" {
 		return nil, nil
 	}
 	want := spiffe.ID{
-		TrustDomain: p.trustDomain,
-		TenantID:    req.TenantID,
+		TrustDomain: trustDomain,
+		TenantID:    tenantID,
 		Kind:        spiffe.KindUser,
-		Name:        req.Username,
+		Name:        username,
 	}
 	refuse := func(reason string) error {
 		return &SPIFFEIdentityError{
-			TrustDomain: p.trustDomain,
-			TenantID:    req.TenantID,
-			Username:    req.Username,
+			TrustDomain: trustDomain,
+			TenantID:    tenantID,
+			Username:    username,
 			Reason:      reason,
 		}
 	}
@@ -570,64 +677,6 @@ func (p *DefaultCertProvider) clientSPIFFEURIs(req *GenerateRequest) ([]*url.URL
 		return nil, refuse("the SPIFFE ID parses back to a different identity than the Subject names")
 	}
 	return []*url.URL{u}, nil
-}
-
-// ExportPKCS12 exports a certificate and private key as a PKCS#12 archive.
-// This requires the software.sslmate.com/src/go-pkcs12 module. If the
-// module is not available, this method returns a CertExportError.
-//
-// The certificate's serial is checked against revocation state before
-// encoding, and export is refused with *CertRevokedError when it is
-// revoked. There is no override: a caller that wants a forensic or
-// archival export of a revoked bundle needs that added deliberately, not
-// defaulted. This is an OPERATOR SIGNAL, not a containment control -- the
-// caller already supplied certPEM and keyPEM, so refusing the export
-// withholds nothing it did not already have. Its value is that the system
-// stops silently packaging a credential it will not honour anywhere in the
-// cluster. See go-qrdb#287.
-//
-// PKCS#12 export is delegated to the encodePKCS12 function, which can be
-// replaced by builds that include a PKCS#12 encoder.
-func (p *DefaultCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-	if p.barrier.IsSealed() {
-		return nil, &BarrierSealedError{}
-	}
-
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return nil, &CertExportError{Err: &ValidationError{Field: "certPEM", Reason: "invalid PEM data"}}
-	}
-	parsedCert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, &CertExportError{Err: err}
-	}
-
-	serial := FormatSerial(parsedCert.SerialNumber)
-	revoked, err := p.IsRevoked(ctx, serial)
-	if err != nil {
-		return nil, err
-	}
-	if revoked {
-		return nil, &CertRevokedError{Serial: serial}
-	}
-
-	// The CA bundled into the archive is parsedCert's OWN issuing tenant's
-	// Key B CA, resolved through getCAMaterial directly for THIS tenant --
-	// never a shared "most recently resolved" cache, which would bundle
-	// whichever tenant's CA happened to resolve most recently across the
-	// whole provider, not necessarily certPEM's own tenant (go-qrdb#560
-	// review, non-blocking).
-	tenantID := tenantid.System
-	if len(parsedCert.Subject.OrganizationalUnit) > 0 && parsedCert.Subject.OrganizationalUnit[0] != "" {
-		tenantID = parsedCert.Subject.OrganizationalUnit[0]
-	}
-	_, caCert, err := p.getCAMaterial(ctx, tenantID)
-	if err != nil {
-		return nil, &CertExportError{Err: err}
-	}
-	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw})
-
-	return encodePKCS12(certPEM, keyPEM, caCertPEM, passphrase)
 }
 
 // RevokeCert marks a certificate serial as revoked by writing a revocation
@@ -665,6 +714,38 @@ func (p *DefaultCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM 
 //
 // Every revocation also reaps expired markers (ReapExpiredRevocations), which
 // is what bounds the namespace without a background sweeper.
+// emitAudit records a compliance-grade audit event (FedRAMP AU-2, PCI-DSS
+// 10.2) for a Key B operation. It captures the acting identity (Subject +
+// TenantID, when the call runs with one in context -- a first-boot or
+// tenant-onboarding call frequently does not, and then Actor and the
+// top-level TenantID are both empty), and is a no-op when no audit logger
+// is configured. Emission is best-effort per the AuditLogger contract and
+// never affects the certificate operation's outcome.
+func (p *DefaultCertProvider) emitAudit(ctx context.Context, action, outcome string, attrs map[string]any) {
+	if p.audit == nil {
+		return
+	}
+	var actor, callerTenant string
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		actor = id.Subject
+		callerTenant = id.TenantID
+	}
+	// The resource is the certificate, "cert:{serial}", as for every other
+	// audited object; a refusal before any serial exists is plain "cert".
+	resource := "cert"
+	if serial, ok := attrs["serial"].(string); ok && serial != "" {
+		resource = "cert:" + serial
+	}
+	audit.EmitBestEffort(ctx, p.audit, "cert", audit.AuditEvent{
+		Actor:      actor,
+		TenantID:   callerTenant,
+		Resource:   resource,
+		Action:     action,
+		Outcome:    outcome,
+		Attributes: attrs,
+	})
+}
+
 func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*RevokeResult, error) {
 	if p.barrier.IsSealed() {
 		return nil, &BarrierSealedError{}
@@ -717,6 +798,22 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 			"error", err,
 		)
 	}
+
+	// Audited unconditionally -- including deny-by-serial, where this node
+	// holds no record at all: that is still a real revocation (the marker
+	// above is durable either way), and FedRAMP AU-2/PCI-DSS 10.2 call for a
+	// trail of it regardless of which case this was. recordTenant is empty
+	// for deny-by-serial, since a serial this node holds no record for
+	// names no tenant here (see findBySerial).
+	var recordTenant string
+	if record != nil {
+		recordTenant = record.TenantID
+	}
+	p.emitAudit(ctx, "cert.revoke", audit.OutcomeSuccess, map[string]any{
+		"serial":       serial,
+		"record_found": record != nil,
+		"tenant_id":    recordTenant,
+	})
 
 	return &RevokeResult{Serial: serial, Outcome: outcome}, nil
 }
@@ -1022,15 +1119,18 @@ func (p *DefaultCertProvider) loadOnlyCertificate(ctx context.Context, prov cake
 // raw key bytes: every signature is produced by calling the returned
 // crypto.Signer. Signer auto-initializes the built-in cakey.SoftwareProvider
 // on first use (create-or-load, atomic via PutIfAbsent -- see
-// cakey.SoftwareProvider.Initialize), matching GenerateClientCert's existing
+// cakey.SoftwareProvider.Initialize), matching IssueClientCert's existing
 // auto-init-on-first-issuance behavior.
 //
 // The certificate returned is prov.Certificate's OWN answer for tenantID,
-// read directly. Two different tenants' calls can interleave (this is
-// called from GenerateClientCert and ExportPKCS12, neither of which holds
-// any lock across the call), so returning anything other than THIS
-// resolution's own answer would risk handing one tenant's caller a
-// DIFFERENT tenant's CA certificate (go-qrdb#560 review, non-blocking).
+// read directly -- this package caches no certificate of its own (see
+// noteHeldCA). Two different tenants' calls can interleave (this is called
+// from IssueClientCert and ExportPKCS12, neither of which holds any lock
+// across the call), so returning anything other than THIS resolution's own
+// answer would risk handing one tenant's caller a DIFFERENT tenant's CA
+// certificate (go-qrdb#560 review, non-blocking). noteHeldCA is still called,
+// for WithNewCAHook's benefit, but its bookkeeping is never what this
+// function returns.
 func (p *DefaultCertProvider) getCAMaterial(ctx context.Context, tenantID string) (crypto.Signer, *x509.Certificate, error) {
 	if p.barrier.IsSealed() {
 		return nil, nil, &BarrierSealedError{}
@@ -1048,6 +1148,7 @@ func (p *DefaultCertProvider) getCAMaterial(ctx context.Context, tenantID string
 	if err != nil {
 		return nil, nil, mapProviderError(err)
 	}
+	p.noteHeldCA(cert)
 	return signer, cert, nil
 }
 
@@ -1061,8 +1162,8 @@ func generateSerial() (*big.Int, error) {
 	return serialNumber, nil
 }
 
-// validateGenerateRequest validates the fields of a GenerateRequest.
-func validateGenerateRequest(req *GenerateRequest) error {
+// validateIssueRequest validates the fields of an IssueRequest.
+func validateIssueRequest(req *IssueRequest) error {
 	if req == nil {
 		return &ValidationError{Field: "request", Reason: "must not be nil"}
 	}
@@ -1075,7 +1176,10 @@ func validateGenerateRequest(req *GenerateRequest) error {
 	if req.TTL < 0 {
 		return &ValidationError{Field: "ttl", Reason: "must not be negative"}
 	}
-	return nil
+	if req.PublicKey == nil {
+		return &ValidationError{Field: "publicKey", Reason: "must not be nil"}
+	}
+	return CheckClientKey(req.PublicKey)
 }
 
 // hasSerialSuffix reports whether a key path ends with "/" + serial.

@@ -736,16 +736,6 @@ func TestE2E_ListRoles_UnmarshalError(t *testing.T) {
 	}
 }
 
-func TestE2E_ExportCert_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("cert.Export", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageJSON
-	})
-	if _, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // AuthFactor unmarshal errors
 // ---------------------------------------------------------------------------

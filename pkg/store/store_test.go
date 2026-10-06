@@ -982,6 +982,23 @@ func TestInvalidQueryError(t *testing.T) {
 	}
 }
 
+// TestInvalidQueryError_UnsupportedQueryType proves the marker pkg/service
+// duck-types to surface an MVCC-only query's actionable error (naming
+// raft.sm_type: mvcc) answers true only for the exact Reason Lookup sets on
+// an MVCC-only query against this (the default) state machine, never for an
+// unrelated InvalidQueryError.
+func TestInvalidQueryError_UnsupportedQueryType(t *testing.T) {
+	mvccOnly := &InvalidQueryError{Reason: "unsupported query type"}
+	if !mvccOnly.UnsupportedQueryType() {
+		t.Error("UnsupportedQueryType() = false, want true for Reason \"unsupported query type\"")
+	}
+
+	other := &InvalidQueryError{Reason: "lessor not configured"}
+	if other.UnsupportedQueryType() {
+		t.Error("UnsupportedQueryType() = true, want false for an unrelated Reason")
+	}
+}
+
 func TestNotOpenError(t *testing.T) {
 	e := &NotOpenError{}
 	if e.Error() != "pebbledb: store not open" {

@@ -33,9 +33,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // sharedHostReplicaID and sharedHostRaftAddr identify the single local replica
@@ -278,6 +280,8 @@ func TestRaftBackendFactory_SealedFailsClosed(t *testing.T) {
 	ctx := context.Background()
 
 	// Self-managed registration: registered but NOT initialized -> sealed.
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	sealtest.ReserveVolumeTenant(t, allocVal.(volume.Allocator), "sealed")
 	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "sealed", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
@@ -351,7 +355,7 @@ func TestResolver_RoutesRaftTenantToDedicatedShard(t *testing.T) {
 	dataRoot, _ := registerVolumeTenant(t, reg, "rdb")
 	src.add("rdb", "app", 1000, dataRoot)
 
-	info := &tenant.TenantInfo{ID: "rdb", IsolationType: tenant.IsolationRaft, DataRoot: dataRoot}
+	info := &tenant.TenantInfo{ID: "rdb", IsolationType: tenant.IsolationRaft, VolumePool: "default"}
 	dbReg := NewDatabaseServiceRegistry("system")
 	rr := &restServiceRegistry{
 		dbReg:        dbReg,

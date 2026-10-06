@@ -120,7 +120,7 @@ func bootRaftNodeFull(t *testing.T, opts raftNodeOpts) (*node.Node, transport.KV
 	cfg.Raft.RaftAddress = fmt.Sprintf("127.0.0.1:%d", port)
 	cfg.Raft.ReplicaID = 1
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
-	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}}}
+	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
 	cfg.Seal.Enabled = opts.sealEnabled
 	cfg.Seal.Strategy = "none"
 	// This suite is about the raft-only coordination surface (lease/watch

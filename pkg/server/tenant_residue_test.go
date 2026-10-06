@@ -29,7 +29,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -59,23 +58,31 @@ func TestBuildTenantInfra_BootReclaimsATenantDeletedWhileTheNodeWasDown(t *testi
 	fx, reg, perTenantReg := newFreshRegistryFixture(t, &quota.Entitlements{
 		AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 		AllowVolumeStorage:    true,
+		AllowedVolumePools:    []string{"default"},
 	})
 	meta := seal.NewMemoryBackend() // the replicated tenant metadata store
 	ents := tenant.WithDefaultEntitlements(&quota.Entitlements{
 		AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 		AllowVolumeStorage:    true,
+		AllowedVolumePools:    []string{"default"},
 	})
-	svc, err := tenant.NewTenantService(meta, reg, reattachTestLogger(), ents)
+	svc, err := tenant.NewTenantService(meta, reg, reattachTestLogger(), ents, tenant.WithVolumeAllocator(fx.allocator))
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, err := svc.CreateTenant(ctx, "vgone", "Gone", tenant.IsolationVolume)
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "vgone", "Gone", tenant.IsolationVolume); err != nil {
 		t.Fatal(err)
 	}
-	live, err := svc.CreateTenant(ctx, "vlive", "Live", tenant.IsolationVolume)
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "vlive", "Live", tenant.IsolationVolume); err != nil {
 		t.Fatal(err)
+	}
+	goneDataRoot, err := reg.LocalTenantDataRoot(ctx, "vgone")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vgone): %v", err)
+	}
+	liveDataRoot, err := reg.LocalTenantDataRoot(ctx, "vlive")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vlive): %v", err)
 	}
 
 	// The node goes down.
@@ -99,25 +106,25 @@ func TestBuildTenantInfra_BootReclaimsATenantDeletedWhileTheNodeWasDown(t *testi
 		t.Fatal(err)
 	}
 	ti, err := BuildTenantInfra(TenantInfraConfig{
-		Ctx:          ctx,
-		BarrierReg:   reg2,
-		TenantSvc:    svc2,
-		TenantLookup: svc2,
-		VolumePool:   &qrdbpool.VolumePoolSubsystem{},
-		Logger:       reattachTestLogger(),
+		Ctx:                  ctx,
+		BarrierReg:           reg2,
+		TenantSvc:            svc2,
+		TenantLookup:         svc2,
+		VolumePoolConfigured: true,
+		Logger:               reattachTestLogger(),
 	})
 	if err != nil {
 		t.Fatalf("BuildTenantInfra: %v", err)
 	}
 	t.Cleanup(func() { _ = ti.Hosts.CloseAll() })
 
-	if exists(t, gone.DataRoot) {
-		t.Fatalf("the deleted tenant's DataRoot %s survived the boot", gone.DataRoot)
+	if exists(t, goneDataRoot) {
+		t.Fatalf("the deleted tenant's DataRoot %s survived the boot", goneDataRoot)
 	}
 	if _, err := reg2.GetTenant("vgone"); !errors.Is(err, seal.ErrTenantNotFound) {
 		t.Fatalf("the boot restored the deleted tenant's barrier: %v", err)
 	}
-	if !exists(t, live.DataRoot) {
+	if !exists(t, liveDataRoot) {
 		t.Fatal("the boot removed a LIVE tenant's DataRoot")
 	}
 	if _, err := reg2.GetTenant("vlive"); err != nil {

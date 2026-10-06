@@ -22,25 +22,16 @@ import (
 )
 
 func TestUnsupportedTransportError_Error(t *testing.T) {
-	err := &UnsupportedTransportError{Scheme: "rest"}
-	got := err.Error()
-
-	if got == "" {
-		t.Fatal("Error() is empty")
-	}
-	if !strings.Contains(got, "rest") {
-		t.Errorf("Error() = %q, want it to mention the scheme %q", got, "rest")
-	}
-}
-
-func TestInvalidSavePointNameError_Error(t *testing.T) {
-	err := &InvalidSavePointNameError{Name: "1; DROP TABLE users"}
-	got := err.Error()
-
-	if got == "" {
-		t.Fatal("Error() is empty")
-	}
-	if !strings.Contains(got, "1; DROP TABLE users") {
-		t.Errorf("Error() = %q, want it to mention the rejected name", got)
+	tests := []string{"rest", "grpc"}
+	for _, scheme := range tests {
+		t.Run(scheme, func(t *testing.T) {
+			got := (&UnsupportedTransportError{Scheme: scheme}).Error()
+			if !strings.Contains(got, `"`+scheme+`"`) {
+				t.Errorf("Error() = %q, want it to name the scheme %q", got, scheme)
+			}
+			if !strings.Contains(got, "node://") {
+				t.Errorf("Error() = %q, want it to name node:// as the alternative", got)
+			}
+		})
 	}
 }

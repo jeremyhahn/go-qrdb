@@ -23,14 +23,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -57,25 +52,6 @@ func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegis
 func newReattachFixtureStore(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry, *seal.MemoryBackend) {
 	t.Helper()
 
-	dir := t.TempDir()
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": dir}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
-
 	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("reattach-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
@@ -89,16 +65,7 @@ func newReattachFixtureStore(t *testing.T) (*tenant.TenantService, *seal.Barrier
 		t.Fatalf("system Initialize: %v", err)
 	}
 
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(reattachTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+	reg, _, allocator := sealtest.PooledRegistry(t, system)
 
 	store := seal.NewMemoryBackend()
 	svc, err := tenant.NewTenantService(store, reg, reattachTestLogger(),
@@ -106,7 +73,10 @@ func newReattachFixtureStore(t *testing.T) (*tenant.TenantService, *seal.Barrier
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 			AllowVolumeStorage:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -174,15 +144,18 @@ func TestReattachVolumeTenants_AttachError(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a system-managed (auto-unseal) volume tenant.
-	info, err := svc.CreateTenant(ctx, "vattach-err", "AttachErr",
-		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "vattach-err", "AttachErr",
+		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true)); err != nil {
 		t.Fatalf("CreateTenant(vattach-err): %v", err)
 	}
 
 	// Block newTenantHost from creating {DataRoot}/databases/{wal,nodehost} by
 	// pre-creating a plain file at {DataRoot}/databases.
-	dbsPath := filepath.Join(info.DataRoot, "databases")
+	dataRoot, err := reg.LocalTenantDataRoot(ctx, "vattach-err")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vattach-err): %v", err)
+	}
+	dbsPath := filepath.Join(dataRoot, "databases")
 	if err := os.WriteFile(dbsPath, []byte("block"), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", dbsPath, err)
 	}

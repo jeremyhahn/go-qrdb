@@ -127,11 +127,8 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
 	sys := mtlsHTTPClient(t, ca, 15*time.Second)
-	if _, st := iraftAPIPost(t, sys, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id": shardIDsTenantID, "name": "Shard IDs Test Tenant",
-			"isolation_type": "raft", "barrier_auto_unseal": true,
-		}); st != http.StatusCreated && st != http.StatusOK {
+	createVolumePoolREST(t, sys, leaderPort, "default")
+	if _, st := createRaftTenant(t, sys, leaderPort, shardIDsTenantID, "Shard IDs Test Tenant"); st != http.StatusCreated && st != http.StatusOK {
 		t.Fatalf("create tenant: status %d", st)
 	}
 	roleBody, st := iraftAPIPost(t, sys, fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),

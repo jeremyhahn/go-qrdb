@@ -295,6 +295,38 @@ func (e *BarrierError) Unwrap() error {
 	return e.Err
 }
 
+// DataRootIsolationTypeError is returned when CreateTenant's WithVolumePool
+// option is used with an isolation type that has no meaningful notion of a
+// dedicated filesystem location (prefix or barrier isolation). Only
+// IsolationVolume and IsolationRaft tenants are placed on a volume pool.
+type DataRootIsolationTypeError struct {
+	TenantID      string
+	IsolationType IsolationType
+}
+
+func (e *DataRootIsolationTypeError) Error() string {
+	return "tenant: a volume pool is not meaningful for tenant " + e.TenantID +
+		" with isolation type " + string(e.IsolationType) + " (requires volume or raft isolation)"
+}
+
+// VolumePoolReserveError is returned when CreateTenant's reservation of a
+// volume pool's capacity fails: see volume.Catalog.Reserve's own error
+// classes (*volume.PoolNotFoundError, *volume.PoolCapacityExceededError,
+// *volume.InvalidAssignmentPathError, *volume.ReservationConflictError) for
+// why. Nothing was registered: the barrier is provisioned only after the
+// reservation succeeds.
+type VolumePoolReserveError struct {
+	TenantID string
+	Pool     string
+	Err      error
+}
+
+func (e *VolumePoolReserveError) Error() string {
+	return "tenant: could not reserve volume pool " + e.Pool + " for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+func (e *VolumePoolReserveError) Unwrap() error { return e.Err }
+
 // InvalidStrategyError is returned when the caller requests a seal strategy
 // that is not registered in the injected StrategyRegistry, or when an empty
 // strategy ID is supplied to TenantBarrierInitWithStrategy.
@@ -516,39 +548,4 @@ func (e *ResidueReconcileFailuresError) Unwrap() []error {
 		out[i] = err
 	}
 	return out
-}
-
-// DataRootRetiredError refuses CreateTenant's explicit data root
-// (WithDataRoot, `tenant create --data-root`). A path names one node's disk;
-// recorded in replicated tenant state it was trusted by every other node,
-// which opened -- and on reclamation deleted -- a directory it did not own. A
-// dedicated disk is placed through a named volume pool, which every node maps
-// to its own mount.
-type DataRootRetiredError struct {
-	TenantID string
-	DataRoot string
-}
-
-// Error returns a human-readable description naming the replacement.
-func (e *DataRootRetiredError) Error() string {
-	return "tenant: explicit data root " + e.DataRoot + " for tenant " + e.TenantID +
-		" is refused: a tenant's location is a named volume pool resolved on each node, not a path;" +
-		" configure the disk as a volume pool on every node instead"
-}
-
-// PersistedDataRootError refuses a stored tenant record that carries a
-// DataRoot. The record is replicated and a path names one node's disk, so a
-// record naming one is refused rather than trusted; the tenant must be
-// re-created on a named volume pool.
-type PersistedDataRootError struct {
-	TenantID string
-	DataRoot string
-}
-
-// Error returns a human-readable description naming the fix.
-func (e *PersistedDataRootError) Error() string {
-	return "tenant: tenant " + e.TenantID + "'s stored record names the data root " + e.DataRoot +
-		"; a tenant's location is resolved on each node from its volume pool, so the record is refused" +
-		" and its data is not opened -- delete the tenant (the delete removes its records and touches no" +
-		" directory) and re-create it on a named volume pool"
 }

@@ -19,6 +19,7 @@ package qrdb.v1;
 option go_package = "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1";
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
 import "pkg/api/grpc/proto/qrdbv1/authz.proto";
 
 // QRDBService is the gRPC API for the QRDB distributed key-value database.
@@ -137,12 +138,38 @@ service QRDBService {
         option (qrdb.v1.permission) = "batch:execute";
     }
 
-    // BatchImport parses and imports key-value pairs from a file (CSV, JSON,
-    // NDJSON, YAML, or archive) carried in the request. This is a bounded
-    // unary RPC, not a stream; the file must fit within the server's
-    // configured max receive message size (mirrors the REST /batch/import
-    // 100 MB bound).
-    rpc BatchImport(BatchImportRequest) returns (BatchImportResponse) {
+    // ImportBegin starts a chunked import session scoped to the caller's
+    // (tenant, database) and (tenant, identity), returning the session ID
+    // passed to ImportAppend/ImportCommit/ImportAbort. Carries a dataset of
+    // any size as many small calls instead of one message no transport's
+    // pre-auth cap can admit -- the replacement for the single-message
+    // BatchImport RPC this service used to carry, deleted outright with no
+    // compat once every transport, SDK and the CLI moved to this session
+    // (go-qrdb#576 part 2). See docs/transactions/architecture.md ("Import
+    // session").
+    rpc ImportBegin(ImportBeginRequest) returns (ImportBeginResponse) {
+        option (qrdb.v1.permission) = "batch:execute";
+    }
+
+    // ImportAppend stages chunk as sequence seq of session_id. seq must be
+    // exactly one more than the last appended sequence, or equal to it
+    // with identical bytes (an idempotent replay); any other value is
+    // refused.
+    rpc ImportAppend(ImportAppendRequest) returns (ImportAppendResponse) {
+        option (qrdb.v1.permission) = "batch:execute";
+    }
+
+    // ImportCommit applies every staged chunk of session_id atomically,
+    // exactly as the retired BatchImport RPC applied its one file, and
+    // releases the session on success.
+    rpc ImportCommit(ImportCommitRequest) returns (ImportCommitResponse) {
+        option (qrdb.v1.permission) = "batch:execute";
+    }
+
+    // ImportAbort releases session_id -- its lease, and therefore its
+    // metadata record and every staged chunk -- without applying
+    // anything.
+    rpc ImportAbort(ImportAbortRequest) returns (ImportAbortResponse) {
         option (qrdb.v1.permission) = "batch:execute";
     }
 
@@ -625,14 +652,36 @@ service QRDBService {
     // Certificate management
     // -----------------------------------------------------------------------
 
-    // GenerateCert creates a client certificate.
-    rpc GenerateCert(GenerateCertRequest) returns (CertBundleResponse) {
-        option (qrdb.v1.permission) = "certs:generate";
+    // IssueCert issues a certificate from a CSR for an EXISTING account of the
+    // caller's own tenant, signed by that tenant's own Key B CA, and binds it
+    // to the account. The requester keeps its private key: no RPC generates
+    // one. (GenerateCert, which did, is removed.)
+    rpc IssueCert(IssueCertRequest) returns (EnrolledCertResponse) {
+        option (qrdb.v1.permission) = "certs:issue";
     }
 
-    // ExportCert exports a certificate as PKCS#12.
-    rpc ExportCert(ExportCertRequest) returns (ExportCertResponse) {
-        option (qrdb.v1.permission) = "certs:export";
+    // EnrollCert binds a bring-your-own certificate to an EXISTING account of
+    // the caller's own tenant, after verifying it chains to one of the
+    // tenant's registered trust anchors and authenticates as that account.
+    rpc EnrollCert(EnrollCertRequest) returns (EnrolledCertResponse) {
+        option (qrdb.v1.permission) = "certs:enroll";
+    }
+
+    // TrustAnchorAdd registers CA certificates as trust anchors of
+    // tenant_id, which must be the caller's own tenant.
+    rpc TrustAnchorAdd(TrustAnchorAddRequest) returns (TrustAnchorListResponse) {
+        option (qrdb.v1.permission) = "trust_anchors:add";
+    }
+
+    // TrustAnchorList lists tenant_id's trust anchors (the caller's own).
+    rpc TrustAnchorList(TrustAnchorListRequest) returns (TrustAnchorListResponse) {
+        option (qrdb.v1.permission) = "trust_anchors:list";
+    }
+
+    // TrustAnchorRemove withdraws one of tenant_id's trust anchors (the
+    // caller's own).
+    rpc TrustAnchorRemove(TrustAnchorRemoveRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "trust_anchors:remove";
     }
 
     // RevokeCert marks a certificate serial as revoked.
@@ -917,7 +966,7 @@ service QRDBService {
     // -----------------------------------------------------------------------
 
     // TenantCreate creates a new tenant with the given ID, name, and isolation type.
-    rpc TenantCreate(TenantCreateRequest) returns (TenantResponse) {
+    rpc TenantCreate(TenantCreateRequest) returns (TenantCreateResponse) {
         option (qrdb.v1.permission) = "tenants:create";
     }
 
@@ -967,6 +1016,51 @@ service QRDBService {
     // deleted. It never removes a directory a live tenant claims.
     rpc TenantReconcileDeleted(google.protobuf.Empty) returns (TenantReconcileDeletedResponse) {
         option (qrdb.v1.permission) = "tenants:reconcile_deleted";
+    }
+
+    // -----------------------------------------------------------------------
+    // Volume pool operations (docs/volume-pools/api.md) -- Tier 1: every
+    // capability here is served on every transport (REST, gRPC, Unix over
+    // the same gRPC wire, QUIC, MCP, embedded). Every permission below is
+    // ScopeCross: only an identity in the system tenant may exercise it.
+    // -----------------------------------------------------------------------
+
+    // VolumePoolList lists every pool in the catalog with its aggregate
+    // usage, tenant count and per-node health tally. Not paginated: a
+    // cluster has a handful of pools.
+    rpc VolumePoolList(google.protobuf.Empty) returns (VolumePoolListResponse) {
+        option (qrdb.v1.permission) = "volume_pools:list";
+    }
+
+    // VolumePoolGet inspects one pool, with one row per node that has
+    // reported it.
+    rpc VolumePoolGet(VolumePoolGetRequest) returns (VolumePoolDetail) {
+        option (qrdb.v1.permission) = "volume_pools:read";
+    }
+
+    // VolumePoolCreate adds a pool to the catalog. The pool is not served
+    // until each node maps it in its own configuration and restarts or
+    // reloads.
+    rpc VolumePoolCreate(VolumePoolCreateRequest) returns (VolumePool) {
+        option (qrdb.v1.permission) = "volume_pools:create";
+    }
+
+    // VolumePoolUpdate changes a pool's description, capacity or overcommit
+    // factor. The provider is immutable.
+    rpc VolumePoolUpdate(VolumePoolUpdateRequest) returns (VolumePool) {
+        option (qrdb.v1.permission) = "volume_pools:update";
+    }
+
+    // VolumePoolDelete removes a pool from the catalog. Refused while any
+    // tenant is assigned to it.
+    rpc VolumePoolDelete(VolumePoolDeleteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "volume_pools:delete";
+    }
+
+    // VolumePoolListTenants lists the tenants assigned to a pool, with each
+    // one's reservation and measured use. Paginated.
+    rpc VolumePoolListTenants(VolumePoolListTenantsRequest) returns (VolumePoolListTenantsResponse) {
+        option (qrdb.v1.permission) = "volume_pools:read";
     }
 
     // -----------------------------------------------------------------------
@@ -1623,35 +1717,63 @@ message BatchResponse {
     repeated OpResponse responses = 1;
 }
 
-// BatchImportRequest carries a file to be parsed and imported as key-value
-// pairs. The target database is carried by the transport's scope mechanism
-// (gRPC x-qrdb-database metadata / Unix socket equivalent), not by a field
-// on this message, mirroring BatchRequest and every other data-plane RPC.
-message BatchImportRequest {
-    bytes  file           = 1;
-    string format         = 2;
-    string filename       = 3;
-    string key_field      = 4;
-    string value_mode     = 5;
-    string value_field    = 6;
-    bool   skip_header    = 7;
-    bool   transactional  = 8;
-}
-
-// BatchImportError describes a single row that failed during import.
+// BatchImportError describes a single row that failed during import. Named
+// for the single-message BatchImport RPC it originally served (deleted, no
+// compat, go-qrdb#576 part 2); kept and reused by ImportCommitResponse
+// below, which carries the same per-row failure shape.
 message BatchImportError {
     int32  row     = 1;
     string key     = 2;
     string message = 3;
 }
 
-// BatchImportResponse returns statistics from a batch import operation.
-message BatchImportResponse {
+// ImportBeginRequest configures a chunked import session.
+message ImportBeginRequest {
+    string format        = 1;
+    string filename      = 2;
+    string key_field     = 3;
+    string value_mode    = 4;
+    string value_field   = 5;
+    bool   skip_header   = 6;
+    bool   transactional = 7;
+}
+
+// ImportBeginResponse carries the new session's ID.
+message ImportBeginResponse {
+    string session_id = 1;
+}
+
+// ImportAppendRequest stages chunk as sequence seq of session_id.
+message ImportAppendRequest {
+    string session_id = 1;
+    uint64 seq         = 2;
+    bytes  chunk       = 3;
+}
+
+// ImportAppendResponse is empty: success is the response arriving at all.
+message ImportAppendResponse {}
+
+// ImportCommitRequest names the session to apply.
+message ImportCommitRequest {
+    string session_id = 1;
+}
+
+// ImportCommitResponse returns import statistics, reusing BatchImportError
+// for its per-row failures.
+message ImportCommitResponse {
     int32                     total     = 1;
     int32                     succeeded = 2;
     int32                     failed    = 3;
     repeated BatchImportError errors    = 4;
 }
+
+// ImportAbortRequest names the session to discard.
+message ImportAbortRequest {
+    string session_id = 1;
+}
+
+// ImportAbortResponse is empty: success is the response arriving at all.
+message ImportAbortResponse {}
 
 // ===========================================================================
 // Watch messages
@@ -2862,30 +2984,70 @@ message ListPermissionsResponse {
 // Certificate management messages
 // ===========================================================================
 
-// GenerateCertRequest creates a client certificate.
-message GenerateCertRequest {
+// IssueCertRequest asks for a certificate for an existing account of the
+// caller's own tenant. Only the CSR's key is used: the certificate names the
+// account, whatever the CSR's Subject says.
+message IssueCertRequest {
     string username = 1;
-    string tenant_id = 2;
+    string csr_pem = 2;
+    // ttl is a Go duration; empty is the issuer's default.
     string ttl = 3;
 }
 
-// CertBundleResponse holds the generated certificate bundle.
-message CertBundleResponse {
-    string cert_pem = 1;
-    string key_pem = 2;
-    string serial = 3;
+// EnrollCertRequest enrols a bring-your-own certificate (leaf first; any
+// further certificates, and all of chain_pem, are offered as intermediates)
+// for an existing account of the caller's own tenant.
+message EnrollCertRequest {
+    string username = 1;
+    string cert_pem = 2;
+    string chain_pem = 3;
 }
 
-// ExportCertRequest exports a certificate as PKCS#12.
-message ExportCertRequest {
-    string cert_pem = 1;
-    string key_pem = 2;
-    string passphrase = 3;
+// EnrolledCertResponse is a certificate now bound to an account. There is no
+// key field: the requester keeps its own.
+message EnrolledCertResponse {
+    uint64 user_id = 1;
+    string username = 2;
+    string tenant_id = 3;
+    string cert_pem = 4;
+    // serial is empty for a bring-your-own certificate.
+    string serial = 5;
+    string thumbprint = 6;
+    // not_after is RFC 3339.
+    string not_after = 7;
 }
 
-// ExportCertResponse holds the base64-encoded PKCS#12 archive.
-message ExportCertResponse {
-    string pkcs12 = 1;
+// TrustAnchorAddRequest registers every CA certificate in certs_pem.
+message TrustAnchorAddRequest {
+    string tenant_id = 1;
+    string certs_pem = 2;
+}
+
+// TrustAnchorListRequest lists a tenant's trust anchors.
+message TrustAnchorListRequest {
+    string tenant_id = 1;
+}
+
+// TrustAnchorRemoveRequest withdraws the anchor with fingerprint (lowercase
+// hex SHA-256 of its DER).
+message TrustAnchorRemoveRequest {
+    string tenant_id = 1;
+    string fingerprint = 2;
+}
+
+// TrustAnchor is one registered trust anchor. Times are RFC 3339.
+message TrustAnchor {
+    string fingerprint = 1;
+    string subject = 2;
+    string not_before = 3;
+    string not_after = 4;
+    string cert_pem = 5;
+    string added_at = 6;
+}
+
+// TrustAnchorListResponse is a tenant's trust anchors.
+message TrustAnchorListResponse {
+    repeated TrustAnchor anchors = 1;
 }
 
 // RevokeCertRequest marks a certificate serial as revoked.
@@ -3843,6 +4005,22 @@ message TenantEntitlements {
     // allow_dedicated_wal permits a tenant to opt a dedicated-raft database into
     // a dedicated WAL group (requires the allow_dedicated_raft entitlement).
     bool allow_dedicated_wal                = 6;
+    // allowed_volume_pools lists the named volume pools (pkg/volume's
+    // catalog) a volume/raft tenant may be placed on. The first entry is
+    // the tenant's default pool. Fail-closed: empty entitles no pool.
+    repeated string allowed_volume_pools    = 7;
+}
+
+// TenantRefusal is the answering node's own view of why it will not serve
+// a tenant's dedicated-isolation data: its catalog Assignment or volume
+// pool did not resolve on this node. Another node may still serve the
+// tenant; a caller that needs the cluster view reads the pool's per-node
+// health (VolumePoolGet) instead.
+message TenantRefusal {
+    // code is stable: pool_unavailable | provider_missing.
+    string code    = 1;
+    // message is the typed error's text; for display, never parsed.
+    string message = 2;
 }
 
 // TenantResponse is the shared response shape for tenant CRUD operations.
@@ -3854,10 +4032,16 @@ message TenantResponse {
     string       created_at     = 5;
     string       updated_at     = 6;
     TenantEntitlements entitlements = 7;
-    // data_root is the dedicated filesystem root for an IsolationVolume /
-    // IsolationRaft tenant, whether pool-allocated or pinned via
-    // TenantCreateRequest.data_root. Empty for prefix/barrier tenants.
-    string data_root = 8;
+    // data_root was removed (docs/volume-pools/api.md): the dedicated
+    // filesystem root is never named on the wire, only resolved locally.
+    reserved 8;
+    reserved "data_root";
+    // volume_pool is the named volume pool an IsolationVolume/IsolationRaft
+    // tenant is placed on. Empty for prefix/barrier tenants.
+    string volume_pool = 9;
+    // refusal is set when the answering node will not serve this tenant's
+    // data; absent otherwise.
+    TenantRefusal refusal = 10;
 }
 
 // TenantCreateRequest creates a new tenant.
@@ -3869,11 +4053,51 @@ message TenantCreateRequest {
     // into the system-managed auto-unseal key-management mode. The default
     // (false) is the secure self-managed mode. Entitlement-gated.
     bool barrier_auto_unseal = 4;
-    // data_root pins an IsolationVolume/IsolationRaft tenant's dedicated
-    // filesystem DataRoot to this operator-supplied absolute path instead of
-    // pool allocation. Empty (the default) allocates from the configured
-    // volume pool. Rejected for prefix/barrier isolation.
-    string data_root = 5;
+    // data_root was removed (docs/volume-pools/api.md): an operator-pinned
+    // filesystem path is no longer accepted; a tenant is always placed on
+    // a named volume pool.
+    reserved 5;
+    reserved "data_root";
+    // volume_pool names the pool a volume/raft tenant is placed on. Empty
+    // (the default) uses the tenant's default pool, the first entry of its
+    // allowed_volume_pools; with none entitled, creation is refused
+    // (PERMISSION_DENIED, volume_pool:<none>). Ignored for prefix/barrier.
+    string volume_pool = 6;
+    // admin_username is the tenant's first admin. Required: a tenant is
+    // created with its first admin's login credential, or not at all.
+    string admin_username = 7;
+    // admin_csr_pem is the admin's CSR, signed by the tenant's own Key B CA;
+    // the admin keeps its key. Exactly one of this and admin_cert_pem.
+    string admin_csr_pem = 8;
+    // admin_cert_pem is the admin's own certificate, leaf first; it must
+    // chain to one of trust_anchors_pem.
+    string admin_cert_pem = 9;
+    // admin_chain_pem holds intermediates for admin_cert_pem.
+    string admin_chain_pem = 10;
+    // trust_anchors_pem registers the tenant's trust anchors with it.
+    string trust_anchors_pem = 11;
+}
+
+// TenantCreateResponse is the created tenant and its first admin's
+// credential. There is never a private key.
+message TenantCreateResponse {
+    TenantResponse tenant = 1;
+    TenantAdminCredential admin = 2;
+}
+
+// TenantAdminCredential is a tenant's first admin as onboarding left it.
+message TenantAdminCredential {
+    // user_id is 0 while awaits_barrier_init.
+    uint64 user_id = 1;
+    string username = 2;
+    string cert_pem = 3;
+    // serial is empty for a bring-your-own certificate.
+    string serial = 4;
+    string thumbprint = 5;
+    // awaits_barrier_init: the tenant keeps its identity records behind its
+    // own barrier, so the admin's account is created when the admin
+    // initializes it -- which only this certificate may do.
+    bool awaits_barrier_init = 6;
 }
 
 // TenantGetRequest retrieves a tenant by ID.
@@ -3900,9 +4124,14 @@ message DeletedTenant {
     string id             = 1;
     string name           = 2;
     string isolation_type = 3;
-    string data_root      = 4;
+    // data_root was removed (docs/volume-pools/api.md).
+    reserved 4;
+    reserved "data_root";
     string created_at     = 5;
     string deleted_at     = 6;
+    // volume_pool is the named volume pool the deleted tenant was placed
+    // on; empty for prefix/barrier tenants.
+    string volume_pool = 7;
 }
 
 // TenantListDeletedResponse is one page of retired tenant ids.
@@ -3940,6 +4169,121 @@ message TenantReconcileDeletedResponse {
     repeated TenantResiduePath    reclaimed = 2;
     repeated TenantResiduePath    skipped   = 3;
     repeated TenantResidueFailure failed    = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Volume pool messages (docs/volume-pools/api.md)
+// ---------------------------------------------------------------------------
+
+// VolumePoolNodeCounts tallies a pool's per-node health: how many of the
+// nodes that have reported it are ready, locked, unavailable, or (always 0
+// in this release -- see pkg/volume.NodeHealthCounts) unmapped.
+message VolumePoolNodeCounts {
+    int32 ready       = 1;
+    int32 locked      = 2;
+    int32 unavailable = 3;
+    int32 unmapped    = 4;
+}
+
+// VolumePool is one pool's catalog record plus the aggregate view every
+// list/get response reports: measured usage, assigned-tenant count, and a
+// per-node health tally.
+message VolumePool {
+    string name                    = 1;
+    string provider                = 2;
+    string description             = 3;
+    int64  capacity_bytes          = 4;
+    int64  reserved_bytes          = 5;
+    int64  used_bytes              = 6;
+    int32  tenant_count            = 7;
+    VolumePoolNodeCounts nodes     = 8;
+    double overcommit              = 9;
+    string created_at              = 10;
+    string updated_at              = 11;
+}
+
+// VolumePoolNodeReport is one node's report, scoped to a single pool.
+// state is "ready", "locked", "unavailable", "unmapped" (the node's last
+// report said it does not map the pool) or "no_report" (the report is
+// older than the catalog's lease TTL; size_bytes, free_bytes and detail
+// are zeroed rather than shown stale).
+message VolumePoolNodeReport {
+    string node_id     = 1;
+    string state       = 2;
+    int64  size_bytes  = 3;
+    int64  free_bytes  = 4;
+    string detail      = 5;
+    string reported_at = 6;
+}
+
+// VolumePoolDetail is VolumePoolGet's response: a VolumePool plus one row
+// per node that has reported it.
+message VolumePoolDetail {
+    VolumePool pool                           = 1;
+    repeated VolumePoolNodeReport node_reports = 2;
+}
+
+// VolumePoolListResponse lists every pool in the catalog. Not paginated.
+message VolumePoolListResponse {
+    repeated VolumePool pools = 1;
+}
+
+// VolumePoolGetRequest inspects one pool.
+message VolumePoolGetRequest {
+    string name = 1;
+}
+
+// VolumePoolCreateRequest adds a pool to the catalog.
+message VolumePoolCreateRequest {
+    string name            = 1;
+    // provider defaults to "dir" when empty.
+    string provider        = 2;
+    string description     = 3;
+    // capacity_bytes of 0 means derived from health reports.
+    int64  capacity_bytes  = 4;
+    // overcommit defaults to 1.0 when 0; must be >= 1.0 otherwise.
+    double overcommit      = 5;
+}
+
+// VolumePoolUpdateRequest changes a pool's description, capacity or
+// overcommit. The provider is immutable. Wrapper types distinguish
+// "absent, leave unchanged" from "explicitly set to the zero value":
+// capacity_bytes of a present, zero wrapper returns the pool to the
+// derived capacity.
+message VolumePoolUpdateRequest {
+    string                        name           = 1;
+    google.protobuf.StringValue   description    = 2;
+    google.protobuf.Int64Value    capacity_bytes = 3;
+    google.protobuf.DoubleValue   overcommit     = 4;
+}
+
+// VolumePoolDeleteRequest removes a pool from the catalog. Refused while
+// any tenant is assigned to it.
+message VolumePoolDeleteRequest {
+    string name = 1;
+}
+
+// VolumePoolListTenantsRequest pages through the tenants assigned to a
+// pool. page_size 0 means the server default; page_token is the previous
+// response's next_page_token.
+message VolumePoolListTenantsRequest {
+    string pool       = 1;
+    string page_token = 2;
+    int32  page_size  = 3;
+}
+
+// VolumePoolTenant is one row of VolumePoolListTenantsResponse: an
+// assigned tenant's reservation and measured use on the pool.
+message VolumePoolTenant {
+    string tenant_id      = 1;
+    int64  reserved_bytes = 2;
+    int64  used_bytes     = 3;
+}
+
+// VolumePoolListTenantsResponse is one page of a pool's assigned tenants.
+message VolumePoolListTenantsResponse {
+    repeated VolumePoolTenant tenants = 1;
+    string next_page_token            = 2;
 }
 
 // TenantUpdateRequest applies a partial update to an existing tenant.

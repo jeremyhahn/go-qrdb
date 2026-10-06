@@ -96,8 +96,8 @@ func TestGenerateClientCert_PutRecordError(t *testing.T) {
 	// be persisted.
 	p.kvStore = &errorKVStore{err: errors.New("disk full")}
 
-	req := &GenerateRequest{Username: "record-fail-user", TenantID: "system"}
-	_, err := p.GenerateClientCert(context.Background(), req)
+	req := &testRequest{Username: "record-fail-user", TenantID: "system"}
+	_, err := generateForTest(context.Background(), p, req)
 	if err == nil {
 		t.Fatal("expected error when persisting cert record fails")
 	}
@@ -132,27 +132,24 @@ func TestRevokeCert_ScanError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// encodePKCS12 — CA cert parse error
+// EncodePKCS12 — CA cert parse error
 // ---------------------------------------------------------------------------
 
-// TestEncodePKCS12_InvalidCACert exercises the branch in encodePKCS12 where
+// TestEncodePKCS12_InvalidCACert exercises the branch in EncodePKCS12 where
 // the CA cert PEM block decodes successfully but contains invalid DER data.
-//
-// This calls encodePKCS12 directly rather than through
-// DefaultCertProvider.ExportPKCS12: ExportPKCS12 now resolves its CA
-// certificate from getCAMaterial's own, already-parsed *x509.Certificate
-// (go-qrdb#560 review, non-blocking -- the shared-cache tenant mix-up fix),
-// so poisoning p.caCertPEM no longer reaches encodePKCS12's CA argument at
-// all. The branch itself is still real -- an embedder's own CA source could
-// still hand encodePKCS12 malformed DER -- so it is covered at the
-// function's own boundary instead.
+// EncodePKCS12 is a local, no-server encoder (there is no server-side
+// ExportPKCS12 any more -- go-qrdb security review, no private key may
+// reach a node), and a caller supplying its own CA source -- the CLI's
+// "ca export-bundle" --ca-pem, in particular -- could still hand it
+// malformed DER, so the branch is covered directly at the function's own
+// boundary.
 func TestEncodePKCS12_InvalidCACert(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
 	// Generate a valid client cert bundle.
-	req := &GenerateRequest{Username: "pkcs12-ca-bad", TenantID: "system"}
-	bundle, err := p.GenerateClientCert(ctx, req)
+	req := &testRequest{Username: "pkcs12-ca-bad", TenantID: "system"}
+	bundle, err := generateForTest(ctx, p, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -163,7 +160,7 @@ func TestEncodePKCS12_InvalidCACert(t *testing.T) {
 		Bytes: []byte("not-valid-der"),
 	})
 
-	_, err = encodePKCS12(bundle.CertPEM, bundle.KeyPEM, invalidCACertPEM, "pw")
+	_, err = EncodePKCS12(bundle.CertPEM, bundle.KeyPEM, invalidCACertPEM, "pw")
 	if err == nil {
 		t.Fatal("expected error for invalid CA cert DER")
 	}
@@ -211,13 +208,12 @@ func TestGenerateSerial_Unique(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// validateGenerateRequest — TTL < 0 branch (already covered but kept for
-// completeness alongside the nil-request and empty-field branches)
+// validateIssueRequest — the nil-request branch
 // ---------------------------------------------------------------------------
 
-// TestValidateGenerateRequest_NilRequest covers the nil-request branch.
-func TestValidateGenerateRequest_NilRequest(t *testing.T) {
-	err := validateGenerateRequest(nil)
+// TestValidateIssueRequest_NilRequest covers the nil-request branch.
+func TestValidateIssueRequest_NilRequest(t *testing.T) {
+	err := validateIssueRequest(nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
 	}
@@ -296,11 +292,11 @@ func (s *putSucceedsScanFailsKVStore) PutAllIfAllUnchanged(ctx context.Context, 
 var _ kvstore.MultiGuardedBatchKVStore = (*putSucceedsScanFailsKVStore)(nil)
 
 // ---------------------------------------------------------------------------
-// encodePKCS12 — invalid cert DER in cert block
+// EncodePKCS12 — invalid cert DER in cert block
 // ---------------------------------------------------------------------------
 
 // TestEncodePKCS12_InvalidCertDER exercises the x509.ParseCertificate error
-// path in encodePKCS12 when the cert block contains non-DER data.
+// path in EncodePKCS12 when the cert block contains non-DER data.
 func TestEncodePKCS12_InvalidCertDER(t *testing.T) {
 	// Build a valid EC key PEM.
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -319,7 +315,7 @@ func TestEncodePKCS12_InvalidCertDER(t *testing.T) {
 		Bytes: []byte("not-valid-der"),
 	})
 
-	_, err = encodePKCS12(invalidCertPEM, keyPEM, nil, "pw")
+	_, err = EncodePKCS12(invalidCertPEM, keyPEM, nil, "pw")
 	if err == nil {
 		t.Fatal("expected error for invalid cert DER")
 	}
@@ -330,7 +326,7 @@ func TestEncodePKCS12_InvalidCertDER(t *testing.T) {
 }
 
 // TestEncodePKCS12_InvalidKeyDER exercises the x509.ParseECPrivateKey error
-// path in encodePKCS12 when the key block contains non-DER data.
+// path in EncodePKCS12 when the key block contains non-DER data.
 func TestEncodePKCS12_InvalidKeyDER(t *testing.T) {
 	// Build a valid self-signed cert PEM to get past the cert parse.
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -356,7 +352,7 @@ func TestEncodePKCS12_InvalidKeyDER(t *testing.T) {
 		Bytes: []byte("not-valid-key-der"),
 	})
 
-	_, err = encodePKCS12(certPEM, invalidKeyPEM, nil, "pw")
+	_, err = EncodePKCS12(certPEM, invalidKeyPEM, nil, "pw")
 	if err == nil {
 		t.Fatal("expected error for invalid key DER")
 	}

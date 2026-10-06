@@ -20,6 +20,11 @@ type TransactionClient interface {
 
 type BatchClient interface {
 	ExecuteBatch(ctx context.Context, ops []Op, opts ...WriteOption) (*BatchResponse, error)
+
+	// ImportFile drives the whole chunked import session lifecycle
+	// (ImportBegin, as many ImportAppend calls as data needs, ImportCommit)
+	// transparently: the caller never sees a session ID or a sequence
+	// number. data is read and split into transport-cap-sized chunks.
 	ImportFile(ctx context.Context, filename string, data io.Reader, opts ImportOptions) (*ImportResult, error)
 }
 ```
@@ -147,7 +152,7 @@ type BatchResponse struct{ Responses []OpResponse }
 with `UnsupportedTransactionOpError` before anything is proposed, rather than
 defaulting to a write that would corrupt the key.
 
-Import:
+Import session — `pkg/service.BatchServicer`:
 
 ```go
 type ImportOptions struct {
@@ -158,6 +163,7 @@ type ImportOptions struct {
 	ValueField    string
 	SkipHeader    bool
 	Transactional bool
+	KeyPrefix     string // set by the per-database wrapper, not the caller
 }
 
 type ImportResult struct {
@@ -166,7 +172,44 @@ type ImportResult struct {
 	Failed    int
 	Errors    []ImportError // {Row, Key, Message}
 }
+
+type BatchServicer interface {
+	Execute(ctx context.Context, ops []Op) ([]OpResponse, error)
+	ExecuteWithMode(ctx context.Context, ops []Op, mode writemode.Mode) ([]OpResponse, error)
+	ExecuteEntity(ctx context.Context, req *BatchEntityRequest) (*BatchEntityResponse, error)
+
+	// ImportBegin starts a chunked import session scoped to the caller's
+	// (tenant, database) and (tenant, identity). opts configures the
+	// import exactly as a single-message import always has.
+	ImportBegin(ctx context.Context, opts ImportOptions) (sessionID string, err error)
+
+	// ImportAppend stages chunk as sequence seq of sessionID and renews
+	// the session's lease. seq must be exactly one more than the last
+	// appended sequence, or equal to it with identical bytes (an
+	// idempotent replay); any other value is refused. The caller's
+	// (tenant, identity) must match the session's.
+	ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
+
+	// ImportCommit applies every staged chunk of sessionID atomically,
+	// exactly as a single-message import applied its one file, and
+	// releases the session. The caller's (tenant, identity) must match
+	// the session's.
+	ImportCommit(ctx context.Context, sessionID string) (*ImportResult, error)
+
+	// ImportAbort releases sessionID -- its lease, and therefore its
+	// metadata record and every staged chunk -- without applying
+	// anything. The caller's (tenant, identity) must match the session's.
+	ImportAbort(ctx context.Context, sessionID string) error
+}
 ```
+
+There is no separate `ImportSessionServicer`: the four lifecycle methods
+are part of `BatchServicer` itself, alongside `Execute`/`ExecuteWithMode`/
+`ExecuteEntity`, because every wrapper that already implements
+`BatchServicer` for one reason (namespace confinement, per-tenant quota,
+per-call service resolution) needs to wrap all seven together — splitting
+import into its own interface would not reduce how many types implement
+it, only how many `var _ Xxx = (*T)(nil)` lines prove they still do.
 
 Note the enum ordering: `CompareTarget` and `CompareResult` are `iota` enums, so
 the JSON wire form carries **integers**, not names. A client that hardcodes
@@ -191,18 +234,34 @@ the JSON wire form carries **integers**, not names. A client that hardcodes
   reports per-row failures.
 - **Imports always target the raw KV keyspace.** There is no collection-targeted
   import path.
-- **Import size ceilings are per transport**: 100 MB on REST and MCP;
-  approximately 63 MB on QUIC, set by the QUIC wire protocol's shared
-  per-RPC payload cap. On gRPC and Unix, every RPC -- import included -- is
-  bounded by `DefaultMaxRecvMsgSize` (4 MiB): grpc-go buffers
-  an incoming message up to the server's configured receive bound before
-  any interceptor runs, so leaving every RPC able to accept 100+ MB by
-  default would let an unauthenticated peer force that allocation with no
-  rate limit of its own. There is currently no larger-message opt-in for
-  BatchImport over gRPC/Unix; a payload that does not fit is refused with
-  `codes.ResourceExhausted`. A chunked-import redesign, carrying a payload
-  in bounded pieces instead of one large message, is expected to replace
-  this ceiling rather than reintroduce a larger-message opt-in.
+- **Every call in the session lifecycle is bounded by the universal
+  pre-auth message cap** (`transport.max_message_bytes`, default 4 MiB),
+  identical on every transport. There is no larger-message opt-in; a
+  dataset bigger than one chunk needs more `ImportAppend` calls, not a
+  bigger one.
+- **`ImportAppend`'s `seq` is strictly sequential, with exactly one
+  exception: replay.** `seq` must equal `lastSeq + 1` (a new chunk) or
+  `lastSeq` with byte-identical content (idempotent replay of the call
+  whose response the caller may not have seen). `lastSeq` with DIFFERENT
+  content, or any other value, is refused — a gap or a regression is
+  never silently accepted.
+- **A session belongs to the (tenant, identity) that opened it.**
+  `ImportAppend`/`ImportCommit`/`ImportAbort` compare the request's
+  authenticated identity and tenant against what `ImportBegin` recorded,
+  and refuse a mismatch on EITHER dimension independently — same tenant,
+  different identity is refused; same identity shape, different tenant is
+  refused. A session ID grants no authority of its own.
+- **`ImportCommit` applies all staged chunks as one atomic unit** — the
+  combined bytes feed the SAME parse-and-apply path a single-message
+  import always used, so `--transactional` and per-row semantics are
+  identical to the pre-session behavior. A failure partway through commit
+  (a chunk whose concatenation cannot be parsed, a proposal that is
+  refused) applies nothing: the staged chunks and the session survive a
+  failed commit so the caller can inspect and retry, and are released only
+  on success, on `ImportAbort`, or on lease expiry.
+- **An abandoned session is reclaimed by lease expiry, not a background
+  sweep of its own.** The session's lease is the only liveness mechanism;
+  there is no separate timer, cron, or GC pass for import sessions.
 
 ## Error semantics
 
@@ -216,19 +275,54 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
 | Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`) | the key is bound to the lease in the same commit; a lease the state machine does not hold refuses the whole transaction or batch with lease-not-found, nothing written | **yes** |
 | Lease-bearing op on the legacy `regular` `sm_type` | whole transaction or batch refused as an unsupported capability, nothing written | **yes** |
-| Import file exceeds the transport ceiling | refused before parsing | **yes** |
-| Import format cannot be inferred and none given | refused | **yes** |
-| `--transactional` import, any row fails | whole import rolled back, `ImportResult.Failed > 0` | **yes** |
+| A chunk, or any other single call, exceeds the transport's pre-auth cap | refused before parsing, before authentication on every transport | **yes** |
+| `ImportBegin`'s format cannot be inferred and none given | refused | **yes** |
+| `--transactional` commit, any row fails | whole import rolled back, `ImportResult.Failed > 0` | **yes** |
+| `ImportAppend`'s `seq` is not `lastSeq+1` and not an identical replay of `lastSeq` | refused (`*ImportSequenceError`), nothing staged | **yes** |
+| `ImportAppend`/`ImportCommit`/`ImportAbort` naming an unknown or expired session | refused (`*ImportSessionNotFoundError`) | **yes** |
+| `ImportAppend`/`ImportCommit`/`ImportAbort` from a different (tenant, identity) than `ImportBegin` recorded | refused (`*ImportSessionOwnerError`) | **yes** |
+| A session's staged bytes, chunk count, or its tenant's concurrent session count would exceed its configured quota | refused (`*ImportQuotaExceededError`) | **yes** |
+| A staging command (`protocol.OpImportStage`) reaches an engine that keeps no leases: the plain KV engine of a standalone node on the `file` or `objstore` backend, or any engine built without a lessor | refused as an unsupported capability (`ServiceNotConfiguredError` naming `lease`) in the apply result, nothing staged; apply keeps advancing. On those backends `ImportBegin`'s own lease grant is refused first | **yes** |
+| `ImportCommit` carries more encoded ops than one Raft proposal admits (`maxImportProposalBytes`, 8 MiB) and `--transactional` is set | refused before anything is proposed (`*ImportProposalTooLargeError`); all-or-nothing has no multi-proposal path, so this is the hard ceiling on a transactional import's size | **yes** |
+| A chunked (non-transactional) import's Raft proposal for one chunk suffers an outcome-unknown fault (`errors.Is(err, service.ErrOutcomeUnknown)` — the entry may or may not have committed) | the WHOLE `ImportCommit` call fails; no later chunk is attempted, and the session is NOT revoked, so the caller can retry `ImportCommit` — never downgraded to a per-row failure in either mode, because the chunk is not provably "nothing stored" | **yes** |
+| Same, but the chunk's proposal commits and is refused ON ITS MERITS (a result-level `AppError` — `checkResultError`'s path, provably nothing stored) | that chunk's rows are recorded failed; later chunks are still attempted (non-transactional) or the whole commit is refused (transactional) | **yes** |
 | Missing `transaction:execute` / `batch:execute` | permission denied | **yes** |
 | `UnitOfWork.Commit` by a caller holding `kv:put`/`kv:delete` but not `transaction:execute` | permission denied (**BREAKING**: the removed compensating fallback needed only `kv:put`/`kv:delete`) | **yes** |
 | Barrier sealed | refused | **yes** |
 
 ## Configuration
 
-No feature-specific configuration keys. Behavior follows the store's
-`raft.sm_type` and `storage.backend`, and write durability follows the request's
-write mode (`sync`, `wal_durable`, `batched`) — see
-[../key-value/engineering.md](../key-value/engineering.md).
+Behavior follows the store's `raft.sm_type` and `storage.backend`, and
+write durability follows the request's write mode (`sync`, `wal_durable`,
+`batched`) — see [../key-value/engineering.md](../key-value/engineering.md).
+
+An import session is additionally bounded by `pkg/config.ImportSessionConfig`
+(`import_session:` in YAML; see `docs/12-configuration.md`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `max_session_bytes` | 64 MiB | total staged bytes a single session may accumulate across all its chunks |
+| `max_chunks_per_session` | 16384 | chunk-count ceiling per session |
+| `max_sessions_per_tenant` | 16 | concurrent (not yet committed/aborted/expired) sessions a tenant may hold |
+| `session_ttl_seconds` | 3600 | the session's lease TTL; renewed on every `ImportAppend` |
+
+All four resolve a non-positive configured value to their default (the
+same convention `transport.*` uses), so a `Config` built without going
+through `DefaultConfig` still carries production bounds.
+
+**Staged bytes are not metered against the tenant's storage quota; this is
+the design boundary, not a gap.** `pkg/quota.Quotas.MaxStorageBytes` (and
+`MaxKeys`) track committed data — the same counters every other write
+updates — and a session's chunks are not yet applied to the state machine,
+so they do not touch those counters while staged. The ONLY cap on staging
+is `import_session`'s own four fields above (`max_session_bytes`,
+`max_chunks_per_session`, `max_sessions_per_tenant`,
+`session_ttl_seconds`), which bound the resource a session can hold
+independent of the tenant's storage quota. `ImportCommit` is the one place
+staged bytes become metered: committing feeds the combined chunks through
+the SAME parse-and-apply path, and therefore the same per-write quota
+accounting, as every other write — a session is invisible to
+`MaxStorageBytes` right up to the commit that makes it real.
 
 Group commit for `batched` writes is the batch aggregator's job, which is a
 storage-layer concern rather than part of this API.
@@ -257,13 +351,45 @@ never replays it over its own result.
   cluster stage (`make integration-test-cluster`), which is **not currently
   wired into CI**.
 - **Fault injection**: the import path takes an `io.Reader`, so a truncated or
-  malformed stream is injected directly rather than staged on disk.
+  malformed stream is injected directly rather than staged on disk. A
+  multi-chunk `ImportCommit` is covered separately: a fake host's
+  `SyncPropose` returns a generic (outcome-unknown) error on the SECOND of
+  several chunk proposals, proving the whole commit fails,
+  `errors.Is(err, service.ErrOutcomeUnknown)` holds, no later chunk is
+  attempted, and the session survives for a retry
+  (`TestImportCommit_ProposalFaultMidImport_LeavesSessionRetryable`).
+- **Import session**: sequence ordering (gap refused, regression refused,
+  exact replay accepted as a no-op), wrong caller refused (same tenant,
+  different identity), cross-tenant refused (different tenant, matching
+  identity shape — a SEPARATE test from the previous one: either check
+  alone can be vacuous in a way the other catches), cross-DATABASE refused
+  (same tenant, same identity, a different namespaced database wrapper than
+  `ImportBegin` was called through), abort discards staged data, a failure
+  parsing the assembled file applies nothing and leaves the session intact,
+  a mid-commit outcome-unknown proposal fault aborts the whole commit
+  without revoking the session (above — this does NOT roll back whichever
+  earlier chunk already committed in the same `ImportCommit` call: only a
+  single-proposal, `--transactional` commit at or under 8 MiB is genuinely
+  atomic; a larger `--transactional` import is refused outright rather than
+  attempted non-atomically), lease expiry reclaims an abandoned session
+  (`pkg/server`'s `TestBuildDataPlaneServices_ImportSession_LeaseExpiryReclaims`
+  drives a real `lease.Lessor`'s TTL to actual elapse, not a simulated one),
+  and a leader change between `ImportBegin` and `ImportCommit` does not
+  lose a staged chunk (`pkg/service`'s
+  `TestImportSession_LeaderChangeDoesNotLoseStagedChunk`, a real 3-node
+  Raft group under `sdk/go/testutil/raftharness` with an actual
+  `RequestLeaderTransfer`, `ImportCommit` reissued against the new leader
+  through a separate `BatchService` instance sharing nothing with the one
+  that staged the chunk).
 
 ## Observability
 
 - Transaction and batch mutations are audited through [../audit/](../audit/).
 - Import failures are reported per row in `ImportResult.Errors` (`Row`, `Key`,
   `Message`) rather than collapsed into one error string.
+- An import session's lifecycle (`Begin`, each `Append`, `Commit`/`Abort`,
+  and a lease-expiry reclaim) is audited through [../audit/](../audit/) the
+  same way every other mutation is.
 
 ## Wire-field bounds
 

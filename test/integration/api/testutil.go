@@ -106,23 +106,6 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// nodeCAKeyUnavailable reports whether this node's local ca-key.pem cache,
-// read from beside cfg.TLSCACert, has already been removed. cmd/qrdbd
-// deletes that cache unconditionally -- not only in Raft mode -- once the
-// cluster CA key is confirmed durable in the replicated store
-// (cmd/qrdbd/clusterca.go's confirmClusterCAPersisted; see
-// docs/certificate-authority/architecture.md's "Bootstrap crash window" and
-// the CA-signer ruling that a CA private key is never cached on disk past
-// that confirmation). That confirmation runs before the admin endpoint
-// opens, so by the time this suite's /health readiness gate has passed --
-// the only way these tests observe the server -- the cache is
-// deterministically already gone: callers do not need to guard against a
-// race with removal still in flight.
-func nodeCAKeyUnavailable(cfg *TestConfig) bool {
-	_, err := os.Stat(filepath.Join(filepath.Dir(cfg.TLSCACert), "ca-key.pem"))
-	return os.IsNotExist(err)
-}
-
 // loadCACertPool loads the test CA certificate pool from the given path.
 func loadCACertPool(caFile string) *x509.CertPool {
 	caPEM, err := os.ReadFile(caFile)
@@ -171,6 +154,21 @@ func requireCLI(t *testing.T, cfg *TestConfig) {
 	if !isCLIAvailable(t, cfg) {
 		t.Fatalf("CLI binary not available (path: %s). Run 'make build-client' first.", cfg.CLIBinPath)
 	}
+}
+
+// adminCSRArgsForTenant generates a fresh local key/CSR for a throwaway
+// admin account named adminUsername (via "ca csr", pure local keygen) and
+// returns the "tenant create" flags that name it as the tenant's first
+// admin: a tenant is created with its first admin, or not at all, so every
+// "tenant create" call in this package needs these two flags.
+func adminCSRArgsForTenant(t *testing.T, cfg *TestConfig, proto ProtocolType, adminUsername string) []string {
+	t.Helper()
+	csrDir := t.TempDir()
+	stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "ca", "csr", "--username", adminUsername, "--out", csrDir)
+	if err != nil {
+		t.Fatalf("[%s] ca csr for tenant admin %s: %v\nstdout: %s\nstderr: %s", proto, adminUsername, err, stdout, stderr)
+	}
+	return []string{"--admin-username", adminUsername, "--admin-csr", filepath.Join(csrDir, "csr.pem")}
 }
 
 // probeTimeout bounds every connectivity probe below (REST, gRPC, Unix,

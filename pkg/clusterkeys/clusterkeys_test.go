@@ -37,16 +37,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -177,58 +173,16 @@ func newTestNonP256CertPEM(t *testing.T, ca *testCABundle, trustDomain, nodeID s
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-// newTestRegistry builds a BarrierRegistry with a two-path volume pool, a
-// Pebble-backed state store, and a per-tenant Pebble registry. It mirrors the
-// newPooledRegistry helper used in the seal package tests, adapted for use from
-// the external test package.
-func newTestRegistry(t *testing.T) *seal.BarrierRegistry {
+// newTestRegistry builds a BarrierRegistry with a real "dir"-provider
+// volume pool and a per-tenant Pebble registry (sealtest.PooledRegistry),
+// and returns the volume.Allocator so callers can Reserve a tenant's
+// Assignment before RegisterVolumeTenant / ImportTenant, which require it
+// to already exist (see seal.BarrierRegistry's doc comments).
+func newTestRegistry(t *testing.T) (*seal.BarrierRegistry, volume.Allocator) {
 	t.Helper()
-
-	c1 := newLocalStorage(t)
-	c2 := newLocalStorage(t)
-
-	mgr := objpool.NewManager()
-	stateDir := t.TempDir()
-	statePebble, err := pebblestore.New(&pebblestore.Config{DataDir: stateDir})
-	if err != nil {
-		t.Fatalf("open state-store pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = statePebble.Close() })
-	stateStore, err := qrdbpool.NewPebbleStateStore(statePebble)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	rr := &objpool.RoundRobinStrategy{State: stateStore}
-	if err := mgr.Register("default", []common.Storage{c1, c2}, rr); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
-
 	sysBarrier := newTestSystemBarrier(t)
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(
-		newTestLogger(),
-		sysBarrier,
-		seal.WithVolumePool(mgr, stateStore, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
-	return reg
-}
-
-// newLocalStorage opens a fresh local-filesystem objstore backend at a
-// t-scoped temp directory.
-func newLocalStorage(t *testing.T) common.Storage {
-	t.Helper()
-	dir := t.TempDir()
-	s := local.New()
-	if err := s.Configure(map[string]string{"path": dir}); err != nil {
-		t.Fatalf("Configure local backend: %v", err)
-	}
-	return s
+	reg, _, allocator := sealtest.PooledRegistry(t, sysBarrier)
+	return reg, allocator
 }
 
 // newTestSystemBarrier builds a StorageBarrier with NoneStrategy (credential-
@@ -260,11 +214,13 @@ func initTestSystemBarrier(t *testing.T, reg *seal.BarrierRegistry) {
 	}
 }
 
-// initLeaderTenant initializes a tenant barrier on a leader registry.
-// Returns the sealed StorageBarrier after Initialize.
-func initLeaderTenant(t *testing.T, reg *seal.BarrierRegistry, tenantID string) *seal.StorageBarrier {
+// initLeaderTenant reserves tenantID on allocator's "default" pool and
+// initializes a tenant barrier on a leader registry. Returns the sealed
+// StorageBarrier after Initialize.
+func initLeaderTenant(t *testing.T, reg *seal.BarrierRegistry, allocator volume.Allocator, tenantID string) *seal.StorageBarrier {
 	t.Helper()
 	ctx := context.Background()
+	sealtest.ReserveVolumeTenant(t, allocator, tenantID)
 	_, tb, err := reg.RegisterVolumeTenant(ctx, tenantID, true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(%s): %v", tenantID, err)
@@ -374,7 +330,7 @@ func (c *countingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func TestNewReceiver_NilKD(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, followerCertPEM := simpleNodeCert(t)
 	_, err := clusterkeys.NewReceiver(nil, reg, placements, "cluster.local", "node-1", nil, nil, followerCertPEM, nil)
@@ -395,7 +351,7 @@ func TestNewReceiver_NilRegistry(t *testing.T) {
 
 func TestNewReceiver_NilPlacements(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	_, _, certPEM := simpleNodeCert(t)
 	_, err := clusterkeys.NewReceiver(kd, reg, nil, "cluster.local", "node-1", nil, nil, certPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrNilPlacements) {
@@ -405,7 +361,7 @@ func TestNewReceiver_NilPlacements(t *testing.T) {
 
 func TestNewReceiver_EmptySelfNodeID(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
 	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "", nil, nil, certPEM, nil)
@@ -416,7 +372,7 @@ func TestNewReceiver_EmptySelfNodeID(t *testing.T) {
 
 func TestNewReceiver_EmptyDeliveryCertPEM(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, nil, nil)
 	if !errors.Is(err, clusterkeys.ErrEmptyDeliveryCert) {
@@ -426,7 +382,7 @@ func TestNewReceiver_EmptyDeliveryCertPEM(t *testing.T) {
 
 func TestNewReceiver_NilLogger_UsesDefault(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, certPEM, nil)
@@ -492,7 +448,7 @@ func TestNodeKeyHandler_ServesNodeCert(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
@@ -518,7 +474,7 @@ func TestNodeKeyHandler_MethodNotAllowed(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
@@ -543,7 +499,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
@@ -799,10 +755,10 @@ func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// ---- Leader registry ----
-	leaderReg := newTestRegistry(t)
+	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-sysmanaged")
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-sysmanaged")
 
 	leaderKey, err := leaderBarrier.GetMasterKey(context.Background())
 	if err != nil {
@@ -814,8 +770,9 @@ func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-sysmanaged", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-sysmanaged")
 
 	placements := &staticPlacementGetter{p: p}
 	recv, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, placements)
@@ -872,18 +829,19 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// ---- Leader registry ----
-	leaderReg := newTestRegistry(t)
+	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-selfmanaged")
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-selfmanaged")
 
 	// ---- Follower setup ----
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-selfmanaged", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-selfmanaged")
 
 	placements := &staticPlacementGetter{p: p}
 	_, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, placements)
@@ -926,17 +884,18 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 func TestHandler_IdempotentDelivery(t *testing.T) {
 	ctx := context.Background()
 
-	leaderReg := newTestRegistry(t)
+	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-idem")
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-idem")
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-idem", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-idem")
 
 	_, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, &staticPlacementGetter{p: p})
 
@@ -974,17 +933,18 @@ func TestHandler_IdempotentDelivery(t *testing.T) {
 func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	ctx := context.Background()
 
-	leaderReg := newTestRegistry(t)
+	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-nodl")
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-nodl")
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-nodl", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-nodl")
 
 	// Use nil caPool so the receiver does not enforce TLS cert chain checks.
 	// The plain httptest.Server carries no peer certs, so the handler falls
@@ -1045,7 +1005,7 @@ func TestHandler_EvilClusterNode_RejectedAtPlacement(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	// Placement lookup returns an error — no entry for this tenant/database.
 	placements := &staticPlacementGetter{err: errors.New("no placement entry")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
@@ -1088,7 +1048,7 @@ func TestHandler_InvalidPeerCert(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("should not reach")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
@@ -1205,18 +1165,19 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	ctx := context.Background()
 
 	// ---- Leader registry ----
-	leaderReg := newTestRegistry(t)
+	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-skip")
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, "tenant-skip")
 
 	// ---- Follower setup ----
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-skip", "db-main", 1, 2, "follower-node-1", followerDataRoot)
-	followerReg := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-skip")
 
 	// Use a counting handler to verify only one POST reaches the server.
 	var postCount atomic.Int64
@@ -1465,7 +1426,7 @@ func newMinimalReceiver(t *testing.T, follower *testNodeBundle, caPool *x509.Cer
 		placements = &staticPlacementGetter{err: errors.New("no placement")}
 	}
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
 		caPool, nil, follower.pem, newTestLogger())
 	if err != nil {
@@ -1562,7 +1523,7 @@ func TestHandler_NilCAPool_NoSAN(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("not reached yet")}
 	// nil caPool: verifyCert skips chain check entirely.
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
@@ -1592,7 +1553,7 @@ func TestHandler_TrustDomainMismatch(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("not reached")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
@@ -1630,7 +1591,7 @@ func TestHandler_CorrectNodeSAN_Proceeds(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("will not reach")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
@@ -1662,7 +1623,7 @@ func TestHandler_SystemManaged_InvalidJSONPayload(t *testing.T) {
 	followerDataRoot := t.TempDir()
 	p := newTestPlacement("tenant-badjson", "db-main", 1, 2, "follower-node-1", followerDataRoot)
 
-	followerReg := newTestRegistry(t)
+	followerReg, _ := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
 
 	// Seal non-JSON bytes to the follower's key. Receiver will decrypt

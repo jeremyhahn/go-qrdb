@@ -110,9 +110,20 @@ const NodeCompaction Feature = "node-compaction"
 // enablement is not the right test.
 const ClusterSeal Feature = "cluster-seal"
 
+// ImportStaging is protocol.OpImportStage: a chunked import session's
+// metadata and staged chunks, written directly into the state machine's
+// raw keyspace (bound to the session's lease) rather than through the MVCC
+// store or the KV engine, so they are structurally unreachable from the
+// client data plane -- the fix for go-qrdb#576's security review finding
+// that the session's earlier MVCC-backed staging was only a discovery
+// guard, not storage isolation. ImportBegin refuses with
+// *featuregate.NotActiveError until every replica of the group can apply
+// the opcode.
+const ImportStaging Feature = "import-staging"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

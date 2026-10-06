@@ -16,13 +16,14 @@ package quic
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
 // errMockCert is a sentinel error used by mock cert provider failures.
@@ -33,80 +34,119 @@ func newCertServer(cp cert.CertProvider) *Server {
 	return NewServer(nil, nil, "localhost:0", WithCertProvider(cp))
 }
 
+// fakeCertEnroll is a configurable, faithful service.CertEnrollmentServicer
+// double: each method returns exactly what was configured, with no
+// enrolment logic of its own for the handler tests to accidentally depend on.
+type fakeCertEnroll struct {
+	signFn   func(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error)
+	enrollFn func(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error)
+	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
+	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
+	removeFn func(ctx context.Context, tenantID, fingerprint string) error
+}
+
+var _ service.CertEnrollmentServicer = (*fakeCertEnroll)(nil)
+
+func (f *fakeCertEnroll) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	return f.signFn(ctx, req)
+}
+
+func (f *fakeCertEnroll) EnrollCertificate(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	return f.enrollFn(ctx, req)
+}
+
+func (f *fakeCertEnroll) AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+	return f.addFn(ctx, tenantID, bundlePEM)
+}
+
+func (f *fakeCertEnroll) ListTrustAnchors(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error) {
+	return f.listFn(ctx, tenantID)
+}
+
+func (f *fakeCertEnroll) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	return f.removeFn(ctx, tenantID, fingerprint)
+}
+
+// newCertEnrollServer creates a Server with the given cert enrolment service
+// mock, and no auth middleware, matching newCertServer's posture.
+func newCertEnrollServer(ce service.CertEnrollmentServicer) *Server {
+	return NewServer(nil, nil, "localhost:0", WithCertEnrollment(ce))
+}
+
 // ---------------------------------------------------------------------------
-// handleGenerateCert
+// handleIssueCert
 // ---------------------------------------------------------------------------
 
-func TestHandleGenerateCert_Success(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_Success(t *testing.T) {
+	notAfter := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := &fakeCertEnroll{
+		signFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			if req.Username != "alice" {
 				t.Fatalf("expected username 'alice', got %q", req.Username)
 			}
-			if req.TenantID != "tenant-1" {
-				t.Fatalf("expected tenant 'tenant-1', got %q", req.TenantID)
-			}
-			return &cert.CertBundle{
-				CertPEM: []byte("-----BEGIN CERTIFICATE-----\nfake-cert\n-----END CERTIFICATE-----\n"),
-				KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\nfake-key\n-----END EC PRIVATE KEY-----\n"),
-				Serial:  "ABCDEF01",
+			return &service.EnrolledCertificate{
+				UserID:     7,
+				Username:   "alice",
+				TenantID:   req.TenantID,
+				CertPEM:    []byte("-----BEGIN CERTIFICATE-----\nfake-cert\n-----END CERTIFICATE-----\n"),
+				Serial:     "ABCDEF01",
+				Thumbprint: "thumb-1",
+				NotAfter:   notAfter,
 			}, nil
 		},
 	}
 
-	srv := newCertServer(mock)
-	payload, _ := json.Marshal(generateCertWireRequest{
-		Username: "alice",
-		TenantID: "tenant-1",
-	})
+	srv := newCertEnrollServer(fake)
+	payload, _ := json.Marshal(issueCertWireRequest{Username: "alice", CSRPEM: "csr-pem"})
 
-	resp, err := srv.handleGenerateCert(context.Background(), payload)
+	resp, err := srv.handleIssueCert(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var out certBundleWireResponse
+	var out enrolledCertWireResponse
 	if err := json.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
+	if out.UserID != 7 {
+		t.Errorf("expected userID 7, got %d", out.UserID)
+	}
+	if out.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", out.Username)
+	}
 	if out.Serial != "ABCDEF01" {
-		t.Fatalf("expected serial 'ABCDEF01', got %q", out.Serial)
+		t.Errorf("expected serial 'ABCDEF01', got %q", out.Serial)
+	}
+	if out.Thumbprint != "thumb-1" {
+		t.Errorf("expected thumbprint 'thumb-1', got %q", out.Thumbprint)
 	}
 	if out.CertPEM == "" {
-		t.Fatal("expected non-empty certPEM")
+		t.Error("expected non-empty certPEM")
 	}
-	if out.KeyPEM == "" {
-		t.Fatal("expected non-empty keyPEM")
+	if !out.NotAfter.Equal(notAfter) {
+		t.Errorf("expected notAfter %v, got %v", notAfter, out.NotAfter)
 	}
 }
 
-func TestHandleGenerateCert_WithTTL(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_WithTTL(t *testing.T) {
+	fake := &fakeCertEnroll{
+		signFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			if req.TTL != 24*time.Hour {
 				t.Fatalf("expected TTL 24h, got %v", req.TTL)
 			}
-			return &cert.CertBundle{
-				CertPEM: []byte("cert"),
-				KeyPEM:  []byte("key"),
-				Serial:  "SER001",
-			}, nil
+			return &service.EnrolledCertificate{Serial: "SER001"}, nil
 		},
 	}
 
-	srv := newCertServer(mock)
-	payload, _ := json.Marshal(generateCertWireRequest{
-		Username: "bob",
-		TenantID: "tenant-1",
-		TTL:      "24h",
-	})
+	srv := newCertEnrollServer(fake)
+	payload, _ := json.Marshal(issueCertWireRequest{Username: "bob", CSRPEM: "csr-pem", TTL: "24h"})
 
-	resp, err := srv.handleGenerateCert(context.Background(), payload)
+	resp, err := srv.handleIssueCert(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var out certBundleWireResponse
+	var out enrolledCertWireResponse
 	if err := json.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -115,54 +155,48 @@ func TestHandleGenerateCert_WithTTL(t *testing.T) {
 	}
 }
 
-func TestHandleGenerateCert_InvalidTTL(t *testing.T) {
-	mock := &mockCertProvider{}
-	srv := newCertServer(mock)
-	payload, _ := json.Marshal(generateCertWireRequest{
-		Username: "carol",
-		TenantID: "tenant-1",
-		TTL:      "not-a-duration",
-	})
+func TestHandleIssueCert_InvalidTTL(t *testing.T) {
+	srv := newCertEnrollServer(&fakeCertEnroll{})
+	payload, _ := json.Marshal(issueCertWireRequest{Username: "carol", CSRPEM: "csr-pem", TTL: "not-a-duration"})
 
-	_, err := srv.handleGenerateCert(context.Background(), payload)
+	_, err := srv.handleIssueCert(context.Background(), payload)
 	var ttlErr *InvalidTTLError
 	if !errors.As(err, &ttlErr) {
 		t.Fatalf("expected InvalidTTLError, got %T: %v", err, err)
 	}
 }
 
-func TestHandleGenerateCert_ServiceError(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestHandleIssueCert_ServiceError(t *testing.T) {
+	fake := &fakeCertEnroll{
+		signFn: func(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, errMockCert
 		},
 	}
 
-	srv := newCertServer(mock)
-	payload, _ := json.Marshal(generateCertWireRequest{Username: "x"})
+	srv := newCertEnrollServer(fake)
+	payload, _ := json.Marshal(issueCertWireRequest{Username: "x", CSRPEM: "csr-pem"})
 
-	_, err := srv.handleGenerateCert(context.Background(), payload)
+	_, err := srv.handleIssueCert(context.Background(), payload)
 	if !errors.Is(err, errMockCert) {
 		t.Fatalf("expected errMockCert, got %v", err)
 	}
 }
 
-func TestHandleGenerateCert_NilService(t *testing.T) {
+func TestHandleIssueCert_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(generateCertWireRequest{Username: "x"})
+	payload, _ := json.Marshal(issueCertWireRequest{Username: "x", CSRPEM: "csr-pem"})
 
-	_, err := srv.handleGenerateCert(context.Background(), payload)
+	_, err := srv.handleIssueCert(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
 	if !errors.As(err, &snc) {
 		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
 	}
 }
 
-func TestHandleGenerateCert_InvalidJSON(t *testing.T) {
-	mock := &mockCertProvider{}
-	srv := newCertServer(mock)
+func TestHandleIssueCert_InvalidJSON(t *testing.T) {
+	srv := newCertEnrollServer(&fakeCertEnroll{})
 
-	_, err := srv.handleGenerateCert(context.Background(), []byte("{bad"))
+	_, err := srv.handleIssueCert(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError
 	if !errors.As(err, &ue) {
 		t.Fatalf("expected UnmarshalError, got %T: %v", err, err)
@@ -170,84 +204,70 @@ func TestHandleGenerateCert_InvalidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleExportCert
+// handleEnrollCert
 // ---------------------------------------------------------------------------
 
-func TestHandleExportCert_Success(t *testing.T) {
-	expectedP12 := []byte("pkcs12-binary-data")
-	mock := &mockCertProvider{
-		exportPKCS12Fn: func(_ context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-			if string(certPEM) != "fake-cert" {
-				t.Fatalf("expected certPEM 'fake-cert', got %q", string(certPEM))
+func TestHandleEnrollCert_Success(t *testing.T) {
+	fake := &fakeCertEnroll{
+		enrollFn: func(_ context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+			if req.Username != "dave" {
+				t.Fatalf("expected username 'dave', got %q", req.Username)
 			}
-			if string(keyPEM) != "fake-key" {
-				t.Fatalf("expected keyPEM 'fake-key', got %q", string(keyPEM))
-			}
-			if passphrase != "secret123" {
-				t.Fatalf("expected passphrase 'secret123', got %q", passphrase)
-			}
-			return expectedP12, nil
+			return &service.EnrolledCertificate{Username: "dave", Thumbprint: "thumb-2"}, nil
 		},
 	}
 
-	srv := newCertServer(mock)
-	payload, _ := json.Marshal(exportCertWireRequest{
-		CertPEM:    "fake-cert",
-		KeyPEM:     "fake-key",
-		Passphrase: "secret123",
-	})
+	srv := newCertEnrollServer(fake)
+	payload, _ := json.Marshal(enrollCertWireRequest{Username: "dave", CertPEM: "leaf-pem"})
 
-	resp, err := srv.handleExportCert(context.Background(), payload)
+	resp, err := srv.handleEnrollCert(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	var out exportCertWireResponse
+	var out enrolledCertWireResponse
 	if err := json.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-
-	decoded, err := base64.StdEncoding.DecodeString(out.PKCS12)
-	if err != nil {
-		t.Fatalf("base64 decode: %v", err)
+	if out.Thumbprint != "thumb-2" {
+		t.Fatalf("expected thumbprint 'thumb-2', got %q", out.Thumbprint)
 	}
-	if string(decoded) != string(expectedP12) {
-		t.Fatalf("expected decoded PKCS12 %q, got %q", string(expectedP12), string(decoded))
+	// A bring-your-own certificate was not issued by this cluster.
+	if out.Serial != "" {
+		t.Errorf("expected empty serial for a BYOC enrolment, got %q", out.Serial)
 	}
 }
 
-func TestHandleExportCert_ServiceError(t *testing.T) {
-	mock := &mockCertProvider{
-		exportPKCS12Fn: func(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
+func TestHandleEnrollCert_ServiceError(t *testing.T) {
+	fake := &fakeCertEnroll{
+		enrollFn: func(context.Context, *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, errMockCert
 		},
 	}
 
-	srv := newCertServer(mock)
-	payload, _ := json.Marshal(exportCertWireRequest{CertPEM: "c", KeyPEM: "k"})
+	srv := newCertEnrollServer(fake)
+	payload, _ := json.Marshal(enrollCertWireRequest{Username: "x", CertPEM: "c"})
 
-	_, err := srv.handleExportCert(context.Background(), payload)
+	_, err := srv.handleEnrollCert(context.Background(), payload)
 	if !errors.Is(err, errMockCert) {
 		t.Fatalf("expected errMockCert, got %v", err)
 	}
 }
 
-func TestHandleExportCert_NilService(t *testing.T) {
+func TestHandleEnrollCert_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(exportCertWireRequest{CertPEM: "c", KeyPEM: "k"})
+	payload, _ := json.Marshal(enrollCertWireRequest{Username: "x", CertPEM: "c"})
 
-	_, err := srv.handleExportCert(context.Background(), payload)
+	_, err := srv.handleEnrollCert(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
 	if !errors.As(err, &snc) {
 		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
 	}
 }
 
-func TestHandleExportCert_InvalidJSON(t *testing.T) {
-	mock := &mockCertProvider{}
-	srv := newCertServer(mock)
+func TestHandleEnrollCert_InvalidJSON(t *testing.T) {
+	srv := newCertEnrollServer(&fakeCertEnroll{})
 
-	_, err := srv.handleExportCert(context.Background(), []byte("invalid"))
+	_, err := srv.handleEnrollCert(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError
 	if !errors.As(err, &ue) {
 		t.Fatalf("expected UnmarshalError, got %T: %v", err, err)

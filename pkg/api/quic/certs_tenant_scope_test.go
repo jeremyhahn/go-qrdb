@@ -32,11 +32,16 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
 // errCertScopeGateRefused is what the recording authorizer denies with, so a
@@ -67,6 +72,47 @@ func newCertScopeGateServer(cp cert.CertProvider) (*Server, *certScopeGateAuthor
 	return srv, authz
 }
 
+// refusingCertEnroll fails loudly if any of its methods run: every gate test
+// that wires it expects the tenancy gate to refuse FIRST.
+type refusingCertEnroll struct{ t *testing.T }
+
+func (f *refusingCertEnroll) SignCertificate(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	f.t.Fatal("SignCertificate ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingCertEnroll) EnrollCertificate(context.Context, *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	f.t.Fatal("EnrollCertificate ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingCertEnroll) AddTrustAnchors(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
+	f.t.Fatal("AddTrustAnchors ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingCertEnroll) ListTrustAnchors(context.Context, string) ([]trustanchor.Anchor, error) {
+	f.t.Fatal("ListTrustAnchors ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingCertEnroll) RemoveTrustAnchor(context.Context, string, string) error {
+	f.t.Fatal("RemoveTrustAnchor ran although the tenancy gate refused")
+	return nil
+}
+
+// newCertEnrollScopeGateServer returns a QUIC server whose certs gate
+// refuses, with a CertEnrollmentServicer wired instead of a CertProvider, for
+// the IssueCert/EnrollCert/TrustAnchor* handlers.
+func newCertEnrollScopeGateServer(t *testing.T) (*Server, *certScopeGateAuthorizer) {
+	authz := &certScopeGateAuthorizer{}
+	srv := NewServer(nil, nil, "localhost:0",
+		WithCertEnrollment(&refusingCertEnroll{t: t}),
+		WithAuthMiddleware(authmw.New(authz)),
+	)
+	return srv, authz
+}
+
 // certScopeGateCtx builds the context the authentication path builds.
 func certScopeGateCtx() context.Context {
 	id := &auth.Identity{Subject: "a-admin", TenantID: "acme", Roles: []string{"admin"}}
@@ -81,8 +127,8 @@ type refusingCertProvider struct {
 	t *testing.T
 }
 
-func (p *refusingCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
-	p.t.Fatal("GenerateClientCert ran although the tenancy gate refused")
+func (p *refusingCertProvider) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
+	p.t.Fatal("IssueClientCert ran although the tenancy gate refused")
 	return nil, nil
 }
 
@@ -100,17 +146,50 @@ func (p *refusingCertProvider) TenantForSerial(_ context.Context, _ string) (str
 	return "globex", true, nil
 }
 
-// TestQUICGenerateCert_ConsultsTheTenancyGate proves the mint is gated on this
-// transport, not only on REST.
-func TestQUICGenerateCert_ConsultsTheTenancyGate(t *testing.T) {
-	srv, authz := newCertScopeGateServer(&refusingCertProvider{t: t})
-	payload, _ := json.Marshal(generateCertWireRequest{Username: "b-user", TenantID: "globex"})
+// TestQUICIssueCert_ConsultsTheTenancyGate proves the issuance verb is gated
+// on this transport, not only on REST. IssueCert carries no tenant_id of its
+// own (the account must exist in the CALLER's tenant), so the gate is always
+// asked about the caller's own tenant, "acme".
+func TestQUICIssueCert_ConsultsTheTenancyGate(t *testing.T) {
+	srv, authz := newCertEnrollScopeGateServer(t)
+	payload, _ := json.Marshal(issueCertWireRequest{Username: "a-user", CSRPEM: "csr-pem"})
 
-	_, err := srv.handleGenerateCert(certScopeGateCtx(), payload)
+	_, err := srv.handleIssueCert(certScopeGateCtx(), payload)
 	if !errors.Is(err, errCertScopeGateRefused) {
 		t.Fatalf("err = %v, want the gate's refusal", err)
 	}
-	assertGateAsked(t, authz, permission.CertsGenerate)
+	assertGateAsked(t, authz, permission.CertsIssue)
+}
+
+// TestQUICEnrollCert_ConsultsTheTenancyGate is EnrollCert's twin.
+func TestQUICEnrollCert_ConsultsTheTenancyGate(t *testing.T) {
+	srv, authz := newCertEnrollScopeGateServer(t)
+	payload, _ := json.Marshal(enrollCertWireRequest{Username: "a-user", CertPEM: "leaf-pem"})
+
+	_, err := srv.handleEnrollCert(certScopeGateCtx(), payload)
+	if !errors.Is(err, errCertScopeGateRefused) {
+		t.Fatalf("err = %v, want the gate's refusal", err)
+	}
+	assertGateAsked(t, authz, permission.CertsEnroll)
+}
+
+// TestQUICTrustAnchorAdd_ConsultsTheTenancyGate is the cross-tenant case
+// GenerateCert's predecessor used to cover: trust_anchors:add still carries a
+// tenant_id field of its own, so this is where a transport could still mint
+// against another tenant's trust store if the gate were bypassed.
+func TestQUICTrustAnchorAdd_ConsultsTheTenancyGate(t *testing.T) {
+	srv, authz := newCertEnrollScopeGateServer(t)
+	req := &pb.TrustAnchorAddRequest{TenantId: "globex", CertsPem: "ca-pem"}
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	_, err = srv.handleTrustAnchorAdd(certScopeGateCtx(), payload)
+	if !errors.Is(err, errCertScopeGateRefused) {
+		t.Fatalf("err = %v, want the gate's refusal", err)
+	}
+	assertGateAsked(t, authz, permission.TrustAnchorsAdd)
 }
 
 // TestQUICRevokeCert_ConsultsTheTenancyGate proves the headline verb is gated

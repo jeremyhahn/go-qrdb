@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -33,7 +34,7 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 		ID:            info.ID,
 		Name:          info.Name,
 		IsolationType: transport.TenantIsolationType(info.EffectiveIsolationType()),
-		DataRoot:      info.DataRoot,
+		VolumePool:    info.VolumePool,
 		CreatedAt:     info.CreatedAt,
 		UpdatedAt:     info.UpdatedAt,
 	}
@@ -42,6 +43,9 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 	}
 	if info.Entitlements != nil {
 		ti.Entitlements = mapEntitlements(info.Entitlements)
+	}
+	if refusal := tenant.RefusalOf(info.Refusal); refusal != nil {
+		ti.Refusal = &transport.TenantRefusal{Code: refusal.Code, Message: refusal.Message}
 	}
 	return ti
 }
@@ -77,6 +81,7 @@ func mapEntitlements(e *quota.Entitlements) *transport.TenantEntitlements {
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       e.AllowedBarrierModes,
 		AllowDedicatedWAL:         e.AllowDedicatedWAL,
+		AllowedVolumePools:        e.AllowedVolumePools,
 	}
 }
 
@@ -97,26 +102,122 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
+	if t.onboarding == nil {
+		return nil, &NilServiceError{Service: "TenantOnboardingServicer"}
 	}
 	if err := t.authorizeTenantSelf(ctx, permission.TenantsCreate); err != nil {
 		return nil, err
 	}
 
-	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal)}
-	if req.DataRoot != "" {
-		opts = append(opts, tenant.WithDataRoot(req.DataRoot))
-	}
-
-	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name, tenant.IsolationType(req.IsolationType), opts...)
+	result, err := t.onboarding.OnboardTenant(ctx, &service.OnboardTenantRequest{
+		ID:                req.ID,
+		Name:              req.Name,
+		IsolationType:     tenant.IsolationType(req.IsolationType),
+		BarrierAutoUnseal: req.BarrierAutoUnseal,
+		VolumePool:        req.VolumePool,
+		AdminUsername:     req.AdminUsername,
+		AdminCSRPEM:       []byte(req.AdminCSRPEM),
+		AdminCertPEM:      []byte(req.AdminCertPEM),
+		AdminChainPEM:     []byte(req.AdminChainPEM),
+		TrustAnchorsPEM:   []byte(req.TrustAnchorsPEM),
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &transport.CreateTenantResponse{
-		Tenant: mapTenantInfo(info),
+		Tenant: mapTenantInfo(result.Tenant),
+		Admin: transport.TenantAdminCredential{
+			UserID:            result.Admin.UserID,
+			Username:          result.Admin.Username,
+			CertPEM:           string(result.Admin.CertPEM),
+			Serial:            result.Admin.Serial,
+			Thumbprint:        result.Admin.Thumbprint,
+			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
+		},
 	}, nil
+}
+
+// anchorsToTransport converts a tenant's trust anchors.
+func anchorsToTransport(anchors []trustanchor.Anchor) *transport.TrustAnchorList {
+	out := &transport.TrustAnchorList{Anchors: make([]transport.TrustAnchor, 0, len(anchors))}
+	for _, a := range anchors {
+		out.Anchors = append(out.Anchors, transport.TrustAnchor{
+			Fingerprint: a.Fingerprint,
+			Subject:     a.Subject,
+			NotBefore:   a.NotBefore,
+			NotAfter:    a.NotAfter,
+			CertPEM:     string(a.CertPEM),
+			AddedAt:     a.AddedAt,
+		})
+	}
+	return out
+}
+
+// AddTrustAnchors registers trust anchors of req.TenantID, confined to the
+// caller's own tenant (tenant.Confine) as trust_anchors:add's ScopeSelfStrict
+// confines it on the network transports.
+func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrustAnchorsRequest) (*transport.TrustAnchorList, error) {
+	if err := t.gate("AddTrustAnchors"); err != nil {
+		return nil, err
+	}
+	if t.certEnroll == nil {
+		return nil, &transport.NotImplementedError{Method: "AddTrustAnchors"}
+	}
+	tenantID, err := tenant.Confine(ctx, req.TenantID, "add trust anchors")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeCertTenant(ctx, tenantID, permission.TrustAnchorsAdd); err != nil {
+		return nil, err
+	}
+	anchors, err := t.certEnroll.AddTrustAnchors(ctx, tenantID, []byte(req.CertsPEM))
+	if err != nil {
+		return nil, err
+	}
+	return anchorsToTransport(anchors), nil
+}
+
+// ListTrustAnchors lists tenantID's trust anchors, confined to the caller's
+// own tenant.
+func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*transport.TrustAnchorList, error) {
+	if err := t.gate("ListTrustAnchors"); err != nil {
+		return nil, err
+	}
+	if t.certEnroll == nil {
+		return nil, &transport.NotImplementedError{Method: "ListTrustAnchors"}
+	}
+	id, err := tenant.Confine(ctx, tenantID, "list trust anchors")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeCertTenant(ctx, id, permission.TrustAnchorsList); err != nil {
+		return nil, err
+	}
+	anchors, err := t.certEnroll.ListTrustAnchors(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return anchorsToTransport(anchors), nil
+}
+
+// RemoveTrustAnchor withdraws one of tenantID's trust anchors, confined to
+// the caller's own tenant.
+func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	if err := t.gate("RemoveTrustAnchor"); err != nil {
+		return err
+	}
+	if t.certEnroll == nil {
+		return &transport.NotImplementedError{Method: "RemoveTrustAnchor"}
+	}
+	id, err := tenant.Confine(ctx, tenantID, "remove a trust anchor")
+	if err != nil {
+		return err
+	}
+	if err := t.authorizeCertTenant(ctx, id, permission.TrustAnchorsRemove); err != nil {
+		return err
+	}
+	return t.certEnroll.RemoveTrustAnchor(ctx, id, fingerprint)
 }
 
 // GetTenant retrieves a tenant by ID by delegating to the TenantServicer.
@@ -214,7 +315,7 @@ func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListD
 			ID:            ts.ID,
 			Name:          ts.Name,
 			IsolationType: transport.TenantIsolationType(ts.IsolationType),
-			DataRoot:      ts.DataRoot,
+			VolumePool:    ts.VolumePool,
 			CreatedAt:     ts.CreatedAt,
 			DeletedAt:     ts.DeletedAt,
 		})
@@ -391,6 +492,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 		AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
 		AllowDedicatedWAL:         req.Entitlements.AllowDedicatedWAL,
+		AllowedVolumePools:        req.Entitlements.AllowedVolumePools,
 	}
 
 	info, err := t.tenantSvc.UpdateEntitlements(ctx, req.TenantID, e)

@@ -115,6 +115,10 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 		protocol.OpLeaseRevoke:    k.handleLeaseRevoke,
 		protocol.OpLeaseKeepAlive: k.handleLeaseKeepAlive,
 
+		// Chunked import session staging (pkg/importstage), lease-bound and
+		// never reachable from a client KV verb -- see kv_import_stage.go.
+		protocol.OpImportStage: k.handleImportStage,
+
 		// Secondary indexes
 		protocol.OpIndexCreate: k.handleIndexCreate,
 		protocol.OpIndexDrop:   k.handleIndexDrop,

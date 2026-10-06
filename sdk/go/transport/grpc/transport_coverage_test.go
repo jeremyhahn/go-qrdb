@@ -102,10 +102,13 @@ func TestGRPCCert_AllMethods_Closed(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"GenerateCert", func() error { _, e := tr.GenerateCert(ctx, &transport.GenerateCertRequest{}); return e }},
-		{"ExportCert", func() error { _, e := tr.ExportCert(ctx, &transport.ExportCertRequest{}); return e }},
+		{"IssueCert", func() error { _, e := tr.IssueCert(ctx, &transport.IssueCertRequest{}); return e }},
+		{"EnrollCert", func() error { _, e := tr.EnrollCert(ctx, &transport.EnrollCertRequest{}); return e }},
 		{"RevokeCert", func() error { _, e := tr.RevokeCert(ctx, "001"); return e }},
 		{"ListCerts", func() error { _, e := tr.ListCerts(ctx, "t1"); return e }},
+		{"AddTrustAnchors", func() error { _, e := tr.AddTrustAnchors(ctx, &transport.AddTrustAnchorsRequest{}); return e }},
+		{"ListTrustAnchors", func() error { _, e := tr.ListTrustAnchors(ctx, "t1"); return e }},
+		{"RemoveTrustAnchor", func() error { return tr.RemoveTrustAnchor(ctx, "t1", "fp1") }},
 	}
 
 	for _, c := range cases {
@@ -474,11 +477,11 @@ func TestGRPCServer_AuthCtxCanceled(t *testing.T) {
 	if _, err := tr.ListRoles(canceledCtx, &transport.ListRolesRequest{}); err == nil {
 		t.Fatal("ListRoles: expected error")
 	}
-	if _, err := tr.GenerateCert(canceledCtx, &transport.GenerateCertRequest{}); err == nil {
-		t.Fatal("GenerateCert: expected error")
+	if _, err := tr.IssueCert(canceledCtx, &transport.IssueCertRequest{}); err == nil {
+		t.Fatal("IssueCert: expected error")
 	}
-	if _, err := tr.ExportCert(canceledCtx, &transport.ExportCertRequest{}); err == nil {
-		t.Fatal("ExportCert: expected error")
+	if _, err := tr.EnrollCert(canceledCtx, &transport.EnrollCertRequest{}); err == nil {
+		t.Fatal("EnrollCert: expected error")
 	}
 	if _, err := tr.RevokeCert(canceledCtx, "001"); err == nil {
 		t.Fatal("RevokeCert: expected error")

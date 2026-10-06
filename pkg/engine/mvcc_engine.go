@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
@@ -373,6 +374,15 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 	case service.CompactionStatesQuery:
 		return compactionStates(e.stg)
 
+	case service.ImportStageMetaQuery:
+		return e.stg.Get(importstage.MetaKey(q.SessionID))
+
+	case service.ImportStageChunkQuery:
+		return e.stg.Get(importstage.ChunkKey(q.SessionID, q.Seq))
+
+	case service.ImportStageOpenSessionsQuery:
+		return countOpenImportSessions(e.stg, q.TenantID)
+
 	case service.LeaseTimeToLiveQuery:
 		if e.lessor == nil {
 			return nil, &InvalidQueryError{Reason: "lessor not configured"}
@@ -589,6 +599,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpMVCCCompactPrefix: handleMVCCCompactPrefix,
 		protocol.OpMVCCCompactNode:   handleMVCCCompactNode,
 		protocol.OpCompactionState:   handleCompactionState,
+		protocol.OpImportStage:       handleImportStage,
 		protocol.OpTransaction:       e.handleTransaction,
 		protocol.OpCompareAndDelete:  e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:    e.handleCompareAndSwap,
@@ -1507,6 +1518,17 @@ func (e *MVCCEngine) handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch st
 	if len(keys) > 0 {
 		rev := s.CurrentRevision() + 1
 		for _, key := range keys {
+			// An import-staging key (pkg/importstage) was never written
+			// through s *mvcc.Store -- see handleImportStage -- so deleting
+			// it through the store would silently no-op (its Encode*Key
+			// never matches the raw key) and leak the staged bytes forever.
+			// Delete it the same raw way it was written.
+			if importstage.IsTableKey(key) {
+				if delErr := batch.Delete(key); delErr != nil {
+					return sm.Result{}, nil, delErr
+				}
+				continue
+			}
 			prevKv, delErr := s.DeleteInBatch(batch, key, rev)
 			if delErr != nil {
 				// DeleteInBatch fails only on a storage write fault (an absent

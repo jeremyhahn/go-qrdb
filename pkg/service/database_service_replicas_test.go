@@ -117,7 +117,7 @@ func newReplicaDatabaseService(t *testing.T, info *tenant.TenantInfo, f *fakeRep
 }
 
 func raftTenant(t *testing.T) *tenant.TenantInfo {
-	return &tenant.TenantInfo{ID: "rt", IsolationType: tenant.IsolationRaft, DataRoot: t.TempDir()}
+	return &tenant.TenantInfo{ID: "rt", IsolationType: tenant.IsolationRaft}
 }
 
 // TestCreateForTenant_Replicas_UnderPerGroupCap accepts a replica count within

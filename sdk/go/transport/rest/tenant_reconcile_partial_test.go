@@ -22,9 +22,33 @@ import (
 
 	restserver "github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// onboardingFromTenant is a TenantOnboardingServicer that delegates straight
+// to svc.CreateTenant, so a test exercising CreateTenant's refusals against a
+// hand-built tenant.TenantServicer double does not need to assemble the
+// production onboarding service's full dependency graph (users, roles,
+// certs, trust anchors).
+type onboardingFromTenantSvc struct {
+	tenants tenant.TenantServicer
+}
+
+func onboardingFromTenant(svc tenant.TenantServicer) *onboardingFromTenantSvc {
+	return &onboardingFromTenantSvc{tenants: svc}
+}
+
+func (o *onboardingFromTenantSvc) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	info, err := o.tenants.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+	if err != nil {
+		return nil, err
+	}
+	return &service.OnboardTenantResult{Tenant: info}, nil
+}
+
+var _ service.TenantOnboardingServicer = (*onboardingFromTenantSvc)(nil)
 
 // partialReconcileSvc answers ReconcileDeletedTenants as the real service does
 // when one retired id failed and another was reclaimed: the report, whose
@@ -75,6 +99,7 @@ func newTenantRoundTrip(t *testing.T, svc tenant.TenantServicer) *Transport {
 	serverTLS, roots := generateRoundTripTLSConfig(t)
 	srv := restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
 		restserver.WithTenantService(svc),
+		restserver.WithTenantOnboarding(onboardingFromTenant(svc)),
 		restserver.WithTLS(serverTLS),
 	)
 	if err := srv.Start(); err != nil {
@@ -92,6 +117,16 @@ func realKVTenants(t *testing.T) tenant.TenantServicer {
 	}
 	return svc
 }
+
+// TestRESTRoundTrip_CreateTenant_DataRootOverlapIs409 covered CreateTenant's
+// refusal of an explicit --data-root a retired tenant's unreclaimed record
+// still claimed, answered over the wire as 409 with the remedy.
+// CreateTenant no longer accepts an explicit disk path (a volume tenant's
+// reserved path is always its own tenant id), so two different tenant ids
+// can never contend for the same literal path through this API any more,
+// and the error type itself (*tenant.DataRootOverlapError) is gone; see the
+// identical note on pkg/tenant's deleted
+// TestCreateTenant_RefusesARootAStaleRecordStillClaims.
 
 // TestRESTRoundTrip_ReconcileDeletedTenants_PartialFailureCarriesBoth: the
 // real server answers 200 with the report and its failures, and the client

@@ -28,17 +28,18 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 func TestTenantIsolation(t *testing.T) {
-	grpctest.TenantIsolation(t, func(t *testing.T, mw *authmw.AuthMiddleware, tenants tenant.TenantServicer) *grpc.ClientConn {
+	grpctest.TenantIsolation(t, func(t *testing.T, mw *authmw.AuthMiddleware, tenants tenant.TenantServicer, onboarding service.TenantOnboardingServicer) *grpc.ClientConn {
 		t.Helper()
 		socketPath := tempSocketPath(t)
 		tlsCfg := selfSignedTLSConfig(t)
 		srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
 			WithTLS(tlsCfg), WithAuthMiddleware(mw),
-			WithTenantService(tenants), WithTenantBarrierService(tenants))
+			WithTenantService(tenants), WithTenantBarrierService(tenants), WithTenantOnboarding(onboarding))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

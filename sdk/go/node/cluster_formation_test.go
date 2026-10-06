@@ -637,6 +637,7 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *
 	if err := n1.Unseal(ctx, creds()); err != nil {
 		t.Fatalf("first boot Unseal: %v", err)
 	}
+	createDefaultPool(t, n1)
 	for i := 0; i < tenantCount; i++ {
 		id := fmt.Sprintf("tenant-%02d", i)
 		if _, err := n1.Services().Tenant.CreateTenant(ctx, id, id,
@@ -829,21 +830,24 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	}
 
 	// Every other backing handle a failed boot built must be retracted too:
-	// the scoped encryption migrator, the replicated volume-pool cursor and
-	// the cluster-wide tenant-slot store (both bound by bindReplicatedVolumePool
-	// before wireClientAndServer -- the failing step -- ever runs), and the
-	// database manager.
+	// the scoped encryption migrator and the database manager. The
+	// volume-pool composition is different in kind: its resolver and
+	// VolumeLifecycle are attached once in buildNodeSealSubsystem, long
+	// before wireClientAndServer -- the failing step -- ever runs, and
+	// survive a failed attempt by design (closing them would require
+	// reopening every configured pool's volume on each retry). Only its
+	// volume.Allocator (the replicated catalog) is attached per attempt, in
+	// attachVolumeCatalog -- and a stale one left over a closed host needs
+	// no explicit detach, because a retried Unseal calls attachVolumeCatalog
+	// again and Attach overwrites it with a fresh catalog before any tenant
+	// data is read (see attachVolumeCatalog's doc comment). HasVolumePool
+	// reporting true across the failure is therefore the correct
+	// post-condition, not a leak.
 	if n.encMigrator.Load() != nil {
 		t.Fatal("encMigrator must be nil after a failed boot, not the scoped router built over the stopped host")
 	}
-	if n.volumePool == nil || n.volumePool.ReplicatedState == nil {
-		t.Fatal("this test's config must configure a clustered volume pool to exercise the cursor/slot-store detach")
-	}
-	if n.volumePool.ReplicatedState.Bound() {
-		t.Fatal("the replicated volume-pool cursor must be unbound after a failed boot")
-	}
-	if reg := n.BarrierRegistry(); reg == nil || reg.HasReplicatedSlotStore() {
-		t.Fatal("the cluster-wide tenant-slot store must be detached after a failed boot")
+	if reg := n.BarrierRegistry(); reg == nil || !reg.HasVolumePool() {
+		t.Fatal("this test's config must configure a clustered volume pool, and its resolver/lifecycle must survive a failed boot")
 	}
 	if n.dbManager != nil {
 		t.Fatal("dbManager must be nil after a failed boot, not a manager over the closed data directory")

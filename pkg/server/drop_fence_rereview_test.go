@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // droppingCatalog is the real manager catalog with a hook that runs a drop
@@ -157,11 +158,14 @@ func TestRaftBackendFactory_FenceServicesReportsAPlacementReadFailure(t *testing
 func TestRaftBackendFactory_ColdDedicatedDatabaseIsDroppable(t *testing.T) {
 	ctx := context.Background()
 	reg := newVolumePooledRegistryWith(t, seal.NewNoneStrategy())
+	allocVal, _ := testVolumeAllocators.Load(reg)
 	tenants, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, volTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 			AllowDedicatedRaft:    true,
-		}))
+			AllowedVolumePools:    []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocVal.(volume.Allocator)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

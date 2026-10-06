@@ -20,8 +20,6 @@ import (
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
 
 // TestBuildTenantInfra_HostWithoutManager_ReturnsConfigError verifies that
@@ -48,7 +46,7 @@ func TestBuildTenantInfra_HostWithoutManager_ReturnsConfigError(t *testing.T) {
 
 // TestBuildTenantInfra_HostWithoutManager_AllOtherFieldsNonNil_ReturnsConfigError
 // verifies that TenantInfraConfigError is returned even when BarrierReg,
-// TenantSvc, and VolumePool are all non-nil — i.e. the guard fires before
+// TenantSvc are non-nil and VolumePoolConfigured is true — i.e. the guard fires before
 // reattachRaftTenants dereferences the nil Manager.
 //
 // Without the fix the original code would enter the IsolationRaft block
@@ -63,11 +61,11 @@ func TestBuildTenantInfra_HostWithoutManager_AllOtherFieldsNonNil_ReturnsConfigE
 		BarrierReg:   reg,
 		TenantSvc:    svc,
 		TenantLookup: svc,
-		// Non-nil VolumePool so the IsolationVolume block is entered and
-		// ti.Hosts is built — verifying that it is cleaned up before the
+		// VolumePoolConfigured true so the IsolationVolume block is entered
+		// and ti.Hosts is built — verifying that it is cleaned up before the
 		// TenantInfraConfigError is returned.
-		VolumePool: &qrdbpool.VolumePoolSubsystem{},
-		Host:       new(quicraft.Host),
+		VolumePoolConfigured: true,
+		Host:                 new(quicraft.Host),
 		// Manager intentionally omitted.
 		Logger: reattachTestLogger(),
 	})

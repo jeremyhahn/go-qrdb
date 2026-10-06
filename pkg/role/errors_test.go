@@ -273,6 +273,90 @@ func TestValidationError_As(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ServiceRequiredError
+// ---------------------------------------------------------------------------
+
+func TestServiceRequiredError_Message(t *testing.T) {
+	err := &ServiceRequiredError{}
+	want := "role: a role service is required to validate the referenced role(s), and none was configured"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestServiceRequiredError_As(t *testing.T) {
+	var err error = &ServiceRequiredError{}
+	var target *ServiceRequiredError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *ServiceRequiredError")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RoleIDExistsError
+// ---------------------------------------------------------------------------
+
+func TestRoleIDExistsError_Message(t *testing.T) {
+	err := &RoleIDExistsError{ID: "role-123", TenantID: "acme"}
+	want := "role: id already exists: role-123 in tenant acme"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRoleIDExistsError_As(t *testing.T) {
+	var err error = &RoleIDExistsError{ID: "role-xyz", TenantID: "globex"}
+	var target *RoleIDExistsError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *RoleIDExistsError")
+	}
+	if target.ID != "role-xyz" {
+		t.Fatalf("ID: got %q, want %q", target.ID, "role-xyz")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReservedRoleNameError
+// ---------------------------------------------------------------------------
+
+func TestReservedRoleNameError_Message(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *ReservedRoleNameError
+		want string
+	}{
+		{
+			name: "with detail",
+			err:  &ReservedRoleNameError{Name: "admin", TenantID: "acme", Detail: "wrong id"},
+			want: "role: reserved system role name: admin in tenant acme: wrong id",
+		},
+		{
+			name: "without detail",
+			err:  &ReservedRoleNameError{Name: "admin", TenantID: "acme"},
+			want: "role: reserved system role name: admin in tenant acme",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Fatalf("Error(): got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReservedRoleNameError_As(t *testing.T) {
+	var err error = &ReservedRoleNameError{Name: "owner", TenantID: "acme"}
+	var target *ReservedRoleNameError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *ReservedRoleNameError")
+	}
+	if target.Name != "owner" {
+		t.Fatalf("Name: got %q, want %q", target.Name, "owner")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // InvalidPermissionError
 // ---------------------------------------------------------------------------
 

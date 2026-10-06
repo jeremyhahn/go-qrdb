@@ -281,6 +281,14 @@ type ServerConfig struct {
 	// barrier records its events on it, keyed by the system tenant, and the
 	// transport serves the audit query from it; Shutdown closes it.
 	AuditTrail string
+
+	// ImportSession bounds a chunked import session (config.ImportSession):
+	// a session's total staged bytes, its chunk count, a tenant's
+	// concurrent open sessions, and the session lease's TTL. The zero
+	// value resolves to the same package defaults
+	// service.WithImportSessionLimits documents, so an embedder that
+	// leaves this unset gets production bounds, not unbounded staging.
+	ImportSession qrdbconfig.ImportSessionConfig
 }
 
 // BarrierConfig controls the encryption barrier.
@@ -533,7 +541,12 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	adminSvc := service.NewAdminService(host)
 	mvccSvc := service.NewMVCCKVService(host, serverDefaultShardID)
 	txSvc := service.NewTransactionService(host, serverDefaultShardID)
-	batchSvc := service.NewBatchService(host, serverDefaultShardID)
+	batchSvc := service.NewBatchService(host, serverDefaultShardID, service.WithImportSessionLimits(
+		config.ImportSession.ResolvedMaxSessionBytes(),
+		config.ImportSession.ResolvedMaxChunksPerSession(),
+		config.ImportSession.ResolvedMaxSessionsPerTenant(),
+		config.ImportSession.ResolvedSessionTTLSeconds(),
+	))
 	leaseSvc := service.NewLeaseService(host, serverDefaultShardID)
 	watchSvc := service.NewWatchService(srv.hub)
 	indexSvc := service.NewIndexService(host, serverDefaultShardID)

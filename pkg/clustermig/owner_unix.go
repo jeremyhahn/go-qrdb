@@ -30,7 +30,14 @@ import (
 // directory -- close-on-exec, so the caller can vet the directory it holds and
 // open the file relative to it: a directory swapped in after the vetting is
 // never the one read.
-func openCredentialDir(dir string) (*os.File, error) {
+//
+// A package-level var, not a func: it is the seam LocalCredentials.openDir
+// opens the directory through, and a test overrides it to inject an
+// open failure that chmod cannot reproduce under every uid -- root bypasses
+// the DAC check a chmod 0 directory relies on, so "this process cannot open
+// its own credentials directory" is otherwise unreproducible when tests run
+// as root.
+var openCredentialDir = func(dir string) (*os.File, error) {
 	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: dir, Err: err}

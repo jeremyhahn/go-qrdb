@@ -86,7 +86,7 @@ func TestPrefixNestingNeverHaltsApply_PebbleAndMVCC(t *testing.T) {
 				t.Fatalf("Open: %v", err)
 			}
 
-			rng := rand.New(rand.NewSource(0xC0FFEE))
+			rng := rand.New(rand.NewSource(0xC0FFEE)) // #nosec G404 -- fixed-seed property-test fixture, not a cryptographic use
 			for i := 0; i < 300; i++ {
 				key := randomNestedKey(rng)
 				var cmd []byte

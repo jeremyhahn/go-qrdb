@@ -55,9 +55,7 @@ func writeDataRootTenantConfig(t *testing.T, volumePoolDir string) string {
 storage:
   volume_pools:
     - name: default
-      paths:
-        - %s
-      strategy: round_robin
+      path: %s
 tenant:
   default_entitlements:
     allowed_isolation_modes:
@@ -68,6 +66,8 @@ tenant:
     allow_dedicated_raft: true
     allow_dedicated_wal: true
     allow_system_managed_barrier: true
+    allowed_volume_pools:
+      - default
   default_quotas:
     max_databases: -1
     max_raft_groups: -1
@@ -86,8 +86,10 @@ tenant:
 // startDataRootTenantNode starts a single-node daemon configured with
 // writeDataRootTenantConfig and returns the admin port, the node's volume-pool
 // path, and a system-admin CLI connArgs slice ready for tenant/role/user
-// provisioning.
-func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminPort int, volumePoolDir string, ca *testCA, sysConnArgs []string) {
+// provisioning. It also registers the configured "default" pool in the
+// replicated catalog (docs/volume-pools/architecture.md D2) so a caller can
+// place a volume/raft-isolation tenant on it immediately.
+func startDataRootTenantNode(t *testing.T, bin, cli, logPrefix string) (adminPort int, volumePoolDir string, ca *testCA, sysConnArgs []string) {
 	t.Helper()
 	ca = generateTestCA(t)
 	nodeCert, nodeKey := ca.generateNodeCert(t)
@@ -125,6 +127,7 @@ func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminP
 
 	adminCertPath, adminKeyPath := ca.boundAdminCert(t, dataDir)
 	sysConnArgs = restConnArgs(ca, adminCertPath, adminKeyPath, adminPort)
+	createVolumePoolCLI(t, cli, sysConnArgs, "default")
 	return adminPort, volumePoolDir, ca, sysConnArgs
 }
 
@@ -163,37 +166,67 @@ func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, sysClie
 }
 
 // cliDataRootTenantJSON decodes the subset of the tenant JSON response this
-// test needs.
+// test needs. The response carries only the named VolumePool (docs/
+// volume-pools/api.md), never a resolved filesystem path -- that is node-
+// local and asserted separately with os.Stat against this node's own pool
+// directory.
 type cliDataRootTenantJSON struct {
 	ID            string `json:"id"`
 	IsolationType string `json:"isolation_type"`
-	DataRoot      string `json:"data_root"`
+	VolumePool    string `json:"volume_pool"`
+}
+
+// cliDataRootCreateTenantJSON mirrors transport.CreateTenantResponse, the
+// (wrapped) shape `tenant create --output json` prints: the tenant and its
+// first admin, created together as one unit.
+type cliDataRootCreateTenantJSON struct {
+	Tenant cliDataRootTenantJSON `json:"tenant"`
+}
+
+// adminCSRArgsForDataRootTenant generates a fresh local key/CSR for a
+// throwaway admin account (via "ca csr", pure local keygen) and returns the
+// "tenant create" flags that name it as the tenant's first admin: a tenant
+// is created with its first admin, or not at all.
+func adminCSRArgsForDataRootTenant(t *testing.T, cli string, connArgs []string, adminUsername string) []string {
+	t.Helper()
+	csrDir := t.TempDir()
+	out, err := runQRDB(t, cli, connArgs, "ca", "csr", "--username", adminUsername, "--out", csrDir)
+	if err != nil {
+		t.Fatalf("ca csr for tenant admin %s: %v\noutput: %s", adminUsername, err, out)
+	}
+	return []string{"--admin-username", adminUsername, "--admin-csr", filepath.Join(csrDir, "csr.pem")}
 }
 
 // TestCLI_TenantCreate_DataRoot_IsRefused proves `qrdb tenant create
-// --data-root` is refused for every dedicated isolation type with the typed
-// refusal naming named volume pools, and that nothing is created at the path.
+// --data-root` is refused for every dedicated isolation type and that
+// nothing is created at the path. Named volume pools (docs/volume-pools)
+// retired the flag outright rather than leaving it as a typed server-side
+// refusal: cmd/qrdb/tenant.go no longer declares it at all, so the refusal
+// is now cobra's own "unknown flag" parse error, which never reaches the
+// server -- a stronger guarantee than the prior typed refusal, since there
+// is no server-side code path left that could accept it.
 func TestCLI_TenantCreate_DataRoot_IsRefused(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
-	_, _, _, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-dataroot-refused] ")
+	_, _, _, sysConnArgs := startDataRootTenantNode(t, bin, cli, "[tenant-dataroot-refused] ")
 
 	for _, iso := range []string{"volume", "raft"} {
 		t.Run(iso, func(t *testing.T) {
 			tenantID := fmt.Sprintf("dr-%s-%d", iso, time.Now().UnixNano())
 			explicit := filepath.Join(t.TempDir(), "dedicated-disk", tenantID)
-			out, err := runQRDB(t, cli, sysConnArgs, "tenant", "create",
+			adminArgs := adminCSRArgsForDataRootTenant(t, cli, sysConnArgs, tenantID+"-admin")
+			out, err := runQRDB(t, cli, sysConnArgs, append([]string{"tenant", "create",
 				"--id", tenantID,
 				"--name", "Explicit DataRoot Tenant",
 				"--isolation-type", iso,
 				"--barrier-auto-unseal",
 				"--data-root", explicit,
-			)
+			}, adminArgs...)...)
 			if err == nil {
 				t.Fatalf("tenant create --data-root must be refused; output: %s", out)
 			}
-			if !strings.Contains(out, "volume pool") {
-				t.Fatalf("the refusal must name named volume pools; output: %s", out)
+			if !strings.Contains(out, "unknown flag") {
+				t.Fatalf("the refusal must be the flag's removal (unknown flag), got: %s", out)
 			}
 			if _, statErr := os.Stat(explicit); !os.IsNotExist(statErr) {
 				t.Fatalf("the refused path %s was created: %v", explicit, statErr)
@@ -213,27 +246,29 @@ func TestCLI_TenantCreate_PoolPlacement_Volume_PlacesDataAndEncrypts(t *testing.
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-pool-volume] ")
+	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, cli, "[tenant-pool-volume] ")
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	tenantID := fmt.Sprintf("vol-pool-%d", time.Now().UnixNano())
 	tenantRoot := filepath.Join(poolDir, tenantID)
+	adminArgs := adminCSRArgsForDataRootTenant(t, cli, sysConnArgs, tenantID+"-admin")
 
-	out, err := runQRDB(t, cli, sysConnArgs, "--output", "json", "tenant", "create",
+	out, err := runQRDB(t, cli, sysConnArgs, append([]string{"--output", "json", "tenant", "create",
 		"--id", tenantID,
 		"--name", "Volume Pool Tenant",
 		"--isolation-type", "volume",
 		"--barrier-auto-unseal",
-	)
+	}, adminArgs...)...)
 	if err != nil {
 		t.Fatalf("tenant create: %v\noutput: %s", err, out)
 	}
-	var tenantResp cliDataRootTenantJSON
-	if decErr := json.Unmarshal([]byte(out), &tenantResp); decErr != nil {
+	var createResp cliDataRootCreateTenantJSON
+	if decErr := json.Unmarshal([]byte(out), &createResp); decErr != nil {
 		t.Fatalf("decode tenant create JSON: %v\noutput: %s", decErr, out)
 	}
-	if tenantResp.DataRoot != tenantRoot {
-		t.Fatalf("tenant DataRoot = %q, want this node's pool path %q", tenantResp.DataRoot, tenantRoot)
+	tenantResp := createResp.Tenant
+	if tenantResp.VolumePool != "default" {
+		t.Fatalf("tenant VolumePool = %q, want %q", tenantResp.VolumePool, "default")
 	}
 	if _, statErr := os.Stat(filepath.Join(tenantRoot, "barrier")); statErr != nil {
 		t.Fatalf("barrier subdirectory not found under %q: %v", tenantRoot, statErr)
@@ -274,27 +309,29 @@ func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T)
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-pool-raft] ")
+	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, cli, "[tenant-pool-raft] ")
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	tenantID := fmt.Sprintf("raft-pool-%d", time.Now().UnixNano())
 	tenantRoot := filepath.Join(poolDir, tenantID)
+	adminArgs := adminCSRArgsForDataRootTenant(t, cli, sysConnArgs, tenantID+"-admin")
 
-	out, err := runQRDB(t, cli, sysConnArgs, "--output", "json", "tenant", "create",
+	out, err := runQRDB(t, cli, sysConnArgs, append([]string{"--output", "json", "tenant", "create",
 		"--id", tenantID,
 		"--name", "Raft Pool Tenant",
 		"--isolation-type", "raft",
 		"--barrier-auto-unseal",
-	)
+	}, adminArgs...)...)
 	if err != nil {
 		t.Fatalf("tenant create: %v\noutput: %s", err, out)
 	}
-	var tenantResp cliDataRootTenantJSON
-	if decErr := json.Unmarshal([]byte(out), &tenantResp); decErr != nil {
+	var createResp cliDataRootCreateTenantJSON
+	if decErr := json.Unmarshal([]byte(out), &createResp); decErr != nil {
 		t.Fatalf("decode tenant create JSON: %v\noutput: %s", decErr, out)
 	}
-	if tenantResp.DataRoot != tenantRoot {
-		t.Fatalf("tenant DataRoot = %q, want this node's pool path %q", tenantResp.DataRoot, tenantRoot)
+	tenantResp := createResp.Tenant
+	if tenantResp.VolumePool != "default" {
+		t.Fatalf("tenant VolumePool = %q, want %q", tenantResp.VolumePool, "default")
 	}
 	if _, statErr := os.Stat(filepath.Join(tenantRoot, "barrier")); statErr != nil {
 		t.Fatalf("barrier subdirectory not found under %q: %v", tenantRoot, statErr)

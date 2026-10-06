@@ -16,7 +16,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -32,38 +34,107 @@ func NewCertBinding(log *logger.Logger, conn *ConnectionBinding) *CertBinding {
 	return &CertBinding{logger: log, conn: conn}
 }
 
-// Generate creates a client certificate signed by the internal CA.
-func (b *CertBinding) Generate(req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
-	b.logger.Debug("Generate called")
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("Generate failed", "error", err)
-		return nil, err
-	}
-	bundle, err := cl.Certs().GenerateCert(context.Background(), req)
-	if err != nil {
-		b.logger.Error("Generate failed", "error", err)
-		return nil, err
-	}
-	b.logger.Debug("Generate completed")
-	return bundle, nil
+// IssueCertInput asks the desktop to issue a certificate for an existing
+// account of the connected tenant. With CSRPEM empty, the key is generated
+// HERE, on this machine, and returned beside the certificate for the user to
+// keep; the server only ever sees a CSR.
+type IssueCertInput struct {
+	Username string `json:"username"`
+	CSRPEM   string `json:"csrPEM,omitempty"`
+	TTL      string `json:"ttl,omitempty"`
 }
 
-// Export exports a certificate and key as a PKCS#12 archive for browser import.
-func (b *CertBinding) Export(req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
-	b.logger.Debug("Export called")
+// IssuedCertOutput is an issued certificate, bound to its account, and the
+// key generated for it on this machine when the input carried no CSR.
+type IssuedCertOutput struct {
+	transport.EnrolledCert
+	KeyPEM string `json:"keyPEM,omitempty"`
+}
+
+// Issue issues a certificate, signed by the tenant's own CA, for an existing
+// account of the connected tenant, and binds it.
+func (b *CertBinding) Issue(in *IssueCertInput) (*IssuedCertOutput, error) {
+	b.logger.Debug("Issue called")
+	csrPEM := in.CSRPEM
+	var keyPEM []byte
+	if csrPEM == "" {
+		k, c, err := newClientKeyAndCSR(in.Username)
+		if err != nil {
+			b.logger.Error("Issue failed", "error", err)
+			return nil, err
+		}
+		keyPEM, csrPEM = k, string(c)
+	}
 	cl, err := b.conn.loadClient()
 	if err != nil {
+		b.logger.Error("Issue failed", "error", err)
+		return nil, err
+	}
+	issued, err := cl.Certs().IssueCert(context.Background(), &transport.IssueCertRequest{
+		Username: in.Username,
+		CSRPEM:   csrPEM,
+		TTL:      in.TTL,
+	})
+	if err != nil {
+		b.logger.Error("Issue failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("Issue completed")
+	return &IssuedCertOutput{EnrolledCert: *issued, KeyPEM: string(keyPEM)}, nil
+}
+
+// Enroll binds a bring-your-own certificate, which must chain to one of the
+// tenant's trust anchors, to an existing account of the connected tenant.
+func (b *CertBinding) Enroll(req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
+	b.logger.Debug("Enroll called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("Enroll failed", "error", err)
+		return nil, err
+	}
+	enrolled, err := cl.Certs().EnrollCert(context.Background(), req)
+	if err != nil {
+		b.logger.Error("Enroll failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("Enroll completed")
+	return enrolled, nil
+}
+
+// ExportCertInput asks the desktop to build a PKCS#12 archive from a
+// certificate and key already held on this machine. CAPEM is an optional
+// issuer certificate to embed in the archive's chain.
+type ExportCertInput struct {
+	CertPEM    string `json:"certPEM"`
+	KeyPEM     string `json:"keyPEM"`
+	CAPEM      string `json:"caPEM,omitempty"`
+	Passphrase string `json:"passphrase"`
+}
+
+// ExportCertOutput is the base64-encoded PKCS#12 archive.
+type ExportCertOutput struct {
+	PKCS12 string `json:"pkcs12"`
+}
+
+// Export builds a PKCS#12 archive ENTIRELY LOCALLY from a certificate and
+// its private key, both already on this machine. There is no server call:
+// no node may receive a private key to encode on a caller's behalf
+// (go-qrdb security review), so the archive is built in this process, the
+// same one that already holds the key.
+func (b *CertBinding) Export(req *ExportCertInput) (*ExportCertOutput, error) {
+	b.logger.Debug("Export called")
+	if req == nil {
+		err := &ExportCertNilInputError{}
 		b.logger.Error("Export failed", "error", err)
 		return nil, err
 	}
-	resp, err := cl.Certs().ExportCert(context.Background(), req)
+	p12, err := cert.EncodePKCS12([]byte(req.CertPEM), []byte(req.KeyPEM), []byte(req.CAPEM), req.Passphrase)
 	if err != nil {
 		b.logger.Error("Export failed", "error", err)
 		return nil, err
 	}
 	b.logger.Debug("Export completed")
-	return resp, nil
+	return &ExportCertOutput{PKCS12: base64.StdEncoding.EncodeToString(p12)}, nil
 }
 
 // Revoke marks a certificate serial as revoked and reports whether the

@@ -189,7 +189,6 @@ func nodeAddRaftTenant(t *testing.T) *tenant.TenantInfo {
 	return &tenant.TenantInfo{
 		ID:            "nodeadd-tenant",
 		IsolationType: tenant.IsolationRaft,
-		DataRoot:      t.TempDir(),
 	}
 }
 

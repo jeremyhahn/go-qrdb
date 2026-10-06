@@ -29,7 +29,7 @@ func TestToListDeletedTenantsResponse(t *testing.T) {
 	got := ToListDeletedTenantsResponse(&pb.TenantListDeletedResponse{
 		NextPageToken: "tok",
 		Tenants: []*pb.DeletedTenant{
-			{Id: "acme", Name: "Acme", IsolationType: "volume", DataRoot: "/d/acme", DeletedAt: deleted.Format(time.RFC3339)},
+			{Id: "acme", Name: "Acme", IsolationType: "volume", DeletedAt: deleted.Format(time.RFC3339)},
 			{Id: "undated", DeletedAt: "not a time"},
 		},
 	})
@@ -37,7 +37,10 @@ func TestToListDeletedTenantsResponse(t *testing.T) {
 		t.Fatalf("page = %+v", got)
 	}
 	a := got.Tenants[0]
-	if a.ID != "acme" || a.Name != "Acme" || a.IsolationType != "volume" || a.DataRoot != "/d/acme" ||
+	// VolumePool is left unset: the protobuf has no VolumePool field yet
+	// (TODO(volume-pools transport lane) in tenantconv.go), and its retired
+	// DataRoot field is no longer read.
+	if a.ID != "acme" || a.Name != "Acme" || a.IsolationType != "volume" || a.VolumePool != "" ||
 		!a.DeletedAt.Equal(deleted) || !a.CreatedAt.IsZero() {
 		t.Fatalf("record = %+v", a)
 	}

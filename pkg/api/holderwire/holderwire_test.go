@@ -103,11 +103,14 @@ func TestOutcomeAndRound(t *testing.T) {
 // TestCeremonyInit pins the ceremony initialization conversions, including
 // each holder's role and the factor policy.
 func TestCeremonyInit(t *testing.T) {
-	opts := CeremonyInitFrom(&transport.CeremonyInitializeRequest{
+	opts, err := CeremonyInitFrom(&transport.CeremonyInitializeRequest{
 		SOPin: "so", UserPin: "user", CredentialSealStrategy: "shamir", Threshold: 2, Policy: "any-enrolled",
 		Officers: []transport.CeremonyOfficerRequest{{Username: "alice", Role: "so", CSRPEM: "a"}, {Username: "carol", Role: "custodian", CSRPEM: "c"}},
 		Hostname: "db.example.com", SANs: []string{"db.example.com"},
 	})
+	if err != nil {
+		t.Fatalf("CeremonyInitFrom: %v", err)
+	}
 	if opts.SOPin != "so" || opts.UserPin != "user" || opts.CredentialSealStrategy != "shamir" || opts.Threshold != 2 ||
 		opts.Policy != seal.FactorPolicyAnyEnrolled || opts.Hostname != "db.example.com" || len(opts.SANs) != 1 {
 		t.Errorf("CeremonyInitFrom = %+v", opts)
@@ -115,7 +118,11 @@ func TestCeremonyInit(t *testing.T) {
 	if len(opts.Officers) != 2 || opts.Officers[0].Role != seal.RoleSecurityOfficer || opts.Officers[1].Role != seal.RoleCustodian || opts.Officers[1].CSRPEM != "c" {
 		t.Errorf("holders = %+v", opts.Officers)
 	}
-	if empty := CeremonyInitFrom(&transport.CeremonyInitializeRequest{}); empty.Officers != nil {
+	empty, err := CeremonyInitFrom(&transport.CeremonyInitializeRequest{})
+	if err != nil {
+		t.Fatalf("CeremonyInitFrom(empty): %v", err)
+	}
+	if empty.Officers != nil {
 		t.Errorf("no holders must stay nil so configured holders apply: %+v", empty.Officers)
 	}
 

@@ -1039,7 +1039,7 @@ func TestCovCeremonyCANotConfiguredError_Error(t *testing.T) {
 
 func TestCovTenantTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
-	tools := tenantTools(svc, nil)
+	tools := tenantTools(svc, &fakeTenantOnboarding{tenants: svc}, nil)
 	if len(tools) != 9 {
 		t.Fatalf("expected 9 tools, got %d", len(tools))
 	}
@@ -1047,7 +1047,7 @@ func TestCovTenantTools_Registration(t *testing.T) {
 
 func TestCovHandleTenantCreate_Success(t *testing.T) {
 	svc := newCovMockTenantSvc()
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{
 		"id": "acme", "name": "ACME Corp", "isolation_type": "barrier",
 	})
@@ -1058,17 +1058,18 @@ func TestCovHandleTenantCreate_Success(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	var info tenant.TenantInfo
-	if jerr := json.Unmarshal([]byte(resultText(t, result)), &info); jerr != nil {
+	var out tenantCreateResult
+	if jerr := json.Unmarshal([]byte(resultText(t, result)), &out); jerr != nil {
 		t.Fatalf("unmarshal: %v", jerr)
 	}
-	if info.ID != "acme" {
-		t.Errorf("expected id 'acme', got %q", info.ID)
+	if out.Tenant.ID != "acme" {
+		t.Errorf("expected id 'acme', got %q", out.Tenant.ID)
 	}
 }
 
 func TestCovHandleTenantCreate_MissingID(t *testing.T) {
-	handler := handleTenantCreate(newCovMockTenantSvc())
+	svc := newCovMockTenantSvc()
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{"name": "X"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1077,7 +1078,8 @@ func TestCovHandleTenantCreate_MissingID(t *testing.T) {
 }
 
 func TestCovHandleTenantCreate_MissingName(t *testing.T) {
-	handler := handleTenantCreate(newCovMockTenantSvc())
+	svc := newCovMockTenantSvc()
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{"id": "x"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1090,7 +1092,7 @@ func TestCovHandleTenantCreate_ServiceError(t *testing.T) {
 	svc.createFn = func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantAlreadyExists
 	}
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{"id": "x", "name": "X"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -2279,6 +2281,55 @@ func TestCovHandleUserGetByUsername_ServiceError(t *testing.T) {
 	_, err := handler(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestHandleUserGetByEmail looks a user up by email within the requested
+// tenant and renders the same record every other user tool returns.
+func TestHandleUserGetByEmail(t *testing.T) {
+	var gotTenant, gotEmail string
+	svc := &mockUserService{
+		getUserByEmailFn: func(_ context.Context, tenantID, email string) (*user.User, error) {
+			gotTenant, gotEmail = tenantID, email
+			if email == "nobody@example.com" {
+				return nil, &user.UserNotFoundError{}
+			}
+			return &user.User{ID: 7, Username: "alice", Email: email, TenantID: tenantID, Lifecycle: user.LifecycleActive}, nil
+		},
+	}
+	handler := handleUserGetByEmail(svc, nil)
+
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_user_get_by_email", map[string]any{
+		"tenant_id": "acme", "email": "alice@example.com",
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("get by email: result=%+v err=%v", result, err)
+	}
+	if gotTenant != "acme" || gotEmail != "alice@example.com" {
+		t.Fatalf("service saw (%q, %q)", gotTenant, gotEmail)
+	}
+	var rec struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		TenantID string `json:"tenantID"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, result)), &rec); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rec.Username != "alice" || rec.Email != "alice@example.com" || rec.TenantID != "acme" {
+		t.Fatalf("record = %+v", rec)
+	}
+
+	result, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_user_get_by_email", map[string]any{"tenant_id": "acme"}))
+	if err != nil || !result.IsError {
+		t.Fatalf("missing email: result=%+v err=%v, want an argument refusal", result, err)
+	}
+
+	_, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_user_get_by_email", map[string]any{"email": "nobody@example.com"}))
+	var te *ToolError
+	var nf *user.UserNotFoundError
+	if !errors.As(err, &te) || te.Tool != "qrdb_user_get_by_email" || !errors.As(err, &nf) {
+		t.Fatalf("err = %v, want ToolError(qrdb_user_get_by_email) wrapping UserNotFoundError", err)
 	}
 }
 

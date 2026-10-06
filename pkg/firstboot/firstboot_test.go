@@ -224,13 +224,13 @@ type fakeRoles struct {
 	// controls what that persisted record actually looks like, so it can
 	// be identical to what the caller requested (the legitimate concurrent
 	// first-boot case) or deliberately different (the genuine-conflict
-	// case registerBuiltInRoles must still refuse).
+	// case RegisterBuiltInRoles must still refuse).
 	existsByID  map[string]role.Role
 	createCalls []role.CreateRoleRequest
 	seeded      []role.Role
 	// existsByNameRecord, keyed like existsByName, models what is ACTUALLY
 	// persisted under a name collision when it must differ from the incoming
-	// request — the genuine-conflict case registerBuiltInRoles must refuse.
+	// request — the genuine-conflict case RegisterBuiltInRoles must refuse.
 	// A name present in existsByName with no entry here is assumed identical
 	// to the request, matching the legitimate "another attempt already
 	// created this exact role" case.
@@ -767,7 +767,7 @@ func (unresolvableIDCollisionUsers) CreateUser(_ context.Context, req *user.Crea
 // go-qrdb#555's actual failure mode: a concurrent first-boot attempt (this
 // run's own retry, or another node's) already won CreateRole's atomic
 // guard for a built-in role's deterministic id, so CreateRole refuses with
-// RoleIDExistsError rather than RoleNameExistsError. registerBuiltInRoles
+// RoleIDExistsError rather than RoleNameExistsError. RegisterBuiltInRoles
 // must read the persisted record back, confirm it is field-for-field the
 // same built-in role this run would have created, and proceed exactly as
 // it does for a name collision.
@@ -858,7 +858,7 @@ func TestInitialize_IDCollisionDifferentDefinitionRefused(t *testing.T) {
 }
 
 // TestInitialize_NameCollisionVerifiedIdenticalIsIdempotent covers the OTHER
-// tolerated collision registerBuiltInRoles handles: RoleNameExistsError, now
+// tolerated collision RegisterBuiltInRoles handles: RoleNameExistsError, now
 // verified with the same provenance check as the id-collision branch rather
 // than accepted on the error type alone.
 func TestInitialize_NameCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
@@ -931,7 +931,7 @@ func TestInitialize_NameCollisionDifferentDefinitionRefused(t *testing.T) {
 // branches directly: a nil resolver, a resolver that cannot find the role,
 // and a resolver that finds one under a DIFFERENT id or tenant than the
 // canonical definition names. Every one of these must answer false, since
-// registerBuiltInRoles' only alternative on true is refusing the whole
+// RegisterBuiltInRoles' only alternative on true is refusing the whole
 // first-boot run.
 func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 	want := &role.Role{
@@ -2104,4 +2104,3 @@ func TestInitialize_RejectsConflictingAdminCertInputs(t *testing.T) {
 func (f *fakeRoles) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil
 }
-

@@ -20,9 +20,9 @@ package transport
 //
 // All error types declared in this file are surfaced by the new SDK
 // accessors added in Phase 3 (Permissions, Factors, Login, Sessions,
-// RBAC, VolumePools). Every error follows the project convention of a
-// concrete struct type plus an Error() method — callers identify
-// failure modes via errors.As.
+// RBAC). Every error follows the project convention of a concrete
+// struct type plus an Error() method — callers identify failure modes
+// via errors.As.
 
 // PermissionNotFoundError is returned by PermissionClient.Lookup when the
 // requested permission is not in the registry.
@@ -133,60 +133,4 @@ type LoginSessionExpiredError struct {
 // Error returns a human-readable description.
 func (e *LoginSessionExpiredError) Error() string {
 	return "transport: login session expired: " + e.SessionID
-}
-
-// PoolNotConfiguredError is returned by VolumePoolClient when the named
-// pool has not been registered.
-type PoolNotConfiguredError struct {
-	Name string
-}
-
-// Error returns a human-readable description.
-func (e *PoolNotConfiguredError) Error() string {
-	return "transport: volume pool not configured: " + e.Name
-}
-
-// PoolEmptyError is returned by VolumePoolClient.Pick when the named
-// pool exists but has no candidates.
-type PoolEmptyError struct {
-	Name string
-}
-
-// Error returns a human-readable description.
-func (e *PoolEmptyError) Error() string {
-	return "transport: volume pool has no candidates: " + e.Name
-}
-
-// PoolBackendNotLocalError is returned by VolumePoolClient.Pick when the
-// strategy returns a backend that does not satisfy the local-path
-// accessor interface.
-type PoolBackendNotLocalError struct {
-	Name string
-}
-
-// Error returns a human-readable description.
-func (e *PoolBackendNotLocalError) Error() string {
-	return "transport: volume pool backend is not local: " + e.Name
-}
-
-// PoolAlreadyRegisteredError is returned by VolumePoolClient.RegisterPool
-// when the pool name is already taken.
-type PoolAlreadyRegisteredError struct {
-	Name string
-}
-
-// Error returns a human-readable description.
-func (e *PoolAlreadyRegisteredError) Error() string {
-	return "transport: volume pool already registered: " + e.Name
-}
-
-// InvalidPoolStrategyError is returned by VolumePoolClient.RegisterPool
-// when the requested strategy name is unknown.
-type InvalidPoolStrategyError struct {
-	Strategy string
-}
-
-// Error returns a human-readable description.
-func (e *InvalidPoolStrategyError) Error() string {
-	return "transport: invalid volume pool strategy: " + e.Strategy
 }

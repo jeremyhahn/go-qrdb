@@ -73,7 +73,11 @@ func noSealStoreNode(t *testing.T) *Node {
 		barrier:         n.barrier.Load(),
 		credCoreSvc:     n.credCoreSvc,
 		barrierRegistry: n.barrierRegistry.Load(),
-		volumePool:      n.volumePool,
+		volumeLifecycle: n.volumeLifecycle,
+		volumeRegistry:  n.volumeRegistry,
+		openVolumes:     n.openVolumes,
+		volumePoolRows:  n.volumePoolRows,
+		perTenantReg:    n.perTenantReg,
 	})
 	// Compared with == rather than require.Nil, which reports a typed nil
 	// inside a non-nil interface as nil and so cannot see the defect.

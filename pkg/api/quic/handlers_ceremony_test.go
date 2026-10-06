@@ -216,8 +216,8 @@ func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	if !got.AdminGenerate {
 		t.Error("AdminGenerate not forwarded")
 	}
-	if string(got.Secret) != "barrier-secret" {
-		t.Errorf("Secret = %q, want %q", got.Secret, "barrier-secret")
+	if string(ceremonySvc.capturedSecret) != "barrier-secret" {
+		t.Errorf("Secret = %q, want %q", ceremonySvc.capturedSecret, "barrier-secret")
 	}
 	if initResp.GetAdminCertPem() != "admin-cert" || string(initResp.GetAdminKeyPem()) != "admin-key" || initResp.GetAdminCredentialSource() != "generated" {
 		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",

@@ -56,6 +56,7 @@ func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture 
 	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithTenantService(tenants),
+		WithTenantOnboarding(&fakeTenantOnboarding{tenants: tenants}),
 		WithAuthMiddleware(mw),
 	)
 	return &isolationFixture{srv: srv, tenants: tenants, caller: caller}

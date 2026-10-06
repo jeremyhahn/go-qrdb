@@ -70,9 +70,10 @@ var WithGRPCMaxConcurrentStreams = qrdbserver.WithGRPCMaxConcurrentStreams
 // simultaneously open connections to its /mcp listener.
 var WithMCPMaxConnections = qrdbserver.WithMCPMaxConnections
 
-// DefaultGRPCMaxRecvMsgSize is the TCP gRPC and Unix socket servers' max
-// receive message size, applied to every RPC.
-const DefaultGRPCMaxRecvMsgSize = grpcapi.DefaultMaxRecvMsgSize
+// DefaultGRPCMaxMessageBytes is the TCP gRPC and Unix socket servers' max
+// message size, applied to every RPC when the embedder's configuration
+// supplies no `transport.max_message_bytes` override (go-qrdb#576).
+const DefaultGRPCMaxMessageBytes = grpcapi.DefaultMaxMessageBytes
 
 // DefaultGRPCMaxConcurrentStreams is the TCP gRPC and Unix socket servers'
 // cap on simultaneously active RPCs per HTTP/2 connection when

@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
 // fakeCertProvider implements cert.CertProvider (every method a no-op) plus
@@ -82,7 +84,7 @@ func (f *fakeInvalidatingCertProvider) fire() {
 
 var _ InvalidationSource = (*fakeInvalidatingCertProvider)(nil)
 
-func (f *fakeCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (f *fakeCertProvider) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, errors.New("not implemented")
 }
 func (f *fakeCertProvider) ExportPKCS12(context.Context, []byte, []byte, string) ([]byte, error) {
@@ -130,7 +132,7 @@ type fakePlainCertProvider struct{}
 
 var _ cert.CertProvider = (*fakePlainCertProvider)(nil)
 
-func (f *fakePlainCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (f *fakePlainCertProvider) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, errors.New("not implemented")
 }
 func (f *fakePlainCertProvider) ExportPKCS12(context.Context, []byte, []byte, string) ([]byte, error) {
@@ -605,7 +607,7 @@ func TestPool_VerifyIssuer_ClusterCAExempt(t *testing.T) {
 	pool := New()
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	// No Key B provider at all -- the cluster CA exemption must still work.
-	if err := pool.VerifyIssuer(context.Background(), "any-tenant", keyACert); err != nil {
+	if err := pool.VerifyIssuer(context.Background(), "any-tenant", chainOf(keyACert)); err != nil {
 		t.Errorf("expected the cluster CA to be exempt regardless of tenant, got: %v", err)
 	}
 }
@@ -617,7 +619,7 @@ func TestPool_VerifyIssuer_OwnTenantCAAccepted(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakeCertProvider{registry: map[string]*x509.Certificate{"A": keyBCertA}})
 
-	if err := pool.VerifyIssuer(context.Background(), "A", keyBCertA); err != nil {
+	if err := pool.VerifyIssuer(context.Background(), "A", chainOf(keyBCertA)); err != nil {
 		t.Errorf("expected tenant A's own Key B CA to be accepted, got: %v", err)
 	}
 }
@@ -633,7 +635,7 @@ func TestPool_VerifyIssuer_ForeignTenantCARefused(t *testing.T) {
 		"B": keyBCertB,
 	}})
 
-	err := pool.VerifyIssuer(context.Background(), "B", keyBCertA)
+	err := pool.VerifyIssuer(context.Background(), "B", chainOf(keyBCertA))
 	if err == nil {
 		t.Fatal("expected tenant A's Key B CA to be refused for a leaf claiming tenant B")
 	}
@@ -737,7 +739,7 @@ func TestPool_VerifyIssuer_NoProviderRefused(t *testing.T) {
 	pool := New()
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 
-	if err := pool.VerifyIssuer(context.Background(), "A", keyBCert); err == nil {
+	if err := pool.VerifyIssuer(context.Background(), "A", chainOf(keyBCert)); err == nil {
 		t.Fatal("expected refusal with no Key B provider installed")
 	}
 }
@@ -779,7 +781,7 @@ func TestPool_VerifyIssuer_StaticClientCAExempt(t *testing.T) {
 	// No ClusterCA, no Key B provider at all: staticCert is trusted ONLY
 	// because it was already in cfg.ClientCAs.
 
-	if err := pool.VerifyIssuer(context.Background(), "any-tenant", staticCert); err != nil {
+	if err := pool.VerifyIssuer(context.Background(), "any-tenant", chainOf(staticCert)); err != nil {
 		t.Errorf("expected a CA already in the static ClientCAs to be exempt regardless of tenant, got: %v", err)
 	}
 }
@@ -806,7 +808,7 @@ func TestPool_VerifyIssuer_StaticExemptionDoesNotLeakToKeyB(t *testing.T) {
 	}})
 	getConfigForClient(t, cfg) // populates staticBase with staticPool
 
-	err := pool.VerifyIssuer(context.Background(), "B", keyBCertA)
+	err := pool.VerifyIssuer(context.Background(), "B", chainOf(keyBCertA))
 	if err == nil {
 		t.Fatal("expected tenant A's Key B CA to still be refused for a leaf claiming tenant B, static exemption notwithstanding")
 	}
@@ -852,10 +854,10 @@ func TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA(t *testing
 
 	// The per-tenant binding still correctly scopes it to tenant A alone:
 	// accepted for A, refused for a leaf claiming any other tenant.
-	if err := pool.VerifyIssuer(context.Background(), "A", keyBCertA); err != nil {
+	if err := pool.VerifyIssuer(context.Background(), "A", chainOf(keyBCertA)); err != nil {
 		t.Errorf("expected tenant A's own Key B CA to still be accepted for tenant A, got: %v", err)
 	}
-	err := pool.VerifyIssuer(context.Background(), "B", keyBCertA)
+	err := pool.VerifyIssuer(context.Background(), "B", chainOf(keyBCertA))
 	if err == nil {
 		t.Fatal("expected tenant A's Key B CA, even though it is ALSO in the static ClientCAs, to be refused for a leaf claiming tenant B")
 	}
@@ -906,7 +908,7 @@ func TestPool_VerifyIssuer_ProviderWithoutCertSourceRefused(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakePlainCertProvider{})
 
-	err := pool.VerifyIssuer(context.Background(), "A", keyBCert)
+	err := pool.VerifyIssuer(context.Background(), "A", chainOf(keyBCert))
 	if err == nil {
 		t.Fatal("expected refusal when the installed CertProvider does not implement CertSource")
 	}
@@ -928,7 +930,7 @@ func TestPool_VerifyIssuer_IsTenantIssuerErrorWrapped(t *testing.T) {
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
 	pool.SetKeyBProvider(&fakeCertProvider{issuerErr: issuerErr})
 
-	err := pool.VerifyIssuer(context.Background(), "A", keyBCert)
+	err := pool.VerifyIssuer(context.Background(), "A", chainOf(keyBCert))
 	if err == nil {
 		t.Fatal("expected refusal when CertSource.IsTenantIssuer itself fails")
 	}
@@ -955,7 +957,7 @@ type manyTenantProvider struct {
 var _ cert.CertProvider = (*manyTenantProvider)(nil)
 var _ CertSource = (*manyTenantProvider)(nil)
 
-func (m *manyTenantProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (m *manyTenantProvider) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, errors.New("not implemented")
 }
 func (m *manyTenantProvider) ExportPKCS12(context.Context, []byte, []byte, string) ([]byte, error) {
@@ -1087,7 +1089,7 @@ func TestPool_RealHandshake_3000Tenants_AdvertisesNoTenantCA(t *testing.T) {
 
 	var acceptableCAs [][]byte
 	clientCfg := &tls.Config{
-		InsecureSkipVerify: true, // this test measures the SERVER's advertised CAs, not the client's verification of the server
+		InsecureSkipVerify: true, // #nosec G402 -- this test measures the SERVER's advertised CAs, not the client's verification of the server
 		MinVersion:         tls.VersionTLS13,
 		GetClientCertificate: func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			acceptableCAs = info.AcceptableCAs
@@ -1200,7 +1202,7 @@ func TestPool_ConfigForClient_HandshakeBoundedNotBackground(t *testing.T) {
 	pool.SetKeyBProvider(&fakeCertProvider{})
 
 	clientCfg := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // #nosec G402 -- this test measures the SERVER's handshake bound, not the client's verification of the server
 		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{clientLeaf},
 	}
@@ -1489,7 +1491,7 @@ func TestPool_Reseal_DropsKeyBTrust(t *testing.T) {
 			// that selection entirely, matching what a real client
 			// presenting a Key B leaf actually does.
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &clientLeaf, nil },
-			InsecureSkipVerify:   true, // this test measures the SERVER's verification of the client cert, not the reverse
+			InsecureSkipVerify:   true, // #nosec G402 -- this test measures the SERVER's verification of the client cert, not the reverse
 			MinVersion:           tls.VersionTLS13,
 		})
 		defer func() { _ = clientTLS.Close() }()
@@ -1668,5 +1670,324 @@ func TestRV794_LongLivedConnStaticAnchorAfterReseal(t *testing.T) {
 	// widen to include Key B.
 	if _, err := pool.VerifyPeerChain(ctx, keyBLeaf, nil); err == nil {
 		t.Error("expected a Key B leaf to be refused on a long-lived connection after Key B became unavailable")
+	}
+}
+
+// chainOf is a verified chain whose direct issuer is issuer: the shape
+// VerifyIssuer receives from the mTLS authenticator.
+func chainOf(issuer *x509.Certificate) []*x509.Certificate {
+	return []*x509.Certificate{{Raw: []byte("leaf")}, issuer}
+}
+
+// ---------------------------------------------------------------------------
+// SetTrustAnchors / Invalidate / anchorBundles / VerifyIssuer's anchor
+// branch -- the bring-your-own trust anchor surface (pkg/trustanchor). The
+// REAL trustanchor.KVRegistry over an in-process kvstore.MemoryKVStore is
+// used throughout, rather than a hand-rolled fake, so these tests exercise
+// the actual per-tenant confinement the registry provides, not an assumption
+// about it.
+// ---------------------------------------------------------------------------
+
+// newRegistry returns a real trustanchor.KVRegistry over an empty in-process
+// store.
+func newRegistry(t testing.TB) *trustanchor.KVRegistry {
+	t.Helper()
+	return trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+}
+
+// registerAnchor adds certPEM as a trust anchor for tenantID in reg, failing
+// the test on error.
+func registerAnchor(t testing.TB, reg *trustanchor.KVRegistry, tenantID string, certPEM []byte) {
+	t.Helper()
+	if _, err := reg.Add(context.Background(), tenantID, certPEM); err != nil {
+		t.Fatalf("Add(%s): %v", tenantID, err)
+	}
+}
+
+// listerOf adapts a fixed tenant ID slice to TenantLister via
+// TenantListerFunc -- also the only direct exercise of that adapter.
+func listerOf(ids ...string) TenantLister {
+	return TenantListerFunc(func(context.Context) ([]string, error) { return ids, nil })
+}
+
+func TestTenantListerFunc_AdaptsFunction(t *testing.T) {
+	f := TenantListerFunc(func(context.Context) ([]string, error) { return []string{"x", "y"}, nil })
+	ids, err := f.TenantIDs(context.Background())
+	if err != nil {
+		t.Fatalf("TenantIDs: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "x" || ids[1] != "y" {
+		t.Fatalf("TenantIDs = %v, want [x y]", ids)
+	}
+}
+
+// TestPool_VerifyIssuer_TenantAnchorAccepted proves a tenant's own registered
+// anchor, present anywhere in the chain above the leaf, admits that tenant --
+// with no Key B provider and no cluster CA configured at all.
+func TestPool_VerifyIssuer_TenantAnchorAccepted(t *testing.T) {
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+
+	pool := New()
+	pool.SetTrustAnchors(reg, nil)
+
+	if err := pool.VerifyIssuer(context.Background(), "tenant-a", chainOf(anchorCert)); err != nil {
+		t.Errorf("expected tenant-a's own anchor to be accepted, got: %v", err)
+	}
+}
+
+// TestPool_VerifyIssuer_CrossTenantAnchorRefused is the security proof the
+// brief calls for: tenant-a registers an anchor, tenant-b registers none,
+// and a leaf CLAIMING tenant-b presents a chain through tenant-a's anchor.
+// VerifyIssuer reads only the CLAIMED tenant's bundle (ChainContainsAnchor
+// scopes by tenantID), so tenant-b's empty bundle never matches -- this
+// would wrongly PASS if VerifyIssuer (or ChainContainsAnchor) consulted
+// every tenant's anchors instead of only the claimed one's.
+func TestPool_VerifyIssuer_CrossTenantAnchorRefused(t *testing.T) {
+	reg := newRegistry(t)
+	anchorPEM, anchorCertA := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+
+	pool := New()
+	pool.SetTrustAnchors(reg, nil)
+
+	err := pool.VerifyIssuer(context.Background(), "tenant-b", chainOf(anchorCertA))
+	if err == nil {
+		t.Fatal("expected tenant-a's anchor to be refused for a leaf claiming tenant-b")
+	}
+	var mismatch *IssuerNotTrustedError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected *IssuerNotTrustedError, got %T: %v", err, err)
+	}
+}
+
+// TestPool_VerifyIssuer_AnchorDoesNotVouchForOtherTenant strengthens the
+// cross-tenant proof: tenant-b has its OWN anchor registered too, so the
+// refusal above cannot be explained away as "tenant-b simply has nothing
+// registered" -- tenant-a's anchor specifically never vouches for tenant-b,
+// while tenant-b's own anchor still does.
+func TestPool_VerifyIssuer_AnchorDoesNotVouchForOtherTenant(t *testing.T) {
+	reg := newRegistry(t)
+	anchorPEMA, anchorCertA := genCAPEM(t)
+	anchorPEMB, anchorCertB := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEMA)
+	registerAnchor(t, reg, "tenant-b", anchorPEMB)
+
+	pool := New()
+	pool.SetTrustAnchors(reg, nil)
+
+	if err := pool.VerifyIssuer(context.Background(), "tenant-b", chainOf(anchorCertA)); err == nil {
+		t.Fatal("expected tenant-a's anchor to be refused for tenant-b, even though tenant-b has its own anchor")
+	}
+	if err := pool.VerifyIssuer(context.Background(), "tenant-b", chainOf(anchorCertB)); err != nil {
+		t.Errorf("expected tenant-b's own anchor to be accepted, got: %v", err)
+	}
+}
+
+// TestPool_VerifyIssuer_AnchorSourceErrorWraps proves a Source failure
+// surfaces as *IssuerNotTrustedError with the underlying error reachable via
+// errors.Unwrap -- VerifyIssuer never panics or silently admits on a broken
+// anchor read.
+func TestPool_VerifyIssuer_AnchorSourceErrorWraps(t *testing.T) {
+	want := errors.New("store unavailable")
+	pool := New()
+	pool.SetTrustAnchors(&erroringSource{err: want}, nil)
+
+	_, anchorCert := genCAPEM(t)
+	err := pool.VerifyIssuer(context.Background(), "tenant-a", chainOf(anchorCert))
+	if err == nil {
+		t.Fatal("expected an error when the anchor Source fails")
+	}
+	var mismatch *IssuerNotTrustedError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected *IssuerNotTrustedError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, want) {
+		t.Errorf("expected Unwrap to reach the underlying Source error, got: %v", err)
+	}
+}
+
+// erroringSource is a trustanchor.Source whose CABundle always fails.
+type erroringSource struct{ err error }
+
+func (e *erroringSource) CABundle(context.Context, string) ([]byte, error) { return nil, e.err }
+
+// TestPool_SetTrustAnchors_WidensPoolWithAnchor proves a registered anchor
+// joins the widened pool VerifyConnection checks against, so a bring-your-own
+// certificate chaining to it completes a handshake. ClientCAs itself is never
+// widened (go-qrdb#591's review, B2: it would advertise the anchor's Subject
+// in the clear), so the proof is VerifyPeerChain -- which resolves and
+// verifies against the SAME widened pool verifyPeerConnection does -- not a
+// direct x509.Verify against ClientCAs.
+func TestPool_SetTrustAnchors_WidensPoolWithAnchor(t *testing.T) {
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{})
+
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+
+	got := getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected a widened config")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
+		t.Errorf("expected the registered anchor in the widened pool: %v", err)
+	}
+}
+
+// TestPool_SetTrustAnchors_NilSourceRemovesAnchorTrust proves a nil Source
+// (SetTrustAnchors(nil, nil)) drops anchor trust from the widened pool
+// immediately -- SetTrustAnchors invalidates the cache itself.
+func TestPool_SetTrustAnchors_NilSourceRemovesAnchorTrust(t *testing.T) {
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{})
+
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
+		t.Fatalf("expected the anchor to be trusted before removal: %v", err)
+	}
+
+	pool.SetTrustAnchors(nil, nil)
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err == nil {
+		t.Error("expected the anchor to no longer be trusted after SetTrustAnchors(nil, nil)")
+	}
+}
+
+// TestPool_RemoveAnchor_InvalidateDropsFromPool proves withdrawing a
+// registered anchor and calling Invalidate drops it from both the widened
+// pool and VerifyIssuer's acceptance on the very next call -- cluster CA /
+// Key B trust is untouched.
+func TestPool_RemoveAnchor_InvalidateDropsFromPool(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	keyBPEM, keyBCert := genCAPEM(t)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+	pool.SetTrustAnchors(reg, listerOf("tenant-a"))
+
+	got := getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected a widened config")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
+		t.Fatalf("expected the anchor to be trusted before removal: %v", err)
+	}
+	if err := pool.VerifyIssuer(context.Background(), "tenant-a", chainOf(anchorCert)); err != nil {
+		t.Fatalf("expected VerifyIssuer to accept the anchor before removal: %v", err)
+	}
+
+	if err := reg.Remove(context.Background(), "tenant-a", trustanchor.Fingerprint(anchorCert)); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	pool.Invalidate()
+
+	got = getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected a config after invalidation (cluster CA and Key B still trusted)")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err == nil {
+		t.Error("expected the removed anchor to no longer verify against the pool")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err != nil {
+		t.Errorf("expected Key B to remain trusted after the anchor was removed: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), keyACert, nil); err != nil {
+		t.Errorf("expected the cluster CA to remain trusted after the anchor was removed: %v", err)
+	}
+
+	if err := pool.VerifyIssuer(context.Background(), "tenant-a", chainOf(anchorCert)); err == nil {
+		t.Error("expected VerifyIssuer to refuse the removed anchor")
+	}
+}
+
+// TestPool_AnchorBundles_TenantListerErrorOmitsAnchorsOnly proves a failing
+// TenantLister omits every anchor from the widened pool while leaving the
+// cluster CA and Key B trust completely unaffected.
+func TestPool_AnchorBundles_TenantListerErrorOmitsAnchorsOnly(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	keyBPEM, keyBCert := genCAPEM(t)
+	pool.SetKeyBProvider(&fakeCertProvider{pems: [][]byte{keyBPEM}})
+
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+	failingLister := TenantListerFunc(func(context.Context) ([]string, error) {
+		return nil, errors.New("tenant service unavailable")
+	})
+	pool.SetTrustAnchors(reg, failingLister)
+
+	got := getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected a config despite the TenantLister failing")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), keyACert, nil); err != nil {
+		t.Errorf("expected the cluster CA to remain trusted: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err != nil {
+		t.Errorf("expected Key B to remain trusted: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err == nil {
+		t.Error("expected the anchor to be omitted while the TenantLister fails")
+	}
+}
+
+// partialErrSource wraps a real trustanchor.Source and fails CABundle for
+// exactly one tenant, so a test can prove a per-tenant read failure omits
+// only that tenant's anchors.
+type partialErrSource struct {
+	real       trustanchor.Source
+	failTenant string
+}
+
+func (s *partialErrSource) CABundle(ctx context.Context, tenantID string) ([]byte, error) {
+	if tenantID == s.failTenant {
+		return nil, errors.New("read failed for this tenant")
+	}
+	return s.real.CABundle(ctx, tenantID)
+}
+
+// TestPool_AnchorBundles_PerTenantSourceErrorOmitsThatTenantOnly proves that
+// when the Source fails to read ONE tenant's anchors, only that tenant's
+// bundle is omitted -- every other tenant's registered anchor still widens
+// the pool.
+func TestPool_AnchorBundles_PerTenantSourceErrorOmitsThatTenantOnly(t *testing.T) {
+	cfg := baseConfig(t, x509.NewCertPool())
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{})
+
+	reg := newRegistry(t)
+	anchorPEM, anchorCert := genCAPEM(t)
+	registerAnchor(t, reg, "tenant-a", anchorPEM)
+	src := &partialErrSource{real: reg, failTenant: "tenant-b"}
+	pool.SetTrustAnchors(src, listerOf("tenant-a", "tenant-b"))
+
+	got := getConfigForClient(t, cfg)
+	if got == nil {
+		t.Fatal("expected a config despite tenant-b's anchor read failing")
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err != nil {
+		t.Errorf("expected tenant-a's anchor to still widen the pool: %v", err)
 	}
 }

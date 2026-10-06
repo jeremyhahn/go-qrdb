@@ -22,6 +22,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -30,6 +33,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -177,8 +182,6 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		err  error
 		want Class
 	}{
-		{"explicit data root retired", &tenant.DataRootRetiredError{TenantID: "t", DataRoot: "/d"}, InvalidArgument},
-		{"stored tenant record names a path", &tenant.PersistedDataRootError{TenantID: "t", DataRoot: "/d"}, FailedPrecondition},
 		{"tenant-root record names a path", &seal.AbsoluteDataRootRecordError{TenantID: "t", DataRoot: "/d"}, FailedPrecondition},
 		{"recorded slot does not resolve here", &seal.TenantRootUnresolvedError{TenantID: "t", Pool: "p", Err: errors.New("x")}, FailedPrecondition},
 		{"removal outside this node's pool", &seal.DataRootOutsideLocalRootsError{DataRoot: "/d"}, Internal},
@@ -266,6 +269,67 @@ func TestClassify_PendingAdminCertStoreError(t *testing.T) {
 	err := &firstboot.PendingAdminCertStoreError{Op: "write", Cause: errors.New("sample")}
 	if got := Classify(err); got != Internal {
 		t.Errorf("Classify(%T) = %s, want %s", err, got, Internal)
+	}
+}
+
+// TestClassify_OnboardingRows pins the explicit class every onboardingRules
+// row answers with -- certificate enrolment, trust-anchor management and
+// tenant onboarding -- so a row that silently lost its class (or was
+// reordered behind a more general one) fails here, not only in the generic
+// loop tests that merely confirm each row recognises its own sample.
+func TestClassify_OnboardingRows(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"invalid CSR", &cert.InvalidCSRError{Reason: "bad key"}, InvalidArgument},
+		{"invalid BYOC certificate", &certenroll.InvalidCertificateError{Err: errors.New("decode")}, InvalidArgument},
+		{"BYOC identity mismatch", &certenroll.IdentityMismatchError{TenantID: "acme", Username: "ada"}, InvalidArgument},
+		{"empty trust-anchor bundle", &trustanchor.EmptyBundleError{}, InvalidArgument},
+		{"invalid trust anchor", &trustanchor.InvalidAnchorError{Index: 0, Reason: "expired"}, InvalidArgument},
+		{"invalid trust-anchor tenant", &trustanchor.InvalidTenantError{TenantID: "acme"}, InvalidArgument},
+		{"BYOC does not chain to a trust anchor", &trustanchor.CertificateNotTrustedError{TenantID: "acme"}, InvalidArgument},
+		{"trust anchor not found", &trustanchor.AnchorNotFoundError{TenantID: "acme", Fingerprint: "fp"}, NotFound},
+		{"too many trust anchors", &trustanchor.TooManyAnchorsError{TenantID: "acme", Max: 8}, ResourceExhausted},
+		{"no trust anchors registered yet", &trustanchor.NoAnchorsError{TenantID: "acme"}, FailedPrecondition},
+		{"trust anchors externally managed", &trustanchor.ExternallyManagedError{}, FailedPrecondition},
+		{"invalid pending-admin tenant", &tenantadmin.InvalidTenantError{TenantID: "acme"}, InvalidArgument},
+		{"cert enrollment field error", &service.CertEnrollmentFieldError{Field: "csr_pem"}, InvalidArgument},
+		{"cert enrollment not configured", &service.CertEnrollmentNotConfiguredError{Capability: "certificate issuance"}, Unimplemented},
+		{"tenant onboarding field error", &service.TenantOnboardingFieldError{Field: "admin_username"}, InvalidArgument},
+		{"tenant onboarding not configured", &service.TenantOnboardingNotConfiguredError{}, Unimplemented},
+		{"missing admin credential", &bootstrap.MissingAdminCredentialError{}, InvalidArgument},
+		{"conflicting admin credential", &bootstrap.ConflictingAdminCredentialError{}, InvalidArgument},
+		{"invalid trust anchors at provisioning", &bootstrap.InvalidTrustAnchorsError{Cause: errors.New("bad PEM")}, InvalidArgument},
+		{"missing provisioning seam", &bootstrap.MissingProvisioningSeamError{Seam: "cert signer"}, Unimplemented},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassify_FirstInitSamples pins the trust-on-first-init refusals as
+// PermissionDenied: the caller DID present a verified certificate (the
+// window is only reached after that), and that identity may not initialize
+// THIS tenant's barrier -- the same reading authClassByFailure gives every
+// AuthFailureUnauthorized.
+func TestClassify_FirstInitSamples(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"wrong certificate for the onboarded admin", &authmw.FirstInitCertificateMismatchError{TenantID: "acme", Username: "ada", PresentedThumbprint: "ff"}},
+		{"no first admin onboarded under mtls_binding_policy required", &authmw.FirstInitNotOnboardedError{TenantID: "acme"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != PermissionDenied {
+				t.Errorf("got %s, want %s", got, PermissionDenied)
+			}
+		})
 	}
 }
 

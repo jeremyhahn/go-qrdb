@@ -51,6 +51,16 @@ export interface MockTenantInfo {
   updated_at: string;
 }
 
+/** Minimal mock trust anchor for mock responses. */
+export interface MockTrustAnchor {
+  fingerprint: string;
+  subject: string;
+  not_before: string;
+  not_after: string;
+  cert_pem: string;
+  added_at: string;
+}
+
 /** Minimal mock officer status for mock responses. */
 /**
  * A share holder as the Go OfficerBinding returns it: transport.OfficerStatus,
@@ -136,6 +146,8 @@ export interface MockState {
    * BarrierStatus / BarrierUnseal.
    */
   tenantBarriers?: Record<string, MockTenantBarrierState>;
+  /** Per-tenant trust anchors keyed by tenant ID (default: none registered). */
+  trustAnchors?: Record<string, MockTrustAnchor[]>;
   /**
    * When true, MVCCBinding.RestoreToRevision's mock reports the FIRST
    * planned change of the next non-dry-run, non-Force apply as a conflict
@@ -1629,20 +1641,62 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         CertBinding: {
-          Generate: async (req: { username: string; tenant_id?: string; ttl?: string }) => {
-            maybeReject("CertBinding.Generate");
+          // Wire fields here (csrPEM, certPEM, keyPEM) are literal camelCase,
+          // matching cmd/qrdb/bindings_certs.go's IssueCertInput/EnrollCertRequest
+          // and sdk/go/transport/auth_types.go — NOT the snake_case Wails IPC
+          // convention most other bindings use.
+          Issue: async (req: { username: string; csrPEM?: string; ttl?: string }) => {
+            maybeReject("CertBinding.Issue");
             const serial = String(++certSerialCounter);
             const now = new Date().toISOString();
             const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: req.tenant_id ?? "default",
+              tenantId: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
             });
-            return { certPEM: "-----BEGIN CERTIFICATE-----\nmock-cert-pem\n-----END CERTIFICATE-----", keyPEM: "-----BEGIN PRIVATE KEY-----\nmock-key-pem\n-----END PRIVATE KEY-----" };
+            const out: Record<string, unknown> = {
+              // userID crosses the wire as a string (json:"userID,string").
+              userID: "1",
+              username: req.username,
+              tenantID: "default",
+              certPEM: "-----BEGIN CERTIFICATE-----\nmock-cert-pem\n-----END CERTIFICATE-----",
+              serial,
+              thumbprint: "mock-thumbprint",
+              notAfter: expiresAt,
+            };
+            // No CSR supplied: the (real) binding generates a key pair
+            // LOCALLY and returns it alongside the certificate.
+            if (!req.csrPEM) {
+              out.keyPEM = "-----BEGIN PRIVATE KEY-----\nmock-key-pem\n-----END PRIVATE KEY-----";
+            }
+            return out;
+          },
+          Enroll: async (req: { username: string; certPEM: string; chainPEM?: string }) => {
+            maybeReject("CertBinding.Enroll");
+            const serial = String(++certSerialCounter);
+            const now = new Date().toISOString();
+            const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+            certStore.set(serial, {
+              serial,
+              username: req.username,
+              tenantId: "default",
+              issuedAt: now,
+              expiresAt,
+              revoked: false,
+            });
+            // Bring-your-own: the cluster did not issue it, so no serial.
+            return {
+              userID: "2",
+              username: req.username,
+              tenantID: "default",
+              certPEM: req.certPEM,
+              thumbprint: "mock-thumbprint",
+              notAfter: expiresAt,
+            };
           },
           Export: async (_req: { certPEM: string; keyPEM: string; passphrase: string }) => {
             maybeReject("CertBinding.Export");
@@ -2132,12 +2186,23 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             isolation_type?: string;
             data_root?: string;
             barrier_auto_unseal?: boolean;
+            admin_username: string;
+            admin_csr_pem?: string;
+            admin_cert_pem?: string;
+            admin_chain_pem?: string;
+            trust_anchors_pem?: string;
           }) => {
             maybeReject("TenantBinding.Create");
             // Record the raw request so tests can assert exactly what the
             // SDK submitted (mirrors the DatabaseBinding.Create capture
             // pattern used by the database wizard specs).
             (window as unknown as Record<string, unknown>).__tenantCreateReq = req;
+            if (!req.admin_username) {
+              throw new Error("admin_username is required");
+            }
+            if (!req.admin_csr_pem && !req.admin_cert_pem) {
+              throw new Error("exactly one of admin_csr_pem or admin_cert_pem is required");
+            }
             const s = getState();
             const now = new Date().toISOString();
             const info: Record<string, unknown> = {
@@ -2152,7 +2217,34 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               info.data_root = req.data_root;
             }
             s.tenants.push(info as unknown as MockTenantInfo);
-            return { tenant: { ...info } };
+            if (req.trust_anchors_pem) {
+              s.trustAnchors ??= {};
+              s.trustAnchors[req.id] = [
+                {
+                  fingerprint: `mock-fp-${req.id}`,
+                  subject: "CN=Mock Root CA",
+                  not_before: now,
+                  not_after: new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString(),
+                  cert_pem: req.trust_anchors_pem,
+                  added_at: now,
+                },
+              ];
+            }
+            return {
+              tenant: { ...info },
+              admin: {
+                // user_id crosses the wire as a string
+                // (json:"user_id,omitempty,string").
+                user_id: req.admin_cert_pem ? "0" : "1",
+                username: req.admin_username,
+                cert_pem: req.admin_csr_pem
+                  ? "-----BEGIN CERTIFICATE-----\nmock-admin-cert-pem\n-----END CERTIFICATE-----"
+                  : (req.admin_cert_pem ?? ""),
+                serial: req.admin_csr_pem ? "mock-admin-serial" : undefined,
+                thumbprint: "mock-admin-thumbprint",
+                awaits_barrier_init: false,
+              },
+            };
           },
           Get: async (tenantId: string) => {
             maybeReject("TenantBinding.Get");
@@ -2223,6 +2315,42 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             t.entitlements = req.entitlements ?? null;
             t.updated_at = new Date().toISOString();
             return { tenant: { ...t } };
+          },
+          // cmd/qrdb/bindings_tenant.go AddTrustAnchors takes (tenantID,
+          // certsPEM string) directly, like its ListTrustAnchors/
+          // RemoveTrustAnchor siblings below.
+          AddTrustAnchors: async (tenantId: string, certsPem: string) => {
+            maybeReject("TenantBinding.AddTrustAnchors");
+            const s = getState();
+            const now = new Date().toISOString();
+            s.trustAnchors ??= {};
+            const existing = s.trustAnchors[tenantId] ?? [];
+            s.trustAnchors[tenantId] = [
+              ...existing,
+              {
+                fingerprint: `mock-fp-${existing.length + 1}`,
+                subject: "CN=Mock CA",
+                not_before: now,
+                not_after: new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString(),
+                cert_pem: certsPem,
+                added_at: now,
+              },
+            ];
+            return { anchors: [...s.trustAnchors[tenantId]] };
+          },
+          ListTrustAnchors: async (tenantId: string) => {
+            maybeReject("TenantBinding.ListTrustAnchors");
+            const s = getState();
+            return { anchors: [...(s.trustAnchors?.[tenantId] ?? [])] };
+          },
+          RemoveTrustAnchor: async (tenantId: string, fingerprint: string) => {
+            maybeReject("TenantBinding.RemoveTrustAnchor");
+            const s = getState();
+            const anchors = s.trustAnchors?.[tenantId];
+            if (!anchors) throw new Error(`tenant "${tenantId}" has no trust anchors`);
+            const idx = anchors.findIndex((a) => a.fingerprint === fingerprint);
+            if (idx === -1) throw new Error(`trust anchor "${fingerprint}" not found`);
+            anchors.splice(idx, 1);
           },
         },
         BackupBinding: {

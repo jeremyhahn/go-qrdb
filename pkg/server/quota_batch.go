@@ -16,7 +16,6 @@ package server
 
 import (
 	"context"
-	"io"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -144,9 +143,26 @@ func (s *quotaBatchService) ExecuteEntity(ctx context.Context, req *service.Batc
 	return resp, nil
 }
 
-// Import is forwarded unchanged. The namespaced wrapper already rejects imports
-// into a non-default scope, and unscoped imports run on the unmetered system
-// tenant where no quota wrapper is installed.
-func (s *quotaBatchService) Import(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
-	return s.inner.Import(ctx, file, opts)
+// ImportBegin, ImportAppend, ImportCommit and ImportAbort are forwarded
+// unchanged. The namespaced wrapper already rejects imports into a
+// non-default scope, and unscoped imports run on the unmetered system
+// tenant where no quota wrapper is installed. A session's own quotas
+// (pkg/config.ImportSessionConfig: per-session bytes and chunk count,
+// per-tenant concurrent sessions) are a different, narrower resource than
+// this wrapper's tenant storage-byte quota, and are enforced inside
+// BatchService itself rather than by a wrapper here.
+func (s *quotaBatchService) ImportBegin(ctx context.Context, opts service.ImportOptions) (string, error) {
+	return s.inner.ImportBegin(ctx, opts)
+}
+
+func (s *quotaBatchService) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	return s.inner.ImportAppend(ctx, sessionID, seq, chunk)
+}
+
+func (s *quotaBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	return s.inner.ImportCommit(ctx, sessionID)
+}
+
+func (s *quotaBatchService) ImportAbort(ctx context.Context, sessionID string) error {
+	return s.inner.ImportAbort(ctx, sessionID)
 }

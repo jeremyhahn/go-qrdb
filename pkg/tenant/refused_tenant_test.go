@@ -17,62 +17,44 @@ package tenant
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
-// legacyRecords writes the two records a tenant created before tenant
-// locations were resolved per node left behind: tenant metadata naming its
-// DataRoot and a tenant-root record naming the same path. The path holds a
-// file, so a test can tell whether anything touched it.
-func legacyRecords(t *testing.T, svc *TenantService, id string) string {
+// orphanedMetadata writes a volume-isolation tenant's metadata record
+// directly, with NO catalog Assignment ever reserved for it -- the state a
+// node that missed a peer's CreateTenant (a partial replication, a crash
+// between the metadata write and the Reserve a future version might retry)
+// is left in. The pre-catalog equivalent of this fixture injected a raw
+// tenant-root record naming a path on another node's disk
+// (*PersistedDataRootError / *seal.AbsoluteDataRootRecordError); neither the
+// record shape nor either error exists any more, since a catalog Assignment
+// is the only durable record and Reserve validates it before it is ever
+// written (docs/volume-pools D9). An unresolvable tenant now looks like
+// exactly what it is here: a metadata record whose id the catalog has never
+// heard of, refused with *volume.AssignmentNotFoundError.
+func orphanedMetadata(t *testing.T, svc *TenantService, id string) {
 	t.Helper()
 	ctx := context.Background()
-	recorded := filepath.Join(t.TempDir(), "another-node", id)
-	if err := os.MkdirAll(recorded, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(recorded, "data"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	meta := `{"id":"` + id + `","name":"Legacy","isolation_type":"volume","data_root":"` + recorded + `"}`
+	meta := `{"id":"` + id + `","name":"Orphaned","isolation_type":"volume"}`
 	if err := svc.store.Put(ctx, metadataPrefix+id, []byte(meta)); err != nil {
 		t.Fatal(err)
 	}
-	root := `{"pool":"default","slot":0,"data_root":"` + recorded + `","auto_unseal":true}`
-	if err := svc.registry.SystemBarrier().Put(ctx, "__registry:tenant_root/"+id, []byte(root)); err != nil {
-		t.Fatal(err)
-	}
-	return recorded
 }
 
-// TestListTenants_ARefusedTenantDoesNotHideTheOthers: one tenant whose record
-// names a path must not take the listing -- and with it every node's boot --
-// down. It is listed with its typed refusal and no DataRoot; the others are
-// served as before. A tenant whose own metadata is clean but whose
-// tenant-root record names a path is refused the same way.
+// TestListTenants_ARefusedTenantDoesNotHideTheOthers: one tenant whose
+// catalog Assignment does not resolve on this node must not take the
+// listing -- and with it every node's boot -- down. It is listed with its
+// typed refusal; the others are served as before.
 func TestListTenants_ARefusedTenantDoesNotHideTheOthers(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newReconcileService(t)
-	live, err := svc.CreateTenant(ctx, "vlive", "Live", IsolationVolume)
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "vlive", "Live", IsolationVolume); err != nil {
 		t.Fatal(err)
 	}
-	legacyRecords(t, svc, "legacy")
-	sealOnly := filepath.Join(t.TempDir(), "sealonly")
-	if err := svc.store.Put(ctx, metadataPrefix+"sealonly",
-		[]byte(`{"id":"sealonly","name":"S","isolation_type":"volume"}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.registry.SystemBarrier().Put(ctx, "__registry:tenant_root/sealonly",
-		[]byte(`{"pool":"default","data_root":"`+sealOnly+`"}`)); err != nil {
-		t.Fatal(err)
-	}
+	orphanedMetadata(t, svc, "orphan")
 
 	tenants, err := svc.ListTenants(ctx)
 	if err != nil {
@@ -82,55 +64,50 @@ func TestListTenants_ARefusedTenantDoesNotHideTheOthers(t *testing.T) {
 	for _, ti := range tenants {
 		byID[ti.ID] = ti
 	}
-	if got := byID["vlive"]; got.Refusal != nil || got.DataRoot != live.DataRoot {
-		t.Fatalf("live tenant = %+v; want served at %s with no refusal", got, live.DataRoot)
+	if got := byID["vlive"]; got.Refusal != nil {
+		t.Fatalf("live tenant = %+v; want served with no refusal", got)
 	}
-	var persisted *PersistedDataRootError
-	if got, ok := byID["legacy"]; !ok || !errors.As(got.Refusal, &persisted) || got.DataRoot != "" {
-		t.Fatalf("legacy tenant = %+v (listed %v); want *PersistedDataRootError and no DataRoot", got, ok)
-	}
-	var abs *seal.AbsoluteDataRootRecordError
-	if got, ok := byID["sealonly"]; !ok || !errors.As(got.Refusal, &abs) || got.DataRoot != "" {
-		t.Fatalf("sealonly tenant = %+v (listed %v); want *seal.AbsoluteDataRootRecordError and no DataRoot", got, ok)
-	}
-	if !strings.Contains(persisted.Error(), "delete the tenant") || !strings.Contains(persisted.Error(), "re-create") {
-		t.Fatalf("refusal %q does not tell the operator to delete and re-create", persisted.Error())
+	var notFound *volume.AssignmentNotFoundError
+	got, ok := byID["orphan"]
+	if !ok || !errors.As(got.Refusal, &notFound) {
+		t.Fatalf("orphan tenant = %+v (listed %v); want *volume.AssignmentNotFoundError", got, ok)
 	}
 }
 
-// TestDeleteTenant_RemovesARefusedRecordWithoutTouchingAnyPath: the delete is
-// the way out for a refused tenant. It retires the id and removes every
-// record that would restore it, and the directory the record named is left
-// exactly as it was.
+// TestDeleteTenant_RemovesARefusedRecordWithoutTouchingAnyPath: the delete
+// is the way out for a refused tenant. It retires the id and removes every
+// record that would restore it; there is no Assignment and so no directory
+// to leave untouched, which is itself the point -- DestroyTenant's
+// "no Assignment" case is "nothing to remove", not an error.
 func TestDeleteTenant_RemovesARefusedRecordWithoutTouchingAnyPath(t *testing.T) {
 	ctx := context.Background()
 	svc, reg, _ := newReconcileService(t)
-	live, err := svc.CreateTenant(ctx, "vlive", "Live", IsolationVolume)
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "vlive", "Live", IsolationVolume); err != nil {
 		t.Fatal(err)
 	}
-	recorded := legacyRecords(t, svc, "legacy")
+	liveRoot, err := reg.LocalTenantDataRoot(ctx, "vlive")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vlive): %v", err)
+	}
+	orphanedMetadata(t, svc, "orphan")
 
-	if err := svc.DeleteTenant(ctx, "legacy"); err != nil {
+	if err := svc.DeleteTenant(ctx, "orphan"); err != nil {
 		t.Fatalf("DeleteTenant(refused) = %v; want success", err)
 	}
-	if _, err := os.Stat(filepath.Join(recorded, "data")); err != nil {
-		t.Fatalf("the directory the refused record named was touched: %v", err)
-	}
-	if _, err := svc.GetTenant(ctx, "legacy"); !errors.Is(err, ErrTenantNotFound) {
+	if _, err := svc.GetTenant(ctx, "orphan"); !errors.Is(err, ErrTenantNotFound) {
 		t.Fatalf("GetTenant after delete = %v; want ErrTenantNotFound", err)
 	}
-	if held, err := reg.HasTenantState(ctx, "legacy"); err != nil || held {
+	if held, err := reg.HasTenantState(ctx, "orphan"); err != nil || held {
 		t.Fatalf("HasTenantState after delete = %v, %v; want no record left to restore it", held, err)
 	}
 	page, err := svc.ListDeletedTenants(ctx, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(page.Tombstones, func(ts Tombstone) bool { return ts.ID == "legacy" }) {
+	if !slices.ContainsFunc(page.Tombstones, func(ts Tombstone) bool { return ts.ID == "orphan" }) {
 		t.Fatalf("tombstones = %+v; want the id retired", page.Tombstones)
 	}
-	if !dirExists(t, live.DataRoot) {
+	if !dirExists(t, liveRoot) {
 		t.Fatal("deleting a refused tenant removed another tenant's directory")
 	}
 	tenants, err := svc.ListTenants(ctx)
@@ -144,43 +121,23 @@ func TestDeleteTenant_RemovesARefusedRecordWithoutTouchingAnyPath(t *testing.T) 
 func TestDeleteTenant_RefusedRecordWithDatabasesIsRefused(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := newReconcileService(t)
-	legacyRecords(t, svc, "legacy")
+	orphanedMetadata(t, svc, "orphan")
 	svc.SetDatabaseLister(&listingLister{names: []string{"ledger"}})
 
 	var has *TenantHasDatabasesError
-	if err := svc.DeleteTenant(ctx, "legacy"); !errors.As(err, &has) {
+	if err := svc.DeleteTenant(ctx, "orphan"); !errors.As(err, &has) {
 		t.Fatalf("DeleteTenant = %v; want *TenantHasDatabasesError", err)
 	}
-	if _, err := svc.store.Get(ctx, metadataPrefix+"legacy"); err != nil {
+	if _, err := svc.store.Get(ctx, metadataPrefix+"orphan"); err != nil {
 		t.Fatalf("the refused record was removed despite the refusal: %v", err)
 	}
 }
 
-// TestReconcileDeletedTenants_ProtectsARefusedLiveTenant: a live refused
-// tenant neither aborts the reconciliation nor loses its directories -- the
-// path its records name and its pool-derived directory are live roots.
-func TestReconcileDeletedTenants_ProtectsARefusedLiveTenant(t *testing.T) {
-	ctx := context.Background()
-	svc, reg, _ := newReconcileService(t)
-	recorded := legacyRecords(t, svc, "legacy")
-
-	roots, err := svc.liveTenantRootsStrict(ctx)
-	if err != nil {
-		t.Fatalf("liveTenantRootsStrict = %v; a refused live tenant must not abort it", err)
-	}
-	bases, err := reg.PoolBasePaths(ctx)
-	if err != nil || len(bases) == 0 {
-		t.Fatalf("PoolBasePaths = %v, %v", bases, err)
-	}
-	for _, want := range []string{recorded, filepath.Join(bases[0], "legacy")} {
-		if !slices.Contains(roots, want) {
-			t.Fatalf("live roots %v do not protect %s", roots, want)
-		}
-	}
-	if _, err := svc.ReconcileDeletedTenants(ctx); err != nil {
-		t.Fatalf("ReconcileDeletedTenants = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(recorded, "data")); err != nil {
-		t.Fatalf("reconciliation touched a refused live tenant's directory: %v", err)
-	}
-}
+// Note: TestReconcileDeletedTenants_ProtectsARefusedLiveTenant covered a
+// refused LIVE tenant's recorded path and pool-derived directory both
+// surviving a concurrent reconcile pass. Under the catalog, an unresolvable
+// tenant (no Assignment) has no recorded path and no pool-derived directory
+// to protect in the first place -- liveTenantRootsStrict's
+// TenantDataRootCandidates call returns no candidates for an id with no
+// Assignment (*volume.AssignmentNotFoundError is treated as "nothing live
+// here", not an abort) -- so there is nothing left for this test to prove.

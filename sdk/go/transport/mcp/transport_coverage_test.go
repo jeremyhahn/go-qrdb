@@ -160,17 +160,26 @@ func TestMCPAuthExtras_AfterClose(t *testing.T) {
 	if err := tr.UnassignRole(ctx, 1, "r"); !errors.As(err, &ce) {
 		t.Errorf("UnassignRole: %v", err)
 	}
-	if _, err := tr.GenerateCert(ctx, &transport.GenerateCertRequest{}); !errors.As(err, &ce) {
-		t.Errorf("GenerateCert: %v", err)
+	if _, err := tr.IssueCert(ctx, &transport.IssueCertRequest{}); !errors.As(err, &ce) {
+		t.Errorf("IssueCert: %v", err)
 	}
-	if _, err := tr.ExportCert(ctx, &transport.ExportCertRequest{}); !errors.As(err, &ce) {
-		t.Errorf("ExportCert: %v", err)
+	if _, err := tr.EnrollCert(ctx, &transport.EnrollCertRequest{}); !errors.As(err, &ce) {
+		t.Errorf("EnrollCert: %v", err)
 	}
 	if _, err := tr.RevokeCert(ctx, "s"); !errors.As(err, &ce) {
 		t.Errorf("RevokeCert: %v", err)
 	}
 	if _, err := tr.ListCerts(ctx, "t"); !errors.As(err, &ce) {
 		t.Errorf("ListCerts: %v", err)
+	}
+	if _, err := tr.AddTrustAnchors(ctx, &transport.AddTrustAnchorsRequest{}); !errors.As(err, &ce) {
+		t.Errorf("AddTrustAnchors: %v", err)
+	}
+	if _, err := tr.ListTrustAnchors(ctx, "t"); !errors.As(err, &ce) {
+		t.Errorf("ListTrustAnchors: %v", err)
+	}
+	if err := tr.RemoveTrustAnchor(ctx, "t", "fp"); !errors.As(err, &ce) {
+		t.Errorf("RemoveTrustAnchor: %v", err)
 	}
 }
 

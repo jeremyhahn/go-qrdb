@@ -18,10 +18,12 @@
   import type {
     Client,
     CertRecord,
-    CertBundle,
+    EnrolledCert,
+    IssuedCertWithKey,
     ExportCertResponse,
     ListCertsResponse,
   } from "@qrdb/sdk";
+  import { isDesktop } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { RefreshCw } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
@@ -35,7 +37,7 @@
   // Types
   // ---------------------------------------------------------------------------
 
-  type ActionTab = "generate" | "export" | "revoke";
+  type ActionTab = "issue" | "enroll" | "export" | "revoke";
 
   type CertStatus = "Active" | "Expiring Soon" | "Revoked";
 
@@ -52,14 +54,25 @@
 
   /** Action panel visibility and active tab. */
   let actionPanelOpen: boolean = $state(false);
-  let activeTab: ActionTab = $state("generate");
+  let activeTab: ActionTab = $state("issue");
 
-  /** Generate form state. */
-  let genUsername: string = $state("");
-  let genTenantId: string = $state(identityStore.tenantId || "default");
-  let genTTL: string = $state("8760h");
-  let genLoading: boolean = $state(false);
-  let generatedCert: CertBundle | null = $state(null);
+  /** Whether the desktop (Wails) runtime is available for local key generation. */
+  const desktopAvailable = isDesktop();
+
+  /** Issue form state. The account named by username must already exist. */
+  let issueUsername: string = $state("");
+  /** Pasted CSR PEM. Empty (desktop only) generates a key pair locally. */
+  let issueCSRPEM: string = $state("");
+  let issueTTL: string = $state("8760h");
+  let issueLoading: boolean = $state(false);
+  let issuedCert: EnrolledCert | IssuedCertWithKey | null = $state(null);
+
+  /** Enroll form state (bring-your-own certificate). */
+  let enrollUsername: string = $state("");
+  let enrollCertPEM: string = $state("");
+  let enrollChainPEM: string = $state("");
+  let enrollLoading: boolean = $state(false);
+  let enrolledCert: EnrolledCert | null = $state(null);
 
   /** Export form state. */
   let exportCertPEM: string = $state("");
@@ -127,6 +140,11 @@
     sortedCerts.slice((currentPage - 1) * pageSize, currentPage * pageSize),
   );
 
+  /** True when the issued cert carries a locally-generated private key. */
+  function hasGeneratedKey(cert: EnrolledCert | IssuedCertWithKey | null): cert is IssuedCertWithKey {
+    return cert !== null && "keyPEM" in cert && typeof cert.keyPEM === "string" && cert.keyPEM !== "";
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -164,6 +182,17 @@
     }
   }
 
+  /** Triggers a browser download of the given text content. */
+  function downloadText(filename: string, content: string): void {
+    const blob = new Blob([content], { type: "application/x-pem-file" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
@@ -188,28 +217,71 @@
     void fetchCerts();
   }
 
-  /** Generates a new client certificate. */
-  async function handleGenerate(): Promise<void> {
-    if (genUsername.trim() === "") {
+  /**
+   * Issues a certificate for an existing account. When a CSR is pasted, the
+   * caller's own key never leaves this form. When the CSR is left blank
+   * (desktop only), a key pair is generated locally and returned alongside
+   * the certificate for the user to keep — the server never sees it.
+   */
+  async function handleIssue(): Promise<void> {
+    if (issueUsername.trim() === "") {
       showToast("warning", "Username is required");
+      return;
+    }
+    if (issueCSRPEM.trim() === "" && !desktopAvailable) {
+      showToast("warning", "A CSR is required (local key generation is desktop-only)");
       return;
     }
 
     try {
-      genLoading = true;
-      const bundle: CertBundle = await client.certs.generate({
-        username: genUsername.trim(),
-        tenantId: genTenantId.trim(),
-        ttl: genTTL.trim(),
-      });
-      generatedCert = bundle;
-      showToast("success", `Certificate generated for "${genUsername}"`);
+      issueLoading = true;
+      if (issueCSRPEM.trim() === "") {
+        issuedCert = await client.certs.issueCertWithLocalKey(issueUsername.trim(), issueTTL.trim());
+      } else {
+        issuedCert = await client.certs.issueCert({
+          username: issueUsername.trim(),
+          csrPEM: issueCSRPEM.trim(),
+          ttl: issueTTL.trim(),
+        });
+      }
+      showToast("success", `Certificate issued for "${issueUsername}"`);
       await fetchCerts();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to generate certificate";
+      const msg = err instanceof Error ? err.message : "Failed to issue certificate";
       showToast("error", msg);
     } finally {
-      genLoading = false;
+      issueLoading = false;
+    }
+  }
+
+  /**
+   * Enrolls a bring-your-own certificate on an existing account. The
+   * certificate must chain to one of the tenant's registered trust anchors.
+   */
+  async function handleEnroll(): Promise<void> {
+    if (enrollUsername.trim() === "") {
+      showToast("warning", "Username is required");
+      return;
+    }
+    if (enrollCertPEM.trim() === "") {
+      showToast("warning", "Certificate PEM is required");
+      return;
+    }
+
+    try {
+      enrollLoading = true;
+      enrolledCert = await client.certs.enrollCert({
+        username: enrollUsername.trim(),
+        certPEM: enrollCertPEM.trim(),
+        ...(enrollChainPEM.trim() === "" ? {} : { chainPEM: enrollChainPEM.trim() }),
+      });
+      showToast("success", `Certificate enrolled for "${enrollUsername}"`);
+      await fetchCerts();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to enroll certificate";
+      showToast("error", msg);
+    } finally {
+      enrollLoading = false;
     }
   }
 
@@ -276,7 +348,7 @@
   });
 </script>
 
-<PageHeader title="Certificates" description="Issue, export, and revoke mTLS client certificates" />
+<PageHeader title="Certificates" description="Issue, enroll, export, and revoke mTLS client certificates" />
 
 <div class="flex flex-col gap-6">
   <!-- Tenant filter -->
@@ -300,10 +372,16 @@
     <div class="flex items-center gap-1 border-b border-base-content/10 px-4 py-2">
       <span class="mr-2 text-sm font-semibold text-base-content/70">Actions</span>
       <button
-        class="btn btn-sm {activeTab === 'generate' && actionPanelOpen ? 'btn-primary' : 'btn-ghost'}"
-        onclick={() => openTab("generate")}
+        class="btn btn-sm {activeTab === 'issue' && actionPanelOpen ? 'btn-primary' : 'btn-ghost'}"
+        onclick={() => openTab("issue")}
       >
-        Generate
+        Issue
+      </button>
+      <button
+        class="btn btn-sm {activeTab === 'enroll' && actionPanelOpen ? 'btn-accent' : 'btn-ghost'}"
+        onclick={() => openTab("enroll")}
+      >
+        Enroll
       </button>
       <button
         class="btn btn-sm {activeTab === 'export' && actionPanelOpen ? 'btn-secondary' : 'btn-ghost'}"
@@ -322,8 +400,13 @@
     <!-- Panel body (shown only when open) -->
     {#if actionPanelOpen}
       <div class="card-body pt-4">
-        <!-- Generate tab -->
-        {#if activeTab === "generate"}
+        <!-- Issue tab -->
+        {#if activeTab === "issue"}
+          <p class="text-base-content/70 text-sm">
+            Issues a certificate for an EXISTING account of your own tenant, signed
+            by the tenant's CA. Paste a CSR to keep your key off this machine, or
+            leave it blank{#if desktopAvailable} to generate a key pair locally{/if}.
+          </p>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
             <label class="form-control w-full">
               <div class="label"><span class="label-text">Username</span></div>
@@ -331,18 +414,22 @@
                 type="text"
                 class="input input-bordered input-sm w-full"
                 placeholder="e.g. alice"
-                bind:value={genUsername}
+                bind:value={issueUsername}
               />
             </label>
-            <label class="form-control w-full" for="cert-gen-tenant">
-              <div class="label"><span class="label-text">Tenant ID</span></div>
-              <TenantSelect
-                id="cert-gen-tenant"
-                {client}
-                bind:value={genTenantId}
-                allowEmpty={false}
-                size="sm"
-              />
+            <label class="form-control w-full md:col-span-2">
+              <div class="label">
+                <span class="label-text">CSR PEM</span>
+                <span class="label-text-alt text-base-content/50">
+                  {desktopAvailable ? "Optional — blank generates a key locally" : "Required"}
+                </span>
+              </div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="3"
+                placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+                bind:value={issueCSRPEM}
+              ></textarea>
             </label>
             <label class="form-control w-full">
               <div class="label"><span class="label-text">TTL</span></div>
@@ -350,22 +437,22 @@
                 type="text"
                 class="input input-bordered input-sm w-full"
                 placeholder="8760h"
-                bind:value={genTTL}
+                bind:value={issueTTL}
               />
             </label>
           </div>
           <button
             class="btn btn-primary btn-sm mt-2 w-fit"
-            onclick={() => void handleGenerate()}
-            disabled={genLoading || genUsername.trim() === ""}
+            onclick={() => void handleIssue()}
+            disabled={issueLoading || issueUsername.trim() === "" || (issueCSRPEM.trim() === "" && !desktopAvailable)}
           >
-            {#if genLoading}
+            {#if issueLoading}
               <span class="loading loading-spinner loading-xs"></span>
             {/if}
-            Generate
+            Issue
           </button>
 
-          {#if generatedCert !== null}
+          {#if issuedCert !== null}
             <div class="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
               <div>
                 <div class="label">
@@ -375,20 +462,101 @@
                   class="textarea textarea-bordered w-full font-mono text-xs"
                   rows="8"
                   readonly
-                  value={generatedCert.certPEM}
+                  value={issuedCert.certPEM}
                 ></textarea>
+                <button
+                  class="btn btn-ghost btn-xs mt-1"
+                  onclick={() => downloadText(`${issueUsername || "cert"}.crt`, issuedCert?.certPEM ?? "")}
+                >
+                  Download Certificate
+                </button>
               </div>
-              <div>
-                <div class="label">
-                  <span class="label-text text-xs font-semibold">Private Key PEM</span>
+              {#if hasGeneratedKey(issuedCert)}
+                <div>
+                  <div class="label">
+                    <span class="label-text text-xs font-semibold">Private Key PEM (generated locally)</span>
+                  </div>
+                  <textarea
+                    class="textarea textarea-bordered w-full font-mono text-xs"
+                    rows="8"
+                    readonly
+                    value={issuedCert.keyPEM}
+                  ></textarea>
+                  <button
+                    class="btn btn-ghost btn-xs mt-1"
+                    onclick={() => downloadText(`${issueUsername || "cert"}.key`, hasGeneratedKey(issuedCert) ? issuedCert.keyPEM : "")}
+                  >
+                    Download Key
+                  </button>
                 </div>
-                <textarea
-                  class="textarea textarea-bordered w-full font-mono text-xs"
-                  rows="8"
-                  readonly
-                  value={generatedCert.keyPEM}
-                ></textarea>
+              {/if}
+            </div>
+          {/if}
+        {/if}
+
+        <!-- Enroll tab -->
+        {#if activeTab === "enroll"}
+          <p class="text-base-content/70 text-sm">
+            Enrolls a bring-your-own certificate on an EXISTING account of your own
+            tenant. The certificate must chain to one of the tenant's registered
+            trust anchors.
+          </p>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Username</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full"
+                placeholder="e.g. alice"
+                bind:value={enrollUsername}
+              />
+            </label>
+          </div>
+          <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text text-xs font-semibold">Certificate PEM</span></div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="5"
+                placeholder="Paste certificate PEM here (leaf first)"
+                bind:value={enrollCertPEM}
+              ></textarea>
+            </label>
+            <label class="form-control w-full">
+              <div class="label">
+                <span class="label-text text-xs font-semibold">Chain PEM</span>
+                <span class="label-text-alt text-base-content/50">Optional</span>
               </div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="5"
+                placeholder="Paste intermediate chain PEM here"
+                bind:value={enrollChainPEM}
+              ></textarea>
+            </label>
+          </div>
+          <button
+            class="btn btn-accent btn-sm mt-2 w-fit"
+            onclick={() => void handleEnroll()}
+            disabled={enrollLoading || enrollUsername.trim() === "" || enrollCertPEM.trim() === ""}
+          >
+            {#if enrollLoading}
+              <span class="loading loading-spinner loading-xs"></span>
+            {/if}
+            Enroll
+          </button>
+
+          {#if enrolledCert !== null}
+            <div class="mt-3">
+              <div class="label">
+                <span class="label-text text-xs font-semibold">Enrolled Certificate</span>
+              </div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="6"
+                readonly
+                value={enrolledCert.certPEM}
+              ></textarea>
             </div>
           {/if}
         {/if}

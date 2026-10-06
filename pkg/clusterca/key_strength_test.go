@@ -79,7 +79,7 @@ func TestCheckPublicKeyStrength_RSA(t *testing.T) {
 		t.Fatalf("CheckPublicKeyStrength(RSA-2048) = %v, want nil", err)
 	}
 
-	weak, err := rsa.GenerateKey(rand.Reader, 1024)
+	weak, err := rsa.GenerateKey(rand.Reader, 1024) // #nosec G403 -- deliberately weak key to prove CheckPublicKeyStrength refuses it; the test IS the rejection path
 	if err != nil {
 		t.Fatalf("GenerateKey (1024): %v", err)
 	}

@@ -693,6 +693,13 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 		)
 	}
 
+	// Override grpc-go's own 4 MiB CLIENT-side receive default: see
+	// transport.DefaultClientMaxRecvMessageBytes's doc comment for why a
+	// response the server chooses to send is not bound by the pre-auth
+	// receive cap the server applies to incoming requests.
+	opts = append(opts, grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(transport.DefaultClientMaxRecvMessageBytes)))
+
 	return opts, nil
 }
 

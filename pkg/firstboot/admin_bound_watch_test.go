@@ -531,10 +531,10 @@ func (l *failsNTimesThenSucceeds) GetUserByUsername(ctx context.Context, tenantI
 	return l.real.GetUserByUsername(ctx, tenantID, username)
 }
 
-// transientLookupFault is the sentinel failsNTimesThenSucceeds returns: any
+// errTransientLookupFault is the sentinel failsNTimesThenSucceeds returns: any
 // error other than *user.UserNotFoundError is a transient fault
 // WatchForAdminBound must retry rather than treat as "nothing to watch."
-var transientLookupFault = errors.New("firstboot_test: simulated transient store fault")
+var errTransientLookupFault = errors.New("firstboot_test: simulated transient store fault")
 
 // TestWatchForAdminBound_TransientLookupFailureRetries is the go-qrdb#560
 // re-review item 4 regression test for the other half of the fix: a
@@ -559,7 +559,7 @@ func TestWatchForAdminBound_TransientLookupFailureRetries(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: errTransientLookupFault}
 	lookup.remain.Store(3)
 	notifier := &capturingAdminBoundNotifier{}
 	done := make(chan error, 1)
@@ -656,7 +656,7 @@ func TestWatchForAdminBound_TransientRecheckFailureRetries(t *testing.T) {
 		t.Fatalf("AddCertBinding: %v", err)
 	}
 
-	lookup := &failsReCheckNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup := &failsReCheckNTimesThenSucceeds{real: userSvc, fail: errTransientLookupFault}
 	lookup.remain.Store(3)
 	notifier := &capturingAdminBoundNotifier{}
 	done := make(chan error, 1)
@@ -701,7 +701,7 @@ func TestWatchForAdminBound_ContextCanceledDuringInitialLookupRetryPropagatesErr
 	t.Cleanup(hub.Close)
 	userSvc, _ := newSystemUserStore(t, hub)
 
-	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: errTransientLookupFault}
 	lookup.remain.Store(1_000_000) // never succeeds within this test's lifetime
 
 	notifier := &capturingAdminBoundNotifier{}
@@ -713,8 +713,8 @@ func TestWatchForAdminBound_ContextCanceledDuringInitialLookupRetryPropagatesErr
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, transientLookupFault) {
-			t.Fatalf("WatchForAdminBound returned %v, want %v", err, transientLookupFault)
+		if !errors.Is(err, errTransientLookupFault) {
+			t.Fatalf("WatchForAdminBound returned %v, want %v", err, errTransientLookupFault)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("WatchForAdminBound never returned after context cancellation during the initial lookup's retry")
@@ -801,7 +801,7 @@ func TestWatchForAdminBound_ContextCanceledDuringRecheckRetryReturnsNil(t *testi
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	lookup := &failsAfterFirstCall{real: userSvc, fail: transientLookupFault}
+	lookup := &failsAfterFirstCall{real: userSvc, fail: errTransientLookupFault}
 	notifier := &capturingAdminBoundNotifier{}
 	done := make(chan error, 1)
 	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
@@ -899,7 +899,7 @@ func TestLookupAdminRetrying_BackoffCapsAtOneSecond(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: transientLookupFault}
+	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: errTransientLookupFault}
 	lookup.remain.Store(5)
 
 	u, err := lookupAdminRetrying(ctx, lookup)

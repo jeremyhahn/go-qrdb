@@ -24,17 +24,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // newPooledTestRegistry builds a BarrierRegistry over a real single-path
-// local volume pool, a real Pebble-backed state store and a real per-tenant
-// Pebble registry, with its system barrier initialized and unsealed.
+// local volume (via newTestVolumeFixture's real "dir" provider and
+// Catalog) and a real per-tenant Pebble registry, with its system barrier
+// initialized and unsealed.
 //
 // Everything here is the production type. DestroyTenant's whole job is to
 // remove records from the system barrier store, close a real Pebble and
@@ -42,32 +39,32 @@ import (
 // exactly the thing under test.
 func newPooledTestRegistry(t *testing.T, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
 	t.Helper()
-	return newPooledTestRegistryAt(t, t.TempDir(), extra...)
+	catalog, open, _ := newTestVolumeFixture(t)
+	return newPooledTestRegistryWith(t, catalog, open, extra...)
 }
 
-// newPooledTestRegistryAt is newPooledTestRegistry with its one pool path
-// configured exactly as poolPath is spelled.
-func newPooledTestRegistryAt(t *testing.T, poolPath string, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
+// newPooledTestRegistryAt is newPooledTestRegistry pinned to a caller-chosen
+// pool path (newTestVolumeFixtureAt), for a guard test that needs an exact
+// pool path shape rather than a fresh t.TempDir().
+func newPooledTestRegistryAt(t *testing.T, poolRoot string, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
+	t.Helper()
+	catalog, open := newTestVolumeFixtureAt(t, poolRoot)
+	return newPooledTestRegistryWith(t, catalog, open, extra...)
+}
+
+// newPooledTestRegistryAtAlias is newPooledTestRegistryAt, but the pool's
+// Volume reports reportedRoot from Root() instead of realRoot (see
+// aliasVolume / newTestVolumeFixtureAtAlias), for a guard test proving
+// containment through a symlinked pool path.
+func newPooledTestRegistryAtAlias(t *testing.T, realRoot, reportedRoot string, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
+	t.Helper()
+	catalog, open := newTestVolumeFixtureAtAlias(t, realRoot, reportedRoot)
+	return newPooledTestRegistryWith(t, catalog, open, extra...)
+}
+
+func newPooledTestRegistryWith(t *testing.T, catalog *volume.Catalog, open *volume.OpenVolumes, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": poolPath}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
 
 	strategy, err := NewSoftwareStrategy(context.Background(), []byte("destroy-tenant-system-pass"))
 	if err != nil {
@@ -86,7 +83,8 @@ func newPooledTestRegistryAt(t *testing.T, poolPath string, extra ...Option) (*B
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
 	opts := append([]Option{
-		WithVolumePool(mgr, state, "default"),
+		WithVolumeAllocator(catalog),
+		WithVolumeResolver(open),
 		WithPerTenantRegistry(perTenantReg),
 	}, extra...)
 	reg, err := NewBarrierRegistry(logger, system, opts...)
@@ -107,12 +105,31 @@ func newPooledTestRegistryAt(t *testing.T, poolPath string, extra ...Option) (*B
 // a deletion needs.
 // ---------------------------------------------------------------------------
 
+// reserveTestVolumeTenant reserves tenantID on reg's configured "default"
+// pool via its volumeAllocator (same package, unexported field), the step
+// RegisterVolumeTenant/ReattachVolumeTenant now require their caller to
+// have already taken (see barrier_registry.go's doc comments) -- the
+// catalog's Reserve replaces the old implicit "pick a fresh path" branch.
+// reserveBytes is 0: these tests are not about quota.
+func reserveTestVolumeTenant(t *testing.T, reg *BarrierRegistry, tenantID string) {
+	t.Helper()
+	allocator, _ := reg.volumeResources()
+	if allocator == nil {
+		t.Fatalf("reserveTestVolumeTenant(%s): registry has no volume allocator configured", tenantID)
+	}
+	if _, err := allocator.Reserve(context.Background(), tenantID, "default", tenantID, 0); err != nil {
+		t.Fatalf("Reserve(%s): %v", tenantID, err)
+	}
+}
+
 // TestDestroyTenant_RemovesTheRecordsThatWouldRestoreIt is the test that
 // separates DestroyTenant from UnregisterTenant.
 func TestDestroyTenant_RemovesTheRecordsThatWouldRestoreIt(t *testing.T) {
 	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t)
+	reg, _ := newPooledTestRegistry(t)
+	allocator, _ := reg.volumeResources()
 
+	reserveTestVolumeTenant(t, reg, "acme")
 	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
@@ -120,16 +137,17 @@ func TestDestroyTenant_RemovesTheRecordsThatWouldRestoreIt(t *testing.T) {
 	if err := reg.InitializeTenant(ctx, "acme", Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); err != nil {
-		t.Fatalf("the fixture did not persist a tenant-root record: %v", err)
+	if _, err := allocator.Resolve(ctx, "acme"); err != nil {
+		t.Fatalf("the fixture did not persist a catalog assignment: %v", err)
 	}
 
 	if err := reg.DestroyTenant(ctx, "acme"); err != nil {
 		t.Fatalf("DestroyTenant: %v", err)
 	}
 
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); !errors.Is(err, ErrSecretNotFound) {
-		t.Errorf("the tenant-root record survived DestroyTenant: %v", err)
+	var notFound *volume.AssignmentNotFoundError
+	if _, err := allocator.Resolve(ctx, "acme"); !errors.As(err, &notFound) {
+		t.Errorf("the catalog assignment survived DestroyTenant: %v", err)
 	}
 	if _, err := reg.GetTenant("acme"); !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("GetTenant after destroy = %v, want ErrTenantNotFound", err)
@@ -154,6 +172,7 @@ func TestDestroyTenant_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := newPooledTestRegistry(t)
 
+	reserveTestVolumeTenant(t, reg, "acme")
 	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", true); err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
@@ -180,7 +199,8 @@ func TestDestroyTenant_EmptyIDIsRefused(t *testing.T) {
 // directory, so the filesystem step is skipped rather than guessed at.
 func TestDestroyTenant_KeyspaceModeTenantHasNoDataRoot(t *testing.T) {
 	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t)
+	reg, _ := newPooledTestRegistry(t)
+	allocator, _ := reg.volumeResources()
 
 	if _, err := reg.RegisterTenantDefault("acme"); err != nil {
 		t.Fatalf("RegisterTenantDefault: %v", err)
@@ -191,20 +211,100 @@ func TestDestroyTenant_KeyspaceModeTenantHasNoDataRoot(t *testing.T) {
 	if _, err := reg.GetTenant("acme"); !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("GetTenant after destroy = %v, want ErrTenantNotFound", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); !errors.Is(err, ErrSecretNotFound) {
-		t.Errorf("a keyspace-mode tenant must have no tenant-root record: %v", err)
+	var notFound *volume.AssignmentNotFoundError
+	if _, err := allocator.Resolve(ctx, "acme"); !errors.As(err, &notFound) {
+		t.Errorf("a keyspace-mode tenant must have no catalog assignment: %v", err)
+	}
+}
+
+// TestDestroyTenant_InterimShapedRecordIsCleanedUpNotRefused proves
+// decision D9(a) actually lets an operator finish deleting a tenant
+// stuck with a record written by the pre-catalog interim fix ({pool,
+// slot}, no Path field). Resolve refuses such a record with
+// *volume.InvalidAssignmentPathError, which before this fix was treated
+// by DestroyTenant as a hard failure (it only tolerated
+// *AssignmentNotFoundError) -- so there was NO way to ever finish
+// deleting such a tenant, the opposite of D9's own ruling ("the tenant is
+// deleted and re-created").
+func TestDestroyTenant_InterimShapedRecordIsCleanedUpNotRefused(t *testing.T) {
+	ctx := context.Background()
+	poolRoot := t.TempDir()
+
+	registry := volume.NewRegistry()
+	provider, err := registry.Lookup("dir")
+	if err != nil {
+		t.Fatalf("registry.Lookup(dir): %v", err)
+	}
+	vol, err := provider.Open(ctx, volume.Spec{Pool: "default", NodeID: "test-node", Path: poolRoot})
+	if err != nil {
+		t.Fatalf("provider.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = vol.Close(context.Background()) })
+	open := volume.NewOpenVolumes("test-node")
+	if err := open.Add("default", vol); err != nil {
+		t.Fatalf("open.Add: %v", err)
+	}
+
+	kv := newSealTestFakeKV()
+	tx := newSealTestFakeTx(kv)
+	catalog, err := volume.NewCatalog(kv, tx, registry)
+	if err != nil {
+		t.Fatalf("volume.NewCatalog: %v", err)
+	}
+	if _, err := catalog.CreatePool(ctx, volume.CreatePoolRequest{Name: "default", Provider: "dir"}); err != nil {
+		t.Fatalf("catalog.CreatePool: %v", err)
+	}
+
+	// Seed the interim-shaped record directly into the catalog's own KV,
+	// bypassing Catalog.Reserve (which validates Path and would refuse
+	// this) -- exactly as the real, pre-catalog interim fix wrote it.
+	if err := kv.Put(ctx, volume.AssignmentKey("legacy-tenant"), []byte(`{"pool":"default","slot":2}`)); err != nil {
+		t.Fatalf("seed interim record: %v", err)
+	}
+
+	system := newSystemBarrier(t)
+	initBarrier(t, system)
+	reg, err := NewBarrierRegistry(testLogger(), system,
+		WithVolumeAllocator(catalog), WithVolumeResolver(open))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+
+	// Confirm this really is the shape under test: Resolve refuses it.
+	var invalidPath *volume.InvalidAssignmentPathError
+	if _, err := catalog.Resolve(ctx, "legacy-tenant"); !errors.As(err, &invalidPath) {
+		t.Fatalf("Resolve(interim-shaped) error = %v, want *volume.InvalidAssignmentPathError", err)
+	}
+
+	// "legacy-tenant" was never registered in memory (only a raw catalog
+	// record), so DestroyTenant returns ErrTenantNotFound by its own
+	// documented idempotency contract -- the SAME return value a
+	// second destroy of an already-destroyed tenant gets. What matters
+	// for D9 is that the record is actually gone afterward, asserted
+	// below; a hard failure here would mean the fix did not take.
+	if err := reg.DestroyTenant(ctx, "legacy-tenant"); err != nil && !errors.Is(err, ErrTenantNotFound) {
+		t.Fatalf("DestroyTenant(interim-shaped) = %v, want nil or ErrTenantNotFound", err)
+	}
+
+	// The record is gone, not merely tolerated in place.
+	var notFound *volume.AssignmentNotFoundError
+	if _, err := catalog.Resolve(ctx, "legacy-tenant"); !errors.As(err, &notFound) {
+		t.Errorf("the interim-shaped record survived DestroyTenant: %v", err)
 	}
 }
 
 // TestDestroyTenant_LeavesOtherTenantsAlone: the destroy is scoped.
 func TestDestroyTenant_LeavesOtherTenantsAlone(t *testing.T) {
 	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t)
+	reg, _ := newPooledTestRegistry(t)
+	allocator, _ := reg.volumeResources()
 
+	reserveTestVolumeTenant(t, reg, "acme")
 	rootA, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(acme): %v", err)
 	}
+	reserveTestVolumeTenant(t, reg, "globex")
 	rootB, _, err := reg.RegisterVolumeTenant(ctx, "globex", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(globex): %v", err)
@@ -220,8 +320,8 @@ func TestDestroyTenant_LeavesOtherTenantsAlone(t *testing.T) {
 	if _, err := reg.GetTenant("globex"); err != nil {
 		t.Errorf("the other tenant's barrier was removed: %v", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"globex"); err != nil {
-		t.Errorf("the other tenant's root record was removed: %v", err)
+	if _, err := allocator.Resolve(ctx, "globex"); err != nil {
+		t.Errorf("the other tenant's catalog assignment was removed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(rootB, "barrier")); err != nil {
 		t.Errorf("the other tenant's store was removed: %v", err)
@@ -270,22 +370,24 @@ func TestDestroyTenantErrors_NameWhatFailed(t *testing.T) {
 
 // TestDestroyTenant_RecoversTheDataRootFromThePersistedRecord: a node that has
 // not re-attached the tenant in this process still knows where its data is,
-// because the record is the authority. Without this, a destroy issued on a
-// follower would remove the records and leave the directory.
+// because the catalog's Assignment is the authority, resolved fresh on every
+// call -- there is no in-memory DataRoot cache to go stale. Without this, a
+// destroy issued on a follower would remove the records and leave the
+// directory.
 func TestDestroyTenant_RecoversTheDataRootFromThePersistedRecord(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := newPooledTestRegistry(t)
 
+	reserveTestVolumeTenant(t, reg, "acme")
 	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
-	// Simulate a process that never re-attached: drop the in-memory handle and
-	// the cached DataRoot, leaving only the persisted record.
+	// Simulate a process that never re-attached: drop the in-memory handle,
+	// leaving only the catalog's Assignment.
 	if err := reg.RemoveTenant("acme"); err != nil {
 		t.Fatalf("RemoveTenant: %v", err)
 	}
-	reg.tenantDataRoots.Delete("acme")
 
 	if err := reg.DestroyTenant(ctx, "acme"); !errors.Is(err, ErrTenantNotFound) {
 		t.Fatalf("DestroyTenant = %v, want ErrTenantNotFound (nothing registered here)", err)

@@ -878,7 +878,7 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil)
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil)
 	}
 }
 
@@ -1456,11 +1456,10 @@ func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
 			Enabled:  true,
 			Strategy: "",
 		},
-		// Volume pool configured: volumePool will be non-nil after
-		// initVolumePoolSubsystem, satisfying the outer condition at line 972.
+		// Volume pool configured: the "default" pool maps volDir on this node.
 		storageConfig: qrdbconfig.StorageConfig{
 			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Paths: []string{volDir}, Strategy: "round_robin"},
+				{Name: "default", Path: volDir},
 			},
 		},
 		host: testBindHost,

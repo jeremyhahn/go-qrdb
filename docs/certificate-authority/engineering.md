@@ -1,6 +1,6 @@
 # Certificate Authority — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 ## Exported surface
 
@@ -10,17 +10,75 @@
 func (c *Client) Certs() transport.CertClient
 ```
 
-Composition-plane option (Tier 2):
+Composition-plane options (Tier 2, `pkg/server`):
 
 ```go
 func WithCertProvider(p cert.CertProvider) ServerOption
+// WithCertEnrollment configures the issue/enrol and trust-anchor service for
+// every protocol server (lifecycle.Node.CertEnrollment).
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption
+// WithTrustAnchors replaces the built-in per-tenant trust-anchor store.
+func WithTrustAnchors(r trustanchor.Registry) ServerOption
 ```
+
+`pkg/service` — the one service every transport's issue and enrol verbs
+delegate to (`cert_enrollment.go`):
+
+```go
+type CertEnrollmentServicer interface {
+	// SignCertificate signs a CSR for an EXISTING account with its tenant's
+	// own Key B CA and binds the certificate's SPKI to the account in the
+	// same operation. A CSR for an account that does not exist is refused
+	// with *user.UserNotFoundError before anything is signed.
+	SignCertificate(ctx context.Context, req *SignCertificateRequest) (*EnrolledCertificate, error)
+	// EnrollCertificate binds a bring-your-own certificate to an EXISTING
+	// account after verifying it chains to one of the tenant's registered
+	// trust anchors and authenticates as exactly that account.
+	EnrollCertificate(ctx context.Context, req *EnrollCertificateRequest) (*EnrolledCertificate, error)
+	AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
+	ListTrustAnchors(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
+	RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error
+}
+
+type SignCertificateRequest struct {
+	TenantID string
+	Username string
+	CSRPEM   []byte
+	TTL      time.Duration // zero = the issuer's default
+}
+
+type EnrollCertificateRequest struct {
+	TenantID string
+	Username string
+	CertPEM  []byte // leaf first
+	ChainPEM []byte
+}
+
+type EnrolledCertificate struct {
+	UserID     uint64
+	Username   string
+	TenantID   string
+	CertPEM    []byte
+	Serial     string // empty for a bring-your-own certificate
+	Thumbprint string
+	NotAfter   time.Time
+}
+
+func NewCertEnrollmentService(certs cert.CertProvider, users certEnrollmentUsers,
+	anchors trustanchor.Registry, opts ...CertEnrollmentOption) *CertEnrollmentService
+```
+
+The transports pass the caller's own tenant as `TenantID`; no wire request
+carries one.
 
 `pkg/cert`:
 
 ```go
 type CertProvider interface {
-	GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error)
+	// IssueClientCert signs a client certificate for req.PublicKey, naming
+	// req.Username in req.TenantID, with that tenant's own CA. It never
+	// generates a key.
+	IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error)
 	// ExportPKCS12 refuses with *CertRevokedError when certPEM's serial is revoked.
 	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
 	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
@@ -56,17 +114,27 @@ type RevokeResult struct {
 // serializes.
 func (r *RevokeResult) RecordFound() bool
 
-type GenerateRequest struct {
-	Username string        // sets certificate CN
-	TenantID string        // sets certificate OU
-	TTL      time.Duration // zero = provider default (1 year)
+type IssueRequest struct {
+	Username  string           // sets certificate CN
+	TenantID  string           // sets certificate OU, and selects the tenant's Key B CA
+	PublicKey crypto.PublicKey // the key certified; must pass CheckClientKey
+	TTL       time.Duration    // zero = provider default (1 year)
 }
 
-type CertBundle struct {
-	CertPEM []byte // PEM-encoded X.509 client certificate
-	KeyPEM  []byte // PEM-encoded ECDSA private key
-	Serial  string // hexadecimal serial number
+type IssuedCert struct {
+	CertPEM  []byte    // PEM-encoded X.509 client certificate
+	Serial   string    // hexadecimal serial number
+	NotAfter time.Time // end of the validity window
 }
+
+// ParseCSR decodes a PEM certificate signing request and returns its public
+// key, after checking the request's own signature and the key (CheckClientKey).
+// Nothing else in the request is honoured.
+func ParseCSR(csrPEM []byte) (crypto.PublicKey, error)
+
+// CheckClientKey accepts ECDSA P-256/P-384/P-521, RSA of at least 2048 bits,
+// and Ed25519; anything else is *InvalidCSRError.
+func CheckClientKey(pub crypto.PublicKey) error
 
 type CertRecord struct {
 	Serial    string    `json:"serial"`
@@ -188,7 +256,22 @@ type AuthMiddlewareConfig struct {
   (`cert.WithTrustDomain`, fed from `auth.spiffe_trust_domain` through
   `lifecycle.Infra.SPIFFETrustDomain`), with kind `user` and the CN as its name.
   With no trust domain the certificate carries no SubjectAltName extension.
-- **`GenerateClientCert` never mints a SAN that disagrees with the OU.**
+- **No server-side client key generation.** `IssueClientCert` certifies the
+  public key it is handed and never sees a private key. The removed
+  `GenerateClientCert` (`GenerateRequest`, `CertBundle`) generated one and
+  returned it (**BREAKING**). Test code that needs a key and a certificate uses
+  `pkg/cert/certtest.Generate`, which makes the key locally and calls
+  `IssueClientCert`.
+- **Only a CSR's key is used.** `ParseCSR` checks the request's signature
+  (proof of possession) and the key type, and the certificate's Subject and
+  SAN come from the account the issuer names, never from the CSR.
+- **Issue and enrol bind atomically.** `SignCertificate` and
+  `EnrollCertificate` require the account to exist and add the certificate's
+  SPKI thumbprint to it (`AddCertBinding`, with the certificate's expiry). If
+  the binding fails after a certificate was signed, `SignCertificate` revokes
+  that serial and returns `*service.CertBindingFailedError`, whose `RevokeErr`
+  says when the revocation failed too.
+- **`IssueClientCert` never mints a SAN that disagrees with the OU.**
   `clientSPIFFEURIs` round-trips the ID through `spiffe.ParseID` and requires
   field-for-field equality before signing; anything else is
   `*SPIFFEIdentityError` and no certificate or record exists.
@@ -211,7 +294,7 @@ type AuthMiddlewareConfig struct {
 - **CA validity 10 years, default client validity 1 year**; `TTL: 0` means the
   provider default.
 - **Every mutating operation checks `barrier.IsSealed()` first.** When sealed,
-  `GenerateClientCert`, `ExportPKCS12`, `RevokeCert`, `IsRevoked` and
+  `IssueClientCert`, `ExportPKCS12`, `RevokeCert`, `IsRevoked` and
   `ListCerts` all return `BarrierSealedError`.
 - **`CACertPEM()` has no barrier check** — the CA certificate is public data and
   is served from cache even while sealed. That is deliberate: a client needs it
@@ -223,7 +306,6 @@ type AuthMiddlewareConfig struct {
   key on seal; a provider resolved from an injected
   `cakey.ProviderFactory` (`WithKeyProviderFactory`) manages its own key
   custody entirely.
-- **Client private key DER is wiped immediately after PEM encoding.**
 - **Revocation is enforced from replicated state, not a CRL.** Nothing generates
   a CRL and nothing answers OCSP; that is deliberate — see
   [architecture.md](architecture.md).
@@ -326,10 +408,12 @@ enumeration.
 | `CAKeyNotAvailableError` | CA private key not loaded or destroyed | **yes** |
 | `CertNotFoundError` | declared for a serial absent from the store. **Currently constructed nowhere**: `RevokeCert` is deny-by-serial by design (see Known limitations) and reports the "no local record" case through `RevokeResult`, not this error | — |
 | `CertRevokedError` | an operation targets a revoked certificate. Produced by `ExportPKCS12` when the supplied certificate's serial is revoked. Authentication-path enforcement is separate and returns `auth.ErrCertificateRevoked` instead | yes |
-| `CertGenerateError` | generation failure — wraps the cause | yes |
+| `CertGenerateError` | signing failure — wraps the cause | yes |
 | `CertExportError` | PKCS#12 export failure — wraps the cause | yes |
 | `StoreError` | KVStore failure — wraps the cause | yes |
 | `ValidationError` | request field validation | yes |
+| `InvalidCSRError` | a CSR that does not parse or verify, or a key `CheckClientKey` refuses | yes |
+| `service.CertBindingFailedError` | the certificate could not be bound to its account; a signed serial was revoked | yes |
 
 `CertGenerateError`, `CertExportError` and `StoreError` implement `Unwrap()`, so
 `errors.Is` and `errors.As` work through them.
@@ -338,7 +422,8 @@ enumeration.
 
 | Operation | Permission |
 |---|---|
-| Generate certificate | `certs:generate` |
+| Issue a certificate from a CSR | `certs:issue` |
+| Enrol a bring-your-own certificate | `certs:enroll` |
 | Export PKCS#12 | `certs:export` |
 | Revoke certificate | `certs:revoke` |
 | Revoke a serial this node holds no record for (deny-by-serial) | `certs:revoke` **and** `certs:revoke:cross` |
@@ -351,15 +436,20 @@ not a substitute for it -- so a caller needs both, and the built-in Admin
 role grants both.
 
 Every other permission in the table is **`ScopeSelfStrict`**
-(`pkg/permission/self_strict_scope.go`), and for generate, revoke and list the
-gate re-checks it against the tenant the REQUEST names rather than the tenant
-the caller is in. `ScopeSelfStrict` is not lifted by the system-tenant rule, so
-the target must be the caller's own tenant for every caller, the system tenant
-included. A caller acting inside its own tenant is unaffected. The embedded
-transport has no authorization middleware and applies the same rule with
-`tenant.Confine` against the caller in its context: `GenerateCert` and
-`ListCerts` confine the named tenant, and `RevokeCert` confines the serial's
-owner, or the system tenant for a deny-by-serial revocation.
+(`pkg/permission/self_strict_scope.go`), and so are `trust_anchors:add`,
+`trust_anchors:list` and `trust_anchors:remove`. For revoke and list the gate
+re-checks the permission against the tenant the REQUEST reaches rather than the
+tenant the caller is in; issue and enrol are checked against the caller's own
+tenant, the only one they can act on. The built-in SO and Admin roles hold
+`certs:issue` and `certs:enroll`; `certs:generate` is removed (**BREAKING**).
+`ScopeSelfStrict` is not lifted by the system-tenant rule, so the target must
+be the caller's own tenant for every caller, the system tenant included. A
+caller acting inside its own tenant is unaffected. The embedded transport has
+no authorization middleware and applies the same rule with `tenant.Confine`
+against the caller in its context: `IssueCert` and `EnrollCert` act on the
+caller's own tenant, `ListCerts` confines the named tenant, and `RevokeCert`
+confines the serial's owner, or the system tenant for a deny-by-serial
+revocation.
 
 ## Configuration
 
@@ -393,7 +483,9 @@ key patterns are the on-disk contract for this feature.
 
 - **Unit**: issuance (CN/OU mapping, TTL default and override, ClientAuth-only
   key usage, 128-bit serial), export, revoke, `IsRevoked`, list, and the
-  `BarrierSealedError` path for **each** mutating operation.
+  `BarrierSealedError` path for **each** mutating operation. CSR handling
+  (signature, each accepted and refused key type) and the enrolment service
+  (missing account, refused CSR, binding failure revoking the serial).
 - **The SPIFFE SAN is tested against the real authenticator over a real
   verified chain** (`pkg/cert/spiffe_san_test.go`): a certificate minted under a
   trust domain resolves with `tenant_source=spiffe` on a node pinned to that
@@ -403,7 +495,7 @@ key patterns are the on-disk contract for this feature.
   persisted; and a key enrolled without the SAN still matches its binding after
   re-issue with it.
 - **`CACertPEM()` while sealed is its own test** — it must still work.
-- **Memory tests**: client key DER wiped after encoding. CA key wiping is
+- **Memory tests**: CA key wiping is
   `pkg/cakey/software_test.go`'s responsibility now that the key lives there;
   `pkg/cert/key_provider_test.go` proves the injected-provider path signs
   through the provider and never writes software key material at all.
@@ -438,13 +530,12 @@ key patterns are the on-disk contract for this feature.
   production would hide this defect rather than catch it: the defect is that
   the real scope check is vacuous, so a test double that "checks the tenant"
   proves the opposite of what it appears to.
-- **Each refusal ships with its control.** Own-tenant generate, revoke and list
-  keep working, the system tenant still reaches every tenant, and a
-  no-middleware deployment is still served — otherwise "deny everything" would
+- **Each refusal ships with its control.** Own-tenant issue, revoke and list
+  keep working, and a no-middleware deployment is still served — otherwise "deny everything" would
   pass every test above.
 - **The transport tests fail the double when the effect runs.** The provider
   used for the QUIC and MCP gate tests calls `t.Fatal` from
-  `GenerateClientCert`/`RevokeCert`/`ListCerts`, so a handler that authorizes
+  `IssueClientCert`/`RevokeCert`/`ListCerts`, so a handler that authorizes
   AFTER acting fails rather than passing on the returned error.
 
 ## Known limitations

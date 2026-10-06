@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // newInitializedTenantBarrier builds a tenant barrier over a shared base
@@ -199,14 +201,33 @@ func TestRegisterTenantPooled_DurableIndependentBackend(t *testing.T) {
 }
 
 // TestRegisterTenantPooled_NoPoolConfigured proves the pooled flow fails
-// closed when no volume pool is configured.
+// closed when NEITHER a volume allocator/resolver NOR a per-tenant registry
+// is configured. The per-tenant registry precondition is checked first (see
+// allocatePooledBackend's doc comment: a Reserve that can never be used
+// would leak a capacity reservation), so this is the error returned.
 func TestRegisterTenantPooled_NoPoolConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
 	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
+	if _, err := reg.RegisterTenantPooled(context.Background(), "x"); !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
+		t.Fatalf("RegisterTenantPooled without pool or per-tenant registry = %v, want ErrPerTenantRegistryNotConfigured", err)
+	}
+}
+
+// TestRegisterTenantPooled_NoVolumeAllocatorConfigured proves the pooled
+// flow fails closed with ErrPoolNotConfigured when a per-tenant registry IS
+// configured but no volume allocator/resolver is.
+func TestRegisterTenantPooled_NoVolumeAllocatorConfigured(t *testing.T) {
+	system := newPoolSystemBarrier(t)
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, WithPerTenantRegistry(perTenantReg))
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
 	if _, err := reg.RegisterTenantPooled(context.Background(), "x"); !errors.Is(err, ErrPoolNotConfigured) {
-		t.Fatalf("RegisterTenantPooled without pool = %v, want ErrPoolNotConfigured", err)
+		t.Fatalf("RegisterTenantPooled without a volume allocator = %v, want ErrPoolNotConfigured", err)
 	}
 }

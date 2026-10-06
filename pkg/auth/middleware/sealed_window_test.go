@@ -150,10 +150,13 @@ func (f *fakeBarrierStatusReader) TenantBarrierStatus(_ context.Context, tenantI
 
 // TestAuthorizeTenantBarrierInit_TrustOnFirstInit verifies the bootstrap
 // window: RBAC denies (no roles exist yet), the barrier has never been
-// initialized, and the tenant's own identity is admitted.
+// initialized, and the tenant's own identity is admitted. This test
+// exercises the window itself, not the separate first-admin-onboarding gate
+// (see first_init_gate_test.go), so it runs under the "enrolled" posture,
+// which skips that gate when the tenant has no pending-admin record.
 func TestAuthorizeTenantBarrierInit_TrustOnFirstInit(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
-	m := New(deny)
+	m := New(deny, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t1"})
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: false}); err != nil {
 		t.Fatalf("trust-on-first-init = %v, want nil", err)

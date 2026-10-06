@@ -72,46 +72,13 @@ func TestRunStart_SealConfig_ShamirInvalidParams_ReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runStart: volumePool error path (line 887-889)
-// ---------------------------------------------------------------------------
-
-func TestRunStart_VolumePool_StateStoreBlocked_ReturnsError(t *testing.T) {
-	dir := t.TempDir()
-
-	// Block the volumepool state store directory by pre-creating a file there.
-	poolStatePath := filepath.Join(dir, "volumepool")
-	require.NoError(t, os.WriteFile(poolStatePath, []byte("x"), 0o600))
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "nonexistent",
-		discoveryMethod: "static",
-		listen:          "0.0.0.0:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		storageConfig: qrdbconfig.StorageConfig{
-			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Paths: []string{filepath.Join(dir, "vol")}, Strategy: ""},
-			},
-		},
-		host: testBindHost,
-	}
-
-	err := runStart(f)
-	require.Error(t, err)
-	// Should fail at volume pool initialization (VolumePoolStorageError).
-	var storErr *VolumePoolStorageError
-	require.True(t, errors.As(err, &storErr),
-		"expected VolumePoolStorageError, got %T: %v", err, err)
-}
-
-// ---------------------------------------------------------------------------
-// runStart: volume pool subsystem wired into startup
+// runStart: volume pool wired into startup
 //
-// Exercises the initVolumePoolSubsystem call in runStart (lines 886-903)
-// by setting storageConfig.VolumePools. The SM fails at initializeNode
-// (unknown type), but the volume-pool init path has already run.
+// Exercises openConfiguredVolumes in runStart by setting
+// storageConfig.VolumePools. A pool that fails to open never aborts boot
+// (invariant 6: a pool that does not open on a node refuses only that
+// pool's tenants on that node) -- the SM fails at initializeNode (unknown
+// type) regardless of whether the configured pool opened.
 // ---------------------------------------------------------------------------
 
 func TestRunStart_VolumePoolConfigured_FailsAtSM(t *testing.T) {
@@ -128,7 +95,7 @@ func TestRunStart_VolumePoolConfigured_FailsAtSM(t *testing.T) {
 		replicaID:       1,
 		storageConfig: qrdbconfig.StorageConfig{
 			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Paths: []string{volDir}, Strategy: "round_robin"},
+				{Name: "default", Path: volDir},
 			},
 		},
 		host: testBindHost,

@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Who someone is, and what they may do. There are no passwords: a certificate is
 the identity, and roles carry the permissions.
@@ -35,26 +35,20 @@ binding.
 
 ## Enrolling somebody, end to end
 
-Under the default `auth.mtls_binding_policy: required`, issuing
-a certificate is not enough on its own — alice cannot log in until her
-account also holds a binding for that certificate's key (step 5 below). Skip
-it and her certificate authenticates to nobody.
-
-> **Known limitation:** a certificate from `qrdb ca issue` (step 1 below) does
-> not yet authenticate to any listener on any transport, regardless of
-> enrollment -- a separate, in-progress fix. Until that lands, use a
-> certificate from the `certs` CSR-sign or BYOC path, or the one `qrdb init`
-> issues for the bootstrap admin, wherever this guide needs a login
-> certificate that actually works today.
+Run as an Admin of the tenant the user belongs to (here `acme`). Under the
+default `auth.mtls_binding_policy: required`, issuing a certificate is not
+enough on its own — alice cannot log in until her account also holds a
+binding for that certificate's key (step 5 below). Skip it and her
+certificate authenticates to nobody.
 
 ```bash
-
-```bash
-# 1. Issue a certificate
-qrdb ca issue --username alice --tenant-id acme --out ./alice
-
-# 2. Create the user record — the email is the login key
+# 1. Create the user record — the email is the login key
 qrdb users create --username alice --email alice@acme.com --tenant-id acme
+
+# 2. Issue a certificate. The key is generated on this machine (or pass
+#    --csr with a CSR alice made herself); the certificate is bound to
+#    alice's account in the same call.
+qrdb ca issue --username alice --out ./alice
 
 # 3. Find the IDs (both assign flags take IDs, not names)
 ROLE=$(qrdb roles get-by-name Operator --output json | jq -r .id)
@@ -75,6 +69,12 @@ curl -X POST "https://db.example.com/v1/users/$USER/cert-bindings" \
      --cert admin-cert.pem --key admin-key.pem --cacert ca.pem \
      -d "{\"thumbprint\": \"$THUMB\"}"
 ```
+
+The account must exist before step 2: a certificate is only ever issued for an
+existing account of the issuer's own tenant, which is also why `ca issue` takes
+no tenant. A user whose certificate comes from their organisation's own CA is
+enrolled with `qrdb ca enroll` instead
+([../trust-anchors/user.md](../trust-anchors/user.md)).
 
 ## Common tasks
 

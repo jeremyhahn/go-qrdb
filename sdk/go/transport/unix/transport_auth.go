@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 )
 
 // Compile-time interface assertions.
@@ -469,46 +470,40 @@ func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermiss
 // CertClient implementation
 // ---------------------------------------------------------------------------
 
-// GenerateCert creates a client certificate.
-func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
+// IssueCert issues a certificate from a CSR for an existing account of the
+// caller's own tenant and binds it, via the IssueCert RPC.
+func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	resp, err := t.client.GenerateCert(ctx, &pb.GenerateCertRequest{
+	resp, err := t.client.IssueCert(ctx, &pb.IssueCertRequest{
 		Username: req.Username,
-		TenantId: req.TenantID,
+		CsrPem:   req.CSRPEM,
 		Ttl:      req.TTL,
 	})
 	if err != nil {
-		return nil, mapGRPCError("GenerateCert", err)
+		// The only thing IssueCert can fail to find is the account.
+		return nil, mapUserLookupNotFound("IssueCert", req.Username, err)
 	}
-
-	return &transport.CertBundle{
-		CertPEM: resp.GetCertPem(),
-		KeyPEM:  resp.GetKeyPem(),
-		Serial:  resp.GetSerial(),
-	}, nil
+	return enrollconv.EnrolledCert(resp), nil
 }
 
-// ExportCert exports a certificate as PKCS#12.
-func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
+// EnrollCert binds a bring-your-own certificate to an existing account of the
+// caller's own tenant, via the EnrollCert RPC.
+func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	resp, err := t.client.ExportCert(ctx, &pb.ExportCertRequest{
-		CertPem:    req.CertPEM,
-		KeyPem:     req.KeyPEM,
-		Passphrase: req.Passphrase,
+	resp, err := t.client.EnrollCert(ctx, &pb.EnrollCertRequest{
+		Username: req.Username,
+		CertPem:  req.CertPEM,
+		ChainPem: req.ChainPEM,
 	})
 	if err != nil {
-		return nil, mapGRPCError("ExportCert", err)
+		// The only thing EnrollCert can fail to find is the account.
+		return nil, mapUserLookupNotFound("EnrollCert", req.Username, err)
 	}
-
-	return &transport.ExportCertResponse{
-		PKCS12: resp.GetPkcs12(),
-	}, nil
+	return enrollconv.EnrolledCert(resp), nil
 }
 
 // RevokeCert marks a certificate serial as revoked and reports whether the

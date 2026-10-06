@@ -25,7 +25,6 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"math/big"
-	"strings"
 	"testing"
 	"time"
 )
@@ -152,7 +151,12 @@ func (f *fakeIssuerVerifier) isStaticallyTrusted(issuer *x509.Certificate) bool 
 	return bytes.Equal(f.staticallyTrusted.Raw, issuer.Raw)
 }
 
-func (f *fakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
+func (f *fakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, chain []*x509.Certificate) error {
+	// Like the real Pool, the Key A and Key B checks judge the direct issuer.
+	var issuer *x509.Certificate
+	if len(chain) > 1 {
+		issuer = chain[1]
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -378,45 +382,4 @@ func TestMTLSAuthenticator_IssuerTenantBinding_ShortChainSkipped(t *testing.T) {
 	if _, err := authn.Authenticate(ctx); err != nil {
 		t.Fatalf("expected the short chain to be skipped and the good chain to satisfy the binding, got: %v", err)
 	}
-}
-
-// TestIssuerTenantMismatchError_Error covers both quoteTenant branches
-// (a named tenant and the empty-tenant-ID "(system)" rendering) and both
-// Unwrap shapes (with and without an underlying cause), none of which
-// errors.As alone -- used throughout this file -- ever exercises.
-func TestIssuerTenantMismatchError_Error(t *testing.T) {
-	t.Run("named tenant, no cause", func(t *testing.T) {
-		err := &IssuerTenantMismatchError{TenantID: "acme"}
-		if !strings.Contains(err.Error(), `"acme"`) {
-			t.Errorf("expected the quoted tenant ID in the message, got %q", err.Error())
-		}
-		if !errors.Is(err, ErrInvalidCertificate) {
-			t.Error("expected errors.Is to reach ErrInvalidCertificate via Unwrap")
-		}
-		if got := err.Unwrap(); len(got) != 1 || got[0] != ErrInvalidCertificate {
-			t.Errorf("Unwrap() = %v, want [ErrInvalidCertificate]", got)
-		}
-	})
-
-	t.Run("empty tenant ID renders as system", func(t *testing.T) {
-		err := &IssuerTenantMismatchError{}
-		if !strings.Contains(err.Error(), `"(system)"`) {
-			t.Errorf("expected the system-tenant rendering in the message, got %q", err.Error())
-		}
-	})
-
-	t.Run("with a cause", func(t *testing.T) {
-		cause := errors.New("barrier sealed")
-		err := &IssuerTenantMismatchError{TenantID: "acme", Err: cause}
-		if !strings.Contains(err.Error(), "barrier sealed") {
-			t.Errorf("expected the cause in the message, got %q", err.Error())
-		}
-		if !errors.Is(err, cause) {
-			t.Error("expected errors.Is to reach the cause via Unwrap")
-		}
-		got := err.Unwrap()
-		if len(got) != 2 || got[0] != ErrInvalidCertificate || got[1] != cause {
-			t.Errorf("Unwrap() = %v, want [ErrInvalidCertificate, cause]", got)
-		}
-	})
 }

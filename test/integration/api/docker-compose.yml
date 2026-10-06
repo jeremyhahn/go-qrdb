@@ -90,8 +90,15 @@ services:
         echo "Configuring UDP buffers for QUIC..."
         echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo "Warning: Could not set rmem_max"
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
-        # Ensure directories exist
-        mkdir -p /var/run/qrdbd /data /app/build/bin /backup-keys
+        # Ensure directories exist. /data/volumes/default is this fixture's
+        # mount point for config.test.yaml's storage.volume_pools "default"
+        # entry: the "dir" provider (pkg/volume/dir.go) deliberately refuses
+        # to auto-create it (a missing mount must fail loud, not get masked
+        # by a silently-created local directory), and OpenConfiguredVolumes
+        # only warns -- never fails boot -- when a configured pool's path is
+        # missing, so an un-created mount point here leaves "default"
+        # permanently unopened on this node instead of surfacing at startup.
+        mkdir -p /var/run/qrdbd /data /data/volumes/default /app/build/bin /backup-keys
         # qrdbd is built into the image; container start is a server start.
         # --backup-key-dir points at the SAME shared volume the
         # integration-tests container mounts read-write at the same path

@@ -1,6 +1,6 @@
 # Multi-Tenancy — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Running several customers on one deployment, with as much separation as each
 one needs.
@@ -32,12 +32,23 @@ It is a key prefix. Everything else on that rung shares the system barrier.
 
 ## Creating tenants
 
+A tenant is created **with its first admin**, or not at all. The admin keeps its
+own private key: it sends you a certificate signing request, never a key, and
+you never receive one back.
+
 ```bash
-qrdb tenant create --id acme --name "Acme Corp"
+# the tenant's admin, on their own machine — only csr.pem leaves it:
+qrdb ca csr --username alice --out ./alice
 
-qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume
+# you, the platform operator:
+qrdb tenant create --id acme --name "Acme Corp" \
+     --admin-username alice --admin-csr alice/csr.pem --out ./acme
 
-qrdb tenant create --id big-co --name "Big Co" --isolation-type raft
+qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume \
+     --admin-username alice --admin-csr alice/csr.pem
+
+qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
+     --admin-username alice --admin-csr alice/csr.pem
 ```
 
 A `volume` or `raft` tenant takes a directory from the volume pool. Every node
@@ -52,6 +63,35 @@ tenant, but no node opens its data, and every other tenant is served as usual.
 Delete it with `qrdb tenant delete` -- the delete removes its records and
 touches no directory -- and create it again. Remove the old directory yourself
 once you no longer need it.
+
+The CSR is signed by the new tenant's own CA. Send the admin the certificate
+(`acme/admin-cert.pem` with `--out`); with the key they already hold, it is
+their login.
+
+**If the admin's organisation has its own CA**, pass their certificate instead
+of a CSR, with the CA certificates it chains to. Those become the tenant's
+trust anchors ([../trust-anchors/user.md](../trust-anchors/user.md)):
+
+```bash
+qrdb tenant create --id globex --name "Globex" \
+     --admin-username ops --admin-cert ops.pem --admin-chain ops-chain.pem \
+     --trust-anchors globex-root.pem
+```
+
+The certificate's CN must be the admin username and it must name the new
+tenant.
+
+**Everything is checked before anything is written.** A bad CSR, anchors that
+are not CA certificates, or a certificate that does not chain or names someone
+else is refused with no tenant created, and you can retry with the same id. A
+failure after that point is undone, but undoing a tenant deletes it, which
+retires the id for good — pick a new one.
+
+**For `barrier`, `volume` and `raft` tenants the admin's account comes later.**
+Their accounts live behind the tenant's own barrier, which does not exist yet.
+`tenant create` reports that the admin's account is created when the admin
+runs `qrdb tenant barrier-init` — and only the certificate you just issued may
+run it. A `prefix` tenant's admin can log in straight away.
 
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.
@@ -78,7 +118,9 @@ a tier is refused without the counters being consulted at all.
 
 ## The tenant's own barrier
 
-Only for `barrier`, `volume` and `raft` tenants.
+Only for `barrier`, `volume` and `raft` tenants. The tenant's first admin runs
+`barrier-init` with the certificate `tenant create` issued; that also creates
+the admin's account.
 
 ```bash
 qrdb tenant barrier-init --id secure-co --strategy passphrase --passphrase "$PP"
@@ -107,11 +149,28 @@ for that reason.
 You do not pass a tenant flag. **The tenant comes from your certificate's OU.**
 
 ```bash
-qrdb ca issue --username alice --tenant-id acme --out ./alice
 qrdb --cert-file alice/cert.pem --key-file alice/key.pem kv list app/
 ```
 
+The tenant's Admin issues further users' certificates itself, into its own
+tenant only — see [../certificate-authority/user.md](../certificate-authority/user.md).
+
 ## Troubleshooting
+
+**`tenant create` says the admin username or credential is missing.** Every
+tenant is created with its first admin: pass `--admin-username` and exactly one
+of `--admin-csr` or `--admin-cert`.
+
+**`tenant create` refused the admin's certificate.** It must chain to one of the
+CA certificates in `--trust-anchors` (with `--admin-chain` supplying any
+intermediates), its CN must be the admin username, and it must name the new
+tenant. No tenant was created; fix it and retry with the same id.
+
+**The admin's `barrier-init` was refused.** On a tenant created with its first
+admin, only the certificate `tenant create` issued or enrolled for that admin
+may initialize the barrier, presented by that admin. Under
+`auth.mtls_binding_policy: required`, a tenant that has no onboarded admin
+cannot have its barrier initialized by any certificate.
 
 **"was deleted and cannot be reused" when creating a tenant.** That id has
 been used and deleted. It is retired permanently — pick another name. The

@@ -15,7 +15,6 @@
 package grpc
 
 import (
-	"bytes"
 	"context"
 	"time"
 
@@ -40,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -301,9 +301,12 @@ type qrdbServiceServer struct {
 	credentialSvc service.CredentialServicer
 	dekSvc        service.DEKServicer
 	tenantSvc     tenant.TenantServicer
+	volumeSvc     volume.Service
 	userSvc       user.UserServicer
 	roleSvc       role.RoleServicer
 	certProv      cert.CertProvider
+	certEnroll    service.CertEnrollmentServicer
+	onboarding    service.TenantOnboardingServicer
 	collectionSvc service.CollectionServicer
 	backupSvc     service.BackupServicer
 	rebalanceSvc  service.RebalanceServicer
@@ -989,13 +992,18 @@ func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*p
 	return &pb.BatchResponse{Responses: responses}, nil
 }
 
-// BatchImport parses and imports key-value pairs from the file carried in
-// the request. It resolves the batch service through the SAME per-(tenant,
-// database) scope as Batch, so the namespaced wrapper's KeyPrefix is applied
-// to every imported key exactly as it is for every other write to the
-// database. The file must fit within the server's max receive message size
-// (DefaultMaxRecvMsgSize).
-func (s *qrdbServiceServer) BatchImport(ctx context.Context, req *pb.BatchImportRequest) (*pb.BatchImportResponse, error) {
+// ---------------------------------------------------------------------------
+// Chunked import session handlers
+//
+// See docs/transactions/architecture.md ("Import session"). Each RPC
+// resolves the batch service through the SAME per-(tenant, database) scope
+// Batch and BatchImport do, so session isolation and the final imported
+// keys' namespace both follow the same KeyPrefix every other write to the
+// database gets.
+// ---------------------------------------------------------------------------
+
+// ImportBegin starts a chunked import session.
+func (s *qrdbServiceServer) ImportBegin(ctx context.Context, req *pb.ImportBeginRequest) (*pb.ImportBeginResponse, error) {
 	batchSvc, svcErr := s.batchSvcFor(ctx)
 	if svcErr != nil {
 		return nil, mapServiceError(svcErr)
@@ -1011,7 +1019,37 @@ func (s *qrdbServiceServer) BatchImport(ctx context.Context, req *pb.BatchImport
 		Transactional: req.GetTransactional(),
 	}
 
-	result, err := batchSvc.Import(ctx, bytes.NewReader(req.GetFile()), opts)
+	sessionID, err := batchSvc.ImportBegin(ctx, opts)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.ImportBeginResponse{SessionId: sessionID}, nil
+}
+
+// ImportAppend stages a chunk of a chunked import session.
+func (s *qrdbServiceServer) ImportAppend(ctx context.Context, req *pb.ImportAppendRequest) (*pb.ImportAppendResponse, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+
+	if err := batchSvc.ImportAppend(ctx, req.GetSessionId(), req.GetSeq(), req.GetChunk()); err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.ImportAppendResponse{}, nil
+}
+
+// ImportCommit applies every staged chunk of a chunked import session
+// atomically.
+func (s *qrdbServiceServer) ImportCommit(ctx context.Context, req *pb.ImportCommitRequest) (*pb.ImportCommitResponse, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+
+	result, err := batchSvc.ImportCommit(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1025,12 +1063,26 @@ func (s *qrdbServiceServer) BatchImport(ctx context.Context, req *pb.BatchImport
 		}
 	}
 
-	return &pb.BatchImportResponse{
+	return &pb.ImportCommitResponse{
 		Total:     int32(result.Total),
 		Succeeded: int32(result.Succeeded),
 		Failed:    int32(result.Failed),
 		Errors:    errs,
 	}, nil
+}
+
+// ImportAbort discards a chunked import session without applying anything.
+func (s *qrdbServiceServer) ImportAbort(ctx context.Context, req *pb.ImportAbortRequest) (*pb.ImportAbortResponse, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+
+	if err := batchSvc.ImportAbort(ctx, req.GetSessionId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.ImportAbortResponse{}, nil
 }
 
 // ---------------------------------------------------------------------------

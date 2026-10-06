@@ -333,18 +333,12 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
+	createVolumePoolREST(t, sysClient, leaderPort, "default")
+
 	// ---------------------------------------------------------------------
 	// Tenant + role + user, mirroring TestIsolationRaft_Scale_Foundation.
 	// ---------------------------------------------------------------------
-	tenantBody, tenantStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id":                  rebalMoveTenantID,
-			"name":                "Rebalance Move Test Tenant",
-			"isolation_type":      "raft",
-			"barrier_auto_unseal": true,
-		},
-	)
+	tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, rebalMoveTenantID, "Rebalance Move Test Tenant")
 	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tenantStatus, tenantBody)
 	}

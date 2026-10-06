@@ -28,7 +28,7 @@ import (
 // database explicitly requesting cluster mode "none" is rejected: a
 // dedicated Raft group is incoherent with "no consensus".
 func TestCreateForTenant_RaftTopology_NoneRejected(t *testing.T) {
-	svc, _ := newRaftTenantDatabaseService(t, raftTenant(t), nil)
+	svc, _ := newRaftTenantDatabaseService(t, raftTenant(t), "", nil)
 	ctx := tenant.WithTenantID(context.Background(), "rt")
 
 	cfg := raftDBConfig("app")
@@ -47,7 +47,7 @@ func TestCreateForTenant_RaftTopology_NoneRejected(t *testing.T) {
 // (store + scheduler) configured, rather than silently collapsing to a
 // single local replica.
 func TestCreateForTenant_RaftTopology_DistributedRequiresPlacement(t *testing.T) {
-	svc, _ := newRaftTenantDatabaseService(t, raftTenant(t), nil)
+	svc, _ := newRaftTenantDatabaseService(t, raftTenant(t), "", nil)
 	ctx := tenant.WithTenantID(context.Background(), "rt")
 
 	cfg := raftDBConfig("app")
@@ -95,7 +95,7 @@ func TestCreateForTenant_RaftTopology_DistributedWithPlacementSucceeds(t *testin
 // existing IsolationRaft default, which fills in ClusterMode=local -- is
 // unaffected by the new topology validation (non-regression).
 func TestCreateForTenant_RaftTopology_LocalDefaultUnaffected(t *testing.T) {
-	svc, _ := newRaftTenantDatabaseService(t, raftTenant(t), nil)
+	svc, _ := newRaftTenantDatabaseService(t, raftTenant(t), "", nil)
 	ctx := tenant.WithTenantID(context.Background(), "rt")
 
 	cfg := raftDBConfig("app")

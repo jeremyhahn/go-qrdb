@@ -18,8 +18,15 @@
 // pkg/service imports back into pkg/firstboot (ceremony_admin_rebind.go,
 // ceremony_leader_gate.go) -- an internal "package firstboot" test file
 // importing pkg/service would close that into an import cycle the
-// production code never has. See export_test.go for the two unexported
-// symbols this file reaches through it.
+// production code never has.
+//
+// It therefore calls firstboot.RegisterBuiltInRoles and
+// firstboot.RoleMatchesSeed directly rather than through an export_test.go
+// shim: gosec's package loader resolves an external test package's imports
+// against the plain (non-test-augmented) build of the imported package, so
+// a symbol an export_test.go exposes only for tests is "undefined" to it
+// even though `go test` builds it fine -- the gate goes red with zero real
+// findings. Both functions are genuine package API for exactly this reason.
 package firstboot_test
 
 import (
@@ -69,7 +76,7 @@ func discardLogger() *slog.Logger {
 // Two kinds of concurrent seeder race the SAME built-in roles, in the SAME
 // system tenant, over the SAME real shard:
 //
-//   - N goroutines, one per cluster host, each running registerBuiltInRoles
+//   - N goroutines, one per cluster host, each running RegisterBuiltInRoles
 //     exactly as cmd/qrdbd's runFirstBoot does on every node at boot.
 //   - One more goroutine running role.RoleServicer.ReconcileBuiltInRoles
 //     directly, over a store built exactly as pkg/server/lifecycle's
@@ -195,6 +202,18 @@ func TestRegisterBuiltInRoles_ConcurrentSeedersConverge(t *testing.T) {
 // itself, so the fix is more patience, not a different algorithm.
 const extraShardReadyBound = 5 * time.Minute
 
+// shardReadyPollAttempt bounds a single readiness probe inside
+// waitShardReadableWithin, rather than handing a probe the whole `bound`:
+// SyncGetShardMembership blocks for its entire context budget while no
+// leader has confirmed a read index yet, so a probe sized to `bound` turns
+// the retry loop into one very long call -- a single slow election round
+// consumes the whole budget and the wait fails having tried exactly once.
+// The two timeouts extraShardReadyBound's doc records were exactly that: not
+// "needs more patience" but "never got a second try." A short per-attempt
+// timeout lets the loop send a fresh ReadIndex request throughout the whole
+// bound window instead of spending it on a single attempt.
+const shardReadyPollAttempt = 2 * time.Second
+
 // waitShardReadableWithin is raftharness.Cluster.WaitReadable with a wait
 // bound this test controls directly, rather than the package's own fixed
 // raftharness.Bound -- see extraShardReadyBound.
@@ -203,7 +222,7 @@ func waitShardReadableWithin(t testing.TB, hosts []*quicraft.Host, shardID uint6
 	deadline := time.Now().Add(bound)
 	for _, host := range hosts {
 		for {
-			ctx, cancel := context.WithTimeout(context.Background(), bound)
+			ctx, cancel := context.WithTimeout(context.Background(), shardReadyPollAttempt)
 			_, err := host.SyncGetShardMembership(ctx, shardID)
 			cancel()
 			if err == nil {

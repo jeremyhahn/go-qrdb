@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -101,7 +102,7 @@ func buildTenantRaftConfigs(dataRoot string) (quicraftconfig.HostConfig, quicraf
 // opens the encrypted Pebble immediately and a sealed barrier would fail every
 // file open with seal.ErrSealed. The caller (TenantHostRegistry) drives the
 // barrier through Initialize (create) or Unseal (boot re-attach) first.
-func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.TenantBarrier, logger *slog.Logger) (*tenantHost, error) {
+func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.TenantBarrier, importSessionCfg qrdbconfig.ImportSessionConfig, logger *slog.Logger) (*tenantHost, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -157,7 +158,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 		lessor:   lessor,
 		cancel:   cancel,
 		logger:   logger,
-		services: buildDataPlaneServices(adapter, tenantHostShardID, hub),
+		services: buildDataPlaneServices(adapter, tenantHostShardID, hub, importSessionCfg),
 	}
 
 	// Leader-side lease-expiry sweeper. The tenant host is a single-node
@@ -480,21 +481,30 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 // intentionally omitted: it requires a separate per-tenant Pebble vector store
 // rather than the Raft state machine, which is out of scope here.
 //
+// importSessionCfg bounds a chunked import session on this shard
+// (config.ImportSession, "import_session:" in YAML); the zero value
+// resolves to the package defaults WithImportSessionLimits documents.
+//
 // mvccOpts configure the MVCC service: a dedicated per-database raft shard
 // passes service.WithDedicatedKeyspace, because the shard is that one
 // database's whole keyspace; the volume Host, which every database of the
 // tenant shares, passes nothing, so it refuses the empty compaction prefix.
-func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
+func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
 	kv := service.NewKVService(host, shardID)
 	mvcc := service.NewMVCCKVService(host, shardID, mvccOpts...)
 	idx := service.NewIndexService(host, shardID)
 	txn := service.NewTransactionService(host, shardID)
 	return &DatabaseServices{
-		Name:        "",
-		ShardID:     shardID,
-		KV:          kv,
-		MVCC:        mvcc,
-		Batch:       service.NewBatchService(host, shardID),
+		Name:    "",
+		ShardID: shardID,
+		KV:      kv,
+		MVCC:    mvcc,
+		Batch: service.NewBatchService(host, shardID, service.WithImportSessionLimits(
+			importSessionCfg.ResolvedMaxSessionBytes(),
+			importSessionCfg.ResolvedMaxChunksPerSession(),
+			importSessionCfg.ResolvedMaxSessionsPerTenant(),
+			importSessionCfg.ResolvedSessionTTLSeconds(),
+		)),
 		Transaction: txn,
 		Lease:       service.NewLeaseService(host, shardID),
 		TimeSeries:  service.NewTimeSeriesService(host, shardID),

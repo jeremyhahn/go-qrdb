@@ -888,7 +888,7 @@ func TestEmbeddedTenant_Create(t *testing.T) {
 			}, nil
 		},
 	}
-	tr := newExtTransport(t, WithTenantService(svc))
+	tr := newExtTransport(t, WithTenantService(svc), WithTenantOnboarding(onboardingFromTenant(svc)))
 	resp, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
 		ID:            "t1",
 		Name:          "tenant 1",
@@ -932,7 +932,7 @@ func TestEmbeddedTenant_Create_Error(t *testing.T) {
 			return nil, errSentinel
 		},
 	}
-	tr := newExtTransport(t, WithTenantService(svc))
+	tr := newExtTransport(t, WithTenantService(svc), WithTenantOnboarding(onboardingFromTenant(svc)))
 	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{})
 	if !errors.Is(err, errSentinel) {
 		t.Errorf("expected errSentinel, got %v", err)

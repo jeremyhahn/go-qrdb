@@ -25,6 +25,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -324,22 +326,13 @@ func (m *mockRoleSvc) ResolvePermissions(_ context.Context, ids []string) ([]per
 type mockCertProvider struct {
 	mu sync.Mutex
 
-	genErr    error
-	exportErr error
 	revokeErr error
 	listErr   error
 
-	lastGenReq *cert.GenerateRequest
-	lastExport struct {
-		Cert, Key  []byte
-		Passphrase string
-	}
 	lastRevoke string
 	lastListT  string
 
-	genResp    *cert.CertBundle
-	exportResp []byte
-	listResp   []*cert.CertRecord
+	listResp []*cert.CertRecord
 }
 
 var _ cert.CertProvider = (*mockCertProvider)(nil)
@@ -347,38 +340,14 @@ var _ cert.CertProvider = (*mockCertProvider)(nil)
 func newMockCertProvider() *mockCertProvider {
 	now := time.Now().UTC()
 	return &mockCertProvider{
-		genResp: &cert.CertBundle{
-			CertPEM: []byte("-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n"),
-			KeyPEM:  []byte("-----BEGIN PRIVATE KEY-----\nMOCK\n-----END PRIVATE KEY-----\n"),
-			Serial:  "0123ABCD",
-		},
-		exportResp: []byte("mock-pkcs12-data"),
 		listResp: []*cert.CertRecord{
 			{Serial: "AA01", Username: "alice", TenantID: "t1", IssuedAt: now, ExpiresAt: now.Add(time.Hour), Revoked: false},
 		},
 	}
 }
 
-func (m *mockCertProvider) GenerateClientCert(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastGenReq = req
-	if m.genErr != nil {
-		return nil, m.genErr
-	}
-	return m.genResp, nil
-}
-
-func (m *mockCertProvider) ExportPKCS12(_ context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastExport.Cert = append([]byte(nil), certPEM...)
-	m.lastExport.Key = append([]byte(nil), keyPEM...)
-	m.lastExport.Passphrase = passphrase
-	if m.exportErr != nil {
-		return nil, m.exportErr
-	}
-	return m.exportResp, nil
+func (m *mockCertProvider) IssueClientCert(_ context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	return &cert.IssuedCert{CertPEM: []byte("-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n"), Serial: "0123ABCD"}, nil
 }
 
 func (m *mockCertProvider) RevokeCert(_ context.Context, serial string) (*cert.RevokeResult, error) {
@@ -410,10 +379,101 @@ func (m *mockCertProvider) CACertPEM() []byte {
 }
 
 // ---------------------------------------------------------------------------
+// mockCertEnrollmentServicer is an in-memory service.CertEnrollmentServicer
+// for transport tests of IssueCert/EnrollCert/trust-anchor verbs.
+// ---------------------------------------------------------------------------
+
+type mockCertEnrollmentServicer struct {
+	mu sync.Mutex
+
+	signErr   error
+	enrollErr error
+
+	lastSign   *service.SignCertificateRequest
+	lastEnroll *service.EnrollCertificateRequest
+
+	signResp   *service.EnrolledCertificate
+	enrollResp *service.EnrolledCertificate
+
+	anchorsErr error
+	anchors    []trustanchor.Anchor
+
+	lastAddTenant, lastAddBundle   string
+	lastListTenant                 string
+	lastRemoveTenant, lastRemoveFP string
+	removeErr                      error
+}
+
+var _ service.CertEnrollmentServicer = (*mockCertEnrollmentServicer)(nil)
+
+func newMockCertEnrollmentServicer() *mockCertEnrollmentServicer {
+	return &mockCertEnrollmentServicer{
+		signResp: &service.EnrolledCertificate{
+			Username: "alice", TenantID: "t1",
+			CertPEM: []byte("-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n"),
+			Serial:  "0123ABCD", Thumbprint: "thumb-0123ABCD",
+		},
+		enrollResp: &service.EnrolledCertificate{
+			Username: "alice", TenantID: "t1",
+			CertPEM:    []byte("-----BEGIN CERTIFICATE-----\nBYOC\n-----END CERTIFICATE-----\n"),
+			Thumbprint: "thumb-byoc",
+		},
+		anchors: []trustanchor.Anchor{{Fingerprint: "fp1", Subject: "CN=ca"}},
+	}
+}
+
+func (m *mockCertEnrollmentServicer) SignCertificate(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastSign = req
+	if m.signErr != nil {
+		return nil, m.signErr
+	}
+	return m.signResp, nil
+}
+
+func (m *mockCertEnrollmentServicer) EnrollCertificate(_ context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastEnroll = req
+	if m.enrollErr != nil {
+		return nil, m.enrollErr
+	}
+	return m.enrollResp, nil
+}
+
+func (m *mockCertEnrollmentServicer) AddTrustAnchors(_ context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastAddTenant, m.lastAddBundle = tenantID, string(bundlePEM)
+	if m.anchorsErr != nil {
+		return nil, m.anchorsErr
+	}
+	return m.anchors, nil
+}
+
+func (m *mockCertEnrollmentServicer) ListTrustAnchors(_ context.Context, tenantID string) ([]trustanchor.Anchor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastListTenant = tenantID
+	if m.anchorsErr != nil {
+		return nil, m.anchorsErr
+	}
+	return m.anchors, nil
+}
+
+func (m *mockCertEnrollmentServicer) RemoveTrustAnchor(_ context.Context, tenantID, fingerprint string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastRemoveTenant, m.lastRemoveFP = tenantID, fingerprint
+	return m.removeErr
+}
+
+// ---------------------------------------------------------------------------
 // Test harness
 // ---------------------------------------------------------------------------
 
-func connectAuthInProcess(t *testing.T, uSvc user.UserServicer, rSvc role.RoleServicer, cProv cert.CertProvider) (*Transport, func()) {
+func connectAuthInProcess(t *testing.T, uSvc user.UserServicer, rSvc role.RoleServicer, cProv cert.CertProvider, extraOpts ...mcpapi.ServerOption) (*Transport, func()) {
 	t.Helper()
 
 	opts := []mcpapi.ServerOption{}
@@ -426,6 +486,7 @@ func connectAuthInProcess(t *testing.T, uSvc user.UserServicer, rSvc role.RoleSe
 	if cProv != nil {
 		opts = append(opts, mcpapi.WithCertProvider(cProv))
 	}
+	opts = append(opts, extraOpts...)
 
 	srv := mcpapi.NewServer(
 		newMockKVService(),
@@ -924,63 +985,158 @@ func TestListPermissions_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GenerateCert / ExportCert / RevokeCert / ListCerts
+// IssueCert / EnrollCert / RevokeCert / ListCerts
 // ---------------------------------------------------------------------------
 
-func TestGenerateCert_Success(t *testing.T) {
-	prov := newMockCertProvider()
-	tr, cleanup := connectAuthInProcess(t, nil, nil, prov)
+func TestIssueCert_Success(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
 	defer cleanup()
 
-	b, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	enrolled, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{
 		Username: "alice",
-		TenantID: "t1",
+		CSRPEM:   "csr-bytes",
 		TTL:      "24h",
 	})
 	if err != nil {
-		t.Fatalf("GenerateCert: %v", err)
+		t.Fatalf("IssueCert: %v", err)
 	}
-	if b.Serial != "0123ABCD" {
-		t.Errorf("serial: %q", b.Serial)
+	if enrolled.Serial != "0123ABCD" {
+		t.Errorf("serial: %q", enrolled.Serial)
+	}
+	if enrolled.Thumbprint != "thumb-0123ABCD" {
+		t.Errorf("thumbprint: %q", enrolled.Thumbprint)
+	}
+	enroll.mu.Lock()
+	defer enroll.mu.Unlock()
+	if enroll.lastSign == nil || enroll.lastSign.Username != "alice" || string(enroll.lastSign.CSRPEM) != "csr-bytes" || enroll.lastSign.TTL != 24*time.Hour {
+		t.Errorf("server received %+v; want Username=alice CSRPEM=csr-bytes TTL=24h", enroll.lastSign)
 	}
 }
 
-func TestGenerateCert_ServiceError(t *testing.T) {
-	prov := newMockCertProvider()
-	prov.genErr = errors.New("ca unavailable")
-	tr, cleanup := connectAuthInProcess(t, nil, nil, prov)
+func TestIssueCert_ServiceError(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	enroll.signErr = errors.New("ca unavailable")
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
 	defer cleanup()
 
-	if _, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{Username: "x"}); err == nil {
+	if _, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "x", CSRPEM: "csr"}); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestExportCert_Success(t *testing.T) {
-	prov := newMockCertProvider()
-	tr, cleanup := connectAuthInProcess(t, nil, nil, prov)
+func TestEnrollCert_Success(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
 	defer cleanup()
 
-	resp, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM:    "cert",
-		KeyPEM:     "key",
-		Passphrase: "secret",
+	enrolled, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{
+		Username: "alice",
+		CertPEM:  "leaf-pem",
+		ChainPEM: "chain-pem",
 	})
 	if err != nil {
-		t.Fatalf("ExportCert: %v", err)
+		t.Fatalf("EnrollCert: %v", err)
 	}
-	if resp.PKCS12 == "" {
-		t.Error("expected non-empty PKCS12 data")
+	if enrolled.Serial != "" {
+		t.Errorf("serial: %q, want empty for a bring-your-own certificate", enrolled.Serial)
+	}
+	if enrolled.Thumbprint != "thumb-byoc" {
+		t.Errorf("thumbprint: %q", enrolled.Thumbprint)
+	}
+	enroll.mu.Lock()
+	defer enroll.mu.Unlock()
+	if enroll.lastEnroll == nil || string(enroll.lastEnroll.CertPEM) != "leaf-pem" || string(enroll.lastEnroll.ChainPEM) != "chain-pem" {
+		t.Errorf("server received %+v; want CertPEM=leaf-pem ChainPEM=chain-pem", enroll.lastEnroll)
 	}
 }
 
-func TestExportCert_ServiceError(t *testing.T) {
-	prov := newMockCertProvider()
-	prov.exportErr = errors.New("encoding failed")
-	tr, cleanup := connectAuthInProcess(t, nil, nil, prov)
+func TestEnrollCert_ServiceError(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	enroll.enrollErr = errors.New("chain verification failed")
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
 	defer cleanup()
 
-	if _, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{CertPEM: "x", KeyPEM: "y", Passphrase: "z"}); err == nil {
+	if _, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{Username: "x", CertPEM: "pem"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AddTrustAnchors / ListTrustAnchors / RemoveTrustAnchor
+// ---------------------------------------------------------------------------
+
+func TestAddTrustAnchors_Success(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	resp, err := tr.AddTrustAnchors(context.Background(), &transport.AddTrustAnchorsRequest{TenantID: "t1", CertsPEM: "bundle-pem"})
+	if err != nil {
+		t.Fatalf("AddTrustAnchors: %v", err)
+	}
+	if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+		t.Fatalf("anchors: %+v", resp.Anchors)
+	}
+	enroll.mu.Lock()
+	defer enroll.mu.Unlock()
+	if enroll.lastAddTenant != "t1" || enroll.lastAddBundle != "bundle-pem" {
+		t.Errorf("server received tenant=%q bundle=%q; want t1/bundle-pem", enroll.lastAddTenant, enroll.lastAddBundle)
+	}
+}
+
+func TestAddTrustAnchors_ServiceError(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	enroll.anchorsErr = errors.New("invalid PEM")
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	if _, err := tr.AddTrustAnchors(context.Background(), &transport.AddTrustAnchorsRequest{TenantID: "t1", CertsPEM: "bad"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListTrustAnchors_Success(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	resp, err := tr.ListTrustAnchors(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("ListTrustAnchors: %v", err)
+	}
+	if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+		t.Fatalf("anchors: %+v", resp.Anchors)
+	}
+	enroll.mu.Lock()
+	defer enroll.mu.Unlock()
+	if enroll.lastListTenant != "t1" {
+		t.Errorf("server received tenant=%q; want t1", enroll.lastListTenant)
+	}
+}
+
+func TestRemoveTrustAnchor_Success(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	if err := tr.RemoveTrustAnchor(context.Background(), "t1", "fp1"); err != nil {
+		t.Fatalf("RemoveTrustAnchor: %v", err)
+	}
+	enroll.mu.Lock()
+	defer enroll.mu.Unlock()
+	if enroll.lastRemoveTenant != "t1" || enroll.lastRemoveFP != "fp1" {
+		t.Errorf("server received tenant=%q fp=%q; want t1/fp1", enroll.lastRemoveTenant, enroll.lastRemoveFP)
+	}
+}
+
+func TestRemoveTrustAnchor_ServiceError(t *testing.T) {
+	enroll := newMockCertEnrollmentServicer()
+	enroll.removeErr = errors.New("no such anchor")
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	if err := tr.RemoveTrustAnchor(context.Background(), "t1", "nope"); err == nil {
 		t.Fatal("expected error")
 	}
 }

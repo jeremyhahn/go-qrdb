@@ -25,7 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -123,9 +122,17 @@ func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.Ceremony
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
 		in.Secret = secretArg(req, "secret")
-		defer secure.Wipe(in.Secret)
 
-		result, err := svc.CeremonyInitialize(ctx, ca, holderwire.CeremonyInitFrom(&in))
+		// in.Secret is consumed into a *secure.Buffer by CeremonyInitFrom,
+		// which this handler owns and destroys once the ceremony call below
+		// has finished with it.
+		opts, err := holderwire.CeremonyInitFrom(&in)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
+		}
+		defer opts.Secret.Destroy()
+
+		result, err := svc.CeremonyInitialize(ctx, ca, opts)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}

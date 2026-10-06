@@ -1,6 +1,6 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
 quotas and entitlements, and drive their dedicated barriers. All verbs accept
@@ -15,23 +15,64 @@ below give the real spelling per verb.
 
 ### `qrdb tenant create`
 
+Creates a tenant **together with its first admin**, or not at all.
+
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--id` | string | — | tenant ID, must be unique |
-| `--name` | string | — | human-readable name |
+| `--id` | string | — | required; tenant ID, must be unique |
+| `--name` | string | — | required; human-readable name |
 | `--isolation-type` | string | `prefix` | `prefix \| barrier \| volume \| raft` |
 | `--data-root` | string | — | **retired, refused** (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`): a tenant's location is a named volume pool resolved on each node, never a path |
 | `--barrier-auto-unseal` | bool | false | for a dedicated-isolation tenant, use **system-managed** auto-unseal instead of the secure self-managed default — **entitlement-gated** |
+| `--admin-username` | string | — | required; the tenant's first admin |
+| `--admin-csr` | string | — | the first admin's PEM certificate signing request; signed by the tenant's own CA |
+| `--admin-cert` | string | — | the first admin's own PEM certificate, leaf first; must chain to `--trust-anchors` |
+| `--admin-chain` | string | — | optional PEM intermediates for `--admin-cert` |
+| `--trust-anchors` | string | — | a PEM bundle of CA certificates to register as the tenant's trust anchors |
+| `--out` | string | — | also write the admin's certificate to this directory as `admin-cert.pem` |
+
+Exactly one of `--admin-csr` and `--admin-cert` is required. The admin keeps
+its own key either way: it makes a CSR with `qrdb ca csr`
+([../certificate-authority/cli.md](../certificate-authority/cli.md)) and hands
+the operator only `csr.pem`.
 
 ```bash
-qrdb tenant create --id acme --name "Acme Corp"
-qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume
-qrdb tenant create --id big-co --name "Big Co" --isolation-type raft
+# the admin, on the admin's machine:
+qrdb ca csr --username alice --out ./alice
+
+# the platform operator:
+qrdb tenant create --id acme --name "Acme Corp" \
+     --admin-username alice --admin-csr alice/csr.pem --out ./acme
+qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume \
+     --admin-username alice --admin-csr alice/csr.pem
+qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
+     --admin-username ops --admin-cert ops.pem --trust-anchors corp-root.pem
 ```
 
 A `volume` or `raft` tenant is allocated a directory from the node's volume
 pool. The replicated record names the pool and the slot within it, never a
 path, and each node resolves that slot to its own directory, `{pool path}/{tenant}`.
+
+The command prints the tenant, the admin's username, the certificate's SPKI
+thumbprint and serial (none for `--admin-cert`), and the certificate. Nothing
+it prints or writes is a private key.
+
+**Validation comes first.** The CSR's signature and key, the trust anchors, and
+an `--admin-cert`'s chain and identity (its CN must be `--admin-username` and
+it must name the new tenant) are all checked before anything is written, so a
+refused credential leaves no tenant behind and the id stays usable. A failure
+after that point undoes what was written — but undoing a tenant deletes it,
+and a deleted id is retired (below), so that id cannot be used again.
+
+**BREAKING:** `--admin-username` and one of `--admin-csr` / `--admin-cert` are
+now required; a tenant can no longer be created without its first admin.
+
+**When the admin's account exists.** For a `prefix` tenant the account is
+created at once, with the tenant's Admin role and the certificate bound. A
+`barrier`, `volume` or `raft` tenant keeps its accounts behind its own barrier,
+which does not exist yet, so the command reports that the admin's account is
+created when the admin runs `qrdb tenant barrier-init` with this certificate —
+and only this certificate may run it.
 
 `--barrier-auto-unseal` trades custody for convenience: the tenant's key is
 wrapped under the *system* barrier so the node can unseal it without the tenant
@@ -188,6 +229,11 @@ barrier of its own.
 
 ### `qrdb tenant barrier-init`
 
+On a tenant created with its first admin, only that admin's certificate may
+initialize the barrier, and the admin's account is created as soon as the
+barrier is usable. Under `auth.mtls_binding_policy: required` a tenant with no
+onboarded admin cannot have its barrier initialized at all.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--id` | string | tenant ID |
@@ -245,9 +291,14 @@ The tenant is taken from **your certificate's OU**, not from a flag. To operate
 as a tenant, use that tenant's certificate:
 
 ```bash
-qrdb ca issue --username alice --tenant-id acme --out ./alice
 qrdb --cert-file alice/cert.pem --key-file alice/key.pem kv list app/
 ```
+
+That certificate is the one `tenant create` returned for the first admin, or
+one the tenant's Admin issued later with `qrdb ca issue` — which always issues
+into the caller's own tenant. Trust anchors, for a tenant whose users bring
+certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
+[../trust-anchors/cli.md](../trust-anchors/cli.md).
 
 ## Parity
 

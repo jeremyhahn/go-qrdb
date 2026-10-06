@@ -92,7 +92,10 @@ n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts,
     node.WithEmbeddedCaller(cert), // the identity this node's client forwards as
 )
 orders, err := n.Client().DatabaseScoped("orders")
-err = orders.KV().Put(tenant.WithTenantID(ctx, "acme"), "k", []byte("v"))
+// The node authorizes the identity the call's context carries before it
+// serves or forwards the call; a forward is made as the configured caller.
+appCtx := tenant.WithTenantID(auth.WithIdentity(ctx, appIdentity), "acme")
+err = orders.KV().Put(appCtx, "k", []byte("v"))
 ```
 
 | Symbol | Package | Purpose |

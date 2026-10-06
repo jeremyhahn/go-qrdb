@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,8 +139,12 @@ func (m *mockTransactionService) ExecuteWithMode(_ context.Context, _ []service.
 // ---------------------------------------------------------------------------
 
 type mockBatchService struct {
-	executeFn func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
-	importFn  func(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+	executeFn      func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
+	importFn       func(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+	importBeginFn  func(ctx context.Context, opts service.ImportOptions) (string, error)
+	importAppendFn func(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
+	importCommitFn func(ctx context.Context, sessionID string) (*service.ImportResult, error)
+	importAbortFn  func(ctx context.Context, sessionID string) error
 }
 
 func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
@@ -160,6 +163,34 @@ func (m *mockBatchService) Import(ctx context.Context, file io.Reader, opts serv
 		return m.importFn(ctx, file, opts)
 	}
 	return nil, nil
+}
+
+func (m *mockBatchService) ImportBegin(ctx context.Context, opts service.ImportOptions) (string, error) {
+	if m.importBeginFn != nil {
+		return m.importBeginFn(ctx, opts)
+	}
+	return "", nil
+}
+
+func (m *mockBatchService) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if m.importAppendFn != nil {
+		return m.importAppendFn(ctx, sessionID, seq, chunk)
+	}
+	return nil
+}
+
+func (m *mockBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	if m.importCommitFn != nil {
+		return m.importCommitFn(ctx, sessionID)
+	}
+	return nil, nil
+}
+
+func (m *mockBatchService) ImportAbort(ctx context.Context, sessionID string) error {
+	if m.importAbortFn != nil {
+		return m.importAbortFn(ctx, sessionID)
+	}
+	return nil
 }
 
 func (m *mockBatchService) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
@@ -2631,448 +2662,6 @@ func TestMapHTTPError_AllTypes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Batch Import Handler Tests
-// ---------------------------------------------------------------------------
-
-// createMultipartRequest creates a multipart/form-data request for testing.
-func createMultipartRequest(t *testing.T, fields map[string]string, filename, fileContent string) *http.Request {
-	t.Helper()
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	// Add form fields.
-	for k, v := range fields {
-		if err := writer.WriteField(k, v); err != nil {
-			t.Fatalf("failed to write field %s: %v", k, err)
-		}
-	}
-
-	// Add file.
-	if filename != "" {
-		part, err := writer.CreateFormFile("file", filename)
-		if err != nil {
-			t.Fatalf("failed to create form file: %v", err)
-		}
-		if _, err := part.Write([]byte(fileContent)); err != nil {
-			t.Fatalf("failed to write file content: %v", err)
-		}
-	}
-
-	if err := writer.Close(); err != nil {
-		t.Fatalf("failed to close multipart writer: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/batch/import", &buf)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	return req
-}
-
-func TestHandleBatchImport_Success(t *testing.T) {
-	var capturedOpts service.ImportOptions
-	batchSvc := &mockBatchService{
-		importFn: func(_ context.Context, _ io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
-			capturedOpts = opts
-			return &service.ImportResult{
-				Total:     2,
-				Succeeded: 2,
-				Failed:    0,
-				Errors:    nil,
-			}, nil
-		},
-	}
-
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":     "csv",
-		"keyField":   "id",
-		"valueMode":  "field",
-		"valueField": "value",
-		"skipHeader": "true",
-	}, "data.csv", "id,value\nkey1,v1\nkey2,v2\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	var resp batchImportResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if resp.Total != 2 {
-		t.Fatalf("expected Total=2, got %d", resp.Total)
-	}
-	if resp.Succeeded != 2 {
-		t.Fatalf("expected Succeeded=2, got %d", resp.Succeeded)
-	}
-	if resp.Failed != 0 {
-		t.Fatalf("expected Failed=0, got %d", resp.Failed)
-	}
-
-	// Verify options were passed correctly.
-	if capturedOpts.Format != "csv" {
-		t.Fatalf("expected format 'csv', got %q", capturedOpts.Format)
-	}
-	if capturedOpts.KeyField != "id" {
-		t.Fatalf("expected keyField 'id', got %q", capturedOpts.KeyField)
-	}
-	if capturedOpts.ValueMode != "field" {
-		t.Fatalf("expected valueMode 'field', got %q", capturedOpts.ValueMode)
-	}
-	if capturedOpts.ValueField != "value" {
-		t.Fatalf("expected valueField 'value', got %q", capturedOpts.ValueField)
-	}
-	if !capturedOpts.SkipHeader {
-		t.Fatal("expected skipHeader=true")
-	}
-}
-
-func TestHandleBatchImport_WithErrors(t *testing.T) {
-	batchSvc := &mockBatchService{
-		importFn: func(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
-			return &service.ImportResult{
-				Total:     3,
-				Succeeded: 1,
-				Failed:    2,
-				Errors: []service.ImportError{
-					{Row: 2, Key: "bad-key", Message: "invalid value format"},
-					{Row: 3, Key: "other-key", Message: "key too long"},
-				},
-			}, nil
-		},
-	}
-
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "csv",
-		"keyField":  "id",
-		"valueMode": "row",
-	}, "data.csv", "id\nkey1\nbad-key\nother-key\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	var resp batchImportResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if resp.Failed != 2 {
-		t.Fatalf("expected Failed=2, got %d", resp.Failed)
-	}
-	if len(resp.Errors) != 2 {
-		t.Fatalf("expected 2 errors, got %d", len(resp.Errors))
-	}
-	if resp.Errors[0].Row != 2 {
-		t.Fatalf("expected first error row=2, got %d", resp.Errors[0].Row)
-	}
-}
-
-func TestHandleBatchImport_ServiceNotImplemented(t *testing.T) {
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0")
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "csv",
-		"keyField":  "id",
-		"valueMode": "row",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("expected status 501, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_MissingFile(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	// Request without file.
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-	_ = writer.WriteField("format", "csv")
-	_ = writer.WriteField("keyField", "id")
-	_ = writer.WriteField("valueMode", "row")
-	_ = writer.Close()
-
-	req := httptest.NewRequest(http.MethodPost, "/batch/import", &buf)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_MissingFormat(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"keyField":  "id",
-		"valueMode": "row",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_InvalidFormat(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "xml",
-		"keyField":  "id",
-		"valueMode": "row",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_MissingKeyField(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "csv",
-		"valueMode": "row",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_MissingValueMode(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":   "csv",
-		"keyField": "id",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_InvalidValueMode(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "csv",
-		"keyField":  "id",
-		"valueMode": "invalid",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_MissingValueFieldWhenFieldMode(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "csv",
-		"keyField":  "id",
-		"valueMode": "field",
-	}, "data.csv", "id,value\nkey1,v1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_InvalidSkipHeader(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":     "csv",
-		"keyField":   "id",
-		"valueMode":  "row",
-		"skipHeader": "notabool",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_InvalidTransactional(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":        "csv",
-		"keyField":      "id",
-		"valueMode":     "row",
-		"transactional": "notabool",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_ServiceError(t *testing.T) {
-	batchSvc := &mockBatchService{
-		importFn: func(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
-			return nil, &service.ImportParseError{Err: errors.New("invalid csv")}
-		},
-	}
-
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "csv",
-		"keyField":  "id",
-		"valueMode": "row",
-	}, "data.csv", "not valid csv")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleBatchImport_TransactionalMode(t *testing.T) {
-	var capturedOpts service.ImportOptions
-	batchSvc := &mockBatchService{
-		importFn: func(_ context.Context, _ io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
-			capturedOpts = opts
-			return &service.ImportResult{Total: 1, Succeeded: 1}, nil
-		},
-	}
-
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":        "csv",
-		"keyField":      "id",
-		"valueMode":     "row",
-		"transactional": "true",
-	}, "data.csv", "id\nkey1\n")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	if !capturedOpts.Transactional {
-		t.Fatal("expected transactional=true")
-	}
-}
-
-func TestHandleBatchImport_JSONFormat(t *testing.T) {
-	var capturedOpts service.ImportOptions
-	batchSvc := &mockBatchService{
-		importFn: func(_ context.Context, _ io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
-			capturedOpts = opts
-			return &service.ImportResult{Total: 1, Succeeded: 1}, nil
-		},
-	}
-
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":     "json",
-		"keyField":   "id",
-		"valueMode":  "field",
-		"valueField": "value",
-	}, "data.json", `[{"id":"key1","value":"v1"}]`)
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	if capturedOpts.Format != "json" {
-		t.Fatalf("expected format 'json', got %q", capturedOpts.Format)
-	}
-}
-
-func TestHandleBatchImport_ArchiveFormat(t *testing.T) {
-	var capturedOpts service.ImportOptions
-	batchSvc := &mockBatchService{
-		importFn: func(_ context.Context, _ io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
-			capturedOpts = opts
-			return &service.ImportResult{Total: 1, Succeeded: 1}, nil
-		},
-	}
-
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
-
-	req := createMultipartRequest(t, map[string]string{
-		"format":    "archive",
-		"keyField":  "id",
-		"valueMode": "row",
-	}, "data.zip", "mock archive content")
-
-	rr := httptest.NewRecorder()
-	srv.handleBatchImport(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	if capturedOpts.Format != "archive" {
-		t.Fatalf("expected format 'archive', got %q", capturedOpts.Format)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Eventual-consistency read tests -- exercises ?consistency=eventual, which
 // routes to the service's *Stale methods
 // ---------------------------------------------------------------------------
@@ -3264,24 +2853,24 @@ func TestHandleUnassignRole_NilService_Direct(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
-func TestHandleGenerateCert_NilService_Direct(t *testing.T) {
+func TestHandleIssueCert_NilService_Direct(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
-	body := `{"username":"alice","tenantID":"t1"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/generate", strings.NewReader(body))
+	body := `{"username":"alice","csrPEM":"csr-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/issue", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	srv.handleGenerateCert(rec, req)
+	srv.handleIssueCert(rec, req)
 
 	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
-func TestHandleExportCert_NilService_Direct(t *testing.T) {
+func TestHandleEnrollCert_NilService_Direct(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
-	body := `{"certPEM":"c","keyPEM":"k","passphrase":"p"}`
-	req := httptest.NewRequest(http.MethodPost, "/certs/export", strings.NewReader(body))
+	body := `{"username":"alice","certPEM":"leaf-pem"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/enroll", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	srv.handleExportCert(rec, req)
+	srv.handleEnrollCert(rec, req)
 
 	assertStatus(t, rec, http.StatusNotImplemented)
 }
@@ -3367,23 +2956,6 @@ func TestHandleRole_EmptyID_Direct(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/roles/", nil)
 	rec := httptest.NewRecorder()
 	srv.handleRole(rec, req)
-
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-// ---------------------------------------------------------------------------
-// handleBatchImport ParseMultipartForm error
-// ---------------------------------------------------------------------------
-
-func TestHandleBatchImport_InvalidMultipartBody(t *testing.T) {
-	batchSvc := &mockBatchService{}
-	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithBatch(batchSvc))
-
-	// Send a non-multipart body with the multipart content type.
-	req := httptest.NewRequest(http.MethodPost, "/batch/import", strings.NewReader("not multipart data"))
-	req.Header.Set("Content-Type", "multipart/form-data; boundary=invalid")
-	rec := httptest.NewRecorder()
-	srv.handleBatchImport(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
 }

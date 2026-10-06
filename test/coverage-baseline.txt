@@ -97,7 +97,7 @@ github.com/jeremyhahn/go-qrdb/pkg/secure 91.01
 github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer 97.61
 github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer/cmd/secure-analyzer 0.00
 github.com/jeremyhahn/go-qrdb/pkg/server 91.53
-github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle 93.04
+github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle 94.02
 github.com/jeremyhahn/go-qrdb/pkg/service 93.00
 github.com/jeremyhahn/go-qrdb/pkg/service/backupsink 98.59
 github.com/jeremyhahn/go-qrdb/pkg/shard 100.00
@@ -116,7 +116,6 @@ github.com/jeremyhahn/go-qrdb/pkg/storage/namespace 100.00
 github.com/jeremyhahn/go-qrdb/pkg/storage/objstore 94.52
 github.com/jeremyhahn/go-qrdb/pkg/storage/partition 100.00
 github.com/jeremyhahn/go-qrdb/pkg/storage/pebble 93.95
-github.com/jeremyhahn/go-qrdb/pkg/storage/pool 94.40
 github.com/jeremyhahn/go-qrdb/pkg/storage/vector 93.34
 github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema 100.00
 github.com/jeremyhahn/go-qrdb/pkg/store 91.46
@@ -132,5 +131,6 @@ github.com/jeremyhahn/go-qrdb/pkg/vector/gpu 92.24
 github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote 92.08
 github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw 95.47
 github.com/jeremyhahn/go-qrdb/pkg/vector/ivf 99.42
+github.com/jeremyhahn/go-qrdb/pkg/volume 91.46
 github.com/jeremyhahn/go-qrdb/pkg/watch 95.29
 github.com/jeremyhahn/go-qrdb/pkg/writemode 100.00

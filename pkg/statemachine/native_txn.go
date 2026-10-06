@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
@@ -408,7 +409,7 @@ func isStateMachineKey(key []byte) bool {
 	if _, reserved := reservedKeys[string(key)]; reserved {
 		return true
 	}
-	return lease.IsTableKey(key)
+	return lease.IsTableKey(key) || importstage.IsTableKey(key)
 }
 
 // reachesStateMachineKeys reports whether an enumeration rooted at prefix can

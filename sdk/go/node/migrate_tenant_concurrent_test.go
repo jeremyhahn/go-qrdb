@@ -79,6 +79,8 @@ func TestNode_EnableEncryption_TenantScope_DuringSystemShamirSealedWindow(t *tes
 	require.False(t, n.IsSealed(), "none-strategy node must boot unsealed")
 	require.NotNil(t, n.tenantHosts, "tenantHosts must be wired when WithTenantIsolation() is set")
 
+	createDefaultPool(t, n)
+
 	// A dedicated IsolationVolume tenant on its OWN none-strategy barrier,
 	// entirely independent of the system barrier this test migrates.
 	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "Acme Corp",

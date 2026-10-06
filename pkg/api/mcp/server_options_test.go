@@ -113,13 +113,103 @@ func TestServer_WithCertProvider(t *testing.T) {
 	}
 
 	registeredTools := s.MCPServer().ListTools()
-	if _, ok := registeredTools["qrdb_cert_generate"]; !ok {
-		t.Error("qrdb_cert_generate not registered")
-	}
-	if _, ok := registeredTools["qrdb_cert_export"]; !ok {
-		t.Error("qrdb_cert_export not registered")
+	if _, ok := registeredTools["qrdb_cert_revoke"]; !ok {
+		t.Error("qrdb_cert_revoke not registered")
 	}
 	if _, ok := registeredTools["qrdb_cert_list"]; !ok {
 		t.Error("qrdb_cert_list not registered")
+	}
+	// Issuance and enrolment are a SEPARATE service (CertEnrollmentServicer,
+	// WithCertEnrollment): WithCertProvider alone must not register them.
+	if _, ok := registeredTools["qrdb_cert_issue"]; ok {
+		t.Error("qrdb_cert_issue registered without WithCertEnrollment")
+	}
+}
+
+// TestServer_WithCertEnrollment verifies the issue/enrol and trust-anchor
+// tools register under their own option, independent of WithCertProvider.
+func TestServer_WithCertEnrollment(t *testing.T) {
+	kvSvc := newMockKVService()
+	adminSvc := newMockAdminService()
+	certEnroll := &fakeCertEnrollTool{}
+
+	s := NewServer(kvSvc, adminSvc, ":0", WithCertEnrollment(certEnroll))
+
+	if s.certEnroll != certEnroll {
+		t.Error("cert enrollment service not set on server")
+	}
+
+	registeredTools := s.MCPServer().ListTools()
+	for _, name := range []string{
+		"qrdb_cert_issue", "qrdb_cert_enroll",
+		"qrdb_trust_anchor_add", "qrdb_trust_anchor_list", "qrdb_trust_anchor_remove",
+	} {
+		if _, ok := registeredTools[name]; !ok {
+			t.Errorf("%s not registered", name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiple options together
+// ---------------------------------------------------------------------------
+
+func TestServer_MultipleOptions(t *testing.T) {
+	kvSvc := newMockKVService()
+	adminSvc := newMockAdminService()
+	userSvc := &mockUserService{}
+	roleSvc := &mockRoleService{}
+	certProv := &mockCertProvider{}
+	barrierSvc := newMockBarrierService()
+	ceremonySvc := newMockCeremonyService()
+	credSvc := newMockCredentialService()
+	ca := &mockCeremonyCA{}
+
+	s := NewServer(kvSvc, adminSvc, ":0",
+		WithUserService(userSvc),
+		WithRoleService(roleSvc),
+		WithCertProvider(certProv),
+		WithBarrierService(barrierSvc),
+		WithCeremonyService(ceremonySvc),
+		WithCredentialService(credSvc),
+		WithCeremonyCA(ca),
+	)
+
+	if s.userSvc != userSvc {
+		t.Error("user service not set")
+	}
+	if s.roleSvc != roleSvc {
+		t.Error("role service not set")
+	}
+	if s.certProv != certProv {
+		t.Error("cert provider not set")
+	}
+	if s.barrierSvc != barrierSvc {
+		t.Error("barrier service not set")
+	}
+	if s.ceremonySvc != ceremonySvc {
+		t.Error("ceremony service not set")
+	}
+	if s.credentialSvc != credSvc {
+		t.Error("credential service not set")
+	}
+	if s.ceremonyCA != ca {
+		t.Error("ceremony CA not set")
+	}
+
+	registeredTools := s.MCPServer().ListTools()
+
+	wantTools := []string{
+		"qrdb_put", "qrdb_get", "qrdb_health",
+		"qrdb_user_create", "qrdb_role_create",
+		"qrdb_barrier_initialize",
+		"qrdb_ceremony_initialize",
+		"qrdb_credential_submit",
+	}
+
+	for _, name := range wantTools {
+		if _, ok := registeredTools[name]; !ok {
+			t.Errorf("tool %q not registered", name)
+		}
 	}
 }

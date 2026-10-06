@@ -1,6 +1,6 @@
 # SQL — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 > **Build-tag gated.** `qrdb_sql` compiles the shared SQL core; `qrdb_mysql`
 > and `qrdb_pgsql` add the wire protocols and each implies `qrdb_sql`.
@@ -376,7 +376,7 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
 | `pg_catalog` subset, `information_schema` additions | `pkg/sql/pgcatalog`, `pkg/sql/infoschema` | go-qrdb |
 | SQL engine | — | **go-mysql-server** (upstream) |
 | PostgreSQL framing | — | **psql-wire** (upstream) |
-| `database/sql` driver, GORM dialector | `sdk/go/driver`, `sdk/go/gorm` | go-qrdb |
+| `database/sql` driver, GORM configuration for the stock MySQL dialector | `sdk/go/driver`, `sdk/go/gorm` | go-qrdb |
 | Consensus underneath every commit | — | **go-quicraft** |
 
 ## Trust boundaries
@@ -448,7 +448,7 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
 - [../row-locking/](../row-locking/) — optimistic vs pessimistic concurrency,
   lock clauses, the replicated lock table and deadlock detection.
 
-- [gorm.md](gorm.md) — the GORM provider, DSN forms, migrations, error mapping,
+- [gorm.md](gorm.md) — GORM over the stock MySQL dialector, DSN forms, migrations, error mapping,
   conformance harness.
 - [upstream-gaps.md](upstream-gaps.md) — go-mysql-server defects and which are
   mitigated here.

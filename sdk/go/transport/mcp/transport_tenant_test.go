@@ -203,14 +203,15 @@ func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _,
 
 // connectTenantInProcess builds an in-process MCP server with the given
 // tenant service registered and returns a connected SDK transport.
-func connectTenantInProcess(t *testing.T, svc tenant.TenantServicer) (*Transport, func()) {
+func connectTenantInProcess(t *testing.T, svc tenant.TenantServicer, extraOpts ...mcpapi.ServerOption) (*Transport, func()) {
 	t.Helper()
 
+	opts := append([]mcpapi.ServerOption{mcpapi.WithTenantService(svc)}, extraOpts...)
 	srv := mcpapi.NewServer(
 		newMockKVService(),
 		newMockAdminService(),
 		":0",
-		mcpapi.WithTenantService(svc),
+		opts...,
 	)
 
 	mcpSrv := srv.MCPServer()

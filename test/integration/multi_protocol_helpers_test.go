@@ -283,6 +283,21 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 	return n
 }
 
+// adminCSRArgsForTenant generates a fresh local key/CSR for a throwaway
+// admin account named adminUsername (via "ca csr", pure local keygen) and
+// returns the "tenant create" flags that name it as the tenant's first
+// admin: a tenant is created with its first admin, or not at all, so every
+// "tenant create" call in this package needs these two flags.
+func adminCSRArgsForTenant(t *testing.T, node *multiProtoNode, proto multiProtocol, adminUsername string) []string {
+	t.Helper()
+	csrDir := t.TempDir()
+	out, err := runCLIProto(t, node, proto, "ca", "csr", "--username", adminUsername, "--out", csrDir)
+	if err != nil {
+		t.Fatalf("[%s] ca csr for tenant admin %s: %v\noutput: %s", proto.name, adminUsername, err, out)
+	}
+	return []string{"--admin-username", adminUsername, "--admin-csr", filepath.Join(csrDir, "csr.pem")}
+}
+
 // waitForCLIProtoReady polls the given protocol with a lightweight
 // read-only CLI command ("kv exists", an ordinary KVServicer.Get -- see
 // cmd/qrdb/kv.go's newKVExistsCmd) until it succeeds or the timeout elapses.
@@ -405,12 +420,11 @@ func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
 
 	caPath := filepath.Join(dataDir, "ca.pem")
 	leafCertPath := filepath.Join(dataDir, "node-cert.pem")
-	adminCertPath := filepath.Join(dataDir, "admin-cert.pem")
-	adminKeyPath := filepath.Join(dataDir, "admin-key.pem")
+	credDir := t.TempDir()
+	adminCertPath := filepath.Join(credDir, "admin-cert.pem")
+	adminKeyPath := filepath.Join(credDir, "admin-key.pem")
 	waitForFile(t, caPath, 30*time.Second)
 	waitForFile(t, leafCertPath, 30*time.Second)
-	waitForFile(t, adminCertPath, 30*time.Second)
-	waitForFile(t, adminKeyPath, 30*time.Second)
 
 	// loadDaemonCA (barrier_cli_test.go) adopts the self-issued CA
 	// confirmClusterCAPersisted (cmd/qrdbd/start.go) wrote into dataDir. It
@@ -429,19 +443,14 @@ func startSelfIssuedCAMultiProtocolNode(t *testing.T) *selfIssuedCANode {
 	// design -- see officer_ceremony_cli_test.go's restArgsNoAuth doc
 	// comment -- so the bootstrap ceremony below always drives it over
 	// REST, regardless of which transports the fully-booted host will
-	// later serve.
+	// later serve. `qrdb init` is the only system bootstrap (go-qrdb#548):
+	// one call brings the barrier up and issues the admin credential.
 	pollUntilCLISucceeds(t, cli, noAuthArgs, 30*time.Second)
-	if out, err := runQRDB(t, cli, noAuthArgs, "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolNode: barrier init: %v\noutput: %s", err, out)
-	}
+	bootAdminIdentityVia(t, cli, noAuthArgs, "SOPIN-selfissued-1", "USERPIN-selfissued-1",
+		adminCertPath, adminKeyPath, "", "--barrier-strategy", "none")
 
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, adminArgs, 60*time.Second)
-
-	if out, err := runQRDB(t, cli, adminArgs,
-		"init", "--so-pin", "SOPIN-selfissued-1", "--user-pin", "USERPIN-selfissued-1"); err != nil {
-		t.Fatalf("startSelfIssuedCAMultiProtocolNode: qrdb init: %v\noutput: %s", err, out)
-	}
 
 	n := &multiProtoNode{
 		cli:        cli,

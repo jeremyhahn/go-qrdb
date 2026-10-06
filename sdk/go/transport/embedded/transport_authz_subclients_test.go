@@ -83,6 +83,10 @@ var subClientPublicOperations = map[string]struct{}{
 // UserAuthFactorClient accessors are not here because they return the
 // *Transport itself (see their own doc comments), so their methods are
 // already covered by TestTransportClientAuthorizationSurface_CoversEveryMethod.
+// VolumePoolClient is the same shape: transport.VolumePoolClient is
+// implemented directly on *Transport (volume_pool.go), not a dotted
+// sub-client, so its bare method keys (ListPools, GetPool, ...) belong to
+// that other test too, not here.
 var subClientTypes = []struct {
 	prefix string
 	typ    reflect.Type
@@ -92,7 +96,6 @@ var subClientTypes = []struct {
 	{"AuditClient.", reflect.TypeOf(&auditClient{})},
 	{"LoginClient.", reflect.TypeOf(&loginClient{})},
 	{"SessionClient.", reflect.TypeOf(&sessionClient{})},
-	{"VolumePoolClient.", reflect.TypeOf(&volumePoolClient{})},
 	{"PermissionClient.", reflect.TypeOf(&permissionClient{})},
 }
 
@@ -247,8 +250,6 @@ func resolveReceiver(t *testing.T, tr *Transport, key string) (reflect.Value, st
 	switch prefix + "." {
 	case "AuditClient.":
 		return reflect.ValueOf(&auditClient{transport: tr}), name
-	case "VolumePoolClient.":
-		return reflect.ValueOf(&volumePoolClient{transport: tr}), name
 	case "RBACClient.":
 		return reflect.ValueOf(&rbacClient{transport: tr}), name
 	case "PermissionClient.":

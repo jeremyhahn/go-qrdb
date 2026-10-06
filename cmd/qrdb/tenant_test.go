@@ -21,10 +21,12 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -72,6 +74,63 @@ func executeTenantCmd(t *testing.T, tenantSvc tenant.TenantServicer, args ...str
 
 	execErr := cmd.ExecuteContext(context.Background())
 	return buf.String(), execErr
+}
+
+// executeTenantCmdOnboard is executeTenantCmd's counterpart for "tenant
+// create": CreateTenant is the one tenant verb the embedded transport routes
+// through service.TenantOnboardingServicer rather than tenant.TenantServicer
+// (sdk/go/transport/embedded/tenant.go CreateTenant), so exercising it needs
+// this double instead.
+func executeTenantCmdOnboard(t *testing.T, onboarding service.TenantOnboardingServicer, args ...string) (string, error) {
+	t.Helper()
+
+	tr, err := embedded.New(&noopKVService{}, newMockAdminService(), embedded.WithTenantOnboarding(onboarding))
+	if err != nil {
+		t.Fatalf("embedded.New: %v", err)
+	}
+
+	sdkClient, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = sdkClient.Close() })
+
+	oldClient := client
+	oldWriter := outputWriter
+	oldFormat := outputFormat
+	t.Cleanup(func() {
+		client = oldClient
+		outputWriter = oldWriter
+		outputFormat = oldFormat
+	})
+
+	client = sdkClient
+	outputFormat = "table"
+	var buf bytes.Buffer
+	outputWriter = &buf
+
+	cmd := newTenantCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(os.Stderr)
+	cmd.SetArgs(args)
+
+	execErr := cmd.ExecuteContext(context.Background())
+	return buf.String(), execErr
+}
+
+// adminCSRFile writes a fresh CSR for commonName to a temp file and returns
+// its path, standing in for the output of "qrdb ca csr".
+func adminCSRFile(t *testing.T, commonName string) string {
+	t.Helper()
+	_, csrPEM, err := newClientKeyAndCSR(commonName)
+	if err != nil {
+		t.Fatalf("newClientKeyAndCSR: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "admin-csr.pem")
+	if err := os.WriteFile(path, csrPEM, 0600); err != nil {
+		t.Fatalf("write admin csr: %v", err)
+	}
+	return path
 }
 
 // ---------------------------------------------------------------------------
@@ -209,48 +268,99 @@ func TestTenantListCmd_OutputYAML(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTenantCreateCmd_Success(t *testing.T) {
-	svc := &mockTenantService{}
-	out, err := executeTenantCmd(t, svc, "create", "--id", "tenant-001", "--name", "Alpha")
+	csrFile := adminCSRFile(t, "admin1")
+	out, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--id", "tenant-001", "--name", "Alpha",
+		"--admin-username", "admin1", "--admin-csr", csrFile)
 	if err != nil {
 		t.Fatalf("tenant create: %v", err)
 	}
 	if !strings.Contains(out, "tenant-001") {
 		t.Fatalf("expected tenant ID in output, got: %s", out)
 	}
+	if !strings.Contains(out, "admin1") {
+		t.Fatalf("expected admin username in output, got: %s", out)
+	}
+	if !strings.Contains(out, "--- Admin certificate ---") {
+		t.Fatalf("expected the admin certificate in output, got: %s", out)
+	}
 }
 
 func TestTenantCreateCmd_MissingID(t *testing.T) {
-	svc := &mockTenantService{}
-	_, err := executeTenantCmd(t, svc, "create", "--name", "Alpha")
+	csrFile := adminCSRFile(t, "admin1")
+	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--name", "Alpha", "--admin-username", "admin1", "--admin-csr", csrFile)
 	if err == nil {
 		t.Fatal("expected error when --id is missing")
 	}
 }
 
 func TestTenantCreateCmd_MissingName(t *testing.T) {
-	svc := &mockTenantService{}
-	_, err := executeTenantCmd(t, svc, "create", "--id", "tenant-001")
+	csrFile := adminCSRFile(t, "admin1")
+	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--id", "tenant-001", "--admin-username", "admin1", "--admin-csr", csrFile)
 	if err == nil {
 		t.Fatal("expected error when --name is missing")
 	}
 }
 
+// TestTenantCreateCmd_MissingAdminUsername pins --admin-username as
+// required: a tenant is created with its first admin, or not at all.
+func TestTenantCreateCmd_MissingAdminUsername(t *testing.T) {
+	csrFile := adminCSRFile(t, "admin1")
+	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--id", "tenant-001", "--name", "Alpha", "--admin-csr", csrFile)
+	if err == nil {
+		t.Fatal("expected error when --admin-username is missing")
+	}
+}
+
+// TestTenantCreateCmd_MissingAdminCredential pins that exactly one of
+// --admin-csr/--admin-cert is required: neither given is refused.
+func TestTenantCreateCmd_MissingAdminCredential(t *testing.T) {
+	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--id", "tenant-001", "--name", "Alpha", "--admin-username", "admin1")
+	if err == nil {
+		t.Fatal("expected error when neither --admin-csr nor --admin-cert is given")
+	}
+}
+
+// TestTenantCreateCmd_AdminCSRAndAdminCertMutuallyExclusive pins that
+// --admin-csr and --admin-cert cannot both be given: the admin's key comes
+// from exactly one of a CSR the tenant's CA signs, or a certificate it
+// already holds.
+func TestTenantCreateCmd_AdminCSRAndAdminCertMutuallyExclusive(t *testing.T) {
+	csrFile := adminCSRFile(t, "admin1")
+	certFile := filepath.Join(t.TempDir(), "admin-cert.pem")
+	if err := os.WriteFile(certFile, []byte("-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"), 0600); err != nil {
+		t.Fatalf("write admin cert: %v", err)
+	}
+	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--id", "tenant-001", "--name", "Alpha", "--admin-username", "admin1",
+		"--admin-csr", csrFile, "--admin-cert", certFile)
+	if err == nil {
+		t.Fatal("expected error when both --admin-csr and --admin-cert are given")
+	}
+}
+
 func TestTenantCreateCmd_ServiceError(t *testing.T) {
-	svc := &mockTenantService{
-		createFn: func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+	csrFile := adminCSRFile(t, "admin1")
+	onboarding := &mockTenantOnboarding{
+		onboardFn: func(_ context.Context, _ *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
 			return nil, tenant.ErrTenantAlreadyExists
 		},
 	}
-	_, err := executeTenantCmd(t, svc, "create", "--id", "dup", "--name", "Duplicate")
+	_, err := executeTenantCmdOnboard(t, onboarding,
+		"create", "--id", "dup", "--name", "Duplicate", "--admin-username", "admin1", "--admin-csr", csrFile)
 	if err == nil {
 		t.Fatal("expected error for duplicate tenant")
 	}
 }
 
 func TestTenantCreateCmd_OutputJSON(t *testing.T) {
-	svc := &mockTenantService{}
+	csrFile := adminCSRFile(t, "admin1")
 
-	tr, err := embedded.New(&noopKVService{}, newMockAdminService(), embedded.WithTenantService(svc))
+	tr, err := embedded.New(&noopKVService{}, newMockAdminService(), embedded.WithTenantOnboarding(&mockTenantOnboarding{}))
 	if err != nil {
 		t.Fatalf("embedded.New: %v", err)
 	}
@@ -277,7 +387,8 @@ func TestTenantCreateCmd_OutputJSON(t *testing.T) {
 	cmd := newTenantCmd()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(os.Stderr)
-	cmd.SetArgs([]string{"create", "--id", "tenant-001", "--name", "Alpha"})
+	cmd.SetArgs([]string{"create", "--id", "tenant-001", "--name", "Alpha",
+		"--admin-username", "admin1", "--admin-csr", csrFile})
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("tenant create --output json: %v", err)
@@ -286,6 +397,28 @@ func TestTenantCreateCmd_OutputJSON(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, `"id"`) {
 		t.Fatalf("expected JSON with id field, got: %s", out)
+	}
+}
+
+// TestTenantCreateCmd_WithOutDir_WritesAdminCert proves --out writes the
+// admin's certificate to admin-cert.pem.
+func TestTenantCreateCmd_WithOutDir_WritesAdminCert(t *testing.T) {
+	csrFile := adminCSRFile(t, "admin1")
+	outDir := filepath.Join(t.TempDir(), "tenantout")
+
+	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},
+		"create", "--id", "tenant-001", "--name", "Alpha",
+		"--admin-username", "admin1", "--admin-csr", csrFile, "--out", outDir)
+	if err != nil {
+		t.Fatalf("tenant create: %v", err)
+	}
+
+	certData, err := os.ReadFile(filepath.Join(outDir, "admin-cert.pem"))
+	if err != nil {
+		t.Fatalf("expected admin-cert.pem to exist: %v", err)
+	}
+	if !strings.Contains(string(certData), "CERTIFICATE") {
+		t.Fatalf("expected certificate PEM content, got: %q", certData)
 	}
 }
 

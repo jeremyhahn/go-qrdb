@@ -198,7 +198,7 @@ func TestBatchService_Import_CSV_HeaderOnly(t *testing.T) {
 	// CSV with only header row and no data.
 	csvData := "key,value\n"
 
-	result, err := svc.Import(context.Background(), newStringReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "key",
 		ValueMode:  "field",
@@ -229,7 +229,7 @@ func TestBatchService_Import_NDJSON_MalformedLine(t *testing.T) {
 	ndjsonData := `{"key":"k1","value":"v1"}
 not-valid-json
 {"key":"k3","value":"v3"}`
-	_, err := svc.Import(context.Background(), newStringReader(ndjsonData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(ndjsonData), ImportOptions{
 		Format:     "ndjson",
 		KeyField:   "key",
 		ValueMode:  "field",
@@ -248,7 +248,7 @@ func TestBatchService_Import_JSON_EmptyArray(t *testing.T) {
 	svc := NewBatchService(host, 1)
 
 	// Empty JSON array.
-	result, err := svc.Import(context.Background(), newStringReader("[]"), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte("[]"), ImportOptions{
 		Format:     "json",
 		KeyField:   "key",
 		ValueMode:  "field",

@@ -194,8 +194,12 @@ func TestSealGate_OpensWithTheProbe(t *testing.T) {
 }
 
 // minGatedSubClientMethods is the sub-client walk's discovery floor, for the
-// same reason as minGatedMethods.
-const minGatedSubClientMethods = 20
+// same reason as minGatedMethods. Lowered from 20 to 18 when
+// *Transport.VolumePoolClient was deleted (docs/volume-pools decision D8):
+// the in-process volume-pool management client is gone, replaced by the
+// replicated catalog's own Tier-1 management surface on a future transport
+// lane, not by a sub-client here.
+const minGatedSubClientMethods = 18
 
 // subClientAccessors returns *Transport's sub-client accessors: exported,
 // no arguments, one interface result, named "...Client". They return no

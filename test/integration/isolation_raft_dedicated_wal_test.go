@@ -167,15 +167,12 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
+	createVolumePoolREST(t, sysClient, leaderPort, "default")
+
 	// ---------------------------------------------------------------------------
 	// Phase 2: tenant + role + user.
 	// ---------------------------------------------------------------------------
-	_, tStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id": dwTenantID, "name": "Test Tenant 1",
-			"isolation_type": "raft", "barrier_auto_unseal": true,
-		})
+	_, tStatus := createRaftTenant(t, sysClient, leaderPort, dwTenantID, "Test Tenant 1")
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d", tStatus)
 	}

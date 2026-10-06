@@ -117,30 +117,3 @@ func TestCertRecord_JSONFields(t *testing.T) {
 		}
 	}
 }
-
-func TestGenerateRequest_ZeroTTL(t *testing.T) {
-	req := &GenerateRequest{
-		Username: "alice",
-		TenantID: "system",
-	}
-	if req.TTL != 0 {
-		t.Errorf("default TTL: got %v, want 0", req.TTL)
-	}
-}
-
-func TestCertBundle_Fields(t *testing.T) {
-	bundle := &CertBundle{
-		CertPEM: []byte("cert-pem"),
-		KeyPEM:  []byte("key-pem"),
-		Serial:  "serial-1",
-	}
-	if string(bundle.CertPEM) != "cert-pem" {
-		t.Errorf("CertPEM: got %q, want %q", bundle.CertPEM, "cert-pem")
-	}
-	if string(bundle.KeyPEM) != "key-pem" {
-		t.Errorf("KeyPEM: got %q, want %q", bundle.KeyPEM, "key-pem")
-	}
-	if bundle.Serial != "serial-1" {
-		t.Errorf("Serial: got %q, want %q", bundle.Serial, "serial-1")
-	}
-}

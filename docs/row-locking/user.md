@@ -54,7 +54,11 @@ With the in-process driver or GORM, put it in the DSN so every pooled connection
 gets it:
 
 ```go
-db, err := gorm.Open(qrdbgorm.Open("node://memory?database=shop&concurrency=pessimistic"), &gorm.Config{})
+dialector, err := qrdbgorm.Open("node://memory?database=shop&concurrency=pessimistic")
+if err != nil {
+	return err
+}
+db, err := gorm.Open(dialector, &gorm.Config{})
 ```
 
 ## Common tasks

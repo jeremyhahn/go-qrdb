@@ -394,6 +394,19 @@ var authFailureRules = []struct {
 		var e *CertBindingRequiredError
 		return AuthFailureUnauthenticated, errors.As(err, &e)
 	}},
+	// A tenant barrier's trust-on-first-init window reached with the wrong
+	// certificate, or under "required" for a tenant with no onboarded admin.
+	// The caller DID establish who it is -- the window is only reached with
+	// a verified certificate -- and that identity may not initialize this
+	// barrier: 403, and retrying with the same certificate never works.
+	{"FirstInitCertificateMismatchError", func(err error) (AuthFailureClass, bool) {
+		var e *FirstInitCertificateMismatchError
+		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
+	{"FirstInitNotOnboardedError", func(err error) (AuthFailureClass, bool) {
+		var e *FirstInitNotOnboardedError
+		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
 	{"AuthChainError", func(err error) (AuthFailureClass, bool) {
 		var e *AuthChainError
 		return AuthFailureUnauthenticated, errors.As(err, &e)

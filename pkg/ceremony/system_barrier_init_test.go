@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // TestInitialize_SystemBarrier_FreshNodeUnsealsIt is the go-qrdb#548 proof
@@ -35,10 +36,12 @@ func TestInitialize_SystemBarrier_FreshNodeUnsealsIt(t *testing.T) {
 
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
-	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+	secretBuf, err := secure.NewBufferFromBytes([]byte("test-master-password"))
+	require.NoError(t, err)
+	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
 		SOPin:         "test-so-pin",
 		UserPin:       "test-user-pin",
-		Secret:        []byte("test-master-password"),
+		Secret:        secretBuf,
 		AdminGenerate: true,
 	})
 	require.NoError(t, err)
@@ -61,10 +64,12 @@ func TestInitialize_SystemBarrier_RetryAfterCrashConverges(t *testing.T) {
 
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
-	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+	secretBuf, err := secure.NewBufferFromBytes(secret)
+	require.NoError(t, err)
+	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
 		SOPin:         "test-so-pin",
 		UserPin:       "test-user-pin",
-		Secret:        secret,
+		Secret:        secretBuf,
 		AdminGenerate: true,
 	})
 	require.NoError(t, err)
@@ -95,10 +100,12 @@ func TestInitialize_SystemBarrier_WrongSecretOnRetryFails(t *testing.T) {
 
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
+	wrongSecretBuf, err := secure.NewBufferFromBytes([]byte("a-completely-different-password"))
+	require.NoError(t, err)
 	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
 		SOPin:         "test-so-pin",
 		UserPin:       "test-user-pin",
-		Secret:        []byte("a-completely-different-password"),
+		Secret:        wrongSecretBuf,
 		AdminGenerate: true,
 	})
 	var barrierErr *SystemBarrierInitError
@@ -159,10 +166,15 @@ func TestInitialize_SystemBarrier_AlreadyUnsealedWrongSecretRefused(t *testing.T
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
 	p2Secret := []byte("p2-a-completely-different-secret")
+	// secure.NewBufferFromBytes consumes its argument, and p2Secret itself
+	// must survive intact for the direct MustCredentials verification below
+	// -- a clone is wrapped instead, matching p1Secret's own clone above.
+	p2SecretBuf, err := secure.NewBufferFromBytes(append([]byte(nil), p2Secret...))
+	require.NoError(t, err)
 	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
 		SOPin:         "test-so-pin",
 		UserPin:       "test-user-pin",
-		Secret:        p2Secret,
+		Secret:        p2SecretBuf,
 		AdminGenerate: true,
 	})
 	var mismatchErr *SystemBarrierCredentialMismatchError

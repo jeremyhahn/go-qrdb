@@ -96,10 +96,15 @@ normal way a compare-and-swap loop works.
 8 KB. Piping from stdin with no extension often defeats it — pass `--format`
 explicitly.
 
-**An import fails at a size that worked on another transport.** QUIC's ceiling
-is lower (~63 MB) than the other transports' 100 MB, because it is bounded by
-the QUIC wire protocol's shared per-RPC payload cap. Split the file, or import
-over REST or gRPC.
+**A large import is slow or the connection drops partway through.**
+`batch import` sends your file as many small chunks rather than one big
+message (no transport accepts a message larger than
+`transport.max_message_bytes`, 4 MiB by default), so a multi-gigabyte file
+is normal, not a misuse — but every chunk still needs a round trip. If the
+connection drops mid-upload, re-run the same `batch import` command; the
+session that was in progress expires on its own (the lease TTL,
+`import_session.session_ttl_seconds`, 1 hour by default) and the retry
+opens a fresh one.
 
 **Rows imported but the keys look wrong.** Check `--key-field`: it names a field
 *in the record*, not a key prefix. With `--value-mode row` the entire row is

@@ -1163,9 +1163,16 @@ func TestLoggingInterceptor_NonGRPCError(t *testing.T) {
 	}
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap mirrors CompareAndDelete's guard on the edit side
+// (go-qrdb#56): it replaces the value only when the stored value still
+// equals expected, and leaves an absent key absent.
+func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	current, ok := m.store[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
 }
 
 // ListAll mirrors List on this double: it applies no internal-key guard,

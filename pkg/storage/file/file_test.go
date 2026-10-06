@@ -1295,7 +1295,7 @@ func TestMkdirAllDurable_StatErrorPropagates(t *testing.T) {
 	if err := os.Chmod(parent, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	err := mkdirAllDurable(filepath.Join(parent, "child"))
 	if err == nil {
@@ -1319,7 +1319,7 @@ func TestMkdirAllDurable_MkdirErrorPropagates(t *testing.T) {
 	if err := os.Mkdir(parent, 0o500); err != nil { // r-x: no write
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	err := mkdirAllDurable(filepath.Join(parent, "child"))
 	if err == nil {
@@ -1337,10 +1337,10 @@ func TestWriteFormatMarker_CreateTempErrorPropagates(t *testing.T) {
 		t.Skip("running as root: permission denial cannot be exercised")
 	}
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil { // r-x: no write
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	_, err := New(dir)
 	if err == nil {
@@ -1427,10 +1427,10 @@ func TestCleanupTempSetFiles_RemoveErrorPropagates(t *testing.T) {
 	if err := os.WriteFile(stray, []byte("leftover"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(shardDir, 0o500); err != nil { // r-x: no write
+	if err := os.Chmod(shardDir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	if err := e.cleanupTempSetFiles(); err == nil {
 		t.Fatal("expected an error removing a temp file in a read-only directory")
@@ -1457,7 +1457,7 @@ func TestCleanupTempSetFiles_WalkErrorPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	if err := e.cleanupTempSetFiles(); err == nil {
 		t.Fatal("expected a permission error reading the shard directory")
@@ -1485,7 +1485,7 @@ func TestList_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	if _, err := e.List(nil); err == nil {
 		t.Fatal("expected a permission error reading the shard directory")
@@ -1511,7 +1511,7 @@ func TestIterator_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	it := e.NewIterator(nil)
 	defer func() { _ = it.Close() }()
@@ -1687,7 +1687,7 @@ func TestSnapshot_PropagatesIteratorError(t *testing.T) {
 	if err := os.Chmod(shardDir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(shardDir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	if _, err := e.Snapshot(); err == nil {
 		t.Fatal("expected Snapshot to propagate the permission error")

@@ -44,11 +44,22 @@ func selfStrictPermissions() []Permission {
 		// system-tenant rule let a system Admin mint a certificate for any
 		// tenant's user. CertsRevokeCross, the deny-by-serial revocation of
 		// a serial no tenant owns, stays ScopeCross (cross_scope.go).
-		CertsExport,
-		CertsGenerate,
+		CertsEnroll,
 		CertsList,
 		CertsRead,
 		CertsRevoke,
+		CertsIssue,
+
+		// trust anchors
+		//
+		// A tenant's trust anchors decide which outside CAs may vouch for its
+		// users' logins. Each tenant manages its own; the system tenant does
+		// the same for its own and for no one else's -- a system Admin adding
+		// an anchor to another tenant would be choosing who can log in as that
+		// tenant's users.
+		TrustAnchorsAdd,
+		TrustAnchorsList,
+		TrustAnchorsRemove,
 
 		// escrow
 		//

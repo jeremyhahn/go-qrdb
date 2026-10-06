@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -88,17 +88,23 @@ func TestClusteredNode_KeyBCacheEvictionPropagatesToEveryNode(t *testing.T) {
 	defer cancel()
 
 	const tenantID = "acme"
+	_, adminCSRPEM, err := certtest.NewCSR("acme-admin")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
 	if _, err := leaderNode.Client().Tenants().CreateTenant(ctx, &transport.CreateTenantRequest{
 		ID:            tenantID,
 		Name:          "Acme Corp",
 		IsolationType: transport.TenantIsolationPrefix,
+		AdminUsername: "admin",
+		AdminCSRPEM:   string(adminCSRPEM),
 	}); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := leaderNode.Services().CertProv.GenerateClientCert(ctx, &cert.GenerateRequest{
+	if _, err := certtest.Generate(ctx, leaderNode.Services().CertProv, &certtest.Request{
 		Username: "alice", TenantID: tenantID,
 	}); err != nil {
-		t.Fatalf("GenerateClientCert (establish): %v", err)
+		t.Fatalf("IssueClientCert (establish): %v", err)
 	}
 
 	// Force every node -- including followers, which never themselves
@@ -144,7 +150,7 @@ func TestClusteredNode_KeyBCacheEvictionPropagatesToEveryNode(t *testing.T) {
 	for i, n := range nodes {
 		src := n.Services().CertProv.(certSource)
 		pollUntilNoErr(t, ctx, func() error {
-			if _, perr := n.Services().CertProv.GenerateClientCert(ctx, &cert.GenerateRequest{
+			if _, perr := certtest.Generate(ctx, n.Services().CertProv, &certtest.Request{
 				Username: "alice", TenantID: tenantID,
 			}); perr != nil {
 				return perr

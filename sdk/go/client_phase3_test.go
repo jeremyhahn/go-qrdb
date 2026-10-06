@@ -23,10 +23,10 @@ import (
 )
 
 // The Phase 3 SDK accessors (Permissions, RBAC, Factors, Login,
-// Sessions, VolumePools) probe the underlying transport for the
-// matching Provider interface. The embedded transport satisfies all
-// of them; the SDK accessor must therefore return a non-nil typed
-// client when the transport is open and nil after Close.
+// Sessions) probe the underlying transport for the matching Provider
+// interface. The embedded transport satisfies all of them; the SDK
+// accessor must therefore return a non-nil typed client when the
+// transport is open and nil after Close.
 
 func newPhase3Client(t *testing.T) (*sdk.Client, *embedded.Transport) {
 	t.Helper()
@@ -99,16 +99,5 @@ func TestClient_Sessions_OpenAndClosed(t *testing.T) {
 	_ = client.Close()
 	if client.Sessions() != nil {
 		t.Error("expected nil SessionClient after Close")
-	}
-}
-
-func TestClient_VolumePools_OpenAndClosed(t *testing.T) {
-	client, _ := newPhase3Client(t)
-	if client.VolumePools() == nil {
-		t.Fatal("expected non-nil VolumePoolClient on open client")
-	}
-	_ = client.Close()
-	if client.VolumePools() != nil {
-		t.Error("expected nil VolumePoolClient after Close")
 	}
 }

@@ -146,12 +146,10 @@ func runDBAdmin(t *testing.T, cli string, flags []string, args ...string) (strin
 // without interacting.
 func TestCLI_DatabaseBarrier_ShamirHolderLifecycle_AllTransports(t *testing.T) {
 	node := startFreshSealedNode(t, "none", 0, 0)
-	bootFlags := node.flagsFor(multiProtocols[0])
-	waitForBarrierReachable(t, node.cli, bootFlags, 60*time.Second)
-	if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, bootFlags...),
-		"barrier", "init", "--barrier-strategy", "none")...); err != nil {
-		t.Fatalf("barrier init: %v\nstderr: %s", err, stderr)
-	}
+	waitForBarrierReachable(t, node.cli, node.noAuthFlagsFor(multiProtocols[0]), 60*time.Second)
+	// `qrdb init` is the only system bootstrap (go-qrdb#548); the database
+	// barriers under test are brought up by the database commands below.
+	node.initSystem(t, multiProtocols[0], "--barrier-strategy", "none")
 	node.waitForFullBoot(t)
 
 	for _, proto := range multiProtocols {

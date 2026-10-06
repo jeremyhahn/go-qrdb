@@ -16,11 +16,12 @@ package tenant
 
 import "github.com/jeremyhahn/go-qrdb/pkg/validation"
 
-// dataRootsOverlap reports whether two dedicated-disk paths refer to the same
-// directory or one is a filesystem ancestor of the other. Both are cleaned
-// first. The comparison is separator-aware so /data/foo and /data/foo2 do NOT
-// overlap: a naive strings.HasPrefix(b, a) would wrongly treat /data/foo2 as
-// nested under /data/foo.
+// dataRootsOverlap reports whether two resolved tenant-directory paths
+// refer to the same directory or one is a filesystem ancestor of the
+// other. Both are cleaned first. The comparison is separator-aware so
+// /data/foo and /data/foo2 do NOT overlap: a naive strings.HasPrefix(b, a)
+// would wrongly treat /data/foo2 as nested under /data/foo. Used by the
+// deleted-tenant reconcile's residue guard.
 func dataRootsOverlap(a, b string) bool { return validation.PathsOverlap(a, b) }
 
 // isPathAncestor reports whether parent is a strict filesystem ancestor of

@@ -95,16 +95,16 @@ func TestLoad_UnknownKeyUnderSequenceElement(t *testing.T) {
 storage:
   volume_pools:
     - name: "default"
-      paths: ["/mnt/a"]
-      strategey: "round_robin"
+      path: "/mnt/a"
+      providerr: "dir"
 `)
 	_, err := Load(path)
 	var ufe *UnknownFieldError
 	if !errors.As(err, &ufe) {
 		t.Fatalf("Load: got %v (%T), want *UnknownFieldError", err, err)
 	}
-	if ufe.Path != "storage.volume_pools[0].strategey" {
-		t.Errorf("Path: got %q, want %q", ufe.Path, "storage.volume_pools[0].strategey")
+	if ufe.Path != "storage.volume_pools[0].providerr" {
+		t.Errorf("Path: got %q, want %q", ufe.Path, "storage.volume_pools[0].providerr")
 	}
 }
 

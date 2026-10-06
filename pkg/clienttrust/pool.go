@@ -42,16 +42,19 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
 // poolCacheTTL bounds how long a widened ClientCAs pool is reused before
 // CACertPEMs is consulted again. It is the current mitigation for the
 // per-handshake cost of scanning and parsing every tenant's CA certificate
-// (go-qrdb#560 review, B2-4): a newly created or rotated Key B CA is picked
-// up within this window, not instantly -- there is no push notification
-// (generation counter or watch) from pkg/cert yet. SetKeyBProvider and
-// SetClusterCA both invalidate the cache immediately, so a provider or
-// cluster-CA swap is never subject to this staleness window.
+// (go-qrdb#560 review, B2-4). On the node where it happens, a change is
+// pushed: a tenant's Key B CA coming into use (cert.WithNewCAHook) and a
+// trust anchor added or removed both reach Invalidate through the
+// composer's change feed, so the next handshake sees them -- a tenant
+// onboarded a moment ago logs in at once. This window bounds only what no
+// local event announces: a CA first used on ANOTHER node. SetKeyBProvider
+// and SetClusterCA also invalidate the cache immediately.
 const poolCacheTTL = 2 * time.Second
 
 // handshakeTrustTimeout bounds how long a single TLS handshake's trust
@@ -159,6 +162,7 @@ func (s *StaticClusterCA) CACertificate(context.Context) (*x509.Certificate, err
 type Pool struct {
 	provider   atomic.Pointer[providerBox]
 	clusterCA  atomic.Pointer[clusterCABox]
+	anchors    atomic.Pointer[anchorsBox]
 	cache      atomic.Pointer[poolCache]
 	keyBCache  atomic.Pointer[keyBCacheEntry]
 	staticBase atomic.Pointer[x509.CertPool]
@@ -183,8 +187,24 @@ type Pool struct {
 	keyBGeneration atomic.Int64
 }
 
+// TenantLister enumerates the tenants whose trust anchors join the widened
+// pool. The composer adapts its tenant service to it.
+type TenantLister interface {
+	TenantIDs(ctx context.Context) ([]string, error)
+}
+
+// TenantListerFunc adapts a function to TenantLister.
+type TenantListerFunc func(ctx context.Context) ([]string, error)
+
+// TenantIDs implements TenantLister.
+func (f TenantListerFunc) TenantIDs(ctx context.Context) ([]string, error) { return f(ctx) }
+
 type providerBox struct{ prov cert.CertProvider }
 type clusterCABox struct{ ca ClusterCA }
+type anchorsBox struct {
+	src     trustanchor.Source
+	tenants TenantLister
+}
 type poolCache struct {
 	built time.Time
 	pool  *x509.CertPool
@@ -281,6 +301,43 @@ func (p *Pool) SetKeyBProvider(prov cert.CertProvider) {
 func (p *Pool) SetClusterCA(ca ClusterCA) {
 	p.clusterCA.Store(&clusterCABox{ca: ca})
 	p.cache.Store(nil)
+}
+
+// SetTrustAnchors installs the source of every tenant's registered trust
+// anchors (pkg/trustanchor) and the lister that enumerates the tenants, and
+// invalidates the cached widened pool.
+//
+// Each tenant's anchors then join the widened ClientCAs pool, so a
+// bring-your-own certificate chaining to one completes a handshake, and
+// VerifyIssuer admits a chain containing one of a tenant's anchors as that
+// tenant's -- and only that tenant's. A nil src removes anchor trust.
+//
+// Install the Registry through trustanchor.Observe with Invalidate as the
+// callback, so a tenant adding or withdrawing an anchor on this node is
+// reflected on the very next handshake rather than after poolCacheTTL.
+func (p *Pool) SetTrustAnchors(src trustanchor.Source, tenants TenantLister) {
+	if src == nil {
+		p.anchors.Store(nil)
+	} else {
+		p.anchors.Store(&anchorsBox{src: src, tenants: tenants})
+	}
+	p.cache.Store(nil)
+}
+
+// Invalidate drops the cached widened pool AND the Key-B-only cache
+// isRegisteredKeyBCA and refreshKeyBOnlyCache read, so the next handshake
+// rebuilds both from the current Key B and trust-anchor state -- not merely
+// once the Key-B-only cache's OWN independent poolCacheTTL happens to have
+// lapsed too. Dropping only p.cache left WithNewCAHook's documented
+// immediacy false whenever a tenant's first-ever certificate (which makes
+// CACertPEMs grow) landed inside that second cache's still-fresh window:
+// resolveClientCAs' own cache miss would call refreshKeyBOnlyCache, which
+// would see its cache as fresh and skip the very CACertPEMs() re-fetch that
+// would have picked up the new CA, serving the stale (pre-growth) PEM set
+// for up to the remainder of that window.
+func (p *Pool) Invalidate() {
+	p.cache.Store(nil)
+	p.keyBCache.Store(nil)
 }
 
 // resolveClusterCA returns the current cluster CA certificate, resolved
@@ -389,19 +446,45 @@ func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
 	return err == nil
 }
 
-// VerifyIssuer reports whether issuer may authenticate as tenantID: the
-// cluster CA (Key A, any tenant), a CA already in the listener's own
-// static ClientCAs (see IsStaticallyTrusted), or tenantID's own registered
-// Key B CA (CertSource.IsTenantIssuer, a load-only, byte-identical-DER
-// check). Returns *IssuerNotTrustedError when it is none of those, or when
-// the check itself could not be completed.
-func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
+// VerifyIssuer reports whether a verified chain (leaf first) may
+// authenticate as tenantID. Its DIRECT issuer, chain[1], may be the cluster CA
+// (Key A, any tenant), a CA already in the listener's own static ClientCAs
+// (see IsStaticallyTrusted), or tenantID's own registered Key B CA
+// (CertSource.IsTenantIssuer, a load-only, byte-identical-DER check). Or the
+// chain may contain one of tenantID's registered trust anchors at any depth
+// above the leaf (trustanchor.ChainContainsAnchor), read fresh, so an anchor
+// vouches for its own tenant only and a withdrawn one stops vouching at once.
+// Returns *IssuerNotTrustedError when it is none of those, or when a check
+// could not be completed.
+func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, chain []*x509.Certificate) error {
+	if len(chain) < 2 {
+		return &IssuerNotTrustedError{TenantID: tenantID}
+	}
+	issuer := chain[1]
 	if p.IsClusterCA(ctx, issuer) {
 		return nil
 	}
 	if p.IsStaticallyTrusted(issuer) {
 		return nil
 	}
+	keyBErr := p.verifyKeyBIssuer(ctx, tenantID, issuer)
+	if keyBErr == nil {
+		return nil
+	}
+	if ab := p.anchors.Load(); ab != nil {
+		ok, err := trustanchor.ChainContainsAnchor(ctx, ab.src, tenantID, chain)
+		if err != nil {
+			return &IssuerNotTrustedError{TenantID: tenantID, Err: err}
+		}
+		if ok {
+			return nil
+		}
+	}
+	return keyBErr
+}
+
+// verifyKeyBIssuer is VerifyIssuer's Key B branch.
+func (p *Pool) verifyKeyBIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
 	box := p.provider.Load()
 	if box == nil || box.prov == nil {
 		return &IssuerNotTrustedError{TenantID: tenantID}
@@ -726,6 +809,9 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 	for _, certPEM := range keyB.pems {
 		pool.AppendCertsFromPEM(certPEM)
 	}
+	for _, bundle := range p.anchorBundles(ctx) {
+		pool.AppendCertsFromPEM(bundle)
+	}
 
 	p.cache.Store(&poolCache{built: time.Now(), pool: pool})
 	return pool, nil
@@ -810,4 +896,29 @@ func (p *Pool) refreshKeyBOnlyCache(ctx context.Context) {
 		p.keyBCache.Store(&keyBCacheEntry{built: time.Now(), pems: pems, keyBOnly: keyBOnly})
 		return nil, nil
 	})
+}
+
+// anchorBundles returns every tenant's trust-anchor bundle for the widened
+// pool. A failure to enumerate the tenants omits every anchor, and a failure
+// to read one tenant's anchors omits that tenant's: an anchor the pool cannot
+// read is not trusted, and Key B trust does not depend on it. Either omission
+// lasts only until the cache next lapses.
+func (p *Pool) anchorBundles(ctx context.Context) [][]byte {
+	ab := p.anchors.Load()
+	if ab == nil || ab.tenants == nil {
+		return nil
+	}
+	ids, err := ab.tenants.TenantIDs(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([][]byte, 0, len(ids))
+	for _, id := range ids {
+		bundle, err := ab.src.CABundle(ctx, id)
+		if err != nil || len(bundle) == 0 {
+			continue
+		}
+		out = append(out, bundle)
+	}
+	return out
 }

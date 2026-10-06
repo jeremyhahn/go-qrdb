@@ -61,6 +61,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -196,6 +197,8 @@ type serverOptions struct {
 	userSvc            user.UserServicer
 	roleSvc            role.RoleServicer
 	certProv           cert.CertProvider
+	certEnroll         service.CertEnrollmentServicer
+	onboarding         service.TenantOnboardingServicer
 	authMW             *authmw.AuthMiddleware
 	caBootstrapCert    []byte
 	caBootstrapBundle  func(context.Context) ([]byte, error)
@@ -297,6 +300,11 @@ type serverOptions struct {
 	// HSM/TPM/KMS-backed cakey.ProviderFactory here (see
 	// WithCertKeyProviderFactory), resolved fresh per tenant.
 	certKeyProviderFactory cakey.ProviderFactory
+
+	// trustAnchors replaces the built-in per-tenant trust anchor store (see
+	// WithTrustAnchors). nil means qrdb's built-in store, replicated inside
+	// each tenant's own identity boundary.
+	trustAnchors trustanchor.Registry
 
 	// sealedWindowProbe controls the sealed-window middleware /
 	// interceptors on REST and gRPC. While the probe reports sealed,
@@ -520,6 +528,18 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 // servers that support it.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(o *serverOptions) { o.certProv = svc }
+}
+
+// WithCertEnrollment configures the certificate issue/enrol and trust-anchor
+// service for every protocol server (lifecycle.Node.CertEnrollment).
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
+	return func(o *serverOptions) { o.certEnroll = svc }
+}
+
+// WithTenantOnboarding configures the tenant-create service for every
+// protocol server (lifecycle.Node.TenantOnboarding).
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
+	return func(o *serverOptions) { o.onboarding = svc }
 }
 
 // WithAuthMiddleware configures authentication and authorization middleware
@@ -1086,6 +1106,22 @@ func WithCertKeyProviderFactory(f cakey.ProviderFactory) ServerOption {
 	return func(o *serverOptions) { o.certKeyProviderFactory = f }
 }
 
+// WithTrustAnchors injects the trust store that holds every tenant's
+// registered trust anchors -- the CA certificates a tenant's bring-your-own
+// login certificates must chain to -- in place of qrdb's built-in store
+// (trustanchor.NewKVRegistry, replicated inside each tenant's own identity
+// boundary). The store is read through its trustanchor.Source half,
+// CABundle(ctx, tenantID), the shape of a CA bundle provider, so an embedder
+// (go-xkms) adapts its own trust store with no glue beyond tenant scoping.
+//
+// Like WithCertKeyProvider, the services that consume it are built during
+// lifecycle.BuildServices, before server.New runs: the SDK node builders
+// resolve it via ResolveCryptoOptions and forward it into
+// lifecycle.Infra.TrustAnchors up front.
+func WithTrustAnchors(r trustanchor.Registry) ServerOption {
+	return func(o *serverOptions) { o.trustAnchors = r }
+}
+
 // CryptoOptions holds the hardware/seal injection values carried by a set of
 // ServerOptions. It exists because the TenantService (which consumes the
 // StrategyRegistry to resolve per-tenant hardware/cloud seal strategies) is
@@ -1100,6 +1136,7 @@ type CryptoOptions struct {
 	PINBackend             pin.PINBackend
 	FactorRegistry         *authfactors.FactorRegistry
 	CertKeyProviderFactory cakey.ProviderFactory
+	TrustAnchors           trustanchor.Registry
 	AuditLogger            audit.AuditLogger
 	// KeyWrapRegistry and KeyWrapProvider carry WithKeyWrapRegistry /
 	// WithKeyWrapProvider into lifecycle.Infra.KeyWrapRegistry /
@@ -1138,6 +1175,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		PINBackend:             o.pinBackend,
 		FactorRegistry:         o.factorRegistry,
 		CertKeyProviderFactory: o.certKeyProviderFactory,
+		TrustAnchors:           o.trustAnchors,
 		AuditLogger:            o.auditLogger,
 		KeyWrapRegistry:        o.keyWrapRegistry,
 		KeyWrapProvider:        o.keyWrapProvider,
@@ -1682,6 +1720,10 @@ func (s *Server) startREST() error {
 		return err
 	}
 	restOpts = append(restOpts, rest.WithTLS(tlsCfg))
+	restOpts = append(restOpts,
+		rest.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
+		rest.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+	)
 	if s.opts.restListener != nil {
 		ln, err := newLifetimeListener("rest", s.opts.restListener)
 		if err != nil {
@@ -1715,6 +1757,12 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.certProv != nil {
 		restOpts = append(restOpts, rest.WithCertProvider(s.opts.certProv))
+	}
+	if s.opts.certEnroll != nil {
+		restOpts = append(restOpts, rest.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.onboarding != nil {
+		restOpts = append(restOpts, rest.WithTenantOnboarding(s.opts.onboarding))
 	}
 	if s.opts.authMW != nil {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
@@ -1792,6 +1840,11 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.tenantSvc != nil {
 		restOpts = append(restOpts, rest.WithTenantService(s.opts.tenantSvc))
+	}
+	if s.opts.barrierRegistry != nil {
+		if volumeSvc, ok := s.opts.barrierRegistry.VolumeService(); ok {
+			restOpts = append(restOpts, rest.WithVolumeService(volumeSvc))
+		}
 	}
 	if s.opts.backupSvc != nil {
 		restOpts = append(restOpts, rest.WithBackupService(s.opts.backupSvc))
@@ -1953,6 +2006,10 @@ func (s *Server) startGRPC() error {
 		return err
 	}
 	grpcOpts = append(grpcOpts, grpcapi.WithTLS(tlsCfg))
+	grpcOpts = append(grpcOpts,
+		grpcapi.WithMaxMessageBytes(s.config.Transport.ResolvedMaxMessageBytes()),
+		grpcapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+	)
 	if s.opts.grpcListener != nil {
 		ln, err := newLifetimeListener("grpc", s.opts.grpcListener)
 		if err != nil {
@@ -1976,6 +2033,12 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.certProv != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCertProvider(s.opts.certProv))
+	}
+	if s.opts.certEnroll != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.onboarding != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithTenantOnboarding(s.opts.onboarding))
 	}
 	if s.opts.authMW != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
@@ -2062,6 +2125,11 @@ func (s *Server) startGRPC() error {
 	if s.opts.tenantSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithTenantService(s.opts.tenantSvc))
 	}
+	if s.opts.barrierRegistry != nil {
+		if volumeSvc, ok := s.opts.barrierRegistry.VolumeService(); ok {
+			grpcOpts = append(grpcOpts, grpcapi.WithVolumeService(volumeSvc))
+		}
+	}
 	if s.opts.backupSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBackupService(s.opts.backupSvc))
 	}
@@ -2103,6 +2171,11 @@ func (s *Server) startQUIC() error {
 		return err
 	}
 	quicOpts = append(quicOpts, quicapi.WithTLS(tlsCfg))
+	quicOpts = append(quicOpts,
+		quicapi.WithMaxPayloadBytes(s.config.Transport.ResolvedMaxMessageBytes()),
+		quicapi.WithMaxStreamsPerConn(s.config.Transport.ResolvedMaxStreamsPerConn()),
+		quicapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+	)
 	if s.opts.userSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithUserService(s.opts.userSvc))
 	}
@@ -2116,6 +2189,12 @@ func (s *Server) startQUIC() error {
 	}
 	if s.opts.certProv != nil {
 		quicOpts = append(quicOpts, quicapi.WithCertProvider(s.opts.certProv))
+	}
+	if s.opts.certEnroll != nil {
+		quicOpts = append(quicOpts, quicapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.onboarding != nil {
+		quicOpts = append(quicOpts, quicapi.WithTenantOnboarding(s.opts.onboarding))
 	}
 	if s.opts.authMW != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
@@ -2190,6 +2269,11 @@ func (s *Server) startQUIC() error {
 	if s.opts.tenantSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithTenantService(s.opts.tenantSvc))
 	}
+	if s.opts.barrierRegistry != nil {
+		if volumeSvc, ok := s.opts.barrierRegistry.VolumeService(); ok {
+			quicOpts = append(quicOpts, quicapi.WithVolumeService(volumeSvc))
+		}
+	}
 	if s.opts.backupSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithBackupService(s.opts.backupSvc))
 	}
@@ -2243,6 +2327,7 @@ func (s *Server) startUnix() error {
 	if s.opts.grpcMaxConcurrentStreams != 0 {
 		unixOpts = append(unixOpts, unixapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
 	}
+	unixOpts = append(unixOpts, unixapi.WithMaxMessageBytes(s.config.Transport.ResolvedMaxMessageBytes()))
 	if s.opts.userSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserService(s.opts.userSvc))
 	}
@@ -2256,6 +2341,12 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.certProv != nil {
 		unixOpts = append(unixOpts, unixapi.WithCertProvider(s.opts.certProv))
+	}
+	if s.opts.certEnroll != nil {
+		unixOpts = append(unixOpts, unixapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.onboarding != nil {
+		unixOpts = append(unixOpts, unixapi.WithTenantOnboarding(s.opts.onboarding))
 	}
 	if s.opts.authMW != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
@@ -2339,6 +2430,11 @@ func (s *Server) startUnix() error {
 	if s.opts.auditLogger != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuditLogger(s.opts.auditLogger))
 	}
+	if s.opts.barrierRegistry != nil {
+		if volumeSvc, ok := s.opts.barrierRegistry.VolumeService(); ok {
+			unixOpts = append(unixOpts, unixapi.WithVolumeService(volumeSvc))
+		}
+	}
 	if s.opts.tenantSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithTenantService(s.opts.tenantSvc))
 		// The same TenantServicer backs both tenant CRUD (WithTenantService)
@@ -2391,6 +2487,10 @@ func (s *Server) startMCP() error {
 	if s.opts.mcpMaxConnections != 0 {
 		mcpOpts = append(mcpOpts, mcpapi.WithMaxConnections(s.opts.mcpMaxConnections))
 	}
+	mcpOpts = append(mcpOpts,
+		mcpapi.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
+		mcpapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+	)
 	if s.opts.authMW != nil {
 		// Authenticate the mTLS peer and authorize every tool call
 		// (default-deny). Parity with REST/gRPC/QUIC.
@@ -2412,6 +2512,12 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.certProv != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))
+	}
+	if s.opts.certEnroll != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.onboarding != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithTenantOnboarding(s.opts.onboarding))
 	}
 	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
 		// The boot-time listener's gate is installed by
@@ -2489,6 +2595,11 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.tenantSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithTenantService(s.opts.tenantSvc))
+	}
+	if s.opts.barrierRegistry != nil {
+		if volumeSvc, ok := s.opts.barrierRegistry.VolumeService(); ok {
+			mcpOpts = append(mcpOpts, mcpapi.WithVolumeService(volumeSvc))
+		}
 	}
 	if s.opts.backupSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBackupService(s.opts.backupSvc))

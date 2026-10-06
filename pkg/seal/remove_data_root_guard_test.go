@@ -56,9 +56,9 @@ func requireOutside(t *testing.T, reg *BarrierRegistry, path string) {
 	}
 }
 
-// TestRequireInsideLocalPool_SiblingWithTheSamePrefixIsOutside: /pool10 is
+// TestRequirePathInsideLocalPools_SiblingWithTheSamePrefixIsOutside: /pool10 is
 // not inside /pool1. Containment is by path component, never by string prefix.
-func TestRequireInsideLocalPool_SiblingWithTheSamePrefixIsOutside(t *testing.T) {
+func TestRequirePathInsideLocalPools_SiblingWithTheSamePrefixIsOutside(t *testing.T) {
 	parent := t.TempDir()
 	reg, _ := newPooledTestRegistryAt(t, filepath.Join(parent, "pool1"))
 	sibling := filepath.Join(parent, "pool10", "tenant")
@@ -73,15 +73,16 @@ func TestRequireInsideLocalPool_SiblingWithTheSamePrefixIsOutside(t *testing.T) 
 	mustSurvive(t, file)
 }
 
-// TestRequireInsideLocalPool_TrailingSeparators: a pool configured with a
-// trailing separator still contains its tenants, while a path to remove that
-// is not already clean -- a trailing or doubled separator -- is refused rather
-// than normalised. Every path removal is handed comes from filepath.Join, so
-// an unclean one did not.
-func TestRequireInsideLocalPool_TrailingSeparators(t *testing.T) {
+// TestRequirePathInsideLocalPools_TrailingSeparators: a path to remove that
+// is not already clean -- a trailing or doubled separator, or a relative
+// path -- is refused rather than normalised. Every real path removal is
+// handed comes from filepath.Join, so an unclean one did not; Volume.Root
+// itself is always absolute and clean by contract (pkg/volume.Volume), so
+// there is no pool base to exercise this against.
+func TestRequirePathInsideLocalPools_TrailingSeparators(t *testing.T) {
 	ctx := context.Background()
 	pool := t.TempDir()
-	reg, _ := newPooledTestRegistryAt(t, pool+string(filepath.Separator))
+	reg, _ := newPooledTestRegistryAt(t, pool)
 	tenant := filepath.Join(pool, "tenant")
 	if err := os.MkdirAll(tenant, 0o700); err != nil {
 		t.Fatal(err)
@@ -90,7 +91,7 @@ func TestRequireInsideLocalPool_TrailingSeparators(t *testing.T) {
 	requireOutside(t, reg, tenant+"/")
 	requireOutside(t, reg, pool+"//tenant")
 	requireOutside(t, reg, pool+"/")
-	if err := reg.RequireInsideLocalPool(ctx, "tenant"); err == nil {
+	if err := reg.RequirePathInsideLocalPools(ctx, "tenant"); err == nil {
 		t.Fatal("a relative path was accepted")
 	}
 	if _, err := os.Stat(tenant); err != nil {
@@ -98,19 +99,19 @@ func TestRequireInsideLocalPool_TrailingSeparators(t *testing.T) {
 	}
 
 	if err := reg.RemoveDataRoot(ctx, tenant); err != nil {
-		t.Fatalf("RemoveDataRoot(%s) under a pool spelled with a trailing separator = %v", tenant, err)
+		t.Fatalf("RemoveDataRoot(%s) = %v; a clean path under the pool must still be removable", tenant, err)
 	}
 	if _, err := os.Stat(tenant); !os.IsNotExist(err) {
 		t.Fatalf("the tenant directory survived its removal: %v", err)
 	}
 }
 
-// TestRequireInsideLocalPool_SymlinkedTenantDirectoryIsOutside: a tenant
+// TestRequirePathInsideLocalPools_SymlinkedTenantDirectoryIsOutside: a tenant
 // directory inside the pool that is a symbolic link to a directory outside it
 // is refused, and nothing it points at is touched. Removal lists the
 // directory and removes its entries, so following the link would empty the
 // target.
-func TestRequireInsideLocalPool_SymlinkedTenantDirectoryIsOutside(t *testing.T) {
+func TestRequirePathInsideLocalPools_SymlinkedTenantDirectoryIsOutside(t *testing.T) {
 	reg, _ := newPooledTestRegistry(t)
 	base := poolBase(t, reg)
 	target, file := victim(t)
@@ -123,10 +124,10 @@ func TestRequireInsideLocalPool_SymlinkedTenantDirectoryIsOutside(t *testing.T) 
 	mustSurvive(t, file)
 }
 
-// TestRequireInsideLocalPool_SymlinkedAncestorIsOutside: a link anywhere
+// TestRequirePathInsideLocalPools_SymlinkedAncestorIsOutside: a link anywhere
 // above the path -- here a directory in the pool that points outside it --
 // carries the removal outside just the same.
-func TestRequireInsideLocalPool_SymlinkedAncestorIsOutside(t *testing.T) {
+func TestRequirePathInsideLocalPools_SymlinkedAncestorIsOutside(t *testing.T) {
 	reg, _ := newPooledTestRegistry(t)
 	base := poolBase(t, reg)
 	target, _ := victim(t)
@@ -149,17 +150,21 @@ func TestRequireInsideLocalPool_SymlinkedAncestorIsOutside(t *testing.T) {
 	mustSurvive(t, file)
 }
 
-// TestRequireInsideLocalPool_SymlinkedPoolPathStillContainsItsTenants: the
-// pool path itself may be a link -- an operator's mount alias. Resolving both
-// sides keeps its tenants inside, and their removal proceeds.
-func TestRequireInsideLocalPool_SymlinkedPoolPathStillContainsItsTenants(t *testing.T) {
+// TestRequirePathInsideLocalPools_SymlinkedPoolPathStillContainsItsTenants: the
+// pool path itself may be a link -- an operator's mount alias. The "dir"
+// provider refuses to Open a pool path that is itself a symlink, so this
+// uses a Volume double (newPooledTestRegistryAtAlias) reporting the alias
+// from Root() to exercise RequirePathInsideLocalPools' own resolution of a
+// symlinked pool base: resolving both sides keeps its tenants inside, and
+// their removal proceeds.
+func TestRequirePathInsideLocalPools_SymlinkedPoolPathStillContainsItsTenants(t *testing.T) {
 	ctx := context.Background()
 	real := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "pool-alias")
 	if err := os.Symlink(real, alias); err != nil {
 		t.Fatal(err)
 	}
-	reg, _ := newPooledTestRegistryAt(t, alias)
+	reg, _ := newPooledTestRegistryAtAlias(t, real, alias)
 	tenant := filepath.Join(alias, "tenant")
 	if err := os.MkdirAll(filepath.Join(tenant, "barrier"), 0o700); err != nil {
 		t.Fatal(err)
@@ -176,10 +181,10 @@ func TestRequireInsideLocalPool_SymlinkedPoolPathStillContainsItsTenants(t *test
 	}
 }
 
-// TestRequireInsideLocalPool_UnresolvablePathIsRefused: a path whose
+// TestRequirePathInsideLocalPools_UnresolvablePathIsRefused: a path whose
 // resolution fails for a reason other than not existing -- here a link loop
 // -- is refused, carrying the cause.
-func TestRequireInsideLocalPool_UnresolvablePathIsRefused(t *testing.T) {
+func TestRequirePathInsideLocalPools_UnresolvablePathIsRefused(t *testing.T) {
 	reg, _ := newPooledTestRegistry(t)
 	base := poolBase(t, reg)
 	a, b := filepath.Join(base, "a"), filepath.Join(base, "b")
@@ -189,9 +194,9 @@ func TestRequireInsideLocalPool_UnresolvablePathIsRefused(t *testing.T) {
 	if err := os.Symlink(a, b); err != nil {
 		t.Fatal(err)
 	}
-	err := reg.RequireInsideLocalPool(context.Background(), filepath.Join(a, "tenant"))
+	err := reg.RequirePathInsideLocalPools(context.Background(), filepath.Join(a, "tenant"))
 	var outside *DataRootOutsideLocalRootsError
 	if !errors.As(err, &outside) || outside.Err == nil || errors.Unwrap(err) == nil {
-		t.Fatalf("RequireInsideLocalPool through a link loop = %v; want a refusal carrying the cause", err)
+		t.Fatalf("RequirePathInsideLocalPools through a link loop = %v; want a refusal carrying the cause", err)
 	}
 }

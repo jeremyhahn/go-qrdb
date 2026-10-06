@@ -89,7 +89,7 @@ defaults; on MCP that is `qrdb_database_update_sql` with `concurrency` omitted
 | `SKIP LOCKED` | 1235 (42000) | 0A000 | 501 / `UNIMPLEMENTED` / `StatusUnimplemented` |
 
 The in-process driver reports the MySQL numbers through
-`*driver.SQLStateError` (`Number`), exactly as it reports 1213 today.
+`*mysql.MySQLError` (`Number`), exactly as it reports 1213 today.
 
 ## Versioning
 

@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // raftEntitlements permits raft isolation and the dedicated-raft feature.
@@ -30,6 +31,7 @@ func raftEntitlements() *quota.Entitlements {
 	return &quota.Entitlements{
 		AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 		AllowDedicatedRaft:    true,
+		AllowedVolumePools:    []string{"default"},
 	}
 }
 
@@ -40,7 +42,7 @@ func newRaftService(t *testing.T) (*TenantService, *seal.BarrierRegistry) {
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
 	svc, err := NewTenantService(store, reg, testLogger(),
-		WithDefaultEntitlements(raftEntitlements()))
+		WithDefaultEntitlements(raftEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -73,8 +75,9 @@ func TestCreateTenant_Raft_AllocatesDataRootAndBarrier(t *testing.T) {
 	if info.BarrierAutoUnseal {
 		t.Error("default raft tenant must be self-managed (BarrierAutoUnseal=false)")
 	}
-	if info.DataRoot == "" || !strings.Contains(info.DataRoot, "rtenant") {
-		t.Errorf("DataRoot = %q, want a pool path containing the tenant ID", info.DataRoot)
+	dataRoot, err := reg.LocalTenantDataRoot(ctx, "rtenant")
+	if err != nil || dataRoot == "" || !strings.Contains(dataRoot, "rtenant") {
+		t.Errorf("LocalTenantDataRoot(rtenant) = %q, %v; want a pool path containing the tenant ID", dataRoot, err)
 	}
 	// No pre-counted raft group: per-database accounting handles MaxRaftGroups.
 	if info.Quotas != nil && info.Quotas.CurrentRaftGroups != 0 {
@@ -114,6 +117,68 @@ func TestCreateTenant_Raft_DeniedWithoutEntitlement(t *testing.T) {
 	}
 }
 
+// TestCreateTenant_Raft_PoolMissingFromCatalogIsRefused pins decision D2 of
+// docs/volume-pools: a pool exists only once the operator creates its catalog
+// record, never because a node maps its name to a directory. A raft tenant
+// whose default pool has no record is refused with the catalog's
+// *volume.PoolNotFoundError, and nothing is left behind: no tenant, no
+// barrier.
+func TestCreateTenant_Raft_PoolMissingFromCatalogIsRefused(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	ents := raftEntitlements()
+	ents.AllowedVolumePools = []string{"unregistered"}
+	svc, err := NewTenantService(store, reg, testLogger(),
+		WithDefaultEntitlements(ents), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	ctx := context.Background()
+	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
+	_, err = svc.CreateTenant(ctx, "nopool", "No Pool", IsolationRaft)
+	var reserveErr *VolumePoolReserveError
+	if !errors.As(err, &reserveErr) || reserveErr.Pool != "unregistered" {
+		t.Fatalf("CreateTenant = %v; want *VolumePoolReserveError for pool unregistered", err)
+	}
+	var notFound *volume.PoolNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("CreateTenant = %v; want it to wrap *volume.PoolNotFoundError", err)
+	}
+	if _, err := reg.GetTenant("nopool"); err == nil {
+		t.Error("a refused create registered the tenant's barrier")
+	}
+	if _, err := svc.GetTenant(ctx, "nopool"); err == nil {
+		t.Error("a refused create recorded the tenant")
+	}
+}
+
+// TestCreateTenant_Raft_NoEntitledPoolIsRefused pins the fail-closed default
+// pool: a raft tenant entitled to no pool is refused naming
+// "volume_pool:<none>", before the catalog is consulted.
+func TestCreateTenant_Raft_NoEntitledPoolIsRefused(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	ents := raftEntitlements()
+	ents.AllowedVolumePools = nil
+	svc, err := NewTenantService(store, reg, testLogger(),
+		WithDefaultEntitlements(ents), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+
+	_, err = svc.CreateTenant(context.Background(), "unentitled", "Unentitled", IsolationRaft)
+	var entErr *quota.EntitlementError
+	if !errors.As(err, &entErr) || entErr.Feature != "volume_pool:<none>" {
+		t.Fatalf("CreateTenant = %v; want *quota.EntitlementError naming volume_pool:<none>", err)
+	}
+	if _, err := reg.GetTenant("unentitled"); err == nil {
+		t.Error("a refused create registered the tenant's barrier")
+	}
+}
+
 // TestCreateTenant_Raft_SystemManaged_AutoUnsealed verifies the opt-in
 // system-managed mode auto-initializes the raft tenant's barrier at create so it
 // comes up unsealed and re-attaches credential-free at boot.
@@ -130,7 +195,8 @@ func TestCreateTenant_Raft_SystemManaged_AutoUnsealed(t *testing.T) {
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 			AllowDedicatedRaft:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -743,5 +744,51 @@ func TestExportSealedBlob_AfterImportSealedBlob(t *testing.T) {
 	}
 	if !bytes.Equal(exported, original) {
 		t.Error("ExportSealedBlob must return the same bytes that were imported")
+	}
+}
+
+// TestExportSealedBlob_GetErrorPassthrough verifies that ExportSealedBlob
+// propagates a storage-layer Get error that is NOT ErrSecretNotFound. When
+// the underlying backend fails with an unexpected error the function must
+// return (nil, err) immediately.
+func TestExportSealedBlob_GetErrorPassthrough(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Use a backend whose Get returns a non-ErrSecretNotFound error. ErrSealed
+	// is a sentinel from this package and is guaranteed != ErrSecretNotFound.
+	backend := &errorBackend{getErr: ErrSealed}
+	b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{RootKeyPath: "root"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+
+	_, gotErr := b.ExportSealedBlob(ctx)
+	if gotErr == nil {
+		t.Fatal("ExportSealedBlob: expected error, got nil")
+	}
+	if errors.Is(gotErr, ErrNotInitialized) {
+		t.Fatalf("ExportSealedBlob: got ErrNotInitialized, want the passthrough storage error")
+	}
+}
+
+// TestExportSealedBlob_NilBlobReturnsNotInitialized exercises the defensive nil
+// guard after a successful Get: when the backend returns (nil, nil) — a valid
+// "found but empty" response from some implementations — ExportSealedBlob must
+// treat the barrier as uninitialized and return ErrNotInitialized.
+func TestExportSealedBlob_NilBlobReturnsNotInitialized(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// errorBackend with no getErr returns (nil, nil) from Get.
+	backend := &errorBackend{}
+	b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{RootKeyPath: "root"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+
+	_, gotErr := b.ExportSealedBlob(ctx)
+	if !errors.Is(gotErr, ErrNotInitialized) {
+		t.Fatalf("ExportSealedBlob nil blob: want ErrNotInitialized, got %v", gotErr)
 	}
 }

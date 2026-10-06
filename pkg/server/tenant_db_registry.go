@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"sync"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -39,6 +40,12 @@ type TenantHostRegistry struct {
 	barrierReg *seal.BarrierRegistry
 	tenants    tenantInfoSource
 	logger     *slog.Logger
+
+	// importSessionCfg bounds a chunked import session on every tenant Host
+	// this registry builds (config.ImportSession, "import_session:" in
+	// YAML). The zero value resolves to the package defaults
+	// WithImportSessionLimits documents. See WithImportSessionConfig.
+	importSessionCfg qrdbconfig.ImportSessionConfig
 
 	mu    sync.Mutex
 	hosts map[string]*tenantHost
@@ -60,20 +67,36 @@ type tenantInfoSource interface {
 	dataRootOf(ctx context.Context, tenantID string) (string, error)
 }
 
+// TenantHostRegistryOption configures optional TenantHostRegistry behavior at
+// construction.
+type TenantHostRegistryOption func(*TenantHostRegistry)
+
+// WithTenantHostImportSessionConfig bounds a chunked import session on every
+// tenant Host this registry builds. Omitting it leaves every tenant Host at
+// the package defaults WithImportSessionLimits documents, not unbounded
+// staging.
+func WithTenantHostImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) TenantHostRegistryOption {
+	return func(r *TenantHostRegistry) { r.importSessionCfg = cfg }
+}
+
 // NewTenantHostRegistry creates a registry that builds per-tenant volume Hosts
 // using the given barrier registry (for the per-tenant encryptor) and tenant
 // metadata source (for the DataRoot). Both must be non-nil for the registry to
 // resolve any tenant.
-func NewTenantHostRegistry(barrierReg *seal.BarrierRegistry, tenants tenantInfoSource, logger *slog.Logger) *TenantHostRegistry {
+func NewTenantHostRegistry(barrierReg *seal.BarrierRegistry, tenants tenantInfoSource, logger *slog.Logger, opts ...TenantHostRegistryOption) *TenantHostRegistry {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &TenantHostRegistry{
+	r := &TenantHostRegistry{
 		barrierReg: barrierReg,
 		tenants:    tenants,
 		logger:     logger,
 		hosts:      make(map[string]*tenantHost),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // NewTenantHostRegistryFromLookup is the composition-facing constructor that
@@ -86,28 +109,26 @@ func NewTenantHostRegistry(barrierReg *seal.BarrierRegistry, tenants tenantInfoS
 // consulted on EVERY DataRoot resolution and never unwrapped into a captured
 // *tenant.Service here; a composition whose tenant service can be swapped must
 // pass a lookup that resolves the current one (go-qrdb#383).
-func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup TenantLookup, logger *slog.Logger) *TenantHostRegistry {
+func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup TenantLookup, logger *slog.Logger, opts ...TenantHostRegistryOption) *TenantHostRegistry {
 	var source tenantInfoSource
 	if lookup != nil {
-		source = &lookupDataRootSource{lookup: lookup}
+		source = &lookupDataRootSource{registry: barrierReg}
 	}
-	return NewTenantHostRegistry(barrierReg, source, logger)
+	return NewTenantHostRegistry(barrierReg, source, logger, opts...)
 }
 
-// lookupDataRootSource adapts a TenantLookup to the tenantInfoSource
-// interface, resolving a tenant's DataRoot from its persisted metadata at the
-// moment it is asked.
+// lookupDataRootSource adapts a *seal.BarrierRegistry to the
+// tenantInfoSource interface, resolving a tenant's DataRoot through its
+// catalog Assignment at the moment it is asked. TenantInfo no longer
+// carries a resolved path itself, only the pool name (VolumePool), so
+// resolution goes through the registry rather than the tenant lookup.
 type lookupDataRootSource struct {
-	lookup TenantLookup
+	registry *seal.BarrierRegistry
 }
 
-// dataRootOf returns the DataRoot recorded for the tenant, or an error.
+// dataRootOf returns the local DataRoot resolved for the tenant, or an error.
 func (s *lookupDataRootSource) dataRootOf(ctx context.Context, tenantID string) (string, error) {
-	info, err := s.lookup.GetTenant(ctx, tenantID)
-	if err != nil {
-		return "", err
-	}
-	return info.DataRoot, nil
+	return s.registry.LocalTenantDataRoot(ctx, tenantID)
 }
 
 // Services returns the (un-namespaced) data-plane service set backing the named
@@ -147,7 +168,7 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 		return nil, &TenantHostError{TenantID: tenantID, Op: "data-root", Err: ErrTenantDataRootUnset}
 	}
 
-	th, err := newTenantHost(ctx, tenantID, dataRoot, tb, r.logger)
+	th, err := newTenantHost(ctx, tenantID, dataRoot, tb, r.importSessionCfg, r.logger)
 	if err != nil {
 		return nil, err
 	}

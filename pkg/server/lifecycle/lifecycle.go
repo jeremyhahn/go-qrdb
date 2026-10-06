@@ -58,7 +58,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -145,6 +147,18 @@ type Infra struct {
 	// SealBarrier is non-nil.
 	BarrierRegistry *seal.BarrierRegistry
 
+	// RaftAddrToNodeID maps this cluster's known Raft addresses to their
+	// decimal replica-ID string (the same form volume.NodeReport.NodeID
+	// carries), built from whatever topology source the composer has at
+	// boot time -- the static --peers map for static discovery, or
+	// cluster.Member.NodeID/Address for dynamic membership. It is the seam
+	// the volume-pool-health ReplicaFilter (security review item 5) uses
+	// to translate a placement candidate's raftAddr into the NodeID a
+	// pool's per-node health report is keyed by. Nil or a miss is treated
+	// as "cannot verify" by that filter, not as "healthy" -- see
+	// newVolumePoolHealthFilter's own doc comment.
+	RaftAddrToNodeID map[string]string
+
 	// StrategyRegistry is the canonical name→factory lookup for sealing
 	// strategies. When non-nil it is injected into the TenantService so
 	// operators can select hardware/cloud seal strategies (tpm2, pkcs11,
@@ -212,6 +226,16 @@ type Infra struct {
 	// below, not after.
 	CertKeyProviderFactory cakey.ProviderFactory
 
+	// TrustAnchors, when non-nil, replaces the built-in per-tenant trust
+	// anchor store (trustanchor.NewKVRegistry over the replicated system
+	// store): every tenant's registered anchors -- what a bring-your-own
+	// login certificate must chain to -- are read and managed through it. An
+	// embedder (go-xkms) injects its own trust store through
+	// server.WithTrustAnchors (resolved by server.ResolveCryptoOptions and
+	// forwarded here by the SDK node builders) and a thin
+	// trustanchor.Registry adapter.
+	TrustAnchors trustanchor.Registry
+
 	// MTLSBindingPolicy is the operator's auth.mtls_binding_policy, as
 	// configured. Under "required" the user service refuses every change that
 	// would leave the bootstrap admin unable to log in by certificate
@@ -259,6 +283,14 @@ type Infra struct {
 	// Node.RAG is only non-nil when EmbeddingConfig.Providers is non-empty and
 	// a vector service is available.
 	RAGConfig qrdbconfig.RAGConfig
+
+	// ImportSession bounds a chunked import session (config.ImportSession,
+	// "import_session:" in YAML): a session's total staged bytes, its chunk
+	// count, a tenant's concurrent open sessions, and the session lease's
+	// TTL. The zero value resolves to the same package defaults
+	// WithImportSessionLimits documents, so a caller that leaves this unset
+	// gets production bounds, not unbounded staging.
+	ImportSession qrdbconfig.ImportSessionConfig
 
 	// ReplicaID is this node's Raft replica identifier (config.Raft.ReplicaID).
 	// It seeds the coordination-free Snowflake generator that assigns uint64
@@ -446,6 +478,35 @@ type Node struct {
 	// cluster-join CSR signing (pkg/clusterenroll).
 	ClusterCAProv cakey.Provider
 
+	// TrustAnchors is every tenant's registered trust anchors. A composer
+	// installs it on its client-auth trust pool
+	// (clienttrust.Pool.SetTrustAnchors); WireTrustAnchors does both steps.
+	TrustAnchors trustanchor.Registry
+
+	// ClientTrustChanges announces every change to the set of CAs a client
+	// certificate may chain to: a trust anchor added or removed, and a
+	// tenant's login CA coming into use (cert.WithNewCAHook) -- the moment a
+	// tenant onboarded a moment ago first has a CA to trust. A composer
+	// subscribes its trust pool's Invalidate, so the next handshake sees the
+	// change instead of waiting out the pool's cache.
+	ClientTrustChanges *trustanchor.Changes
+
+	// CertTargets is the certificate target guard every verb that binds a key
+	// applies: certs:issue and certs:enroll through CertEnrollment (internally,
+	// unconditionally), and users:add_cert_binding through the auth
+	// middleware (AuthMiddleware.AuthorizeCertBindingTarget).
+	CertTargets service.CertTargetGuard
+
+	// PendingAdmins holds the first admins of tenants whose identity records
+	// are behind their own not-yet-initialized barrier (pkg/tenantadmin).
+	PendingAdmins tenantadmin.Store
+
+	// CertEnrollment is the certificate issue/enrol and trust-anchor service
+	// every transport delegates to; TenantOnboarding the tenant-create one.
+	// Both are nil exactly when CertProv is.
+	CertEnrollment   service.CertEnrollmentServicer
+	TenantOnboarding service.TenantOnboardingServicer
+
 	// StoreResolver maps a tenant ID to the KVStore backing its IAM data.
 	// It is non-nil only when a BarrierRegistry was supplied: barrier-mode
 	// tenants route their user/role records through their own TenantBarrier
@@ -568,7 +629,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		adminOpts = append(adminOpts, service.WithNodeCompaction(table))
 	}
 	n.Admin = service.NewAdminService(infra.Host, adminOpts...)
-	n.Batch = service.NewBatchService(infra.Host, shard.ShardKV)
+	n.Batch = service.NewBatchService(infra.Host, shard.ShardKV, service.WithImportSessionLimits(
+		infra.ImportSession.ResolvedMaxSessionBytes(),
+		infra.ImportSession.ResolvedMaxChunksPerSession(),
+		infra.ImportSession.ResolvedMaxSessionsPerTenant(),
+		infra.ImportSession.ResolvedSessionTTLSeconds(),
+	))
 	n.Transaction = service.NewTransactionService(infra.Host, shard.ShardKV)
 	n.Lease = service.NewLeaseService(infra.Host, shard.ShardKV)
 	n.Index = service.NewIndexService(infra.Host, shard.ShardKV)
@@ -721,7 +787,28 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// A host whose groups gate features never has a group placed on a
 		// node that cannot apply what the group uses.
 		if admitter, ok := infra.Host.(service.ReplicaAdmitter); ok {
-			schedOpts = append(schedOpts, placement.WithReplicaFilter(admitter.AdmitReplica))
+			schedOpts = append(schedOpts, placement.WithReplicaFilter(
+				func(_ string, shardID uint64, raftAddr string) error {
+					return admitter.AdmitReplica(shardID, raftAddr)
+				}))
+		}
+		// Security review item 5: a raft tenant's replica is never placed
+		// on a node whose latest health report does not show the
+		// tenant's volume pool ready there. ANDed with the feature-gate
+		// filter above via WithReplicaFilter, not replacing it. Requires
+		// both the replicated catalog (attached to BarrierRegistry
+		// before BuildServices runs, same ordering the TenantService's
+		// own volume-pool reservation already depends on) and a raft-
+		// address-to-node-id snapshot from the composer; either missing
+		// leaves this filter un-added, matching every other optional
+		// filter here.
+		if infra.BarrierRegistry != nil && len(infra.RaftAddrToNodeID) > 0 {
+			if volumeSvc, ok := infra.BarrierRegistry.VolumeService(); ok {
+				if allocator := infra.BarrierRegistry.VolumeAllocator(); allocator != nil {
+					schedOpts = append(schedOpts, placement.WithReplicaFilter(
+						newVolumePoolHealthFilter(allocator, volumeSvc, infra.RaftAddrToNodeID)))
+				}
+			}
 		}
 		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance), schedOpts...); serr == nil {
 			placementOpts = []service.DatabaseServiceOption{
@@ -751,6 +838,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 	if infra.ClusterSealer != nil {
 		placementOpts = append(placementOpts, service.WithDatabaseClusterSealer(infra.ClusterSealer))
+	}
+	// Routes an IsolationVolume/IsolationRaft database's DataDir under its
+	// tenant's catalog-resolved pool directory; TenantInfo itself carries
+	// only the pool NAME (VolumePool), never a resolved path.
+	if infra.BarrierRegistry != nil {
+		placementOpts = append(placementOpts, service.WithTenantDataRootResolver(infra.BarrierRegistry))
 	}
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
@@ -899,6 +992,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				return nil, err
 			}
 		}
+		// Over the FINAL (routed) user and role services; see
+		// buildEnrollmentServices.
+		n.buildEnrollmentServices(infra, log)
 	} else {
 		// When the seal subsystem is disabled, wire a KV-backed tenant service
 		// so tenant CRUD operates through Raft consensus. Barrier operations
@@ -1137,7 +1233,17 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		if err != nil {
 			return &CertStoreError{Err: err}
 		}
-		certOpts := []cert.ProviderOption{cert.WithTrustDomain(infra.SPIFFETrustDomain)}
+		n.ClientTrustChanges = &trustanchor.Changes{}
+		certOpts := []cert.ProviderOption{
+			cert.WithTrustDomain(infra.SPIFFETrustDomain),
+			cert.WithNewCAHook(n.ClientTrustChanges.Notify),
+			// certs:revoke has no single caller every transport funnels
+			// through the way certs:issue/certs:enroll go through
+			// CertEnrollmentService, so its own audit trail (cert.revoke)
+			// belongs here, in the provider every transport's handler
+			// calls directly.
+			cert.WithAuditLogger(infra.AuditLogger),
+		}
 		if infra.CertKeyProviderFactory != nil {
 			certOpts = append(certOpts, cert.WithKeyProviderFactory(infra.CertKeyProviderFactory))
 		}
@@ -1220,6 +1326,9 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		}
 
 		tenantOpts := buildTenantServiceOpts(infra)
+		// A tenant onboarded before its barrier existed gets its first admin's
+		// account as soon as the barrier is usable.
+		tenantOpts = append(tenantOpts, tenant.WithBarrierReadyHook(n.completePendingTenantAdmin(log)))
 		if n.Ceremony != nil {
 			if coreSvc, ok := service.CeremonyServiceCore(n.Ceremony); ok {
 				tenantOpts = append(tenantOpts, tenant.WithTenantHolderDeps(coreSvc.HolderDeps()))
@@ -1311,6 +1420,54 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetAuditLogger(infra.AuditLogger)
 	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
 	return svc, nil
+}
+
+// buildEnrollmentServices constructs tenant onboarding and certificate
+// enrolment over the node's FINAL user and role services. It runs after
+// BuildServices has replaced n.User and n.Role with their tenant-routed
+// versions: built any earlier, the two services would hold the raw shared
+// store's IAM services and never see an account of a tenant whose identity
+// records are routed elsewhere -- or, for a prefix tenant, see them under
+// the wrong namespace -- so a CSR for an account created through the API
+// would be refused as "no such account". A node without a certificate
+// provider gets neither service.
+func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
+	if n.CertProv == nil {
+		return
+	}
+	certStore := newKVStoreAdapter(n.KV, n.Index)
+
+	// Tenant onboarding and certificate enrolment. Trust anchors and
+	// pending tenant admins live in the same replicated store as Key B,
+	// each confined to its tenant's identity namespace, unless the
+	// embedder injected its own trust store (infra.TrustAnchors). Every
+	// change to the anchors is announced on ClientTrustChanges so a
+	// composer's client-auth trust pool drops its cached widening at once.
+	anchors := infra.TrustAnchors
+	if anchors == nil {
+		anchors = trustanchor.NewKVRegistry(certStore,
+			trustanchor.WithAnchorAuditLogger(infra.AuditLogger),
+			trustanchor.WithAnchorAuditPolicy(infra.AuditFailurePolicy))
+	}
+	n.TrustAnchors = trustanchor.Observe(anchors, n.ClientTrustChanges.Notify)
+	n.PendingAdmins = tenantadmin.NewKVStore(certStore)
+	n.CertTargets = service.NewCertTargetGuard()
+	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
+		service.WithEnrollmentTrustDomain(infra.SPIFFETrustDomain),
+		service.WithEnrollmentAuditLogger(infra.AuditLogger),
+		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy))
+	n.TenantOnboarding = service.NewTenantOnboardingService(service.TenantOnboardingDeps{
+		Tenants:     n.Tenant,
+		Users:       n.User,
+		Roles:       n.Role,
+		Certs:       n.CertProv,
+		Anchors:     n.TrustAnchors,
+		Pending:     n.PendingAdmins,
+		TrustDomain: infra.SPIFFETrustDomain,
+		Logger:      log,
+		Audit:       infra.AuditLogger,
+		AuditPolicy: infra.AuditFailurePolicy,
+	})
 }
 
 // BuildSealServicesOnly constructs the subset of seal-gated services that
@@ -1416,6 +1573,17 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 	}
 	if infra.ClusterSealer != nil {
 		opts = append(opts, tenant.WithClusterSealer(infra.ClusterSealer))
+	}
+	// The TenantService's own volume-pool reservation
+	// (reserveAndRegisterVolumeTenant) needs the SAME allocator
+	// BarrierRegistry resolves tenant placement through -- see
+	// BarrierRegistry.VolumeAllocator's doc comment. Composers (cmd/qrdbd,
+	// sdk/go/node) attach the allocator onto BarrierReg themselves; this is
+	// the single place that forwards it into the TenantService they share.
+	if infra.BarrierRegistry != nil {
+		if allocator := infra.BarrierRegistry.VolumeAllocator(); allocator != nil {
+			opts = append(opts, tenant.WithVolumeAllocator(allocator))
+		}
 	}
 	return opts
 }

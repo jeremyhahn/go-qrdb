@@ -22,26 +22,22 @@ import (
 	qrdbgorm "github.com/jeremyhahn/go-qrdb/sdk/go/gorm"
 )
 
-// Example demonstrates building a Dialector for an embedded qrdb database,
-// as shown in the package doc comment. It does not open a connection, so it
-// runs offline: Name reports the dialect GORM treats the connection as
-// speaking (see the package doc comment for why that is "mysql", not
-// "qrdb"), independent of whether Initialize ever succeeds.
+// Example builds a dialector for an in-process qrdb database. It does not
+// open a connection, so it runs offline: the dialector is gorm.io/driver/mysql's,
+// configured to open the DSN through qrdb's "qrdb" database/sql driver.
 func Example() {
-	dialector := qrdbgorm.Open("embedded://memory?database=example")
-	fmt.Println(dialector.Name())
-	// Output: mysql
+	dialector, err := qrdbgorm.Open("embedded://memory?database=example")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(dialector.Name(), dialector.DriverName)
+	// Output: mysql qrdb
 }
 
-// Example_dialectName demonstrates overriding the reported dialect name via
-// Config.DialectName, for a caller that needs to disambiguate multiple
-// dialectors (in logs, for instance) rather than rely on the "mysql"
-// default.
-func Example_dialectName() {
-	dialector := qrdbgorm.New(qrdbgorm.Config{
-		DSN:         "embedded://memory?database=example",
-		DialectName: "qrdb",
-	})
-	fmt.Println(dialector.Name())
-	// Output: qrdb
+// Example_networkTransport shows the refusal a network SQL DSN gets.
+func Example_networkTransport() {
+	_, err := qrdbgorm.Open("rest://db.example.com:8080/app")
+	fmt.Println(err != nil)
+	// Output: true
 }

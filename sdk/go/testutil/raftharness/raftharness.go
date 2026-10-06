@@ -42,6 +42,19 @@ import (
 // not a pacing interval: every wait returns once its condition holds.
 const Bound = 2 * time.Minute
 
+// pollAttempt bounds a single readiness probe inside WaitReadable. It must
+// stay well below Bound: SyncGetShardMembership blocks for its whole context
+// budget while no leader has confirmed a read index yet (go-quicraft's
+// ReadIndex only returns once it is satisfied or ctx expires), so giving an
+// attempt the full Bound turns the retry loop into one very long call --  a
+// single slow election round consumes the entire budget and WaitReadable
+// fails having tried exactly once, indistinguishable from never becoming
+// ready at all. A short per-attempt timeout lets the loop send a fresh
+// ReadIndex request every pollAttempt, so a lost round or a slow election
+// under scheduling pressure gets retried throughout the whole Bound window
+// instead of spending it on a single attempt.
+const pollAttempt = 2 * time.Second
+
 // Cluster is n hosts whose system shard (shard.ShardKV) is formed with every
 // host a voter, so each host's identity is committed in the system shard's
 // membership. Host i runs system-shard replica i+1.
@@ -135,7 +148,7 @@ func (c *Cluster) WaitReadable(t testing.TB, shardID uint64, hosts ...*quicraft.
 	deadline := time.Now().Add(Bound)
 	for _, host := range hosts {
 		for {
-			ctx, cancel := context.WithTimeout(context.Background(), Bound)
+			ctx, cancel := context.WithTimeout(context.Background(), pollAttempt)
 			_, err := host.SyncGetShardMembership(ctx, shardID)
 			cancel()
 			if err == nil {

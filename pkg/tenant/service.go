@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // metadataPrefix is the key prefix for all tenant metadata in the KV store.
@@ -86,17 +87,13 @@ type TenantInfo struct {
 	IsolationType IsolationType       `json:"isolation_type,omitempty"`
 	Quotas        *quota.Quotas       `json:"quotas,omitempty"`
 	Entitlements  *quota.Entitlements `json:"entitlements,omitempty"`
-	// DataRoot is the dedicated filesystem root of an IsolationVolume or
-	// IsolationRaft tenant ON THIS NODE: the parent of the tenant's "barrier"
-	// (IAM Pebble) and "databases" (per-tenant Raft host state)
-	// subdirectories. Empty for prefix/barrier tenants.
-	//
-	// It is never persisted. The record is replicated, and a path names one
-	// node's disk, so GetTenant and ListTenants resolve it on each node from
-	// the tenant's recorded volume pool and slot (see
-	// seal.BarrierRegistry.LocalTenantDataRoot). A stored record that carries
-	// one is refused with *PersistedDataRootError.
-	DataRoot string `json:"data_root,omitempty"`
+	// VolumePool is the named volume pool (pkg/volume's catalog) an
+	// IsolationVolume or IsolationRaft tenant is placed on. Every node
+	// resolves it to its own local mount plus this tenant's id, the
+	// parent of the tenant's "barrier" (IAM Pebble) and "databases"
+	// (per-tenant Raft host state) subdirectories. Empty for
+	// prefix/barrier tenants.
+	VolumePool string `json:"volume_pool,omitempty"`
 	// BarrierAutoUnseal selects the dedicated-isolation tenant's barrier
 	// key-management mode. False (the secure default) means self-managed: the
 	// tenant admin initializes and unseals their own barrier, which comes up
@@ -109,10 +106,12 @@ type TenantInfo struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 
 	// Refusal is set, by ListTenants only, on a tenant this node will not
-	// serve: its stored record names a path (*PersistedDataRootError), or its
-	// volume pool and slot do not resolve on this node. Such a tenant is
-	// listed so it can be seen and deleted, but nothing opens its data, and
-	// DataRoot is empty. Never persisted.
+	// serve: its volume pool or catalog Assignment does not resolve on this
+	// node (e.g. the pool failed to open, or the Assignment is missing or
+	// invalid). Such a tenant is still listed, so it can be seen and
+	// deleted, but nothing opens its data, and no local path is resolved
+	// for it. One such tenant never fails ListTenants as a whole. Never
+	// persisted.
 	Refusal error `json:"-"`
 }
 
@@ -126,10 +125,10 @@ type createTenantConfig struct {
 	// mode for a dedicated-isolation tenant. Default false (self-managed).
 	barrierAutoUnseal bool
 
-	// dataRoot records that the caller asked for an explicit data root
-	// (WithDataRoot). Explicit paths are retired: CreateTenant refuses the
-	// request with *DataRootRetiredError.
-	dataRoot *string
+	// volumePool is the caller-requested named volume pool (WithVolumePool).
+	// Empty means "no preference": the tenant's default pool (the first
+	// entry of its AllowedVolumePools) is used.
+	volumePool string
 }
 
 // WithBarrierAutoUnseal selects the tenant's barrier key-management mode. Pass
@@ -140,13 +139,19 @@ func WithBarrierAutoUnseal(autoUnseal bool) CreateTenantOption {
 	return func(c *createTenantConfig) { c.barrierAutoUnseal = autoUnseal }
 }
 
-// WithDataRoot asks for an explicit filesystem DataRoot. Explicit paths are
-// retired -- a path names one node's disk, and replicated, it was trusted by
-// every other node -- so CreateTenant refuses the request with
-// *DataRootRetiredError. A dedicated disk is placed through a named volume
-// pool, which every node maps to its own mount.
-func WithDataRoot(path string) CreateTenantOption {
-	return func(c *createTenantConfig) { c.dataRoot = &path }
+// WithVolumePool selects the named volume pool (pkg/volume's catalog) an
+// IsolationVolume or IsolationRaft tenant is placed on. The tenant must be
+// entitled to it (quota.Entitlements.AllowedVolumePools); CreateTenant
+// refuses otherwise with a *quota.EntitlementError naming
+// "volume_pool:<name>". Leaving it unset uses the tenant's default pool,
+// the first entry of its AllowedVolumePools; with none entitled, creation
+// is refused the same way, naming "volume_pool:<none>".
+//
+// It is only meaningful for IsolationVolume and IsolationRaft tenants;
+// CreateTenant ignores it for prefix/barrier isolation, where a tenant has
+// no dedicated filesystem location.
+func WithVolumePool(name string) CreateTenantOption {
+	return func(c *createTenantConfig) { c.volumePool = name }
 }
 
 // resolveCreateTenantOptions folds the variadic options into a config.
@@ -404,10 +409,19 @@ type TenantService struct {
 	defaultQuotas    *quota.Quotas
 	defaultEnts      *quota.Entitlements
 	roleSeeder       RoleSeeder
-	// reservedDataRoots are filesystem roots the deleted-tenant reconciliation
-	// never removes and never removes a directory containing, beyond the
-	// volume-pool base paths themselves. It is the seam for injecting the
-	// daemon's system data dir; see WithReservedDataRoots.
+
+	// volumeAllocator reserves and resolves an IsolationVolume / IsolationRaft
+	// tenant's named volume pool and tenant-relative path (pkg/volume's
+	// catalog, injected via WithVolumeAllocator). CreateTenant reserves
+	// before registering the tenant's barrier; DestroyTenant (through
+	// seal.BarrierRegistry.DropTenantRecords) releases it.
+	volumeAllocator volume.Allocator
+
+	// reservedDataRoots are additional filesystem roots the deleted-tenant
+	// reconcile's residue guard must never remove or nest a removal inside --
+	// principally the daemon's own system data dir, beyond the volume-pool
+	// base paths (resolved from the registry) and existing tenants' resolved
+	// directories. See WithReservedDataRoots.
 	reservedDataRoots []string
 
 	// teardownSeams carries DeleteTenant's three optional dependencies; see
@@ -434,10 +448,40 @@ type TenantService struct {
 	removeAll func(ctx context.Context, path string) error
 
 	logger *slog.Logger
+
+	// barrierReady runs whenever a tenant's barrier is known to be usable;
+	// see WithBarrierReadyHook.
+	barrierReady BarrierReadyHook
 }
 
 // TenantServiceOption configures optional TenantService dependencies.
 type TenantServiceOption func(*TenantService)
+
+// BarrierReadyHook is told that tenantID's barrier is initialized and, as far
+// as this node knows, unsealed: the tenant's identity records -- kept behind
+// that barrier for a dedicated-isolation tenant -- may now be readable. It
+// must be idempotent and cheap when it has nothing to do, and it reports its
+// own failures: the barrier operation that triggered it has already succeeded
+// and is not undone by them.
+type BarrierReadyHook func(ctx context.Context, tenantID string)
+
+// WithBarrierReadyHook registers a hook run after a tenant barrier is
+// initialized, after it is unsealed, and on every status read that finds it
+// initialized and unsealed -- the last so that a hook that failed (or found
+// the identity records still unreadable) is retried by the status polling a
+// tenant admin's tooling already does. qrdb's composers register
+// bootstrap.CompletePendingTenantAdmin here: a tenant onboarded before its
+// barrier existed gets its first admin's account the moment it can.
+func WithBarrierReadyHook(h BarrierReadyHook) TenantServiceOption {
+	return func(s *TenantService) { s.barrierReady = h }
+}
+
+// notifyBarrierReady runs the barrier-ready hook, if any.
+func (s *TenantService) notifyBarrierReady(ctx context.Context, tenantID string) {
+	if s.barrierReady != nil {
+		s.barrierReady(ctx, tenantID)
+	}
+}
 
 // WithStrategyRegistry injects a StrategyRegistry so that
 // TenantBarrierInitWithStrategy can resolve hardware/cloud seal strategies
@@ -487,12 +531,13 @@ func WithRoleSeeder(seeder RoleSeeder) TenantServiceOption {
 	return func(s *TenantService) { s.roleSeeder = seeder }
 }
 
-// WithReservedDataRoots registers filesystem roots the deleted-tenant
-// reconciliation (ReconcileDeletedTenants) must never remove, nor remove a
-// directory that contains one. The volume-pool base paths are always
-// protected; this option threads in locations the tenant service cannot
-// otherwise discover — principally the daemon's system data dir. Empty paths
-// are ignored; the rest are cleaned.
+// WithReservedDataRoots registers additional filesystem roots the
+// deleted-tenant reconcile's residue guard must never remove or nest a
+// removal inside. Volume-pool base paths and existing tenants' resolved
+// directories are always checked automatically; this option threads in
+// locations the tenant service cannot otherwise discover — principally the
+// daemon's system data dir. Empty paths are ignored; the rest are cleaned.
+// Overlap is equal-or-ancestor in either direction.
 func WithReservedDataRoots(paths ...string) TenantServiceOption {
 	return func(s *TenantService) {
 		for _, p := range paths {
@@ -501,6 +546,15 @@ func WithReservedDataRoots(paths ...string) TenantServiceOption {
 			}
 		}
 	}
+}
+
+// WithVolumeAllocator injects the catalog (pkg/volume.Catalog, typed as its
+// narrower volume.Allocator seam) CreateTenant reserves an IsolationVolume
+// / IsolationRaft tenant's pool placement through, and DestroyTenant
+// releases it through. Without it, creating such a tenant fails with
+// ErrPoolNotConfigured.
+func WithVolumeAllocator(allocator volume.Allocator) TenantServiceOption {
+	return func(s *TenantService) { s.volumeAllocator = allocator }
 }
 
 // WithDefaultQuotas injects the operator-configured default quotas applied to
@@ -599,9 +653,13 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, ErrSystemTenantMustBePrefix
 	}
 
-	// An explicit data root is retired: refuse it before any side effect.
-	if cfg.dataRoot != nil {
-		return nil, &DataRootRetiredError{TenantID: id, DataRoot: *cfg.dataRoot}
+	// WithVolumePool names the pool a dedicated-isolation tenant should be
+	// placed on; it is only meaningful for IsolationVolume / IsolationRaft,
+	// which are the isolation types with a dedicated filesystem location at
+	// all. Reject it up front for any other isolation type rather than
+	// silently ignoring a caller's request.
+	if cfg.volumePool != "" && isolationType != IsolationVolume && isolationType != IsolationRaft {
+		return nil, &DataRootIsolationTypeError{TenantID: id, IsolationType: isolationType}
 	}
 
 	// Check for existing tenant metadata. Like the tombstone check this is a
@@ -631,7 +689,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		}
 	}
 
-	var dataRoot string
+	var volumePool string
 	switch isolationType {
 	case IsolationBarrier:
 		if err := s.registerDedicatedBarrier(ctx, id, cfg.barrierAutoUnseal); err != nil {
@@ -647,25 +705,11 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		if err := s.CheckFeature(ctx, id, quota.FeatureVolumeStorage); err != nil {
 			return nil, err
 		}
-		// Allocate the dedicated DataRoot from the volume pool and register the
-		// per-tenant barrier (rooted at {DataRoot}/barrier) so the volume is
-		// encrypted under the tenant's own DEK. For a system-managed tenant the
-		// DEK is wrapped under the (already-unsealed) system barrier and the
-		// barrier is initialized immediately so boot re-attach can unseal it
-		// credential-free. For a self-managed tenant the barrier is registered
-		// SEALED and left uninitialized: the tenant admin drives Initialize and
-		// Unseal, and the per-tenant Host builds lazily only after unseal.
-		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
+		pool, regErr := s.reserveAndRegisterVolumeTenant(ctx, id, cfg)
 		if regErr != nil {
-			return nil, volumeRegisterError(id, "register-volume", regErr)
+			return nil, regErr
 		}
-		dataRoot = root
-		if cfg.barrierAutoUnseal {
-			if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
-				_ = s.registry.UnregisterTenant(id)
-				return nil, &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
-			}
-		}
+		volumePool = pool
 	case IsolationRaft:
 		// Entitlement plane: the tenant's plan (or operator defaults, since the
 		// metadata record does not exist yet) must permit raft isolation and the
@@ -676,25 +720,17 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		if err := s.CheckFeature(ctx, id, quota.FeatureDedicatedRaft); err != nil {
 			return nil, err
 		}
-		// Allocate the dedicated DataRoot from the volume pool and register the
-		// per-tenant barrier exactly as for IsolationVolume (rooted at
-		// {DataRoot}/barrier) so each per-database raft shard's state-machine
-		// data is encrypted under the tenant's own DEK. The shards themselves run
-		// on the SHARED system Host (one shard per database) and are started by
-		// the server-layer RaftBackendFactory; only the barrier + DataRoot are
-		// provisioned here. System-managed vs self-managed key handling matches
-		// IsolationVolume.
-		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
+		// Allocation and registration are identical to IsolationVolume: each
+		// per-database raft shard's state-machine data lands under
+		// {poolRoot}/{id}/databases/{db} (encrypted under the tenant DEK), on
+		// the SHARED system Host, started by the server-layer
+		// RaftBackendFactory; only the barrier + pool placement are
+		// provisioned here.
+		pool, regErr := s.reserveAndRegisterVolumeTenant(ctx, id, cfg)
 		if regErr != nil {
-			return nil, volumeRegisterError(id, "register-raft", regErr)
+			return nil, regErr
 		}
-		dataRoot = root
-		if cfg.barrierAutoUnseal {
-			if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
-				_ = s.registry.UnregisterTenant(id)
-				return nil, &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
-			}
-		}
+		volumePool = pool
 	}
 
 	now := time.Now().UTC()
@@ -702,7 +738,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		ID:                id,
 		Name:              name,
 		IsolationType:     isolationType,
-		DataRoot:          dataRoot,
+		VolumePool:        volumePool,
 		BarrierAutoUnseal: cfg.barrierAutoUnseal,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -715,7 +751,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		info.Quotas = &quota.Quotas{CurrentRaftGroups: 1}
 	}
 
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		// Roll back barrier registration on marshal failure.
 		_ = s.registry.UnregisterTenant(id)
@@ -761,13 +797,86 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 }
 
 // volumeRegisterError maps a volume/raft barrier registration failure onto
-// the tenant package's errors: a concurrent registration of the same id is
-// ErrTenantAlreadyExists, anything else a *BarrierError naming the step.
-func volumeRegisterError(id, op string, regErr error) error {
+// the tenant package's errors.
+func (s *TenantService) volumeRegisterError(_ context.Context, id, op string, regErr error) error {
 	if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
 		return ErrTenantAlreadyExists
 	}
 	return &BarrierError{TenantID: id, Op: op, Err: regErr}
+}
+
+// reserveAndRegisterVolumeTenant reserves id's capacity on its target
+// volume pool and registers its barrier there, for IsolationVolume and
+// IsolationRaft alike. It returns the pool name to record on the tenant's
+// TenantInfo.
+//
+// The target pool is cfg.volumePool when set, otherwise the tenant's
+// default pool (the first entry of its AllowedVolumePools, decision D1 in
+// docs/volume-pools/architecture.md); with neither set, creation is
+// refused -- fail-closed, matching
+// quota.Entitlements.AllowsVolumePool's own posture.
+//
+// A failure after the reservation succeeds releases it (best-effort,
+// logged on its own failure) UNLESS the registration failure is
+// ErrTenantAlreadyExists: that means another create for the SAME id won
+// the race and may still be using this exact reservation, so releasing it
+// here would pull the pool out from under that create instead.
+func (s *TenantService) reserveAndRegisterVolumeTenant(ctx context.Context, id string, cfg createTenantConfig) (string, error) {
+	if s.volumeAllocator == nil {
+		return "", seal.ErrPoolNotConfigured
+	}
+	ents, err := s.effectiveEntitlements(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	poolName := cfg.volumePool
+	if poolName == "" {
+		var ok bool
+		poolName, ok = ents.DefaultVolumePool()
+		if !ok {
+			return "", &quota.EntitlementError{TenantID: id, Feature: "volume_pool:<none>"}
+		}
+	}
+	if !ents.AllowsVolumePool(poolName) {
+		return "", &quota.EntitlementError{TenantID: id, Feature: "volume_pool:" + poolName}
+	}
+
+	var reserveBytes int64
+	if s.defaultQuotas != nil {
+		reserveBytes = s.defaultQuotas.MaxStorageBytes
+	}
+	if _, err := s.volumeAllocator.Reserve(ctx, id, poolName, id, reserveBytes); err != nil {
+		return "", &VolumePoolReserveError{TenantID: id, Pool: poolName, Err: err}
+	}
+
+	_, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
+	if regErr != nil {
+		if !errors.Is(regErr, seal.ErrTenantAlreadyExists) {
+			s.releaseVolumeReservation(ctx, id, poolName, "register")
+		}
+		return "", s.volumeRegisterError(ctx, id, "register-volume", regErr)
+	}
+
+	if cfg.barrierAutoUnseal {
+		if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
+			_ = s.registry.UnregisterTenant(id)
+			s.releaseVolumeReservation(ctx, id, poolName, "initialize")
+			return "", &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+		}
+	}
+	return poolName, nil
+}
+
+// releaseVolumeReservation releases id's volume-pool reservation after a
+// failed registration step, logging rather than returning a release
+// failure: the caller is already reporting the original failure, and an
+// orphaned reservation here is cleaned up by the next DestroyTenant or
+// detected by capacity accounting, not a reason to mask the real error.
+func (s *TenantService) releaseVolumeReservation(ctx context.Context, id, poolName, step string) {
+	if err := s.volumeAllocator.Release(ctx, id); err != nil && s.logger != nil {
+		s.logger.Warn("tenant create failed after reserving volume pool capacity; release also failed",
+			slog.String("tenant_id", id), slog.String("pool", poolName), slog.String("step", step), slog.Any("error", err))
+	}
 }
 
 // rollbackRegistration undoes the barrier this create provisioned when its
@@ -857,7 +966,7 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 	}
 	info.UpdatedAt = time.Now().UTC()
 
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -888,13 +997,11 @@ func (s *TenantService) GetTenant(ctx context.Context, tenantID string) (*Tenant
 		return nil, newStoreError("get", err)
 	}
 
-	info, err := decodeTenantInfo(tenantID, data)
-	if err != nil {
-		return nil, err
+	var info TenantInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, &StoreError{Op: "unmarshal", Err: err}
 	}
-	if err := s.resolveLocalDataRoot(ctx, &info); err != nil {
-		return nil, err
-	}
+
 	return &info, nil
 }
 
@@ -977,32 +1084,41 @@ func (s *TenantService) ListTenants(ctx context.Context) ([]TenantInfo, error) {
 			return nil, newStoreError("get", err)
 		}
 
-		info, err := decodeTenantInfo(strings.TrimPrefix(key, metadataPrefix), data)
-		var persisted *PersistedDataRootError
-		switch {
-		case errors.As(err, &persisted):
-			// One tenant this node will not serve must not take the others
-			// down with it: it is listed, refused, and its data never opened.
-			info.Refusal = err
-		case err != nil:
+		var info TenantInfo
+		if err := json.Unmarshal(data, &info); err != nil {
 			s.logger.Warn("skipping corrupt tenant metadata",
 				slog.String("key", key),
 				slog.String("error", err.Error()))
 			continue
-		default:
-			if rerr := s.resolveLocalDataRoot(ctx, &info); rerr != nil {
-				info.Refusal = rerr
-			}
 		}
-		if info.Refusal != nil {
+		// One tenant this node cannot resolve must not take the others down
+		// with it: it is listed, refused, and its data is never opened.
+		if rerr := s.checkLocalResolution(ctx, &info); rerr != nil {
+			info.Refusal = rerr
 			s.logger.Error("tenant refused on this node; its data is not opened",
 				slog.String("tenant_id", info.ID),
-				slog.Any("error", info.Refusal))
+				slog.Any("error", rerr))
 		}
 		tenants = append(tenants, info)
 	}
 
 	return tenants, nil
+}
+
+// checkLocalResolution reports whether info's dedicated-isolation directory
+// resolves on this node, without storing the resolved path: ListTenants
+// calls this to populate TenantInfo.Refusal, since a volume pool that
+// failed to open or a missing catalog Assignment must refuse only this one
+// tenant rather than fail the whole listing. A no-op for prefix/barrier
+// tenants, which have no dedicated directory to resolve.
+func (s *TenantService) checkLocalResolution(ctx context.Context, info *TenantInfo) error {
+	if info.IsolationType != IsolationVolume && info.IsolationType != IsolationRaft {
+		return nil
+	}
+	if _, err := s.registry.LocalTenantDataRoot(ctx, info.ID); err != nil {
+		return &BarrierError{TenantID: info.ID, Op: "resolve-data-root", Err: err}
+	}
+	return nil
 }
 
 // DeleteTenant retires a tenant id and reclaims what the tenant owned.
@@ -1084,10 +1200,6 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 	// Read the tenant BEFORE anything is destroyed: the tombstone records
 	// what the tenant was, and the reclamation needs to know where it lived.
 	info, err := s.GetTenant(ctx, tenantID)
-	var persisted *PersistedDataRootError
-	if errors.As(err, &persisted) {
-		return s.deleteRefusedTenant(ctx, tenantID)
-	}
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			// A tenant whose metadata is already gone but whose id is
@@ -1185,45 +1297,6 @@ func (s *TenantService) finishTeardown(ctx context.Context, tenantID string) err
 	return nil
 }
 
-// deleteRefusedTenant deletes a tenant whose stored record names a path
-// (*PersistedDataRootError). The record is the only way out for such a tenant
-// -- it is refused everywhere else -- so its retirement and every record that
-// would restore it are removed exactly as for any tenant, but nothing touches
-// a path: the path in the record names some node's disk, and which one is not
-// knowable. Its directory, if any, is left for the operator to remove; the
-// tenant is re-created on a named volume pool.
-func (s *TenantService) deleteRefusedTenant(ctx context.Context, tenantID string) error {
-	data, err := s.store.Get(ctx, metadataPrefix+tenantID)
-	if err != nil {
-		return &StoreError{Op: "get", Err: err}
-	}
-	info, derr := decodeTenantInfo(tenantID, data)
-	var persisted *PersistedDataRootError
-	if !errors.As(derr, &persisted) {
-		return derr
-	}
-	if err := s.refuseIfDatabasesRemain(ctx, tenantID); err != nil {
-		return err
-	}
-	if err := s.fence(ctx, tenantID, &info); err != nil {
-		return err
-	}
-	if err := s.registry.ReleaseTenant(ctx, tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
-		return &TeardownError{TenantID: tenantID, Err: &BarrierError{TenantID: tenantID, Op: "release", Err: err}}
-	}
-	if err := s.registry.DropTenantRecords(ctx, tenantID); err != nil {
-		return &TeardownError{TenantID: tenantID, Err: &BarrierError{TenantID: tenantID, Op: "drop-records", Err: err}}
-	}
-	s.tenantCeremonies.Delete(tenantID)
-	if err := s.reclaim(ctx, tenantID); err != nil {
-		return &TeardownError{TenantID: tenantID, Err: err}
-	}
-	s.logger.Warn("tenant with a refused record deleted; the directory its record named was not touched",
-		slog.String("tenant_id", tenantID),
-		slog.String("recorded_data_root", persisted.DataRoot))
-	return nil
-}
-
 // refuseIfDatabasesRemain returns *TenantHasDatabasesError when the tenant
 // still owns databases.
 //
@@ -1273,10 +1346,30 @@ func (s *TenantService) UpdateQuotas(ctx context.Context, tenantID string, quota
 		return nil, err
 	}
 
+	// Security review finding 6: a volume/raft tenant's catalog
+	// reservation must equal its OWN MaxStorageBytes quota, not drift
+	// from it the moment an operator changes the quota after creation.
+	// Adjusted BEFORE the metadata write below, so a capacity refusal
+	// (the new quota would not fit the pool) refuses the whole update
+	// rather than recording a quota the catalog cannot back; a tenant
+	// with no catalog Assignment at all (prefix/barrier isolation, or
+	// pool-unavailable on this node) is a no-op, not an error.
+	if s.volumeAllocator != nil {
+		switch info.EffectiveIsolationType() {
+		case IsolationVolume, IsolationRaft:
+			if _, err := s.volumeAllocator.AdjustReservation(ctx, tenantID, quotas.MaxStorageBytes); err != nil {
+				var notFound *volume.AssignmentNotFoundError
+				if !errors.As(err, &notFound) {
+					return nil, &VolumePoolReserveError{TenantID: tenantID, Pool: info.VolumePool, Err: err}
+				}
+			}
+		}
+	}
+
 	info.Quotas = quotas
 	info.UpdatedAt = time.Now().UTC()
 
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1310,7 +1403,7 @@ func (s *TenantService) UpdateEntitlements(ctx context.Context, tenantID string,
 	info.Entitlements = entitlements
 	info.UpdatedAt = time.Now().UTC()
 
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1473,7 +1566,7 @@ func (s *TenantService) IncrementQuotaUsage(ctx context.Context, tenantID string
 		return nil, &StoreError{Op: "increment-quota", Err: err}
 	}
 	info.UpdatedAt = time.Now().UTC()
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1518,7 +1611,7 @@ func (s *TenantService) DecrementQuotaUsage(ctx context.Context, tenantID string
 		return nil, &StoreError{Op: "decrement-quota", Err: err}
 	}
 	info.UpdatedAt = time.Now().UTC()
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1559,7 +1652,7 @@ func (s *TenantService) SetQuotaUsage(ctx context.Context, tenantID string, reso
 		return nil, &StoreError{Op: "set-quota-usage", Err: err}
 	}
 	info.UpdatedAt = time.Now().UTC()
-	data, err := encodeTenantInfo(info)
+	data, err := json.Marshal(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1749,6 +1842,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	s.logger.Info("tenant barrier initialized",
 		slog.String("tenant_id", tenantID),
 		slog.String("strategy", string(strategyID)))
+	s.notifyBarrierReady(ctx, tenantID)
 
 	return &TenantBarrierInitResult{
 		TenantID: tenantID,
@@ -1821,7 +1915,14 @@ func (s *TenantService) tenantBarrierInitShamir(
 		Threshold:   res.Threshold,
 		TotalShares: res.TotalShares,
 		ShareCount:  res.ShareCount,
-	}, nil
+	}, s.notifyAfter(ctx, tenantID)
+}
+
+// notifyAfter runs the barrier-ready hook and returns nil, so a return
+// statement can carry it.
+func (s *TenantService) notifyAfter(ctx context.Context, tenantID string) error {
+	s.notifyBarrierReady(ctx, tenantID)
+	return nil
 }
 
 // resolveStrategy returns the SealingStrategy for the given ID.
@@ -1898,6 +1999,7 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	}
 
 	s.logger.Info("tenant barrier unsealed", slog.String("tenant_id", tenantID))
+	s.notifyBarrierReady(ctx, tenantID)
 
 	return nil
 }
@@ -1976,7 +2078,7 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 	// not yet initialized (a fresh self-managed barrier). InitializedAt is the
 	// authoritative signal: it is persisted at Initialize time and recovered on
 	// a warm boot, so it stays non-zero even while the barrier is sealed.
-	return &TenantBarrierStatus{
+	status := &TenantBarrierStatus{
 		TenantID:        tenantID,
 		Sealed:          st.Sealed,
 		Initialized:     !st.InitializedAt.IsZero(),
@@ -1985,7 +2087,11 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 		ShamirThreshold: st.ShamirThreshold,
 		ShamirTotal:     st.ShamirTotal,
 		ClusterSeal:     clusterseal.ReportOf(s.sealer, clusterseal.TenantBarrier(tenantID)),
-	}, nil
+	}
+	if status.Initialized && !status.Sealed {
+		s.notifyBarrierReady(ctx, tenantID)
+	}
+	return status, nil
 }
 
 // TenantIDFromKey extracts the tenant ID from a metadata storage key.
@@ -2218,47 +2324,4 @@ func (s *TenantService) TenantBarrierOfficerRevoke(ctx context.Context, tenantID
 		return nil, &BarrierError{TenantID: tenantID, Op: "officer-revoke", Err: err}
 	}
 	return info, nil
-}
-
-// encodeTenantInfo marshals info for the replicated metadata store. DataRoot
-// is a path on one node, so it is never written: every node resolves its own
-// (resolveLocalDataRoot).
-func encodeTenantInfo(info *TenantInfo) ([]byte, error) {
-	rec := *info
-	rec.DataRoot = ""
-	return json.Marshal(&rec)
-}
-
-// decodeTenantInfo unmarshals a stored tenant record. A record that carries a
-// DataRoot names one node's path and is refused with *PersistedDataRootError;
-// the rest of the record is still returned, with DataRoot cleared, so the
-// tenant can be listed and deleted without the path ever being used.
-func decodeTenantInfo(tenantID string, data []byte) (TenantInfo, error) {
-	var info TenantInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return TenantInfo{}, &StoreError{Op: "unmarshal", Err: err}
-	}
-	if info.DataRoot != "" {
-		recorded := info.DataRoot
-		info.DataRoot = ""
-		return info, &PersistedDataRootError{TenantID: tenantID, DataRoot: recorded}
-	}
-	return info, nil
-}
-
-// resolveLocalDataRoot fills info.DataRoot with the tenant's directory on THIS
-// node for the isolation types that have one, from the tenant's recorded
-// volume pool and slot. A tenant whose location does not resolve here fails
-// closed rather than being reported without a root, which a caller would
-// place under the system data directory instead.
-func (s *TenantService) resolveLocalDataRoot(ctx context.Context, info *TenantInfo) error {
-	if info.IsolationType != IsolationVolume && info.IsolationType != IsolationRaft {
-		return nil
-	}
-	root, err := s.registry.LocalTenantDataRoot(ctx, info.ID)
-	if err != nil {
-		return &BarrierError{TenantID: info.ID, Op: "resolve-data-root", Err: err}
-	}
-	info.DataRoot = root
-	return nil
 }

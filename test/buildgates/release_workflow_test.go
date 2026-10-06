@@ -281,7 +281,7 @@ func TestNoOtherWorkflowCreatesTags(t *testing.T) {
 func TestTagWriteDetectionCatchesARealTagPush(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".github", "workflows")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	const fixture = `on:
@@ -297,7 +297,7 @@ jobs:
         run: |
           git -C "$repo" push -q "$GIT_URL" "HEAD:refs/heads/merge-train/x" || die "cannot push"
 `
-	if err := os.WriteFile(filepath.Join(dir, "rogue.yml"), []byte(fixture), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "rogue.yml"), []byte(fixture), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 	violations, _ := tagWriteViolations(t, root)

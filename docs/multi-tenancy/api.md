@@ -134,12 +134,14 @@ separately by `X-QRDB-Database` or its per-transport equivalent. Detail:
 
 ## Schemas
 
-`POST /v1/tenants`:
+`POST /v1/tenants` creates a tenant **with its first admin**, or not at all:
 
 ```json
 { "id": "acme", "name": "Acme Corp",
   "isolation_type": "volume",
-  "barrier_auto_unseal": false }
+  "barrier_auto_unseal": false,
+  "admin_username": "alice",
+  "admin_csr_pem": "<PEM CERTIFICATE REQUEST>" }
 ```
 
 `isolation_type`: `prefix` (default) · `barrier` · `volume` · `raft`.
@@ -149,6 +151,55 @@ self-managed default and is **entitlement-gated**. A request carrying
 tenant's location is a volume pool and slot, resolved on each node. In a
 response, `data_root` is the tenant's directory **on the node that answered**,
 resolved from that pool and slot; it is never stored.
+
+The first admin:
+
+| Field | Meaning |
+|---|---|
+| `admin_username` | required; the admin's account name |
+| `admin_csr_pem` | the admin's certificate signing request, signed by the new tenant's own CA |
+| `admin_cert_pem` | the admin's own certificate, leaf first; must chain to `trust_anchors_pem` |
+| `admin_chain_pem` | optional intermediates for `admin_cert_pem` |
+| `trust_anchors_pem` | CA certificates registered as the tenant's trust anchors in the same call; required with `admin_cert_pem` |
+
+Exactly one of `admin_csr_pem` and `admin_cert_pem`. Only the CSR's key is
+used. A bring-your-own certificate must chain to one of `trust_anchors_pem`
+for client authentication, its CN must be `admin_username`, and it must name
+the new tenant.
+
+Response `201` — the tenant's fields, plus the admin. **There is never a
+private key:**
+
+```json
+{ "id": "acme", "name": "Acme Corp", "isolation_type": "volume", "...": "...",
+  "admin": { "user_id": 42, "username": "alice", "cert_pem": "<PEM>",
+             "serial": "3f2a9c…", "thumbprint": "<SPKI SHA-256>" } }
+```
+
+`serial` is omitted for a bring-your-own certificate. On gRPC, QUIC and MCP the
+same response is `{ "tenant": {…}, "admin": {…} }` (`TenantCreateResponse`),
+with the same admin fields.
+
+For a `barrier`, `volume` or `raft` tenant the admin's account cannot be written
+yet — it lives behind the tenant's own barrier — so `user_id` is omitted and
+`"awaits_barrier_init": true` is set. The certificate is recorded as the
+tenant's pending admin; the barrier's trust-on-first-init window then admits
+**only** that certificate, presented as that username, and the account is
+created, granted the tenant's Admin role and bound to it as soon as the barrier
+is usable (on init, on every unseal, and on every status read that finds it
+unsealed, until it succeeds).
+
+**One unit.** Every input that can be refused — the anchors, the CSR, the
+certificate's chain and identity — is judged before anything is written, so a
+refusal leaves no tenant and the id stays usable. A failure after the first
+write undoes every write in reverse order. Undoing deletes the tenant record,
+and a deleted id is retired (below), so that id cannot be created again; any
+undo step that itself failed is listed in the error (`ProvisioningUndoneError`)
+for an operator to finish.
+
+**BREAKING:** `admin_username` and one admin credential are required, and the
+response carries `admin`. A tenant can no longer be created without its first
+admin. The caller still needs `tenants:create` (platform operator).
 
 Quotas — `-1` unlimited, `0` system default:
 
@@ -283,7 +334,7 @@ leaks to a caller with no access to the tier.
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Success | 200 | `OK` |
+| Success | 200 (201 for create) | `OK` |
 | Isolation change with data present | 409 | `FAILED_PRECONDITION` — `ErrTenantHasData` |
 | Mode or feature not entitled | 403 | `PERMISSION_DENIED` — `*EntitlementError` |
 | Seal strategy not in `allowed_barrier_modes` | 403 | `PERMISSION_DENIED` — hardware fail-closed by default |
@@ -292,6 +343,13 @@ leaks to a caller with no access to the tier.
 | Barrier endpoint on a `prefix` tenant | 409 | `FAILED_PRECONDITION` |
 | Tenant barrier sealed | 503 | `UNAVAILABLE` |
 | Unknown tenant, tenant service configured | 404 | `NOT_FOUND` |
+| Create without `admin_username`, or with neither or both of `admin_csr_pem` / `admin_cert_pem` | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |
+| Create with an admin CSR or certificate that is refused, or invalid trust anchors | 400 | `INVALID_ARGUMENT` — classified as the cause (`cert.InvalidCSRError`, `trustanchor.CertificateNotTrustedError`, `certenroll.IdentityMismatchError`, `*bootstrap.InvalidTrustAnchorsError`); nothing written |
+| Create with `admin_cert_pem` and no `trust_anchors_pem` | 409 | `FAILED_PRECONDITION` — `trustanchor.NoAnchorsError`; nothing written |
+| Create failed after a write and was undone | as the cause | `*bootstrap.ProvisioningUndoneError`; the id is retired; `UndoFailures` lists any undo step that failed |
+| Tenant onboarding not configured on this node | 501 | `UNIMPLEMENTED` |
+| Barrier init by any certificate other than the onboarded admin's | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitCertificateMismatchError` |
+| Barrier init, `auth.mtls_binding_policy: required`, tenant has no onboarded admin | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitNotOnboardedError` |
 | Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError`. Previously unmapped on every transport and reported as 500 / `INTERNAL` |
 | Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
 | Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |

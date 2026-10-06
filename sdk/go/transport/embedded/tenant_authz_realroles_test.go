@@ -92,7 +92,11 @@ func TestEmbeddedTenant_RealAdminRole_SystemCanActOnAnyTenant(t *testing.T) {
 // tenant_barrier:init could structurally exist yet.
 func TestEmbeddedTenantBarrierInit_TrustOnFirstInit(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme")
-	mw := authmw.New(rbac.New(roles))
+	// This test exercises the bootstrap window itself, not the separate
+	// first-admin-onboarding gate (pkg/auth/middleware/first_init_gate_test.go),
+	// so it runs under the "enrolled" posture, which skips that gate when the
+	// tenant has no pending-admin record.
+	mw := authmw.New(rbac.New(roles), authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	svc := &mockTenantService{
 		barrierStatusFn: func(context.Context, string) (*tenant.TenantBarrierStatus, error) {
 			return &tenant.TenantBarrierStatus{TenantID: "acme", Initialized: false}, nil

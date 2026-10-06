@@ -48,6 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -107,6 +108,11 @@ type EmbeddedServerBinding struct {
 	// Wails/cgo boundary, which cannot carry a Go interface value) injects
 	// an HSM/TPM/KMS-backed factory here, resolved fresh per tenant.
 	certKeyProviderFactory cakey.ProviderFactory
+
+	// trustAnchors, when set via SetTrustAnchors before StartEmbedded,
+	// replaces the built-in per-tenant trust anchor store, as
+	// server.WithTrustAnchors does for the SDK node builders.
+	trustAnchors trustanchor.Registry
 }
 
 // SetCertKeyProviderFactory injects the cakey.ProviderFactory that resolves
@@ -119,6 +125,16 @@ func (b *EmbeddedServerBinding) SetCertKeyProviderFactory(f cakey.ProviderFactor
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.certKeyProviderFactory = f
+}
+
+// SetTrustAnchors injects the trust store holding every tenant's registered
+// trust anchors for every embedded node this binding starts, in place of
+// qrdb's built-in store (see server.WithTrustAnchors). It must be called
+// before StartEmbedded, for the same reason as SetCertKeyProvider.
+func (b *EmbeddedServerBinding) SetTrustAnchors(r trustanchor.Registry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.trustAnchors = r
 }
 
 // NewEmbeddedServerBinding creates a new EmbeddedServerBinding backed
@@ -263,6 +279,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		CeremonyDataDir:        embeddedCeremonyDir,
 		AuditLogger:            trail,
 		CertKeyProviderFactory: b.certKeyProviderFactory,
+		TrustAnchors:           b.trustAnchors,
 		Logger:                 slog.Default(),
 	})
 	if svcErr != nil {

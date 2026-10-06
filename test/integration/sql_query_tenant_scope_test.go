@@ -44,6 +44,7 @@ import (
 	"time"
 
 	gomysql "github.com/go-sql-driver/mysql"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 )
 
 // sqlQueryResponse mirrors service.SQLQueryResult for decoding POST
@@ -124,12 +125,24 @@ func adminPostJSON(t *testing.T, client *http.Client, port int, path string, pay
 // All calls are made as the SYSTEM tenant admin identity, whose cross-tenant
 // power (the system-tenant rule) is required to provision another tenant's
 // IAM records.
+//
+// Tenant creation now requires an admin_username/admin_csr_pem pair (the
+// onboarding trust-on-first-init flow), but this test never uses the
+// onboarded admin identity itself: the mTLS identity it authenticates the
+// SQL surfaces with is the separately created role+user below, matching
+// every other fixed-up caller of this breaking change in this package.
 func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminPort int, tenantID, username, certPath string) {
 	t.Helper()
 
+	_, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	if err != nil {
+		t.Fatalf("provisionTenantWithSQLReader: certtest.NewCSR: %v", err)
+	}
 	adminPostJSON(t, adminClient, adminPort, "/v1/tenants", map[string]string{
-		"id":   tenantID,
-		"name": tenantID,
+		"id":             tenantID,
+		"name":           tenantID,
+		"admin_username": tenantID + "-admin",
+		"admin_csr_pem":  string(adminCSRPEM),
 	}, http.StatusCreated)
 
 	roleBody := adminPostJSON(t, adminClient, adminPort, "/roles", map[string]any{
@@ -166,6 +179,15 @@ func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminP
 //
 // The state machine is "mvcc", not "memory" — see startSingleNodeWithSQL's
 // doc for why: "memory" cannot even complete first boot (go-qrdb#555).
+//
+// The daemon boots with a seal barrier (strategy "none", via
+// writeNoneSealConfig) rather than unsealed outright: the tenant-onboarding
+// REST surface this test drives (POST /v1/tenants with an admin CSR) is wired
+// up only when the node has a BarrierRegistry (see
+// pkg/server/lifecycle.buildSealServices / buildEnrollmentServices) — a
+// barrier-less node never constructs a CertProv, and therefore never
+// constructs TenantOnboarding, leaving that endpoint a 501. The "none"
+// strategy keeps the sealed window's init call a formality (empty secret).
 func startSingleNodeWithSQLDefaultDB(t *testing.T) (adminPort, mysqlPort int, ca *testCA) {
 	t.Helper()
 
@@ -176,9 +198,11 @@ func startSingleNodeWithSQLDefaultDB(t *testing.T) (adminPort, mysqlPort int, ca
 	grpcPorts := allocateTCPPorts(t, 1)
 	mysqlPorts := allocateTCPPorts(t, 1)
 	dataDir := t.TempDir()
+	cfgPath := writeNoneSealConfig(t)
 
 	args := []string{
 		"start",
+		"--config", cfgPath,
 		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
 		"--data-dir", dataDir,
@@ -196,6 +220,8 @@ func startSingleNodeWithSQLDefaultDB(t *testing.T) (adminPort, mysqlPort int, ca
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[sql-tenant-scope-node] ")
+	// Sealed-window: initialize the none barrier (empty secret) so the
+	// daemon proceeds to full serving, including CertProv/TenantOnboarding.
 	bootstrapNodes(t, ca, adminPorts[0])
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)

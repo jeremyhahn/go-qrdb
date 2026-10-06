@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -174,6 +175,26 @@ func TestAssertCoverageRefusesAnUnwatchedJob(t *testing.T) {
 		t.Errorf("Missing = %v, want [trivy]", coverage.Missing)
 	}
 	mustContain(t, coverage.Error(), "declared but not passed: trivy")
+}
+
+// Every unwatched job is reported, not just the first: a coverage check that
+// named one gap and stopped would let a second missing job through on the
+// retry. The real nightly.yml now declares only two watched jobs, so this is
+// proved on a fixture rather than through run().
+func TestAssertCoverageReportsEveryUnwatchedJob(t *testing.T) {
+	declared := []DeclaredJob{{"fips", "FIPS 140-3"}, {"trivy", "Trivy"}, {"extra", "Extra"}, {"signal", "Signal"}}
+	specs := []JobSpec{{Key: "fips", Name: "FIPS 140-3"}}
+
+	err := AssertCoverage("nightly.yml", declared, specs, "signal")
+	var coverage *JobCoverageError
+	if !errors.As(err, &coverage) {
+		t.Fatalf("error = %v, want *JobCoverageError", err)
+	}
+	got := append([]string(nil), coverage.Missing...)
+	slices.Sort(got)
+	if want := []string{"extra", "trivy"}; !slices.Equal(got, want) {
+		t.Errorf("Missing = %v, want %v", coverage.Missing, want)
+	}
 }
 
 func TestAssertCoverageRefusesAJobTheWorkflowDoesNotDeclare(t *testing.T) {

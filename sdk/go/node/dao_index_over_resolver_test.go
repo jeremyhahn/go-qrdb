@@ -130,6 +130,7 @@ func resolverStoreCases() []resolverStoreCase {
 			indexCapable: false,
 			setup: func(ctx context.Context, t *testing.T, n *Node) {
 				t.Helper()
+				createDefaultPool(t, n)
 				_, err := n.Services().Tenant.CreateTenant(ctx, "acme", "Acme Corp",
 					tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 				require.NoError(t, err, "CreateTenant(IsolationVolume) must succeed")

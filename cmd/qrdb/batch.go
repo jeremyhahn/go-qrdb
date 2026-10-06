@@ -133,10 +133,10 @@ import (collections only support inserting one document at a time via
 data-plane endpoint, so the globally-scoped connection already carries
 that database context on every request.
 
-The maximum import file size depends on the active --transport: REST,
-gRPC, unix, and mcp accept up to 100MB; quic accepts a slightly smaller
-~63MB (bounded by the QUIC wire protocol's shared per-RPC payload cap, not
-an import-specific limit).
+There is no maximum import file size: the file is carried as a chunked
+import session (ImportBegin/ImportAppend/ImportCommit) transparently, in
+pieces no larger than the active transport's own small pre-auth message
+cap, identical on every transport.
 
 Examples:
   qrdb batch import --file data.csv --key-field id --value-mode row

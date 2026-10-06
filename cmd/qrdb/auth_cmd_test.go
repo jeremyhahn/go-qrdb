@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -120,11 +119,11 @@ func (m *mockAuthTransport) ReconcileBuiltInRoles(ctx context.Context, req *tran
 }
 
 // Cert client delegation.
-func (m *mockAuthTransport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
-	return m.certs.GenerateCert(ctx, req)
+func (m *mockAuthTransport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
+	return m.certs.IssueCert(ctx, req)
 }
-func (m *mockAuthTransport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
-	return m.certs.ExportCert(ctx, req)
+func (m *mockAuthTransport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
+	return m.certs.EnrollCert(ctx, req)
 }
 func (m *mockAuthTransport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	return m.certs.RevokeCert(ctx, serial)
@@ -477,21 +476,28 @@ func newMockCertClient() mockCertClient {
 	}
 }
 
-func (m *mockCertClient) GenerateCert(_ context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
+func (m *mockCertClient) IssueCert(_ context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
 	if req.Username == "" {
 		return nil, errors.New("username required")
 	}
-	return &transport.CertBundle{
-		CertPEM: "-----BEGIN CERTIFICATE-----\nMOCKCERT\n-----END CERTIFICATE-----\n",
-		KeyPEM:  "-----BEGIN PRIVATE KEY-----\nMOCKKEY\n-----END PRIVATE KEY-----\n",
-		Serial:  "SERIAL-001",
+	return &transport.EnrolledCert{
+		Username:   req.Username,
+		TenantID:   "tenant-1",
+		CertPEM:    "-----BEGIN CERTIFICATE-----\nMOCKCERT\n-----END CERTIFICATE-----\n",
+		Serial:     "SERIAL-001",
+		Thumbprint: "mock-thumbprint",
 	}, nil
 }
 
-func (m *mockCertClient) ExportCert(_ context.Context, _ *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
-	data := base64.StdEncoding.EncodeToString([]byte("mock-pkcs12-data"))
-	return &transport.ExportCertResponse{
-		PKCS12: data,
+func (m *mockCertClient) EnrollCert(_ context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
+	if req.Username == "" {
+		return nil, errors.New("username required")
+	}
+	return &transport.EnrolledCert{
+		Username:   req.Username,
+		TenantID:   "tenant-1",
+		CertPEM:    req.CertPEM,
+		Thumbprint: "mock-thumbprint",
 	}, nil
 }
 
@@ -1215,10 +1221,22 @@ func TestRolesDeleteCmd_MissingArg(t *testing.T) {
 // Cert command tests
 // ===========================================================================
 
-func TestCertsGenerateCmd_Success(t *testing.T) {
+// TestCertsIssueCmd_WithCSR_Success issues a certificate from a
+// caller-supplied CSR. The server (mockCertClient) never sees a key: only
+// the CSR file is read, and with --csr present --out is not required.
+func TestCertsIssueCmd_WithCSR_Success(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "ca", "issue", "--username", "alice")
+	_, csrPEM, err := newClientKeyAndCSR("alice")
+	if err != nil {
+		t.Fatalf("newClientKeyAndCSR: %v", err)
+	}
+	csrFile := filepath.Join(t.TempDir(), "csr.pem")
+	if err := os.WriteFile(csrFile, csrPEM, 0600); err != nil {
+		t.Fatalf("write csr: %v", err)
+	}
+
+	out, err := executeCommand(root, "ca", "issue", "--username", "alice", "--csr", csrFile)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1228,15 +1246,24 @@ func TestCertsGenerateCmd_Success(t *testing.T) {
 	if !strings.Contains(out, "CERTIFICATE") {
 		t.Fatalf("expected certificate PEM in output, got: %q", out)
 	}
-	if !strings.Contains(out, "PRIVATE KEY") {
-		t.Fatalf("expected private key PEM in output, got: %q", out)
+	if strings.Contains(out, "PRIVATE KEY") {
+		t.Fatalf("expected no private key in output when --csr supplies the key, got: %q", out)
 	}
 }
 
-func TestCertsGenerateCmd_SuccessJSON(t *testing.T) {
+func TestCertsIssueCmd_WithCSR_JSON(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "--output", "json", "ca", "issue", "--username", "alice")
+	_, csrPEM, err := newClientKeyAndCSR("alice")
+	if err != nil {
+		t.Fatalf("newClientKeyAndCSR: %v", err)
+	}
+	csrFile := filepath.Join(t.TempDir(), "csr.pem")
+	if err := os.WriteFile(csrFile, csrPEM, 0600); err != nil {
+		t.Fatalf("write csr: %v", err)
+	}
+
+	out, err := executeCommand(root, "--output", "json", "ca", "issue", "--username", "alice", "--csr", csrFile)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1248,19 +1275,7 @@ func TestCertsGenerateCmd_SuccessJSON(t *testing.T) {
 	}
 }
 
-func TestCertsGenerateCmd_SuccessYAML(t *testing.T) {
-	root := newTestRootCmdAuth()
-
-	out, err := executeCommand(root, "--output", "yaml", "ca", "issue", "--username", "alice")
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !strings.Contains(out, "serial:") {
-		t.Fatalf("expected YAML serial field, got: %q", out)
-	}
-}
-
-func TestCertsGenerateCmd_MissingUsername(t *testing.T) {
+func TestCertsIssueCmd_MissingUsername(t *testing.T) {
 	root := newTestRootCmdAuth()
 
 	_, err := executeCommand(root, "ca", "issue")
@@ -1269,6 +1284,76 @@ func TestCertsGenerateCmd_MissingUsername(t *testing.T) {
 	}
 }
 
+// TestCertsIssueCmd_NoCSR_MissingOutDir asserts that, without --csr, a key
+// would be generated on this machine and MUST be written somewhere: a
+// missing --out is refused before any key is generated.
+func TestCertsIssueCmd_NoCSR_MissingOutDir(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "ca", "issue", "--username", "alice")
+	if err == nil {
+		t.Fatal("expected error for missing --out without --csr")
+	}
+	var missing *MissingOutDirError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingOutDirError, got: %T: %v", err, err)
+	}
+}
+
+// TestCertsIssueCmd_NoCSR_GeneratesKeyLocally proves that without --csr a
+// fresh key is generated HERE and written to --out as key.pem with 0600
+// permissions -- it never reaches the mock server, which only receives the
+// derived CSR.
+func TestCertsIssueCmd_NoCSR_GeneratesKeyLocally(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	tmpDir := t.TempDir()
+	outDir := filepath.Join(tmpDir, "certout")
+
+	out, err := executeCommand(root, "ca", "issue", "--username", "alice", "--out", outDir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "cert.pem") {
+		t.Fatalf("expected cert.pem path in output, got: %q", out)
+	}
+	if !strings.Contains(out, "key.pem") {
+		t.Fatalf("expected key.pem path in output, got: %q", out)
+	}
+	if !strings.Contains(out, "SERIAL-001") {
+		t.Fatalf("expected serial number in output, got: %q", out)
+	}
+
+	// Verify files were written.
+	certData, err := os.ReadFile(filepath.Join(outDir, "cert.pem"))
+	if err != nil {
+		t.Fatalf("expected cert.pem to exist: %v", err)
+	}
+	if !strings.Contains(string(certData), "CERTIFICATE") {
+		t.Fatalf("expected certificate PEM content, got: %q", certData)
+	}
+
+	keyPath := filepath.Join(outDir, "key.pem")
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("expected key.pem to exist: %v", err)
+	}
+	if !strings.Contains(string(keyData), "PRIVATE KEY") {
+		t.Fatalf("expected private key PEM content, got: %q", keyData)
+	}
+
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat key.pem: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Fatalf("expected key.pem mode 0600, got %o", perm)
+	}
+}
+
+// TestCertsIssueCmd_WithOutDir is retained under its historical name for the
+// earlier -tenant-id-era baseline; it exercises the same no-CSR/--out path as
+// TestCertsIssueCmd_NoCSR_GeneratesKeyLocally.
 func TestCertsGenerateCmd_WithOutDir(t *testing.T) {
 	root := newTestRootCmdAuth()
 
@@ -1307,21 +1392,23 @@ func TestCertsGenerateCmd_WithOutDir(t *testing.T) {
 	}
 }
 
+// TestCertsExportCmd_Success exercises the LOCAL build path: "ca
+// export-bundle" never calls the server (go-qrdb security review -- no
+// private key may reach a node), so the cert and key here must be a real,
+// matching pair for cert.EncodePKCS12 to accept.
 func TestCertsExportCmd_Success(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create mock PEM files for the export command to read.
-	certPEM := "-----BEGIN CERTIFICATE-----\nMOCKCERT\n-----END CERTIFICATE-----\n"
-	keyPEM := "-----BEGIN PRIVATE KEY-----\nMOCKKEY\n-----END PRIVATE KEY-----\n"
+	certPEM, keyPEM := generateSelfSignedCertAndKeyPEM(t)
 
 	certFile := filepath.Join(tmpDir, "cert.pem")
 	keyFile := filepath.Join(tmpDir, "key.pem")
 	outFile := filepath.Join(tmpDir, "client.p12")
 
-	if err := os.WriteFile(certFile, []byte(certPEM), 0o600); err != nil {
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
 		t.Fatalf("failed to write cert file: %v", err)
 	}
-	if err := os.WriteFile(keyFile, []byte(keyPEM), 0600); err != nil {
+	if err := os.WriteFile(keyFile, keyPEM, 0600); err != nil {
 		t.Fatalf("failed to write key file: %v", err)
 	}
 
@@ -1493,7 +1580,8 @@ func TestCertsListCmd_WithTenantFilter(t *testing.T) {
 func TestCertsGenerateCmd_WithTTL(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "ca", "issue", "--username", "alice", "--ttl", "8760h")
+	outDir := filepath.Join(t.TempDir(), "certout")
+	out, err := executeCommand(root, "ca", "issue", "--username", "alice", "--ttl", "8760h", "--out", outDir)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1502,15 +1590,19 @@ func TestCertsGenerateCmd_WithTTL(t *testing.T) {
 	}
 }
 
+// TestCertsGenerateCmd_WithTenantID pins the retirement of --tenant-id from
+// "ca issue" (the tenant is always the caller's own; see
+// cmd/qrdb/certs.go newCertsIssueCmd): the flag no longer exists, so cobra
+// refuses it as unrecognized rather than accepting a cross-tenant target.
 func TestCertsGenerateCmd_WithTenantID(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "ca", "issue", "--username", "alice", "--tenant-id", "tenant-1")
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	_, err := executeCommand(root, "ca", "issue", "--username", "alice", "--tenant-id", "tenant-1")
+	if err == nil {
+		t.Fatal("expected error: --tenant-id was removed from \"ca issue\"")
 	}
-	if !strings.Contains(out, "SERIAL-001") {
-		t.Fatalf("expected serial number in output, got: %q", out)
+	if !strings.Contains(err.Error(), "tenant-id") {
+		t.Fatalf("expected an unknown-flag error naming tenant-id, got: %v", err)
 	}
 }
 

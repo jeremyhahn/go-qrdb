@@ -181,6 +181,38 @@ func (s *forwardingScope) ExecuteBatch(ctx context.Context, a1 []transport.Op, a
 	return r0, err
 }
 
+func (s *forwardingScope) ImportAbort(ctx context.Context, a1 string) error {
+	err := s.Transport.ImportAbort(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.ImportAbort(ctx, a1)
+	}
+	return err
+}
+
+func (s *forwardingScope) ImportAppend(ctx context.Context, a1 string, a2 uint64, a3 []byte) error {
+	err := s.Transport.ImportAppend(ctx, a1, a2, a3)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.ImportAppend(ctx, a1, a2, a3)
+	}
+	return err
+}
+
+func (s *forwardingScope) ImportBegin(ctx context.Context, a1 transport.ImportOptions) (string, error) {
+	r0, err := s.Transport.ImportBegin(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.ImportBegin(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) ImportCommit(ctx context.Context, a1 string) (*transport.ImportResult, error) {
+	r0, err := s.Transport.ImportCommit(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.ImportCommit(ctx, a1)
+	}
+	return r0, err
+}
+
 func (s *forwardingScope) LeaseGrant(ctx context.Context, a1 int64) (*transport.LeaseInfo, error) {
 	r0, err := s.Transport.LeaseGrant(ctx, a1)
 	if remote, ok := s.forwardTo(ctx, err); ok {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // CeremonyState represents the current phase of the initialization ceremony.
@@ -189,15 +190,23 @@ type InitializeOptions struct {
 
 	// Secret is the passphrase (or other strategy-specific credential) the
 	// system barrier is initialized with, BORROWED for the duration of this
-	// call exactly as seal.StorageBarrier.Initialize's own creds parameter
-	// is: Initialize copies it into protected memory and destroys its own
-	// copy before returning, leaving this slice for the caller to wipe.
-	// Required when the barrier's configured strategy needs one (e.g.
-	// "passphrase"); must be empty for "none". qrdb init is the only way a
-	// fresh node's system barrier is ever initialized (go-qrdb#548): `barrier
-	// init` refuses the system barrier outright and names this field's CLI
-	// flag instead.
-	Secret []byte
+	// call: Initialize reads it through WithBytes to build the barrier's
+	// Credentials and never destroys the Buffer itself, leaving that to the
+	// caller that constructed it, exactly as seal.StorageBarrier.Initialize's
+	// own creds parameter borrows the Credentials it is handed. Required when
+	// the barrier's configured strategy needs one (e.g. "passphrase"); must
+	// be nil for "none". qrdb init is the only way a fresh node's system
+	// barrier is ever initialized (go-qrdb#548): `barrier init` refuses the
+	// system barrier outright and names this field's CLI flag instead.
+	//
+	// *secure.Buffer, not []byte (secure-analyzer, go-qrdb's securecheck
+	// rule 3): a passphrase sitting in ordinary memory for the life of a
+	// ceremony call is exactly the unwiped plaintext the analyzer exists to
+	// catch. Every caller that populates this from a wire []byte
+	// (holderwire.CeremonyInitFrom, holderpb.CeremonyInitFromPB) builds the
+	// Buffer with secure.NewBufferFromBytes, which consumes and wipes that
+	// wire copy as a side effect.
+	Secret *secure.Buffer
 }
 
 // AdminCredentialSource records which of the three supported paths produced

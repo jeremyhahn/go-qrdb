@@ -14,7 +14,10 @@
 
 package transport
 
-import "strconv"
+import (
+	"strconv"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // User management types
@@ -366,31 +369,38 @@ type ReconcileRolesResponse struct {
 // Certificate management types
 // ---------------------------------------------------------------------------
 
-// GenerateCertRequest holds parameters for generating a client certificate.
-type GenerateCertRequest struct {
+// IssueCertRequest asks for a certificate, from a certificate signing
+// request, for an existing account of the caller's own tenant. The caller
+// keeps its private key: the server only ever sees the CSR, and the
+// certificate names the account whatever the CSR's Subject says.
+type IssueCertRequest struct {
 	Username string `json:"username"`
-	TenantID string `json:"tenantID,omitempty"`
-	TTL      string `json:"ttl,omitempty"`
+	CSRPEM   string `json:"csrPEM"`
+	// TTL is a Go duration; empty is the issuer's default.
+	TTL string `json:"ttl,omitempty"`
 }
 
-// CertBundle holds the PEM-encoded certificate and private key returned
-// after generating a client certificate.
-type CertBundle struct {
-	CertPEM string `json:"certPEM"`
-	KeyPEM  string `json:"keyPEM"`
-	Serial  string `json:"serial"`
+// EnrollCertRequest enrols a bring-your-own certificate on an existing
+// account of the caller's own tenant. CertPEM holds the leaf first; any
+// further certificates in it, and all of ChainPEM, are offered as
+// intermediates. It must chain to one of the tenant's trust anchors.
+type EnrollCertRequest struct {
+	Username string `json:"username"`
+	CertPEM  string `json:"certPEM"`
+	ChainPEM string `json:"chainPEM,omitempty"`
 }
 
-// ExportCertRequest holds parameters for exporting a certificate as PKCS#12.
-type ExportCertRequest struct {
-	CertPEM    string `json:"certPEM"`
-	KeyPEM     string `json:"keyPEM"`
-	Passphrase string `json:"passphrase"`
-}
-
-// ExportCertResponse holds the base64-encoded PKCS#12 archive.
-type ExportCertResponse struct {
-	PKCS12 string `json:"pkcs12"`
+// EnrolledCert is a certificate now bound to an account. There is no key:
+// the requester keeps its own. Serial is empty for a bring-your-own
+// certificate, which the cluster did not issue.
+type EnrolledCert struct {
+	UserID     uint64    `json:"userID,string"`
+	Username   string    `json:"username"`
+	TenantID   string    `json:"tenantID"`
+	CertPEM    string    `json:"certPEM"`
+	Serial     string    `json:"serial,omitempty"`
+	Thumbprint string    `json:"thumbprint"`
+	NotAfter   time.Time `json:"notAfter"`
 }
 
 // CertRecord is the metadata for an issued certificate.

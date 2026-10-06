@@ -1008,3 +1008,50 @@ func TestHandleDatabaseCreate_RaftWithoutDiscovery(t *testing.T) {
 		t.Errorf("static config should be nil when discovery not specified, got %+v", info.Raft.Static)
 	}
 }
+
+func TestHandleDatabaseScale(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	var gotName string
+	var gotReplicas int
+	dbSvc.scaleFn = func(name string, targetReplicas int) (*database.DatabaseInfo, error) {
+		if name == "missing" {
+			return nil, &database.NotFoundError{Name: name}
+		}
+		gotName, gotReplicas = name, targetReplicas
+		return &database.DatabaseInfo{Name: name, Replicas: targetReplicas, Status: database.StatusOpen}, nil
+	}
+	h := handleDatabaseScale(dbSvc)
+
+	res, err := h(context.Background(), buildCallToolRequest(t, "qrdb_database_scale", map[string]any{
+		"name": "orders", "target_replicas": float64(5),
+	}))
+	if err != nil {
+		t.Fatalf("scale: %v", err)
+	}
+	if gotName != "orders" || gotReplicas != 5 {
+		t.Fatalf("service saw (%q, %d), want (orders, 5)", gotName, gotReplicas)
+	}
+	var info struct {
+		Name     string `json:"name"`
+		Replicas int    `json:"replicas"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &info); err != nil {
+		t.Fatalf("decode %q: %v", resultText(t, res), err)
+	}
+	if info.Name != "orders" || info.Replicas != 5 || info.Status != string(database.StatusOpen) {
+		t.Fatalf("info = %+v", info)
+	}
+
+	res, err = h(context.Background(), buildCallToolRequest(t, "qrdb_database_scale", map[string]any{"target_replicas": float64(3)}))
+	if err != nil || res == nil || !res.IsError {
+		t.Fatalf("missing name: res=%+v err=%v, want an argument refusal", res, err)
+	}
+
+	_, err = h(context.Background(), buildCallToolRequest(t, "qrdb_database_scale", map[string]any{"name": "missing", "target_replicas": float64(3)}))
+	var nf *database.NotFoundError
+	var te *ToolError
+	if !errors.As(err, &nf) || !errors.As(err, &te) || te.Tool != "qrdb_database_scale" {
+		t.Fatalf("err = %v, want ToolError(qrdb_database_scale) wrapping NotFoundError", err)
+	}
+}

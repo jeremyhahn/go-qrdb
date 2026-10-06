@@ -72,6 +72,16 @@ var operationPermissions = map[string]permission.Permission{
 	"ExecuteBatch":       permission.BatchExecute,
 	"ImportFile":         permission.BatchExecute,
 
+	// Chunked import session (ImportFile's own four steps, decomposed for a
+	// caller that drives them directly instead of through the ImportFile
+	// helper): the SAME permission.BatchExecute ImportFile already checks,
+	// matching native QUIC's batch.ImportBegin/ImportAppend/ImportCommit/
+	// ImportAbort registrations exactly (pkg/api/quic/dispatch.go).
+	"ImportBegin":  permission.BatchExecute,
+	"ImportAppend": permission.BatchExecute,
+	"ImportCommit": permission.BatchExecute,
+	"ImportAbort":  permission.BatchExecute,
+
 	// Watch (both the exact and the prefix verb authorize the SAME
 	// permission.WatchWatch, matching QUIC's handleStreamOnly pair).
 	"Watch":       permission.WatchWatch,
@@ -153,13 +163,14 @@ var operationPermissions = map[string]permission.Permission{
 	"ListPermissions":    permission.PermissionsList,
 	"ResolvePermissions": permission.PermissionsResolve,
 
-	// Certs. GenerateCert, RevokeCert and ListCerts name a tenant in their
+	// Certs. RevokeCert, ListCerts, IssueCert, EnrollCert and
+	// the TrustAnchor{Add,List,Remove} trio each name a tenant in their
 	// request and are authorized individually against it
 	// (authorizeCertTenant/authorizeCertRevoke in transport_auth.go,
-	// mirroring pkg/auth/middleware/cert_authz.go exactly); ExportCert
-	// names none -- it exports a bundle the caller already holds -- so it
-	// is ambient-self here.
-	"ExportCert": permission.CertsExport,
+	// mirroring pkg/auth/middleware/cert_authz.go exactly). ExportCert
+	// (and certs:export) are gone entirely: no node may receive a private
+	// key to encode on a caller's behalf; a PKCS#12 archive is now built
+	// LOCALLY, by whoever already holds the key.
 
 	// RAG
 	"RAGIngestDocument": permission.RAGIngest,
@@ -315,15 +326,22 @@ var operationPermissions = map[string]permission.Permission{
 	// transport.
 
 	// VolumePoolClient (ScopeCross: a volume pool is platform storage
-	// topology, not a tenant's). No network transport exposes this family
-	// at all -- it is a host-composition-time facility -- so it is gated
-	// here, ambient-self, exactly like every other ScopeCross entry in this
-	// table: AuthorizeTarget resolves SelfTarget to the caller's own
+	// topology, not a tenant's; docs/volume-pools/api.md). This is a
+	// transcription of pkg/api/quic/dispatch.go's volumepool.* registration
+	// block, the SAME table every other entry here transcribes: ListPools,
+	// GetPool and ListPoolTenants carry the read permissions
+	// (ListPoolTenants shares GetPool's volume_pools:read, matching
+	// volumepool.ListTenants there), and Create/Update/DeletePool carry
+	// their own. AuthorizeTarget resolves SelfTarget to the caller's own
 	// tenant and the RBAC authorizer's ScopeCross rule admits only a
-	// system-tenant identity regardless.
-	"VolumePoolClient.List":         permission.VolumePoolList,
-	"VolumePoolClient.Pick":         permission.VolumePoolRead,
-	"VolumePoolClient.RegisterPool": permission.VolumePoolCreate,
+	// system-tenant identity regardless, exactly like every other
+	// ScopeCross entry in this table.
+	"ListPools":       permission.VolumePoolList,
+	"GetPool":         permission.VolumePoolRead,
+	"CreatePool":      permission.VolumePoolCreate,
+	"UpdatePool":      permission.VolumePoolUpdate,
+	"DeletePool":      permission.VolumePoolDelete,
+	"ListPoolTenants": permission.VolumePoolRead,
 
 	// RBACClient.ListPermissions resolves an ARBITRARY identity's effective
 	// permissions (the identity argument, not necessarily the caller) --
@@ -365,7 +383,6 @@ func (t *Transport) requireIdentity(ctx context.Context) error {
 	}
 	return t.authMW.AuthorizeTarget(ctx, permission.IdentityGated, authmw.SelfTarget())
 }
-
 
 // authorizeCertTenant gates a certificate operation on the tenant the
 // REQUEST names (generate, list), not the tenant the caller happens to be

@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	sqld "database/sql/driver"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,15 @@ type embeddedConn struct {
 	closed   atomic.Bool
 	inTx     atomic.Bool
 	bad      atomic.Bool
+
+	// baseline is every session system variable's value right after the
+	// connector finished configuring the session -- the DSN's own
+	// qrdb_concurrency override included -- and before any caller has run a
+	// statement on it. resetSessionVariables restores a reused connection to
+	// this, not to each variable's registry-wide default, so a connector
+	// option does not get silently undone the first time the connection is
+	// returned to the pool and checked out again.
+	baseline map[string]interface{}
 }
 
 // Prepare returns a prepared statement for the given query.
@@ -79,7 +89,7 @@ func (c *embeddedConn) PrepareContext(ctx context.Context, query string) (sqld.S
 	_, err = c.engine.PrepareQuery(sqlCtx, query)
 	end()
 	if err != nil {
-		return nil, &PrepareError{Query: query, Err: asSQLStateError(err, query)}
+		return nil, engineError(err, func(err error) error { return &PrepareError{Query: query, Err: err} })
 	}
 
 	return &stmt{conn: c, query: query, numInput: countPlaceholders(query)}, nil
@@ -113,6 +123,19 @@ func (c *embeddedConn) IsValid() bool {
 // open statement's write-set and row locks belong to the previous user, and
 // database/sql acts only on ErrBadConn from ResetSession -- any other
 // outcome would hand them to the next caller.
+//
+// Session-scoped state the previous caller changed with SET is restored too
+// (resetSessionVariables), not only the transaction and the current
+// database: without it, a session variable survives into the next caller's
+// hands exactly like an uncommitted transaction would. SET FOREIGN_KEY_CHECKS
+// = 0 is the motivating case -- the stock GORM migrator's DropTable sets it
+// for the drop and only restores it once every drop succeeds, so a failed
+// drop used to leave it off for whatever statement the pool handed that
+// connection to next. resetSessionVariables failing closes the same way the
+// transaction rollback above does: a session variable ResetSession could not
+// restore is exactly as unsafe to hand to the next caller as a transaction it
+// could not roll back, so the connection is marked bad and discarded rather
+// than returned to the pool with the previous caller's value still in effect.
 func (c *embeddedConn) ResetSession(ctx context.Context) error {
 	if c.closed.Load() {
 		return sqld.ErrBadConn
@@ -131,6 +154,54 @@ func (c *embeddedConn) ResetSession(ctx context.Context) error {
 	}
 
 	c.session.SetCurrentDatabase(c.database)
+	if err := c.resetSessionVariables(ctx); err != nil {
+		c.bad.Store(true)
+		return sqld.ErrBadConn
+	}
+	return nil
+}
+
+// resetSessionVariables restores every session system variable the previous
+// caller changed back to c.baseline -- this connection's own value from
+// before that caller's first statement -- so none of them, FOREIGN_KEY_CHECKS
+// included, survive into the next caller's hands.
+//
+// The target is c.baseline, not each variable's registry-wide default: a
+// connector option can set a session variable away from its registered
+// default for a connection's whole life (qrdb_concurrency, from a DSN's
+// concurrency= parameter, is the one that does today), and resetting that
+// back to the generic default on every checkout would silently undo the
+// connector's own configuration the first time the pool reused the
+// connection. baseline already holds every registered variable -- it is a
+// copy of GetAllSessionVariables taken once, right after the connector
+// finished configuring the session -- so walking it costs a handful of map
+// lookups, not a query, and is cheap enough to do on every checkout rather
+// than tracking which variables a caller actually touched. A variable still
+// at its baseline value is left alone rather than rewritten with the same
+// one. reflect.DeepEqual, not ==, compares the two: a system variable's
+// value is an interface{} of whatever concrete type that variable uses, and
+// Go's == panics across two interface values when that underlying type is
+// not comparable (a slice, for instance), which DeepEqual never does.
+//
+// It stops and returns a *SessionVariableResetError at the first variable it
+// cannot read or cannot restore, rather than skipping that one and
+// continuing: this is the exact leak ResetSession exists to close, so a
+// variable it cannot confirm is back at baseline must fail the whole reset,
+// not be treated as if it were already clean.
+func (c *embeddedConn) resetSessionVariables(ctx context.Context) error {
+	sqlCtx := c.newSQLContext(ctx, "")
+	for name, base := range c.baseline {
+		current, err := c.session.GetSessionVariable(sqlCtx, name)
+		if err != nil {
+			return &SessionVariableResetError{Variable: name, Err: err}
+		}
+		if reflect.DeepEqual(current, base) {
+			continue
+		}
+		if err := c.session.SetSessionVariable(sqlCtx, name, base); err != nil {
+			return &SessionVariableResetError{Variable: name, Err: err}
+		}
+	}
 	return nil
 }
 
@@ -271,7 +342,7 @@ func (c *embeddedConn) ExecContext(ctx context.Context, query string, args []sql
 
 	okRes, ok, err := drainOkResult(sqlCtx, schema, iter)
 	if err != nil {
-		return nil, &QueryExecError{Query: query, Err: asSQLStateError(err, query)}
+		return nil, engineError(err, queryExecError(query))
 	}
 	if !ok {
 		// A statement with no OkResult (DDL, or a SELECT run through Exec)
@@ -300,7 +371,7 @@ func (c *embeddedConn) run(ctx context.Context, query string, args []sqld.NamedV
 
 	schema, iter, _, err := c.engine.QueryWithBindings(sqlCtx, query, nil, bindings, nil)
 	if err != nil {
-		return nil, nil, nil, &QueryExecError{Query: query, Err: asSQLStateError(err, query)}
+		return nil, nil, nil, engineError(err, queryExecError(query))
 	}
 	return sqlCtx, schema, iter, nil
 }
@@ -318,7 +389,7 @@ func (c *embeddedConn) execInternal(ctx context.Context, query string) (sqld.Res
 		return nil, err
 	}
 	if _, _, drainErr := drainOkResult(sqlCtx, schema, iter); drainErr != nil {
-		return nil, &QueryExecError{Query: query, Err: asSQLStateError(drainErr, query)}
+		return nil, engineError(drainErr, queryExecError(query))
 	}
 	return &result{}, nil
 }
@@ -336,4 +407,11 @@ func (c *embeddedConn) beginCommand() (end func(), err error) {
 		return nil, err
 	}
 	return func() { gmssql.SessionCommandEnd(c.session) }, nil
+}
+
+// queryExecError is engineError's wrap for a statement that failed to run:
+// a failure the engine could not classify keeps its typed chain inside a
+// *QueryExecError naming query.
+func queryExecError(query string) func(error) error {
+	return func(err error) error { return &QueryExecError{Query: query, Err: err} }
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -49,11 +50,43 @@ type createTenantRequest struct {
 	// system-managed auto-unseal key-management mode (entitlement-gated). The
 	// default (false) is the secure self-managed mode.
 	BarrierAutoUnseal bool `json:"barrier_auto_unseal,omitempty"`
-	// DataRoot pins an IsolationVolume/IsolationRaft tenant's dedicated
-	// filesystem DataRoot to this operator-supplied absolute path instead of
-	// pool allocation (see tenant.WithDataRoot). Empty (the default) lets the
-	// tenant service allocate one from the configured volume pool.
-	DataRoot string `json:"data_root,omitempty"`
+	// VolumePool names the volume pool an IsolationVolume/IsolationRaft
+	// tenant is placed on (see tenant.WithVolumePool). Empty (the default)
+	// uses the tenant's default pool, the first entry of its
+	// AllowedVolumePools.
+	VolumePool string `json:"volume_pool,omitempty"`
+
+	// AdminUsername is the tenant's first admin. Required: a tenant is
+	// created with its first admin's login credential, or not at all.
+	AdminUsername string `json:"admin_username"`
+	// AdminCSRPEM is the admin's certificate signing request, signed by the
+	// tenant's own Key B CA; the admin keeps its key. Exactly one of this and
+	// AdminCertPEM.
+	AdminCSRPEM string `json:"admin_csr_pem,omitempty"`
+	// AdminCertPEM is the admin's own certificate, leaf first, which must
+	// chain to one of TrustAnchorsPEM.
+	AdminCertPEM string `json:"admin_cert_pem,omitempty"`
+	// AdminChainPEM holds intermediates for AdminCertPEM.
+	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
+	// TrustAnchorsPEM registers the tenant's trust anchors with it.
+	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
+}
+
+// createTenantResponse is the 201 body of POST /v1/tenants: the tenant and its
+// first admin's credential. There is never a private key.
+type createTenantResponse struct {
+	*tenantResponse
+	Admin tenantAdminResponse `json:"admin"`
+}
+
+// tenantAdminResponse is a tenant's first admin as onboarding left it.
+type tenantAdminResponse struct {
+	UserID            uint64 `json:"user_id,omitempty,string"`
+	Username          string `json:"username"`
+	CertPEM           string `json:"cert_pem"`
+	Serial            string `json:"serial,omitempty"`
+	Thumbprint        string `json:"thumbprint"`
+	AwaitsBarrierInit bool   `json:"awaits_barrier_init,omitempty"`
 }
 
 // updateTenantRequest is the JSON payload for PUT /v1/tenants/{id}.
@@ -97,6 +130,10 @@ type setTenantEntitlementsRequest struct {
 	// AllowedBarrierModes lists the dedicated-barrier sealing strategies the
 	// isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
 	AllowedBarrierModes []string `json:"allowed_barrier_modes,omitempty"`
+	// AllowedVolumePools lists the named volume pools a volume/raft tenant
+	// may be placed on; the first entry is its default. Fail-closed: empty
+	// entitles no pool.
+	AllowedVolumePools []string `json:"allowed_volume_pools,omitempty"`
 }
 
 // tenantBarrierInitRequest is the JSON payload for
@@ -130,14 +167,22 @@ type tenantResponse struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
 	IsolationType tenant.IsolationType `json:"isolation_type"`
-	// DataRoot is the dedicated filesystem root for an IsolationVolume /
-	// IsolationRaft tenant, whether pool-allocated or pinned via
-	// tenant.WithDataRoot. Empty for prefix/barrier tenants.
-	DataRoot     string              `json:"data_root,omitempty"`
+	// VolumePool is the named volume pool for an IsolationVolume /
+	// IsolationRaft tenant. Empty for prefix/barrier tenants.
+	VolumePool   string              `json:"volume_pool,omitempty"`
 	Quotas       *quota.Quotas       `json:"quotas,omitempty"`
 	Entitlements *quota.Entitlements `json:"entitlements,omitempty"`
 	CreatedAt    string              `json:"createdAt"`
 	UpdatedAt    string              `json:"updatedAt"`
+	// Refusal is set when the answering node will not serve this tenant's
+	// data; absent otherwise. Another node may still serve it.
+	Refusal *tenantRefusal `json:"refusal,omitempty"`
+}
+
+// tenantRefusal is the JSON form of tenant.Refusal.
+type tenantRefusal struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // listTenantsResponse is the JSON payload returned by GET /v1/tenants/list.
@@ -163,14 +208,25 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal)}
-	if req.DataRoot != "" {
-		opts = append(opts, tenant.WithDataRoot(req.DataRoot))
+	if s.tenantOnboarding == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant onboarding"})
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	info, err := s.tenantSvc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType, opts...)
+	result, err := s.tenantOnboarding.OnboardTenant(ctx, &service.OnboardTenantRequest{
+		ID:                req.ID,
+		Name:              req.Name,
+		IsolationType:     req.IsolationType,
+		BarrierAutoUnseal: req.BarrierAutoUnseal,
+		VolumePool:        req.VolumePool,
+		AdminUsername:     req.AdminUsername,
+		AdminCSRPEM:       []byte(req.AdminCSRPEM),
+		AdminCertPEM:      []byte(req.AdminCertPEM),
+		AdminChainPEM:     []byte(req.AdminChainPEM),
+		TrustAnchorsPEM:   []byte(req.TrustAnchorsPEM),
+	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -178,7 +234,17 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(tenantToResponse(info))
+	_ = json.NewEncoder(w).Encode(createTenantResponse{
+		tenantResponse: tenantToResponse(result.Tenant),
+		Admin: tenantAdminResponse{
+			UserID:            result.Admin.UserID,
+			Username:          result.Admin.Username,
+			CertPEM:           string(result.Admin.CertPEM),
+			Serial:            result.Admin.Serial,
+			Thumbprint:        result.Admin.Thumbprint,
+			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
+		},
+	})
 }
 
 // handleListTenants handles GET /v1/tenants/list -- returns every tenant to a
@@ -566,6 +632,7 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 		AllowSystemManagedBarrier: req.AllowSystemManagedBarrier,
 		AllowDedicatedWAL:         req.AllowDedicatedWAL,
 		AllowedBarrierModes:       req.AllowedBarrierModes,
+		AllowedVolumePools:        req.AllowedVolumePools,
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
@@ -774,16 +841,20 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 	if info == nil {
 		return nil
 	}
-	return &tenantResponse{
+	resp := &tenantResponse{
 		ID:            info.ID,
 		Name:          info.Name,
 		IsolationType: info.EffectiveIsolationType(),
-		DataRoot:      info.DataRoot,
+		VolumePool:    info.VolumePool,
 		Quotas:        info.Quotas,
 		Entitlements:  info.Entitlements,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
 	}
+	if refusal := tenant.RefusalOf(info.Refusal); refusal != nil {
+		resp.Refusal = &tenantRefusal{Code: refusal.Code, Message: refusal.Message}
+	}
+	return resp
 }
 
 // ---------------------------------------------------------------------------

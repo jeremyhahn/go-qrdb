@@ -397,3 +397,38 @@ func (e *HolderIdentityNotPermittedError) Error() string {
 	return "auth/middleware: a holder certificate may not reach " + e.Method + " " + e.Path +
 		": holder certificates are admitted only for their own ceremony verbs"
 }
+
+// FirstInitCertificateMismatchError is returned when a tenant barrier's
+// trust-on-first-init window is reached with a certificate other than the one
+// the tenant's first admin was onboarded with. Only that admin may initialize
+// the barrier of a tenant onboarded before it existed.
+type FirstInitCertificateMismatchError struct {
+	TenantID            string
+	Username            string
+	PresentedThumbprint string
+}
+
+// Error names the tenant and the onboarded admin.
+func (e *FirstInitCertificateMismatchError) Error() string {
+	presented := e.PresentedThumbprint
+	if presented == "" {
+		presented = "<no peer certificate>"
+	}
+	return "auth/middleware: tenant " + e.TenantID + "'s barrier may be initialized only with the certificate its first admin " +
+		e.Username + " was onboarded with (presented " + presented + ")"
+}
+
+// FirstInitNotOnboardedError is returned under auth.mtls_binding_policy
+// "required" when a tenant barrier's trust-on-first-init window is reached for
+// a tenant onboarded with no first admin: no certificate is bound to it, and
+// the posture admits no unbound certificate. Onboard the tenant with its first
+// admin (tenant create with an admin CSR or certificate).
+type FirstInitNotOnboardedError struct {
+	TenantID string
+}
+
+// Error names the tenant.
+func (e *FirstInitNotOnboardedError) Error() string {
+	return "auth/middleware: auth.mtls_binding_policy is \"required\" and tenant " + e.TenantID +
+		" was onboarded with no first admin, so no certificate may initialize its barrier"
+}

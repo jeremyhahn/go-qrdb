@@ -17,12 +17,10 @@ package server
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // TestBuildTenantInfra_VolumeRegistryWithoutLookup_ReturnsConfigError pins
@@ -33,11 +31,11 @@ func TestBuildTenantInfra_VolumeRegistryWithoutLookup_ReturnsConfigError(t *test
 	svc, reg := newRaftReattachFixture(t)
 
 	ti, err := BuildTenantInfra(TenantInfraConfig{
-		Ctx:        context.Background(),
-		BarrierReg: reg,
-		TenantSvc:  svc,
-		VolumePool: &qrdbpool.VolumePoolSubsystem{},
-		Logger:     reattachTestLogger(),
+		Ctx:                  context.Background(),
+		BarrierReg:           reg,
+		TenantSvc:            svc,
+		VolumePoolConfigured: true,
+		Logger:               reattachTestLogger(),
 		// TenantLookup intentionally omitted -- the contract violation under test.
 	})
 
@@ -53,46 +51,6 @@ func TestBuildTenantInfra_VolumeRegistryWithoutLookup_ReturnsConfigError(t *test
 	}
 }
 
-// swappableLookup is a TenantLookup whose backing service can be replaced,
-// modelling a composition that rebuilds its tenant service in place.
-type swappableLookup struct {
-	current atomic.Pointer[tenantLookupBox]
-}
-
-type tenantLookupBox struct{ lookup TenantLookup }
-
-func (s *swappableLookup) GetTenant(ctx context.Context, id string) (*tenant.TenantInfo, error) {
-	return s.current.Load().lookup.GetTenant(ctx, id)
-}
-
-// fixedDataRoot answers every GetTenant with one DataRoot.
-type fixedDataRoot string
-
-func (f fixedDataRoot) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
-	return &tenant.TenantInfo{ID: id, DataRoot: string(f)}, nil
-}
-
-// TestTenantHostRegistry_ResolvesLookupAtUseTime is the unit-level half of
-// go-qrdb#383: the registry must consult its lookup on EVERY DataRoot
-// resolution, so swapping the service behind the lookup is visible to a
-// registry built before the swap. A registry that unwrapped the lookup once at
-// construction would keep answering from the first service.
-func TestTenantHostRegistry_ResolvesLookupAtUseTime(t *testing.T) {
-	sw := &swappableLookup{}
-	sw.current.Store(&tenantLookupBox{lookup: fixedDataRoot("/first")})
-	reg := NewTenantHostRegistryFromLookup(nil, sw, reattachTestLogger())
-
-	got, err := reg.tenants.dataRootOf(context.Background(), "acme")
-	if err != nil || got != "/first" {
-		t.Fatalf("dataRootOf before swap = %q, %v; want /first", got, err)
-	}
-	sw.current.Store(&tenantLookupBox{lookup: fixedDataRoot("/second")})
-	got, err = reg.tenants.dataRootOf(context.Background(), "acme")
-	if err != nil || got != "/second" {
-		t.Fatalf("dataRootOf after swap = %q, %v; want /second (the registry captured the first service)", got, err)
-	}
-}
-
 // TestNewTenantHostRegistryFromLookup_NilLookupIsUnavailable verifies a nil
 // lookup yields a registry that refuses with ErrTenantHostUnavailable rather
 // than one that dereferences nil on first use.
@@ -104,17 +62,39 @@ func TestNewTenantHostRegistryFromLookup_NilLookupIsUnavailable(t *testing.T) {
 	}
 }
 
-// TestLookupDataRootSource_PropagatesLookupError verifies a lookup failure is
-// returned to the registry rather than read as an empty DataRoot.
-func TestLookupDataRootSource_PropagatesLookupError(t *testing.T) {
-	src := &lookupDataRootSource{lookup: failingLookup{}}
-	if _, err := src.dataRootOf(context.Background(), "acme"); !errors.Is(err, tenant.ErrTenantNotFound) {
-		t.Fatalf("dataRootOf = %v, want tenant.ErrTenantNotFound", err)
+// TestLookupDataRootSource_ResolvesThroughTheRegistryAtUseTime is the
+// unit-level half of go-qrdb#383, re-expressed for the catalog-backed
+// resolution path: lookupDataRootSource.dataRootOf delegates to
+// BarrierRegistry.LocalTenantDataRoot on EVERY call rather than caching a
+// resolved path, so a tenant reserved and registered AFTER the
+// TenantHostRegistry was built still resolves correctly on first use.
+func TestLookupDataRootSource_ResolvesThroughTheRegistryAtUseTime(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	src := &lookupDataRootSource{registry: reg}
+
+	// Not yet reserved/registered: resolution fails.
+	if _, err := src.dataRootOf(context.Background(), "acme"); err == nil {
+		t.Fatal("dataRootOf must fail before the tenant has a catalog Assignment")
+	}
+
+	dataRoot, _ := registerVolumeTenant(t, reg, "acme")
+
+	got, err := src.dataRootOf(context.Background(), "acme")
+	if err != nil || got != dataRoot {
+		t.Fatalf("dataRootOf after registration = %q, %v; want %q", got, err, dataRoot)
 	}
 }
 
-type failingLookup struct{}
+// TestLookupDataRootSource_PropagatesRegistryError verifies that a
+// resolution failure (here: an unregistered tenant) is returned to the
+// caller rather than read as an empty DataRoot.
+func TestLookupDataRootSource_PropagatesRegistryError(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	src := &lookupDataRootSource{registry: reg}
 
-func (failingLookup) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
-	return nil, tenant.ErrTenantNotFound
+	_, err := src.dataRootOf(context.Background(), "ghost")
+	var notFound *volume.AssignmentNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("dataRootOf = %v, want *volume.AssignmentNotFoundError", err)
+	}
 }

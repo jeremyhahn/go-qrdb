@@ -81,7 +81,7 @@ func TestResolveJoinToken_GroupReadableFileRefused(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
-	if err := os.WriteFile(path, []byte(testJoinToken), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte(testJoinToken), 0o640); err != nil { // #nosec G306 -- deliberately group-readable to prove ResolveJoinToken refuses it; the test IS the rejection path
 		t.Fatalf("WriteFile: %v", err)
 	}
 	_, err := ResolveJoinToken(path, "")
@@ -97,7 +97,7 @@ func TestResolveJoinToken_WorldReadableFileRefused(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
-	if err := os.WriteFile(path, []byte(testJoinToken), 0o604); err != nil {
+	if err := os.WriteFile(path, []byte(testJoinToken), 0o604); err != nil { // #nosec G306 -- deliberately world-readable to prove ResolveJoinToken refuses it; the test IS the rejection path
 		t.Fatalf("WriteFile: %v", err)
 	}
 	_, err := ResolveJoinToken(path, "")

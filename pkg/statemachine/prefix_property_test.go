@@ -96,7 +96,7 @@ func runPrefixNestingProperty(t *testing.T, sm_ interface{}, seed int64, n int) 
 		})
 	}
 
-	rng := rand.New(rand.NewSource(seed))
+	rng := rand.New(rand.NewSource(seed)) // #nosec G404 -- fixed-seed property-test fixture, not a cryptographic use
 	for i := 0; i < n; i++ {
 		key := randomNestedKey(rng)
 		var cmd []byte

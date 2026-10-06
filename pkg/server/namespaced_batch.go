@@ -16,7 +16,6 @@ package server
 
 import (
 	"context"
-	"io"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -113,13 +112,61 @@ func (s *namespacedBatchService) ExecuteEntity(ctx context.Context, req *service
 	return s.inner.ExecuteEntity(ctx, &cp)
 }
 
-// Import scopes a bulk import to the composite namespace by setting the
-// KeyPrefix on the options, so imported keys land in this database's
-// keyspace exactly like every other write. The inner service prefixes each
+// ImportBegin scopes a chunked import session to the composite namespace
+// by setting KeyPrefix on opts, so imported keys land in this database's
+// keyspace exactly like every other write; the inner service prefixes each
 // stored key and still reports the original user-supplied key in any error
-// rows.
-func (s *namespacedBatchService) Import(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+// rows. The inner service also folds KeyPrefix into the session ID it
+// returns, so two sessions opened against two different namespaces
+// sharing one underlying shard (prefix isolation) can never resolve to the
+// same hidden key even if their bare IDs collided.
+func (s *namespacedBatchService) ImportBegin(ctx context.Context, opts service.ImportOptions) (string, error) {
 	ctx = s.scope(ctx)
 	opts.KeyPrefix = s.prefix + opts.KeyPrefix
-	return s.inner.Import(ctx, file, opts)
+	return s.inner.ImportBegin(ctx, opts)
+}
+
+// checkSessionNamespace refuses a session ID ImportBegin did not mint
+// through THIS wrapper's own (tenant, database) namespace: the inner
+// service's checkSessionOwner checks only the caller's (tenant, identity)
+// against what ImportBegin recorded, never the database, so without this a
+// caller could ImportAppend/ImportCommit/ImportAbort a session begun through
+// a DIFFERENT namespaced database wrapper of the same tenant it also has
+// access to (go-qrdb#576's security review). The refusal is the inner
+// service's own *service.ImportSessionNotFoundError -- indistinguishable
+// from "no such session" -- rather than a distinct error that would confirm
+// the session exists in some other database.
+func (s *namespacedBatchService) checkSessionNamespace(sessionID string) error {
+	if !service.ImportSessionHasPrefix(sessionID, s.prefix) {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	return nil
+}
+
+// ImportAppend forwards to the inner service once checkSessionNamespace
+// confirms sessionID belongs to this wrapper's own namespace.
+func (s *namespacedBatchService) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	ctx = s.scope(ctx)
+	if err := s.checkSessionNamespace(sessionID); err != nil {
+		return err
+	}
+	return s.inner.ImportAppend(ctx, sessionID, seq, chunk)
+}
+
+// ImportCommit forwards to the inner service. See ImportAppend.
+func (s *namespacedBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	ctx = s.scope(ctx)
+	if err := s.checkSessionNamespace(sessionID); err != nil {
+		return nil, err
+	}
+	return s.inner.ImportCommit(ctx, sessionID)
+}
+
+// ImportAbort forwards to the inner service. See ImportAppend.
+func (s *namespacedBatchService) ImportAbort(ctx context.Context, sessionID string) error {
+	ctx = s.scope(ctx)
+	if err := s.checkSessionNamespace(sessionID); err != nil {
+		return err
+	}
+	return s.inner.ImportAbort(ctx, sessionID)
 }

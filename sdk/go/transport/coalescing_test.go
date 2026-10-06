@@ -110,6 +110,22 @@ func (m *mockBatchTransport) ImportFile(_ context.Context, _ string, _ io.Reader
 	return &ImportResult{}, nil
 }
 
+func (m *mockBatchTransport) ImportBegin(_ context.Context, _ ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (m *mockBatchTransport) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (m *mockBatchTransport) ImportCommit(_ context.Context, _ string) (*ImportResult, error) {
+	return &ImportResult{}, nil
+}
+
+func (m *mockBatchTransport) ImportAbort(_ context.Context, _ string) error {
+	return nil
+}
+
 // callCount returns the number of ExecuteBatch invocations seen so far.
 func (m *mockBatchTransport) callCount() int {
 	m.mu.Lock()

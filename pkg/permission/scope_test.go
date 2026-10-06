@@ -198,7 +198,7 @@ func TestLookupScopeByName_DelegatesToLookupScope(t *testing.T) {
 		want Scope
 	}{
 		{"tenants:list:cross", ScopeCross},
-		{"volumepool:create", ScopeCross},
+		{"volume_pools:create", ScopeCross},
 		{"tenants:read", ScopeSelf},
 	}
 	for _, tc := range cases {

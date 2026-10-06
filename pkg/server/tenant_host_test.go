@@ -22,21 +22,27 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 func volTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+// testVolumeAllocators maps a *seal.BarrierRegistry built by
+// newVolumePooledRegistry[With] to the volume.Allocator backing it, so
+// registerVolumeTenant can Reserve a tenant's Assignment (required before
+// RegisterVolumeTenant -- see its doc comment) without this package's many
+// existing "reg := newVolumePooledRegistry(t)" call sites having to carry a
+// second return value through to every registerVolumeTenant call.
+var testVolumeAllocators sync.Map // *seal.BarrierRegistry -> volume.Allocator
 
 // newVolumePooledRegistry builds a BarrierRegistry backed by a single-path
 // local volume pool and a per-tenant Pebble registry, suitable for registering
@@ -58,27 +64,6 @@ func newVolumePooledRegistry(t *testing.T) *seal.BarrierRegistry {
 func newVolumePooledRegistryWith(t *testing.T, sysStrat seal.SealingStrategy) *seal.BarrierRegistry {
 	t.Helper()
 
-	dir := t.TempDir()
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": dir}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
-
 	sysStore := seal.NewMemoryBackend()
 	system, err := seal.NewStorageBarrier(volTestLogger(), sysStore,
 		seal.BarrierConfig{RootKeyPath: "system/root-key"}, sysStrat)
@@ -86,16 +71,14 @@ func newVolumePooledRegistryWith(t *testing.T, sysStrat seal.SealingStrategy) *s
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	reg, _, allocator := sealtest.PooledRegistry(t, system)
+	// registerVolumeTenant looks the allocator up by registry pointer, since
+	// changing this helper's long-standing *seal.BarrierRegistry-only return
+	// would ripple through every one of this package's test files that call
+	// it. See testVolumeAllocators below.
+	testVolumeAllocators.Store(reg, allocator)
+	t.Cleanup(func() { testVolumeAllocators.Delete(reg) })
 
-	reg, err := seal.NewBarrierRegistry(volTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
 	// RegisterVolumeTenant/ReattachVolumeTenant refuse with ErrSealed while
 	// the system barrier is sealed; every caller of this helper registers a
 	// volume tenant immediately, so the system barrier must be initialized
@@ -106,11 +89,17 @@ func newVolumePooledRegistryWith(t *testing.T, sysStrat seal.SealingStrategy) *s
 	return reg
 }
 
-// registerVolumeTenant registers and unseals a volume tenant barrier, returning
-// the DataRoot and the live barrier.
+// registerVolumeTenant reserves id on reg's underlying volume pool (via
+// testVolumeAllocators, see above), registers, and unseals a volume tenant
+// barrier, returning the DataRoot and the live barrier.
 func registerVolumeTenant(t *testing.T, reg *seal.BarrierRegistry, id string) (string, *seal.TenantBarrier) {
 	t.Helper()
 	ctx := context.Background()
+	allocVal, ok := testVolumeAllocators.Load(reg)
+	if !ok {
+		t.Fatalf("registerVolumeTenant(%s): reg was not built by newVolumePooledRegistry[With]", id)
+	}
+	sealtest.ReserveVolumeTenant(t, allocVal.(volume.Allocator), id)
 	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, id, false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(%s): %v", id, err)
@@ -130,7 +119,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	dataRoot, tb := registerVolumeTenant(t, reg, "t1")
 	ctx := context.Background()
 
-	th, err := newTenantHost(context.Background(), "t1", dataRoot, tb, volTestLogger())
+	th, err := newTenantHost(context.Background(), "t1", dataRoot, tb, qrdbconfig.ImportSessionConfig{}, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost: %v", err)
 	}
@@ -174,7 +163,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	}
 
 	// Re-open at the same DataRoot: must succeed (lock released) and recover data.
-	th2, err := newTenantHost(context.Background(), "t1", dataRoot, tb, volTestLogger())
+	th2, err := newTenantHost(context.Background(), "t1", dataRoot, tb, qrdbconfig.ImportSessionConfig{}, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost (re-open): %v", err)
 	}
@@ -200,12 +189,12 @@ func TestTenantHost_FullEngineIsolationAndEncryption(t *testing.T) {
 	rootA, tbA := registerVolumeTenant(t, reg, "ta")
 	rootB, tbB := registerVolumeTenant(t, reg, "tb")
 
-	ha, err := newTenantHost(context.Background(), "ta", rootA, tbA, volTestLogger())
+	ha, err := newTenantHost(context.Background(), "ta", rootA, tbA, qrdbconfig.ImportSessionConfig{}, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost(ta): %v", err)
 	}
 	defer func() { _ = ha.Close() }()
-	hb, err := newTenantHost(context.Background(), "tb", rootB, tbB, volTestLogger())
+	hb, err := newTenantHost(context.Background(), "tb", rootB, tbB, qrdbconfig.ImportSessionConfig{}, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost(tb): %v", err)
 	}
@@ -299,12 +288,10 @@ func (f *fakeVolumeTenantSvc) GetTenant(_ context.Context, id string) (*tenant.T
 // the shared system service set, and that the composite namespace is applied.
 func TestResolver_RoutesVolumeTenantToTenantHost(t *testing.T) {
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "vt")
+	registerVolumeTenant(t, reg, "vt")
 	ctx := context.Background()
 
-	source := &lookupDataRootSource{lookup: &fakeVolumeTenantSvc{
-		info: &tenant.TenantInfo{ID: "vt", IsolationType: tenant.IsolationVolume, DataRoot: dataRoot},
-	}}
+	source := &lookupDataRootSource{registry: reg}
 	hostReg := NewTenantHostRegistry(reg, source, volTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 
@@ -312,7 +299,7 @@ func TestResolver_RoutesVolumeTenantToTenantHost(t *testing.T) {
 	rr := &restServiceRegistry{
 		dbReg:        dbReg,
 		barrierReg:   reg,
-		tenantSvc:    &fakeVolumeTenantSvc{info: &tenant.TenantInfo{ID: "vt", IsolationType: tenant.IsolationVolume, DataRoot: dataRoot}},
+		tenantSvc:    &fakeVolumeTenantSvc{info: &tenant.TenantInfo{ID: "vt", IsolationType: tenant.IsolationVolume, VolumePool: "default"}},
 		tenantHosts:  hostReg,
 		systemTenant: "system",
 	}
@@ -359,7 +346,9 @@ func TestTenantHostRegistry_LazyBuildAfterUnseal(t *testing.T) {
 	ctx := context.Background()
 
 	// Self-managed registration: registered but NOT initialized -> sealed.
-	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "lazy", false)
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	sealtest.ReserveVolumeTenant(t, allocVal.(volume.Allocator), "lazy")
+	_, tb, err := reg.RegisterVolumeTenant(ctx, "lazy", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
@@ -367,9 +356,7 @@ func TestTenantHostRegistry_LazyBuildAfterUnseal(t *testing.T) {
 		t.Fatal("self-managed volume barrier must start sealed")
 	}
 
-	source := &lookupDataRootSource{lookup: &fakeVolumeTenantSvc{
-		info: &tenant.TenantInfo{ID: "lazy", IsolationType: tenant.IsolationVolume, DataRoot: dataRoot},
-	}}
+	source := &lookupDataRootSource{registry: reg}
 	hostReg := NewTenantHostRegistry(reg, source, volTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 

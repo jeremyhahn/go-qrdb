@@ -69,7 +69,7 @@ type tenantCLIJSON struct {
 	ID            string                     `json:"id"`
 	Name          string                     `json:"name"`
 	IsolationType string                     `json:"isolation_type,omitempty"`
-	DataRoot      string                     `json:"data_root,omitempty"`
+	VolumePool    string                     `json:"volume_pool,omitempty"`
 	Quotas        *tenantCLIQuotasJSON       `json:"quotas,omitempty"`
 	Entitlements  *tenantCLIEntitlementsJSON `json:"entitlements,omitempty"`
 	CreatedAt     time.Time                  `json:"created_at"`
@@ -80,6 +80,22 @@ type tenantCLIJSON struct {
 // shape `tenant list --output json` actually prints.
 type tenantListCLIJSON struct {
 	Tenants []tenantCLIJSON `json:"tenants"`
+}
+
+// tenantAdminCLIJSON mirrors transport.TenantAdminCredential, the admin
+// half of `tenant create --output json`'s response envelope.
+type tenantAdminCLIJSON struct {
+	Username   string `json:"username"`
+	CertPEM    string `json:"cert_pem"`
+	Thumbprint string `json:"thumbprint"`
+}
+
+// tenantCreateCLIJSON mirrors transport.CreateTenantResponse, the (wrapped)
+// shape `tenant create --output json` prints: the tenant and its first
+// admin, created together as one unit.
+type tenantCreateCLIJSON struct {
+	Tenant tenantCLIJSON      `json:"tenant"`
+	Admin  tenantAdminCLIJSON `json:"admin"`
 }
 
 // TestTenant_CLI_Lifecycle_PerProtocol drives the full `qrdb tenant` lifecycle
@@ -107,18 +123,20 @@ func testTenantLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto m
 
 	// --- create ("prefix" isolation: always permitted, no volume pool
 	// or special entitlement needed) --------------------------------------
-	out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "create",
+	adminArgs := adminCSRArgsForTenant(t, node, proto, tenantID+"-admin")
+	out, err := runCLIProto(t, node, proto, append([]string{"--output", "json", "tenant", "create",
 		"--id", tenantID,
 		"--name", "Lifecycle Tenant",
 		"--isolation-type", "prefix",
-	)
+	}, adminArgs...)...)
 	if err != nil {
 		t.Fatalf("[%s] tenant create: %v\noutput: %s", proto.name, err, out)
 	}
-	var created tenantCLIJSON
-	if jerr := json.Unmarshal([]byte(out), &created); jerr != nil {
+	var createResp tenantCreateCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &createResp); jerr != nil {
 		t.Fatalf("[%s] decode tenant create JSON: %v\noutput: %s", proto.name, jerr, out)
 	}
+	created := createResp.Tenant
 	if created.ID != tenantID || created.Name != "Lifecycle Tenant" || created.IsolationType != "prefix" {
 		t.Fatalf("[%s] tenant create result = %+v, want id=%s name=%q isolation=prefix", proto.name, created, tenantID, "Lifecycle Tenant")
 	}
@@ -152,7 +170,7 @@ func testTenantLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	// --- update (name only; isolation-type held at its current value so
 	// this never attempts the unsupported prefix->barrier/volume/raft
 	// transition -- UpdateTenant only patches metadata, it performs none of
-	// CreateTenant's barrier/DataRoot provisioning side effects) -----------
+	// CreateTenant's barrier/volume-pool provisioning side effects) -------
 	out, err = runCLIProto(t, node, proto, "--output", "json", "tenant", "update", tenantID,
 		"--name", "Renamed Tenant",
 		"--isolation-type", "prefix",
@@ -267,8 +285,9 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 
 	// prefix: always permitted (the default entitlement).
 	prefixID := base + "-prefix"
-	out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "create",
-		"--id", prefixID, "--name", "Prefix Tenant", "--isolation-type", "prefix")
+	prefixAdminArgs := adminCSRArgsForTenant(t, node, proto, prefixID+"-admin")
+	out, err := runCLIProto(t, node, proto, append([]string{"--output", "json", "tenant", "create",
+		"--id", prefixID, "--name", "Prefix Tenant", "--isolation-type", "prefix"}, prefixAdminArgs...)...)
 	if err != nil {
 		t.Fatalf("[%s] tenant create (prefix) should succeed on any node, got: %v\noutput: %s", proto.name, err, out)
 	}
@@ -285,8 +304,9 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 	// isolation mode -- barrier included, not just volume/raft -- requires a
 	// configured volume pool at the infrastructure level.
 	barrierID := base + "-barrier"
-	out, err = runCLIProto(t, node, proto, "tenant", "create",
-		"--id", barrierID, "--name", "Barrier Tenant", "--isolation-type", "barrier")
+	barrierAdminArgs := adminCSRArgsForTenant(t, node, proto, barrierID+"-admin")
+	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
+		"--id", barrierID, "--name", "Barrier Tenant", "--isolation-type", "barrier"}, barrierAdminArgs...)...)
 	if err == nil {
 		t.Fatalf("[%s] tenant create (barrier, self-managed) should be denied without a configured volume pool, got: %s", proto.name, out)
 	}
@@ -299,8 +319,9 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 	// defaults to false (quota.DefaultEntitlements) and CreateTenant's
 	// auto-unseal gate (quota.FeatureSystemManagedBarrier) rejects it.
 	autoID := base + "-barrier-auto"
-	out, err = runCLIProto(t, node, proto, "tenant", "create",
-		"--id", autoID, "--name", "Auto Barrier Tenant", "--isolation-type", "barrier", "--barrier-auto-unseal")
+	autoAdminArgs := adminCSRArgsForTenant(t, node, proto, autoID+"-admin")
+	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
+		"--id", autoID, "--name", "Auto Barrier Tenant", "--isolation-type", "barrier", "--barrier-auto-unseal"}, autoAdminArgs...)...)
 	if err == nil {
 		t.Fatalf("[%s] tenant create (barrier, auto-unseal) should be denied by entitlement, got: %s", proto.name, out)
 	}
@@ -311,8 +332,9 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 	// volume: denied -- AllowedIsolationModes defaults to [prefix] only,
 	// and this node has no configured volume pool either.
 	volumeID := base + "-volume"
-	out, err = runCLIProto(t, node, proto, "tenant", "create",
-		"--id", volumeID, "--name", "Volume Tenant", "--isolation-type", "volume")
+	volumeAdminArgs := adminCSRArgsForTenant(t, node, proto, volumeID+"-admin")
+	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
+		"--id", volumeID, "--name", "Volume Tenant", "--isolation-type", "volume"}, volumeAdminArgs...)...)
 	if err == nil {
 		t.Fatalf("[%s] tenant create (volume) should be denied without a configured volume pool/entitlement, got: %s", proto.name, out)
 	}
@@ -322,8 +344,9 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 
 	// raft: denied -- same AllowedIsolationModes gate as volume.
 	raftID := base + "-raft"
-	out, err = runCLIProto(t, node, proto, "tenant", "create",
-		"--id", raftID, "--name", "Raft Tenant", "--isolation-type", "raft")
+	raftAdminArgs := adminCSRArgsForTenant(t, node, proto, raftID+"-admin")
+	out, err = runCLIProto(t, node, proto, append([]string{"tenant", "create",
+		"--id", raftID, "--name", "Raft Tenant", "--isolation-type", "raft"}, raftAdminArgs...)...)
 	if err == nil {
 		t.Fatalf("[%s] tenant create (raft) should be denied without a configured volume pool/entitlement, got: %s", proto.name, out)
 	}
@@ -350,9 +373,7 @@ func writeTenantEntitlementConfig(t *testing.T, volumePoolDir string) string {
 storage:
   volume_pools:
     - name: default
-      paths:
-        - %s
-      strategy: round_robin
+      path: %s
 tenant:
   default_entitlements:
     allowed_isolation_modes:
@@ -364,6 +385,8 @@ tenant:
     allow_dedicated_raft: true
     allow_dedicated_wal: true
     allow_system_managed_barrier: true
+    allowed_volume_pools:
+      - default
   default_quotas:
     max_databases: -1
     max_raft_groups: -1
@@ -470,6 +493,14 @@ func startTenantEntitlementNode(t *testing.T) *multiProtoNode {
 		waitForCLIProtoReady(t, n, proto, 60*time.Second)
 	}
 
+	// The replicated catalog has no pool until an explicit API call creates
+	// one (docs/volume-pools/architecture.md D2), and registerDedicatedBarrier
+	// always resolves through the pooled registration path regardless of
+	// isolation type (see this function's own doc comment), so register the
+	// node's configured "default" pool before any caller places a tenant on
+	// it.
+	createVolumePoolCLI(t, cli, n.cliArgsFor(multiProtocols[0]), "default")
+
 	return n
 }
 
@@ -501,45 +532,51 @@ func testTenantIsolationTypeSuccessOverProtocol(t *testing.T, node *multiProtoNo
 	cases := []struct {
 		isolationType string
 		autoUnseal    bool
-		// wantDataRoot reports whether CreateTenant is expected to allocate
-		// a dedicated filesystem DataRoot: true for volume/raft (pool
-		// allocated), false for barrier (no dedicated filesystem root --
-		// pkg/tenant/service.go's IsolationBarrier case never assigns
-		// dataRoot).
-		wantDataRoot bool
+		// wantVolumePool reports whether CreateTenant's response is
+		// expected to carry a named VolumePool: true for volume/raft (the
+		// wire-facing field docs/volume-pools/api.md defines), false for
+		// barrier -- TenantInfo.VolumePool's own doc comment: "Empty for
+		// prefix/barrier tenants." A barrier tenant's underlying store is
+		// still placed through a pool internally (registerDedicatedBarrier
+		// always resolves through the pooled registration path), but that
+		// is not exposed on this field.
+		wantVolumePool bool
 	}{
-		{isolationType: "barrier", autoUnseal: false, wantDataRoot: false},
-		{isolationType: "barrier", autoUnseal: true, wantDataRoot: false},
-		{isolationType: "volume", autoUnseal: false, wantDataRoot: true},
-		{isolationType: "volume", autoUnseal: true, wantDataRoot: true},
-		{isolationType: "raft", autoUnseal: false, wantDataRoot: true},
-		{isolationType: "raft", autoUnseal: true, wantDataRoot: true},
+		{isolationType: "barrier", autoUnseal: false, wantVolumePool: false},
+		{isolationType: "barrier", autoUnseal: true, wantVolumePool: false},
+		{isolationType: "volume", autoUnseal: false, wantVolumePool: true},
+		{isolationType: "volume", autoUnseal: true, wantVolumePool: true},
+		{isolationType: "raft", autoUnseal: false, wantVolumePool: true},
+		{isolationType: "raft", autoUnseal: true, wantVolumePool: true},
 	}
 
 	for _, tc := range cases {
 		id := fmt.Sprintf("%s-%s-auto%v", base, tc.isolationType, tc.autoUnseal)
+		adminArgs := adminCSRArgsForTenant(t, node, proto, id+"-admin")
 		args := []string{"--output", "json", "tenant", "create",
 			"--id", id, "--name", "Entitled Tenant", "--isolation-type", tc.isolationType}
 		if tc.autoUnseal {
 			args = append(args, "--barrier-auto-unseal")
 		}
+		args = append(args, adminArgs...)
 		out, err := runCLIProto(t, node, proto, args...)
 		if err != nil {
 			t.Fatalf("[%s] tenant create (isolation=%s auto-unseal=%v) should succeed with a configured volume pool and entitlements, got: %v\noutput: %s",
 				proto.name, tc.isolationType, tc.autoUnseal, err, out)
 		}
-		var created tenantCLIJSON
-		if jerr := json.Unmarshal([]byte(out), &created); jerr != nil {
+		var createResp tenantCreateCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &createResp); jerr != nil {
 			t.Fatalf("[%s] decode tenant create (isolation=%s) JSON: %v\noutput: %s", proto.name, tc.isolationType, jerr, out)
 		}
+		created := createResp.Tenant
 		if created.IsolationType != tc.isolationType {
 			t.Fatalf("[%s] tenant create (isolation=%s) IsolationType = %q, want %s", proto.name, tc.isolationType, created.IsolationType, tc.isolationType)
 		}
-		if tc.wantDataRoot && created.DataRoot == "" {
-			t.Fatalf("[%s] tenant create (isolation=%s) DataRoot is empty, want a pool-allocated path", proto.name, tc.isolationType)
+		if tc.wantVolumePool && created.VolumePool == "" {
+			t.Fatalf("[%s] tenant create (isolation=%s) VolumePool is empty, want a named pool", proto.name, tc.isolationType)
 		}
-		if !tc.wantDataRoot && created.DataRoot != "" {
-			t.Fatalf("[%s] tenant create (isolation=%s) DataRoot = %q, want empty (barrier isolation has no dedicated filesystem root)", proto.name, tc.isolationType, created.DataRoot)
+		if !tc.wantVolumePool && created.VolumePool != "" {
+			t.Fatalf("[%s] tenant create (isolation=%s) VolumePool = %q, want empty (prefix/barrier isolation never exposes it)", proto.name, tc.isolationType, created.VolumePool)
 		}
 	}
 }

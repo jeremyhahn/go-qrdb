@@ -25,7 +25,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"log/slog"
 	"math/big"
 	"os"
@@ -203,91 +202,6 @@ func TestCertReloader_DifferentDirs(t *testing.T) {
 
 	if r.cert.Load() == nil {
 		t.Error("expected loaded certificate")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Volume pool errors – additional error constructors
-// ---------------------------------------------------------------------------
-
-func TestVolumePoolStorageError_ErrorAndUnwrap(t *testing.T) {
-	root := errors.New("pebble open failed")
-	e := &VolumePoolStorageError{Err: root}
-	if e.Error() == "" {
-		t.Error("expected non-empty error string")
-	}
-	if !errors.Is(e, root) {
-		t.Error("expected Unwrap to expose root error")
-	}
-}
-
-func TestVolumePoolRegisterError_ErrorAndUnwrap(t *testing.T) {
-	root := errors.New("duplicate name")
-	e := &VolumePoolRegisterError{Name: "backups", Err: root}
-	msg := e.Error()
-	if msg == "" {
-		t.Error("expected non-empty error string")
-	}
-	if !errors.Is(e, root) {
-		t.Error("expected Unwrap to expose root error")
-	}
-}
-
-func TestVolumePoolStrategyError_WithErr(t *testing.T) {
-	root := errors.New("unsupported")
-	e := &VolumePoolStrategyError{Strategy: "raid", Err: root}
-	msg := e.Error()
-	if msg == "" {
-		t.Error("expected non-empty error string")
-	}
-	if !errors.Is(e, root) {
-		t.Error("expected Unwrap to expose root error")
-	}
-}
-
-func TestVolumePoolStrategyError_NilErr(t *testing.T) {
-	e := &VolumePoolStrategyError{Strategy: "unknown"}
-	msg := e.Error()
-	if msg == "" {
-		t.Error("expected non-empty error string for nil Err")
-	}
-}
-
-func TestVolumePoolPathError_ErrorAndUnwrap(t *testing.T) {
-	root := errors.New("permission denied")
-	e := &VolumePoolPathError{Pool: "pool1", Path: "/data", Err: root}
-	msg := e.Error()
-	if msg == "" {
-		t.Error("expected non-empty error string")
-	}
-	if !errors.Is(e, root) {
-		t.Error("expected Unwrap to expose root error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// buildLocalCandidates – success path
-// ---------------------------------------------------------------------------
-
-func TestBuildLocalCandidates_Success(t *testing.T) {
-	dir1 := t.TempDir()
-	dir2 := t.TempDir()
-	candidates, err := buildLocalCandidates("testpool", []string{dir1, dir2})
-	if err != nil {
-		t.Fatalf("buildLocalCandidates: %v", err)
-	}
-	if len(candidates) != 2 {
-		t.Errorf("expected 2 candidates, got %d", len(candidates))
-	}
-}
-
-func TestBuildLocalCandidates_Empty(t *testing.T) {
-	candidates, err := buildLocalCandidates("testpool", nil)
-	if err != nil {
-		t.Fatalf("buildLocalCandidates empty: %v", err)
-	}
-	if len(candidates) != 0 {
-		t.Errorf("expected 0 candidates for empty paths, got %d", len(candidates))
 	}
 }
 

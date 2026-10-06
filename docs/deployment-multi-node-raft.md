@@ -57,19 +57,18 @@ The trust domain is threaded into:
 
 ### Volume pool
 
-Each node must have the same pool path(s) configured:
+Each node must have the same pool path configured:
 
 ```yaml
 storage:
   volume_pools:
     - name: "default"
-      paths: ["/var/qrdb/pools/default"]   # Same path(s) on every node
-      strategy: "round_robin"               # round_robin (default) | least_utilization
+      path: "/var/qrdb/pools/default"   # Same path on every node
 ```
 
-The pool is homogeneous — operator must ensure the same mount point(s) exist
-on all nodes. A tenant's dedicated store is allocated under one of the pool's
-paths, so its replicas can resolve the same path on each node.
+The pool is homogeneous — operator must ensure the same mount point exists
+on all nodes. A tenant's dedicated store is allocated under the pool's
+path, so its replicas can resolve the same path on each node.
 
 ### Barrier and key management
 

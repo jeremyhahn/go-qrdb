@@ -35,9 +35,16 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,11 +54,43 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
+
+// certScopeUsers is the minimal certEnrollmentUsers double: accounts live
+// strictly in the tenant they were seeded under, so a lookup for the same
+// username in a different tenant always misses -- the whole premise of
+// TestGRPCCertsIssue_AccountOutsideCallerTenantIsRefused.
+type certScopeUsers struct {
+	byKey map[string]*user.User
+}
+
+func newCertScopeUsers() *certScopeUsers {
+	return &certScopeUsers{byKey: make(map[string]*user.User)}
+}
+
+func (u *certScopeUsers) seed(tenantID, username string, id uint64) {
+	u.byKey[tenantID+"/"+username] = &user.User{ID: id, Username: username, TenantID: tenantID}
+}
+
+func (u *certScopeUsers) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
+	if usr, ok := u.byKey[tenantID+"/"+username]; ok {
+		return usr, nil
+	}
+	return nil, &user.UserNotFoundError{Lookup: tenantID + "/" + username}
+}
+
+func (u *certScopeUsers) AddCertBinding(_ context.Context, userID uint64, _ string, _ int64) (*user.User, error) {
+	return &user.User{ID: userID}, nil
+}
 
 const (
 	certScopeTenantA = "acme"
@@ -100,8 +139,10 @@ func (b *certScopeBarrier) IsSealed() bool { return false }
 
 // certScopeGRPCFixture is one node: one shared store, one CA, two tenants.
 type certScopeGRPCFixture struct {
-	svc  *qrdbServiceServer
-	prov *cert.DefaultCertProvider
+	svc     *qrdbServiceServer
+	prov    *cert.DefaultCertProvider
+	anchors trustanchor.Registry
+	users   *certScopeUsers
 }
 
 // newCertScopeGRPCFixture wires the real provider behind the real middleware.
@@ -115,25 +156,57 @@ func newCertScopeGRPCFixture(t *testing.T) *certScopeGRPCFixture {
 	if err := prov.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize CA: %v", err)
 	}
+	anchors := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+	users := newCertScopeUsers()
 
 	roles := &mockRoleService{
 		resolveResult: []permission.Permission{
-			permission.CertsGenerate,
-			permission.CertsExport,
+			permission.CertsIssue,
+			permission.CertsEnroll,
 			permission.CertsRevoke,
 			permission.CertsRevokeCross,
 			permission.CertsList,
 			permission.CertsRead,
+			permission.TrustAnchorsAdd,
+			permission.TrustAnchorsList,
+			permission.TrustAnchorsRemove,
 		},
 	}
 
 	return &certScopeGRPCFixture{
 		svc: &qrdbServiceServer{
-			certProv: prov,
-			authMW:   authmw.New(rbac.New(roles)),
+			certProv:   prov,
+			certEnroll: service.NewCertEnrollmentService(prov, users, anchors),
+			authMW:     authmw.New(rbac.New(roles)),
 		},
-		prov: prov,
+		prov:    prov,
+		anchors: anchors,
+		users:   users,
 	}
+}
+
+// newTestCAPEM returns a fresh self-signed CA certificate, PEM-encoded, for
+// trust-anchor registration tests.
+func newTestCAPEM(t *testing.T, cn string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("CA key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CA cert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 // as builds the context the auth middleware would have built: the identity
@@ -147,7 +220,7 @@ func (f *certScopeGRPCFixture) as(tenantID, subject string) context.Context {
 
 func (f *certScopeGRPCFixture) issue(t *testing.T, tenantID, username string) string {
 	t.Helper()
-	bundle, err := f.prov.GenerateClientCert(context.Background(), &cert.GenerateRequest{
+	bundle, err := certtest.Generate(context.Background(), f.prov, &certtest.Request{
 		Username: username,
 		TenantID: tenantID,
 	})
@@ -242,44 +315,97 @@ func TestGRPCCertsRevoke_UnknownSerialPermittedToSystemTenant(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GenerateCert
+// TrustAnchorAdd
+//
+// GenerateCert is retired (server-side keygen is gone); the cross-tenant mint
+// it used to cover is replaced by the trust-anchor verbs, which are the only
+// certs-adjacent RPCs that still carry a tenant_id field of their own. IssueCert
+// and EnrollCert act on the caller's own tenant unconditionally (callerTenant),
+// so they have no cross-tenant request field to refuse in the first place; see
+// TestGRPCCertsIssue_AccountOutsideCallerTenantIsRefused for how THEY stay
+// tenant-confined.
 // ---------------------------------------------------------------------------
 
-// TestGRPCCertsGenerate_CrossTenantTargetIsRefused covers the cross-tenant
-// mint, which is the more serious half: tenant_id lands in the certificate's
-// Subject OU, and the mTLS authenticator reads that OU as the identity's
-// tenant.
-func TestGRPCCertsGenerate_CrossTenantTargetIsRefused(t *testing.T) {
+// TestGRPCTrustAnchorAdd_CrossTenantTargetIsRefused covers the cross-tenant
+// case: trust_anchors:add is ScopeSelfStrict, so a request naming another
+// tenant must be refused before any anchor is registered.
+func TestGRPCTrustAnchorAdd_CrossTenantTargetIsRefused(t *testing.T) {
 	f := newCertScopeGRPCFixture(t)
 
-	_, err := f.svc.GenerateCert(f.as(certScopeTenantA, "a-admin"), &pb.GenerateCertRequest{
-		Username: "b-user",
+	_, err := f.svc.TrustAnchorAdd(f.as(certScopeTenantA, "a-admin"), &pb.TrustAnchorAddRequest{
 		TenantId: certScopeTenantB,
+		CertsPem: string(newTestCAPEM(t, "globex-root")),
 	})
-	assertPermissionDenied(t, err, "tenant A minting into tenant B")
+	assertPermissionDenied(t, err, "tenant A registering an anchor for tenant B")
 
-	records, lerr := f.prov.ListCerts(context.Background(), certScopeTenantB)
+	anchors, lerr := f.anchors.List(context.Background(), certScopeTenantB)
 	if lerr != nil {
-		t.Fatalf("ListCerts: %v", lerr)
+		t.Fatalf("List: %v", lerr)
 	}
-	if len(records) != 0 {
-		t.Fatalf("the refusal left %d record(s) in tenant %s", len(records), certScopeTenantB)
+	if len(anchors) != 0 {
+		t.Fatalf("the refusal left %d anchor(s) in tenant %s", len(anchors), certScopeTenantB)
 	}
 }
 
-// TestGRPCCertsGenerate_OwnTenantStillSucceeds is the control.
-func TestGRPCCertsGenerate_OwnTenantStillSucceeds(t *testing.T) {
+// TestGRPCTrustAnchorAdd_OwnTenantStillSucceeds is the control.
+func TestGRPCTrustAnchorAdd_OwnTenantStillSucceeds(t *testing.T) {
 	f := newCertScopeGRPCFixture(t)
 
-	resp, err := f.svc.GenerateCert(f.as(certScopeTenantA, "a-admin"), &pb.GenerateCertRequest{
-		Username: "a-user",
+	resp, err := f.svc.TrustAnchorAdd(f.as(certScopeTenantA, "a-admin"), &pb.TrustAnchorAddRequest{
 		TenantId: certScopeTenantA,
+		CertsPem: string(newTestCAPEM(t, "acme-root")),
 	})
 	if err != nil {
-		t.Fatalf("own-tenant mint must keep working: %v", err)
+		t.Fatalf("own-tenant trust anchor add must keep working: %v", err)
+	}
+	if len(resp.GetAnchors()) != 1 {
+		t.Fatalf("expected 1 anchor, got %d", len(resp.GetAnchors()))
+	}
+}
+
+// TestGRPCCertsIssue_AccountOutsideCallerTenantIsRefused is IssueCert's
+// tenant-confinement case: the request carries no tenant_id field at all
+// (unlike GenerateCert's predecessor), and SignCertificate scopes the account
+// lookup to callerTenant(ctx) -- so a CSR naming a username that exists only
+// in ANOTHER tenant is refused as not found rather than minted against it.
+func TestGRPCCertsIssue_AccountOutsideCallerTenantIsRefused(t *testing.T) {
+	f := newCertScopeGRPCFixture(t)
+	f.users.seed(certScopeTenantA, "shared-name", 1)
+	_, csrPEM, err := certtest.NewCSR("shared-name")
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+
+	// "shared-name" exists in tenant A, not in tenant B: tenant B's caller
+	// must not be able to mint a certificate for it.
+	_, err = f.svc.IssueCert(f.as(certScopeTenantB, "b-admin"), &pb.IssueCertRequest{
+		Username: "shared-name",
+		CsrPem:   string(csrPEM),
+	})
+	if got := status.Code(err); got != codes.NotFound {
+		t.Fatalf("IssueCert across tenants: code = %s (%v), want NotFound", got, err)
+	}
+}
+
+// TestGRPCCertsIssue_OwnTenantAccountSucceeds is the control: the same
+// username, looked up in the caller's own tenant, issues normally.
+func TestGRPCCertsIssue_OwnTenantAccountSucceeds(t *testing.T) {
+	f := newCertScopeGRPCFixture(t)
+	f.users.seed(certScopeTenantA, "a-user", 7)
+	_, csrPEM, err := certtest.NewCSR("a-user")
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+
+	resp, err := f.svc.IssueCert(f.as(certScopeTenantA, "a-admin"), &pb.IssueCertRequest{
+		Username: "a-user",
+		CsrPem:   string(csrPEM),
+	})
+	if err != nil {
+		t.Fatalf("own-tenant issue must keep working: %v", err)
 	}
 	if resp.GetSerial() == "" {
-		t.Error("own-tenant mint returned no serial")
+		t.Error("own-tenant issue returned no serial")
 	}
 }
 

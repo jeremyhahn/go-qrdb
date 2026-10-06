@@ -22,6 +22,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // mountPointRemover is the real filesystem, except that the directories it is
@@ -133,7 +135,9 @@ func TestRemoveDataRoot_OtherRmdirFailuresAreReported(t *testing.T) {
 func TestDestroyTenant_FailedRemovalKeepsTheRecords(t *testing.T) {
 	ctx := context.Background()
 	rm := &mountPointRemover{mounts: map[string]bool{}, failAll: syscall.EIO}
-	reg, system := newPooledTestRegistry(t, WithDirectoryRemover(rm))
+	reg, _ := newPooledTestRegistry(t, WithDirectoryRemover(rm))
+	allocator, _ := reg.volumeResources()
+	reserveTestVolumeTenant(t, reg, "acme")
 	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatal(err)
@@ -144,8 +148,8 @@ func TestDestroyTenant_FailedRemovalKeepsTheRecords(t *testing.T) {
 	if !errors.As(err, &re) || !errors.Is(err, syscall.EIO) {
 		t.Fatalf("DestroyTenant = %v; want *TenantDataRootRemoveError", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); err != nil {
-		t.Fatalf("the record naming the DataRoot was dropped although its removal failed: %v", err)
+	if _, err := allocator.Resolve(ctx, "acme"); err != nil {
+		t.Fatalf("the catalog assignment naming the DataRoot was dropped although its removal failed: %v", err)
 	}
 
 	rm.mu.Lock()
@@ -157,8 +161,9 @@ func TestDestroyTenant_FailedRemovalKeepsTheRecords(t *testing.T) {
 	if _, err := os.Stat(dataRoot); !os.IsNotExist(err) {
 		t.Fatalf("the retry did not remove the DataRoot: %v", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); !errors.Is(err, ErrSecretNotFound) {
-		t.Fatalf("the record survived the successful retry: %v", err)
+	var notFound *volume.AssignmentNotFoundError
+	if _, err := allocator.Resolve(ctx, "acme"); !errors.As(err, &notFound) {
+		t.Fatalf("the catalog assignment survived the successful retry: %v", err)
 	}
 }
 

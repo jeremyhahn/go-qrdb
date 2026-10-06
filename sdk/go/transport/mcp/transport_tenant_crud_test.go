@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -31,13 +32,14 @@ import (
 
 func TestCreateTenant_Success(t *testing.T) {
 	svc := newMockTenantSvc()
-	tr, cleanup := connectTenantInProcess(t, svc)
+	tr, cleanup := connectTenantInProcess(t, svc, mcpapi.WithTenantOnboarding(onboardingFromTenant(svc)))
 	defer cleanup()
 
 	resp, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
 		ID:            "acme",
 		Name:          "Acme Corp",
 		IsolationType: transport.TenantIsolationBarrier,
+		AdminUsername: "admin",
 	})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)

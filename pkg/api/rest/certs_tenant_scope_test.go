@@ -31,24 +31,34 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // The two tenants every test in this file uses. Neither is the system tenant,
@@ -128,12 +138,69 @@ func (b *certScopeBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 
 func (b *certScopeBarrier) IsSealed() bool { return false }
 
+// newCertScopeCAPEM returns a fresh self-signed CA certificate, PEM-encoded,
+// for trust-anchor registration tests.
+func newCertScopeCAPEM(t *testing.T, cn string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("CA key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CA cert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// certScopeUsers is the minimal certEnrollmentUsers double: accounts live
+// strictly in the tenant they were seeded under, so a lookup for the same
+// username in a different tenant always misses.
+type certScopeUsers struct {
+	mu    sync.Mutex
+	byKey map[string]*user.User
+}
+
+func newCertScopeUsers() *certScopeUsers {
+	return &certScopeUsers{byKey: make(map[string]*user.User)}
+}
+
+func (u *certScopeUsers) seed(tenantID, username string, id uint64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.byKey[tenantID+"/"+username] = &user.User{ID: id, Username: username, TenantID: tenantID}
+}
+
+func (u *certScopeUsers) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if usr, ok := u.byKey[tenantID+"/"+username]; ok {
+		return usr, nil
+	}
+	return nil, &user.UserNotFoundError{Lookup: tenantID + "/" + username}
+}
+
+func (u *certScopeUsers) AddCertBinding(_ context.Context, userID uint64, _ string, _ int64) (*user.User, error) {
+	return &user.User{ID: userID}, nil
+}
+
 // certScopeFixture is one node: one shared store, one CA, two tenants.
 type certScopeFixture struct {
-	srv    *Server
-	prov   *cert.DefaultCertProvider
-	store  *kvstoretest.GuardedMemoryStore
-	caller *certScopeAuthenticator
+	srv     *Server
+	prov    *cert.DefaultCertProvider
+	store   *kvstoretest.GuardedMemoryStore
+	caller  *certScopeAuthenticator
+	users   *certScopeUsers
+	anchors trustanchor.Registry
 }
 
 // newCertScopeFixture wires the real cert provider behind the real REST
@@ -159,12 +226,15 @@ func newCertScopeFixture(t *testing.T) *certScopeFixture {
 	roles := &mockRoleService{
 		resolvePermissionsFn: func(context.Context, []string) ([]permission.Permission, error) {
 			return []permission.Permission{
-				permission.CertsGenerate,
-				permission.CertsExport,
+				permission.CertsIssue,
+				permission.CertsEnroll,
 				permission.CertsRevoke,
 				permission.CertsRevokeCross,
 				permission.CertsList,
 				permission.CertsRead,
+				permission.TrustAnchorsAdd,
+				permission.TrustAnchorsList,
+				permission.TrustAnchorsRemove,
 			}, nil
 		},
 	}
@@ -172,13 +242,17 @@ func newCertScopeFixture(t *testing.T) *certScopeFixture {
 	caller := &certScopeAuthenticator{}
 	caller.as(certScopeTenantA, "a-admin")
 
+	users := newCertScopeUsers()
+	anchors := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+
 	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithCertProvider(prov),
+		WithCertEnrollment(service.NewCertEnrollmentService(prov, users, anchors)),
 		WithAuthMiddleware(mw),
 	)
 
-	return &certScopeFixture{srv: srv, prov: prov, store: store, caller: caller}
+	return &certScopeFixture{srv: srv, prov: prov, store: store, caller: caller, users: users, anchors: anchors}
 }
 
 // do drives one request through the complete chain: authenticate, bind the
@@ -204,7 +278,7 @@ func (f *certScopeFixture) do(t *testing.T, method, path string, body any) *http
 // depending on the very authorization path it is about to exercise.
 func (f *certScopeFixture) issue(t *testing.T, tenantID, username string) string {
 	t.Helper()
-	bundle, err := f.prov.GenerateClientCert(context.Background(), &cert.GenerateRequest{
+	bundle, err := certtest.Generate(context.Background(), f.prov, &certtest.Request{
 		Username: username,
 		TenantID: tenantID,
 	})
@@ -334,117 +408,120 @@ func TestCertsRevoke_SystemTenantCannotRevokeAnotherTenantsSerial(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// POST /certs/generate
+// POST /certs/issue
+//
+// GenerateCert (server-side keygen) is retired. IssueCert carries no
+// tenant_id of its own -- the request names only a username and a CSR, and
+// SignCertificate scopes the account lookup to callerTenant(ctx) -- so there
+// is no cross-tenant request field left to refuse here. What replaces the
+// former mint-into-another-tenant case is that the account must exist in the
+// CALLER's own tenant: a CSR naming a username that exists only in another
+// tenant is refused as not found, never minted against it.
 // ---------------------------------------------------------------------------
 
-// TestCertsGenerate_CrossTenantTargetIsRefused covers the sibling permission
-// the issue asked to audit, and it is the more serious of the two.
+// TestCertsIssue_AccountOutsideCallerTenantIsRefused is IssueCert's
+// tenant-confinement case.
+func TestCertsIssue_AccountOutsideCallerTenantIsRefused(t *testing.T) {
+	f := newCertScopeFixture(t)
+	f.users.seed(certScopeTenantA, "shared-name", 1)
+	_, csrPEM, err := certtest.NewCSR("shared-name")
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+
+	// "shared-name" exists in tenant A, not in tenant B: tenant B's caller
+	// must not be able to mint a certificate for it.
+	f.caller.as(certScopeTenantB, "b-admin")
+	rec := f.do(t, http.MethodPost, "/certs/issue", map[string]string{
+		"username": "shared-name",
+		"csrPEM":   string(csrPEM),
+	})
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: tenant B must not mint a certificate for an account that exists only in tenant A (body %q)",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// TestCertsIssue_OwnTenantAccountSucceeds is the control.
+func TestCertsIssue_OwnTenantAccountSucceeds(t *testing.T) {
+	f := newCertScopeFixture(t)
+	f.users.seed(certScopeTenantA, "a-user", 7)
+	_, csrPEM, err := certtest.NewCSR("a-user")
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+
+	f.caller.as(certScopeTenantA, "a-admin")
+	rec := f.do(t, http.MethodPost, "/certs/issue", map[string]string{
+		"username": "a-user",
+		"csrPEM":   string(csrPEM),
+	})
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: an own-tenant issue must keep working (body %q)",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tenants/{id}/trust-anchors (TrustAnchorAdd)
 //
-// The handler passes the request body's tenantID straight into
-// GenerateClientCert, which writes it as the certificate's Subject OU. The mTLS
-// authenticator derives the identity's tenant from exactly that OU
-// (pkg/auth/mtls.go, the legacy fallback). So an unchecked cross-tenant mint is
-// not a bookkeeping error — it hands the caller a CA-signed credential that
-// authenticates as the victim tenant.
-func TestCertsGenerate_CrossTenantTargetIsRefused(t *testing.T) {
+// trust_anchors:add is the certs-adjacent verb that still carries a tenant_id
+// of its own (the {id} path segment) -- the cross-tenant case GenerateCert
+// used to cover.
+// ---------------------------------------------------------------------------
+
+// TestTrustAnchorAdd_CrossTenantTargetIsRefused covers the cross-tenant mint
+// into another tenant's trust store.
+func TestTrustAnchorAdd_CrossTenantTargetIsRefused(t *testing.T) {
 	f := newCertScopeFixture(t)
 
 	f.caller.as(certScopeTenantA, "a-admin")
-	rec := f.do(t, http.MethodPost, "/certs/generate", map[string]string{
-		"username": "b-user",
-		"tenantID": certScopeTenantB,
+	rec := f.do(t, http.MethodPost, "/v1/tenants/"+certScopeTenantB+"/trust-anchors", map[string]string{
+		"certs_pem": string(newCertScopeCAPEM(t, "globex-root")),
 	})
 
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: tenant %s must not mint a certificate bound to tenant %s (body %q)",
+		t.Fatalf("status = %d, want 403: tenant %s must not register a trust anchor for tenant %s (body %q)",
 			rec.Code, certScopeTenantA, certScopeTenantB, rec.Body.String())
 	}
 
-	records, err := f.prov.ListCerts(context.Background(), certScopeTenantB)
+	anchors, err := f.anchors.List(context.Background(), certScopeTenantB)
 	if err != nil {
-		t.Fatalf("ListCerts(%s): %v", certScopeTenantB, err)
+		t.Fatalf("List(%s): %v", certScopeTenantB, err)
 	}
-	if len(records) != 0 {
-		t.Fatalf("the refusal left %d record(s) in tenant %s", len(records), certScopeTenantB)
-	}
-}
-
-// TestCertsGenerate_CrossTenantMintCarriesVictimTenantInOU makes the
-// consequence explicit rather than asserted in prose: if the mint is allowed,
-// the resulting certificate's OU — and therefore the tenant every mTLS
-// authentication derives from it — is the victim's.
-func TestCertsGenerate_CrossTenantMintCarriesVictimTenantInOU(t *testing.T) {
-	f := newCertScopeFixture(t)
-
-	f.caller.as(certScopeTenantA, "a-admin")
-	rec := f.do(t, http.MethodPost, "/certs/generate", map[string]string{
-		"username": "b-user",
-		"tenantID": certScopeTenantB,
-	})
-
-	if rec.Code == http.StatusCreated {
-		var bundle certBundleResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		block, _ := pem.Decode([]byte(bundle.CertPEM))
-		if block == nil {
-			t.Fatal("minted bundle carried no PEM")
-		}
-		minted, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			t.Fatalf("parse minted cert: %v", err)
-		}
-		ou := ""
-		if len(minted.Subject.OrganizationalUnit) > 0 {
-			ou = minted.Subject.OrganizationalUnit[0]
-		}
-		t.Fatalf("tenant %s minted a CA-signed certificate whose OU is %q; the mTLS authenticator reads that OU as the identity's tenant, so this is a credential for tenant %s",
-			certScopeTenantA, ou, certScopeTenantB)
-	}
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (body %q)", rec.Code, rec.Body.String())
+	if len(anchors) != 0 {
+		t.Fatalf("the refusal left %d anchor(s) in tenant %s", len(anchors), certScopeTenantB)
 	}
 }
 
-// TestCertsGenerate_OwnTenantStillSucceeds is the control.
-func TestCertsGenerate_OwnTenantStillSucceeds(t *testing.T) {
+// TestTrustAnchorAdd_OwnTenantStillSucceeds is the control.
+func TestTrustAnchorAdd_OwnTenantStillSucceeds(t *testing.T) {
 	f := newCertScopeFixture(t)
 
 	f.caller.as(certScopeTenantA, "a-admin")
-	rec := f.do(t, http.MethodPost, "/certs/generate", map[string]string{
-		"username": "a-user",
-		"tenantID": certScopeTenantA,
+	rec := f.do(t, http.MethodPost, "/v1/tenants/"+certScopeTenantA+"/trust-anchors", map[string]string{
+		"certs_pem": string(newCertScopeCAPEM(t, "acme-root")),
 	})
 
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201: an own-tenant mint must keep working (body %q)",
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200/201: an own-tenant trust anchor add must keep working (body %q)",
 			rec.Code, rec.Body.String())
 	}
 }
 
-// TestCertsGenerate_SystemTenantCannotTargetAnotherTenant: the system tenant
-// mints for itself only. A certificate it minted for tenant B's user would
-// authenticate as that user, so certs:generate is ScopeSelfStrict.
-func TestCertsGenerate_SystemTenantCannotTargetAnotherTenant(t *testing.T) {
+// TestTrustAnchorAdd_SystemTenantCannotTargetAnotherTenant: the system tenant
+// registers anchors for itself only.
+func TestTrustAnchorAdd_SystemTenantCannotTargetAnotherTenant(t *testing.T) {
 	f := newCertScopeFixture(t)
 
 	f.caller.as(tenantid.System, "platform-op")
-	rec := f.do(t, http.MethodPost, "/certs/generate", map[string]string{
-		"username": "b-user",
-		"tenantID": certScopeTenantB,
+	rec := f.do(t, http.MethodPost, "/v1/tenants/"+certScopeTenantB+"/trust-anchors", map[string]string{
+		"certs_pem": string(newCertScopeCAPEM(t, "globex-root")),
 	})
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: the platform operator minted for another tenant (body %q)",
-			rec.Code, rec.Body.String())
-	}
-
-	rec = f.do(t, http.MethodPost, "/certs/generate", map[string]string{
-		"username": "op",
-		"tenantID": tenantid.System,
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201: the platform operator mints for its own tenant (body %q)",
+		t.Fatalf("status = %d, want 403: the platform operator registered an anchor for another tenant (body %q)",
 			rec.Code, rec.Body.String())
 	}
 }

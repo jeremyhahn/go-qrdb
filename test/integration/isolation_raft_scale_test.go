@@ -159,19 +159,13 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
+	createVolumePoolREST(t, sysClient, leaderPort, "default")
+
 	// ---------------------------------------------------------------------
 	// Tenant + role + user, mirroring TestIsolationRaft_EndToEnd.
 	// ---------------------------------------------------------------------
 	t.Logf("creating tenant %s with IsolationRaft + barrier_auto_unseal", scaleFoundationTenantID)
-	tenantBody, tenantStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id":                  scaleFoundationTenantID,
-			"name":                "Scale Test Tenant",
-			"isolation_type":      "raft",
-			"barrier_auto_unseal": true,
-		},
-	)
+	tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, scaleFoundationTenantID, "Scale Test Tenant")
 	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tenantStatus, tenantBody)
 	}
@@ -833,15 +827,12 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
+	createVolumePoolREST(t, sysClient, leaderPort, "default")
+
 	// ---------------------------------------------------------------------
 	// Tenant + role + user.
 	// ---------------------------------------------------------------------
-	_, tStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id": restartSurvivalTenantID, "name": "Scale Restart Test Tenant",
-			"isolation_type": "raft", "barrier_auto_unseal": true,
-		})
+	_, tStatus := createRaftTenant(t, sysClient, leaderPort, restartSurvivalTenantID, "Scale Restart Test Tenant")
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d", tStatus)
 	}

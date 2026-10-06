@@ -67,9 +67,13 @@ var targetResolvedOperations = map[string]struct{}{
 	"ListRoles":                    {},
 	"GetRoleByName":                {},
 	"ReconcileBuiltInRoles":        {},
-	"GenerateCert":                 {},
 	"RevokeCert":                   {},
 	"ListCerts":                    {},
+	"IssueCert":                    {},
+	"EnrollCert":                   {},
+	"AddTrustAnchors":              {},
+	"ListTrustAnchors":             {},
+	"RemoveTrustAnchor":            {},
 }
 
 // identityGatedOperations are the per-tenant, per-database, and node-level
@@ -143,10 +147,15 @@ var publicOperations = map[string]struct{}{
 // database-scoped transport (every one of whose requests is gated in turn
 // by the SAME registry and helpers -- database_scope.go copies authMW onto
 // the clone), and the "Phase 3 provider" accessors (RBACClient,
-// FactorClient, LoginClient, SessionClient, VolumePoolClient, AuditClient,
-// PermissionClient, SQLClient) that construct and return a sub-client
-// rather than perform an operation themselves. The sub-clients those
-// accessors return ARE covered, by subClientCoverage below.
+// FactorClient, LoginClient, SessionClient, AuditClient, PermissionClient,
+// SQLClient) that construct and return a sub-client rather than perform an
+// operation themselves. The sub-clients those accessors return ARE covered,
+// by subClientCoverage below. VolumePoolClient is NOT one of these:
+// transport.VolumePoolClient is implemented directly on *Transport
+// (volume_pool.go), with no accessor method of that name at all, so its six
+// methods (ListPools, GetPool, CreatePool, UpdatePool, DeletePool,
+// ListPoolTenants) are bare keys in operationPermissions like any other
+// ambient-self operation.
 var lifecycleOperations = map[string]struct{}{
 	"Connect":              {},
 	"Close":                {},
@@ -157,7 +166,6 @@ var lifecycleOperations = map[string]struct{}{
 	"FactorClient":         {},
 	"LoginClient":          {},
 	"SessionClient":        {},
-	"VolumePoolClient":     {},
 	"AuditClient":          {},
 	"PermissionClient":     {},
 	"SQLClient":            {},

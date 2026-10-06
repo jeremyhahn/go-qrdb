@@ -87,7 +87,7 @@ func (r *BarrierRegistry) directoryRemover() DirectoryRemover {
 // record naming another node's path -- or any path a caller was handed --
 // can never delete it.
 func (r *BarrierRegistry) RemoveDataRoot(ctx context.Context, root string) error {
-	if err := r.RequireInsideLocalPool(ctx, root); err != nil {
+	if err := r.RequirePathInsideLocalPools(ctx, root); err != nil {
 		return err
 	}
 	d := r.directoryRemover()
@@ -121,8 +121,15 @@ func (r *BarrierRegistry) RemoveDataRoot(ctx context.Context, root string) error
 	}
 }
 
-// RequireInsideLocalPool returns *DataRootOutsideLocalRootsError unless path
-// is strictly inside one of this node's own volume-pool paths.
+// RequirePathInsideLocalPools returns *DataRootOutsideLocalRootsError unless
+// path is strictly inside one of this node's own volume-pool paths.
+//
+// This is distinct from RequireInsideLocalPool (barrier_registry.go), which
+// resolves a TENANT ID to its local directory through the replicated
+// catalog; this function instead validates an already-known PATH -- the
+// guard RemoveDataRoot and RaftBackendFactory.CloseAndPurge need before
+// deleting anything, so a path from any source (a stale record, a caller,
+// another node's mistake) can never reach outside this node's own pools.
 //
 // The path must be absolute and already clean -- a ".." component, a
 // trailing separator or a doubled one is refused rather than normalised --
@@ -138,7 +145,7 @@ func (r *BarrierRegistry) RemoveDataRoot(ctx context.Context, root string) error
 //
 // A pool path that cannot be resolved contains nothing; a path whose
 // resolution fails for any reason other than not existing is refused.
-func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, path string) error {
+func (r *BarrierRegistry) RequirePathInsideLocalPools(ctx context.Context, path string) error {
 	bases, err := r.PoolBasePaths(ctx)
 	if err != nil {
 		return err

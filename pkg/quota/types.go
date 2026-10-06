@@ -179,6 +179,15 @@ type Entitlements struct {
 	// It does NOT govern the "use the shared system barrier" option, which is
 	// gated by the SystemBarrierQuota (see Quotas).
 	AllowedBarrierModes []string `json:"allowed_barrier_modes,omitempty"`
+
+	// AllowedVolumePools lists the named volume pools (pkg/volume's catalog)
+	// a "volume" or "raft" tenant may be placed on. The FIRST entry is the
+	// tenant's default pool, used when a create or move names none. An
+	// EMPTY list entitles no pool: placement is fail-closed, matching
+	// AllowedIsolationModes rather than AllowedBarrierModes, because there
+	// is no software default pool to fall back to. See decision D1 in
+	// docs/volume-pools/architecture.md.
+	AllowedVolumePools []string `json:"allowed_volume_pools,omitempty"`
 }
 
 // defaultBarrierModes are the built-in software sealing strategies an isolated
@@ -216,6 +225,30 @@ func (e *Entitlements) AllowsBarrierMode(mode string) bool {
 		}
 	}
 	return false
+}
+
+// AllowsVolumePool reports whether a tenant holding these entitlements may
+// be placed on the named pool. Fail-closed: an empty AllowedVolumePools
+// entitles no pool, including "" and the empty name itself.
+func (e *Entitlements) AllowsVolumePool(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, p := range e.AllowedVolumePools {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultVolumePool returns the tenant's default pool -- the first entry of
+// AllowedVolumePools -- and false when the tenant is entitled to none.
+func (e *Entitlements) DefaultVolumePool() (string, bool) {
+	if len(e.AllowedVolumePools) == 0 {
+		return "", false
+	}
+	return e.AllowedVolumePools[0], true
 }
 
 // AllowsFeature reports whether the named feature is enabled. Unknown feature

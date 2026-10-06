@@ -20,12 +20,13 @@ import (
 	"crypto/x509"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -93,10 +94,12 @@ func TestKeyBLogin_AuthenticatesOnEveryRemoteTransport(t *testing.T) {
 // NO client CA statically: the only path by which a client certificate can
 // ever verify is the dynamic Key B trust pool. It creates tenant acme, a role
 // granting kv:put/kv:get, and a non-enrolled user "alice" in acme, then mints
-// alice's client certificate through the node's own Key B CertProvider --
-// exactly the `certs generate` / `ca issue` path -- and returns it alongside
-// the root CA pool a test client needs to verify the node's OWN server leaf.
-func bootKeyBLoginCell(t *testing.T, tk transportKind) (*node.Node, *x509.CertPool, *cert.CertBundle) {
+// alice's client certificate through the node's own Key B cert enrolment
+// service from a LOCALLY generated CSR (certtest.NewCSR) -- exactly the
+// `certs issue` / `ca issue` path, where the server never sees a private key
+// -- and returns it alongside the root CA pool a test client needs to verify
+// the node's OWN server leaf.
+func bootKeyBLoginCell(t *testing.T, tk transportKind) (*node.Node, *x509.CertPool, *certtest.Bundle) {
 	t.Helper()
 
 	certDir := t.TempDir()
@@ -188,12 +191,24 @@ func bootKeyBLoginCell(t *testing.T, tk transportKind) (*node.Node, *x509.CertPo
 		t.Fatalf("create user: %v", err)
 	}
 
-	if svc.CertProv == nil {
-		t.Fatal("the node has no certificate provider (Key B)")
+	if svc.CertEnrollment == nil {
+		t.Fatal("the node has no certificate enrolment service (Key B)")
 	}
-	bundle, err := svc.CertProv.GenerateClientCert(ctx, &cert.GenerateRequest{Username: "alice", TenantID: "acme"})
+	keyPEM, csrPEM, err := certtest.NewCSR("alice")
 	if err != nil {
-		t.Fatalf("GenerateClientCert (Key B): %v", err)
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
+	enrolled, err := svc.CertEnrollment.SignCertificate(ctx, &service.SignCertificateRequest{
+		TenantID: "acme", Username: "alice", CSRPEM: csrPEM,
+	})
+	if err != nil {
+		t.Fatalf("SignCertificate (Key B): %v", err)
+	}
+	bundle := &certtest.Bundle{
+		CertPEM:  enrolled.CertPEM,
+		KeyPEM:   keyPEM,
+		Serial:   enrolled.Serial,
+		NotAfter: enrolled.NotAfter,
 	}
 
 	return n, ca.Pool, bundle

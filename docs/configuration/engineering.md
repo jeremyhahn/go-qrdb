@@ -161,7 +161,8 @@ Viper-bound, equivalent to their flags:
 `server`, `protocols`, `raft`, `storage`, `tls`, `logging`, `discovery`,
 `mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `cors`,
 `databases` (with per-database `mysql`, `postgresql` and `sql.concurrency`),
-`embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`, `mode`.
+`embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`,
+`transport`, `import_session`, `mode`.
 There is no `audit:` section (audit logging is always on) and no per-database
 etcd key (etcd is enabled through `qrdb database create --etcd`, not YAML).
 

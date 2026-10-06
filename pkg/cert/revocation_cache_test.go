@@ -276,7 +276,7 @@ func TestRevocationCache_AgainstRealProvider(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}

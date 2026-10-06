@@ -137,6 +137,33 @@ func (e *FileReadError) Unwrap() error {
 	return e.Err
 }
 
+// KeyGenerationError is returned when a local key or certificate signing
+// request cannot be generated.
+type KeyGenerationError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *KeyGenerationError) Error() string {
+	return "qrdb: failed to generate a key and certificate signing request: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *KeyGenerationError) Unwrap() error {
+	return e.Err
+}
+
+// MissingOutDirError is returned when a command that would generate a
+// private key is given nowhere to write it.
+type MissingOutDirError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *MissingOutDirError) Error() string {
+	return "qrdb: --out is required: " + e.Reason
+}
+
 // FileWriteError is returned when a file cannot be written.
 type FileWriteError struct {
 	Path string
@@ -166,22 +193,6 @@ func (e *DirectoryCreateError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *DirectoryCreateError) Unwrap() error {
-	return e.Err
-}
-
-// PKCS12DecodeError is returned when base64 decoding of a PKCS#12
-// archive fails.
-type PKCS12DecodeError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *PKCS12DecodeError) Error() string {
-	return "qrdb: failed to decode PKCS#12 data: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *PKCS12DecodeError) Unwrap() error {
 	return e.Err
 }
 
@@ -378,4 +389,15 @@ type AuditPathOutsideDataDirError struct {
 // Error returns a human-readable description.
 func (e *AuditPathOutsideDataDirError) Error() string {
 	return "embedded: audit trail path " + strconv.Quote(e.Path) + " must be relative to the data directory and stay inside it"
+}
+
+// ExportCertNilInputError is returned by CertBinding.Export when called
+// with a nil input. Export builds its PKCS#12 archive entirely locally, so
+// there is no connection to be unavailable here -- a nil input is simply a
+// malformed call.
+type ExportCertNilInputError struct{}
+
+// Error returns a human-readable description.
+func (e *ExportCertNilInputError) Error() string {
+	return "qrdb: cert export input must not be nil"
 }

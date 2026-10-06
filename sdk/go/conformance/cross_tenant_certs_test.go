@@ -15,140 +15,167 @@
 package conformance
 
 import (
+	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// TestCerts_SystemAdminCannotActOnAnotherTenant: the system tenant's Admin
-// can neither mint a client certificate for acme's user, nor list acme's
-// certificates, nor revoke one of them. It can still mint for its own tenant.
+// Cross-tenant certificate confinement under IssueCert/EnrollCert
+// (go-qrdb tenant-onboarding refactor).
 //
-// The embedded cell is absent because sdk/go/node does not wire a certificate
-// provider into the in-process client; the embedded transport's confinement is
-// proven in sdk/go/transport/embedded (TestCertConfinement_*).
-func TestCerts_SystemAdminCannotActOnAnotherTenant(t *testing.T) {
-	for _, tk := range userNotFoundTransports {
-		if !tk.remote() {
-			continue
-		}
-		t.Run(string(tk), func(t *testing.T) {
-			c := bootConfinedCell(t, tk, tenantid.System)
-			certs := c.client.Certs()
-			if certs == nil {
-				t.Fatalf("%s: no cert client", tk)
-			}
+// Server keygen (GenerateCert, which took an explicit TenantID) is retired.
+// IssueCert and EnrollCert both bind to an EXISTING account, which the
+// service looks up by (CALLER'S OWN TENANT, Username) -- the tenant comes
+// from the caller's authenticated context (tenant.Confine), never from a
+// request field, so there is no parameter left to "ask for another
+// tenant's" the way the old test proved GenerateCert's TenantID was
+// refused.
+//
+// What replaces it: naming an account that is NOT in the caller's own
+// tenant -- whether because it belongs to a DIFFERENT tenant or because it
+// does not exist anywhere -- must be refused. Both collapse to the exact
+// same server-side classification (*user.UserNotFoundError, go-qrdb#343):
+// a caller cannot distinguish "exists elsewhere" from "exists nowhere" by
+// the shape of the refusal, which is itself the confinement property this
+// file proves.
+//
+// The embedded cell is included: sdk/go/node wires a real CertEnrollment
+// service into the in-process client (unlike the old CertProv-only wiring
+// TestCerts_SystemAdminCannotActOnAnotherTenant's comment described), so
+// embedded is on the same axis as every remote transport here.
 
-			own, err := certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
-				Username: "operator", TenantID: tenantid.System,
-			})
-			if err != nil {
-				t.Fatalf("%s: GenerateCert for the caller's own tenant: %v", tk, err)
-			}
-			if own.Serial == "" {
-				t.Fatalf("%s: own-tenant certificate carries no serial", tk)
-			}
+// certAccountRefusals is what IssueCert/EnrollCert must answer, on each
+// transport, when the named account does not resolve within the caller's
+// own tenant. Every transport is listed, so a new one declares its
+// classification instead of inheriting a default (same discipline as
+// crossTenantRefusals and wantClassByTransport).
+var certAccountRefusals = map[transportKind]func(error) bool{
+	embeddedTransport: isUserNotFound,
+	restTransport:     isUserNotFound,
+	grpcTransport:     isUserNotFound,
+	unixTransport:     isUserNotFound,
+	quicTransport:     isUserNotFound,
+	mcpTransport:      isUserNotFound,
+}
 
-			_, err = certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
-				Username: "alice", TenantID: confineAcme,
-			})
-			assertCrossTenantRefused(t, tk, "GenerateCert for acme's user", err)
+// isUserNotFound reports whether err is the SDK's typed account refusal.
+// Every transport answers it the same way: the only subject either verb can
+// fail to find is the account it names, so each SDK transport types its
+// not-found as *transport.UserNotFoundError rather than the generic
+// key-not-found a NotFound means elsewhere.
+func isUserNotFound(err error) bool {
+	var unf *transport.UserNotFoundError
+	return errors.As(err, &unf)
+}
 
-			_, err = certs.ListCerts(c.ctx, confineAcme)
-			assertCrossTenantRefused(t, tk, "ListCerts for acme", err)
-
-			acmeSerial := issueThroughNode(t, c.node, "bob", confineAcme)
-			_, err = certs.RevokeCert(c.ctx, acmeSerial)
-			assertCrossTenantRefused(t, tk, "RevokeCert of acme's certificate", err)
-
-			// The deny-by-serial revocation of a serial no tenant owns is the
-			// system tenant's CA-operator act, and survives the confinement.
-			denied, err := certs.RevokeCert(c.ctx, "0a0b0c0d0e0f")
-			if err != nil {
-				t.Fatalf("%s: the system Admin's deny-by-serial revocation: %v", tk, err)
-			}
-			if denied.RecordFound {
-				t.Errorf("%s: a serial no tenant owns reported a record", tk)
-			}
-		})
+// assertAccountRefused checks err is tk's refusal for an account that does
+// not resolve in the caller's own tenant.
+func assertAccountRefused(t *testing.T, tk transportKind, verb string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: %s: the request succeeded", tk, verb)
+		return
+	}
+	refused, ok := certAccountRefusals[tk]
+	if !ok {
+		t.Fatalf("%s declares no account-not-found refusal for certificate enrolment", tk)
+	}
+	if !refused(err) {
+		t.Errorf("%s: %s: %T %v is not %s's not-found refusal", tk, verb, err, err, tk)
 	}
 }
 
-// TestCerts_TenantAdminCannotActOnAnotherTenant: acme's Admin mints for acme
-// and is refused globex.
-func TestCerts_TenantAdminCannotActOnAnotherTenant(t *testing.T) {
+// seedCertAccount creates username in tenantID directly through the node's
+// own user service, the way an operator would have provisioned the account
+// before a holder ever asks for a certificate.
+func seedCertAccount(t *testing.T, n *node.Node, tenantID, username string) {
+	t.Helper()
+	if _, err := n.Services().User.CreateUser(boundedCtx(t), &user.CreateUserRequest{
+		WithoutEmailLoginKey: true,
+		Username:             username,
+		TenantID:             tenantID,
+	}); err != nil {
+		t.Fatalf("seed account %s/%s: %v", tenantID, username, err)
+	}
+}
+
+// TestIssueCert_ConfinedToCallersOwnTenant: acme's Admin can IssueCert for an
+// account that exists in acme, but is refused for one that exists only in
+// globex, and refused identically for one that exists nowhere at all.
+func TestIssueCert_ConfinedToCallersOwnTenant(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
-		if !tk.remote() {
-			continue
-		}
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootConfinedCell(t, tk, confineAcme)
 			certs := c.client.Certs()
 			if certs == nil {
 				t.Fatalf("%s: no cert client", tk)
 			}
+			seedCertAccount(t, c.node, confineAcme, "alice")
+			seedCertAccount(t, c.node, confineGlobex, "dave")
 
-			own, err := certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
-				Username: "alice", TenantID: confineAcme,
+			_, csrPEM, err := certtest.NewCSR("alice")
+			if err != nil {
+				t.Fatalf("certtest.NewCSR: %v", err)
+			}
+			own, err := certs.IssueCert(c.ctx, &transport.IssueCertRequest{
+				Username: "alice", CSRPEM: string(csrPEM),
 			})
 			if err != nil {
-				t.Fatalf("%s: GenerateCert for the caller's own tenant: %v", tk, err)
+				t.Fatalf("%s: IssueCert for the caller's own tenant's account: %v", tk, err)
+			}
+			if own.Thumbprint == "" {
+				t.Fatalf("%s: own-tenant certificate carries no thumbprint", tk)
 			}
 
-			// acme lists and revokes its own certificates.
-			listed, err := certs.ListCerts(c.ctx, confineAcme)
+			_, otherCSR, err := certtest.NewCSR("dave")
 			if err != nil {
-				t.Fatalf("%s: ListCerts for the caller's own tenant: %v", tk, err)
+				t.Fatalf("certtest.NewCSR: %v", err)
 			}
-			found := false
-			for _, rec := range listed.Certs {
-				found = found || rec.Serial == own.Serial
-			}
-			if !found {
-				t.Fatalf("%s: acme's listing %+v lacks the certificate it just issued (%s)", tk, listed.Certs, own.Serial)
-			}
-			revoked, err := certs.RevokeCert(c.ctx, own.Serial)
-			if err != nil {
-				t.Fatalf("%s: RevokeCert of the caller's own certificate: %v", tk, err)
-			}
-			if !revoked.RecordFound {
-				t.Errorf("%s: revoking acme's own certificate reported no record", tk)
-			}
-
-			_, err = certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
-				Username: "carol", TenantID: confineGlobex,
+			_, err = certs.IssueCert(c.ctx, &transport.IssueCertRequest{
+				Username: "dave", CSRPEM: string(otherCSR),
 			})
-			assertCrossTenantRefused(t, tk, "GenerateCert for globex's user", err)
+			assertAccountRefused(t, tk, "IssueCert for globex's account", err)
 
-			_, err = certs.ListCerts(c.ctx, confineGlobex)
-			assertCrossTenantRefused(t, tk, "ListCerts for globex", err)
-
-			// A serial no tenant owns is the deny-by-serial CA-operator act,
-			// and a tenant Admin may not write it.
-			_, err = certs.RevokeCert(c.ctx, "0a0b0c0d0e0f")
-			assertCrossTenantRefused(t, tk, "deny-by-serial revocation from a tenant", err)
-
-			globexSerial := issueThroughNode(t, c.node, "dave", confineGlobex)
-			_, err = certs.RevokeCert(c.ctx, globexSerial)
-			assertCrossTenantRefused(t, tk, "RevokeCert of globex's certificate", err)
+			_, nobodyCSR, err := certtest.NewCSR("nobody")
+			if err != nil {
+				t.Fatalf("certtest.NewCSR: %v", err)
+			}
+			_, err = certs.IssueCert(c.ctx, &transport.IssueCertRequest{
+				Username: "nobody-at-all", CSRPEM: string(nobodyCSR),
+			})
+			assertAccountRefused(t, tk, "IssueCert for a nonexistent account", err)
 		})
 	}
 }
 
-// issueThroughNode mints a certificate through the node's own provider, the
-// way a tenant's own Admin would have, and returns its serial.
-func issueThroughNode(t *testing.T, n *node.Node, username, tenantID string) string {
-	t.Helper()
-	prov := n.Services().CertProv
-	if prov == nil {
-		t.Fatal("the node has no certificate provider")
+// TestEnrollCert_ConfinedToCallersOwnTenant: the same confinement for
+// EnrollCert's bring-your-own path. The offered certificate is deliberately
+// not a valid chain: the account lookup -- the refusal under test -- happens
+// BEFORE chain verification (pkg/service.CertEnrollmentService), so a
+// malformed bring-your-own certificate never masks it.
+func TestEnrollCert_ConfinedToCallersOwnTenant(t *testing.T) {
+	for _, tk := range userNotFoundTransports {
+		t.Run(string(tk), func(t *testing.T) {
+			c := bootConfinedCell(t, tk, confineAcme)
+			certs := c.client.Certs()
+			if certs == nil {
+				t.Fatalf("%s: no cert client", tk)
+			}
+			seedCertAccount(t, c.node, confineGlobex, "dave")
+
+			_, err := certs.EnrollCert(c.ctx, &transport.EnrollCertRequest{
+				Username: "dave", CertPEM: "not-a-real-certificate",
+			})
+			assertAccountRefused(t, tk, "EnrollCert for globex's account", err)
+
+			_, err = certs.EnrollCert(c.ctx, &transport.EnrollCertRequest{
+				Username: "nobody-at-all", CertPEM: "not-a-real-certificate",
+			})
+			assertAccountRefused(t, tk, "EnrollCert for a nonexistent account", err)
+		})
 	}
-	bundle, err := prov.GenerateClientCert(boundedCtx(t), &cert.GenerateRequest{Username: username, TenantID: tenantID})
-	if err != nil {
-		t.Fatalf("issue %s/%s: %v", tenantID, username, err)
-	}
-	return bundle.Serial
 }

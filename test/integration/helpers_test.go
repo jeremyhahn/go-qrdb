@@ -39,6 +39,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -2244,9 +2245,7 @@ func writeIsolationRaftConfig(t *testing.T, volumePoolDir string, peerAdminURLs 
 storage:
   volume_pools:
     - name: default
-      paths:
-        - %s
-      strategy: round_robin
+      path: %s
 tenant:
   default_entitlements:
     allowed_isolation_modes:
@@ -2255,6 +2254,8 @@ tenant:
     allow_dedicated_raft: true
     allow_system_managed_barrier: true
     allow_dedicated_wal: true
+    allowed_volume_pools:
+      - default
   default_quotas:
     max_databases: -1
     max_raft_groups: -1
@@ -2489,6 +2490,32 @@ func iraftAPIPost(t *testing.T, client *http.Client, rawURL string, body interfa
 	return respBody, resp.StatusCode
 }
 
+// createRaftTenant creates an IsolationRaft tenant with barrier_auto_unseal
+// through the real tenant-onboarding API (POST /v1/tenants), which now
+// requires every tenant's first admin -- admin_username plus admin_csr_pem
+// or admin_cert_pem -- at creation time, not as a follow-up call. The
+// onboarded admin identity's CSR is generated and discarded here: callers
+// provision their own "db-admin" role and bound user for the mTLS identity
+// they actually authenticate with, exactly as provisionTenantWithSQLReader
+// does for the same requirement in sql_query_tenant_scope_test.go.
+func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantID, name string) ([]byte, int) {
+	t.Helper()
+
+	_, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	if err != nil {
+		t.Fatalf("createRaftTenant: certtest.NewCSR: %v", err)
+	}
+	return iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+		map[string]interface{}{
+			"id":                  tenantID,
+			"name":                name,
+			"isolation_type":      "raft",
+			"barrier_auto_unseal": true,
+			"admin_username":      tenantID + "-admin",
+			"admin_csr_pem":       string(adminCSRPEM),
+		})
+}
+
 // iraftAPIGet performs a GET request using the provided client and returns the
 // response body bytes and status code.
 func iraftAPIGet(t *testing.T, client *http.Client, rawURL string) ([]byte, int) {
@@ -2501,6 +2528,35 @@ func iraftAPIGet(t *testing.T, client *http.Client, rawURL string) ([]byte, int)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return body, resp.StatusCode
+}
+
+// createVolumePoolREST registers a named pool in the replicated catalog via
+// POST /v1/volume-pools against the given admin port, ahead of any tenant
+// placement onto it. docs/volume-pools/architecture.md decision D2: a
+// pool's catalog record always comes from an explicit API call, never
+// implicitly from a node's storage.volume_pools config -- every fixture
+// that configures a volume pool and then creates a volume/raft-isolation
+// tenant against it must call this (or createVolumePoolCLI) first.
+func createVolumePoolREST(t *testing.T, client *http.Client, adminPort int, name string) {
+	t.Helper()
+	body, status := iraftAPIPost(t, client,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/volume-pools", adminPort),
+		map[string]interface{}{"name": name},
+	)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("create volume pool %q: status %d, body: %s", name, status, body)
+	}
+}
+
+// createVolumePoolCLI registers a named pool in the replicated catalog via
+// the CLI's "volume-pool create" verb. Same rationale as
+// createVolumePoolREST, for fixtures that drive tenant placement through
+// the CLI binary rather than raw REST calls.
+func createVolumePoolCLI(t *testing.T, cli string, connArgs []string, name string) {
+	t.Helper()
+	if out, err := runQRDB(t, cli, connArgs, "volume-pool", "create", name); err != nil {
+		t.Fatalf("volume-pool create %q: %v\noutput: %s", name, err, out)
+	}
 }
 
 // ---------------------------------------------------------------------------

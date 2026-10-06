@@ -67,7 +67,8 @@ func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture 
 	serverCfg.ClientAuth = tls.RequireAnyClientCert
 	clientCfg.Certificates = serverCfg.Certificates
 	srv := NewServer(nil, nil, "127.0.0.1:0",
-		WithTLS(serverCfg), WithTenantService(tenants), WithAuthMiddleware(mw))
+		WithTLS(serverCfg), WithTenantService(tenants), WithTenantOnboarding(&fakeTenantOnboarding{tenants: tenants}),
+		WithAuthMiddleware(mw))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}

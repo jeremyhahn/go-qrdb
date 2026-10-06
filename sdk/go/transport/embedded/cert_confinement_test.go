@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -42,10 +43,6 @@ func callerCtx(tenantID string) context.Context {
 // refusal is proven to have happened BEFORE the provider acted.
 func confinementProvider(owners map[string]string, reached *[]string) *mockCertProvider {
 	return &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-			*reached = append(*reached, "generate:"+req.TenantID)
-			return &cert.CertBundle{CertPEM: []byte("c"), KeyPEM: []byte("k"), Serial: "new"}, nil
-		},
 		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
 			*reached = append(*reached, "list:"+tenantID)
 			return []*cert.CertRecord{}, nil
@@ -65,6 +62,18 @@ func confinementProvider(owners map[string]string, reached *[]string) *mockCertP
 	}
 }
 
+// confinementEnroll is a CertEnrollmentServicer that records which tenant
+// SignCertificate was called for, so a refusal is proven to have happened
+// BEFORE the service acted.
+func confinementEnroll(reached *[]string) *mockCertEnrollmentServicer {
+	return &mockCertEnrollmentServicer{
+		signCertificateFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+			*reached = append(*reached, "issue:"+req.TenantID)
+			return &service.EnrolledCertificate{CertPEM: []byte("c"), Serial: "new"}, nil
+		},
+	}
+}
+
 func assertCrossTenantDenied(t *testing.T, verb string, err error) {
 	t.Helper()
 	var denied *tenant.CrossTenantDeniedError
@@ -73,32 +82,26 @@ func assertCrossTenantDenied(t *testing.T, verb string, err error) {
 	}
 }
 
-func TestCertConfinement_SystemCallerCannotGenerateForAnotherTenant(t *testing.T) {
+// TestCertConfinement_IssueCertIsAlwaysConfinedToCallersOwnTenant replaces
+// the two former GenerateCert confinement tests: transport.IssueCertRequest
+// carries no TenantID field at all (go-qrdb tenant onboarding refactor), so a
+// caller has no way to even ASK for another tenant's certificate -- IssueCert
+// resolves the tenant exclusively from the caller's own context
+// (tenant.Confine(ctx, "", ...)). What remains to prove is that every caller,
+// system tenant included, is signed for its own tenant and nothing else.
+func TestCertConfinement_IssueCertIsAlwaysConfinedToCallersOwnTenant(t *testing.T) {
 	var reached []string
-	tr := newAuthTransport(t, WithCertProvider(confinementProvider(nil, &reached)))
+	tr := newAuthTransport(t, WithCertEnrollment(confinementEnroll(&reached)))
 
-	_, err := tr.GenerateCert(callerCtx(tenantid.System), &transport.GenerateCertRequest{Username: "alice", TenantID: "acme"})
-	assertCrossTenantDenied(t, "system caller generating for acme", err)
-	if len(reached) != 0 {
-		t.Fatalf("the provider was reached (%v); a refused mint must sign nothing", reached)
+	if _, err := tr.IssueCert(callerCtx("acme"), &transport.IssueCertRequest{Username: "alice"}); err != nil {
+		t.Fatalf("acme issuing for itself: %v", err)
 	}
-
-	if _, err := tr.GenerateCert(callerCtx(tenantid.System), &transport.GenerateCertRequest{Username: "op", TenantID: tenantid.System}); err != nil {
-		t.Fatalf("system caller generating for its own tenant: %v", err)
+	if _, err := tr.IssueCert(callerCtx(tenantid.System), &transport.IssueCertRequest{Username: "op"}); err != nil {
+		t.Fatalf("system caller issuing for its own tenant: %v", err)
 	}
-}
-
-func TestCertConfinement_TenantCallerGeneratesOnlyForItself(t *testing.T) {
-	var reached []string
-	tr := newAuthTransport(t, WithCertProvider(confinementProvider(nil, &reached)))
-
-	if _, err := tr.GenerateCert(callerCtx("acme"), &transport.GenerateCertRequest{Username: "alice", TenantID: "acme"}); err != nil {
-		t.Fatalf("acme generating for acme: %v", err)
-	}
-	_, err := tr.GenerateCert(callerCtx("acme"), &transport.GenerateCertRequest{Username: "carol", TenantID: "globex"})
-	assertCrossTenantDenied(t, "acme generating for globex", err)
-	if len(reached) != 1 || reached[0] != "generate:acme" {
-		t.Fatalf("provider calls = %v; want only the own-tenant mint", reached)
+	want := []string{"issue:acme", "issue:" + tenantid.System}
+	if len(reached) != len(want) || reached[0] != want[0] || reached[1] != want[1] {
+		t.Fatalf("service calls = %v; want %v -- each call confined to its own caller's tenant", reached, want)
 	}
 }
 

@@ -634,9 +634,20 @@ describe('Outbound transform — tenants.create sends isolation_type', () => {
 
     it('isolationType is serialized as isolation_type in POST body', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ tenant: { id: 't1', name: 'T', isolation_type: 'prefix' } });
+        const calls = installMockFetch({
+            id: 't1',
+            name: 'T',
+            isolation_type: 'prefix',
+            admin: { username: 'admin', cert_pem: 'CERT', thumbprint: 'THUMB' },
+        });
 
-        await client.tenants.create({ id: 't1', name: 'T', isolationType: 'prefix' });
+        await client.tenants.create({
+            id: 't1',
+            name: 'T',
+            isolationType: 'prefix',
+            adminUsername: 'admin',
+            adminCsrPem: 'CSR',
+        });
 
         expect(calls).toHaveLength(1);
         const body = calls[0].body as Record<string, unknown>;
@@ -646,6 +657,8 @@ describe('Outbound transform — tenants.create sends isolation_type', () => {
         expect(body['isolationType']).toBeUndefined();
         expect(body['id']).toBe('t1');
         expect(body['name']).toBe('T');
+        expect(body['admin_username']).toBe('admin');
+        expect(body['admin_csr_pem']).toBe('CSR');
     });
 
     it('tenants.update sends isolation_type in PUT body', async () => {
@@ -1125,5 +1138,192 @@ describe('Outbound — database.create sends the barrier secret', () => {
         expect(calls[0].method).toBe('POST');
         const body = calls[0].body as { barrier: Record<string, unknown> };
         expect(body.barrier).toEqual({ enabled: true, mode: 'passphrase', secret: 'correct horse' });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Certs: issueCert / enrollCert send their PEM fields VERBATIM (literal
+// camelCase wire tags: csrPEM, certPEM, chainPEM — see
+// sdk/go/transport/auth_types.go IssueCertRequest/EnrollCertRequest). The
+// deepCamelToSnake transform jsonBody() applies elsewhere would mangle
+// "csrPEM" into "csr_p_e_m"; these two verbs must bypass it.
+// ---------------------------------------------------------------------------
+
+describe('Certs — issueCert/enrollCert send literal camelCase PEM fields', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('issueCert posts to /certs/issue with csrPEM verbatim', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            userID: '1',
+            username: 'alice',
+            tenantID: 't1',
+            certPEM: 'CERT',
+            serial: 'abc123',
+            thumbprint: 'THUMB',
+            notAfter: '2027-01-01T00:00:00Z',
+        });
+
+        const result = await client.certs.issueCert({ username: 'alice', csrPEM: 'CSR', ttl: '8760h' });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/certs/issue');
+        expect(calls[0].method).toBe('POST');
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['csrPEM']).toBe('CSR');
+        expect(body['username']).toBe('alice');
+        expect(body['ttl']).toBe('8760h');
+        // The mangled snake form must NOT appear.
+        expect(body['csr_p_e_m']).toBeUndefined();
+        // userID crosses the wire as a string (json:"userID,string") because
+        // uint64 Snowflakes exceed Number.MAX_SAFE_INTEGER.
+        expect(result.userID).toBe('1');
+        expect(result.certPEM).toBe('CERT');
+        expect(result.tenantID).toBe('t1');
+    });
+
+    it('enrollCert posts to /certs/enroll with certPEM/chainPEM verbatim', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            userID: '2',
+            username: 'bob',
+            tenantID: 't1',
+            certPEM: 'LEAF',
+            thumbprint: 'THUMB2',
+            notAfter: '2027-01-01T00:00:00Z',
+        });
+
+        await client.certs.enrollCert({ username: 'bob', certPEM: 'LEAF', chainPEM: 'CHAIN' });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/certs/enroll');
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['certPEM']).toBe('LEAF');
+        expect(body['chainPEM']).toBe('CHAIN');
+        expect(body['cert_p_e_m']).toBeUndefined();
+    });
+
+    it('export posts to /certs/export with certPEM/keyPEM verbatim', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ pkcs12: 'BASE64DATA' });
+
+        await client.certs.export({ certPEM: 'LEAF', keyPEM: 'KEY', passphrase: 'secret' });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['certPEM']).toBe('LEAF');
+        expect(body['keyPEM']).toBe('KEY');
+        expect(body['cert_p_e_m']).toBeUndefined();
+        expect(body['key_p_e_m']).toBeUndefined();
+    });
+
+    it('issueCertWithLocalKey throws DesktopOnlyError on REST transport', async () => {
+        const client = await connectedClient();
+        await expect(client.certs.issueCertWithLocalKey('alice')).rejects.toThrow();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Tenants: trust anchors and the admin-onboarding create response.
+// ---------------------------------------------------------------------------
+
+describe('Tenants — trust anchors', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('addTrustAnchors posts certs_pem to /v1/tenants/{id}/trust-anchors', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            anchors: [
+                {
+                    fingerprint: 'ab:cd',
+                    subject: 'CN=Root',
+                    not_before: '2026-01-01T00:00:00Z',
+                    not_after: '2036-01-01T00:00:00Z',
+                    cert_pem: 'CA_CERT',
+                    added_at: '2026-01-01T00:00:00Z',
+                },
+            ],
+        });
+
+        const result = await client.tenants.addTrustAnchors('t1', 'CA_CERT_PEM');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/v1/tenants/t1/trust-anchors');
+        expect(calls[0].method).toBe('POST');
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['certs_pem']).toBe('CA_CERT_PEM');
+        expect(result.anchors).toHaveLength(1);
+        expect(result.anchors[0].fingerprint).toBe('ab:cd');
+        expect(result.anchors[0].notBefore).toBe('2026-01-01T00:00:00Z');
+        expect(result.anchors[0].certPem).toBe('CA_CERT');
+    });
+
+    it('listTrustAnchors GETs /v1/tenants/{id}/trust-anchors', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ anchors: [] });
+
+        await client.tenants.listTrustAnchors('t1');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/v1/tenants/t1/trust-anchors');
+        expect(calls[0].method).toBe('GET');
+    });
+
+    it('removeTrustAnchor DELETEs /v1/tenants/{id}/trust-anchors/{fingerprint}', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.tenants.removeTrustAnchor('t1', 'ab:cd');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/v1/tenants/t1/trust-anchors/ab%3Acd');
+        expect(calls[0].method).toBe('DELETE');
+    });
+});
+
+describe('Tenants — create() splits the flattened admin-onboarding response', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('wraps the flat {...tenant, admin} wire body into {tenant, admin}', async () => {
+        const client = await connectedClient();
+        installMockFetch({
+            id: 't1',
+            name: 'Acme',
+            isolation_type: 'prefix',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            admin: {
+                user_id: '42',
+                username: 'admin',
+                cert_pem: 'ADMIN_CERT',
+                serial: 'ser-1',
+                thumbprint: 'THUMB',
+                awaits_barrier_init: false,
+            },
+        });
+
+        const result = await client.tenants.create({
+            id: 't1',
+            name: 'Acme',
+            isolationType: 'prefix',
+            adminUsername: 'admin',
+            adminCsrPem: 'CSR',
+        });
+
+        expect(result.tenant.id).toBe('t1');
+        expect(result.tenant.name).toBe('Acme');
+        expect((result.tenant as unknown as Record<string, unknown>)['admin']).toBeUndefined();
+        // userId crosses the wire as a string (json:"user_id,omitempty,string")
+        // because uint64 Snowflakes exceed Number.MAX_SAFE_INTEGER.
+        expect(result.admin.userId).toBe('42');
+        expect(result.admin.username).toBe('admin');
+        expect(result.admin.certPem).toBe('ADMIN_CERT');
+        expect(result.admin.awaitsBarrierInit).toBe(false);
     });
 });

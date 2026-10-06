@@ -133,7 +133,6 @@ func TestCreateForTenant_DistributorCalledOnPlacement(t *testing.T) {
 	raftInfo := &tenant.TenantInfo{
 		ID:                "rt",
 		IsolationType:     tenant.IsolationRaft,
-		DataRoot:          t.TempDir(),
 		BarrierAutoUnseal: true, // system-managed
 	}
 	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, localNode,
@@ -185,7 +184,6 @@ func TestCreateForTenant_DistributorCalledSelfManagedMode(t *testing.T) {
 	raftInfo := &tenant.TenantInfo{
 		ID:                "self-rt",
 		IsolationType:     tenant.IsolationRaft,
-		DataRoot:          t.TempDir(),
 		BarrierAutoUnseal: false, // self-managed
 	}
 	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, localNode,
@@ -215,7 +213,6 @@ func TestCreateForTenant_DistributorSkippedWithoutPrerequisites(t *testing.T) {
 	raftInfo := &tenant.TenantInfo{
 		ID:            "rt",
 		IsolationType: tenant.IsolationRaft,
-		DataRoot:      t.TempDir(),
 	}
 
 	t.Run("no distributor", func(t *testing.T) {
@@ -294,7 +291,6 @@ func TestSetDistributor_PostConstruction(t *testing.T) {
 	raftInfo := &tenant.TenantInfo{
 		ID:                "rt",
 		IsolationType:     tenant.IsolationRaft,
-		DataRoot:          t.TempDir(),
 		BarrierAutoUnseal: true,
 	}
 

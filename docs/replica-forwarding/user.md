@@ -40,6 +40,11 @@ n, err := node.NewClusteredNode(ctx, cfg, members, serverOpts, node.WithEmbedded
 - The node checks that certificate on every forward, as its QUIC listener
   checks a client's, and the replica authorizes **that** identity, with its
   roles there. A revoked or expired certificate stops forwarding at once.
+- The node first authorizes the call itself, against the identity the
+  embedding application binds to the call's context (`auth.WithIdentity`),
+  as it does for every embedded call; a call carrying none is refused as
+  unauthenticated and is not forwarded. Only then is it forwarded, as the
+  configured caller.
 - Without `WithEmbeddedCaller`, a call to a database the node holds no
   replica of fails with "not a replica" and the replica set. The node never
   forwards as itself.

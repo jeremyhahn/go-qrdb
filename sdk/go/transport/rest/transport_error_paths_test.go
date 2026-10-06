@@ -452,11 +452,11 @@ func TestRESTUserRoleCert_AllMethods_BadJSON(t *testing.T) {
 	if _, err := rt.ListPermissions(ctx); err == nil {
 		t.Fatal("ListPermissions: expected JSON error")
 	}
-	if _, err := rt.GenerateCert(ctx, &transport.GenerateCertRequest{}); err == nil {
-		t.Fatal("GenerateCert: expected JSON error")
+	if _, err := rt.IssueCert(ctx, &transport.IssueCertRequest{}); err == nil {
+		t.Fatal("IssueCert: expected JSON error")
 	}
-	if _, err := rt.ExportCert(ctx, &transport.ExportCertRequest{}); err == nil {
-		t.Fatal("ExportCert: expected JSON error")
+	if _, err := rt.EnrollCert(ctx, &transport.EnrollCertRequest{}); err == nil {
+		t.Fatal("EnrollCert: expected JSON error")
 	}
 	if _, err := rt.ListCerts(ctx, "t1"); err == nil {
 		t.Fatal("ListCerts: expected JSON error")
@@ -495,11 +495,11 @@ func TestRESTUserRoleCert_AllMethods_ServerError(t *testing.T) {
 	if err := rt.UnassignRole(ctx, 1, "r1"); err == nil {
 		t.Fatal("UnassignRole: expected error")
 	}
-	if _, err := rt.GenerateCert(ctx, &transport.GenerateCertRequest{}); err == nil {
-		t.Fatal("GenerateCert: expected error")
+	if _, err := rt.IssueCert(ctx, &transport.IssueCertRequest{}); err == nil {
+		t.Fatal("IssueCert: expected error")
 	}
-	if _, err := rt.ExportCert(ctx, &transport.ExportCertRequest{}); err == nil {
-		t.Fatal("ExportCert: expected error")
+	if _, err := rt.EnrollCert(ctx, &transport.EnrollCertRequest{}); err == nil {
+		t.Fatal("EnrollCert: expected error")
 	}
 	if _, err := rt.RevokeCert(ctx, "001"); err == nil {
 		t.Fatal("RevokeCert: expected error")
@@ -645,11 +645,11 @@ func TestRESTAllMethods_NetworkError(t *testing.T) {
 	if _, err := rt.ListPermissions(ctx); err == nil {
 		t.Fatal("ListPermissions: expected error")
 	}
-	if _, err := rt.GenerateCert(ctx, &transport.GenerateCertRequest{}); err == nil {
-		t.Fatal("GenerateCert: expected error")
+	if _, err := rt.IssueCert(ctx, &transport.IssueCertRequest{}); err == nil {
+		t.Fatal("IssueCert: expected error")
 	}
-	if _, err := rt.ExportCert(ctx, &transport.ExportCertRequest{}); err == nil {
-		t.Fatal("ExportCert: expected error")
+	if _, err := rt.EnrollCert(ctx, &transport.EnrollCertRequest{}); err == nil {
+		t.Fatal("EnrollCert: expected error")
 	}
 	if _, err := rt.RevokeCert(ctx, "001"); err == nil {
 		t.Fatal("RevokeCert: expected error")

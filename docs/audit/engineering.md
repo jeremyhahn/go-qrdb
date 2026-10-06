@@ -602,7 +602,9 @@ With metadata, as a nested group:
 |---|---|---|
 | `user.create` / `update` / `delete` / `enable` / `disable` | `user:{username}` | user management |
 | `role.create` / `update` / `delete` / `assign` / `unassign` | `role:{name}` | role management |
-| `cert.generate` / `cert.revoke` | `cert:{serial}` | certificate management |
+| `cert.issue` | `cert:{serial}` | every signature by a tenant's login CA (`CertEnrollmentService.SignCertificate`): CSR issuance for an existing account |
+| `cert.enroll` | `user:{id}` | a bring-your-own certificate bound to an existing account (`CertEnrollmentService.EnrollCertificate`) |
+| `cert.revoke` | `cert:{serial}` | every revocation (`DefaultCertProvider.RevokeCert`), deny-by-serial included |
 | `initialize` / `unseal` / `seal` / `quorum-complete` / `distribute` / `change_password` / `enable_encryption` / `import-root-key` / `import-sealed-blob` / `holder-record-conflict` | `barrier` | every barrier -- system, tenant, database -- through `seal.NewComplianceAuditLogger`; see [../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability) |
 | `admin.drain` | `node:{id}` | admin operations |
 | `admin.snapshot` | `shard:{id}` | admin operations |

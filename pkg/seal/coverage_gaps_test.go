@@ -16,7 +16,6 @@ package seal
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -42,26 +41,6 @@ func TestSystemBarrierStrategy_Close(t *testing.T) {
 	t.Parallel()
 	if err := NewSystemBarrierStrategy(nil).Close(); err != nil {
 		t.Fatalf("Close: %v", err)
-	}
-}
-
-// TestSlotForBase_NoPool verifies slotForBase reports not-found when no volume
-// pool is configured.
-func TestSlotForBase_NoPool(t *testing.T) {
-	t.Parallel()
-	reg := newNoPoolRegistry(t)
-	if _, ok := reg.slotForBase(context.Background(), "default", "/some/base"); ok {
-		t.Fatal("slotForBase: expected ok=false with no pool configured")
-	}
-}
-
-// TestLocalBaseForSlot_NoPool verifies localBaseForSlot fails closed with
-// ErrPoolNotConfigured when no volume pool is configured.
-func TestLocalBaseForSlot_NoPool(t *testing.T) {
-	t.Parallel()
-	reg := newNoPoolRegistry(t)
-	if _, err := reg.localBaseForSlot(context.Background(), "default", 0); !errors.Is(err, ErrPoolNotConfigured) {
-		t.Fatalf("localBaseForSlot no-pool: expected ErrPoolNotConfigured, got %v", err)
 	}
 }
 

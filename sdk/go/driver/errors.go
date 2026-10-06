@@ -105,6 +105,31 @@ func (e *EngineInitError) Unwrap() error {
 	return e.Err
 }
 
+// SessionVariableResetError is returned when ResetSession cannot restore a
+// session system variable to this connection's baseline -- either reading
+// its current value or writing the baseline back failed. ResetSession
+// treats it the same as a transaction that cannot roll back: the connection
+// is marked bad and reported to database/sql as sqld.ErrBadConn, never
+// handed back to the pool with a session variable the previous caller
+// changed still in effect.
+type SessionVariableResetError struct {
+	// Variable is the system variable name resetSessionVariables was
+	// restoring when the engine refused it.
+	Variable string
+	// Err is the underlying engine error.
+	Err error
+}
+
+// Error returns a human-readable description of the reset failure.
+func (e *SessionVariableResetError) Error() string {
+	return "driver: failed to reset session variable " + strconv.Quote(e.Variable) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *SessionVariableResetError) Unwrap() error {
+	return e.Err
+}
+
 // QueryExecError is returned when SQL query execution fails.
 type QueryExecError struct {
 	Query string

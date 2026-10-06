@@ -18,8 +18,6 @@ import (
 	"context"
 	"testing"
 
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -35,6 +33,7 @@ func restartedAutoUnsealVolumeTenant(t *testing.T, id string) (*freshRegistryFix
 		AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 		AllowVolumeStorage:        true,
 		AllowSystemManagedBarrier: true,
+		AllowedVolumePools:        []string{"default"},
 	})
 	ctx := context.Background()
 	if _, err := fx.svc.CreateTenant(ctx, id, id, tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true)); err != nil {
@@ -45,12 +44,12 @@ func restartedAutoUnsealVolumeTenant(t *testing.T, id string) (*freshRegistryFix
 	}
 	reg2 := fx.rebuildRegistry(t)
 	return fx, TenantInfraConfig{
-		Ctx:          ctx,
-		BarrierReg:   reg2,
-		TenantSvc:    fx.svc,
-		TenantLookup: fx.svc,
-		VolumePool:   &qrdbpool.VolumePoolSubsystem{},
-		Logger:       reattachTestLogger(),
+		Ctx:                  ctx,
+		BarrierReg:           reg2,
+		TenantSvc:            fx.svc,
+		TenantLookup:         fx.svc,
+		VolumePoolConfigured: true,
+		Logger:               reattachTestLogger(),
 	}
 }
 

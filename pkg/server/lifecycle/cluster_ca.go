@@ -20,13 +20,15 @@ import (
 	"errors"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 const (
 	// clusterCAEstablishRetryDeadline bounds how long AwaitClusterCACertificate
-	// retries a transient *service.NotLeaderError before giving up. Right
+	// retries a transient read (clusterCAReadSettling) before giving up. Right
 	// after this node's own boot, the system shard's leadership can still be
 	// settling -- even on a single-node shard -- so the first answer this
 	// node sees can be "not leader, leader unknown". Bounded so a genuinely
@@ -43,8 +45,9 @@ const (
 )
 
 // AwaitClusterCACertificate calls provider.Certificate, retrying with
-// bounded exponential backoff while the answer is a transient
-// *service.NotLeaderError -- the system shard's leadership can still be
+// bounded exponential backoff while the answer is transient -- a
+// *service.NotLeaderError or quicraft.ErrReadIndexNotReady (see
+// clusterCAReadSettling): the system shard's leadership can still be
 // settling immediately after this node's own boot, even on a single-node
 // shard, and this node's own read can lose that race. Any other error class
 // (a corrupt record, a sealed barrier, no material at all) is returned
@@ -70,8 +73,7 @@ func AwaitClusterCACertificate(ctx context.Context, provider cakey.Provider, dea
 		if err == nil {
 			return cert, nil
 		}
-		var notLeader *service.NotLeaderError
-		if !errors.As(err, &notLeader) {
+		if !clusterCAReadSettling(err) {
 			return nil, err
 		}
 		if !time.Now().Before(giveUpAt) {
@@ -86,6 +88,20 @@ func AwaitClusterCACertificate(ctx context.Context, provider cakey.Provider, dea
 			delay = maxDelay
 		}
 	}
+}
+
+// clusterCAReadSettling reports whether err is the system shard still
+// settling rather than a failure waiting cannot fix: a *service.NotLeaderError
+// (leadership in flux), or quicraft.ErrReadIndexNotReady -- a leader elected a
+// moment ago refuses a linearizable read until it has committed an entry in
+// its own term. A restarted node reaches this read right after the unseal,
+// which is exactly that window, and treating it as fatal made the daemon exit.
+func clusterCAReadSettling(err error) bool {
+	if errors.Is(err, quicraft.ErrReadIndexNotReady) {
+		return true
+	}
+	var notLeader *service.NotLeaderError
+	return errors.As(err, &notLeader)
 }
 
 // EstablishClusterCA triggers n.ClusterCAProv's lazy adopt-or-load (a

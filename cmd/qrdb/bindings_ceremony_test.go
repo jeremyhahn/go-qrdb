@@ -136,7 +136,7 @@ func TestCeremonyBinding_Initialize_GeneratePath_RefusesLocallyBeforeCallingServ
 	// A regular file sits exactly where the "qrdb" subdirectory needs to
 	// be created, so os.MkdirAll fails regardless of process privilege
 	// (unlike a permission-bit probe, which a root-run test would ignore).
-	if err := os.WriteFile(filepath.Join(configDir, "qrdb"), []byte("not a directory"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "qrdb"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("seeding blocker file: %v", err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", configDir)

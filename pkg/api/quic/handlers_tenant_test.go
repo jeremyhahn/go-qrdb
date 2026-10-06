@@ -205,7 +205,8 @@ func TestHandleTenantCreate_Success(t *testing.T) {
 			}, nil
 		},
 	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+	srv := newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(svc), WithTenantOnboarding(&fakeTenantOnboarding{tenants: svc}))
 
 	payload, _ := proto.Marshal(&pb.TenantCreateRequest{
 		Id:            "acme",
@@ -217,15 +218,15 @@ func TestHandleTenantCreate_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var tenantResp pb.TenantResponse
-	if err := proto.Unmarshal(resp, &tenantResp); err != nil {
+	var createResp pb.TenantCreateResponse
+	if err := proto.Unmarshal(resp, &createResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if tenantResp.GetId() != "acme" {
-		t.Errorf("expected id 'acme', got %q", tenantResp.GetId())
+	if createResp.GetTenant().GetId() != "acme" {
+		t.Errorf("expected id 'acme', got %q", createResp.GetTenant().GetId())
 	}
-	if tenantResp.GetName() != "ACME Corp" {
-		t.Errorf("expected name 'ACME Corp', got %q", tenantResp.GetName())
+	if createResp.GetTenant().GetName() != "ACME Corp" {
+		t.Errorf("expected name 'ACME Corp', got %q", createResp.GetTenant().GetName())
 	}
 }
 
@@ -236,7 +237,8 @@ func TestHandleTenantCreate_ServiceError(t *testing.T) {
 			return nil, svcErr
 		},
 	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+	srv := newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(svc), WithTenantOnboarding(&fakeTenantOnboarding{tenants: svc}))
 	payload, _ := proto.Marshal(&pb.TenantCreateRequest{Id: "dup", Name: "Dup"})
 
 	_, err := srv.handleTenantCreate(context.Background(), payload)
@@ -250,7 +252,8 @@ func TestHandleTenantCreate_ServiceError(t *testing.T) {
 
 func TestHandleTenantCreate_UnmarshalError(t *testing.T) {
 	svc := &mockTenantService{}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+	srv := newTestServer(&mockKVService{}, &mockAdminService{},
+		WithTenantService(svc), WithTenantOnboarding(&fakeTenantOnboarding{tenants: svc}))
 
 	_, err := srv.handleTenantCreate(context.Background(), []byte{0xff, 0xfe})
 	if err == nil {

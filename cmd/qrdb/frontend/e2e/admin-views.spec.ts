@@ -387,7 +387,10 @@ test.describe("Admin Views - Certificates", () => {
 
     // The action panel tab buttons are always visible.
     await expect(
-      main.getByRole("button", { name: "Generate", exact: true }),
+      main.getByRole("button", { name: "Issue", exact: true }),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(
+      main.getByRole("button", { name: "Enroll", exact: true }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
     await expect(
       main.getByRole("button", { name: "Export PKCS#12" }),
@@ -402,15 +405,15 @@ test.describe("Admin Views - Certificates", () => {
     });
   });
 
-  test("shows Generate Certificate action", async ({ page }) => {
+  test("shows Issue Certificate action", async ({ page }) => {
     await enterAdminMode(page);
     await navigateTo(page, "Certificates");
 
     const main = page.locator("main");
 
-    // Generate tab button is always present in the action panel header.
+    // Issue tab button is always present in the action panel header.
     await expect(
-      main.getByRole("button", { name: "Generate", exact: true }),
+      main.getByRole("button", { name: "Issue", exact: true }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
   });
 });
@@ -577,7 +580,7 @@ test.describe("Admin Views - No Uncaught Errors on Load", () => {
     // Wait for the action panel header to render.
     const main = page.locator("main");
     await expect(
-      main.getByRole("button", { name: "Generate", exact: true }),
+      main.getByRole("button", { name: "Issue", exact: true }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     // Give any async errors a moment to surface.

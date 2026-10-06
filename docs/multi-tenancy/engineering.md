@@ -1,6 +1,6 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 ## Exported surface
 
@@ -17,6 +17,106 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error)
 `QuorumBegin`, `QuorumSubmit`, `RekeyStart`, `OfficerRevoke`.
 
 Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
+
+Tenant creation delegates, on every transport, to one service
+(`pkg/service/tenant_onboarding.go`), wired with
+`server.WithTenantOnboarding(svc service.TenantOnboardingServicer)`:
+
+```go
+type TenantOnboardingServicer interface {
+	// OnboardTenant creates a tenant and, as one unit, registers its trust
+	// anchors, creates its first admin with the tenant's Admin role, and
+	// binds the admin's certificate. It returns the admin's certificate,
+	// never a key.
+	OnboardTenant(ctx context.Context, req *OnboardTenantRequest) (*OnboardTenantResult, error)
+}
+
+type OnboardTenantRequest struct {
+	ID, Name          string
+	IsolationType     tenant.IsolationType // empty = prefix
+	BarrierAutoUnseal bool
+	DataRoot          string
+	AdminUsername     string // required
+	AdminCSRPEM       []byte // exactly one of AdminCSRPEM and AdminCertPEM
+	AdminCertPEM      []byte
+	AdminChainPEM     []byte
+	TrustAnchorsPEM   []byte // required with AdminCertPEM
+}
+
+type OnboardTenantResult struct {
+	Tenant *tenant.TenantInfo
+	Admin  TenantAdminCredential
+}
+
+type TenantAdminCredential struct {
+	UserID            uint64 // zero when AwaitsBarrierInit
+	Username          string
+	CertPEM           []byte
+	Serial            string // empty for a bring-your-own certificate
+	Thumbprint        string
+	AwaitsBarrierInit bool
+}
+```
+
+`OnboardTenant` calls `bootstrap.ProvisionTenant` with
+`AdminEnrollment: AdminEnrollCert`, `Exclusive: true` and
+`Signer: &bootstrap.KeyBSigner{Certs: certProvider}` — the tenant's own Key B
+CA signs the admin's CSR (`cert.CertProvider.IssueClientCert`, through
+`certenroll.IssueFromCSR`).
+
+`pkg/bootstrap`:
+
+```go
+type TenantProvisionConfig struct {
+	TenantID, DisplayName string
+	Isolation             tenant.IsolationType // empty = IsolationBarrier
+	AdminUsername         string               // empty = "admin"
+	AdminCSRPEM           []byte
+	AdminCertPEM          []byte
+	AdminChainPEM         []byte
+	TrustAnchorsPEM       []byte
+	CreateOptions         []tenant.CreateTenantOption
+	Exclusive             bool
+	AdminEnrollment       AdminEnrollmentMode
+}
+
+// TenantProvisionResult gains AdminCertSerial and AdminAwaitsBarrierInit;
+// AdminKeyPEM is removed. AdminCertPEM, AdminChainPEM, TrustAnchorsPEM and
+// Exclusive are new on the config.
+func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies) (*TenantProvisionResult, error)
+
+// CompletePendingTenantAdmin creates a pending admin's account once the
+// tenant's identity records can be written; idempotent.
+func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Dependencies) (bool, error)
+```
+
+`Dependencies` gains `TrustAnchors trustanchor.Registry`,
+`PendingAdmins tenantadmin.Store`, `TrustDomain string` and `Now func() time.Time`.
+
+`pkg/tenantadmin` — the pending first admin of a tenant whose identity records
+are behind its barrier:
+
+```go
+type Pending struct {
+	Username   string    `json:"username"`
+	Thumbprint string    `json:"thumbprint"`
+	NotAfter   time.Time `json:"not_after"`
+	Serial     string    `json:"serial,omitempty"`
+}
+
+type Store interface {
+	Put(ctx context.Context, tenantID string, p *Pending) error
+	Get(ctx context.Context, tenantID string) (*Pending, error) // (nil, nil) when none
+	Delete(ctx context.Context, tenantID string) error
+}
+
+func NewKVStore(store kvstore.KVStore) *KVStore
+```
+
+`pkg/tenant`: `WithBarrierReadyHook(h BarrierReadyHook) TenantServiceOption`,
+where `type BarrierReadyHook func(ctx context.Context, tenantID string)`.
+`pkg/auth/middleware`: `WithPendingTenantAdmins(p PendingTenantAdmins) Option`;
+`pkg/auth/wiring.AuthMiddlewareConfig.PendingTenantAdmins`.
 
 ## Isolation modes
 
@@ -838,6 +938,14 @@ with a warning, rather than failing the boot.
 | Deleting a RESERVED tenant id (`system`, `default`, `custodian`, `security-officer`, `_*`, `*:*`) | `*ReservedTenantIDError`, 400 / `InvalidArgument`, nothing committed | **yes** |
 | Deleting a malformed tenant id | `*InvalidTenantIDCharError` / `*InvalidTenantIDError`, nothing committed | **yes** |
 | Creating a tenant under a DELETED id | `*TenantDeletedError`, 409 / `AlreadyExists` | **yes** |
+| Creating a tenant with no admin credential, or two | `*bootstrap.MissingAdminCredentialError` / `*bootstrap.ConflictingAdminCredentialError`, 400; nothing written | **yes** |
+| Admin CSR or certificate refused | `*bootstrap.AdminCredentialRejectedError` wrapping the cause, classified as the cause; nothing written | **yes** |
+| Trust anchors unparseable or not CA certificates | `*bootstrap.InvalidTrustAnchorsError`, 400; nothing written | **yes** |
+| A seam the request needs is not wired (signer, binder, anchor registry, pending-admin store, delete seams for an exclusive run) | `*bootstrap.MissingProvisioningSeamError`, 501; checked before any write | **yes** |
+| Exclusive provisioning failed after a write | `*bootstrap.ProvisioningUndoneError` (`Cause`, `UndoFailures`); writes undone in reverse, id retired | **yes** |
+| Trust-on-first-init with a certificate other than the pending admin's | `*middleware.FirstInitCertificateMismatchError`, 403 | **yes** |
+| Trust-on-first-init under `required` with no pending admin | `*middleware.FirstInitNotOnboardedError`, 403 | **yes** |
+| Pending-admin record unreadable during the first-init check | `*middleware.StoreUnavailableError`, refused | **yes** |
 | Deleting a tenant that still owns databases | `*TenantHasDatabasesError`, 409 / `FailedPrecondition` | **yes** |
 | Tombstone store unreadable during create | `*StoreError{Op: "tombstone-check"}` | **yes** |
 | Deleted-tenant reconcile would touch a live tenant's directory | skipped and reported, never removed | **yes** |
@@ -950,7 +1058,7 @@ did not.
   the **cluster stage**. CI runs them on **every push** in the
   `integration-cluster-tenancy` job (`make integration-test-cluster-tenancy`,
   selected by `CLUSTER_TENANCY_RUN` in the Makefile), and the full cluster
-  stage runs nightly. `test/buildgates/cluster_tenancy_gate_test.go` fails
+  stage runs on every push too, in the `integration-cluster` job. `test/buildgates/cluster_tenancy_gate_test.go` fails
   when the selection drops an `isolation_raft_*` suite, selects fewer than its
   floor of tests, or leaves the job out of the CI result gate. The test
   function count behind that floor is **build-constraint aware**: it parses

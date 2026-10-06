@@ -15,6 +15,7 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -25,6 +26,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2010,6 +2012,22 @@ func TestEmbeddedTS_ListMetrics_NilService(t *testing.T) {
 // fullBatchService satisfies service.BatchServicer with a configurable Import.
 type fullBatchService struct {
 	importFn func(ctx context.Context, r io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+
+	// sessions backs ImportBegin/ImportAppend/ImportCommit/ImportAbort: a
+	// minimal real session (not just stubs) so TestEmbeddedImportFile_*
+	// exercises the SAME importFn hook ImportFile's chunked session now
+	// drives through ImportCommit, exactly as it exercised Import
+	// directly before. seq is deliberately not validated here -- that
+	// behavior belongs to *service.BatchService's own tests
+	// (pkg/service/batch_import_session_test.go), not this double.
+	sessions map[string]*fullBatchSession
+}
+
+// fullBatchSession is one in-memory chunked-import session for
+// fullBatchService.
+type fullBatchSession struct {
+	opts service.ImportOptions
+	buf  bytes.Buffer
 }
 
 func (b *fullBatchService) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
@@ -2029,6 +2047,41 @@ func (b *fullBatchService) Import(ctx context.Context, r io.Reader, opts service
 		return b.importFn(ctx, r, opts)
 	}
 	return &service.ImportResult{Total: 1, Succeeded: 1}, nil
+}
+
+func (b *fullBatchService) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
+	if b.sessions == nil {
+		b.sessions = make(map[string]*fullBatchSession)
+	}
+	id := strconv.Itoa(len(b.sessions))
+	b.sessions[id] = &fullBatchSession{opts: opts}
+	return id, nil
+}
+
+func (b *fullBatchService) ImportAppend(_ context.Context, sessionID string, _ uint64, chunk []byte) error {
+	sess, ok := b.sessions[sessionID]
+	if !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	sess.buf.Write(chunk)
+	return nil
+}
+
+func (b *fullBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	sess, ok := b.sessions[sessionID]
+	if !ok {
+		return nil, &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	delete(b.sessions, sessionID)
+	return b.Import(ctx, bytes.NewReader(sess.buf.Bytes()), sess.opts)
+}
+
+func (b *fullBatchService) ImportAbort(_ context.Context, sessionID string) error {
+	if _, ok := b.sessions[sessionID]; !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	delete(b.sessions, sessionID)
+	return nil
 }
 
 // SetImportKeyGuard satisfies service.ImportKeyGuardSetter as a no-op:

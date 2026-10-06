@@ -252,6 +252,7 @@ Supported transports:
 	rootCmd.AddCommand(newCeremonyCmd())
 	rootCmd.AddCommand(newBackupCmd())
 	rootCmd.AddCommand(newRebalanceCmd())
+	rootCmd.AddCommand(newVolumePoolCmd())
 	rootCmd.AddCommand(newEmbeddingCmd())
 	if cmd := newRAGCmd(); cmd != nil {
 		rootCmd.AddCommand(cmd)

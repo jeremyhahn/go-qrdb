@@ -44,6 +44,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -80,7 +81,6 @@ var (
 	_ transport.FactorProvider     = (*Transport)(nil)
 	_ transport.LoginProvider      = (*Transport)(nil)
 	_ transport.SessionProvider    = (*Transport)(nil)
-	_ transport.VolumePoolProvider = (*Transport)(nil)
 	_ transport.AuditProvider      = (*Transport)(nil)
 )
 
@@ -102,6 +102,8 @@ type Transport struct {
 	userSvc       user.UserServicer
 	roleSvc       role.RoleServicer
 	certProv      cert.CertProvider
+	certEnroll    service.CertEnrollmentServicer
+	onboarding    service.TenantOnboardingServicer
 	dbSvc         service.DatabaseServicer
 	barrierSvc    service.BarrierServicer
 	pinBackend    pin.PINBackend
@@ -116,6 +118,7 @@ type Transport struct {
 	collectionSvc service.CollectionServicer
 	sealStoreSvc  *seal.SealStore
 	tenantSvc     tenant.TenantServicer
+	volumeSvc     volume.Service
 	lockSvc       service.LockServicer
 	authFactorSvc service.AuthFactorServicer
 	auditLogger   audit.AuditLogger
@@ -269,6 +272,22 @@ func WithRoleService(svc role.RoleServicer) Option {
 func WithCertProvider(prov cert.CertProvider) Option {
 	return func(t *Transport) {
 		t.certProv = prov
+	}
+}
+
+// WithCertEnrollment sets the certificate issue/enrol and trust-anchor
+// service (lifecycle.Node.CertEnrollment).
+func WithCertEnrollment(svc service.CertEnrollmentServicer) Option {
+	return func(t *Transport) {
+		t.certEnroll = svc
+	}
+}
+
+// WithTenantOnboarding sets the tenant-create service
+// (lifecycle.Node.TenantOnboarding).
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) Option {
+	return func(t *Transport) {
+		t.onboarding = svc
 	}
 }
 
@@ -1383,9 +1402,10 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	}, nil
 }
 
-// ImportFile parses and imports key-value pairs from the given reader
-// through the embedded batch service. The filename parameter is used
-// for format auto-detection when opts.Format is "auto" or empty.
+// ImportFile parses and imports key-value pairs from the given reader by
+// driving a chunked import session (ImportBegin/ImportAppend/ImportCommit
+// below) -- see transport.ImportFileChunked. The filename parameter is
+// used for format auto-detection when opts.Format is "auto" or empty.
 func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
 	if err := t.gate("ImportFile"); err != nil {
 		return nil, err
@@ -1399,18 +1419,79 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 	if t.batchSvc == nil {
 		return nil, &NilServiceError{Service: "BatchServicer"}
 	}
+	return transport.ImportFileChunked(ctx, t, filename, data, opts, 0)
+}
 
-	svcOpts := service.ImportOptions{
+// ImportBegin starts a chunked import session directly against the
+// embedded BatchServicer -- no wire framing, no network boundary.
+func (t *Transport) ImportBegin(ctx context.Context, opts transport.ImportOptions) (string, error) {
+	if err := t.gate("ImportBegin"); err != nil {
+		return "", err
+	}
+	if err := t.authorize(ctx, "ImportBegin"); err != nil {
+		return "", err
+	}
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	if t.batchSvc == nil {
+		return "", &NilServiceError{Service: "BatchServicer"}
+	}
+
+	sessionID, err := t.batchSvc.ImportBegin(ctx, service.ImportOptions{
 		Format:        opts.Format,
-		Filename:      filename,
+		Filename:      opts.Filename,
 		KeyField:      opts.KeyField,
 		ValueMode:     opts.ValueMode,
 		ValueField:    opts.ValueField,
 		SkipHeader:    opts.SkipHeader,
 		Transactional: opts.Transactional,
+	})
+	if err != nil {
+		return "", translateError(err)
+	}
+	return sessionID, nil
+}
+
+// ImportAppend stages a chunk of a chunked import session directly
+// against the embedded BatchServicer.
+func (t *Transport) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if err := t.gate("ImportAppend"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "ImportAppend"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.batchSvc == nil {
+		return &NilServiceError{Service: "BatchServicer"}
 	}
 
-	result, err := t.batchSvc.Import(ctx, data, svcOpts)
+	if err := t.batchSvc.ImportAppend(ctx, sessionID, seq, chunk); err != nil {
+		return translateError(err)
+	}
+	return nil
+}
+
+// ImportCommit applies every staged chunk of a chunked import session
+// atomically, directly against the embedded BatchServicer.
+func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transport.ImportResult, error) {
+	if err := t.gate("ImportCommit"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ImportCommit"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.batchSvc == nil {
+		return nil, &NilServiceError{Service: "BatchServicer"}
+	}
+
+	result, err := t.batchSvc.ImportCommit(ctx, sessionID)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1420,19 +1501,36 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 
 	errs := make([]transport.ImportError, len(result.Errors))
 	for i, e := range result.Errors {
-		errs[i] = transport.ImportError{
-			Row:     e.Row,
-			Key:     e.Key,
-			Message: e.Message,
-		}
+		errs[i] = transport.ImportError{Row: e.Row, Key: e.Key, Message: e.Message}
 	}
-
 	return &transport.ImportResult{
 		Total:     result.Total,
 		Succeeded: result.Succeeded,
 		Failed:    result.Failed,
 		Errors:    errs,
 	}, nil
+}
+
+// ImportAbort discards a chunked import session without applying
+// anything, directly against the embedded BatchServicer.
+func (t *Transport) ImportAbort(ctx context.Context, sessionID string) error {
+	if err := t.gate("ImportAbort"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "ImportAbort"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.batchSvc == nil {
+		return &NilServiceError{Service: "BatchServicer"}
+	}
+
+	if err := t.batchSvc.ImportAbort(ctx, sessionID); err != nil {
+		return translateError(err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

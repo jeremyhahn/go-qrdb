@@ -1144,11 +1144,6 @@ func (h *holderScope) claim(ctx context.Context, username, nonceHex string, sign
 	if err != nil || !verifyShareClaim(pub, h.scope.ClaimLabel(), username, c.Nonce, signature) {
 		return nil, ErrChallengeVerificationFailed
 	}
-	// The envelope is the share already sealed (HPKE) to this holder's own
-	// key: ciphertext, which leaves the node as the claim response. The
-	// store's protected copy is destroyed by Claim; this one has to outlive
-	// the function to be delivered.
-	//secure:unwiped HPKE ciphertext sealed to the holder's key, returned to the transport as the one-time claim response
 	if !h.store.Exists(username) {
 		if h.store.Expired(username) {
 			return nil, ErrShareExpired
@@ -1158,6 +1153,15 @@ func (h *holderScope) claim(ctx context.Context, username, nonceHex string, sign
 	if err := admit(rec.ShareIndex); err != nil {
 		return nil, err
 	}
+	// The envelope is the share already sealed (HPKE) to this holder's own
+	// key: ciphertext, which leaves the node as the claim response. The
+	// store's protected copy is destroyed by Claim; this copy is embedded in
+	// the *ShareClaimResult returned below, which securecopy cannot trace
+	// through a struct literal, so it never sees this obligation discharged
+	// even though ownership passes, intact, to the caller that delivers it
+	// to the holder exactly once and does not persist it (the custodian
+	// envelope ruling).
+	//secure:unwiped HPKE ciphertext sealed to the holder's key, embedded in the ShareClaimResult returned for one-time delivery
 	envelope, err := h.store.Claim(ctx, username)
 	if err != nil {
 		return nil, err

@@ -301,16 +301,39 @@ const (
 // ---------------------------------------------------------------------------
 
 const (
-	// CertsGenerate grants access to generate TLS certificates.
-	CertsGenerate Permission = "certs:generate"
-	// CertsExport grants access to export TLS certificates as PKCS#12.
-	CertsExport Permission = "certs:export"
+	// CertsIssue grants issuing a certificate, from a certificate signing
+	// request, for an existing account of the caller's own tenant -- signed
+	// by that tenant's own Key B CA and bound to the account. The requester
+	// keeps its key: no verb generates a client's private key. (It replaces
+	// certs:generate, which did.)
+	CertsIssue Permission = "certs:issue"
+	// CertsEnroll grants enrolling a bring-your-own certificate -- one that
+	// chains to a trust anchor the caller's own tenant registered -- on an
+	// existing account of that tenant.
+	CertsEnroll Permission = "certs:enroll"
 	// CertsRevoke grants access to revoke TLS certificates.
 	CertsRevoke Permission = "certs:revoke"
 	// CertsList grants access to list TLS certificates.
 	CertsList Permission = "certs:list"
 	// CertsRead grants access to read a single certificate's metadata.
 	CertsRead Permission = "certs:read"
+)
+
+// ---------------------------------------------------------------------------
+// Trust-anchor permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// TrustAnchorsAdd grants registering CA certificates as trust anchors of
+	// the caller's own tenant: certificates chaining to one may then be
+	// enrolled on, and log in as, that tenant's accounts -- and no other
+	// tenant's.
+	TrustAnchorsAdd Permission = "trust_anchors:add"
+	// TrustAnchorsList grants listing the caller's own tenant's trust anchors.
+	TrustAnchorsList Permission = "trust_anchors:list"
+	// TrustAnchorsRemove grants withdrawing one of the caller's own tenant's
+	// trust anchors.
+	TrustAnchorsRemove Permission = "trust_anchors:remove"
 )
 
 // ---------------------------------------------------------------------------
@@ -970,7 +993,8 @@ var categories = []Category{
 		Name:  "Certificate Management",
 		Group: "Management Services",
 		Permissions: []Permission{
-			CertsGenerate, CertsExport, CertsRevoke, CertsList, CertsRead,
+			CertsIssue, CertsEnroll, CertsRevoke, CertsList, CertsRead,
+			TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		},
 	},
 	{

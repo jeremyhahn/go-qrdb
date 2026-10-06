@@ -218,7 +218,7 @@ func TestPropertyPrefixNestingNeverCollides(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	rng := rand.New(rand.NewSource(0xC0FFEE))
+	rng := rand.New(rand.NewSource(0xC0FFEE)) // #nosec G404 -- fixed-seed property-test fixture, not a cryptographic use
 	alphabet := "abc"
 	randKey := func() []byte {
 		segments := rng.Intn(4) + 1
@@ -473,7 +473,7 @@ func TestWalks_NeverDescendIntoAnUnreadableRootEntry(t *testing.T) {
 	if err := os.Chmod(lostAndFound, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(lostAndFound, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(lostAndFound, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	// New itself must succeed: it runs cleanupTempSetFiles, which walks the
 	// tree exactly like List and the iterator do.

@@ -95,7 +95,12 @@ var malformedOpenErrs = []error{
 	keydelivery.ErrInvalidMode,
 }
 
-// modeImporter is the function type dispatched per delivery Mode.
+// modeImporter is the function type dispatched per delivery Mode. There is
+// no DataRoot parameter: the tenant's location comes entirely from the
+// catalog's Assignment now (volume.Allocator.Resolve, through
+// BarrierRegistry.ImportTenant), which every node -- leader or follower --
+// resolves identically, so a follower never needs the leader's placement
+// record to tell it where to put the tenant's barrier.
 type modeImporter func(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error
 
 // modeHandlers is the map-based dispatch for delivery modes. Map-based

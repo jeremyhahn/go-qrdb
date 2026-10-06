@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	gomysql "github.com/go-sql-driver/mysql"
 )
 
 // openTestDB opens an in-memory embedded database for end-to-end assertions.
@@ -231,9 +233,9 @@ func TestEmbedded_NullRejectedByNotNullColumn(t *testing.T) {
 		t.Fatal("expected a NOT NULL violation, got nil error")
 	}
 
-	var stateErr *SQLStateError
-	if !errors.As(err, &stateErr) {
-		t.Fatalf("error = %v (%T), want *SQLStateError", err, err)
+	stateErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want *mysql.MySQLError", err, err)
 	}
 	// 1048 is MySQL's ER_BAD_NULL_ERROR, the same code go-sql-driver/mysql
 	// surfaces for this over the wire protocol.

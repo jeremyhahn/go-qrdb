@@ -1,6 +1,6 @@
 # Identity and RBAC — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Two command groups: `qrdb users` and `qrdb roles`. Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
@@ -250,14 +250,12 @@ See [../firstboot/cli.md](../firstboot/cli.md).
 
 ## A complete enrolment
 
-> **Known limitation:** `qrdb ca issue` below does not yet produce a
-> certificate that authenticates to any listener on any transport -- a
-> separate, in-progress fix. Use the `certs` CSR-sign or BYOC path for a
-> login certificate that works today.
+Run as an Admin of `acme`. The account comes first; `ca issue` binds the
+certificate to it.
 
 ```bash
-qrdb ca issue --username alice --tenant-id acme --out ./alice
-qrdb users create --username alice --tenant-id acme
+qrdb users create --username alice --email alice@acme.com --tenant-id acme
+qrdb ca issue --username alice --out ./alice
 ROLE=$(qrdb roles get-by-name Operator --output json | jq -r .id)
 USER=$(qrdb users list --tenant-id acme --output json | jq -r '.[] | select(.username=="alice") | .id')
 qrdb roles assign --user "$USER" --role "$ROLE"

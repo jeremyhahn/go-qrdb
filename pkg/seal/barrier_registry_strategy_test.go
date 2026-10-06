@@ -186,8 +186,9 @@ func TestRegisterTenantPooledShamir_InvalidThreshold(t *testing.T) {
 }
 
 // TestRegisterTenantPooledWithStrategy_NoPoolConfigured verifies the error
-// path: without a configured volume pool, the durable flow surfaces
-// ErrPoolNotConfigured rather than silently falling back to memory.
+// path: without a configured per-tenant registry (checked first -- see
+// allocatePooledBackend's doc comment) OR volume allocator, the durable
+// flow fails closed rather than silently falling back to memory.
 func TestRegisterTenantPooledWithStrategy_NoPoolConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
 	reg, err := NewBarrierRegistry(poolTestLogger(), system)
@@ -196,8 +197,8 @@ func TestRegisterTenantPooledWithStrategy_NoPoolConfigured(t *testing.T) {
 	}
 
 	_, err = reg.RegisterTenantPooledWithStrategy(context.Background(), "alpha", NewNoneStrategy())
-	if !errors.Is(err, ErrPoolNotConfigured) {
-		t.Errorf("RegisterTenantPooledWithStrategy without pool: got %v, want ErrPoolNotConfigured", err)
+	if !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
+		t.Errorf("RegisterTenantPooledWithStrategy without pool: got %v, want ErrPerTenantRegistryNotConfigured", err)
 	}
 }
 
@@ -228,7 +229,8 @@ func TestRegisterTenantPooledSystemManaged_RegistrationSucceeds(t *testing.T) {
 }
 
 // TestRegisterTenantPooledSystemManaged_NoPool verifies that the function
-// propagates ErrPoolNotConfigured when no volume pool is attached.
+// fails closed (ErrPerTenantRegistryNotConfigured, checked first -- see
+// allocatePooledBackend's doc comment) when nothing is attached.
 func TestRegisterTenantPooledSystemManaged_NoPool(t *testing.T) {
 	system := newPoolSystemBarrier(t)
 	reg, err := NewBarrierRegistry(poolTestLogger(), system)
@@ -237,8 +239,8 @@ func TestRegisterTenantPooledSystemManaged_NoPool(t *testing.T) {
 	}
 
 	_, err = reg.RegisterTenantPooledSystemManaged(context.Background(), "sys-mgd-nopool")
-	if !errors.Is(err, ErrPoolNotConfigured) {
-		t.Errorf("RegisterTenantPooledSystemManaged without pool: got %v, want ErrPoolNotConfigured", err)
+	if !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
+		t.Errorf("RegisterTenantPooledSystemManaged without pool: got %v, want ErrPerTenantRegistryNotConfigured", err)
 	}
 }
 

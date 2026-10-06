@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 )
 
 // ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ func (f *fakeCertAuthority) IsRevoked(_ context.Context, serial string) (bool, e
 	return f.revoked[serial], nil
 }
 
-func (f *fakeCertAuthority) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (f *fakeCertAuthority) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, errors.New("fakeCertAuthority: not implemented")
 }
 
@@ -153,9 +154,10 @@ func deliveryRequest(t *testing.T, peer *x509.Certificate) *http.Request {
 // revocation gate refused" by status code alone.
 func newReceiverWithRevocation(t *testing.T, ca *testCABundle, follower *testNodeBundle, revocation auth.RevocationChecker) *clusterkeys.Receiver {
 	t.Helper()
+	reg, _ := newTestRegistry(t)
 	recv, err := clusterkeys.NewReceiver(
 		newTestKDReceiver(t, follower.key, "follower-node-1"),
-		newTestRegistry(t),
+		reg,
 		&staticPlacementGetter{err: errors.New("placement gate reached")},
 		"cluster.local", "follower-node-1",
 		ca.pool, revocation, follower.pem,
@@ -371,17 +373,18 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 	t.Helper()
 	ctx := context.Background()
 
-	leaderReg := newTestRegistry(t)
+	leaderReg, leaderAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, tenantID)
+	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, tenantID)
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	leader := newTestNodeCert(t, ca, "cluster.local", "leader-node-1")
 	followerDataRoot := t.TempDir()
-	followerReg := newTestRegistry(t)
+	followerReg, followerAlloc := newTestRegistry(t)
 	initTestSystemBarrier(t, followerReg)
+	sealtest.ReserveVolumeTenant(t, followerAlloc, tenantID)
 
 	p := newTestPlacement(tenantID, "db-main", 1, 2, "follower-node-1", followerDataRoot)
 	recv, err := clusterkeys.NewReceiver(

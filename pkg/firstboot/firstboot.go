@@ -166,7 +166,7 @@ type UserCreator interface {
 // UserResolver looks a user up by its tenant-scoped username. qrdb's own
 // user.UserServicer satisfies it; it exists so createAdminUser can verify a
 // create-time collision on the admin's fixed, well-known username actually
-// names the admin, the same way role.NameResolver lets registerBuiltInRoles
+// names the admin, the same way role.NameResolver lets RegisterBuiltInRoles
 // verify a built-in role collision (go-qrdb#555).
 type UserResolver interface {
 	GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error)
@@ -187,7 +187,7 @@ type Dependencies struct {
 	// Roles is the role-creation surface. Required.
 	Roles RoleCreator
 
-	// RoleResolver looks a role up by name so registerBuiltInRoles can verify
+	// RoleResolver looks a role up by name so RegisterBuiltInRoles can verify
 	// that a create-time collision on a built-in role's reserved name (or
 	// generated id) actually names that exact canonical role — same tenant,
 	// name, System flag and permission set — before treating it as this
@@ -308,7 +308,7 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	}
 
 	// Step 2: built-in roles. Tolerates already-exists for idempotency.
-	_, err := registerBuiltInRoles(ctx, deps, tenantID, result)
+	_, err := RegisterBuiltInRoles(ctx, deps, tenantID, result)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +506,7 @@ func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID
 		existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal()
 }
 
-// registerBuiltInRoles installs every role returned by role.BuiltInRoles
+// RegisterBuiltInRoles installs every role returned by role.BuiltInRoles
 // under the supplied tenant. Already-exists for any individual role is
 // treated as idempotent success; only structural errors propagate.
 //
@@ -546,7 +546,7 @@ func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID
 //     accepting "same name and a guessed id means treat it as mine" would
 //     let any caller holding roles:create adopt another actor's in-flight
 //     or malformed role.
-func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID string, result *Result) (preexisting bool, err error) {
+func RegisterBuiltInRoles(ctx context.Context, deps Dependencies, tenantID string, result *Result) (preexisting bool, err error) {
 	roles := role.BuiltInRoles(tenantID)
 	// Under the standard (non-strict) posture also seed the Owner
 	// convenience role. In strict mode it is omitted entirely so a
@@ -615,7 +615,7 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 // permission set are ALL exactly want's — the only condition under which a
 // collision on a built-in role's create is safe to treat as "this run's own
 // idempotent re-attempt" rather than a genuine, unexplained conflict.
-// registerBuiltInRoles' two call sites (a RoleNameExistsError and a
+// RegisterBuiltInRoles' two call sites (a RoleNameExistsError and a
 // RoleIDExistsError) both call this the same way.
 //
 // The id is checked unconditionally, on BOTH collision kinds. For a reserved
@@ -663,13 +663,13 @@ func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, t
 	if err != nil || existing == nil {
 		return false
 	}
-	return roleMatchesSeed(existing, want)
+	return RoleMatchesSeed(existing, want)
 }
 
-// roleMatchesSeed is builtInRoleAlreadySeeded's comparison, factored out so
+// RoleMatchesSeed is builtInRoleAlreadySeeded's comparison, factored out so
 // BuiltInRoleAlreadySeededWithin can retry the LOOKUP without retrying — or
 // duplicating — the field-by-field verdict once a record is found.
-func roleMatchesSeed(existing, want *role.Role) bool {
+func RoleMatchesSeed(existing, want *role.Role) bool {
 	if existing.ID != want.ID {
 		return false
 	}
@@ -695,7 +695,7 @@ var (
 // bounded backoff while the verification lookup itself comes back not-found
 // or erroring. Exported because it is the ONE place that answers "is this
 // create collision my own idempotent re-attempt?" for every seeder of a
-// built-in role, not only this package's own registerBuiltInRoles:
+// built-in role, not only this package's own RegisterBuiltInRoles:
 // pkg/bootstrap's seedTenantRoles (ProvisionTenant's tenant-scoped seeding)
 // calls it too, rather than re-deriving the same verification a third time.
 //
@@ -713,7 +713,7 @@ var (
 //     this exact collision (see that function's doc).
 //   - A tenant's CreateTenant-triggered RoleSeeder (pkg/server/lifecycle's
 //     roleSeederAdapter) seeding the SAME tenant's built-ins concurrently
-//     with first-boot's own registerBuiltInRoles loop. Even with both sides
+//     with first-boot's own RegisterBuiltInRoles loop. Even with both sides
 //     writing atomically, the SAME replication lag applies across the two
 //     callers' stores.
 //   - Two concurrent ProvisionTenant calls for the SAME new tenant, racing
@@ -736,7 +736,7 @@ func BuiltInRoleAlreadySeededWithin(ctx context.Context, resolver role.NameResol
 	for {
 		existing, err := resolver.GetRoleByName(ctx, tenantID, want.Name)
 		if err == nil && existing != nil {
-			return roleMatchesSeed(existing, want)
+			return RoleMatchesSeed(existing, want)
 		}
 		if !time.Now().Before(deadline) {
 			return false

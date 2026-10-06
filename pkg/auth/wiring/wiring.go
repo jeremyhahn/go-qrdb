@@ -203,6 +203,21 @@ type AuthMiddlewareConfig struct {
 	// tenant it names, unchecked.
 	IssuerVerifier auth.IssuerVerifier
 
+	// PendingTenantAdmins, when non-nil, confines the trust-on-first-init
+	// window of a tenant barrier (middleware.WithPendingTenantAdmins): a
+	// dedicated-isolation tenant onboarded with a first admin may have its
+	// barrier initialized only with that admin's certificate, and under
+	// MTLSBindingPolicy "required" a tenant onboarded with none may not have
+	// it initialized by any certificate. qrdb's composers pass the node's
+	// lifecycle.Node.PendingAdmins -- the store tenant onboarding writes.
+	PendingTenantAdmins middleware.PendingTenantAdmins
+
+	// CertTargetGuard is the certificate target guard users:add_cert_binding
+	// is held to, the same one certs:issue and certs:enroll apply
+	// (lifecycle.Node.CertTargets). Nil leaves add_cert_binding failing
+	// closed.
+	CertTargetGuard middleware.CertTargetGuard
+
 	// RevocationCacheTTL is how long a NOT-REVOKED answer is cached on the
 	// authentication path.
 	//
@@ -405,6 +420,12 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		// entirely and so does not inherit the mTLS authenticator's own
 		// check above (go-qrdb#560 review, B2-1).
 		opts = append(opts, middleware.WithIssuerVerifier(cfg.IssuerVerifier))
+	}
+	if cfg.CertTargetGuard != nil {
+		opts = append(opts, middleware.WithCertTargetGuard(cfg.CertTargetGuard))
+	}
+	if cfg.PendingTenantAdmins != nil {
+		opts = append(opts, middleware.WithPendingTenantAdmins(cfg.PendingTenantAdmins))
 	}
 	for _, a := range cfg.ExtraAuthenticators {
 		if a == nil {

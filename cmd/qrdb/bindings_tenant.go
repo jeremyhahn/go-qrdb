@@ -32,7 +32,9 @@ func NewTenantBinding(log *logger.Logger, conn *ConnectionBinding) *TenantBindin
 	return &TenantBinding{logger: log, conn: conn}
 }
 
-// Create creates a new tenant with the given ID and name.
+// Create creates a new tenant with its first admin: the admin's CSR, signed by
+// the tenant's own CA, or the admin's own certificate, verified against the
+// trust anchors registered with it.
 func (b *TenantBinding) Create(req *transport.CreateTenantRequest) (*transport.CreateTenantResponse, error) {
 	b.logger.Debug("Create called")
 	cl, err := b.conn.loadClient()
@@ -147,4 +149,56 @@ func (b *TenantBinding) BarrierStatus(tenantID string) (*transport.TenantBarrier
 	}
 	b.logger.Debug("BarrierStatus completed", "tenantID", tenantID, "sealed", status.Sealed)
 	return status, nil
+}
+
+// AddTrustAnchors registers the CA certificates in certsPEM as trust anchors
+// of tenantID, which must be the connected caller's own tenant. The tenant is
+// an explicit argument, as on ListTrustAnchors and RemoveTrustAnchor: the
+// request type's TenantID is a path parameter that never crosses the JSON
+// boundary.
+func (b *TenantBinding) AddTrustAnchors(tenantID, certsPEM string) (*transport.TrustAnchorList, error) {
+	b.logger.Debug("AddTrustAnchors called", "tenantID", tenantID)
+	req := &transport.AddTrustAnchorsRequest{TenantID: tenantID, CertsPEM: certsPEM}
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("AddTrustAnchors failed", "error", err)
+		return nil, err
+	}
+	list, err := cl.Tenants().AddTrustAnchors(context.Background(), req)
+	if err != nil {
+		b.logger.Error("AddTrustAnchors failed", "error", err)
+		return nil, err
+	}
+	return list, nil
+}
+
+// ListTrustAnchors lists the connected tenant's trust anchors.
+func (b *TenantBinding) ListTrustAnchors(tenantID string) (*transport.TrustAnchorList, error) {
+	b.logger.Debug("ListTrustAnchors called", "tenantID", tenantID)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("ListTrustAnchors failed", "error", err)
+		return nil, err
+	}
+	list, err := cl.Tenants().ListTrustAnchors(context.Background(), tenantID)
+	if err != nil {
+		b.logger.Error("ListTrustAnchors failed", "error", err)
+		return nil, err
+	}
+	return list, nil
+}
+
+// RemoveTrustAnchor withdraws one of the connected tenant's trust anchors.
+func (b *TenantBinding) RemoveTrustAnchor(tenantID, fingerprint string) error {
+	b.logger.Debug("RemoveTrustAnchor called", "tenantID", tenantID)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("RemoveTrustAnchor failed", "error", err)
+		return err
+	}
+	if err := cl.Tenants().RemoveTrustAnchor(context.Background(), tenantID, fingerprint); err != nil {
+		b.logger.Error("RemoveTrustAnchor failed", "error", err)
+		return err
+	}
+	return nil
 }

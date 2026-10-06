@@ -218,6 +218,15 @@ is not served by the advertiser either and is already required by
 `LoadFromDir`, which fails closed with `*PartialMaterialError` when any of
 its three are missing.
 
+`confirmClusterCAPersisted` reads Key A's certificate back from the system
+shard with a linearizable read, right after the barrier unseals. On a
+restart that is exactly when a leader elected a moment earlier still refuses
+such reads until it commits an entry in its own term
+(`quicraft.ErrReadIndexNotReady`). The read is therefore retried, with
+bounded backoff for up to 30 seconds, on that error as on a not-leader
+answer (`lifecycle.AwaitClusterCACertificate`); every other error fails the
+boot at once.
+
 **Every path that writes CA material records the role, including `Join`.**
 `Join` is exported and reachable without going through `Resolve`, and it
 persists a joined node's material; the role write lives inside it rather than in

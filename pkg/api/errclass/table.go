@@ -25,8 +25,10 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
@@ -49,7 +51,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -325,11 +330,20 @@ var importRules = []rule{
 	as(&service.ImportParseError{}, InvalidArgument),
 	as(&service.ImportArchiveError{}, InvalidArgument),
 	as(&service.ImportTransactionAbortedError{}, Aborted),
-	as(&service.ImportInputTooLargeError{}, TooLarge),
 	as(&service.ImportArchiveExpandedTooLargeError{}, TooLarge),
 	as(&service.ImportTooManyEntriesError{}, InvalidArgument),
 	as(&service.ImportTooManyRowsError{}, InvalidArgument),
 	as(&service.ImportProposalTooLargeError{}, TooLarge),
+
+	// Chunked import session conditions (batch_import_session.go).
+	as(&service.ImportSessionNotFoundError{}, NotFound),
+	as(&service.ImportSessionOwnerError{}, PermissionDenied),
+	as(&service.ImportSequenceError{}, InvalidArgument),
+	as(&service.ImportQuotaExceededError{}, ResourceExhausted),
+	// Should never happen through the public API (see its own doc
+	// comment); reported as Internal rather than given a class that
+	// would suggest the caller can do something about it.
+	as(&service.ImportSessionCorruptError{}, Internal),
 }
 
 // restoreRules are the MVCC compaction and selective point-in-time restore
@@ -755,17 +769,102 @@ var identityRules = []rule{
 	as(&cert.ValidationError{}, InvalidArgument),
 }
 
+// volumeRules are pkg/volume's catalog and provider conditions: the volume
+// pool management surface itself (docs/volume-pools/api.md's status-mapping
+// table), and the per-cause rules tenantRules' VolumePoolReserveError
+// catch-all falls back to when none of these match first. They are placed
+// BEFORE tenantRules in the table (see rules below) so a
+// *tenant.VolumePoolReserveError wrapping, say, *volume.PoolNotFoundError
+// classifies as NotFound rather than the wrapper's own FailedPrecondition
+// catch-all: errors.As walks the whole chain, and Classify is first-match-
+// wins, so the more specific cause must be checked first.
+var volumeRules = []rule{
+	as(&volume.PoolNotFoundError{}, NotFound),
+	as(&volume.PoolAlreadyExistsError{}, AlreadyExists),
+	// Delete refused while tenants remain assigned, or Reserve refused
+	// because the provider named at create is not registered on the node
+	// handling the request (docs: "Create names a provider this node
+	// lacks").
+	as(&volume.PoolInUseError{}, FailedPrecondition),
+	as(&volume.ProviderNotRegisteredError{}, FailedPrecondition),
+	as(&volume.PoolCapacityExceededError{}, ResourceExhausted),
+	as(&volume.InvalidPoolRequestError{}, InvalidArgument),
+	as(&volume.InvalidAssignmentPathError{}, InvalidArgument),
+	as(&volume.InvalidPageRequestError{}, InvalidArgument),
+	as(&volume.AssignmentNotFoundError{}, NotFound),
+	// A tenant's Assignment already names a different pool than the one
+	// just requested: a state conflict, not a straightforward duplicate.
+	as(&volume.TenantAlreadyAssignedError{}, FailedPrecondition),
+	as(&volume.ReservationConflictError{}, Aborted),
+	as(&volume.MoveNotImplementedError{}, Unimplemented),
+	// This node cannot open or resolve the pool: a missing mount, an absent
+	// device, or a Lockable volume that failed to unlock (decision D6).
+	as(&volume.PoolUnavailableError{}, Unavailable),
+	as(&volume.OpenError{}, Unavailable),
+	as(&volume.ClosedVolumeError{}, Unavailable),
+	as(&volume.UsageError{}, Unavailable),
+	as(&volume.InvalidSpecError{}, InvalidArgument),
+	as(&volume.InvalidVolumeIdentityError{}, InvalidArgument),
+	// Composition-time/internal defects: never caused by a caller's request.
+	as(&volume.VolumeAlreadyOpenError{}, Internal),
+	as(&volume.InvalidCatalogDependencyError{}, Internal),
+	as(&volume.InvalidProviderError{}, Internal),
+	as(&volume.ProviderAlreadyRegisteredError{}, Internal),
+	as(&volume.EncodeError{}, Internal),
+	as(&volume.CorruptRecordError{}, Internal),
+	as(&volume.InvalidMasterKeyError{}, Internal),
+	as(&volume.VolumeKeyDerivationError{}, Internal),
+}
+
+// onboardingRules are tenant onboarding, certificate enrolment and trust
+// anchors. The wrappers bootstrap uses for a refused credential or an undone
+// provisioning (AdminCredentialRejectedError, ProvisioningUndoneError) carry
+// no row of their own: they classify as the cause they wrap.
+var onboardingRules = []rule{
+	as(&cert.InvalidCSRError{}, InvalidArgument),
+	as(&certenroll.InvalidCertificateError{}, InvalidArgument),
+	// A certificate that would log in as someone else is the request's fault,
+	// however well it chains.
+	as(&certenroll.IdentityMismatchError{}, InvalidArgument),
+	as(&trustanchor.EmptyBundleError{}, InvalidArgument),
+	as(&trustanchor.InvalidAnchorError{}, InvalidArgument),
+	as(&trustanchor.InvalidTenantError{}, InvalidArgument),
+	as(&trustanchor.CertificateNotTrustedError{}, InvalidArgument),
+	as(&trustanchor.AnchorNotFoundError{}, NotFound),
+	as(&trustanchor.TooManyAnchorsError{}, ResourceExhausted),
+	// Enrolling a bring-your-own certificate before registering any anchor:
+	// a precondition the caller clears by adding one.
+	as(&trustanchor.NoAnchorsError{}, FailedPrecondition),
+	as(&trustanchor.ExternallyManagedError{}, FailedPrecondition),
+	as(&tenantadmin.InvalidTenantError{}, InvalidArgument),
+	as(&service.CertEnrollmentFieldError{}, InvalidArgument),
+	as(&service.CertEnrollmentNotConfiguredError{}, Unimplemented),
+	// Key custody stays with the ceremony: certs:issue, certs:enroll and
+	// (through the auth middleware) users:add_cert_binding all refuse a
+	// Security Officer or (for a non-Owner caller) Owner target the same
+	// way, and every transport renders it as a permission refusal, not an
+	// internal error.
+	as(&service.CertTargetRefusedError{}, PermissionDenied),
+	as(&service.TenantOnboardingFieldError{}, InvalidArgument),
+	as(&service.TenantOnboardingNotConfiguredError{}, Unimplemented),
+	as(&bootstrap.MissingAdminCredentialError{}, InvalidArgument),
+	as(&bootstrap.ConflictingAdminCredentialError{}, InvalidArgument),
+	as(&bootstrap.InvalidTrustAnchorsError{}, InvalidArgument),
+	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
+}
+
 // tenantRules are the tenant-lifecycle conditions.
 var tenantRules = []rule{
 	as(&tenant.TenantScopeError{}, PermissionDenied),
-	// An explicit data root is retired: a tenant is placed through a named
-	// volume pool. The request itself is what the caller must change.
-	as(&tenant.DataRootRetiredError{}, InvalidArgument),
-	// A stored record that names a path is refused rather than trusted; the
-	// tenant must be re-created on a named volume pool.
-	as(&tenant.PersistedDataRootError{}, FailedPrecondition),
 	// A page size or page token the caller supplied that cannot be honoured.
 	as(&tenant.InvalidPageRequestError{}, InvalidArgument),
+	as(&tenant.DataRootIsolationTypeError{}, InvalidArgument),
+	// Reserving the tenant's named volume pool failed (pool not found,
+	// capacity exceeded, entitlement denied). volumeRules above, placed
+	// earlier in the table, classifies the specific cause when
+	// errors.As finds one; this is the catch-all for anything it does not
+	// (VolumePoolReserveError.Unwrap exposes the cause either way).
+	as(&tenant.VolumePoolReserveError{}, FailedPrecondition),
 	is(tenant.ErrEmptyTenantID, InvalidArgument),
 	is(tenant.ErrEmptyTenantName, InvalidArgument),
 	is(tenant.ErrEmptyPassphrase, InvalidArgument),
@@ -1282,6 +1381,8 @@ var authSamples = []error{
 	&authmw.UserDisabledError{},
 	&authmw.AuthMethodNotPermittedError{},
 	&authmw.CertBindingNotPermittedError{},
+	&authmw.FirstInitCertificateMismatchError{},
+	&authmw.FirstInitNotOnboardedError{},
 	&authmw.AuthChainError{},
 	&authmw.CertSerialUnresolvableError{},
 	&authmw.RateLimitedError{},

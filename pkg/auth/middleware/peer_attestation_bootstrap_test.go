@@ -55,11 +55,16 @@ func bootstrapGate(t *testing.T, rbacErr error) *gateFixture {
 	}
 	gate.now = func() time.Time { return now }
 	f := &gateFixture{cert: cert, verifier: v, audit: &mockAuditLogger{}, authz: &mockAuthorizer{err: rbacErr}, now: now}
+	// This fixture exercises the peer-attestation gate over the bootstrap
+	// windows, not the separate first-admin-onboarding gate (see
+	// first_init_gate_test.go), so it runs under the "enrolled" posture,
+	// which skips that gate when the tenant has no pending-admin record.
 	f.m = New(f.authz,
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
 		WithAuditLogger(f.audit),
 		WithPeerAttestationGate(gate),
+		WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
 	ctx, identity, err := f.m.authenticate(mtlsContext(cert))
 	if err != nil {
@@ -226,8 +231,13 @@ func TestBootstrapWindows_RateLimitHolds(t *testing.T) {
 		t.Cleanup(func() { _ = limiter.Close() })
 		policies := ratelimit.NewRegistry()
 		policies.Register(perm, ratelimit.Policy{RatePerSecond: 0.001, Burst: 1})
+		// This test exercises the rate limiter's precedence over the bootstrap
+		// windows, not the separate first-admin-onboarding gate (see
+		// first_init_gate_test.go), so it runs under the "enrolled" posture,
+		// which skips that gate when the tenant has no pending-admin record.
 		return New(&mockAuthorizer{err: errors.New("rbac: permission denied")},
-			WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+			WithRateLimiter(limiter), WithRateLimitPolicies(policies),
+			WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	}
 	t.Run("trust-on-first-init", func(t *testing.T) {
 		m := newLimited(t, permission.TenantBarrierInit)

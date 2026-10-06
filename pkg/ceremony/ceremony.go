@@ -775,9 +775,24 @@ func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []
 // refused with *SystemBarrierCredentialMismatchError rather than reported
 // operational -- this service must never let a caller believe a secret
 // unseals a barrier it does not.
-func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, secret []byte) error {
+func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, secret *secure.Buffer) error {
+	credsFor := func() (seal.Credentials, error) {
+		if secret == nil {
+			return seal.CredentialsFor(ctx, nil)
+		}
+		var creds seal.Credentials
+		var credsErr error
+		if err := secret.WithBytes(func(b []byte) error {
+			creds, credsErr = seal.CredentialsFor(ctx, b)
+			return credsErr
+		}); err != nil {
+			return seal.Credentials{}, err
+		}
+		return creds, credsErr
+	}
+
 	if !s.barrier.IsSealed() {
-		creds, err := seal.CredentialsFor(ctx, secret)
+		creds, err := credsFor()
 		if err != nil {
 			return &SystemBarrierInitError{Cause: err}
 		}
@@ -787,7 +802,7 @@ func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, sec
 		}
 		return nil
 	}
-	creds, err := seal.CredentialsFor(ctx, secret)
+	creds, err := credsFor()
 	if err != nil {
 		return &SystemBarrierInitError{Cause: err}
 	}

@@ -315,6 +315,23 @@ type MVCCRangeResult struct {
 }
 
 // ---------------------------------------------------------------------------
+// Import-staging lookup query types (aliases to statemachine package, for
+// the same reason the MVCC query types above are: pkg/statemachine answers
+// them too, on every KVStateMachine-family sm_type, and cannot import
+// pkg/service back to use a type defined here).
+// ---------------------------------------------------------------------------
+
+// ImportStageMetaQuery is an alias for statemachine.ImportStageMetaQuery.
+type ImportStageMetaQuery = statemachine.ImportStageMetaQuery
+
+// ImportStageChunkQuery is an alias for statemachine.ImportStageChunkQuery.
+type ImportStageChunkQuery = statemachine.ImportStageChunkQuery
+
+// ImportStageOpenSessionsQuery is an alias for
+// statemachine.ImportStageOpenSessionsQuery.
+type ImportStageOpenSessionsQuery = statemachine.ImportStageOpenSessionsQuery
+
+// ---------------------------------------------------------------------------
 // Lease lookup query types
 // ---------------------------------------------------------------------------
 

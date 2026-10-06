@@ -62,9 +62,12 @@ var expectedMethods = []string{
 	// Transaction (1)
 	"tx.Transaction",
 
-	// Batch (2)
+	// Batch (6)
 	"batch.Batch",
-	"batch.Import",
+	"batch.ImportBegin",
+	"batch.ImportAppend",
+	"batch.ImportCommit",
+	"batch.ImportAbort",
 
 	// Watch is server-streaming (handleWatchStream); not in the unary table.
 
@@ -152,8 +155,8 @@ var expectedMethods = []string{
 	"role.ReconcileBuiltIn",
 
 	// Certificate management (4)
-	"cert.Generate",
-	"cert.Export",
+	"cert.Issue",
+	"cert.Enroll",
 	"cert.Revoke",
 	"cert.List",
 
@@ -226,7 +229,7 @@ var expectedMethods = []string{
 	"ceremony.Status",
 	"ceremony.SignCSR",
 
-	// Tenant (6)
+	// Tenant (12)
 	"tenant.Create",
 	"tenant.Get",
 	"tenant.List",
@@ -236,6 +239,15 @@ var expectedMethods = []string{
 	"tenant.UpdateEntitlements",
 	"tenant.ListDeleted",
 	"tenant.ReconcileDeleted",
+	"volumepool.List",
+	"volumepool.Get",
+	"volumepool.Create",
+	"volumepool.Update",
+	"volumepool.Delete",
+	"volumepool.ListTenants",
+	"tenant.TrustAnchorAdd",
+	"tenant.TrustAnchorList",
+	"tenant.TrustAnchorRemove",
 }
 
 func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
@@ -253,6 +265,22 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 186 = 183 + cert.Issue and cert.Enroll replacing the single retired
+	// cert.Generate (net +1), plus tenant.TrustAnchorAdd/List/Remove (+3),
+	// minus cert.Export (-1): the tenant-onboarding verbs.
+	// 183 = 174 + 4 chunked import session verbs (batch.ImportBegin/
+	// ImportAppend/ImportCommit/ImportAbort) - 1 for the retired
+	// batch.Import, the single-message RPC these four replace on a
+	// dataset bigger than one pre-auth-capped message
+	// (docs/transactions/architecture.md "Import session", go-qrdb#576
+	// part 2)
+	// + the 6 volumepool.* verbs (docs/volume-pools/api.md): List, Get,
+	// Create, Update, Delete, ListTenants.
+	// cert.Export is retired entirely: encoding a PKCS#12 archive needs
+	// the private key, and no private key may reach a node (go-qrdb
+	// security review). The archive is now built LOCALLY, in the CLI and the
+	// desktop app, through the exported pkg/cert.EncodePKCS12 -- never over
+	// any transport. Server-side keygen (cert.Generate) is gone too.
 	// 174 = 171 + 3 verbs added independently on top of the shared 171
 	// baseline below, none of which replaces another: barrier.ClusterUnseal,
 	// the authorized cluster-unseal record (docs/barrier-seal);
@@ -286,7 +314,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 174
+	const wantCount = 186
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -380,7 +408,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"admin":    15,
 		"mvcc":     7,
 		"tx":       1,
-		"batch":    2,
+		"batch":    5,
 		"lease":    5,
 		"lock":     6,
 		"index":    5,
@@ -391,7 +419,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"cert":     4,
 		"barrier":  21,
 		"ceremony": 3,
-		"tenant":   9,
+		"tenant":   12,
 		"sql":      1,
 	}
 

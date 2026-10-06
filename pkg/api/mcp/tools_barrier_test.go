@@ -42,6 +42,7 @@ type mockBarrierService struct {
 	generateRecoveryKeysFn func(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error)
 	deleteRecoveryKeysFn   func(ctx context.Context) error
 	hasRecoveryKeysFn      func(ctx context.Context) (bool, error)
+	clusterUnsealFn        func(ctx context.Context) (*clusterseal.Report, error)
 }
 
 func newMockBarrierService() *mockBarrierService {
@@ -106,9 +107,53 @@ func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) erro
 // initialize paths answer for themselves through their canned results.
 func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
 
-// BarrierClusterUnseal answers as a node without cluster sealing does.
-func (m *mockBarrierService) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+// BarrierClusterUnseal answers as a node without cluster sealing does unless
+// clusterUnsealFn overrides it.
+func (m *mockBarrierService) BarrierClusterUnseal(ctx context.Context) (*clusterseal.Report, error) {
+	if m.clusterUnsealFn != nil {
+		return m.clusterUnsealFn(ctx)
+	}
 	return nil, clusterseal.ErrInactive
+}
+
+func TestHandleBarrierClusterUnseal(t *testing.T) {
+	report := &clusterseal.Report{Active: true, Epoch: 3, Node: "n1", Local: clusterseal.LocalServing}
+	svc := newMockBarrierService()
+	svc.clusterUnsealFn = func(context.Context) (*clusterseal.Report, error) { return report, nil }
+	h := handleBarrierClusterUnseal(svc)
+
+	result, err := h(context.Background(), buildCallToolRequest(t, "qrdb_barrier_cluster_unseal", nil))
+	if err != nil || result.IsError {
+		t.Fatalf("unseal: result=%+v err=%v", result, err)
+	}
+	var got clusterseal.Report
+	if err := json.Unmarshal([]byte(resultText(t, result)), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Active != true || got.Epoch != 3 || got.Node != "n1" || got.Local != clusterseal.LocalServing {
+		t.Fatalf("report = %+v", got)
+	}
+
+	// A nil report is rendered as the inactive report, never as null.
+	svc.clusterUnsealFn = func(context.Context) (*clusterseal.Report, error) { return nil, nil }
+	result, err = h(context.Background(), buildCallToolRequest(t, "qrdb_barrier_cluster_unseal", nil))
+	if err != nil {
+		t.Fatalf("unseal nil report: %v", err)
+	}
+	if text := resultText(t, result); text == "null" {
+		t.Fatal("nil report rendered as null")
+	}
+	got = clusterseal.Report{Active: true}
+	if err := json.Unmarshal([]byte(resultText(t, result)), &got); err != nil || got.Active {
+		t.Fatalf("nil report: decoded %+v err %v, want inactive", got, err)
+	}
+
+	svc.clusterUnsealFn = nil
+	_, err = h(context.Background(), buildCallToolRequest(t, "qrdb_barrier_cluster_unseal", nil))
+	var te *ToolError
+	if !errors.As(err, &te) || te.Tool != "qrdb_barrier_cluster_unseal" || !errors.Is(err, clusterseal.ErrInactive) {
+		t.Fatalf("err = %v, want ToolError wrapping ErrInactive", err)
+	}
 }
 
 func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {

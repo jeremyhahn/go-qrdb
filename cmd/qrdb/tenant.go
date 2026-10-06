@@ -17,6 +17,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -48,6 +49,7 @@ func newTenantCmd() *cobra.Command {
 		newTenantBarrierUnsealCmd(),
 		newTenantBarrierSealCmd(),
 		newTenantBarrierStatusCmd(),
+		newTenantTrustAnchorsCmd(),
 	)
 
 	return cmd
@@ -90,28 +92,62 @@ func newTenantCreateCmd() *cobra.Command {
 		name              string
 		isolationType     string
 		barrierAutoUnseal bool
-		dataRoot          string
+		volumePool        string
+		adminUsername     string
+		adminCSRFile      string
+		adminCertFile     string
+		adminChainFile    string
+		trustAnchorsFile  string
+		outDir            string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a new tenant",
-		Args:  cobra.NoArgs,
+		Short: "Create a new tenant with its first admin",
+		Long: `Create a tenant together with its first admin's login certificate. A tenant
+is created with its first admin, or not at all.
+
+The first admin keeps its own key: pass either the admin's certificate signing
+request (--admin-csr; the admin makes one with "qrdb ca csr"), which the
+tenant's own CA signs, or the admin's own certificate (--admin-cert), which
+must chain to one of the tenant's trust anchors (--trust-anchors). The admin's
+certificate is printed, or written to --out as admin-cert.pem.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			files := map[string]*string{}
 			req := &transport.CreateTenantRequest{
 				ID:                id,
 				Name:              name,
 				IsolationType:     transport.TenantIsolationType(isolationType),
 				BarrierAutoUnseal: barrierAutoUnseal,
-				DataRoot:          dataRoot,
+				VolumePool:        volumePool,
+				AdminUsername:     adminUsername,
+			}
+			files[adminCSRFile] = &req.AdminCSRPEM
+			files[adminCertFile] = &req.AdminCertPEM
+			files[adminChainFile] = &req.AdminChainPEM
+			files[trustAnchorsFile] = &req.TrustAnchorsPEM
+			for path, dest := range files {
+				if path == "" {
+					continue
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return &FileReadError{Path: path, Err: err}
+				}
+				*dest = string(data)
 			}
 
 			resp, err := client.Tenants().CreateTenant(cmd.Context(), req)
 			if err != nil {
 				return err
 			}
-
-			return printTenant(resp.Tenant)
+			if outDir != "" {
+				if err := writePEMFiles(outDir, map[string][]byte{"admin-cert.pem": []byte(resp.Admin.CertPEM)}); err != nil {
+					return err
+				}
+			}
+			return printCreatedTenant(resp)
 		},
 	}
 
@@ -122,10 +158,44 @@ func newTenantCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&isolationType, "isolation-type", "", "Isolation type (prefix|barrier|volume|raft); empty = prefix")
 	cmd.Flags().BoolVar(&barrierAutoUnseal, "barrier-auto-unseal", false,
 		"For a dedicated-isolation tenant (barrier/volume/raft), use system-managed auto-unseal instead of the secure self-managed default (entitlement-gated)")
-	cmd.Flags().StringVar(&dataRoot, "data-root", "",
-		"Retired: refused by the server. A tenant's location is a named volume pool resolved on each node; configure a dedicated disk as a volume pool instead")
+	cmd.Flags().StringVar(&volumePool, "pool", "",
+		"For a volume/raft isolation tenant, place it on this volume pool instead of its default; the tenant must be entitled to the pool")
+	cmd.Flags().StringVar(&adminUsername, "admin-username", "", "The tenant's first admin")
+	_ = cmd.MarkFlagRequired("admin-username")
+	cmd.Flags().StringVar(&adminCSRFile, "admin-csr", "", "The first admin's PEM certificate signing request")
+	cmd.Flags().StringVar(&adminCertFile, "admin-cert", "", "The first admin's own PEM certificate (must chain to --trust-anchors)")
+	cmd.Flags().StringVar(&adminChainFile, "admin-chain", "", "Optional PEM intermediates for --admin-cert")
+	cmd.Flags().StringVar(&trustAnchorsFile, "trust-anchors", "", "A PEM bundle of CA certificates to register as the tenant's trust anchors")
+	cmd.Flags().StringVar(&outDir, "out", "", "Also write the admin's certificate to this directory as admin-cert.pem")
+	cmd.MarkFlagsMutuallyExclusive("admin-csr", "admin-cert")
+	cmd.MarkFlagsOneRequired("admin-csr", "admin-cert")
 
 	return cmd
+}
+
+// printCreatedTenant prints a created tenant and its first admin.
+func printCreatedTenant(resp *transport.CreateTenantResponse) error {
+	switch outputFormat {
+	case "json":
+		return printJSON(resp)
+	case "yaml":
+		return printYAML(resp)
+	default:
+		if err := printTenant(resp.Tenant); err != nil {
+			return err
+		}
+		a := resp.Admin
+		_, _ = fmt.Fprintf(outputWriter, "Admin:      %s\n", a.Username)
+		_, _ = fmt.Fprintf(outputWriter, "Thumbprint: %s\n", a.Thumbprint)
+		if a.Serial != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Serial:     %s\n", a.Serial)
+		}
+		if a.AwaitsBarrierInit {
+			_, _ = fmt.Fprintf(outputWriter, "The admin's account is created when the admin runs \"tenant barrier-init\" with this certificate.\n")
+		}
+		_, _ = fmt.Fprintf(outputWriter, "\n--- Admin certificate ---\n%s\n", a.CertPEM)
+		return nil
+	}
 }
 
 // newTenantGetCmd creates the "tenant get" subcommand.
@@ -279,6 +349,7 @@ func newTenantSetEntitlementCmd() *cobra.Command {
 		allowVolumeStorage        bool
 		allowSystemManagedBarrier bool
 		allowedBarrierModes       []string
+		allowedVolumePools        []string
 	)
 
 	cmd := &cobra.Command{
@@ -295,6 +366,7 @@ func newTenantSetEntitlementCmd() *cobra.Command {
 					AllowVolumeStorage:        allowVolumeStorage,
 					AllowSystemManagedBarrier: allowSystemManagedBarrier,
 					AllowedBarrierModes:       allowedBarrierModes,
+					AllowedVolumePools:        allowedVolumePools,
 				},
 			}
 
@@ -312,6 +384,7 @@ func newTenantSetEntitlementCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allowVolumeStorage, "allow-volume-storage", false, "Permit provisioning databases on a dedicated storage volume")
 	cmd.Flags().BoolVar(&allowSystemManagedBarrier, "allow-system-managed-barrier", false, "Permit opting a dedicated-isolation tenant into system-managed barrier auto-unseal")
 	cmd.Flags().StringSliceVar(&allowedBarrierModes, "allowed-barrier-modes", nil, "Comma-separated dedicated-barrier sealing strategies the tenant may select (e.g. none,passphrase,shamir or an xkms hardware id); empty = software defaults")
+	cmd.Flags().StringSliceVar(&allowedVolumePools, "allowed-volume-pools", nil, "Comma-separated named volume pools the tenant may be placed on; the first is its default. Empty = no pool, fail-closed.")
 
 	return cmd
 }
@@ -549,11 +622,14 @@ func printTenant(t transport.TenantInfo) error {
 		if t.IsolationType != "" {
 			_, _ = fmt.Fprintf(outputWriter, "Isolation:  %s\n", t.IsolationType)
 		}
-		if t.DataRoot != "" {
-			_, _ = fmt.Fprintf(outputWriter, "DataRoot:   %s\n", t.DataRoot)
+		if t.VolumePool != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Pool:       %s\n", t.VolumePool)
 		}
 		_, _ = fmt.Fprintf(outputWriter, "CreatedAt:  %s\n", t.CreatedAt.String())
 		_, _ = fmt.Fprintf(outputWriter, "UpdatedAt:  %s\n", t.UpdatedAt.String())
+		if t.Refusal != nil {
+			_, _ = fmt.Fprintf(outputWriter, "Refused:    %s: %s\n", t.Refusal.Code, t.Refusal.Message)
+		}
 		return nil
 	}
 }

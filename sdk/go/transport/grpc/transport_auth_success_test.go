@@ -28,6 +28,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -136,12 +138,8 @@ type fakeCertProvider struct{}
 
 var _ cert.CertProvider = (*fakeCertProvider)(nil)
 
-func (f *fakeCertProvider) GenerateClientCert(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
-	return &cert.CertBundle{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY"), Serial: "001"}, nil
-}
-
-func (f *fakeCertProvider) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
-	return []byte("PKCS12"), nil
+func (f *fakeCertProvider) IssueClientCert(_ context.Context, _ *cert.IssueRequest) (*cert.IssuedCert, error) {
+	return &cert.IssuedCert{CertPEM: []byte("CERT"), Serial: "001"}, nil
 }
 
 func (f *fakeCertProvider) RevokeCert(_ context.Context, serial string) (*cert.RevokeResult, error) {
@@ -155,6 +153,41 @@ func (f *fakeCertProvider) ListCerts(_ context.Context, _ string) ([]*cert.CertR
 }
 
 func (f *fakeCertProvider) CACertPEM() []byte { return []byte("CA") }
+
+// ===========================================================================
+// fakeCertEnrollmentServicer
+// ===========================================================================
+
+type fakeCertEnrollmentServicer struct{}
+
+var _ service.CertEnrollmentServicer = (*fakeCertEnrollmentServicer)(nil)
+
+func (f *fakeCertEnrollmentServicer) SignCertificate(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	return &service.EnrolledCertificate{
+		UserID: 1, Username: req.Username, TenantID: req.TenantID,
+		CertPEM: []byte("CERT"), Serial: "001", Thumbprint: "thumb-001",
+		NotAfter: time.Unix(1800000000, 0).UTC(),
+	}, nil
+}
+
+func (f *fakeCertEnrollmentServicer) EnrollCertificate(_ context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	return &service.EnrolledCertificate{
+		Username: req.Username, TenantID: req.TenantID,
+		CertPEM: req.CertPEM, Thumbprint: "thumb-byoc",
+	}, nil
+}
+
+func (f *fakeCertEnrollmentServicer) AddTrustAnchors(_ context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+	return []trustanchor.Anchor{{Fingerprint: "fp1", Subject: "CN=ca", CertPEM: bundlePEM}}, nil
+}
+
+func (f *fakeCertEnrollmentServicer) ListTrustAnchors(_ context.Context, tenantID string) ([]trustanchor.Anchor, error) {
+	return []trustanchor.Anchor{{Fingerprint: "fp1", Subject: "CN=ca"}}, nil
+}
+
+func (f *fakeCertEnrollmentServicer) RemoveTrustAnchor(_ context.Context, tenantID, fingerprint string) error {
+	return nil
+}
 
 // ===========================================================================
 // Server setup
@@ -171,6 +204,7 @@ func startUserRoleCertServer(t *testing.T) (string, func()) {
 		grpcpkg.WithRegisterUserService(sharedFakeUserServicer),
 		grpcpkg.WithRegisterRoleService(&fakeRoleServicer{}),
 		grpcpkg.WithRegisterCertProvider(&fakeCertProvider{}),
+		grpcpkg.WithRegisterCertEnrollment(&fakeCertEnrollmentServicer{}),
 	)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -333,22 +367,54 @@ func TestGRPCCert_AllMethods_Success(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	t.Run("GenerateCert", func(t *testing.T) {
-		b, err := tr.GenerateCert(ctx, &transport.GenerateCertRequest{Username: "alice", TenantID: "t1"})
+	t.Run("IssueCert", func(t *testing.T) {
+		enrolled, err := tr.IssueCert(ctx, &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr-bytes", TTL: "1h"})
 		if err != nil {
-			t.Fatalf("GenerateCert: %v", err)
+			t.Fatalf("IssueCert: %v", err)
 		}
-		if b.Serial != "001" {
-			t.Fatalf("Serial = %q", b.Serial)
+		if enrolled.Serial != "001" {
+			t.Fatalf("Serial = %q", enrolled.Serial)
+		}
+		if enrolled.Thumbprint != "thumb-001" {
+			t.Fatalf("Thumbprint = %q", enrolled.Thumbprint)
+		}
+		if !enrolled.NotAfter.Equal(time.Unix(1800000000, 0).UTC()) {
+			t.Fatalf("NotAfter = %v", enrolled.NotAfter)
 		}
 	})
-	t.Run("ExportCert", func(t *testing.T) {
-		resp, err := tr.ExportCert(ctx, &transport.ExportCertRequest{CertPEM: "CERT", KeyPEM: "KEY", Passphrase: "x"})
+	t.Run("EnrollCert", func(t *testing.T) {
+		enrolled, err := tr.EnrollCert(ctx, &transport.EnrollCertRequest{Username: "alice", CertPEM: "leaf-pem", ChainPEM: "chain-pem"})
 		if err != nil {
-			t.Fatalf("ExportCert: %v", err)
+			t.Fatalf("EnrollCert: %v", err)
 		}
-		if resp.PKCS12 == "" {
-			t.Fatal("expected PKCS12 to be set")
+		if enrolled.Serial != "" {
+			t.Fatalf("Serial = %q, want empty for a bring-your-own certificate", enrolled.Serial)
+		}
+		if enrolled.Thumbprint != "thumb-byoc" {
+			t.Fatalf("Thumbprint = %q", enrolled.Thumbprint)
+		}
+	})
+	t.Run("AddTrustAnchors", func(t *testing.T) {
+		resp, err := tr.AddTrustAnchors(ctx, &transport.AddTrustAnchorsRequest{TenantID: "t1", CertsPEM: "bundle-pem"})
+		if err != nil {
+			t.Fatalf("AddTrustAnchors: %v", err)
+		}
+		if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+			t.Fatalf("Anchors = %+v", resp.Anchors)
+		}
+	})
+	t.Run("ListTrustAnchors", func(t *testing.T) {
+		resp, err := tr.ListTrustAnchors(ctx, "t1")
+		if err != nil {
+			t.Fatalf("ListTrustAnchors: %v", err)
+		}
+		if len(resp.Anchors) != 1 || resp.Anchors[0].Fingerprint != "fp1" {
+			t.Fatalf("Anchors = %+v", resp.Anchors)
+		}
+	})
+	t.Run("RemoveTrustAnchor", func(t *testing.T) {
+		if err := tr.RemoveTrustAnchor(ctx, "t1", "fp1"); err != nil {
+			t.Fatalf("RemoveTrustAnchor: %v", err)
 		}
 	})
 	t.Run("RevokeCert", func(t *testing.T) {

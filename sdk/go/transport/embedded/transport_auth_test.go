@@ -16,7 +16,6 @@ package embedded
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
@@ -24,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -148,21 +148,16 @@ func (m *mockRoleServicer) ResolvePermissions(ctx context.Context, roleIDs []str
 
 // mockCertProvider implements cert.CertProvider with function-field injection.
 type mockCertProvider struct {
-	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
-	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
-	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
-	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
-	tenantForSerialFn    func(ctx context.Context, serial string) (string, bool, error)
-	caCertPEMFn          func() []byte
+	issueClientCertFn func(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error)
+	revokeCertFn      func(ctx context.Context, serial string) (*cert.RevokeResult, error)
+	isRevokedFn       func(ctx context.Context, serial string) (bool, error)
+	listCertsFn       func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
+	tenantForSerialFn func(ctx context.Context, serial string) (string, bool, error)
+	caCertPEMFn       func() []byte
 }
 
-func (m *mockCertProvider) GenerateClientCert(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-	return m.generateClientCertFn(ctx, req)
-}
-
-func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-	return m.exportPKCS12Fn(ctx, certPEM, keyPEM, passphrase)
+func (m *mockCertProvider) IssueClientCert(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	return m.issueClientCertFn(ctx, req)
 }
 
 func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
@@ -1417,9 +1412,9 @@ func TestListPermissions_PermissionStringFormat(t *testing.T) {
 // CertClient tests
 // ---------------------------------------------------------------------------
 
-func TestGenerateCert_Success(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestIssueCert_Success(t *testing.T) {
+	mock := &mockCertEnrollmentServicer{
+		signCertificateFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			if req.Username != "alice" {
 				t.Errorf("expected username 'alice', got %q", req.Username)
 			}
@@ -1429,71 +1424,82 @@ func TestGenerateCert_Success(t *testing.T) {
 			if req.TTL != 24*time.Hour {
 				t.Errorf("expected TTL 24h, got %v", req.TTL)
 			}
-			return &cert.CertBundle{
-				CertPEM: []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"),
-				KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----"),
-				Serial:  "abc123",
+			if string(req.CSRPEM) != "csr-bytes" {
+				t.Errorf("expected csr 'csr-bytes', got %q", req.CSRPEM)
+			}
+			return &service.EnrolledCertificate{
+				UserID:     1001,
+				Username:   "alice",
+				TenantID:   "tenant-a",
+				CertPEM:    []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"),
+				Serial:     "abc123",
+				Thumbprint: "thumb-1",
+				NotAfter:   testTime(),
 			}, nil
 		},
 	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
 
-	bundle, err := tr.GenerateCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.GenerateCertRequest{
+	enrolled, err := tr.IssueCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.IssueCertRequest{
 		Username: "alice",
-		TenantID: "tenant-a",
+		CSRPEM:   "csr-bytes",
 		TTL:      "24h",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if bundle.Serial != "abc123" {
-		t.Errorf("expected serial 'abc123', got %q", bundle.Serial)
+	if enrolled.Serial != "abc123" {
+		t.Errorf("expected serial 'abc123', got %q", enrolled.Serial)
 	}
-	if bundle.CertPEM == "" {
+	if enrolled.CertPEM == "" {
 		t.Error("expected non-empty certPEM")
 	}
-	if bundle.KeyPEM == "" {
-		t.Error("expected non-empty keyPEM")
+	if enrolled.Thumbprint != "thumb-1" {
+		t.Errorf("expected thumbprint 'thumb-1', got %q", enrolled.Thumbprint)
+	}
+	if !enrolled.NotAfter.Equal(testTime()) {
+		t.Errorf("expected NotAfter %v, got %v", testTime(), enrolled.NotAfter)
 	}
 }
 
-func TestGenerateCert_NoTTL(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestIssueCert_NoTTL(t *testing.T) {
+	mock := &mockCertEnrollmentServicer{
+		signCertificateFn: func(_ context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			if req.TTL != 0 {
 				t.Errorf("expected zero TTL, got %v", req.TTL)
 			}
-			return &cert.CertBundle{
+			return &service.EnrolledCertificate{
 				CertPEM: []byte("cert"),
-				KeyPEM:  []byte("key"),
 				Serial:  "def456",
 			}, nil
 		},
 	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
 
-	bundle, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	enrolled, err := tr.IssueCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.IssueCertRequest{
 		Username: "alice",
+		CSRPEM:   "csr-bytes",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if bundle.Serial != "def456" {
-		t.Errorf("expected serial 'def456', got %q", bundle.Serial)
+	if enrolled.Serial != "def456" {
+		t.Errorf("expected serial 'def456', got %q", enrolled.Serial)
 	}
 }
 
-func TestGenerateCert_InvalidTTL(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
-			t.Fatal("generateClientCertFn should not be called with invalid TTL")
+func TestIssueCert_InvalidTTL(t *testing.T) {
+	mock := &mockCertEnrollmentServicer{
+		signCertificateFn: func(_ context.Context, _ *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+			t.Fatal("signCertificateFn should not be called with invalid TTL")
 			return nil, nil
 		},
 	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
 
-	_, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	_, err := tr.IssueCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.IssueCertRequest{
 		Username: "alice",
+		CSRPEM:   "csr-bytes",
 		TTL:      "not-a-duration",
 	})
 	if err == nil {
@@ -1501,24 +1507,25 @@ func TestGenerateCert_InvalidTTL(t *testing.T) {
 	}
 }
 
-func TestGenerateCert_NilProvider(t *testing.T) {
+func TestIssueCert_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	_, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	_, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{
 		Username: "alice",
 	})
-	assertNotImplementedError(t, err, "GenerateCert")
+	assertNotImplementedError(t, err, "IssueCert")
 }
 
-func TestGenerateCert_ServiceError(t *testing.T) {
-	mock := &mockCertProvider{
-		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func TestIssueCert_ServiceError(t *testing.T) {
+	mock := &mockCertEnrollmentServicer{
+		signCertificateFn: func(_ context.Context, _ *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, &cert.CertGenerateError{Err: errors.New("CA key sealed")}
 		},
 	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
 
-	_, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	_, err := tr.IssueCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.IssueCertRequest{
 		Username: "alice",
+		CSRPEM:   "csr-bytes",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1529,65 +1536,72 @@ func TestGenerateCert_ServiceError(t *testing.T) {
 	}
 }
 
-func TestExportCert_Success(t *testing.T) {
-	p12Data := []byte("mock-pkcs12-data")
-	mock := &mockCertProvider{
-		exportPKCS12Fn: func(_ context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-			if string(certPEM) != "test-cert" {
-				t.Errorf("expected certPEM 'test-cert', got %q", string(certPEM))
+func TestEnrollCert_Success(t *testing.T) {
+	mock := &mockCertEnrollmentServicer{
+		enrollCertificateFn: func(_ context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+			if req.Username != "alice" {
+				t.Errorf("expected username 'alice', got %q", req.Username)
 			}
-			if string(keyPEM) != "test-key" {
-				t.Errorf("expected keyPEM 'test-key', got %q", string(keyPEM))
+			if req.TenantID != "tenant-a" {
+				t.Errorf("expected tenantID 'tenant-a', got %q", req.TenantID)
 			}
-			if passphrase != "secret" {
-				t.Errorf("expected passphrase 'secret', got %q", passphrase)
+			if string(req.CertPEM) != "leaf-pem" {
+				t.Errorf("expected certPEM 'leaf-pem', got %q", req.CertPEM)
 			}
-			return p12Data, nil
+			if string(req.ChainPEM) != "chain-pem" {
+				t.Errorf("expected chainPEM 'chain-pem', got %q", req.ChainPEM)
+			}
+			return &service.EnrolledCertificate{
+				UserID:     1002,
+				Username:   "alice",
+				TenantID:   "tenant-a",
+				CertPEM:    []byte("leaf-pem"),
+				Thumbprint: "thumb-2",
+				NotAfter:   testTime(),
+			}, nil
 		},
 	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
 
-	resp, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM:    "test-cert",
-		KeyPEM:     "test-key",
-		Passphrase: "secret",
+	enrolled, err := tr.EnrollCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.EnrollCertRequest{
+		Username: "alice",
+		CertPEM:  "leaf-pem",
+		ChainPEM: "chain-pem",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := base64.StdEncoding.EncodeToString(p12Data)
-	if resp.PKCS12 != expected {
-		t.Errorf("expected base64 %q, got %q", expected, resp.PKCS12)
+	if enrolled.Serial != "" {
+		t.Errorf("expected empty serial for a bring-your-own certificate, got %q", enrolled.Serial)
+	}
+	if enrolled.Thumbprint != "thumb-2" {
+		t.Errorf("expected thumbprint 'thumb-2', got %q", enrolled.Thumbprint)
 	}
 }
 
-func TestExportCert_NilProvider(t *testing.T) {
+func TestEnrollCert_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	_, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM: "cert",
-		KeyPEM:  "key",
+	_, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{
+		Username: "alice",
+		CertPEM:  "leaf-pem",
 	})
-	assertNotImplementedError(t, err, "ExportCert")
+	assertNotImplementedError(t, err, "EnrollCert")
 }
 
-func TestExportCert_ServiceError(t *testing.T) {
-	mock := &mockCertProvider{
-		exportPKCS12Fn: func(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
-			return nil, &cert.CertExportError{Err: errors.New("invalid PEM")}
+func TestEnrollCert_ServiceError(t *testing.T) {
+	mock := &mockCertEnrollmentServicer{
+		enrollCertificateFn: func(_ context.Context, _ *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+			return nil, errors.New("chain verification failed")
 		},
 	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
 
-	_, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{
-		CertPEM: "bad-cert",
-		KeyPEM:  "bad-key",
+	_, err := tr.EnrollCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.EnrollCertRequest{
+		Username: "alice",
+		CertPEM:  "leaf-pem",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
-	}
-	var cee *cert.CertExportError
-	if !errors.As(err, &cee) {
-		t.Errorf("expected *cert.CertExportError, got %T", err)
 	}
 }
 

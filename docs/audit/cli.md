@@ -94,7 +94,8 @@ the message before treating any non-zero exit as a tamper finding; see
 
 ## What gets audited
 
-Identity (`user.*`, `role.*`), certificates (`cert.generate`, `cert.revoke`),
+Identity (`user.*`, `role.*`), certificates (`cert.issue`, `cert.enroll`,
+`cert.revoke`),
 every barrier (`initialize`, `unseal`, `seal`, `quorum-complete`,
 `distribute` and the rest, resource `barrier`), cluster
 administration (`admin.drain`, `admin.snapshot`, `admin.member.add/remove`),

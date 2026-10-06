@@ -1,6 +1,6 @@
 # Certificate Authority — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -9,13 +9,25 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Certs()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Generate client certificate | `POST /certs/generate` | `GenerateCert` | `cert.Generate` | `qrdb_cert_generate` | `GenerateCert` | `certs:generate` |
+| Issue a client certificate from a CSR | `POST /certs/issue` | `IssueCert` | `cert.Issue` | `qrdb_cert_issue` | `IssueCert` | `certs:issue` |
+| Enrol a bring-your-own certificate | `POST /certs/enroll` | `EnrollCert` | `cert.Enroll` | `qrdb_cert_enroll` | `EnrollCert` | `certs:enroll` |
 | Export PKCS#12 | `POST /certs/export` | `ExportCert` | `cert.Export` | `qrdb_cert_export` | `ExportCert` | `certs:export` |
 | Revoke certificate | `POST /certs/revoke` | `RevokeCert` | `cert.Revoke` | `qrdb_cert_revoke` | `RevokeCert` | `certs:revoke` |
 | List certificates | `GET /certs/list` | `ListCerts` | `cert.List` | `qrdb_cert_list` | `ListCerts` | `certs:list` |
 | Fetch the CA bootstrap certificate | `GET /v1/ca/bootstrap` | MISSING | MISSING | MISSING | `CACertPEM()` in process | **public**, conditionally registered |
 
-Four capabilities on all six transports, plus the public bootstrap route.
+Five capabilities on all six transports, plus the public bootstrap route.
+
+**No verb generates a client's private key.** Issue signs a certificate
+signing request the requester made with its own key; enrol binds a certificate
+the requester already holds. Both act on an **existing** account of the
+caller's own tenant and bind the certificate's public key to it in the same
+call. The trust anchors that enrolment verifies against are their own feature:
+[../trust-anchors/api.md](../trust-anchors/api.md).
+
+**BREAKING:** `POST /certs/generate` (`GenerateCert`, `cert.Generate`,
+`qrdb_cert_generate`) and the `certs:generate` permission are removed. They
+generated the client's private key on the server and returned it.
 
 ### The permission column is only half the authorization
 
@@ -26,7 +38,7 @@ tenant. A second check establishes the target:
 
 | Capability | Target tenant | Additional permission |
 |---|---|---|
-| Generate | the request's `tenantID` / `tenant_id` | — (`certs:generate` re-checked against the target) |
+| Issue, Enrol | the **caller's own** tenant — no request field names a tenant | — (`certs:issue` / `certs:enroll` re-checked against it) |
 | List | the request's `tenantID` / `tenant_id` | — (`certs:list` re-checked against the target) |
 | Revoke, serial **known** to this node | the owning tenant, resolved from the serial | — (`certs:revoke` re-checked against the owner) |
 | Revoke, serial **unknown** to this node | none — deny-by-serial | **`certs:revoke:cross`** (system tenant only) |
@@ -56,20 +68,46 @@ the missing capability is visible rather than inferred from a verb name.
 
 ## Schemas
 
-`POST /certs/generate` — `GenerateRequest`:
+The REST certificate bodies use camelCase field names; gRPC, QUIC and MCP use
+the snake_case names in `qrdb.proto` (`csr_pem`, `cert_pem`, `chain_pem`,
+`user_id`, `tenant_id`, `not_after`).
+
+`POST /certs/issue`:
 
 ```json
-{ "username": "alice", "tenantID": "acme", "ttl": "8760h" }
+{ "username": "alice", "csrPEM": "<PEM CERTIFICATE REQUEST>", "ttl": "8760h" }
 ```
 
-`username` becomes the certificate **CN**; `tenantID` becomes the **OU**; `ttl`
-zero or absent means the provider default (1 year).
+`username` names an account that must already exist in the caller's tenant; it
+becomes the certificate **CN**, and the caller's tenant becomes the **OU**.
+Only the CSR's public key is used — its Subject and any SANs it asks for are
+ignored. The CSR's signature must verify, and its key must be ECDSA P-256,
+P-384 or P-521, RSA of at least 2048 bits, or Ed25519. `ttl` is a Go duration;
+absent means the provider default (1 year). The certificate is signed by the
+tenant's own login CA and its SPKI thumbprint is bound to the account; if the
+binding fails, the certificate is revoked before the error is returned.
 
-Response — `CertBundle`:
+`POST /certs/enroll`:
 
 ```json
-{ "certPEM": "<PEM>", "keyPEM": "<PEM>", "serial": "3f2a9c…" }
+{ "username": "alice", "certPEM": "<PEM, leaf first>", "chainPEM": "<PEM intermediates>" }
 ```
+
+The leaf must chain to one of the tenant's registered trust anchors for client
+authentication, its CN must equal `username`, and the tenant it authenticates
+as (read by the mTLS authenticator's own rule) must be the caller's tenant.
+`chainPEM` is optional; any certificates after the leaf in `certPEM` are
+offered as intermediates too.
+
+Both return `201` with the bound certificate — never a key:
+
+```json
+{ "userID": 42, "username": "alice", "tenantID": "acme",
+  "certPEM": "<PEM>", "serial": "3f2a9c…", "thumbprint": "<SPKI SHA-256>",
+  "notAfter": "2027-10-03T10:00:00Z" }
+```
+
+`serial` is omitted for an enrolled certificate, which this CA did not issue.
 
 `GET /certs/list` — `tenantID` query parameter. Response elements are
 `CertRecord`:
@@ -99,7 +137,8 @@ PKCS#12 archive.
 
 | Property | Value |
 |---|---|
-| Key algorithm | ECDSA P-256 (CA and client) |
+| CA key algorithm | ECDSA P-256 |
+| Client key | the requester's own: ECDSA P-256/384/521, RSA ≥ 2048 bits, or Ed25519 |
 | CA validity | 10 years |
 | Default client validity | 1 year |
 | Extended key usage | **ClientAuth only** |
@@ -111,7 +150,7 @@ The CA private key is destroyed in memory when the barrier seals. While sealed:
 
 | Operation | Behaviour |
 |---|---|
-| Generate, export, revoke, `IsRevoked`, list | `BarrierSealedError` |
+| Issue, export, revoke, `IsRevoked`, list | `BarrierSealedError` |
 | `CACertPEM()` / `GET /v1/ca/bootstrap` | **still works** — the CA certificate is public data served from cache |
 
 That asymmetry is deliberate: a client needs the CA certificate to connect at
@@ -122,13 +161,19 @@ than merely inert.
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Success | 200 | `OK` |
+| Success | 200 (201 for issue and enrol) | `OK` |
 | Barrier sealed | 503 | `UNAVAILABLE` — `BarrierSealedError` |
 | CA key not loaded or destroyed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
 | Serial not found — declared and mapped, currently **produced by nothing**: `RevokeCert` is deny-by-serial by design and never returns it | 404 | `NOT_FOUND` — `CertNotFoundError` |
 | Export targets a revoked certificate | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
-| Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError` |
-| Generation or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
+| Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError`, `service.CertEnrollmentFieldError` |
+| CSR does not parse, its signature does not verify, or its key is not accepted | 400 | `INVALID_ARGUMENT` — `cert.InvalidCSRError` |
+| The named account does not exist in the caller's tenant | 404 | `NOT_FOUND` — `user.UserNotFoundError` |
+| Enrolled certificate does not chain to a trust anchor of the tenant | 400 | `INVALID_ARGUMENT` — `trustanchor.CertificateNotTrustedError` |
+| Enrolled certificate authenticates as another account or tenant | 400 | `INVALID_ARGUMENT` — `certenroll.IdentityMismatchError` |
+| Enrolment attempted with no trust anchor registered | 409 | `FAILED_PRECONDITION` — `trustanchor.NoAnchorsError` |
+| Issue or enrol not configured on this node | 501 | `UNIMPLEMENTED` — `service.CertEnrollmentNotConfiguredError` |
+| Signing or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Target tenant is not the caller's — for every caller, the system tenant included | 403 | `PERMISSION_DENIED` |
 | Deny-by-serial attempted without `certs:revoke:cross` | 403 | `PERMISSION_DENIED` |

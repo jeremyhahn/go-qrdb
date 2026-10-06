@@ -245,7 +245,7 @@ func TestIsCryptoUse_ExcludesGovernanceAndAmbiguousVerbs(t *testing.T) {
 		SealBootstrap, SealUnseal, SealSeal, SealRotateRootKey, SealRekey,
 		SealGenerateRecovery, CeremonySignCSR,
 		// Issuance and credential minting, not primitives on caller input.
-		CertsGenerate, PasswordsGenerate,
+		CertsIssue, PasswordsGenerate,
 		// Key lifecycle, including key entry / output.
 		KeysCreate, KeysRotate, KeysDelete, KeysList, KeysGet, KeysImport, KeysExport,
 		// PIV slot administration, as opposed to piv:use.

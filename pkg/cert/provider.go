@@ -17,15 +17,21 @@ package cert
 import "context"
 
 // CertProvider is the pluggable certificate management interface.
-// Implementations generate client certificates signed by a CA, manage
-// revocation, and export certificates for browser-based mTLS.
+// Implementations issue client certificates signed by a CA and manage
+// revocation.
+//
+// There is deliberately no server-side PKCS#12 export here: encoding one
+// requires the certificate's private key, and no private key may reach a
+// node (go-qrdb security review). A PKCS#12 archive is built LOCALLY, by
+// whoever already holds the key, with the package-level EncodePKCS12.
 type CertProvider interface {
-	// GenerateClientCert creates a client certificate signed by the CA.
-	GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error)
-
-	// ExportPKCS12 exports a certificate and key as PKCS#12 (.p12)
-	// for browser import.
-	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
+	// IssueClientCert signs a client certificate for req.PublicKey, naming
+	// req.Username in req.TenantID, with that tenant's own CA. It never
+	// generates a key.
+	//
+	// BREAKING: this replaces GenerateClientCert, which generated the
+	// client's private key on the server and returned it.
+	IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error)
 
 	// RevokeCert marks a certificate serial as revoked and reports what it
 	// found: RevokeResult.Outcome distinguishes a certificate this node

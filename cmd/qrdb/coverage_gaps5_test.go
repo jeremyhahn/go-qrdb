@@ -194,6 +194,22 @@ func (e *errorBatchService) Import(_ context.Context, _ io.Reader, _ service.Imp
 	return nil, errors.New("batch: import failed")
 }
 
+func (e *errorBatchService) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (e *errorBatchService) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (e *errorBatchService) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
+	return nil, nil
+}
+
+func (e *errorBatchService) ImportAbort(_ context.Context, _ string) error {
+	return nil
+}
+
 // errorTransactionService implements service.TransactionServicer, returning
 // errors for all operations.
 type errorTransactionService struct{}

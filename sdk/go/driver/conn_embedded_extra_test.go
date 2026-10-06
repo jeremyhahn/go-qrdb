@@ -22,6 +22,10 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	gomysql "github.com/go-sql-driver/mysql"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
 // newEmbeddedTestConn opens a raw embedded connection for driver-level tests.
@@ -238,6 +242,34 @@ func TestEmbeddedConn_ResetSessionRollsBack(t *testing.T) {
 	}
 }
 
+// TestEmbeddedConn_ResetSessionFailsClosedOnVariableResetFailure verifies
+// that a session variable ResetSession cannot restore discards the
+// connection rather than returning it to the pool with that variable still
+// at whatever the previous caller left it -- the exact leak ResetSession
+// exists to close, now closed on the failure path too.
+//
+// c.baseline is corrupted directly (white-box: this test lives in package
+// driver) to a value qrdb_concurrency's enum type refuses, standing in for
+// whatever real condition might make the engine's SetSessionVariable call
+// fail: ResetSession does not know or care why the restore failed, only
+// that it did, and must fail closed either way.
+func TestEmbeddedConn_ResetSessionFailsClosedOnVariableResetFailure(t *testing.T) {
+	conn := newEmbeddedTestConn(t, "resetfailclosed")
+	ctx := context.Background()
+
+	if _, ok := conn.baseline[provider.ConcurrencyVariable]; !ok {
+		t.Fatalf("baseline has no entry for %q; the injected failure below would be a no-op", provider.ConcurrencyVariable)
+	}
+	conn.baseline[provider.ConcurrencyVariable] = "not-a-real-concurrency-value"
+
+	if err := conn.ResetSession(ctx); !errors.Is(err, sqld.ErrBadConn) {
+		t.Fatalf("ResetSession error = %v, want driver.ErrBadConn", err)
+	}
+	if conn.IsValid() {
+		t.Error("connection reported valid after a failed session-variable reset")
+	}
+}
+
 // TestEmbeddedConn_QueryRejectsBadArgument verifies an unbindable argument is
 // reported before the statement reaches the engine.
 func TestEmbeddedConn_QueryRejectsBadArgument(t *testing.T) {
@@ -255,7 +287,10 @@ func TestEmbeddedConn_QueryRejectsBadArgument(t *testing.T) {
 }
 
 // TestEmbeddedConn_QueryRejectsInvalidSQL verifies a malformed statement is
-// reported with its MySQL error number attached.
+// refused with the engine's own error kept reachable. go-mysql-server does not
+// classify a syntax error with a MySQL number of its own (it is
+// ER_UNKNOWN_ERROR, 1105, over the wire as well), so it is not rendered as a
+// *mysql.MySQLError: it stays a *QueryExecError naming the statement.
 func TestEmbeddedConn_QueryRejectsInvalidSQL(t *testing.T) {
 	conn := newEmbeddedTestConn(t, "invalidsql")
 
@@ -264,8 +299,11 @@ func TestEmbeddedConn_QueryRejectsInvalidSQL(t *testing.T) {
 		t.Fatal("expected an error for malformed SQL")
 	}
 
-	var stateErr *SQLStateError
-	if !errors.As(err, &stateErr) {
-		t.Errorf("error = %v (%T), want a wrapped *SQLStateError", err, err)
+	var execErr *QueryExecError
+	if !errors.As(err, &execErr) || execErr.Query != "THIS IS NOT SQL" {
+		t.Fatalf("error = %v (%T), want a *QueryExecError naming the statement", err, err)
+	}
+	if _, isMySQL := err.(*gomysql.MySQLError); isMySQL {
+		t.Fatal("an unclassified engine error was given a MySQL number it does not have")
 	}
 }

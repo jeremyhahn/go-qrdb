@@ -440,17 +440,17 @@ func TestRunAuthLogin_FIDO2_ValidHex_NoClient(t *testing.T) {
 }
 
 // ===========================================================================
-// certs.go — writeCertBundle (66%)
+// certs.go — writePEMFiles (replaced writeCertBundle when server-side
+// keygen was retired) (66%)
 // ===========================================================================
 
-func TestWriteCertBundle_InvalidDir(t *testing.T) {
+func TestWritePEMFiles_InvalidDir(t *testing.T) {
 	// Write to a path under an existing FILE (so MkdirAll fails).
 	tmpFile := t.TempDir() + "/file.txt"
 	if err := os.WriteFile(tmpFile, []byte("x"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	bundle := &transport.CertBundle{CertPEM: "cert", KeyPEM: "key"}
-	err := writeCertBundle(tmpFile+"/subdir", bundle)
+	err := writePEMFiles(tmpFile+"/subdir", map[string][]byte{"cert.pem": []byte("cert")})
 	if err == nil {
 		t.Fatal("expected error when dir cannot be created under a file")
 	}

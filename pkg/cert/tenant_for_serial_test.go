@@ -44,7 +44,7 @@ func TestTenantForSerial_ResolvesTheIssuingTenant(t *testing.T) {
 	p := newTenantSerialProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -69,11 +69,11 @@ func TestTenantForSerial_DistinguishesTwoTenantsSharingAStore(t *testing.T) {
 	p := newTenantSerialProvider(t)
 	ctx := context.Background()
 
-	a, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "a-user", TenantID: "acme"})
+	a, err := generateForTest(ctx, p, &testRequest{Username: "a-user", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("issue acme: %v", err)
 	}
-	b, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "b-user", TenantID: "globex"})
+	b, err := generateForTest(ctx, p, &testRequest{Username: "b-user", TenantID: "globex"})
 	if err != nil {
 		t.Fatalf("issue globex: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestTenantForSerial_AgreesWithRevokeCert(t *testing.T) {
 	p := newTenantSerialProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}

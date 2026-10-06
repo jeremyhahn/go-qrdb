@@ -92,7 +92,7 @@ func TestWriteFileAtomic_OverwritesModeOfAPreExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
 
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("old"), 0o400); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -330,7 +330,7 @@ func TestRefuseSymlink_LstatFailurePropagates(t *testing.T) {
 	if err := os.Mkdir(locked, 0o000); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) // let t.TempDir() clean up
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) // #nosec G302 -- let t.TempDir() clean up; not a secret file's mode
 
 	path := filepath.Join(locked, "out")
 	err := refuseSymlink(path)

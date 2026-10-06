@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // getWhenReadable performs a linearizable KV read, retrying while the shard's
@@ -65,12 +66,17 @@ type raftMigrateStack struct {
 func newRaftMigrateStack(t *testing.T) *raftMigrateStack {
 	t.Helper()
 	reg := newVolumePooledRegistryWith(t, seal.NewNoneStrategy())
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	allocator := allocVal.(volume.Allocator)
 
 	tenants, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, volTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 			AllowDedicatedRaft:    true,
-		}))
+			AllowedVolumePools:    []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -81,6 +87,7 @@ func newRaftMigrateStack(t *testing.T) *raftMigrateStack {
 	dbSvc := service.NewDatabaseService(mgr,
 		service.WithEntitlementChecker(tenants),
 		service.WithTenantInfoLookup(tenants),
+		service.WithTenantDataRootResolver(reg),
 	)
 
 	host, _ := newSharedTestHost(t)
@@ -109,11 +116,10 @@ func (s *raftMigrateStack) createDedicatedRaftDB(t *testing.T, tenantID, db stri
 		database.DatabaseConfig{Name: db, Engine: database.EngineKV}); err != nil {
 		t.Fatalf("CreateForTenant(%s/%s): %v", tenantID, db, err)
 	}
-	ti, err := s.tenants.GetTenant(ctx, tenantID)
-	if err != nil {
+	if _, err := s.tenants.GetTenant(ctx, tenantID); err != nil {
 		t.Fatalf("GetTenant(%s): %v", tenantID, err)
 	}
-	return ti.DataRoot
+	return mustTenantDataRoot(t, s.reg, tenantID)
 }
 
 // TestRaftBackendFactory_MigrateTenantEncryption_NoneToPassphrase is the
@@ -179,7 +185,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToPassphrase(t *testing.
 	}
 
 	// At-rest proof: stop the shard so files flush, the plaintext must be absent.
-	dataRoot := mustTenantDataRoot(t, s.tenants, "rt")
+	dataRoot := mustTenantDataRoot(t, s.reg, "rt")
 	if err := s.raftReg.Close("rt", "appdata"); err != nil {
 		t.Fatalf("stop shard: %v", err)
 	}
@@ -278,14 +284,16 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir(t *testing.T) {
 	}
 }
 
-// mustTenantDataRoot returns a tenant's DataRoot or fails the test.
-func mustTenantDataRoot(t *testing.T, tenants *tenant.TenantService, id string) string {
+// mustTenantDataRoot returns a tenant's DataRoot, resolved through reg's
+// catalog (TenantInfo itself carries only the pool name), or fails the
+// test.
+func mustTenantDataRoot(t *testing.T, reg *seal.BarrierRegistry, id string) string {
 	t.Helper()
-	ti, err := tenants.GetTenant(context.Background(), id)
+	dataRoot, err := reg.LocalTenantDataRoot(context.Background(), id)
 	if err != nil {
-		t.Fatalf("GetTenant(%s): %v", id, err)
+		t.Fatalf("LocalTenantDataRoot(%s): %v", id, err)
 	}
-	return ti.DataRoot
+	return dataRoot
 }
 
 // TestRaftBackendFactory_MigrateTenantEncryption_InvalidTarget rejects a
@@ -373,7 +381,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_RecodeFailureRollsBack(t *te
 	}
 
 	// No staging copies are left behind under the tenant db tree.
-	dataRoot := mustTenantDataRoot(t, s.tenants, "rt")
+	dataRoot := mustTenantDataRoot(t, s.reg, "rt")
 	dbDir := filepath.Join(dataRoot, "databases", "appdata")
 	var staging []string
 	_ = filepath.WalkDir(dbDir, func(path string, d fs.DirEntry, _ error) error {

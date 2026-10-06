@@ -21,7 +21,6 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,18 +45,15 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 	if s.ceremonySvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
-	// req.Secret (the proto request's own bytes) is shared, not copied,
-	// all the way down to ceremony.InitializeOptions.Secret
-	// (holderpb.CeremonyInitFromPB, pkg/service's CeremonyInitialize) --
-	// wiping it here, after the service call below has consumed it, wipes
-	// every one of those views at once (go-qrdb#560 review item 7,
-	// follow-up).
-	defer secure.Wipe(req.Secret)
-
+	// req.Secret (the proto request's own bytes) is consumed into a
+	// *secure.Buffer by CeremonyInitFromPB, which this handler owns and
+	// destroys once the service call below has finished with it.
 	opts, err := holderpb.CeremonyInitFromPB(req)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
+	defer opts.Secret.Destroy()
+
 	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, opts)
 	if err != nil {
 		return nil, mapServiceError(err)

@@ -16,22 +16,25 @@ package seal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides pins
 // the two halves DestroyTenant is built from. ReleaseTenant forgets the
-// in-memory barrier and changes nothing durable -- the record that names the
-// DataRoot survives it, which is what lets a retried reclamation find a
-// directory whose removal failed. DropTenantRecords then removes the records
-// the boot path restores from.
+// in-memory barrier and changes nothing durable -- the catalog Assignment
+// naming the DataRoot survives it, which is what lets a retried reclamation
+// find a directory whose removal failed. DropTenantRecords then removes the
+// records the boot path restores from.
 func TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides(t *testing.T) {
 	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t)
+	reg, _ := newPooledTestRegistry(t)
+	allocator, _ := reg.volumeResources()
+	reserveTestVolumeTenant(t, reg, "acme")
 	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
@@ -43,8 +46,8 @@ func TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides(t *tes
 	if _, err := reg.GetTenant("acme"); !errors.Is(err, ErrTenantNotFound) {
 		t.Fatalf("barrier still registered: %v", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); err != nil {
-		t.Fatalf("ReleaseTenant removed the durable record: %v", err)
+	if _, err := allocator.Resolve(ctx, "acme"); err != nil {
+		t.Fatalf("ReleaseTenant removed the durable catalog assignment: %v", err)
 	}
 	if _, err := os.Stat(dataRoot); err != nil {
 		t.Fatalf("ReleaseTenant removed the DataRoot: %v", err)
@@ -56,8 +59,9 @@ func TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides(t *tes
 	if err := reg.DropTenantRecords(ctx, "acme"); err != nil {
 		t.Fatalf("DropTenantRecords: %v", err)
 	}
-	if _, err := system.Get(ctx, tenantRootStorePrefix+"acme"); !errors.Is(err, ErrSecretNotFound) {
-		t.Fatalf("tenant-root record survived DropTenantRecords: %v", err)
+	var notFound *volume.AssignmentNotFoundError
+	if _, err := allocator.Resolve(ctx, "acme"); !errors.As(err, &notFound) {
+		t.Fatalf("catalog assignment survived DropTenantRecords: %v", err)
 	}
 	if err := reg.RestoreVolumeTenants(ctx); err != nil {
 		t.Fatal(err)
@@ -79,51 +83,30 @@ func TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides(t *tes
 	}
 }
 
-// TestTenantDataRootCandidates_NamesEveryLocalPlace covers the three sources:
-// the in-memory registration, the persisted record and the pool-derived path.
-func TestTenantDataRootCandidates_NamesEveryLocalPlace(t *testing.T) {
+// TestTenantDataRootCandidates_NamesTheResolvedAssignment covers the
+// single-candidate contract: a tenant with a catalog Assignment reports
+// exactly the one directory RequireInsideLocalPool resolves; a tenant with
+// no Assignment reports no candidates (nil, nil) rather than an error.
+func TestTenantDataRootCandidates_NamesTheResolvedAssignment(t *testing.T) {
 	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t)
-	bases, err := reg.PoolBasePaths(ctx)
-	if err != nil || len(bases) != 1 {
-		t.Fatalf("PoolBasePaths = %v, %v", bases, err)
+	reg, _ := newPooledTestRegistry(t)
+
+	got, err := reg.TenantDataRootCandidates(ctx, "never-registered")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("candidates for an unassigned tenant = %v, %v; want (nil, nil)", got, err)
 	}
 
+	reserveTestVolumeTenant(t, reg, "acme")
 	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := reg.TenantDataRootCandidates(ctx, "acme")
+	got, err = reg.TenantDataRootCandidates(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0] != filepath.Clean(dataRoot) {
-		t.Fatalf("candidates = %v; want the one pool DataRoot, de-duplicated", got)
-	}
-
-	// A record for a tenant not registered in memory resolves to this node's
-	// own pool path for its slot -- the same directory the pool-derived scan
-	// names, reported once.
-	rec, _ := json.Marshal(tenantRootRecord{Pool: "default", Slot: 0})
-	if err := system.Put(ctx, tenantRootStorePrefix+"ghost", rec); err != nil {
-		t.Fatal(err)
-	}
-	got, err = reg.TenantDataRootCandidates(ctx, "ghost")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := filepath.Join(bases[0], "ghost"); len(got) != 1 || got[0] != want {
-		t.Fatalf("candidates = %v; want only %q", got, want)
-	}
-
-	// A record that names a path is refused, never offered as a candidate.
-	legacy, _ := json.Marshal(tenantRootRecord{Pool: "default", DataRoot: filepath.Join(t.TempDir(), "moved")})
-	if err := system.Put(ctx, tenantRootStorePrefix+"legacy", legacy); err != nil {
-		t.Fatal(err)
-	}
-	var abs *AbsoluteDataRootRecordError
-	if _, err := reg.TenantDataRootCandidates(ctx, "legacy"); !errors.As(err, &abs) {
-		t.Fatalf("candidates for a record naming a path = %v; want *AbsoluteDataRootRecordError", err)
+		t.Fatalf("candidates = %v; want the one resolved DataRoot %q", got, dataRoot)
 	}
 
 	if _, err := reg.TenantDataRootCandidates(ctx, ""); !errors.Is(err, ErrEmptyTenantID) {
@@ -131,9 +114,12 @@ func TestTenantDataRootCandidates_NamesEveryLocalPlace(t *testing.T) {
 	}
 }
 
-// TestTenantDataRootCandidates_WithoutAPoolUsesOnlyTheRecords: no pool, no
-// pool-derived path; a sealed system barrier contributes no record.
-func TestTenantDataRootCandidates_WithoutAPoolUsesOnlyTheRecords(t *testing.T) {
+// TestTenantDataRootCandidates_WithoutAPoolReturnsError verifies that with no
+// volume allocator/resolver configured, TenantDataRootCandidates returns the
+// underlying ErrPoolNotConfigured rather than silently reporting no
+// candidates -- a caller deciding what is safe to reclaim must not read "not
+// configured" as "nothing here".
+func TestTenantDataRootCandidates_WithoutAPoolReturnsError(t *testing.T) {
 	system, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
 		BarrierConfig{RootKeyPath: "system/root-key"}, testSoftwareStrategy(t))
 	if err != nil {
@@ -143,15 +129,15 @@ func TestTenantDataRootCandidates_WithoutAPoolUsesOnlyTheRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := reg.TenantDataRootCandidates(context.Background(), "acme")
-	if err != nil || len(got) != 0 {
-		t.Fatalf("candidates = %v, %v; want none", got, err)
+	_, err = reg.TenantDataRootCandidates(context.Background(), "acme")
+	if !errors.Is(err, ErrPoolNotConfigured) {
+		t.Fatalf("candidates without a pool = %v; want ErrPoolNotConfigured", err)
 	}
 }
 
 // TestHasTenantState_TracksEveryHoldingOfAnId walks one id through each kind
-// of state the registry can hold for it -- the in-memory barrier, the
-// tenant-root record, the slot assignment -- and back to none.
+// of state the registry can hold for it -- the in-memory barrier and the
+// catalog Assignment -- and back to none.
 func TestHasTenantState_TracksEveryHoldingOfAnId(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := newPooledTestRegistry(t)
@@ -160,6 +146,7 @@ func TestHasTenantState_TracksEveryHoldingOfAnId(t *testing.T) {
 	if err != nil || held {
 		t.Fatalf("before registration = %v, %v; want false", held, err)
 	}
+	reserveTestVolumeTenant(t, reg, "acme")
 	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", true); err != nil {
 		t.Fatal(err)
 	}
@@ -183,23 +170,25 @@ func TestHasTenantState_TracksEveryHoldingOfAnId(t *testing.T) {
 	}
 }
 
-// TestHasTenantState_SealedSystemBarrierStillSeesTheSlot: with the system
-// barrier sealed the record is unreadable, so the answer rests on the slot
-// assignment, which lives outside it in the replicated slot store.
-func TestHasTenantState_SealedSystemBarrierStillSeesTheSlot(t *testing.T) {
+// TestHasTenantState_SealedSystemBarrierStillSeesTheAssignment: the catalog
+// Assignment lives in the replicated system KV, not the system barrier's own
+// store, so sealing the system barrier must not hide it -- the answer rests
+// on the catalog, which HasTenantState consults regardless of seal state.
+func TestHasTenantState_SealedSystemBarrierStillSeesTheAssignment(t *testing.T) {
 	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t, WithReplicatedSlotStore(NewMemoryBackend()))
+	reg, _ := newPooledTestRegistry(t)
+	reserveTestVolumeTenant(t, reg, "acme")
 	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := reg.ReleaseTenant(ctx, "acme"); err != nil {
 		t.Fatal(err)
 	}
-	if err := system.Seal(); err != nil {
+	if err := reg.SystemBarrier().Seal(); err != nil {
 		t.Fatal(err)
 	}
 	held, err := reg.HasTenantState(ctx, "acme")
 	if err != nil || !held {
-		t.Fatalf("sealed system, slot held = %v, %v; want true", held, err)
+		t.Fatalf("sealed system, assignment held = %v, %v; want true", held, err)
 	}
 }

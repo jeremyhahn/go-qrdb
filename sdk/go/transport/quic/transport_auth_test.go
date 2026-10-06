@@ -414,16 +414,16 @@ func TestTransport_ListPermissions_Closed(t *testing.T) {
 // Closed state tests for Cert methods
 // ---------------------------------------------------------------------------
 
-func TestTransport_GenerateCert_Closed(t *testing.T) {
+func TestTransport_IssueCert_Closed(t *testing.T) {
 	tr, err := New(transport.WithAddress("localhost:63002"))
 	if err != nil {
 		t.Fatalf("New() returned unexpected error: %v", err)
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	_, err = tr.GenerateCert(ctx, &transport.GenerateCertRequest{Username: "test"})
+	_, err = tr.IssueCert(ctx, &transport.IssueCertRequest{Username: "test"})
 	if err == nil {
-		t.Fatal("GenerateCert() on closed transport should return error")
+		t.Fatal("IssueCert() on closed transport should return error")
 	}
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
@@ -431,16 +431,67 @@ func TestTransport_GenerateCert_Closed(t *testing.T) {
 	}
 }
 
-func TestTransport_ExportCert_Closed(t *testing.T) {
+func TestTransport_EnrollCert_Closed(t *testing.T) {
 	tr, err := New(transport.WithAddress("localhost:63002"))
 	if err != nil {
 		t.Fatalf("New() returned unexpected error: %v", err)
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	_, err = tr.ExportCert(ctx, &transport.ExportCertRequest{CertPEM: "cert"})
+	_, err = tr.EnrollCert(ctx, &transport.EnrollCertRequest{Username: "test"})
 	if err == nil {
-		t.Fatal("ExportCert() on closed transport should return error")
+		t.Fatal("EnrollCert() on closed transport should return error")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransport_AddTrustAnchors_Closed(t *testing.T) {
+	tr, err := New(transport.WithAddress("localhost:63002"))
+	if err != nil {
+		t.Fatalf("New() returned unexpected error: %v", err)
+	}
+	_ = tr.Close()
+	ctx := context.Background()
+	_, err = tr.AddTrustAnchors(ctx, &transport.AddTrustAnchorsRequest{TenantID: "t1"})
+	if err == nil {
+		t.Fatal("AddTrustAnchors() on closed transport should return error")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransport_ListTrustAnchors_Closed(t *testing.T) {
+	tr, err := New(transport.WithAddress("localhost:63002"))
+	if err != nil {
+		t.Fatalf("New() returned unexpected error: %v", err)
+	}
+	_ = tr.Close()
+	ctx := context.Background()
+	_, err = tr.ListTrustAnchors(ctx, "t1")
+	if err == nil {
+		t.Fatal("ListTrustAnchors() on closed transport should return error")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransport_RemoveTrustAnchor_Closed(t *testing.T) {
+	tr, err := New(transport.WithAddress("localhost:63002"))
+	if err != nil {
+		t.Fatalf("New() returned unexpected error: %v", err)
+	}
+	_ = tr.Close()
+	ctx := context.Background()
+	err = tr.RemoveTrustAnchor(ctx, "t1", "fp1")
+	if err == nil {
+		t.Fatal("RemoveTrustAnchor() on closed transport should return error")
 	}
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {

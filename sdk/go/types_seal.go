@@ -238,14 +238,20 @@ var NewStorageBarrier = seal.NewStorageBarrier
 var NewBarrierRegistry = seal.NewBarrierRegistry
 
 // BarrierRegistryOption configures a BarrierRegistry at construction
-// time. Re-exported so SDK consumers can attach the volume pool and
-// per-tenant Pebble registry without importing pkg/seal directly.
+// time. Re-exported so SDK consumers can attach the volume allocator,
+// volume resolver, and per-tenant Pebble registry without importing
+// pkg/seal directly.
 type BarrierRegistryOption = seal.Option
 
-// WithVolumePool attaches a volume pool to the BarrierRegistry. After
-// this option is applied, RegisterTenant calls that pass a nil
-// backend allocate a per-tenant path from the named pool.
-var WithVolumePool = seal.WithVolumePool
+// WithVolumeAllocator attaches the catalog (pkg/volume.Catalog, typed as
+// its narrower volume.Allocator seam) RegisterTenant's nil-backend flow
+// and RegisterVolumeTenant/ReattachVolumeTenant resolve a tenant's pool
+// and tenant-relative path through.
+var WithVolumeAllocator = seal.WithVolumeAllocator
+
+// WithVolumeResolver attaches the resolver that maps a pool name to this
+// node's own opened volume root directory (typically *volume.OpenVolumes).
+var WithVolumeResolver = seal.WithVolumeResolver
 
 // WithPerTenantRegistry attaches the per-tenant Pebble registry that
 // owns the lifecycle of the dedicated Pebble each barrier-mode tenant

@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
@@ -50,16 +51,33 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
-// DefaultMaxRecvMsgSize is the server's default per-message receive bound.
-// grpc-go buffers an incoming message up to this bound BEFORE any
-// interceptor -- so before authentication -- runs, so every RPC is bounded
-// here rather than left at grpc-go's much larger compiled-in default
-// (go-qrdb#576). It equals grpc-go's own historical compiled-in default
-// (4 MiB), made explicit here so it reads as a chosen bound rather than an
-// accident of the library.
-const DefaultMaxRecvMsgSize = 4 << 20
+// DefaultMaxMessageBytes is the gRPC message size cap applied when no
+// WithMaxMessageBytes option is given. It is the same pre-auth cap every
+// other transport applies by default (config.DefaultTransportMaxMessageBytes);
+// gRPC-go enforces it at message decode time, before any unary or stream
+// interceptor runs, so it bounds what an unauthenticated TLS peer can force
+// this server to allocate (go-qrdb#576). A caller with a larger payload
+// (bulk import) uses the chunked import session API instead of a single
+// oversized message. This is applied to both the TCP gRPC server (this
+// package) and the Unix domain socket server, which shares this server's
+// QRDBServiceServer implementation.
+const DefaultMaxMessageBytes = 4 << 20
+
+// ResolveMaxMessageBytes returns n if positive, else DefaultMaxMessageBytes,
+// so a server built without WithMaxMessageBytes still carries the
+// production cap rather than gRPC-go's own (unrelated) default. Exported
+// so the Unix domain socket server -- which shares this cap but builds its
+// own *grpc.Server -- resolves it identically rather than duplicating the
+// rule.
+func ResolveMaxMessageBytes(n int) int {
+	if n <= 0 {
+		return DefaultMaxMessageBytes
+	}
+	return n
+}
 
 // DefaultMaxConcurrentStreams bounds the number of simultaneously active
 // RPCs grpc-go admits on a single HTTP/2 connection. Stream creation (HEADERS
@@ -101,9 +119,12 @@ type Server struct {
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
 	tenantSvc         tenant.TenantServicer
+	volumeSvc         volume.Service
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
+	certEnroll        service.CertEnrollmentServicer
+	onboarding        service.TenantOnboardingServicer
 	collectionSvc     service.CollectionServicer
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
@@ -165,6 +186,18 @@ type Server struct {
 	// from it at Start and closed at Stop.
 	replicaForwarding *replicaforward.Config
 	forwarder         *ReplicaForwarder
+
+	// maxMessageBytes bounds a single gRPC message this server accepts or
+	// produces. Zero or negative resolves to DefaultMaxMessageBytes. See
+	// WithMaxMessageBytes.
+	maxMessageBytes int
+
+	// maxConnsPerPeer bounds the number of concurrent TCP connections a
+	// single remote IP may hold open against this server's listener.
+	// Zero means unlimited (connlimit.New's convention); the orchestrator
+	// resolves the configured default before calling WithMaxConnsPerPeer,
+	// so this field only sees "the caller's actual choice."
+	maxConnsPerPeer int
 }
 
 // ServerOption configures optional Server dependencies.
@@ -221,6 +254,21 @@ func WithMaxConcurrentStreams(n uint32) ServerOption {
 	return func(s *Server) {
 		s.maxConcurrentStreams = n
 	}
+}
+
+// WithMaxMessageBytes bounds a single gRPC message this server accepts or
+// produces. n <= 0 resolves to DefaultMaxMessageBytes at Start; there is
+// no way to request an unbounded message.
+func WithMaxMessageBytes(n int) ServerOption {
+	return func(s *Server) { s.maxMessageBytes = n }
+}
+
+// WithMaxConnsPerPeer bounds the number of concurrent TCP connections a
+// single remote IP may hold open against this server's listener. n <= 0
+// means unlimited. Has no effect when the server is started on a
+// WithListener-provided listener the caller already wrapped itself.
+func WithMaxConnsPerPeer(n int) ServerOption {
+	return func(s *Server) { s.maxConnsPerPeer = n }
 }
 
 // WithMVCC configures the gRPC server with an MVCC key-value service.
@@ -397,6 +445,17 @@ func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = svc }
 }
 
+// WithCertEnrollment configures the certificate issue/enrol and trust-anchor
+// service behind IssueCert, EnrollCert and TrustAnchor*.
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
+	return func(s *Server) { s.certEnroll = svc }
+}
+
+// WithTenantOnboarding configures the service behind TenantCreate.
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
+	return func(s *Server) { s.onboarding = svc }
+}
+
 // WithCollectionService configures the gRPC server with a collection service.
 func WithCollectionService(svc service.CollectionServicer) ServerOption {
 	return func(s *Server) { s.collectionSvc = svc }
@@ -405,6 +464,12 @@ func WithCollectionService(svc service.CollectionServicer) ServerOption {
 // WithTenantService configures the gRPC server with a tenant management service.
 func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithVolumeService configures the gRPC server with the volume pool
+// management surface (docs/volume-pools/api.md).
+func WithVolumeService(svc volume.Service) ServerOption {
+	return func(s *Server) { s.volumeSvc = svc }
 }
 
 // WithBackupService configures the gRPC server with a backup management service.
@@ -550,6 +615,13 @@ func (s *Server) Start() error {
 			return &StartError{Addr: s.addr, Err: err}
 		}
 	}
+	// Per-peer connection cap: without it, a single remote IP can open
+	// unlimited concurrent TCP connections against this listener, each
+	// good for DefaultMaxMessageBytes of allocation before gRPC has
+	// authenticated anything on it (go-qrdb#576).
+	if s.maxConnsPerPeer > 0 {
+		ln = connlimit.New(ln, s.maxConnsPerPeer)
+	}
 	s.listener = ln
 
 	// Feed module-declared public gRPC methods into the auth middleware
@@ -650,10 +722,19 @@ func (s *Server) Start() error {
 	if maxStreams == 0 {
 		maxStreams = DefaultMaxConcurrentStreams
 	}
+	maxMsgBytes := ResolveMaxMessageBytes(s.maxMessageBytes)
 	serverOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(unaryChain),
 		grpc.StreamInterceptor(streamChain),
-		grpc.MaxRecvMsgSize(DefaultMaxRecvMsgSize),
+		// MaxRecvMsgSize only: the pre-auth exposure go-qrdb#576 closes is an
+		// unauthenticated peer forcing an allocation on the RECEIVE side,
+		// before anything has checked who is asking. A response this server
+		// itself chooses to send (a `kv range`/`scan` whose matches exceed
+		// 4 MiB) is under no such threat model -- the server decided its own
+		// size -- so it is deliberately NOT capped here. grpc-go's
+		// MaxSendMsgSize default (effectively unbounded, math.MaxInt32) is
+		// the server-side default, same as leaving it unset entirely.
+		grpc.MaxRecvMsgSize(maxMsgBytes),
 		grpc.MaxConcurrentStreams(maxStreams),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             DefaultKeepaliveMinTime,
@@ -696,10 +777,13 @@ func (s *Server) Start() error {
 		credentialSvc:     s.credentialSvc,
 		dekSvc:            s.dekSvc,
 		tenantSvc:         s.tenantSvc,
+		volumeSvc:         s.volumeSvc,
 		userSvc:           s.userSvc,
 		userAuthFactorSvc: s.userAuthFactorSvc,
 		roleSvc:           s.roleSvc,
 		certProv:          s.certProv,
+		certEnroll:        s.certEnroll,
+		onboarding:        s.onboarding,
 		collectionSvc:     s.collectionSvc,
 		backupSvc:         s.backupSvc,
 		rebalanceSvc:      s.rebalanceSvc,

@@ -23,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -35,6 +38,7 @@ import (
 type flakyClusterCAProvider struct {
 	cert           *x509.Certificate
 	notLeaderCalls int   // answers *service.NotLeaderError this many times first
+	transientErr   error // when set, answered instead of NotLeaderError for those calls
 	permanentErr   error // when set, answered immediately, never retried
 	calls          int
 }
@@ -47,6 +51,9 @@ func (f *flakyClusterCAProvider) Certificate(context.Context) (*x509.Certificate
 		return nil, f.permanentErr
 	}
 	if f.calls <= f.notLeaderCalls {
+		if f.transientErr != nil {
+			return nil, f.transientErr
+		}
 		return nil, &service.NotLeaderError{ShardID: 1}
 	}
 	return f.cert, nil
@@ -70,6 +77,44 @@ func TestAwaitClusterCACertificate_RetriesTransientNotLeader(t *testing.T) {
 	}
 	if stub.calls != 3 {
 		t.Errorf("Certificate called %d times, want 3 (2 transient failures + 1 success)", stub.calls)
+	}
+}
+
+// TestAwaitClusterCACertificate_RetriesReadIndexNotReady proves a freshly
+// elected leader's ReadIndex warm-up is waited out, not treated as fatal. The
+// error is wrapped exactly as the built-in provider returns it on a restarted
+// node right after its unseal -- cakey.StoreError over service.ReadError over
+// quicraft.ErrReadIndexNotReady -- which used to make qrdbd exit at boot.
+func TestAwaitClusterCACertificate_RetriesReadIndexNotReady(t *testing.T) {
+	want := &x509.Certificate{}
+	stub := &flakyClusterCAProvider{cert: want, notLeaderCalls: 2, transientErr: &cakey.StoreError{
+		Op: "get", Detail: "__sys:cluster_ca/certificate", Err: &service.ReadError{Err: quicraft.ErrReadIndexNotReady},
+	}}
+
+	got, err := AwaitClusterCACertificate(context.Background(), stub, time.Second, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("AwaitClusterCACertificate: %v", err)
+	}
+	if got != want {
+		t.Error("expected the certificate returned once the read index became ready")
+	}
+	if stub.calls != 3 {
+		t.Errorf("Certificate called %d times, want 3 (2 not-ready reads + 1 success)", stub.calls)
+	}
+}
+
+// TestAwaitClusterCACertificate_ReadIndexNotReadyPastDeadline proves a read
+// index that never becomes ready still fails the boot once the deadline
+// passes, returning the not-ready error itself.
+func TestAwaitClusterCACertificate_ReadIndexNotReadyPastDeadline(t *testing.T) {
+	stub := &flakyClusterCAProvider{notLeaderCalls: 1 << 30, transientErr: &service.ReadError{Err: quicraft.ErrReadIndexNotReady}}
+
+	_, err := AwaitClusterCACertificate(context.Background(), stub, 20*time.Millisecond, time.Millisecond, 5*time.Millisecond)
+	if !errors.Is(err, quicraft.ErrReadIndexNotReady) {
+		t.Fatalf("AwaitClusterCACertificate = %v, want quicraft.ErrReadIndexNotReady", err)
+	}
+	if stub.calls < 2 {
+		t.Errorf("Certificate called %d times, want at least 2 (retried before the deadline)", stub.calls)
 	}
 }
 

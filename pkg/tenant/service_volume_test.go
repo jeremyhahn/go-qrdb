@@ -23,13 +23,16 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
-// volumeEntitlements permits both volume isolation and dedicated volume storage.
+// volumeEntitlements permits both volume isolation and dedicated volume
+// storage, entitled to the fixture's "default" pool (sealtest.PooledRegistry).
 func volumeEntitlements() *quota.Entitlements {
 	return &quota.Entitlements{
 		AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 		AllowVolumeStorage:    true,
+		AllowedVolumePools:    []string{"default"},
 	}
 }
 
@@ -40,7 +43,7 @@ func newVolumeService(t *testing.T) (*TenantService, *seal.BarrierRegistry) {
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t)
 	svc, err := NewTenantService(store, reg, testLogger(),
-		WithDefaultEntitlements(volumeEntitlements()))
+		WithDefaultEntitlements(volumeEntitlements()), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -72,8 +75,9 @@ func TestCreateTenant_Volume_AllocatesDataRootAndBarrier(t *testing.T) {
 	if info.BarrierAutoUnseal {
 		t.Error("default volume tenant must be self-managed (BarrierAutoUnseal=false)")
 	}
-	if info.DataRoot == "" || !strings.Contains(info.DataRoot, "vtenant") {
-		t.Errorf("DataRoot = %q, want a pool path containing the tenant ID", info.DataRoot)
+	dataRoot, err := reg.LocalTenantDataRoot(ctx, "vtenant")
+	if err != nil || dataRoot == "" || !strings.Contains(dataRoot, "vtenant") {
+		t.Errorf("LocalTenantDataRoot(vtenant) = %q, %v; want a pool path containing the tenant ID", dataRoot, err)
 	}
 	if info.Quotas == nil || info.Quotas.CurrentRaftGroups != 1 {
 		t.Errorf("CurrentRaftGroups = %v, want 1 (one local raft group per volume tenant)", info.Quotas)
@@ -106,7 +110,8 @@ func TestCreateTenant_Volume_SystemManaged_AutoUnsealed(t *testing.T) {
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 			AllowVolumeStorage:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}), WithVolumeAllocator(volumeAllocatorFor(t, reg)))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -178,5 +183,66 @@ func TestCreateTenant_Volume_SystemTenantRejected(t *testing.T) {
 	_, err := svc.CreateTenant(context.Background(), tenantid.System, "System", IsolationVolume)
 	if err == nil {
 		t.Fatal("expected error creating system tenant with volume isolation, got nil")
+	}
+}
+
+// TestUpdateQuotas_Volume_AdjustsCatalogReservation proves security review
+// finding 6: changing a volume-isolation tenant's MaxStorageBytes quota
+// also adjusts its catalog reservation, keeping the two in step rather
+// than letting the catalog's number go stale the moment an operator
+// changes the quota after creation.
+func TestUpdateQuotas_Volume_AdjustsCatalogReservation(t *testing.T) {
+	svc, reg := newVolumeService(t)
+	ctx := context.Background()
+	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
+	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationVolume); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	allocator := volumeAllocatorFor(t, reg)
+	before, err := allocator.Resolve(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Resolve (before): %v", err)
+	}
+	t.Logf("reservation at create: %d bytes", before.ReservedBytes)
+
+	info, err := svc.UpdateQuotas(ctx, "acme", &quota.Quotas{MaxStorageBytes: 12345})
+	if err != nil {
+		t.Fatalf("UpdateQuotas: %v", err)
+	}
+	if info.Quotas.MaxStorageBytes != 12345 {
+		t.Fatalf("TenantInfo.Quotas.MaxStorageBytes = %d, want 12345", info.Quotas.MaxStorageBytes)
+	}
+
+	after, err := allocator.Resolve(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Resolve (after): %v", err)
+	}
+	if after.ReservedBytes != 12345 {
+		t.Fatalf("catalog Assignment.ReservedBytes after UpdateQuotas = %d, want 12345 (kept in step with the quota)", after.ReservedBytes)
+	}
+}
+
+// TestUpdateQuotas_Prefix_NeverTouchesTheCatalog proves the new wiring is
+// scoped to volume/raft tenants: a prefix-isolation tenant has no catalog
+// Assignment at all, and UpdateQuotas must not try to adjust one.
+func TestUpdateQuotas_Prefix_NeverTouchesTheCatalog(t *testing.T) {
+	svc, reg := newVolumeService(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "acme-prefix", "Acme Prefix", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.UpdateQuotas(ctx, "acme-prefix", &quota.Quotas{MaxStorageBytes: 999}); err != nil {
+		t.Fatalf("UpdateQuotas: %v", err)
+	}
+
+	allocator := volumeAllocatorFor(t, reg)
+	var notFound *volume.AssignmentNotFoundError
+	if _, err := allocator.Resolve(ctx, "acme-prefix"); !errors.As(err, &notFound) {
+		t.Fatalf("Resolve(prefix tenant) error = %v, want *volume.AssignmentNotFoundError (no catalog Assignment at all)", err)
 	}
 }

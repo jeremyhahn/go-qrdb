@@ -111,7 +111,7 @@ func TestCreateForTenant_DedicatedWAL_EntitlementRejected(t *testing.T) {
 func TestCreateForTenant_DedicatedWAL_NonRaftCleared(t *testing.T) {
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxDedicatedWALGroups: 5}}
 	// A prefix tenant so the IsolationRaft backend-forcing path does not run.
-	info := &tenant.TenantInfo{ID: "rt", IsolationType: tenant.IsolationPrefix, DataRoot: t.TempDir()}
+	info := &tenant.TenantInfo{ID: "rt", IsolationType: tenant.IsolationPrefix}
 	svc := newReplicaDatabaseService(t, info, f)
 	ctx := tenant.WithTenantID(context.Background(), "rt")
 

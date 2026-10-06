@@ -1,6 +1,6 @@
 # SQL — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Design and boundaries are in [architecture.md](architecture.md). This file is
 the implementation contract: schemas, invariants, error codes, limits and the
@@ -29,9 +29,11 @@ In-process paths, both gated on `qrdb_sql`:
   sizes the destination from `Columns()`, so a wider row would index past it
   and a narrower one would leave the previous row's values in the unfilled
   slots.
-- `sdk/go/gorm` — the GORM dialector. See [gorm.md](gorm.md) for the two
-  in-process DSN schemes (`node://`, `embedded://`), which differ in exactly
-  whether the relational catalog is reachable.
+- `sdk/go/gorm` — `Open` and `NewConfig`, which configure the stock
+  `gorm.io/driver/mysql` dialector for the in-process driver. QRDB has no GORM
+  dialector of its own. See [gorm.md](gorm.md) for the two in-process DSN
+  schemes (`node://`, `embedded://`), which differ in exactly whether the
+  relational catalog is reachable.
 
 ## Configuration
 
@@ -411,7 +413,7 @@ ALTER TABLE users DROP FOREIGN KEY fk_users_company;
 
 Properties worth knowing:
 
-- **Violations surface as the standard MySQL errors**: 1452 (`ER_NO_REFERENCED_ROW_2`) for a child row with no parent, 1451 (`ER_ROW_IS_REFERENCED_2`) for a parent row that still has children. `sdk/go/gorm` maps both to `gorm.ErrForeignKeyViolated`.
+- **Violations surface as the standard MySQL errors**: 1452 (`ER_NO_REFERENCED_ROW_2`) for a child row with no parent, 1451 (`ER_ROW_IS_REFERENCED_2`) for a parent row that still has children. `gorm.io/driver/mysql` maps both to `gorm.ErrForeignKeyViolated`, in-process and over the wire port alike.
 - **Constraint names are database-scoped**, as in MySQL: adding a constraint whose name is already used by *any* table in the database is rejected with `duplicate foreign key constraint name`. (go-mysql-server itself only checks the declaring table, so this rule lives in `pkg/service.TableService`.)
 - **The backing index is built, not just declared.** A constraint added to a non-empty table gets its index populated from the existing rows; an empty index would silently make the constraint reject every child row rather than error.
 - **Self-referential constraints work**, and appear on both sides of the reverse lookup.
@@ -510,7 +512,7 @@ resolved. So the provider memoizes, for the duration of one statement:
 | The scope is opened by `QRDBSession.CommandBegin` and closed by `CommandEnd` | every SQL surface brackets every statement with them: go-mysql-server's MySQL handler, the PostgreSQL wire (each executed statement, simple or extended, and the describe of each parameterized statement at Parse), the ad-hoc query service (each request) and the embedded driver (`Exec`, `Prepare`, and a `Query` until its rows are closed). A caller that brackets nothing resolves on every lookup |
 | Only `SELECT`, `WITH`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `SHOW`, `DESCRIBE`/`DESC`, `EXPLAIN`, `TABLE` and `VALUES` statements are memoized — by their first keyword, after whitespace, comments and parentheses | none of them can change a definition. `CREATE`, `ALTER`, `DROP`, `RENAME`, `TRUNCATE`, `CALL` and `EXECUTE` re-resolve on every lookup, so a DDL statement sees its own changes; a statement opening with an executable comment (`/*! ... */`) is not memoized either |
 | The scope serves only the statement text it was first used with | a statement the engine runs on the same session while the command is open is not served another statement's answers |
-| A command cannot begin while another is open on the session: `CommandBegin` returns `CommandInProgressError` | a command begun inside another would drop the open statement's savepoint, and with it that statement's pending writes. The MySQL and PostgreSQL wires run one statement at a time per connection, so they never meet this. `database/sql` does not serialize statements on one connection: within a `sql.Tx` or `sql.Conn`, a statement run while a query's rows are still open reaches the embedded driver on the same session, and is refused -- as the network MySQL and PostgreSQL drivers refuse it. The next statement after the rows are read or closed runs normally. The driver's `Ping` succeeds without running a statement while one is open, and does not mark the connection bad: `database/sql` closing it would wait forever on the caller's own open rows. `ResetSession` is the opposite case -- a pooled connection reset with a statement still open (`QRDBSession.CommandOpen`), inside an explicit transaction or not, is reported bad (`ErrBadConn`, the only error `database/sql` acts on there) and discarded, never handed to the next caller with the previous user's transaction, the open statement's implicit write-set, or their row locks |
+| A command cannot begin while another is open on the session: `CommandBegin` returns `CommandInProgressError` | a command begun inside another would drop the open statement's savepoint, and with it that statement's pending writes. The MySQL and PostgreSQL wires run one statement at a time per connection, so they never meet this. `database/sql` does not serialize statements on one connection: within a `sql.Tx` or `sql.Conn`, a statement run while a query's rows are still open reaches the embedded driver on the same session, and is refused -- as the network MySQL and PostgreSQL drivers refuse it. The next statement after the rows are read or closed runs normally. The driver's `Ping` succeeds without running a statement while one is open, and does not mark the connection bad: `database/sql` closing it would wait forever on the caller's own open rows. `ResetSession` is the opposite case -- a pooled connection reset with a statement still open (`QRDBSession.CommandOpen`), inside an explicit transaction or not, is reported bad (`ErrBadConn`, the only error `database/sql` acts on there) and discarded, never handed to the next caller with the previous user's transaction, the open statement's implicit write-set, or their row locks. `ResetSession` also restores every session system variable (`SET FOREIGN_KEY_CHECKS = 0` included) to this connection's own baseline -- the values it held when the connector opened it, so a connector option such as a DSN's `concurrency=` survives -- before the connection is handed out again, so a caller that set one and never unset it -- the stock GORM migrator's `DropTable` on a failed drop, for one -- cannot leave it changed for whoever the pool hands that connection to next. It fails closed: a variable it cannot read or restore (`*SessionVariableResetError`) marks the connection bad and returns `ErrBadConn`, so `database/sql` discards it, the same as a transaction it cannot roll back (`(*embeddedConn).resetSessionVariables`, `sdk/go/driver/conn_embedded.go`) |
 | A failed resolution is never memoized | the next lookup reports its own outcome |
 | Nothing outlives the command | DDL committed by any session is seen by this session's next statement — the invalidation is the statement boundary, so there is no revision to compare and nothing to go stale |
 
@@ -611,6 +613,29 @@ lock was granted. The full contract — lock modes, the lock table, timeouts
 ### Conflicts surface as MySQL 1213
 
 A losing commit clears the write-set (matching InnoDB, which rolls back a transaction that hits `ER_LOCK_DEADLOCK`) and returns a `TransactionConflictError` wrapped in go-mysql-server's `sql.ErrLockDeadlock` — which `sql.CastSQLError` maps to **MySQL error 1213 / SQLSTATE 40001**. That is the code `database/sql` clients and ORM retry loops already recognise as "retry the transaction". A genuine infrastructure error (an unreachable leader, say) leaves the write-set in place instead, so `COMMIT` may safely be retried without losing buffered work.
+
+### What the in-process driver returns for an engine error
+
+`sdk/go/driver` returns the **same error type a MySQL wire client gets**: for a
+failure go-mysql-server classifies with a MySQL error number, the in-process
+connection (`embedded://`, `node://`) returns go-sql-driver/mysql's
+`*mysql.MySQLError` -- `Number`, `SQLState` and `Message` -- bare, as the top
+of the error, from `Exec`, `Query`, `Prepare`, row iteration and `COMMIT`
+alike. A 1062, a 1452 and a 1213 look the same in-process as they do over the
+wire port, and `gorm.io/driver/mysql`'s translator, which asserts the error
+*is* a `*mysql.MySQLError`, recognises them.
+
+A failure the engine does **not** classify -- its `ER_UNKNOWN_ERROR` (1105)
+fallback, which is what a context cancellation, a syntax error, or one of
+QRDB's own typed errors (`*provider.RelationalCatalogUnavailableError`,
+`WriteSetLimitError`, `CrossDatabaseTransactionError`, ...) becomes -- is not
+given a number it does not have. It stays typed inside `*driver.QueryExecError`
+(or `*driver.PrepareError`), so `errors.Is(err, context.Canceled)` and
+`errors.As` against QRDB's error types keep working. Over the wire those same
+failures can only arrive as a 1105 message.
+
+The REST and gRPC `database/sql` transports are unchanged: they report the
+server's response through `*driver.QueryExecError`.
 
 ### What is *not* transactional
 

@@ -17,11 +17,10 @@ package rest
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"strconv"
+	"net/url"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -101,73 +100,99 @@ type batchImportWireResponse struct {
 	} `json:"errors"`
 }
 
-// ImportFile streams a CSV/JSON/archive file to POST /batch/import as a
-// multipart form and returns the per-row import result. The active
-// database scope is carried by the transport's data-plane header
-// round-tripper (/batch is a data-plane prefix), so no explicit database
-// field is sent on the wire.
+// ---------------------------------------------------------------------------
+// Chunked import session
+// ---------------------------------------------------------------------------
+
+// importBeginWireRequest matches the JSON payload for
+// POST /batch/import/begin.
+type importBeginWireRequest struct {
+	Format        string `json:"format"`
+	Filename      string `json:"filename"`
+	KeyField      string `json:"key_field"`
+	ValueMode     string `json:"value_mode"`
+	ValueField    string `json:"value_field"`
+	SkipHeader    bool   `json:"skip_header"`
+	Transactional bool   `json:"transactional"`
+}
+
+// importBeginWireResponse matches the JSON payload returned by
+// POST /batch/import/begin.
+type importBeginWireResponse struct {
+	SessionID string `json:"session_id"`
+}
+
+// ImportFile reads filename's entire contents from data and imports it as
+// key-value pairs by driving a chunked import session (ImportBegin/
+// ImportAppend/ImportCommit below) -- see transport.ImportFileChunked.
 func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	return transport.ImportFileChunked(ctx, t, filename, data, opts, 0)
+}
 
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-
-	// The multipart filename must be non-empty: Go's server-side
-	// ParseMultipartForm treats a part whose Content-Disposition carries an
-	// empty filename as a form VALUE rather than a FILE, so r.FormFile
-	// would not find it. Stdin imports pass an empty filename, so default
-	// it here. The value is only used server-side for "auto" format
-	// detection, which explicit-format callers bypass.
-	partName := filename
-	if partName == "" {
-		partName = "upload"
+// ImportBegin starts a chunked import session via POST /batch/import/begin.
+func (t *Transport) ImportBegin(ctx context.Context, opts transport.ImportOptions) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
 	}
-	fw, err := mw.CreateFormFile("file", partName)
+
+	wireReq := importBeginWireRequest{
+		Format:        opts.Format,
+		Filename:      opts.Filename,
+		KeyField:      opts.KeyField,
+		ValueMode:     opts.ValueMode,
+		ValueField:    opts.ValueField,
+		SkipHeader:    opts.SkipHeader,
+		Transactional: opts.Transactional,
+	}
+	var wireResp importBeginWireResponse
+	if err := t.postJSONDecode(ctx, "ImportBegin", "/batch/import/begin", wireReq, &wireResp); err != nil {
+		return "", err
+	}
+	return wireResp.SessionID, nil
+}
+
+// ImportAppend stages chunk as sequence seq of sessionID via
+// POST /batch/import/{session}/append?seq=N, with chunk as the raw
+// request body (not JSON/base64), so the universal pre-auth cap bounds
+// it with no encoding overhead.
+func (t *Transport) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	path := fmt.Sprintf("/batch/import/%s/append?seq=%d", url.PathEscape(sessionID), seq)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, bytes.NewReader(chunk))
 	if err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
+		return &transport.RequestError{Method: "ImportAppend", Err: err}
 	}
-	if _, err := io.Copy(fw, data); err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
-	}
+	httpReq.Header.Set("Content-Type", "application/octet-stream")
 
-	fields := map[string]string{
-		"format":        opts.Format,
-		"keyField":      opts.KeyField,
-		"valueMode":     opts.ValueMode,
-		"valueField":    opts.ValueField,
-		"skipHeader":    strconv.FormatBool(opts.SkipHeader),
-		"transactional": strconv.FormatBool(opts.Transactional),
-	}
-	for k, v := range fields {
-		if err := mw.WriteField(k, v); err != nil {
-			return nil, &transport.RequestError{Method: "ImportFile", Err: err}
-		}
-	}
-	if err := mw.Close(); err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/batch/import", &body)
+	resp, err := t.client.Do(httpReq)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
+		return &transport.RequestError{Method: "ImportAppend", Err: err}
 	}
-	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+	defer func() { _ = resp.Body.Close() }()
 
-	httpResp, err := t.client.Do(httpReq)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
+	if resp.StatusCode >= 400 {
+		return t.decodeErrorResponse("ImportAppend", resp)
 	}
-	defer func() { _ = httpResp.Body.Close() }()
+	return nil
+}
 
-	if httpResp.StatusCode >= 400 {
-		return nil, t.decodeErrorResponse("ImportFile", httpResp)
+// ImportCommit applies every staged chunk of sessionID atomically via
+// POST /batch/import/{session}/commit.
+func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
 
+	path := fmt.Sprintf("/batch/import/%s/commit", url.PathEscape(sessionID))
 	var wire batchImportWireResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&wire); err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: &jsonDecodeError{Err: err}}
+	if err := t.postJSONDecode(ctx, "ImportCommit", path, struct{}{}, &wire); err != nil {
+		return nil, err
 	}
 
 	result := &transport.ImportResult{
@@ -180,4 +205,15 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 		result.Errors[i] = transport.ImportError{Row: e.Row, Key: e.Key, Message: e.Message}
 	}
 	return result, nil
+}
+
+// ImportAbort discards sessionID without applying anything via
+// POST /batch/import/{session}/abort.
+func (t *Transport) ImportAbort(ctx context.Context, sessionID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	path := fmt.Sprintf("/batch/import/%s/abort", url.PathEscape(sessionID))
+	return t.postJSONDecode(ctx, "ImportAbort", path, struct{}{}, nil)
 }

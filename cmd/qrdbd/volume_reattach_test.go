@@ -20,14 +20,9 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -40,25 +35,6 @@ func reattachTestLogger() *slog.Logger {
 // exercising reattach helpers and quota tests in this package.
 func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry) {
 	t.Helper()
-
-	dir := t.TempDir()
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": dir}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
 
 	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("reattach-system-pass"))
 	if err != nil {
@@ -73,23 +49,17 @@ func newReattachFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegis
 		t.Fatalf("system Initialize: %v", err)
 	}
 
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(reattachTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+	reg, _, allocator := sealtest.PooledRegistry(t, system)
 
 	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, reattachTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeVolume},
 			AllowVolumeStorage:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

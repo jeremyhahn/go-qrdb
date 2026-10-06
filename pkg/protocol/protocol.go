@@ -189,6 +189,24 @@ const (
 	// window that lets a stalled contender take the key as a fresh create
 	// (go-qrdb#56).
 	OpCompareAndSwap byte = 67
+
+	// OpImportStage writes a chunked import session's metadata or one staged
+	// chunk directly into the state machine's reserved keyspace -- never an
+	// MVCC key, never client data -- bound to the session's lease exactly as
+	// the lease table binds any other key, so revoking or expiring that lease
+	// deletes it. Unlike OpMVCCPut (which every reserved-key client write
+	// used before go-qrdb#576's security review), this bypasses the MVCC
+	// store/KV engine's own keyspace entirely: a client Get/Range/Put of the
+	// same literal key reaches a structurally different physical location
+	// (pkg/mvcc's EncodeMetaKey/EncodeDataKey never produce the literal key),
+	// so the staged record is unreachable from the client data plane on every
+	// backend, exactly like the lease table itself.
+	//
+	// Payload: [kind:1][sessionIdLen:2 LE][sessionId][leaseId:8 LE][body];
+	// see protocol.EncodeImportStage. Gated behind
+	// featuregate.ImportStaging: a replica that does not understand this
+	// opcode must never be sent it.
+	OpImportStage byte = 69
 )
 
 // Range flags (bit mask for OpMVCCRange).

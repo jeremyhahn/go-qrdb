@@ -1,6 +1,6 @@
 # Identity and RBAC — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Users, roles, the permission vocabulary, and the single policy decision point
 that authorizes every request on every transport.
@@ -471,11 +471,18 @@ handle, so a global index would forbid that while buying nothing.
 - **The tenant comes from the certificate, never from the request.** This is the
   root of tenant isolation across every feature.
 - **No caller mints another tenant's identities or reads another tenant's
-  audit trail — the system tenant included.** `certs:generate`, `certs:list`,
-  `certs:revoke`, `certs:read` and `certs:export` are `ScopeSelfStrict`, which
-  the system-tenant rule does not lift: a certificate this node's CA signs
-  authenticates as the user and tenant it names, so minting one for another
-  tenant's user is logging in as that user. An audit query is confined to the
+  audit trail — the system tenant included.** `certs:issue`, `certs:enroll`,
+  `certs:list`, `certs:revoke`, `certs:read`, `certs:export` and
+  `trust_anchors:add|list|remove` are `ScopeSelfStrict`, which the
+  system-tenant rule does not lift: a certificate this node's CA signs — or
+  one chaining to a tenant's trust anchor — authenticates as the user and
+  tenant it names, so minting or enrolling one for another tenant's user is
+  logging in as that user. Issuance and enrolment take no tenant at all; they
+  act on the caller's own. The only exception is a new tenant's first admin,
+  certified at tenant creation by the platform operator from the admin's own
+  CSR or certificate (see
+  [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)), with
+  no private key generated on the server. An audit query is confined to the
   caller's own tenant on every transport (`tenant.ConfineAuditFilter`); the
   system tenant additionally sees the platform events that carry no tenant.
   See [../certificate-authority/architecture.md](../certificate-authority/architecture.md#which-tenant-a-certs-call-may-act-on)
@@ -486,6 +493,21 @@ handle, so a global index would forbid that while buying nothing.
   an account holding none states no restriction under the default posture and
   is refused under `auth.mtls_binding_policy: required`. See
   [What a certificate actually claims](#what-a-certificate-actually-claims).
+- **Key custody stays with the ceremony: the certificate target guard**
+  (`pkg/service.certTargetGuard`) refuses `certs:issue`, `certs:enroll` and
+  `users:add_cert_binding` (granted to the built-in tenant Admin) against an
+  account holding the tenant's Security Officer role, and against an account
+  holding the Owner role unless the CALLER itself holds Owner too — a tenant
+  Admin otherwise does everything in its own tenant. There is no Custodian
+  role to refuse: a custodian authenticates by holder certificate
+  (`pkg/holderprofile`), never by user account, so it is never a target to
+  begin with. `users:add_cert_binding` binds a thumbprint, which is binding a
+  key, so it is held to the SAME guard on every transport: the auth
+  middleware reads the target account's record and asks the guard the node
+  built for issuance (`AuthMiddleware.AuthorizeCertBindingTarget`, wired by
+  `wiring.AuthMiddlewareConfig.CertTargetGuard` from
+  `lifecycle.Node.CertTargets`; without a guard the verb fails closed with
+  `*middleware.CertTargetGuardRequiredError`).
 - **A binding can be withdrawn, and withdrawal is the only unenrolment.**
   `users:remove_cert_binding` removes the record entry and both index entries.
   It is a distinct grant from enrolment because it is the direction that can

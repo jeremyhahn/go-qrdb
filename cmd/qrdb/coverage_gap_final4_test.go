@@ -327,7 +327,7 @@ func TestConnectionManager_PersistProfiles_WriteError(t *testing.T) {
 }
 
 // ===========================================================================
-// certs.go — writeCertBundle write-key-error path (77%)
+// bindings_connection_manager.go — Disconnect with an embedded server (77%)
 // ===========================================================================
 
 func TestConnectionManager_Disconnect_WithEmbeddedServer(t *testing.T) {

@@ -61,24 +61,27 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 }
 
 // ImportFile reads filename's entire contents from data and imports it as
-// key-value pairs through the Unix (gRPC-over-UDS) transport's unary
-// BatchImport RPC. The active database scope is carried by the transport's
-// x-qrdb-database metadata interceptor (the same mechanism used by every
-// other data-plane RPC), so no explicit database field is sent on the wire.
+// key-value pairs by driving a chunked import session (ImportBegin/
+// ImportAppend/ImportCommit below) -- see transport.ImportFileChunked. The
+// active database scope is carried by the transport's x-qrdb-database
+// metadata interceptor (the same mechanism used by every other data-plane
+// RPC), so no explicit database field is sent on the wire.
 func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	return transport.ImportFileChunked(ctx, t, filename, data, opts, 0)
+}
 
-	file, err := io.ReadAll(data)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
+// ImportBegin starts a chunked import session.
+func (t *Transport) ImportBegin(ctx context.Context, opts transport.ImportOptions) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
 	}
 
-	resp, err := t.client.BatchImport(ctx, &pb.BatchImportRequest{
-		File:          file,
+	resp, err := t.client.ImportBegin(ctx, &pb.ImportBeginRequest{
 		Format:        opts.Format,
-		Filename:      filename,
+		Filename:      opts.Filename,
 		KeyField:      opts.KeyField,
 		ValueMode:     opts.ValueMode,
 		ValueField:    opts.ValueField,
@@ -86,22 +89,61 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 		Transactional: opts.Transactional,
 	})
 	if err != nil {
-		return nil, mapGRPCError("ImportFile", err)
+		return "", mapGRPCError("ImportBegin", err)
+	}
+	return resp.GetSessionId(), nil
+}
+
+// ImportAppend stages a chunk of a chunked import session.
+func (t *Transport) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.ImportAppend(ctx, &pb.ImportAppendRequest{
+		SessionId: sessionID,
+		Seq:       seq,
+		Chunk:     chunk,
+	})
+	if err != nil {
+		return mapGRPCError("ImportAppend", err)
+	}
+	return nil
+}
+
+// ImportCommit applies every staged chunk of a chunked import session
+// atomically.
+func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.ImportCommit(ctx, &pb.ImportCommitRequest{SessionId: sessionID})
+	if err != nil {
+		return nil, mapGRPCError("ImportCommit", err)
 	}
 
 	errs := make([]transport.ImportError, len(resp.GetErrors()))
 	for i, e := range resp.GetErrors() {
-		errs[i] = transport.ImportError{
-			Row:     int(e.GetRow()),
-			Key:     e.GetKey(),
-			Message: e.GetMessage(),
-		}
+		errs[i] = transport.ImportError{Row: int(e.GetRow()), Key: e.GetKey(), Message: e.GetMessage()}
 	}
-
 	return &transport.ImportResult{
 		Total:     int(resp.GetTotal()),
 		Succeeded: int(resp.GetSucceeded()),
 		Failed:    int(resp.GetFailed()),
 		Errors:    errs,
 	}, nil
+}
+
+// ImportAbort discards a chunked import session without applying anything.
+func (t *Transport) ImportAbort(ctx context.Context, sessionID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.ImportAbort(ctx, &pb.ImportAbortRequest{SessionId: sessionID})
+	if err != nil {
+		return mapGRPCError("ImportAbort", err)
+	}
+	return nil
 }

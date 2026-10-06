@@ -28,6 +28,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"golang.org/x/net/netutil"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -42,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // Server is the MCP server for QRDB. It registers KV, admin, MVCC,
@@ -65,6 +67,8 @@ type Server struct {
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
+	certEnroll        service.CertEnrollmentServicer
+	onboarding        service.TenantOnboardingServicer
 	collectionSvc     service.CollectionServicer
 	dbSvc             service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
@@ -75,6 +79,7 @@ type Server struct {
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
 	tenantSvc         tenant.TenantServicer
+	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
 	ceremonyCA        ceremony.CeremonyCA
@@ -156,6 +161,16 @@ type Server struct {
 	// to the /mcp listener. Zero means DefaultMaxConnections; see
 	// WithMaxConnections.
 	maxConnections int
+
+	// maxBodyBytes bounds every authenticated request body, overriding
+	// maxRequestBodyBytes when positive. Zero uses the package default.
+	// See WithMaxBodyBytes.
+	maxBodyBytes int64
+
+	// maxConnsPerPeer bounds the number of concurrent TCP connections a
+	// single remote IP may hold open against this server's listener.
+	// Zero means unlimited. See WithMaxConnsPerPeer.
+	maxConnsPerPeer int
 }
 
 // DefaultMaxConnections bounds simultaneously open connections to the MCP
@@ -172,6 +187,20 @@ const ProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource"
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithMaxBodyBytes bounds every authenticated request body this server
+// reads. n <= 0 leaves the package default (maxRequestBodyBytes) in
+// force; there is no way to request an unbounded body.
+func WithMaxBodyBytes(n int64) ServerOption {
+	return func(s *Server) { s.maxBodyBytes = n }
+}
+
+// WithMaxConnsPerPeer bounds the number of concurrent TCP connections a
+// single remote IP may hold open against this server's listener. n <= 0
+// means unlimited.
+func WithMaxConnsPerPeer(n int) ServerOption {
+	return func(s *Server) { s.maxConnsPerPeer = n }
+}
 
 // WithTLS configures the server with TLS. The config is cloned and pinned to
 // a TLS 1.3 floor: an unset MinVersion is raised to TLS 1.3, and an explicitly
@@ -369,6 +398,17 @@ func WithCertProvider(prov cert.CertProvider) ServerOption {
 	}
 }
 
+// WithCertEnrollment registers the certificate issue/enrol and trust-anchor
+// tools (qrdb_cert_issue, qrdb_cert_enroll, qrdb_trust_anchor_*).
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
+	return func(s *Server) { s.certEnroll = svc }
+}
+
+// WithTenantOnboarding wires the service behind qrdb_tenant_create.
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
+	return func(s *Server) { s.onboarding = svc }
+}
+
 // WithCollectionService registers collection management tools on the MCP server.
 func WithCollectionService(svc service.CollectionServicer) ServerOption {
 	return func(s *Server) {
@@ -454,6 +494,12 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 // WithTenantService registers tenant management tools on the MCP server.
 func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithVolumeService registers the volume pool management tools
+// (docs/volume-pools/api.md) on the MCP server.
+func WithVolumeService(svc volume.Service) ServerOption {
+	return func(s *Server) { s.volumeSvc = svc }
 }
 
 // WithBackupService registers backup management tools on the MCP server.
@@ -689,6 +735,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.certProv != nil {
 		s.addTools(certTools(s.certProv, s.authMW)...)
 	}
+	if s.certEnroll != nil {
+		s.addTools(enrollmentTools(s.certEnroll, s.authMW)...)
+	}
 	// Registered when either the singleton is wired or a registry is
 	// configured: the per-(tenant, database) collection servicer resolves at
 	// call time through resolveCollection, so gating on the singleton alone
@@ -731,12 +780,15 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(credentialTools(s.credentialSvc)...)
 	}
 	if s.tenantSvc != nil {
-		s.addTools(tenantTools(s.tenantSvc, s.authMW)...)
+		s.addTools(tenantTools(s.tenantSvc, s.onboarding, s.authMW)...)
 		s.addTools(tenantBarrierTools(s.tenantSvc, tenantBarrierAuthorizers{
 			Op:     s.authorizeTenantBarrierOp,
 			Init:   s.authorizeTenantBarrierInit,
 			Sealed: s.authorizeTenantBarrierSealedOp,
 		})...)
+	}
+	if s.volumeSvc != nil {
+		s.addTools(volumePoolTools(s.volumeSvc)...)
 	}
 	if s.backupSvc != nil {
 		s.addTools(backupTools(s.backupSvc)...)
@@ -814,6 +866,15 @@ func (s *Server) Start() error {
 		maxConns = DefaultMaxConnections
 	}
 	ln = netutil.LimitListener(ln, maxConns)
+
+	// Per-peer connection cap: previously the only thing bounding how many
+	// connections a single remote IP could hold open against this
+	// listener was the process's open-file-descriptor limit -- a GLOBAL,
+	// not per-peer, ceiling that one abusive peer can exhaust on behalf of
+	// every other caller (go-qrdb#576).
+	if s.maxConnsPerPeer > 0 {
+		ln = connlimit.New(ln, s.maxConnsPerPeer)
+	}
 
 	// Report every accepted connection to the modules that observe them.
 	// Wrapped BENEATH the TLS listener, so http.Server still sees a *tls.Conn.

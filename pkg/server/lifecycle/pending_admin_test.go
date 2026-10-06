@@ -1,0 +1,271 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package lifecycle
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"io"
+	"log/slog"
+	"math/big"
+	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// spkiThumbprint mints a throwaway self-signed certificate and returns its
+// canonical SPKI thumbprint -- the shape AddCertBinding requires, which a
+// hand-typed string is not.
+func spkiThumbprint(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "admin"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	return user.ComputeSPKIThumbprint(c)
+}
+
+// discardLog returns a logger that writes nowhere, for tests that only
+// care about the hook's side effects.
+func discardLog() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// newRealUserAndRole builds n.User/n.Role exactly the way BuildServices
+// builds them for a non-dedicated-isolation tenant: user.NewStore and
+// role.NewStore directly over a shared kvstore.KVStore, so
+// completePendingTenantAdmin's success path is exercised against the real
+// provisioning seams, not a hand-rolled double.
+func newRealUserAndRole(t *testing.T) (user.UserServicer, role.RoleServicer) {
+	t.Helper()
+	store := kvstore.NewMemoryKVStore()
+	idGen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	users, err := user.NewStore(store, idGen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	roles, err := role.NewStore(store)
+	if err != nil {
+		t.Fatalf("role.NewStore: %v", err)
+	}
+	return users, roles
+}
+
+// sealedRoleServicer embeds a REAL role.RoleServicer for every method except
+// CreateRole, which it fails with a fixed error -- the one condition this
+// file's deferred-on-sealed-tenant test needs, without losing fidelity on
+// every other method a less careful double would have to stub out blind.
+type sealedRoleServicer struct {
+	role.RoleServicer
+	err error
+}
+
+func (s *sealedRoleServicer) CreateRole(context.Context, *role.CreateRoleRequest) (*role.Role, error) {
+	return nil, s.err
+}
+
+// putPending registers tenantID's pending admin record directly, bypassing
+// the onboarding flow that normally writes it.
+func putPending(t *testing.T, store tenantadmin.Store, tenantID, username, thumbprint string) {
+	t.Helper()
+	if err := store.Create(context.Background(), tenantID, &tenantadmin.Pending{
+		Username:   username,
+		Thumbprint: thumbprint,
+	}); err != nil {
+		t.Fatalf("Create pending admin: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// nil dependencies: completePendingTenantAdmin's hook must be a no-op.
+// ---------------------------------------------------------------------------
+
+// TestCompletePendingTenantAdmin_NilPendingAdmins_NoOp proves a Node with no
+// PendingAdmins store at all runs the hook with no effect and no panic.
+func TestCompletePendingTenantAdmin_NilPendingAdmins_NoOp(t *testing.T) {
+	users, roles := newRealUserAndRole(t)
+	n := &Node{User: users, Role: roles} // PendingAdmins deliberately nil
+
+	hook := n.completePendingTenantAdmin(discardLog())
+	hook(context.Background(), "acme") // must not panic
+}
+
+// TestCompletePendingTenantAdmin_NilUser_NoOp proves a Node with no User
+// service leaves a pending record untouched -- the hook does not even
+// attempt completion, so the record is still there to retry once a user
+// service is wired.
+func TestCompletePendingTenantAdmin_NilUser_NoOp(t *testing.T) {
+	ctx := context.Background()
+	_, roles := newRealUserAndRole(t)
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	putPending(t, pending, "acme", "admin", "thumbprint-abc")
+
+	n := &Node{PendingAdmins: pending, Role: roles} // User deliberately nil
+
+	hook := n.completePendingTenantAdmin(discardLog())
+	hook(ctx, "acme")
+
+	got, err := pending.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected the pending record to remain untouched with no User service wired")
+	}
+}
+
+// TestCompletePendingTenantAdmin_NilRole_NoOp is the same proof for a Node
+// with no Role service.
+func TestCompletePendingTenantAdmin_NilRole_NoOp(t *testing.T) {
+	ctx := context.Background()
+	users, _ := newRealUserAndRole(t)
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	putPending(t, pending, "acme", "admin", "thumbprint-abc")
+
+	n := &Node{PendingAdmins: pending, User: users} // Role deliberately nil
+
+	hook := n.completePendingTenantAdmin(discardLog())
+	hook(ctx, "acme")
+
+	got, err := pending.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected the pending record to remain untouched with no Role service wired")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tenant.ErrTenantSealed: the hook defers rather than consuming the record.
+// ---------------------------------------------------------------------------
+
+// TestCompletePendingTenantAdmin_ErrTenantSealed_Deferred proves that when
+// completion fails because the tenant's identity records are still
+// unreadable (tenant.ErrTenantSealed), the hook logs and returns without
+// consuming the pending record -- it is retried on the next unseal or
+// status read.
+func TestCompletePendingTenantAdmin_ErrTenantSealed_Deferred(t *testing.T) {
+	ctx := context.Background()
+	users, roles := newRealUserAndRole(t)
+	sealedRoles := &sealedRoleServicer{RoleServicer: roles, err: tenant.ErrTenantSealed}
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	putPending(t, pending, "acme", "admin", "thumbprint-abc")
+
+	n := &Node{PendingAdmins: pending, User: users, Role: sealedRoles}
+
+	hook := n.completePendingTenantAdmin(discardLog())
+	hook(ctx, "acme") // must not panic, and must not treat this as a hard failure
+
+	got, err := pending.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected the pending record to remain for a later retry after a sealed-tenant deferral")
+	}
+
+	if _, err := users.GetUserByUsername(ctx, "acme", "admin"); err == nil {
+		t.Fatal("expected no admin account to have been created while the tenant is reported sealed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Success: the admin account is created, bound, and the record consumed.
+// ---------------------------------------------------------------------------
+
+// TestCompletePendingTenantAdmin_Success_CreatesAccount proves the hook
+// creates the onboarded admin's account, binds its certificate thumbprint,
+// and deletes the pending record -- using the REAL user and role services
+// built the same way BuildServices builds them.
+func TestCompletePendingTenantAdmin_Success_CreatesAccount(t *testing.T) {
+	ctx := context.Background()
+	users, roles := newRealUserAndRole(t)
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	thumbprint := spkiThumbprint(t)
+	putPending(t, pending, "acme", "admin", thumbprint)
+
+	n := &Node{PendingAdmins: pending, User: users, Role: roles}
+
+	hook := n.completePendingTenantAdmin(discardLog())
+	hook(ctx, "acme")
+
+	u, err := users.GetUserByUsername(ctx, "acme", "admin")
+	if err != nil {
+		t.Fatalf("expected the admin account to have been created, GetUserByUsername: %v", err)
+	}
+	foundBinding := false
+	for _, b := range u.CertBindings {
+		if b.Thumbprint == thumbprint {
+			foundBinding = true
+		}
+	}
+	if !foundBinding {
+		t.Errorf("expected the onboarded certificate's thumbprint to be bound, got bindings: %+v", u.CertBindings)
+	}
+
+	got, err := pending.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != nil {
+		t.Error("expected the pending record to be deleted once completion succeeds")
+	}
+}
+
+// TestCompletePendingTenantAdmin_NoRecord_NoOp proves a tenant with no
+// pending admin at all is a harmless no-op -- the common case, since this
+// hook runs on every barrier-ready event for every tenant.
+func TestCompletePendingTenantAdmin_NoRecord_NoOp(t *testing.T) {
+	ctx := context.Background()
+	users, roles := newRealUserAndRole(t)
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+
+	n := &Node{PendingAdmins: pending, User: users, Role: roles}
+
+	hook := n.completePendingTenantAdmin(discardLog())
+	hook(ctx, "no-such-tenant") // must not panic
+
+	if _, err := users.GetUserByUsername(ctx, "no-such-tenant", "admin"); err == nil {
+		t.Fatal("expected no account to be created for a tenant with no pending record")
+	}
+}

@@ -52,28 +52,26 @@ function panelBody(page: Page): Locator {
 }
 
 /**
- * Opens the Generate tab and fills in the username, then clicks the Generate
- * submit button (inside the panel body) and waits for the success toast.
+ * Opens the Issue tab, fills in the username (leaving the CSR blank so the
+ * desktop mock generates a key locally), clicks Issue, and waits for the
+ * success toast.
  */
-async function generateCert(
+async function issueCert(
   page: Page,
   username: string,
 ): Promise<void> {
   const main = page.locator("main");
 
-  // Click the Generate tab button in the action panel tab bar.
-  await main.getByRole("button", { name: "Generate", exact: true }).first().click();
+  await main.getByRole("button", { name: "Issue", exact: true }).first().click();
 
-  // Fill username inside the panel body.
   const body = panelBody(page);
   await body.getByPlaceholder("e.g. alice").fill(username);
 
-  // Click the Generate submit button (scoped to the panel body).
-  await body.getByRole("button", { name: "Generate", exact: true }).click();
+  await body.getByRole("button", { name: "Issue", exact: true }).click();
 
   const alert = page.locator('[role="alert"]');
   await expect(alert).toBeVisible({ timeout: 5_000 });
-  await expect(alert.locator("span")).toContainText(`Certificate generated for "${username}"`);
+  await expect(alert.locator("span")).toContainText(`Certificate issued for "${username}"`);
 }
 
 // ---------------------------------------------------------------------------
@@ -94,76 +92,104 @@ test.describe("Admin - Certificates", () => {
     });
   });
 
-  test("generate certificate with valid inputs shows success toast and displays PEM", async ({
+  test("issue certificate with blank CSR generates a key locally and shows success toast", async ({
     page,
   }) => {
     await navigateToCerts(page);
 
     const main = page.locator("main");
 
-    // Click the Generate tab button in the action panel tab bar.
-    const generateTabBtn = main.getByRole("button", { name: "Generate", exact: true }).first();
-    await expect(generateTabBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
-    await generateTabBtn.click();
+    // Click the Issue tab button in the action panel tab bar.
+    const issueTabBtn = main.getByRole("button", { name: "Issue", exact: true }).first();
+    await expect(issueTabBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await issueTabBtn.click();
 
-    // Fill in only the username inside the panel body.
+    // Fill in only the username inside the panel body; leave CSR blank.
     const body = panelBody(page);
     await body.getByPlaceholder("e.g. alice").fill("alice");
 
-    // Click the Generate submit button scoped to the panel body.
-    await body.getByRole("button", { name: "Generate", exact: true }).click();
+    // Click the Issue submit button scoped to the panel body.
+    await body.getByRole("button", { name: "Issue", exact: true }).click();
 
     // Toast should confirm success.
     const alert = page.locator('[role="alert"]');
     await expect(alert).toBeVisible({ timeout: 5_000 });
     await expect(alert.locator("span")).toContainText(
-      'Certificate generated for "alice"',
+      'Certificate issued for "alice"',
     );
 
-    // The generated PEM textareas should now be visible inside the panel body.
+    // The issued certificate and locally-generated key should now be visible.
     await expect(body.getByText("Certificate PEM")).toBeVisible();
-    await expect(body.getByText("Private Key PEM")).toBeVisible();
+    await expect(body.getByText("Private Key PEM (generated locally)")).toBeVisible();
 
     // The certificate table should now list the new cert.
     await expect(main.getByText("alice")).toBeVisible();
   });
 
-  test("generate certificate with empty username shows warning", async ({
-    page,
-  }) => {
+  test("issue button disabled when username is empty and no CSR is pasted", async ({ page }) => {
     await navigateToCerts(page);
 
     const main = page.locator("main");
 
-    // Click the Generate tab button.
-    await main.getByRole("button", { name: "Generate", exact: true }).first().click();
-
-    // The submit button inside the panel body should be disabled when username is empty.
-    const body = panelBody(page);
-    await expect(body.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
-  });
-
-  test("generate button disabled when username is empty", async ({ page }) => {
-    await navigateToCerts(page);
-
-    const main = page.locator("main");
-
-    // Click the Generate tab button.
-    await main.getByRole("button", { name: "Generate", exact: true }).first().click();
+    // Click the Issue tab button.
+    await main.getByRole("button", { name: "Issue", exact: true }).first().click();
 
     const body = panelBody(page);
-    const generateSubmitBtn = body.getByRole("button", { name: "Generate", exact: true });
+    const issueSubmitBtn = body.getByRole("button", { name: "Issue", exact: true });
 
     // Button should be disabled with empty username (default state).
-    await expect(generateSubmitBtn).toBeDisabled();
+    await expect(issueSubmitBtn).toBeDisabled();
 
-    // Fill username → button becomes enabled.
+    // Fill username → button becomes enabled (desktop mock allows blank CSR).
     await body.getByPlaceholder("e.g. alice").fill("bob");
-    await expect(generateSubmitBtn).toBeEnabled();
+    await expect(issueSubmitBtn).toBeEnabled();
 
     // Clear username → button disabled again.
     await body.getByPlaceholder("e.g. alice").fill("");
-    await expect(generateSubmitBtn).toBeDisabled();
+    await expect(issueSubmitBtn).toBeDisabled();
+  });
+
+  test("enroll certificate with valid inputs shows success toast", async ({ page }) => {
+    await navigateToCerts(page);
+
+    const main = page.locator("main");
+
+    // Click the Enroll tab button in the action panel tab bar.
+    const enrollTabBtn = main.getByRole("button", { name: "Enroll", exact: true }).first();
+    await expect(enrollTabBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await enrollTabBtn.click();
+
+    const body = panelBody(page);
+    await body.getByPlaceholder("e.g. alice").fill("erin");
+    await body
+      .getByPlaceholder("Paste certificate PEM here (leaf first)")
+      .fill("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----");
+
+    await body.getByRole("button", { name: "Enroll", exact: true }).click();
+
+    const alert = page.locator('[role="alert"]');
+    await expect(alert).toBeVisible({ timeout: 5_000 });
+    await expect(alert.locator("span")).toContainText(
+      'Certificate enrolled for "erin"',
+    );
+
+    await expect(body.getByText("Enrolled Certificate")).toBeVisible();
+    await expect(main.getByText("erin")).toBeVisible();
+  });
+
+  test("enroll button disabled when certificate PEM is empty", async ({ page }) => {
+    await navigateToCerts(page);
+
+    const main = page.locator("main");
+
+    await main.getByRole("button", { name: "Enroll", exact: true }).first().click();
+
+    const body = panelBody(page);
+    await body.getByPlaceholder("e.g. alice").fill("frank");
+
+    await expect(
+      body.getByRole("button", { name: "Enroll", exact: true }),
+    ).toBeDisabled();
   });
 
   test("revoke certificate flow: enter serial → click Revoke → confirm → success", async ({
@@ -171,8 +197,8 @@ test.describe("Admin - Certificates", () => {
   }) => {
     await navigateToCerts(page);
 
-    // First generate a cert so there is something to revoke.
-    await generateCert(page, "carol");
+    // First issue a cert so there is something to revoke.
+    await issueCert(page, "carol");
 
     const main = page.locator("main");
 
@@ -198,7 +224,7 @@ test.describe("Admin - Certificates", () => {
     // Confirm revocation.
     await body.getByRole("button", { name: "Confirm Revoke" }).click();
 
-    // Success toast should appear (use last() because the generate toast may still be visible).
+    // Success toast should appear (use last() because the issue toast may still be visible).
     const alert = page.locator('[role="alert"]').last();
     await expect(alert).toBeVisible({ timeout: 5_000 });
     await expect(alert.locator("span")).toContainText("1001 revoked");
@@ -393,36 +419,63 @@ test.describe("Admin - Certificates", () => {
     await expect(exportSubmitBtn).toBeEnabled();
   });
 
-  test("generate error shows error toast", async ({ page }) => {
+  test("issue error shows error toast", async ({ page }) => {
     await navigateToCerts(page);
 
-    await injectError(page, "CertBinding.Generate", "certificate generation failed");
+    await injectError(page, "CertBinding.Issue", "certificate issuance failed");
 
     const main = page.locator("main");
 
-    // Click the Generate tab button.
-    const generateTabBtn = main.getByRole("button", { name: "Generate", exact: true }).first();
-    await expect(generateTabBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
-    await generateTabBtn.click();
+    // Click the Issue tab button.
+    const issueTabBtn = main.getByRole("button", { name: "Issue", exact: true }).first();
+    await expect(issueTabBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await issueTabBtn.click();
 
     const body = panelBody(page);
     await body.getByPlaceholder("e.g. alice").fill("alice");
-    await body.getByRole("button", { name: "Generate", exact: true }).click();
+    await body.getByRole("button", { name: "Issue", exact: true }).click();
 
     const alert = page.locator('[role="alert"]');
     await expect(alert).toBeVisible({ timeout: 5_000 });
     await expect(alert.locator("span")).toContainText(
-      "certificate generation failed",
+      "certificate issuance failed",
     );
 
-    await clearError(page, "CertBinding.Generate");
+    await clearError(page, "CertBinding.Issue");
+  });
+
+  test("enroll error shows error toast", async ({ page }) => {
+    await navigateToCerts(page);
+
+    await injectError(page, "CertBinding.Enroll", "certificate enrollment failed");
+
+    const main = page.locator("main");
+
+    const enrollTabBtn = main.getByRole("button", { name: "Enroll", exact: true }).first();
+    await expect(enrollTabBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await enrollTabBtn.click();
+
+    const body = panelBody(page);
+    await body.getByPlaceholder("e.g. alice").fill("gina");
+    await body
+      .getByPlaceholder("Paste certificate PEM here (leaf first)")
+      .fill("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----");
+    await body.getByRole("button", { name: "Enroll", exact: true }).click();
+
+    const alert = page.locator('[role="alert"]');
+    await expect(alert).toBeVisible({ timeout: 5_000 });
+    await expect(alert.locator("span")).toContainText(
+      "certificate enrollment failed",
+    );
+
+    await clearError(page, "CertBinding.Enroll");
   });
 
   test("revoke error shows error toast", async ({ page }) => {
     await navigateToCerts(page);
 
-    // Generate a cert first so the Revoke tab becomes available with data.
-    await generateCert(page, "dave");
+    // Issue a cert first so the Revoke tab becomes available with data.
+    await issueCert(page, "dave");
 
     await injectError(page, "CertBinding.Revoke", "revocation failed");
 
@@ -441,7 +494,7 @@ test.describe("Admin - Certificates", () => {
     await body.getByRole("button", { name: "Revoke", exact: true }).click();
     await body.getByRole("button", { name: "Confirm Revoke" }).click();
 
-    // Use last() because the generate toast may still be visible alongside the error toast.
+    // Use last() because the issue toast may still be visible alongside the error toast.
     const alert = page.locator('[role="alert"]').last();
     await expect(alert).toBeVisible({ timeout: 5_000 });
     await expect(alert.locator("span")).toContainText("revocation failed");

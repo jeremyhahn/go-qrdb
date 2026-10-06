@@ -26,52 +26,24 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
-// ---------------------------------------------------------------------------
-// Import - Input size limit
-// ---------------------------------------------------------------------------
-
-func TestBatchService_Import_InputTooLarge(t *testing.T) {
-	svc := NewBatchService(&mockHost{}, 1)
-
-	oversized := bytes.Repeat([]byte("a"), maxImportInputBytes+1)
-
-	_, err := svc.Import(context.Background(), bytes.NewReader(oversized), ImportOptions{
-		Format:    "csv",
-		KeyField:  "id",
-		ValueMode: "row",
-	})
-
-	var iite *ImportInputTooLargeError
-	if !errors.As(err, &iite) {
-		t.Fatalf("expected *ImportInputTooLargeError, got %T: %v", err, err)
+// parseAndImportOf asserts svc is a *BatchService and returns it, so these
+// tests can call parseAndImport directly -- the shared tail both the
+// retired single-message Import and ImportCommit call -- rather than
+// driving a whole chunked session (ImportBegin/ImportAppend/ImportCommit)
+// just to reach it. These tests are about parseAndImport's own row/size/
+// proposal-chunking limits, not session lifecycle; batch_import_session_test.go
+// owns the session-level tests (quotas, ownership, idempotent replay, etc).
+func parseAndImportOf(t *testing.T, svc BatchServicer) *BatchService {
+	t.Helper()
+	bs, ok := svc.(*BatchService)
+	if !ok {
+		t.Fatalf("svc is %T, not *BatchService", svc)
 	}
-	if iite.Max != maxImportInputBytes {
-		t.Fatalf("expected Max=%d, got %d", maxImportInputBytes, iite.Max)
-	}
-}
-
-func TestBatchService_Import_InputAtLimit_NotRejected(t *testing.T) {
-	svc := NewBatchService(&mockHost{}, 1)
-
-	// A file that is exactly at the byte cap (not over it) must not be
-	// rejected by the size gate; it should fail parsing normally instead
-	// (this payload isn't valid CSV content for the configured key field,
-	// but format detection/parsing errors are a distinct failure mode from
-	// the size gate under test here).
-	atLimit := bytes.Repeat([]byte("a"), maxImportInputBytes)
-
-	_, err := svc.Import(context.Background(), bytes.NewReader(atLimit), ImportOptions{
-		Format:    "csv",
-		KeyField:  "id",
-		ValueMode: "row",
-	})
-
-	var iite *ImportInputTooLargeError
-	if errors.As(err, &iite) {
-		t.Fatalf("did not expect *ImportInputTooLargeError for input at the exact limit")
-	}
+	return bs
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +61,7 @@ func TestBatchService_Import_TooManyRows(t *testing.T) {
 		sb.WriteString(",v\n")
 	}
 
-	_, err := svc.Import(context.Background(), strings.NewReader(sb.String()), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(sb.String()), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "row",
@@ -120,7 +92,7 @@ func TestBatchService_Import_KeyTooLarge_NonTransactional(t *testing.T) {
 	hugeKey := strings.Repeat("k", maxImportKeySize+1)
 	csvData := "id,value\n" + hugeKey + ",v1\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -144,7 +116,7 @@ func TestBatchService_Import_KeyTooLarge_Transactional(t *testing.T) {
 	hugeKey := strings.Repeat("k", maxImportKeySize+1)
 	csvData := "id,value\n" + hugeKey + ",v1\n"
 
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -173,7 +145,7 @@ func TestBatchService_Import_ValueTooLarge_NonTransactional(t *testing.T) {
 	hugeValue := strings.Repeat("v", maxImportValueSize+1)
 	csvData := "id,value\nkey1," + hugeValue + "\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -197,7 +169,7 @@ func TestBatchService_Import_ValueTooLarge_Transactional(t *testing.T) {
 	hugeValue := strings.Repeat("v", maxImportValueSize+1)
 	csvData := "id,value\nkey1," + hugeValue + "\n"
 
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -300,7 +272,7 @@ func TestBatchService_Import_Zip_ExpandedTooLarge(t *testing.T) {
 		t.Fatalf("failed to close zip writer: %v", err)
 	}
 
-	_, err = svc.Import(context.Background(), bytes.NewReader(buf.Bytes()), ImportOptions{
+	_, err = parseAndImportOf(t, svc).parseAndImport(context.Background(), buf.Bytes(), ImportOptions{
 		Format:    "archive",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -352,7 +324,7 @@ func TestBatchService_Import_TarGz_ExpandedTooLarge(t *testing.T) {
 		t.Fatalf("failed to close gzip writer: %v", err)
 	}
 
-	_, err := svc.Import(context.Background(), bytes.NewReader(buf.Bytes()), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), buf.Bytes(), ImportOptions{
 		Format:    "archive",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -382,7 +354,7 @@ func TestBatchService_Import_Zip_TooManyEntries(t *testing.T) {
 		t.Fatalf("failed to close zip writer: %v", err)
 	}
 
-	_, err := svc.Import(context.Background(), bytes.NewReader(buf.Bytes()), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), buf.Bytes(), ImportOptions{
 		Format:    "archive",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -435,7 +407,7 @@ func TestBatchService_Import_NonTransactional_ChunksOversizedProposal(t *testing
 		sb.WriteString("\n")
 	}
 
-	result, err := svc.Import(context.Background(), strings.NewReader(sb.String()), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(sb.String()), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -489,7 +461,7 @@ func TestBatchService_Import_Transactional_RejectsOversizedProposal(t *testing.T
 		sb.WriteString("\n")
 	}
 
-	_, err := svc.Import(context.Background(), strings.NewReader(sb.String()), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(sb.String()), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -510,11 +482,17 @@ func TestBatchService_Import_Transactional_RejectsOversizedProposal(t *testing.T
 	}
 }
 
-// TestBatchService_Import_NonTransactional_ChunkFailureContinues verifies
-// that when one chunk's SyncPropose call fails, subsequent chunks are still
-// attempted (matching the existing non-transactional "continue on error"
-// semantics, now applied per chunk instead of per whole-import).
-func TestBatchService_Import_NonTransactional_ChunkFailureContinues(t *testing.T) {
+// TestBatchService_Import_NonTransactional_ChunkFailureAborts verifies that
+// when one chunk's SyncPropose call suffers an outcome-unknown fault, the
+// import aborts immediately -- no later chunk is even attempted -- instead
+// of recording the chunk as a per-row failure and continuing (go-qrdb#576's
+// security review finding 4: that outcome is never provably "nothing
+// stored", so it can never be downgraded to a clean per-row failure in
+// either transactional mode). See
+// TestBatchService_Import_NonTransactional_ChunkRefusalContinues for the
+// complementary case -- a clean, provably-nothing-stored chunk REFUSAL --
+// which still continues exactly as before.
+func TestBatchService_Import_NonTransactional_ChunkFailureAborts(t *testing.T) {
 	var proposeCalls int
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
@@ -540,7 +518,60 @@ func TestBatchService_Import_NonTransactional_ChunkFailureContinues(t *testing.T
 		sb.WriteString("\n")
 	}
 
-	result, err := svc.Import(context.Background(), strings.NewReader(sb.String()), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(sb.String()), ImportOptions{
+		Format:     "csv",
+		KeyField:   "id",
+		ValueMode:  "field",
+		ValueField: "value",
+		SkipHeader: true,
+	})
+	if err == nil {
+		t.Fatal("expected an error for an outcome-unknown propose fault on the first chunk")
+	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Errorf("error = %v, want errors.Is(err, ErrOutcomeUnknown)", err)
+	}
+	if result != nil {
+		t.Errorf("result = %+v, want nil on an aborted import", result)
+	}
+	if proposeCalls != 1 {
+		t.Fatalf("propose was called %d times; the import must abort after the first chunk's fault, never attempting the rest", proposeCalls)
+	}
+}
+
+// TestBatchService_Import_NonTransactional_ChunkRefusalContinues is
+// TestBatchService_Import_NonTransactional_ChunkFailureAborts's complementary
+// case: a chunk that commits and is refused ON ITS MERITS (a result-level
+// AppError, checkResultError's path) -- provably stored nothing, never
+// ambiguous -- still marks that chunk's rows failed and continues to the
+// next chunk, exactly as a non-transactional import always has.
+func TestBatchService_Import_NonTransactional_ChunkRefusalContinues(t *testing.T) {
+	var proposeCalls int
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposeCalls++
+			if proposeCalls == 1 {
+				return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, "refused")}, nil
+			}
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewBatchService(host, 1)
+
+	rowValue := strings.Repeat("v", 60_000)
+	rowsNeeded := (maxImportProposalBytes / 60_000) * 3
+
+	var sb strings.Builder
+	sb.WriteString("id,value\n")
+	for i := 0; i < rowsNeeded; i++ {
+		sb.WriteString("key")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(",")
+		sb.WriteString(rowValue)
+		sb.WriteString("\n")
+	}
+
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(sb.String()), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -554,7 +585,7 @@ func TestBatchService_Import_NonTransactional_ChunkFailureContinues(t *testing.T
 		t.Fatalf("expected multiple propose calls, got %d", proposeCalls)
 	}
 	if result.Failed == 0 {
-		t.Fatalf("expected at least one failed row from the failing chunk, got Failed=0")
+		t.Fatalf("expected at least one failed row from the refused chunk, got Failed=0")
 	}
 	if result.Succeeded == 0 {
 		t.Fatalf("expected at least one succeeded row from the later, successful chunk, got Succeeded=0")

@@ -98,44 +98,6 @@ func TestDirectoryCreateError_Unwrap_ErrorsIs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PKCS12DecodeError
-// ---------------------------------------------------------------------------
-
-func TestPKCS12DecodeError_Error(t *testing.T) {
-	inner := errors.New("invalid base64 encoding")
-	e := &PKCS12DecodeError{Err: inner}
-	expected := "qrdb: failed to decode PKCS#12 data: invalid base64 encoding"
-	if got := e.Error(); got != expected {
-		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-func TestPKCS12DecodeError_Error_DifferentMessage(t *testing.T) {
-	inner := errors.New("truncated input")
-	e := &PKCS12DecodeError{Err: inner}
-	expected := "qrdb: failed to decode PKCS#12 data: truncated input"
-	if got := e.Error(); got != expected {
-		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-func TestPKCS12DecodeError_Unwrap(t *testing.T) {
-	inner := errors.New("invalid base64 encoding")
-	e := &PKCS12DecodeError{Err: inner}
-	if unwrapped := e.Unwrap(); unwrapped != inner {
-		t.Fatalf("expected unwrapped error %v, got %v", inner, unwrapped)
-	}
-}
-
-func TestPKCS12DecodeError_Unwrap_ErrorsIs(t *testing.T) {
-	sentinel := errors.New("sentinel")
-	e := &PKCS12DecodeError{Err: sentinel}
-	if !errors.Is(e, sentinel) {
-		t.Fatal("expected errors.Is to match sentinel via Unwrap")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // InvalidLogLevelError
 // ---------------------------------------------------------------------------
 
@@ -191,15 +153,6 @@ func TestDirectoryCreateError_ErrorsAs(t *testing.T) {
 	}
 	if target.Path != "/y" {
 		t.Fatalf("expected Path %q, got %q", "/y", target.Path)
-	}
-}
-
-func TestPKCS12DecodeError_ErrorsAs(t *testing.T) {
-	inner := errors.New("fail")
-	var target *PKCS12DecodeError
-	e := &PKCS12DecodeError{Err: inner}
-	if !errors.As(e, &target) {
-		t.Fatal("expected errors.As to match *PKCS12DecodeError")
 	}
 }
 

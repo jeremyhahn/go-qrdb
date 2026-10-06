@@ -19,12 +19,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/x509"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -991,5 +995,110 @@ func TestStartEmbedded_PebbleRestart_NoLockConflict_Raft(t *testing.T) {
 	}
 	if err := esb.StopEmbedded(); err != nil {
 		t.Fatalf("second StopEmbedded: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetCertKeyProviderFactory / SetTrustAnchors
+// ---------------------------------------------------------------------------
+
+// fakeCAKeyProvider is a minimal cakey.Provider double for
+// SetCertKeyProviderFactory tests: it never signs anything real, it only
+// proves the seam is wired.
+func fakeCAKeyProvider() cakey.Provider {
+	return cakey.Adapter{
+		SignerFunc:      func(context.Context) (crypto.Signer, error) { return nil, errors.New("not implemented") },
+		CertificateFunc: func(context.Context) (*x509.Certificate, error) { return nil, errors.New("not implemented") },
+	}
+}
+
+// fakeCAKeyProviderFactory is a minimal cakey.ProviderFactory double backing
+// exactly one tenant ID -- Key B requires one key per tenant (owner ruling,
+// go-qrdb#591's review), so there is deliberately no adapter from a single
+// bare cakey.Provider into a factory.
+type fakeCAKeyProviderFactory struct {
+	tenantID string
+	provider cakey.Provider
+}
+
+func (f *fakeCAKeyProviderFactory) ProviderForTenant(tenantID string) (cakey.Provider, error) {
+	if tenantID != f.tenantID {
+		return nil, errors.New("fakeCAKeyProviderFactory: no provider configured for this tenant")
+	}
+	return f.provider, nil
+}
+
+func (f *fakeCAKeyProviderFactory) TenantIDs(context.Context) ([]string, error) {
+	return []string{f.tenantID}, nil
+}
+
+var _ cakey.ProviderFactory = (*fakeCAKeyProviderFactory)(nil)
+
+func TestEmbeddedServerBinding_SetCertKeyProviderFactory_StoresFactory(t *testing.T) {
+	log := testLogger(t)
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	f := &fakeCAKeyProviderFactory{tenantID: "acme", provider: fakeCAKeyProvider()}
+	esb.SetCertKeyProviderFactory(f)
+
+	if esb.certKeyProviderFactory == nil {
+		t.Fatal("expected certKeyProviderFactory to be set")
+	}
+}
+
+func TestEmbeddedServerBinding_SetCertKeyProviderFactory_NilClearsFactory(t *testing.T) {
+	log := testLogger(t)
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	esb.SetCertKeyProviderFactory(&fakeCAKeyProviderFactory{tenantID: "acme", provider: fakeCAKeyProvider()})
+	esb.SetCertKeyProviderFactory(nil)
+
+	if esb.certKeyProviderFactory != nil {
+		t.Fatal("expected certKeyProviderFactory to be cleared by a nil SetCertKeyProviderFactory")
+	}
+}
+
+// fakeTrustAnchorRegistry is a minimal trustanchor.Registry double for
+// SetTrustAnchors tests: every method is a deliberate no-op, since these
+// tests only prove the seam is wired, not the registry's own behavior
+// (that is pkg/trustanchor's own test suite's job).
+type fakeTrustAnchorRegistry struct{}
+
+var _ trustanchor.Registry = fakeTrustAnchorRegistry{}
+
+func (fakeTrustAnchorRegistry) CABundle(context.Context, string) ([]byte, error) { return nil, nil }
+func (fakeTrustAnchorRegistry) Add(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
+	return nil, nil
+}
+func (fakeTrustAnchorRegistry) List(context.Context, string) ([]trustanchor.Anchor, error) {
+	return nil, nil
+}
+func (fakeTrustAnchorRegistry) Remove(context.Context, string, string) error { return nil }
+
+func TestEmbeddedServerBinding_SetTrustAnchors_StoresRegistry(t *testing.T) {
+	log := testLogger(t)
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	r := fakeTrustAnchorRegistry{}
+	esb.SetTrustAnchors(r)
+
+	if esb.trustAnchors == nil {
+		t.Fatal("expected trustAnchors to be set")
+	}
+}
+
+func TestEmbeddedServerBinding_SetTrustAnchors_NilClearsRegistry(t *testing.T) {
+	log := testLogger(t)
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	esb.SetTrustAnchors(fakeTrustAnchorRegistry{})
+	esb.SetTrustAnchors(nil)
+
+	if esb.trustAnchors != nil {
+		t.Fatal("expected trustAnchors to be cleared by a nil SetTrustAnchors")
 	}
 }

@@ -49,7 +49,16 @@ import {
   defaultMockState,
   injectError,
 } from "./fixtures/wails-mock.ts";
-import type { Page } from "@playwright/test";
+import {
+  waitForConnectionManager,
+  openEmbeddedWizard,
+  stepName,
+  stepMode,
+  stepBarrier,
+  stepAdminCredential,
+  waitForSummary,
+  createServer,
+} from "./fixtures/embedded-wizard-steps.ts";
 
 const STEP_TIMEOUT = 10_000;
 
@@ -57,54 +66,6 @@ const STEP_TIMEOUT = 10_000;
 const firstRunState = {
   ...defaultMockState,
 };
-
-async function waitForConnectionManager(page: Page): Promise<void> {
-  await expect(
-    page.getByRole("heading", { name: "No servers configured", exact: true }),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-}
-
-async function openEmbeddedWizard(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Create Embedded Server" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Create Embedded Server" }),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-}
-
-async function stepName(page: Page, name: string): Promise<void> {
-  await expect(page.locator("#emb-name")).toBeVisible({ timeout: STEP_TIMEOUT });
-  await page.locator("#emb-name").fill(name);
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-async function stepModeStandalone(page: Page): Promise<void> {
-  await expect(
-    page.locator("button").filter({ hasText: "Standalone" }).first(),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-  await page.locator("button").filter({ hasText: "Standalone" }).first().click();
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-async function stepBarrierPassphrase(
-  page: Page,
-  passphrase: string,
-): Promise<void> {
-  await expect(
-    page.locator("button").filter({ hasText: "Passphrase" }).first(),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-  await page.locator("button").filter({ hasText: "Passphrase" }).first().click();
-  await page.locator("#emb-passphrase").fill(passphrase);
-  await page.locator("#emb-passphrase-confirm").fill(passphrase);
-  await page.getByRole("button", { name: "Next" }).click();
-}
-
-async function stepBarrierNone(page: Page): Promise<void> {
-  await expect(
-    page.locator("button").filter({ hasText: "None" }).first(),
-  ).toBeVisible({ timeout: STEP_TIMEOUT });
-  await page.locator("button").filter({ hasText: "None" }).first().click();
-  await page.getByRole("button", { name: "Next" }).click();
-}
 
 test.describe("Embedded wizard - barrier already initialized", () => {
   test.use({ mockState: firstRunState });
@@ -145,21 +106,15 @@ test.describe("Embedded wizard - barrier already initialized", () => {
       // Walk the wizard with a passphrase selection.
       await openEmbeddedWizard(page);
       await stepName(page, "Local Server");
-      await stepModeStandalone(page);
-      await stepBarrierPassphrase(page, "secret-passphrase-1!");
-
-      await expect(
-        page.getByText("Review your server configuration before creating it."),
-      ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-      await page.getByRole("button", { name: "Create Server" }).click();
+      await stepMode(page, "Standalone");
+      await stepBarrier(page, "Passphrase", "secret-passphrase-1!");
+      await stepAdminCredential(page);
+      await waitForSummary(page);
 
       // Success: wizard completes and we land on the Dashboard.
       // Without the fix, an error alert appears on the applying step
       // because SealBinding.Initialize rejects.
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: STEP_TIMEOUT });
+      await createServer(page);
 
       // No error toast should have been raised.
       const errorAlert = page
@@ -194,18 +149,11 @@ test.describe("Embedded wizard - barrier already initialized", () => {
 
       await openEmbeddedWizard(page);
       await stepName(page, "No-Barrier Server");
-      await stepModeStandalone(page);
-      await stepBarrierNone(page);
-
-      await expect(
-        page.getByText("Review your server configuration before creating it."),
-      ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-      await page.getByRole("button", { name: "Create Server" }).click();
-
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: STEP_TIMEOUT });
+      await stepMode(page, "Standalone");
+      await stepBarrier(page, "None");
+      await stepAdminCredential(page);
+      await waitForSummary(page);
+      await createServer(page);
     },
   );
 
@@ -222,8 +170,9 @@ test.describe("Embedded wizard - barrier already initialized", () => {
 
       await openEmbeddedWizard(page);
       await stepName(page, "Retry Server");
-      await stepModeStandalone(page);
-      await stepBarrierNone(page);
+      await stepMode(page, "Standalone");
+      await stepBarrier(page, "None");
+      await stepAdminCredential(page);
 
       await expect(
         page.getByText("Review your server configuration before creating it."),

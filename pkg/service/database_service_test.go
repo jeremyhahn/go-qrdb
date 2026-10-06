@@ -983,7 +983,6 @@ func TestDatabaseService_CreateForTenantWithCredentials_IsolatedTenantBarrierRef
 			lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
 				ID:            "acme",
 				IsolationType: c.isolation,
-				DataRoot:      t.TempDir(),
 			}}
 			svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
 			if !ok {

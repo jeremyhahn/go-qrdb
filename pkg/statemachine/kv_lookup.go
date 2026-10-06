@@ -53,6 +53,11 @@ func (k *KVStateMachine) Lookup(query interface{}) (interface{}, error) {
 		return result, err
 	}
 
+	// Try import-staging lookups.
+	if result, handled, err := k.lookupImportStage(query); handled {
+		return result, err
+	}
+
 	// Try MVCC lookups.
 	if result, handled, err := k.lookupMVCC(query); handled {
 		return result, err

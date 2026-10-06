@@ -18,8 +18,9 @@ package driver
 
 import (
 	"context"
-	"errors"
 	"testing"
+
+	gomysql "github.com/go-sql-driver/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -45,9 +46,9 @@ func TestEmbeddedRelational_LegacyLayoutTableIsRefusedWithItsCode(t *testing.T) 
 		}
 		err = rows.Err()
 	}
-	var stateErr *SQLStateError
-	if !errors.As(err, &stateErr) {
-		t.Fatalf("error = %v (%T), want a *SQLStateError", err, err)
+	stateErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want a *mysql.MySQLError", err, err)
 	}
 	if stateErr.Number != service.TableLayoutUnsupportedSQLCode {
 		t.Errorf("Number = %d, want %d", stateErr.Number, service.TableLayoutUnsupportedSQLCode)

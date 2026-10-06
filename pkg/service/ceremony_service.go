@@ -99,20 +99,22 @@ type CeremonyInitializeOptions struct {
 	// system barrier is initialized with (go-qrdb#548): qrdb init is the
 	// only system bootstrap, bringing the barrier up itself as part of
 	// this same call. Required when the barrier's registered strategy
-	// needs one (e.g. "passphrase"); must be empty for "none". Ignored in
+	// needs one (e.g. "passphrase"); must be nil for "none". Ignored in
 	// M-of-N mode, where the barrier stays sealed until officers later
 	// reconstruct it from their shares.
 	//
-	// []byte, not string (go-qrdb#560 review item 7): a Go string is
-	// immutable and can never be wiped from memory after use. Every
-	// caller that populates this from a wire string (holderwire.go, the
-	// JSON/embedded path) necessarily makes that one, unavoidable
-	// string-to-[]byte copy at the point of receipt; from here down,
-	// through ceremony.InitializeOptions.Secret (already []byte), the
-	// value is wipeable and CeremonyInitialize no longer has to make a
-	// SECOND, equally unwiped copy of its own to hand off to the core
-	// ceremony package.
-	Secret []byte
+	// *secure.Buffer, not []byte (go-qrdb's secure-analyzer rule 3): a Go
+	// []byte sitting on this struct is exactly the unwiped-plaintext shape
+	// the analyzer exists to catch, and a Go string is worse still --
+	// immutable, so it can never be wiped at all. Every caller that
+	// populates this from a wire []byte (holderwire.CeremonyInitFrom,
+	// holderpb.CeremonyInitFromPB, the MCP plain-text "secret" argument)
+	// builds the Buffer with secure.NewBufferFromBytes, which consumes and
+	// wipes that one, unavoidable wire copy as a side effect; from here
+	// down, through ceremony.InitializeOptions.Secret (the same *secure.Buffer,
+	// passed through unchanged), CeremonyInitialize makes no second,
+	// unwiped copy of its own to hand off to the core ceremony package.
+	Secret *secure.Buffer
 }
 
 // CeremonyOfficerConfig names one initial share holder. CSRPEM is a PEM

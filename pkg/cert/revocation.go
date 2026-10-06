@@ -78,7 +78,7 @@ type revocationEntry struct {
 // FormatSerial renders a certificate serial number in the canonical form
 // go-qrdb stores and compares it by: lowercase base-16, unpadded.
 //
-// It is the SINGLE definition of that format. GenerateClientCert keys its
+// It is the SINGLE definition of that format. IssueClientCert keys its
 // certificate records with it, RevokeCert keys the revocation marker with it,
 // and RevocationCache derives the lookup key for a peer certificate with it.
 // Two of those three deriving the format independently is how an enforcement

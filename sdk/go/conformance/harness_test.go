@@ -364,7 +364,7 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		cfg.Raft.SMType = c.smType
 		cfg.Raft.SMStorage = c.smStorage
 		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
-		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}}}
+		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
 		// The non-default cells run with the barrier off: the disk cell's
 		// file storage cannot be encrypted and is refused under it
 		// (sdk/go/node.clusteredCreateFunc), and one seal setting across the

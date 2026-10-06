@@ -290,6 +290,7 @@ func startThreeNodeClusterWithSpareSPIFFE(t *testing.T, smType string) (adminPor
 		startNode(t, bin, args, prefix)
 	}
 
+	bootstrapNodes(t, ca, allAdminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
 		waitForAdmin(t, ca.Pool, allAdminPorts[i], 90*time.Second)
@@ -1075,6 +1076,7 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 		}
 		cmds[i] = cmd
 	}
+	bootstrapNodes(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
@@ -1120,6 +1122,7 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 			}
 		})
 	}
+	unsealNodes(t, ca, adminPorts...)
 	for i := range 3 {
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
@@ -1160,24 +1163,12 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 	// triggers tryForwardWrite/forwardToLeader, which re-signs the
 	// on-behalf-of assertion so the leader re-authorizes as the original
 	// "admin" caller -- see TestCluster_MembershipAdd_ForwardsToLeader).
-	// It could not be used here: as of this writing,
-	// TestCluster_MembershipAdd_ForwardsToLeader and
-	// TestCluster_MembershipRemove_ForwardsToLeader -- which this test
-	// would otherwise have mirrored -- both fail independently of any
-	// restart, with "featuregate: ... no live feature advertisement from
-	// that node names guarded-writes ... enroll or upgrade the node
-	// first": AddMember now requires the new member to be a live,
-	// enrolled, feature-advertising node, which neither of those
-	// PRE-EXISTING tests' placeholder "127.0.0.1:1" address is, so the
-	// 409 they get is unrelated to leader-forwarding or restart and
-	// happens before any NotLeaderError/forwarding is ever reached. This
-	// is a separate, pre-existing regression this review surfaced but did
-	// not cause and is out of scope to fix here; B4's wiring fix itself is
-	// covered precisely instead by cmd/qrdbd's own
+	// That path is covered by TestCluster_MembershipAdd_ForwardsToLeader and
+	// _MembershipRemove_ForwardsToLeader, which run against a live spare
+	// node; B4's wiring fix itself is covered precisely by cmd/qrdbd's own
 	// TestResolveTrustPoolClusterCA_* unit tests, which exercise
 	// resolveTrustPoolClusterCA (the exact function the on-behalf
-	// cluster-CA check depends on) directly, without needing a live
-	// multi-node forward to observe it.
+	// cluster-CA check depends on) directly.
 	httpPut(t, ca, followerPort, "forwarded-after-restart", []byte("forwarded-value"))
 	if got := httpGet(t, ca, leaderPort, "forwarded-after-restart"); !bytes.Equal(got, []byte("forwarded-value")) {
 		t.Fatalf("forwarded-after-restart (read from leader): got %q, want %q", got, "forwarded-value")

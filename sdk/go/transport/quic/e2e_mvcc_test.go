@@ -248,18 +248,41 @@ func TestE2E_ExecuteBatch_HappyPath(t *testing.T) {
 
 func TestE2E_ImportFile_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("batch.Import", func(req []byte) (uint16, []byte) {
-		var pbReq pb.BatchImportRequest
+
+	var staged []byte
+	srv.SetResponder("batch.ImportBegin", func(req []byte) (uint16, []byte) {
+		var pbReq pb.ImportBeginRequest
 		if err := proto.Unmarshal(req, &pbReq); err != nil {
 			t.Fatalf("unmarshal request: %v", err)
-		}
-		if string(pbReq.GetFile()) != "id,val\n1,a\n" {
-			t.Errorf("file = %q", pbReq.GetFile())
 		}
 		if pbReq.GetFormat() != "csv" || pbReq.GetKeyField() != "id" {
 			t.Errorf("request = %+v", &pbReq)
 		}
-		return wire.StatusOK, mustMarshal(&pb.BatchImportResponse{
+		return wire.StatusOK, mustMarshal(&pb.ImportBeginResponse{SessionId: "sess-1"})
+	})
+	srv.SetResponder("batch.ImportAppend", func(req []byte) (uint16, []byte) {
+		var pbReq pb.ImportAppendRequest
+		if err := proto.Unmarshal(req, &pbReq); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if pbReq.GetSessionId() != "sess-1" {
+			t.Errorf("session id = %q", pbReq.GetSessionId())
+		}
+		staged = append(staged, pbReq.GetChunk()...)
+		return wire.StatusOK, mustMarshal(&pb.ImportAppendResponse{})
+	})
+	srv.SetResponder("batch.ImportCommit", func(req []byte) (uint16, []byte) {
+		var pbReq pb.ImportCommitRequest
+		if err := proto.Unmarshal(req, &pbReq); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if pbReq.GetSessionId() != "sess-1" {
+			t.Errorf("session id = %q", pbReq.GetSessionId())
+		}
+		if string(staged) != "id,val\n1,a\n" {
+			t.Errorf("staged = %q", staged)
+		}
+		return wire.StatusOK, mustMarshal(&pb.ImportCommitResponse{
 			Total:     1,
 			Succeeded: 1,
 			Errors: []*pb.BatchImportError{
@@ -284,7 +307,10 @@ func TestE2E_ImportFile_HappyPath(t *testing.T) {
 
 func TestE2E_ImportFile_ServerError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("batch.Import", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("batch.ImportBegin", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.ImportBeginResponse{SessionId: "sess-1"})
+	})
+	srv.SetResponder("batch.ImportAppend", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("import failed")
 	})
 

@@ -1,6 +1,6 @@
 # Multi-Tenancy — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
 database, plus the three governance planes that decide who may have which.
@@ -83,6 +83,88 @@ raft     dedicated raft group per database, SM data under
 
 **Changing a tenant's isolation type after it holds data is rejected** with
 `ErrTenantHasData` (HTTP 409). Migrate or delete the data first.
+
+## Creating a tenant: onboarding with its first admin
+
+### Problem
+
+A tenant with no account in it is unusable, and on a dedicated tenant it is
+worse: the first thing a dedicated tenant needs is its own barrier, and before
+that barrier exists the barrier's trust-on-first-init window was the only way
+in — admitting **any** authenticated identity of the tenant. Whoever reached it
+first set the tenant's key. And the platform operator is the one party that
+must not hold the tenant's credential, so it cannot simply mint one and hand it
+over.
+
+### Shape chosen
+
+**A tenant is created with its first admin's login credential, or not at all.**
+`tenant create` takes the admin's username and exactly one credential the admin
+already holds the key for:
+
+- a **certificate signing request**, which the new tenant's own login CA
+  (Key B) signs; or
+- a **bring-your-own certificate** from the admin's organisation's CA, which
+  must chain to CA certificates registered as the tenant's trust anchors in the
+  same call ([../trust-anchors/](../trust-anchors/architecture.md)), with its
+  CN naming the admin and its tenant naming the new tenant.
+
+The response carries the admin's certificate and its SPKI thumbprint — never a
+private key, because none was ever made on the server.
+
+What happens next depends on where the tenant keeps its identity records
+(`tenant.IAMBehindTenantBarrier`):
+
+| Isolation | Identity records | The admin at creation |
+|---|---|---|
+| `prefix` | the shared system store | account created, granted the tenant's Admin role, certificate bound — usable at once |
+| `barrier`, `volume`, `raft` | behind the tenant's own barrier, which does not exist yet | certificate issued or verified and recorded as the tenant's **pending admin**; the response says `awaits_barrier_init` |
+
+For a pending admin, the record (`pkg/tenantadmin`) lives in the tenant's
+identity namespace on the replicated system store, readable while the tenant
+barrier is sealed, and does two things:
+
+1. **It is the only certificate the trust-on-first-init window admits.** A
+   barrier-init request must present that SPKI, as that username; anything
+   else is refused. So whoever initializes the barrier is the admin the
+   operator onboarded. Under `auth.mtls_binding_policy: required`, a tenant
+   with no onboarded admin admits **nobody** through the window — that posture
+   admits no unbound certificate anywhere else either.
+2. **It becomes the account.** The tenant service runs a barrier-ready hook
+   after the barrier is initialized, after each unseal, and on each status read
+   that finds it unsealed; qrdb's composers register
+   `bootstrap.CompletePendingTenantAdmin` there, which seeds the tenant's roles,
+   creates the admin with the Admin role (or adopts an existing account of that
+   name), binds the certificate, and deletes the record. It is idempotent, so a
+   failed attempt is finished by the next trigger.
+
+### One unit, with compensation
+
+Every input that can be refused — the trust anchors, the CSR, the
+bring-your-own certificate's chain and identity — is judged **before** the
+tenant record is written. That ordering is not tidiness: a deleted tenant id is
+retired permanently (see [Deleting a tenant](#deleting-a-tenant)), so undoing a
+created tenant costs the caller its id. Refusing early means an ordinary
+mistake never costs an id.
+
+Only a failure after the first write — an infrastructure failure — reaches the
+undo path: each write registered how to take itself back (remove the anchors,
+revoke the signed certificate, delete the pending record or the account, delete
+the tenant), and they run in reverse. An undo step that itself fails is
+reported to the caller for an operator to finish rather than swallowed.
+
+### Alternatives rejected
+
+- **The server generates the admin's key and returns it.** Rejected: the
+  platform operator would hold the tenant's first credential, and the response
+  would be a credential in transit. The CSR path gives the operator nothing it
+  could log in with.
+- **Create the tenant, then issue the admin separately.** Rejected: between the
+  two steps the tenant exists with no admin, and a dedicated tenant's
+  first-init window admits whoever reaches it first.
+- **Pre-create the dedicated tenant's admin account in the system store.**
+  Rejected: a dedicated tenant's accounts live behind its barrier by design;
+  writing one outside it would split the tenant's identity across two stores.
 
 ## Deleting a tenant
 

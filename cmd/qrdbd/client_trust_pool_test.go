@@ -45,7 +45,7 @@ type fakeKeyBCertProvider struct {
 var _ cert.CertProvider = (*fakeKeyBCertProvider)(nil)
 var _ clienttrust.CertSource = (*fakeKeyBCertProvider)(nil)
 
-func (f *fakeKeyBCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (f *fakeKeyBCertProvider) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, errors.New("not implemented")
 }
 func (f *fakeKeyBCertProvider) ExportPKCS12(context.Context, []byte, []byte, string) ([]byte, error) {

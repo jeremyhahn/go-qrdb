@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 )
 
 // TestCLIMultiProtocolTenantsLifecycle tests the full tenant lifecycle
@@ -41,11 +43,12 @@ func TestCLIMultiProtocolTenantsLifecycle(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
 			})
 
-			// Step 1: Create a tenant.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+			// Step 1: Create a tenant with its first admin.
+			adminArgs := adminCSRArgsForTenant(t, cfg, proto, tenantID+"-admin")
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, append([]string{
 				"tenant", "create",
 				"--id", tenantID,
-				"--name", tenantName)
+				"--name", tenantName}, adminArgs...)...)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -164,9 +167,18 @@ func TestRESTTenantRoutes_NonFourOhFour(t *testing.T) {
 	tenantName := fmt.Sprintf("REST Regression Tenant %d", ts)
 
 	// --- POST /v1/tenants must not 404 ---
+	// Tenant creation requires an admin_username/admin_csr_pem pair (the
+	// onboarding trust-on-first-init flow); this test never uses the
+	// onboarded admin identity, only the tenant record's existence.
+	_, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
 	body, _ := json.Marshal(map[string]string{
-		"id":   tenantID,
-		"name": tenantName,
+		"id":             tenantID,
+		"name":           tenantName,
+		"admin_username": tenantID + "-admin",
+		"admin_csr_pem":  string(adminCSRPEM),
 	})
 	createResp, err := client.Post(
 		cfg.RESTBaseURL+"/v1/tenants",
@@ -453,7 +465,19 @@ func TestRESTTenantCRUD_KVBacked(t *testing.T) {
 	})
 
 	// POST /v1/tenants — must return 201 with tenant JSON body.
-	body, _ := json.Marshal(map[string]string{"id": tenantID, "name": tenantName})
+	// Tenant creation requires an admin_username/admin_csr_pem pair (the
+	// onboarding trust-on-first-init flow); this test never uses the
+	// onboarded admin identity, only the tenant record's existence.
+	_, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"id":             tenantID,
+		"name":           tenantName,
+		"admin_username": tenantID + "-admin",
+		"admin_csr_pem":  string(adminCSRPEM),
+	})
 	createResp, err := client.Post(
 		cfg.RESTBaseURL+"/v1/tenants",
 		"application/json",

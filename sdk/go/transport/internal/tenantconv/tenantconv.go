@@ -39,7 +39,10 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 		ID:            resp.GetId(),
 		Name:          resp.GetName(),
 		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
-		DataRoot:      resp.GetDataRoot(),
+		VolumePool:    resp.GetVolumePool(),
+	}
+	if r := resp.GetRefusal(); r != nil {
+		info.Refusal = &transport.TenantRefusal{Code: r.GetCode(), Message: r.GetMessage()}
 	}
 
 	if pbQ := resp.GetQuotas(); pbQ != nil {
@@ -71,6 +74,7 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 			AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 			AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+			AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 		}
 	}
 
@@ -102,7 +106,7 @@ func ToListDeletedTenantsResponse(resp *pb.TenantListDeletedResponse) *transport
 			ID:            d.GetId(),
 			Name:          d.GetName(),
 			IsolationType: transport.TenantIsolationType(d.GetIsolationType()),
-			DataRoot:      d.GetDataRoot(),
+			VolumePool:    d.GetVolumePool(),
 		}
 		if parsed, err := time.Parse(time.RFC3339, d.GetCreatedAt()); err == nil {
 			dt.CreatedAt = parsed

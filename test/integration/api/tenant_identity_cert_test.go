@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // tenantAdminIdentity is a user in its own tenant, holding a role created
@@ -23,30 +21,21 @@ type tenantAdminIdentity struct {
 	keyFile  string
 }
 
-// newTenantAdminIdentity creates tenantID, a role in it carrying perms, and a
-// user holding that role, then tries to mint the user's client certificate
-// (CN=username, OU=tenantID) from the node's own CA -- the CA the mTLS
-// listener trusts, read from beside cfg.TLSCACert -- so the CLI can act AS
-// that tenant's administrator.
+// newTenantAdminIdentity creates tenantID together with a bootstrap admin --
+// onboarding's mandatory first-admin credential, signed by the tenant's own
+// Key B CA -- then a role in the tenant carrying perms and a user holding
+// it, and mints that user's client certificate through the supported path:
+// a CSR generated locally and "ca issue"d by the bootstrap admin itself.
+// The bootstrap admin's built-in Admin role grants certs:issue (see
+// pkg/permission/builtin_role_grants.go's registerAdminGrants), so no node
+// CA key material is ever read.
 //
 // No caller may issue a certificate into another tenant (certs:* is
 // ScopeSelfStrict), so a test that needs a tenant's certificate operations
 // performs them as the tenant's own administrator, which is what this builds.
-// The harness admin only provisions the tenant, role and user.
-//
-// Minting that administrator's certificate needs this node's local
-// ca-key.pem cache, and cmd/qrdbd deletes that cache unconditionally once
-// the cluster CA key is confirmed durable in the replicated store (see
-// nodeCAKeyUnavailable). That confirmation runs before the admin endpoint
-// opens, so the cache is deterministically already gone by the time this
-// suite's readiness gate passes: there is no supported way, through any CLI
-// or API surface, to mint a NEW Key-A-trusted identity for an arbitrary
-// subject on an already-booted node. The ok return reports whether the
-// identity was actually minted; a caller that gets false has still
-// provisioned the tenant, role and user (reachable, and asserted here), but
-// must stop before anything that needs to act as that tenant's
-// administrator -- see TestCLIMultiProtocolCertsGenerateTenant.
-func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, tenantID string, perms ...string) (*tenantAdminIdentity, bool) {
+// The harness admin only provisions the tenant, role and user; the bootstrap
+// admin issues the final certificate.
+func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, tenantID string, perms ...string) *tenantAdminIdentity {
 	t.Helper()
 	ts := testTimestamp()
 	username := fmt.Sprintf("tadmin-%s-%d", proto, ts)
@@ -63,10 +52,23 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 		return stdout
 	}
 
-	run("tenant create", "tenant", "create", "--id", tenantID, "--name", "Tenant "+tenantID)
+	// A tenant is created with its first admin, or not at all. This bootstrap
+	// admin's certificate, signed by the tenant's own Key B CA, is what
+	// issues the final identity's certificate below -- never a key read
+	// straight from the node's own CA material.
+	bootstrapAdmin := fmt.Sprintf("tadmin-boot-%s-%d", proto, ts)
+	bootCSRDir := t.TempDir()
+	run("ca csr (bootstrap admin)", "ca", "csr", "--username", bootstrapAdmin, "--out", bootCSRDir)
+	bootCertDir := t.TempDir()
+	run("tenant create", "tenant", "create", "--id", tenantID, "--name", "Tenant "+tenantID,
+		"--admin-username", bootstrapAdmin, "--admin-csr", filepath.Join(bootCSRDir, "csr.pem"),
+		"--out", bootCertDir)
 	t.Cleanup(func() {
 		execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
 	})
+	bootstrapAdminCert := filepath.Join(bootCertDir, "admin-cert.pem")
+	bootstrapAdminKey := filepath.Join(bootCSRDir, "key.pem")
+
 	roleID := parseIDResponse(t, proto, "roles create", run("roles create",
 		"--output", "json", "roles", "create",
 		"--name", roleName, "--tenant-id", tenantID,
@@ -80,22 +82,33 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	})
 	run("roles assign", "roles", "assign", "--user", userID, "--role", roleID)
 
-	if nodeCAKeyUnavailable(cfg) {
-		t.Logf("[%s] node CA key cache is unavailable (ca-key.pem removed once persisted to the "+
-			"replicated store) -- cannot mint %s/%s's Key-A-trusted client certificate", proto, tenantID, username)
-		return nil, false
-	}
-
-	caDir := filepath.Dir(cfg.TLSCACert)
-	ca, err := qrdbdharness.LoadCA(cfg.TLSCACert, filepath.Join(caDir, "ca-key.pem"))
+	// The final identity's own CSR, issued by the bootstrap admin -- the
+	// supported path: no private key ever reaches the server, and the
+	// issued certificate is signed by the tenant's own Key B CA.
+	identityCSRDir := t.TempDir()
+	stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+		"ca", "csr", "--username", username, "--out", identityCSRDir)
 	if err != nil {
-		t.Fatalf("[%s] load the node CA from %s: %v", proto, caDir, err)
+		t.Logf("stdout: %s", stdout)
+		t.Logf("stderr: %s", stderr)
+		t.Fatalf("[%s] ca csr for %s failed: %v", proto, username, err)
 	}
-	kp, err := ca.Issue(t.TempDir(), qrdbdharness.WithSubject(username, tenantID))
+	identityCertDir := t.TempDir()
+	stdout, stderr, err = execCLIWithProtocolAndCert(t, cfg, proto, bootstrapAdminCert, bootstrapAdminKey,
+		"ca", "issue", "--username", username,
+		"--csr", filepath.Join(identityCSRDir, "csr.pem"),
+		"--out", identityCertDir)
 	if err != nil {
-		t.Fatalf("[%s] mint %s/%s's client certificate: %v", proto, tenantID, username, err)
+		t.Logf("stdout: %s", stdout)
+		t.Logf("stderr: %s", stderr)
+		t.Fatalf("[%s] ca issue for %s (by the bootstrap admin) failed: %v", proto, username, err)
 	}
-	return &tenantAdminIdentity{tenantID: tenantID, username: username, certFile: kp.CertPath, keyFile: kp.KeyPath}, true
+	return &tenantAdminIdentity{
+		tenantID: tenantID,
+		username: username,
+		certFile: filepath.Join(identityCertDir, "cert.pem"),
+		keyFile:  filepath.Join(identityCSRDir, "key.pem"),
+	}
 }
 
 // exec runs the CLI as this tenant administrator.

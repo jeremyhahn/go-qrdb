@@ -29,6 +29,11 @@ import (
 // message. These are the sole diagnostic for a refused tenant creation or a
 // denied cross-tenant call: the operation is rejected before anything is
 // written, so there is no state left to inspect afterwards.
+//
+// This table used to cover InvalidDataRootError, DataRootNotEmptyError and
+// DataRootOverlapError too: CreateTenant no longer accepts an explicit disk
+// path (volume-pools D9), so none of the three can be constructed by this
+// package any more, and all three are gone from errors.go.
 func TestRefusalMessagesCarryTheOffendingValue(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -43,6 +48,14 @@ func TestRefusalMessagesCarryTheOffendingValue(t *testing.T) {
 				Op:                "create user",
 			},
 			contains: []string{"tenant:", "acme", "globex", "create user"},
+		},
+		{
+			name: "isolation-type mismatch names the tenant and the type",
+			err: &DataRootIsolationTypeError{
+				TenantID:      "acme",
+				IsolationType: IsolationPrefix,
+			},
+			contains: []string{"acme", string(IsolationPrefix), "volume or raft"},
 		},
 	}
 

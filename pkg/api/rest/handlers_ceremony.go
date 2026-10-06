@@ -19,7 +19,6 @@ import (
 	"net/http"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -82,13 +81,18 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
-	// req.Secret is this handler's own copy of the system barrier
-	// passphrase (go-qrdb#560 review item 7, follow-up: the field is
-	// []byte, wire-encoded as base64, matching
-	// transport.BarrierInitializeRequest.Secret's existing convention).
-	defer secure.Wipe(req.Secret)
+	// req.Secret (wire-encoded as base64, matching
+	// transport.BarrierInitializeRequest.Secret's existing convention) is
+	// consumed into a *secure.Buffer by CeremonyInitFrom, which this handler
+	// owns and destroys once the ceremony call below has finished with it.
+	opts, err := holderwire.CeremonyInitFrom(&req)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	defer opts.Secret.Destroy()
 
-	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA, holderwire.CeremonyInitFrom(&req))
+	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA, opts)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

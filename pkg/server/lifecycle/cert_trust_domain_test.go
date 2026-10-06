@@ -20,7 +20,7 @@ import (
 	"encoding/pem"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -51,9 +51,9 @@ func issuedCertURIs(t *testing.T, trustDomain string) []string {
 	}
 	t.Cleanup(func() { _ = node.Stop(context.Background()) })
 
-	bundle, err := node.CertProv.GenerateClientCert(context.Background(), &cert.GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := certtest.Generate(context.Background(), node.CertProv, &certtest.Request{Username: "alice", TenantID: "acme"})
 	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
+		t.Fatalf("certtest.Generate: %v", err)
 	}
 	block, _ := pem.Decode(bundle.CertPEM)
 	if block == nil {

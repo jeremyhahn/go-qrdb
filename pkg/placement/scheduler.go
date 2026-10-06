@@ -89,16 +89,37 @@ func WithEpsilon(epsilon float64) SchedulerOption {
 	}
 }
 
-// ReplicaFilter reports whether a replica of shardID may be placed on the
-// node at raftAddr; a non-nil error excludes the node. The feature gate
-// supplies one so a group is never placed on a node that cannot apply the
-// commands the group uses.
-type ReplicaFilter func(shardID uint64, raftAddr string) error
+// ReplicaFilter reports whether a replica of tenantID's shardID may be
+// placed on the node at raftAddr; a non-nil error excludes the node. The
+// feature gate supplies one so a group is never placed on a node that
+// cannot apply the commands the group uses; the volume-pools feature
+// (docs/volume-pools/architecture.md, "Raft placement") supplies another so
+// a raft tenant's replicas are never placed on a node whose latest health
+// report does not show the tenant's pool healthy.
+type ReplicaFilter func(tenantID string, shardID uint64, raftAddr string) error
 
-// WithReplicaFilter excludes every candidate node filter refuses from Place
-// and PlaceAdditional.
+// WithReplicaFilter composes filter into the scheduler's admission check:
+// a candidate is admitted only while EVERY filter attached this way accepts
+// it. Calling it more than once -- once per concern, e.g. once for the
+// feature gate and once for pool health -- ANDs them together rather than
+// the later call overwriting the earlier one.
 func WithReplicaFilter(filter ReplicaFilter) SchedulerOption {
-	return func(s *Scheduler) { s.filter = filter }
+	return func(s *Scheduler) {
+		if filter == nil {
+			return
+		}
+		prev := s.filter
+		if prev == nil {
+			s.filter = filter
+			return
+		}
+		s.filter = func(tenantID string, shardID uint64, raftAddr string) error {
+			if err := prev(tenantID, shardID, raftAddr); err != nil {
+				return err
+			}
+			return filter(tenantID, shardID, raftAddr)
+		}
+	}
 }
 
 // Scheduler computes a Placement from a snapshot of cluster topology using a
@@ -160,7 +181,7 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 	if req.RF < 1 {
 		return nil, ErrInvalidRF
 	}
-	candidates := s.admitted(req.ShardID, healthyDistinct(s.topo.Nodes()))
+	candidates := s.admitted(req.TenantID, req.ShardID, healthyDistinct(s.topo.Nodes()))
 	if len(candidates) < req.RF {
 		return nil, &InsufficientNodesError{Have: len(candidates), Need: req.RF}
 	}
@@ -224,7 +245,7 @@ func (s *Scheduler) PlaceAdditional(ctx context.Context, existing *Placement, ad
 	}
 
 	candidates := make([]NodeLoad, 0, len(s.topo.Nodes()))
-	for _, n := range s.admitted(existing.ShardID, healthyDistinct(s.topo.Nodes())) {
+	for _, n := range s.admitted(existing.TenantID, existing.ShardID, healthyDistinct(s.topo.Nodes())) {
 		if _, dup := occupied[n.NodeID]; dup {
 			continue
 		}
@@ -260,14 +281,15 @@ func (s *Scheduler) PlaceAdditional(ctx context.Context, existing *Placement, ad
 }
 
 // admitted returns the candidates the scheduler's replica filter accepts for
-// shardID, in their original order; all of them when there is no filter.
-func (s *Scheduler) admitted(shardID uint64, candidates []NodeLoad) []NodeLoad {
+// tenantID's shardID, in their original order; all of them when there is no
+// filter.
+func (s *Scheduler) admitted(tenantID string, shardID uint64, candidates []NodeLoad) []NodeLoad {
 	if s.filter == nil {
 		return candidates
 	}
 	out := candidates[:0:0]
 	for _, n := range candidates {
-		if s.filter(shardID, n.RaftAddr) == nil {
+		if s.filter(tenantID, shardID, n.RaftAddr) == nil {
 			out = append(out, n)
 		}
 	}

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestErrorMessagesAndUnwrap exercises the Error() strings and Unwrap()
@@ -87,8 +88,13 @@ func TestProvisionTenant_MissingLoggerRejected(t *testing.T) {
 // path.
 func TestProvisionTenant_RoleSeedErrorWrapped(t *testing.T) {
 	sentinel := errors.New("role write failed")
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{createErr: sentinel},
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		Logger: discardLogger(),
 	})
 	var want *TenantAdminRoleCreationError
@@ -104,8 +110,13 @@ func TestProvisionTenant_RoleSeedErrorWrapped(t *testing.T) {
 // creation error path.
 func TestProvisionTenant_AdminUserErrorWrapped(t *testing.T) {
 	sentinel := errors.New("user write failed")
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{createErr: sentinel}, Roles: &fakeRoles{},
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		Logger: discardLogger(),
 	})
 	var want *TenantAdminUserCreationError
@@ -118,12 +129,16 @@ func TestProvisionTenant_AdminUserErrorWrapped(t *testing.T) {
 }
 
 // TestProvisionTenant_CertErrorWrapped covers the tenant-admin cert enrollment
-// error path (CA failure).
+// error path (Signer failure).
 func TestProvisionTenant_CertErrorWrapped(t *testing.T) {
-	sentinel := errors.New("CA sealed")
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	sentinel := errors.New("signer sealed")
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		CA: &fakeCA{err: sentinel}, Logger: discardLogger(),
+		Signer: &fakeSignerErr{err: sentinel}, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -135,11 +150,15 @@ func TestProvisionTenant_CertErrorWrapped(t *testing.T) {
 }
 
 // TestProvisionTenant_InvalidCertPEMWrapped covers the SPKI-thumbprint parse
-// failure path (CA returns non-PEM bytes).
+// failure path (Signer returns non-PEM bytes).
 func TestProvisionTenant_InvalidCertPEMWrapped(t *testing.T) {
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		CA: &fakeCA{cert: []byte("not a pem"), key: []byte("k")}, Logger: discardLogger(),
+		Signer: &fakeSigner{cert: []byte("not a pem")}, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {

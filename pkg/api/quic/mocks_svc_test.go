@@ -17,7 +17,6 @@
 package quic
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"time"
@@ -150,17 +149,24 @@ type mockCeremonyService struct {
 	ceremonySignCSRFn    func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
 	ceremonyStatusFn     func(ctx context.Context) (*service.CeremonyStatusInfo, error)
 	capturedInitOpts     *service.CeremonyInitializeOptions
+	capturedSecret       []byte
 	capturedCA           ceremony.CeremonyCA
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
-	// The handler wipes opts.Secret's backing array (go-qrdb#560 review
-	// item 7, follow-up) once it has finished using it, which runs before
-	// this call returns to the test -- captured is a shallow copy with an
-	// independent clone of Secret, so the test can still inspect what was
-	// forwarded after the wipe has already run.
+	// The handler destroys opts.Secret once it has finished using it, which
+	// runs before this call returns to the test -- capturedSecret clones the
+	// plaintext out while the Buffer is still live, so the test can still
+	// inspect what was forwarded after the handler's own Destroy has already
+	// run.
 	captured := *opts
-	captured.Secret = bytes.Clone(opts.Secret)
+	m.capturedSecret = nil
+	if opts.Secret != nil {
+		_ = opts.Secret.WithBytes(func(b []byte) error {
+			m.capturedSecret = append([]byte(nil), b...)
+			return nil
+		})
+	}
 	m.capturedInitOpts = &captured
 	m.capturedCA = ca
 	if m.ceremonyInitializeFn != nil {

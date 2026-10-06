@@ -603,3 +603,34 @@ func TestLeaseBinding_CorruptTableRefusesSnapshotRecovery(t *testing.T) {
 		}
 	})
 }
+
+// TestLeaseBinding_GrantInvalidTTLRefused proves a lease grant naming a
+// non-positive TTL is refused as a deterministic application error -- the
+// caller's own request is wrong, not a replica fault -- on every
+// lease-capable state machine, matching lease.Lessor.Grant's own contract.
+func TestLeaseBinding_GrantInvalidTTLRefused(t *testing.T) {
+	forEachLeaseSM(t, func(t *testing.T, h *leaseHarness) {
+		res := h.apply(protocol.EncodeLeaseGrant(0))
+		if _, refused := protocol.DecodeAppError(res.Data); !refused {
+			t.Fatalf("Grant(ttl=0) was not refused (result=%q)", res.Data)
+		}
+
+		res = h.apply(protocol.EncodeLeaseGrant(-5))
+		if _, refused := protocol.DecodeAppError(res.Data); !refused {
+			t.Fatalf("Grant(ttl=-5) was not refused (result=%q)", res.Data)
+		}
+	})
+}
+
+// TestLeaseBinding_KeepAliveUnknownLeaseIsIdempotentSuccess proves a
+// KeepAlive naming a lease the lessor does not (or no longer) hold is a
+// no-op success, not an error, so Raft Apply never stalls on a duplicate or
+// late-replayed keepalive proposal -- on every lease-capable state machine.
+func TestLeaseBinding_KeepAliveUnknownLeaseIsIdempotentSuccess(t *testing.T) {
+	forEachLeaseSM(t, func(t *testing.T, h *leaseHarness) {
+		res := h.applyOK(protocol.EncodeLeaseKeepAlive(999999))
+		if res.Value != 0 {
+			t.Fatalf("KeepAlive(unknown lease).Value = %d, want 0", res.Value)
+		}
+	})
+}

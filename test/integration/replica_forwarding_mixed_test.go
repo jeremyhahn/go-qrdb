@@ -23,13 +23,11 @@ package integration_test
 // embedder configured.
 
 import (
-	"context"
 	"crypto/tls"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
 
@@ -41,6 +39,7 @@ const mixedEmbedded = 2
 // anchor database is placed on all three, so the embedded node can only hold
 // the tenant's key if a qrdbd node delivered it.
 func TestMixedCluster_EmbeddedNodeServesAndForwardsARaftTenant(t *testing.T) {
+	var callerCert string
 	c := startFwdClusterWith(t, 3, map[int]fwdEmbedded{
 		mixedEmbedded: func(ca *testCA) []qrdbnode.NodeOption {
 			certPath, keyPath := ca.generateClientCertForTenant(t, fwdTenantID)
@@ -48,11 +47,16 @@ func TestMixedCluster_EmbeddedNodeServesAndForwardsARaftTenant(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			callerCert = certPath
 			return []qrdbnode.NodeOption{qrdbnode.WithEmbeddedCaller(caller)}
 		},
 	})
+	// auth.mtls_binding_policy defaults to "required": the configured
+	// caller authenticates, and so forwards, only once enrolled as the
+	// writer's binding.
+	bindUserCert(t, c.sys, c.nodes[c.creator].admin, c.writerID, callerCert)
 	emb := c.nodes[mixedEmbedded].embedded
-	ctx := tenant.WithTenantID(context.Background(), fwdTenantID)
+	ctx := c.writerContext()
 	rest := restFwdTransport{}
 
 	t.Run("the embedded replica holds the tenant's key and serves its database", func(t *testing.T) {

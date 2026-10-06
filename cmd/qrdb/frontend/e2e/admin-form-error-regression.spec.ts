@@ -110,13 +110,17 @@ async function openAndSubmitCreateTenant(
 
   await main.locator("#tenant-id").fill(id);
   await main.locator("#tenant-name").fill(name);
+  await main.getByTestId("create-tenant-admin-username").fill(`${id}-admin`);
+  await main.getByTestId("create-tenant-admin-csr").fill(
+    "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+  );
 
   // Change isolation type if not the default.
   if (isolationType !== "barrier") {
     await main.locator("#tenant-isolation").selectOption(isolationType);
   }
 
-  await main.getByRole("button", { name: "Create" }).click();
+  await main.getByTestId("create-tenant-submit").click();
 }
 
 // ---------------------------------------------------------------------------
@@ -328,17 +332,17 @@ test.describe("Admin form error regression — Wails mode", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Cert generate — failure shows error toast
+  // Cert issue — failure shows error toast
   // -------------------------------------------------------------------------
 
-  test("cert generate failure: error toast shown", async ({ page }) => {
+  test("cert issue failure: error toast shown", async ({ page }) => {
     await navigateToCerts(page);
 
     const main = page.locator("main");
 
-    // Open the Generate tab.
+    // Open the Issue tab.
     await main
-      .getByRole("button", { name: "Generate", exact: true })
+      .getByRole("button", { name: "Issue", exact: true })
       .first()
       .click();
 
@@ -346,20 +350,20 @@ test.describe("Admin form error regression — Wails mode", () => {
 
     await injectError(
       page,
-      "CertBinding.Generate",
+      "CertBinding.Issue",
       "user not found: alice",
     );
 
     await body.getByPlaceholder("e.g. alice").fill("alice");
     await body
-      .getByRole("button", { name: "Generate", exact: true })
+      .getByRole("button", { name: "Issue", exact: true })
       .click();
 
     const alert = page.locator('[role="alert"]');
     await expect(alert).toBeVisible({ timeout: LOAD_TIMEOUT });
     await expect(alert).toContainText("user not found");
 
-    await clearError(page, "CertBinding.Generate");
+    await clearError(page, "CertBinding.Issue");
   });
 
   // -------------------------------------------------------------------------
@@ -492,7 +496,11 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
       await main.getByRole("button", { name: "Create Tenant" }).click();
       await main.locator("#tenant-id").fill("default");
       await main.locator("#tenant-name").fill("Default Tenant");
-      await main.getByRole("button", { name: "Create" }).click();
+      await main.getByTestId("create-tenant-admin-username").fill("default-admin");
+      await main.getByTestId("create-tenant-admin-csr").fill(
+        "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+      );
+      await main.getByTestId("create-tenant-submit").click();
 
       // One or more error toasts must appear. At least one must carry a
       // meaningful message from the 409 response (not a generic undefined/empty).
@@ -787,13 +795,15 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
   );
 
   // -------------------------------------------------------------------------
-  // Cert generate — failure shows error toast
+  // Cert issue — failure shows error toast
   // -------------------------------------------------------------------------
 
   webTest(
-    "POST /v1/certs/generate failure: frontend shows error toast",
+    "POST /certs/issue failure: frontend shows error toast",
     async ({ page }) => {
-      await page.route("**/v1/certs/generate", async (route) => {
+      // The REST route carries no /v1 prefix (see pkg/api/rest/server.go
+      // s.routeIf(enrollOn, http.MethodPost, "/certs/issue", ...)).
+      await page.route("**/certs/issue", async (route) => {
         await route.fulfill({
           status: 404,
           contentType: "application/json",
@@ -801,7 +811,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
         });
       });
 
-      await page.route("**/v1/certs/list**", (route) => {
+      await page.route("**/certs/list**", (route) => {
         void route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -826,15 +836,18 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
 
       const main = page.locator("main");
 
-      // Open the Generate tab.
+      // Open the Issue tab.
       await main
-        .getByRole("button", { name: "Generate", exact: true })
+        .getByRole("button", { name: "Issue", exact: true })
         .first()
         .click();
 
       const body = main.locator(".card-body");
       await body.getByPlaceholder("e.g. alice").fill("nobody");
-      await body.getByRole("button", { name: "Generate", exact: true }).click();
+      await body.getByPlaceholder("-----BEGIN CERTIFICATE REQUEST-----").fill(
+        "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+      );
+      await body.getByRole("button", { name: "Issue", exact: true }).click();
 
       // Use .first() — the list endpoint may also error and produce a toast.
       const alert = page.locator('[role="alert"]').first();
@@ -846,7 +859,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
         text?.includes("user not found") ||
           text?.includes("404") ||
           text?.includes("nobody") ||
-          text?.includes("Failed to generate") ||
+          text?.includes("Failed to issue") ||
           text?.includes("transport"),
       ).toBe(true);
     },

@@ -24,7 +24,11 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -126,6 +130,42 @@ func TestForwardingScope_ForwardsTheRefusedWriteAsTheConfiguredCaller(t *testing
 	}
 	if c.method != "kv.Put" || c.database != "orders" || c.caller != alice || c.refusal == nil || c.refusal.Database != "orders" {
 		t.Fatalf("forwarded %s on %q as %+v with refusal %+v; want kv.Put on orders as alice with the node's refusal", c.method, c.database, c.caller, c.refusal)
+	}
+}
+
+// With an AuthMiddleware installed, the embedded transport authorizes the
+// identity the call's context carries before it reaches the node, so a call
+// whose context carries none is refused as unauthenticated and nothing is
+// forwarded -- the configured caller is who a forward is made as, never a
+// stand-in for the in-process caller. A call whose context carries an
+// identity the node admits is forwarded as the configured caller.
+func TestForwardingScope_AuthorizesTheContextsIdentityBeforeForwarding(t *testing.T) {
+	mw := authmw.New(rbac.New(authtest.BuiltInRoles(t, "acme")))
+	fwd := &recordingForwarder{status: wire.StatusOK}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithServiceRegistry(&nonReplicaRegistry{}),
+		WithReplicaForwarding(fwd, fixedCaller{id: alice}), WithAuthMiddleware(mw))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	scoped, err := tr.WithDatabase("orders")
+	if err != nil {
+		t.Fatalf("WithDatabase: %v", err)
+	}
+	kv := scoped.(transport.KVClient)
+
+	if err := kv.Put(acmeCtx(), "k1", []byte("v1")); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("Put with no identity = %v; want auth.ErrUnauthenticated", err)
+	}
+	if len(fwd.calls) != 0 {
+		t.Fatalf("forwarded %d frames for an unauthenticated call; want none", len(fwd.calls))
+	}
+
+	app := identityCtx("acme", role.SystemRoleID("acme", role.RoleNameOperator))
+	if err := kv.Put(app, "k1", []byte("v1")); err != nil {
+		t.Fatalf("Put as an admitted identity = %v; want the replica's answer", err)
+	}
+	if len(fwd.calls) != 1 || fwd.calls[0].caller != alice {
+		t.Fatalf("forwarded %+v; want one frame, as the configured caller", fwd.calls)
 	}
 }
 

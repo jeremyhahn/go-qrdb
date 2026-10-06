@@ -78,9 +78,14 @@ import. Use the global `--database` flag to scope the import to a named
 database; `/batch` is a data-plane endpoint, so the globally scoped connection
 already carries that database context on every request.
 
-**Maximum import size depends on `--transport`**: REST, gRPC, Unix and MCP
-accept up to 100 MB; QUIC accepts roughly 63 MB, bounded by the QUIC wire
-protocol's shared per-RPC payload cap rather than an import-specific limit.
+**There is no file-size limit of its own.** `qrdb batch import` drives a
+chunked import session underneath (`ImportBegin`, as many `ImportAppend`
+calls as the file needs, `ImportCommit`) — the file is split into pieces no
+larger than the transport's pre-auth message cap
+(`transport.max_message_bytes`, default 4 MiB) before any of it is sent,
+identically on every `--transport`. The command's flags, output, and exit
+behavior are exactly what they were when a single message carried the
+whole file; only the wire underneath changed.
 
 ```bash
 qrdb batch import --file data.csv --key-field id --value-mode row

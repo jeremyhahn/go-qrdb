@@ -52,7 +52,8 @@ import (
 // sql.NewUniqueKeyErr (PRIMARY or a named index) that go-mysql-server's own
 // INSERT/REPLACE/ON DUPLICATE KEY UPDATE execution loop
 // (rowexec/insert.go) expects, which is what ultimately surfaces to a
-// client as MySQL error 1062 (see sdk/go/gorm/error_translator.go).
+// client as MySQL error 1062, which gorm.io/driver/mysql translates to
+// gorm.ErrDuplicatedKey.
 // ---------------------------------------------------------------------------
 
 // Compile-time interface assertions.

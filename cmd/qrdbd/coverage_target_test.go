@@ -92,7 +92,7 @@ func TestBuildQuotaReconciler_SystemTenantSkipped(t *testing.T) {
 	acct := buildQuotaAccountant(svc)
 	require.NotNil(t, acct, "buildQuotaAccountant must return non-nil for a quota-capable service")
 
-	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{})
+	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{}, nil)
 	require.NotNil(t, rec, "buildQuotaReconciler must return non-nil reconciler")
 
 	// RunOnce calls the Tenants closure, which lists tenants and skips the
@@ -327,7 +327,7 @@ func TestBuildQuotaReconciler_TenantsClosureListTenantsError(t *testing.T) {
 	acct := buildQuotaAccountant(svc)
 	require.NotNil(t, acct, "buildQuotaAccountant must return non-nil for a QuotaProvider")
 
-	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{})
+	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{}, nil)
 	require.NotNil(t, rec, "buildQuotaReconciler must return non-nil reconciler")
 
 	// RunOnce invokes the Tenants closure, which calls svc.ListTenants and

@@ -21,6 +21,7 @@
     TenantIsolationType,
     ListTenantsResponse,
     CreateTenantRequest,
+    TenantAdminCredential,
     TenantBarrierInitRequest,
     TenantBarrierInitResponse,
     TenantBarrierStatusResponse,
@@ -82,13 +83,28 @@
   // key-management mode (entitlement-gated). Defaults to false (the secure
   // self-managed mode). Only meaningful for barrier/volume/raft isolation.
   let newTenantBarrierAutoUnseal: boolean = $state(false);
-  // Explicit dedicated-disk filesystem root, valid ONLY for IsolationVolume
-  // and IsolationRaft tenants. Mirrors the CLI's `tenant create --data-root`
-  // flag; empty (the default) allocates from the configured volume pool.
-  // The server refuses every explicit data root (DataRootRetiredError ->
-  // 400); the field is only shown/sent for volume/raft.
-  let newTenantDataRoot: string = $state("");
+  // Named volume pool, valid ONLY for IsolationVolume and IsolationRaft
+  // tenants. Mirrors the CLI's `tenant create --pool` flag; empty (the
+  // default) uses the tenant's default pool, the first entry of its
+  // allowedVolumePools. The field is only shown/sent for volume/raft.
+  let newTenantVolumePool: string = $state("");
   let createLoading: boolean = $state(false);
+
+  // Admin onboarding fields. A tenant is created with its first admin's
+  // login credential, or not at all: AdminUsername is always required, and
+  // exactly one of a CSR (server-signed) or a bring-your-own certificate
+  // (chained to the trust anchors below) is provided.
+  let newAdminUsername: string = $state("");
+  let newAdminCredentialKind = $state<"csr" | "cert">("csr");
+  let newAdminCsrPem: string = $state("");
+  let newAdminCertPem: string = $state("");
+  let newAdminChainPem: string = $state("");
+  let newTrustAnchorsPem: string = $state("");
+
+  /** The created tenant's first admin, returned once by onboarding. Never a key. */
+  let createdAdmin: TenantAdminCredential | null = $state(null);
+  /** The tenant ID the just-created admin belongs to, for the result panel. */
+  let createdTenantId: string = $state("");
 
   /**
    * Isolation modes offered by the create selector. The volume and raft tiers
@@ -114,22 +130,22 @@
   );
 
   /**
-   * True only for the dedicated-disk isolation tiers (volume/raft) that
-   * support an explicit --data-root. Barrier isolation shares the daemon's
-   * default store and has no dedicated filesystem root; prefix isolation is
-   * shared-store only. The server rejects data_root for either.
+   * True only for the dedicated-storage isolation tiers (volume/raft) that
+   * place data on a named volume pool. Barrier isolation shares the
+   * daemon's default store; prefix isolation is shared-store only. The
+   * server ignores volume_pool for either.
    */
-  let isDataRootEligible = $derived(
+  let isVolumePoolEligible = $derived(
     newTenantIsolationType === "volume" || newTenantIsolationType === "raft",
   );
 
-  // Clear the data-root field whenever the isolation type moves away from
+  // Clear the pool field whenever the isolation type moves away from
   // volume/raft so a stale value can never be submitted for prefix/barrier
   // (mirrors the CLI's validation instead of relying solely on the server's
   // typed rejection).
   $effect(() => {
-    if (!isDataRootEligible && newTenantDataRoot !== "") {
-      newTenantDataRoot = "";
+    if (!isVolumePoolEligible && newTenantVolumePool !== "") {
+      newTenantVolumePool = "";
     }
   });
 
@@ -339,13 +355,23 @@
     // Barrier isolation requires storage.volume_pools on the daemon.
     newTenantIsolationType = "prefix";
     newTenantBarrierAutoUnseal = false;
-    newTenantDataRoot = "";
+    newTenantVolumePool = "";
+    newAdminUsername = "";
+    newAdminCredentialKind = "csr";
+    newAdminCsrPem = "";
+    newAdminCertPem = "";
+    newAdminChainPem = "";
+    newTrustAnchorsPem = "";
+    createdAdmin = null;
+    createdTenantId = "";
     showCreateForm = true;
   }
 
   /** Cancels the create form and returns to the list. */
   function handleCancelCreate(): void {
     showCreateForm = false;
+    createdAdmin = null;
+    createdTenantId = "";
   }
 
   /** Submits the create tenant form. */
@@ -354,25 +380,51 @@
       showToast("error", "Tenant ID and Name are required.");
       return;
     }
+    if (!newAdminUsername.trim()) {
+      showToast("error", "Admin username is required.");
+      return;
+    }
+    if (newAdminCredentialKind === "csr" && !newAdminCsrPem.trim()) {
+      showToast("error", "Admin CSR is required.");
+      return;
+    }
+    if (newAdminCredentialKind === "cert" && !newAdminCertPem.trim()) {
+      showToast("error", "Admin certificate is required.");
+      return;
+    }
     try {
       createLoading = true;
       const req: CreateTenantRequest = {
         id: newTenantId.trim(),
         name: newTenantName.trim(),
         isolationType: newTenantIsolationType,
+        adminUsername: newAdminUsername.trim(),
+        // Exactly one of adminCsrPem / adminCertPem, chosen by the form's
+        // credential-kind toggle.
+        ...(newAdminCredentialKind === "csr"
+          ? { adminCsrPem: newAdminCsrPem.trim() }
+          : {
+              adminCertPem: newAdminCertPem.trim(),
+              ...(newAdminChainPem.trim() === "" ? {} : { adminChainPem: newAdminChainPem.trim() }),
+            }),
+        ...(newTrustAnchorsPem.trim() === "" ? {} : { trustAnchorsPem: newTrustAnchorsPem.trim() }),
         // Only meaningful for a dedicated-isolation tenant; harmless otherwise.
         ...(isDedicatedIsolation && newTenantBarrierAutoUnseal
           ? { barrierAutoUnseal: true }
           : {}),
-        // Only ever sent for IsolationVolume/IsolationRaft; the server
-        // refuses it (DataRootRetiredError, 400).
-        ...(isDataRootEligible && newTenantDataRoot.trim() !== ""
-          ? { dataRoot: newTenantDataRoot.trim() }
+        // Only meaningful for IsolationVolume/IsolationRaft; ignored by the
+        // server otherwise.
+        ...(isVolumePoolEligible && newTenantVolumePool.trim() !== ""
+          ? { volumePool: newTenantVolumePool.trim() }
           : {}),
       };
-      await client.tenants.create(req);
+      const resp = await client.tenants.create(req);
       showToast("success", `Tenant "${newTenantName.trim()}" created.`);
-      showCreateForm = false;
+      // Show the admin's certificate once, here — never a key. Keep the
+      // form open on the result panel instead of returning to the list
+      // immediately, so the admin cert can be copied or downloaded.
+      createdAdmin = resp.admin;
+      createdTenantId = resp.tenant.id;
       await fetchTenants();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to create tenant";
@@ -380,6 +432,24 @@
     } finally {
       createLoading = false;
     }
+  }
+
+  /** Triggers a browser download of the given text content. */
+  function downloadText(filename: string, content: string): void {
+    const blob = new Blob([content], { type: "application/x-pem-file" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /** Dismisses the admin-credential result panel and returns to the list. */
+  function handleDismissCreatedAdmin(): void {
+    showCreateForm = false;
+    createdAdmin = null;
+    createdTenantId = "";
   }
 
   /** Deletes selected tenants by their row indices. */
@@ -729,6 +799,51 @@
     </div>
 
     <div class="card bg-base-200 w-full max-w-lg shadow">
+      {#if createdAdmin != null}
+        <!-- Admin credential result: shown/downloadable exactly once. No key
+             is ever present here — the admin keeps its own. -->
+        <div class="card-body gap-4" data-testid="create-tenant-admin-result">
+          <div class="flex flex-col items-center gap-2 text-center">
+            <CheckCircle class="text-success h-12 w-12" strokeWidth={1.5} />
+            <h2 class="text-xl font-bold">Tenant Created</h2>
+            <p class="text-base-content/70 text-sm">
+              Tenant <span class="font-mono">{createdTenantId}</span> was created with admin
+              <span class="font-mono">{createdAdmin.username}</span>.
+              {#if createdAdmin.awaitsBarrierInit}
+                This tenant keeps its identity records behind its own barrier; the admin's
+                account is created once the admin initializes it with this certificate.
+              {/if}
+            </p>
+          </div>
+
+          <label class="form-control w-full">
+            <div class="label"><span class="label-text text-xs font-semibold">Admin Certificate PEM</span></div>
+            <textarea
+              class="textarea textarea-bordered w-full font-mono text-xs"
+              rows="8"
+              readonly
+              data-testid="create-tenant-admin-cert-result"
+              value={createdAdmin.certPem}
+            ></textarea>
+            <button
+              class="btn btn-ghost btn-xs mt-1 w-fit"
+              onclick={() => downloadText(`${createdAdmin?.username ?? "admin"}.crt`, createdAdmin?.certPem ?? "")}
+            >
+              Download Certificate
+            </button>
+          </label>
+
+          <div class="flex justify-end pt-2">
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="create-tenant-admin-result-done"
+              onclick={handleDismissCreatedAdmin}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      {:else}
       <div class="card-body gap-4">
         <div class="form-control">
           <label class="label" for="tenant-id">
@@ -785,23 +900,23 @@
           {/if}
         </div>
 
-        {#if isDataRootEligible}
+        {#if isVolumePoolEligible}
           <div class="form-control">
-            <label class="label" for="tenant-data-root">
-              <span class="label-text font-semibold">Data Root / Dedicated Disk</span>
+            <label class="label" for="tenant-volume-pool">
+              <span class="label-text font-semibold">Volume Pool</span>
               <span class="label-text-alt text-base-content/50">Optional</span>
             </label>
             <input
-              id="tenant-data-root"
+              id="tenant-volume-pool"
               type="text"
               class="input input-bordered w-full"
-              placeholder="/mnt/tenant-disks/acme-corp"
-              data-testid="create-tenant-data-root"
-              bind:value={newTenantDataRoot}
+              placeholder="fast"
+              data-testid="create-tenant-volume-pool"
+              bind:value={newTenantVolumePool}
             />
             <div class="label">
               <span class="label-text-alt text-base-content/60">
-                Pins this tenant's dedicated filesystem root to an explicit absolute path instead of allocating from the configured volume pool. Leave empty to allocate from the pool.
+                The named volume pool to place this tenant on. Leave empty to use the tenant's default pool.
               </span>
             </div>
           </div>
@@ -827,10 +942,117 @@
           </div>
         {/if}
 
+        <div class="divider">First Admin</div>
+
+        <div class="form-control">
+          <label class="label" for="tenant-admin-username">
+            <span class="label-text font-semibold">Admin Username</span>
+            <span class="label-text-alt text-base-content/50">Required</span>
+          </label>
+          <input
+            id="tenant-admin-username"
+            type="text"
+            class="input input-bordered w-full"
+            placeholder="e.g. admin"
+            data-testid="create-tenant-admin-username"
+            bind:value={newAdminUsername}
+          />
+          <div class="label">
+            <span class="label-text-alt text-base-content/60">
+              A tenant is created with its first admin's login credential, or not at all.
+            </span>
+          </div>
+        </div>
+
+        <div class="form-control">
+          <span class="label-text font-semibold mb-2">Admin Credential</span>
+          <div class="join">
+            <button
+              type="button"
+              class="join-item btn btn-sm {newAdminCredentialKind === 'csr' ? 'btn-active' : ''}"
+              data-testid="create-tenant-admin-kind-csr"
+              onclick={() => (newAdminCredentialKind = "csr")}
+            >
+              CSR (server-signed)
+            </button>
+            <button
+              type="button"
+              class="join-item btn btn-sm {newAdminCredentialKind === 'cert' ? 'btn-active' : ''}"
+              data-testid="create-tenant-admin-kind-cert"
+              onclick={() => (newAdminCredentialKind = "cert")}
+            >
+              Bring Your Own Certificate
+            </button>
+          </div>
+        </div>
+
+        {#if newAdminCredentialKind === "csr"}
+          <label class="form-control w-full">
+            <div class="label"><span class="label-text text-xs font-semibold">Admin CSR PEM</span></div>
+            <textarea
+              class="textarea textarea-bordered w-full font-mono text-xs"
+              rows="4"
+              placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+              data-testid="create-tenant-admin-csr"
+              bind:value={newAdminCsrPem}
+            ></textarea>
+            <div class="label">
+              <span class="label-text-alt text-base-content/60">
+                Signed by the tenant's own CA; the admin keeps its key — it never leaves their machine.
+              </span>
+            </div>
+          </label>
+        {:else}
+          <label class="form-control w-full">
+            <div class="label"><span class="label-text text-xs font-semibold">Admin Certificate PEM</span></div>
+            <textarea
+              class="textarea textarea-bordered w-full font-mono text-xs"
+              rows="4"
+              placeholder="-----BEGIN CERTIFICATE-----"
+              data-testid="create-tenant-admin-cert"
+              bind:value={newAdminCertPem}
+            ></textarea>
+          </label>
+          <label class="form-control w-full">
+            <div class="label">
+              <span class="label-text text-xs font-semibold">Admin Chain PEM</span>
+              <span class="label-text-alt text-base-content/50">Optional</span>
+            </div>
+            <textarea
+              class="textarea textarea-bordered w-full font-mono text-xs"
+              rows="3"
+              placeholder="Intermediate certificates"
+              data-testid="create-tenant-admin-chain"
+              bind:value={newAdminChainPem}
+            ></textarea>
+          </label>
+        {/if}
+
+        <label class="form-control w-full">
+          <div class="label">
+            <span class="label-text text-xs font-semibold">Trust Anchors PEM</span>
+            <span class="label-text-alt text-base-content/50">Optional</span>
+          </div>
+          <textarea
+            class="textarea textarea-bordered w-full font-mono text-xs"
+            rows="3"
+            placeholder="CA certificates to register as this tenant's trust anchors"
+            data-testid="create-tenant-trust-anchors"
+            bind:value={newTrustAnchorsPem}
+          ></textarea>
+          <div class="label">
+            <span class="label-text-alt text-base-content/60">
+              Registers one or more CA certificates as this tenant's trust anchors, so
+              bring-your-own certificates issued by them can be enrolled later.
+            </span>
+          </div>
+        </label>
+
         <div class="flex justify-end gap-3 pt-2">
           <button class="btn btn-ghost btn-sm" onclick={handleCancelCreate}>Cancel</button>
           <button
             class="btn btn-primary btn-sm"
+            data-testid="create-tenant-submit"
             disabled={createLoading}
             onclick={handleSubmitCreate}
           >
@@ -841,6 +1063,7 @@
           </button>
         </div>
       </div>
+      {/if}
     </div>
   </div>
 

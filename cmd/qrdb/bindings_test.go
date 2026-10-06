@@ -1530,16 +1530,29 @@ func TestRoleBinding_ListPermissions_NotConnected(t *testing.T) {
 // CertBinding not-connected tests
 // ---------------------------------------------------------------------------
 
-func TestCertBinding_Generate_NotConnected(t *testing.T) {
+func TestCertBinding_Issue_NotConnected(t *testing.T) {
 	b := NewCertBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	_, err := b.Generate(nil)
+	_, err := b.Issue(&IssueCertInput{Username: "alice", CSRPEM: "already-have-a-csr"})
 	assertNotConnected(t, err)
 }
 
-func TestCertBinding_Export_NotConnected(t *testing.T) {
+func TestCertBinding_Enroll_NotConnected(t *testing.T) {
+	b := NewCertBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	_, err := b.Enroll(&transport.EnrollCertRequest{Username: "alice"})
+	assertNotConnected(t, err)
+}
+
+// TestCertBinding_Export_NilInput reflects Export's actual contract: it
+// builds its PKCS#12 archive entirely locally (go-qrdb security review --
+// no private key may reach a node), so it needs no connection at all, and a
+// nil input is refused on its own terms rather than as "not connected".
+func TestCertBinding_Export_NilInput(t *testing.T) {
 	b := NewCertBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
 	_, err := b.Export(nil)
-	assertNotConnected(t, err)
+	var nilErr *ExportCertNilInputError
+	if !errors.As(err, &nilErr) {
+		t.Fatalf("Export(nil) = %v, want *ExportCertNilInputError", err)
+	}
 }
 
 func TestCertBinding_Revoke_NotConnected(t *testing.T) {

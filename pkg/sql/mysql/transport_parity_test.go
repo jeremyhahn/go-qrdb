@@ -25,7 +25,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -70,6 +69,7 @@ import (
 // the MySQL wire protocol, the embedded database/sql driver, and the
 // service-layer SQL API, all reading and writing the same MemStore.
 type paritySuite struct {
+	addr     string
 	wire     *sql.DB
 	embedded *sql.DB
 	service  service.SQLServicer
@@ -116,6 +116,7 @@ func newParitySuite(t *testing.T) *paritySuite {
 	t.Cleanup(func() { _ = embedded.Close() })
 
 	return &paritySuite{
+		addr:     srv.Addr(),
 		wire:     wire,
 		embedded: embedded,
 		service:  query.NewService(h.KVSvc, nil, query.WithRegistry(h.Registry)),
@@ -563,7 +564,7 @@ func TestTransportParity_ScanTypes(t *testing.T) {
 // between two ways of reaching the same rows, not a rendering difference.
 //
 // The error NUMBERS are asserted, not just the failure, because they are the
-// contract sdk/go/gorm's error translator matches on to produce
+// contract gorm.io/driver/mysql's error translator matches on to produce
 // gorm.ErrForeignKeyViolated.
 // ---------------------------------------------------------------------------
 
@@ -587,23 +588,20 @@ func createParityFKSchema(t *testing.T, db *sql.DB) {
 }
 
 // mysqlErrorNumber extracts the MySQL error number from either transport's
-// error representation: the wire client returns *mysql.MySQLError, the
-// embedded driver returns *qrdbdriver.SQLStateError. Both carry the same
-// number for the same failure, which is what these tests assert.
+// error. Both return go-sql-driver's *mysql.MySQLError -- the wire client
+// natively, qrdb's in-process driver for every failure the engine classified
+// -- and both carry the same number for the same failure, which is what these
+// tests assert. The embedded driver returns it bare, so a type assertion
+// suffices on both.
 func mysqlErrorNumber(t *testing.T, err error) uint16 {
 	t.Helper()
 	require.Error(t, err)
 
-	var wireErr *gomysql.MySQLError
-	if errors.As(err, &wireErr) {
-		return wireErr.Number
+	mysqlErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want a *mysql.MySQLError", err, err)
 	}
-	var embeddedErr *qrdbdriver.SQLStateError
-	if errors.As(err, &embeddedErr) {
-		return embeddedErr.Number
-	}
-	t.Fatalf("error = %v (%T) carries no MySQL error number", err, err)
-	return 0
+	return mysqlErr.Number
 }
 
 // TestTransportParity_ForeignKeyChildViolation asserts a child row with no
@@ -814,8 +812,8 @@ func wireTLSPair(t *testing.T) (server *tls.Config, client *tls.Config) {
 // guarantee: a statement refused by the privilege plane reaches a real MySQL
 // client as ER_TABLEACCESS_DENIED_ERROR (1142), not as the generic 1105 every
 // unclassified engine error collapses to. The number is what a client
-// classifies on -- go-sql-driver/mysql surfaces it as *mysql.MySQLError.Number
-// and qrdb's own driver as *driver.SQLStateError.Number.
+// classifies on -- go-sql-driver/mysql and qrdb's own driver both surface it
+// as *mysql.MySQLError.Number.
 func TestTransportParity_PrivilegeRefusalCarriesTheMySQLCode(t *testing.T) {
 	admin, h := newPrivilegeWireSuite(t, "alice")
 
@@ -878,4 +876,70 @@ func TestTransportParity_ShowGrantsOverTheWire(t *testing.T) {
 		"GRANT USAGE ON *.* TO `bob`@`%`",
 		"GRANT SELECT ON `qrdb`.`priv_show` TO `bob`@`%`",
 	}, lines)
+}
+
+// ---------------------------------------------------------------------------
+// Multi-statement text is refused unless the client opts in.
+//
+// gorm.io/driver/mysql builds SAVEPOINT and ROLLBACK TO SAVEPOINT by
+// concatenating the name into the statement, so a crafted name such as
+// "a; DROP TABLE t" is a second statement in the same text. Neither in-process
+// connection nor a default wire connection may run it. Over the wire, MySQL's
+// CLIENT_MULTI_STATEMENTS capability is the opt-in, as it is for a real MySQL
+// server; go-sql-driver sets it only for multiStatements=true.
+// ---------------------------------------------------------------------------
+
+// parityTableExists reports whether table exists in the qrdb database.
+func parityTableExists(t *testing.T, db *sql.DB, table string) bool {
+	t.Helper()
+	var n int
+	require.NoError(t, db.QueryRow(
+		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'qrdb' AND table_name = ?",
+		table).Scan(&n))
+	return n == 1
+}
+
+func TestTransportParity_MultiStatementRefusedByDefault(t *testing.T) {
+	s := newParitySuite(t)
+	_, err := s.wire.Exec("CREATE TABLE parity_multi (id INT PRIMARY KEY)")
+	require.NoError(t, err)
+
+	transports := map[string]*sql.DB{"wire": s.wire, "embedded": s.embedded}
+	for name, db := range transports {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			tx, err := db.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			_, err = tx.ExecContext(ctx, "SAVEPOINT sp1; DROP TABLE parity_multi")
+			require.Error(t, err, "a second statement after the savepoint must be refused")
+			_ = tx.Rollback()
+
+			_, err = db.Exec("SELECT 1; DROP TABLE parity_multi")
+			require.Error(t, err)
+			require.True(t, parityTableExists(t, s.wire, "parity_multi"),
+				"the statement after the semicolon ran")
+		})
+	}
+}
+
+func TestTransportParity_MultiStatementIsAWireClientOptIn(t *testing.T) {
+	s := newParitySuite(t)
+	_, err := s.wire.Exec("CREATE TABLE parity_optin (id INT PRIMARY KEY)")
+	require.NoError(t, err)
+
+	cfg := gomysql.NewConfig()
+	cfg.Net = "tcp"
+	cfg.Addr = s.addr
+	cfg.User = "qrdb"
+	cfg.DBName = "qrdb"
+	cfg.AllowNativePasswords = true
+	cfg.MultiStatements = true
+	multi, err := sql.Open("mysql", cfg.FormatDSN())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = multi.Close() })
+
+	_, err = multi.Exec("SELECT 1; DROP TABLE parity_optin")
+	require.NoError(t, err)
+	require.False(t, parityTableExists(t, s.wire, "parity_optin"),
+		"a client that set CLIENT_MULTI_STATEMENTS ran only the first statement")
 }

@@ -37,29 +37,24 @@ import (
 // ---------------------------------------------------------------------------
 // Import resource limits
 //
-// These bound every stage of Import so that no single call -- a huge raw
-// file, a zip/tar bomb, an archive with millions of entries, a dataset with
+// These bound every stage of parseAndImport so that no single import -- a
+// zip/tar bomb, an archive with millions of entries, a dataset with
 // millions of rows, an oversized key/value, or an oversized encoded Raft
-// command -- can exhaust node memory or CPU. Transports already cap the
-// request bytes they accept (REST/gRPC/MCP: 100MB; QUIC: ~63MB), but these
-// service-level limits apply unconditionally, including to callers (like
-// the embedded transport) that have no request-size cap of their own.
+// command -- can exhaust node memory or CPU. A chunked import session's own
+// per-session byte/chunk quotas (config.ImportSessionConfig, enforced at
+// ImportAppend time -- see maxSessionBytes et al.) bound the raw input
+// before it ever reaches parseAndImport; these limits apply unconditionally
+// on top of that, including to callers (like the embedded transport) that
+// have no request-size cap of their own.
 // ---------------------------------------------------------------------------
 
 const (
-	// maxImportInputBytes bounds the raw bytes read from the Import file
-	// argument. It matches the request-body cap already enforced by the
-	// REST (http.MaxBytesReader) and gRPC (grpc.MaxRecvMsgSize) transports
-	// so behavior is consistent regardless of which layer applies it.
-	maxImportInputBytes = 100 << 20 // 100 MB
-
 	// maxImportExpandedBytes bounds the cumulative decompressed bytes
 	// produced while extracting a zip/tar/tar.gz archive, summed across
 	// every member of a single archive. It defends against archive ("zip
 	// bomb") inputs that are small on the wire but expand to gigabytes in
-	// memory. Set to a small, fixed multiple of maxImportInputBytes rather
-	// than left unbounded.
-	maxImportExpandedBytes = 4 * maxImportInputBytes // 400 MB
+	// memory.
+	maxImportExpandedBytes = 400 << 20 // 400 MB
 
 	// maxImportArchiveEntries bounds the number of entries examined within
 	// a single zip/tar/tar.gz archive. Defends against archives containing
@@ -68,11 +63,11 @@ const (
 	// under maxImportExpandedBytes.
 	maxImportArchiveEntries = 10_000
 
-	// maxImportRows bounds the number of records a single Import call will
+	// maxImportRows bounds the number of records a single import will
 	// process, regardless of source format. This bounds both the in-memory
 	// parsed-record slice and the number of encoded Raft operations built
 	// from it. Callers with larger datasets should split them across
-	// multiple Import calls.
+	// multiple chunked import sessions.
 	maxImportRows = 1_000_000
 
 	// maxImportKeySize and maxImportValueSize bound the size of any single
@@ -110,6 +105,20 @@ const (
 	// the encoded size of a chunk during proposal chunking. It is derived
 	// from protocol.FrameSize so the estimate cannot drift from the encoder.
 	importBatchHeaderOverhead = 1 + protocol.FrameSize
+
+	// defaultImportSessionMaxBytes, defaultImportSessionMaxChunks,
+	// defaultImportSessionsPerTenant and defaultImportSessionTTLSeconds
+	// mirror pkg/config's DefaultImportSessionMaxBytes/MaxChunks/
+	// PerTenant/TTLSeconds exactly. pkg/service does not import pkg/config
+	// (no layer below the server orchestrator reads YAML), so the
+	// production values are duplicated here rather than shared; the two
+	// are proven to agree by TestImportSessionDefaultsMatchConfigPackage
+	// (pkg/config, which may import pkg/service -- the reverse would not
+	// be allowed -- without creating a cycle).
+	defaultImportSessionMaxBytes   = 64 << 20
+	defaultImportSessionMaxChunks  = 16384
+	defaultImportSessionsPerTenant = 16
+	defaultImportSessionTTLSeconds = 3600
 )
 
 // entityOpTypeHandlers maps entity operation type strings to the
@@ -140,10 +149,37 @@ type BatchServicer interface {
 	// atomically within a single MVCC revision.
 	ExecuteEntity(ctx context.Context, req *BatchEntityRequest) (*BatchEntityResponse, error)
 
-	// Import parses and imports key-value pairs from a file (CSV, JSON,
-	// or archive). Returns statistics about the import operation including
-	// succeeded and failed row counts.
-	Import(ctx context.Context, file io.Reader, opts ImportOptions) (*ImportResult, error)
+	// ImportBegin starts a chunked import session scoped to the caller's
+	// (tenant, database) and (tenant, identity) -- both read from ctx, the
+	// same way every other data-plane call resolves them. opts configures
+	// the import; KeyPrefix is set by the per-database wrapper, never the
+	// caller. Returns the session ID the caller passes to ImportAppend,
+	// ImportCommit, and ImportAbort.
+	ImportBegin(ctx context.Context, opts ImportOptions) (sessionID string, err error)
+
+	// ImportAppend stages chunk as sequence seq of sessionID and renews
+	// the session's lease. seq must be exactly one more than the last
+	// appended sequence (a new chunk), or equal to the last appended
+	// sequence with byte-identical content (an idempotent replay of a call
+	// whose response the caller may not have seen); any other value is
+	// refused with *ImportSequenceError. The caller's (tenant, identity)
+	// must match what ImportBegin recorded, checked explicitly -- refused
+	// with *ImportSessionOwnerError on a mismatch in either dimension --
+	// never inferred from the session ID being hard to guess.
+	ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
+
+	// ImportCommit applies every staged chunk of sessionID atomically --
+	// the concatenation of every chunk, in sequence order, is parsed and
+	// imported as a single file -- and releases the session on success.
+	// A failure partway through commit
+	// applies nothing and leaves the session staged for inspection or
+	// retry. The caller's (tenant, identity) must match the session's.
+	ImportCommit(ctx context.Context, sessionID string) (*ImportResult, error)
+
+	// ImportAbort releases sessionID -- its lease, and therefore its
+	// metadata record and every staged chunk -- without applying
+	// anything. The caller's (tenant, identity) must match the session's.
+	ImportAbort(ctx context.Context, sessionID string) error
 }
 
 // ImportOptions configures batch import behavior.
@@ -244,6 +280,25 @@ type BatchService struct {
 	// via SetImportKeyGuard, which NewHardConfinedBatch calls through the
 	// ImportKeyGuardSetter interface.
 	importKeyGuard func(key string) error
+
+	// Import session quotas (see pkg/config.ImportSessionConfig, which
+	// pkg/server resolves into WithImportSessionLimits at construction).
+	// Zero or negative resolves to the package default for each, via the
+	// importMaxSessionBytes/importMaxChunksPerSession/
+	// importMaxSessionsPerTenant/importSessionTTLSeconds accessors, so the
+	// zero value of BatchService carries production bounds exactly as
+	// expandedBudget does.
+	maxSessionBytes      int64
+	maxChunksPerSession  int
+	maxSessionsPerTenant int
+	importSessionTTLSecs int64
+
+	// leaseSvc backs an import session's lease (grant at ImportBegin,
+	// renew at ImportAppend, revoke at ImportCommit/ImportAbort). nil
+	// resolves to a LeaseService over the same host and shard, via
+	// leaseService(); a field rather than always constructing one inline
+	// so a test can inject a fake that forces a lease failure.
+	leaseSvc LeaseServicer
 }
 
 // Compile-time interface assertion.
@@ -256,14 +311,44 @@ func (s *BatchService) SetImportKeyGuard(guard func(key string) error) {
 	s.importKeyGuard = guard
 }
 
+// BatchServiceOption configures optional BatchService behavior at
+// construction.
+type BatchServiceOption func(*BatchService)
+
+// WithImportSessionLimits configures the chunked import session quotas:
+// maxBytes and maxChunks bound a single session, maxSessionsPerTenant
+// bounds a tenant's concurrent sessions, and ttlSeconds is the session
+// lease's TTL. Any non-positive argument leaves that quota at its package
+// default.
+func WithImportSessionLimits(maxBytes int64, maxChunks, maxSessionsPerTenant int, ttlSeconds int64) BatchServiceOption {
+	return func(s *BatchService) {
+		s.maxSessionBytes = maxBytes
+		s.maxChunksPerSession = maxChunks
+		s.maxSessionsPerTenant = maxSessionsPerTenant
+		s.importSessionTTLSecs = ttlSeconds
+	}
+}
+
+// WithLeaseServicer overrides the LeaseServicer an import session's lease is
+// granted, renewed, and revoked through. Exists for tests that need to force
+// a lease failure; production callers never need it, since the zero value
+// resolves to a LeaseService over the same host and shard.
+func WithLeaseServicer(svc LeaseServicer) BatchServiceOption {
+	return func(s *BatchService) { s.leaseSvc = svc }
+}
+
 // NewBatchService creates a new BatchServicer that operates on the specified
 // shard. The shard must be running an MVCCStateMachine for batch operations
 // to succeed.
-func NewBatchService(host Host, shardID uint64) BatchServicer {
-	return &BatchService{
+func NewBatchService(host Host, shardID uint64, opts ...BatchServiceOption) BatchServicer {
+	s := &BatchService{
 		host:    host,
 		shardID: shardID,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // importExpandedBudget reports the archive expansion budget in force for this
@@ -274,6 +359,52 @@ func (s *BatchService) importExpandedBudget() int64 {
 		return maxImportExpandedBytes
 	}
 	return s.expandedBudget
+}
+
+// leaseService returns the LeaseServicer an import session's lease is
+// granted, renewed, and revoked through.
+func (s *BatchService) leaseService() LeaseServicer {
+	if s.leaseSvc != nil {
+		return s.leaseSvc
+	}
+	return NewLeaseService(s.host, s.shardID)
+}
+
+// importMaxSessionBytes resolves the configured per-session byte budget, or
+// defaultImportSessionMaxBytes when unset (non-positive).
+func (s *BatchService) importMaxSessionBytes() int64 {
+	if s.maxSessionBytes <= 0 {
+		return defaultImportSessionMaxBytes
+	}
+	return s.maxSessionBytes
+}
+
+// importMaxChunksPerSession resolves the configured per-session chunk-count
+// ceiling, or defaultImportSessionMaxChunks when unset (non-positive).
+func (s *BatchService) importMaxChunksPerSession() int {
+	if s.maxChunksPerSession <= 0 {
+		return defaultImportSessionMaxChunks
+	}
+	return s.maxChunksPerSession
+}
+
+// importMaxSessionsPerTenant resolves the configured per-tenant concurrent-
+// session ceiling, or defaultImportSessionsPerTenant when unset
+// (non-positive).
+func (s *BatchService) importMaxSessionsPerTenant() int {
+	if s.maxSessionsPerTenant <= 0 {
+		return defaultImportSessionsPerTenant
+	}
+	return s.maxSessionsPerTenant
+}
+
+// importSessionTTLSeconds resolves the configured session lease TTL, or
+// defaultImportSessionTTLSeconds when unset (non-positive).
+func (s *BatchService) importSessionTTLSeconds() int64 {
+	if s.importSessionTTLSecs <= 0 {
+		return defaultImportSessionTTLSeconds
+	}
+	return s.importSessionTTLSecs
 }
 
 // Execute applies the given operations atomically through Raft consensus.
@@ -541,22 +672,16 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 // Import implementation
 // ---------------------------------------------------------------------------
 
-// Import parses and imports key-value pairs from a file. Supports CSV, JSON
-// (single object, array, or NDJSON), and archive formats (zip, tar, tar.gz).
-func (s *BatchService) Import(ctx context.Context, file io.Reader, opts ImportOptions) (*ImportResult, error) {
+// parseAndImport resolves data's format (detecting it from opts.Filename and
+// a content sample when opts.Format is "auto" or empty), parses it into
+// records, and imports them. Supports CSV, JSON (single object, array, or
+// NDJSON), and archive formats (zip, tar, tar.gz). It is ImportCommit's
+// tail: data is already the concatenation of a session's staged chunks,
+// each already bounded by the per-session byte quota at ImportAppend time,
+// so no additional size check is needed here.
+func (s *BatchService) parseAndImport(ctx context.Context, data []byte, opts ImportOptions) (*ImportResult, error) {
 	if err := validateImportOptions(opts); err != nil {
 		return nil, err
-	}
-
-	// Read file into memory for potential archive handling. Bounded to
-	// maxImportInputBytes so the service is safe even when the calling
-	// transport applies no request-size cap of its own.
-	data, err := io.ReadAll(io.LimitReader(file, maxImportInputBytes+1))
-	if err != nil {
-		return nil, &ImportParseError{Err: err}
-	}
-	if len(data) > maxImportInputBytes {
-		return nil, &ImportInputTooLargeError{Max: maxImportInputBytes}
 	}
 
 	// Resolve "auto" (or empty) format by probing the filename and data.
@@ -575,6 +700,7 @@ func (s *BatchService) Import(ctx context.Context, file io.Reader, opts ImportOp
 	}
 
 	var records []map[string]string
+	var err error
 
 	switch resolvedFormat {
 	case "csv":
@@ -1218,33 +1344,53 @@ func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResul
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}
-		proposed, err := propose(ctx, s.host, s.shardID, cmd)
-		if err != nil {
-			err = translateProposeError(err)
-		} else {
-			// A not-configured subsystem -- or a refused write guard, such as
-			// the drop fence of a database being dropped -- arrives in the
-			// RESULT, not as a Raft error, so a chunk that applied nothing
-			// would otherwise be counted as imported (go-qrdb#62). Treated as
-			// a failure from here: returned in transactional mode, per-row in
-			// the other. It is NOT wrapped as a proposal failure: the entry
-			// committed and provably stored nothing, which a ProposeError
-			// (outcome unknown) would misreport.
-			err = checkResultError(proposed)
-		}
-		if err != nil {
-			if transactional {
-				// For transactional mode, return the error directly. Not
-				// translateProposeError: checkResultError above already
-				// returns a fully-typed application error (a refused guard,
-				// a capability/conflict/unavailable/fault/corrupt kind),
-				// and wrapping it as a ProposeError would misreport a
-				// provably-stored-nothing outcome as one that may have
-				// landed (see the comment above this block).
+		proposed, proposeErr := propose(ctx, s.host, s.shardID, cmd)
+		if proposeErr != nil {
+			err := translateProposeError(proposeErr)
+			// An outcome-unknown fault (go-quicraft committed the entry and
+			// then failed to deliver the response -- see
+			// service.ErrOutcomeUnknown) is NEVER safe to record as "this
+			// chunk's rows failed" and continue, in EITHER mode: the chunk
+			// may actually have applied, so silently treating it as a clean
+			// per-row failure could under-report Succeeded, and letting
+			// ImportCommit's caller see an overall success for a batch of
+			// unknown rows would be worse -- it revokes the session,
+			// destroying the only copy of the unresolved chunk's bytes
+			// (go-qrdb#576's security review). Abort the whole commit
+			// instead: ImportCommit returns this error without revoking the
+			// lease, so the session -- every staged chunk, byte for byte --
+			// stays retryable exactly as it was before this call.
+			if errors.Is(err, ErrOutcomeUnknown) {
 				return nil, err
 			}
-			// For non-transactional mode, mark this chunk's rows as failed
-			// and continue with the remaining chunks.
+			// A NotLeaderError proves the opposite: refused before the entry
+			// could commit, so nothing was stored. Safe to treat exactly
+			// like a clean result-level refusal below.
+			if transactional {
+				return nil, err
+			}
+			for i, rowNum := range chunk.rowNums {
+				result.Errors = append(result.Errors, ImportError{
+					Row:     rowNum,
+					Key:     chunk.keys[i],
+					Message: err.Error(),
+				})
+			}
+			result.Failed += len(chunk.ops)
+			continue
+		}
+		// A not-configured subsystem -- or a refused write guard, such as
+		// the drop fence of a database being dropped -- arrives in the
+		// RESULT, not as a Raft error, so a chunk that applied nothing
+		// would otherwise be counted as imported (go-qrdb#62). Every error
+		// checkResultError can return is marked ErrNotStored (the entry
+		// committed and provably stored nothing), so it is always safe to
+		// treat as a clean failure: returned in transactional mode, per-row
+		// in the other.
+		if err := checkResultError(proposed); err != nil {
+			if transactional {
+				return nil, err
+			}
 			for i, rowNum := range chunk.rowNums {
 				result.Errors = append(result.Errors, ImportError{
 					Row:     rowNum,

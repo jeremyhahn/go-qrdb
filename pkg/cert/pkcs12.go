@@ -15,6 +15,7 @@
 package cert
 
 import (
+	"crypto"
 	"crypto/fips140"
 	"crypto/x509"
 	"encoding/pem"
@@ -22,8 +23,15 @@ import (
 	"software.sslmate.com/src/go-pkcs12"
 )
 
-// encodePKCS12 encodes a certificate, private key, and optional CA chain
+// EncodePKCS12 encodes a certificate, private key, and optional CA chain
 // into a PKCS#12 archive protected by the given passphrase.
+//
+// This is a LOCAL, no-network encoder, exported for callers that already
+// hold the private key on the machine running them -- the CLI's
+// "ca export-bundle" and the desktop app's export binding, both of which
+// read certPEM/keyPEM from local files or local state. There is no
+// server-side equivalent: no node ever receives a private key to encode on
+// a caller's behalf (go-qrdb security review).
 //
 // Under GODEBUG=fips140=only the encode is refused up front: the PKCS#12
 // localKeyId attribute is a SHA-1 fingerprint of the certificate, and
@@ -32,7 +40,7 @@ import (
 // interoperability identifier rather than a protection mechanism -- nothing in
 // FIPS 140-3, FedRAMP, PCI DSS or HIPAA prohibits it, so a deployment running
 // GODEBUG=fips140=on keeps the export. See docs/seal/fips140-mode.md.
-func encodePKCS12(certPEM, keyPEM, caCertPEM []byte, passphrase string) ([]byte, error) {
+func EncodePKCS12(certPEM, keyPEM, caCertPEM []byte, passphrase string) ([]byte, error) {
 	if fips140.Enforced() {
 		return nil, &CertExportError{Err: &PKCS12FIPSUnavailableError{}}
 	}
@@ -42,7 +50,7 @@ func encodePKCS12(certPEM, keyPEM, caCertPEM []byte, passphrase string) ([]byte,
 	if keyBlock == nil {
 		return nil, &CertExportError{Err: &ValidationError{Field: "keyPEM", Reason: "invalid PEM data"}}
 	}
-	privKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	privKey, err := parsePrivateKeyBlock(keyBlock)
 	if err != nil {
 		return nil, &CertExportError{Err: err}
 	}
@@ -55,6 +63,9 @@ func encodePKCS12(certPEM, keyPEM, caCertPEM []byte, passphrase string) ([]byte,
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		return nil, &CertExportError{Err: err}
+	}
+	if !publicKeyMatches(privKey, cert.PublicKey) {
+		return nil, &CertExportError{Err: &ValidationError{Field: "keyPEM", Reason: "the private key is not the certificate's key"}}
 	}
 
 	// Decode CA certificate PEM for the chain.
@@ -78,4 +89,40 @@ func encodePKCS12(certPEM, keyPEM, caCertPEM []byte, passphrase string) ([]byte,
 	}
 
 	return p12Data, nil
+}
+
+// parsePrivateKeyBlock decodes a client private key in any encoding a client
+// key is written in: PKCS#8 ("PRIVATE KEY", what qrdb's own CLI writes and
+// the only encoding Ed25519 has), SEC 1 ("EC PRIVATE KEY") and PKCS#1 ("RSA
+// PRIVATE KEY"). The key types are the ones CheckClientKey admits for issuance.
+func parsePrivateKeyBlock(block *pem.Block) (crypto.Signer, error) {
+	parse, ok := privateKeyParsers[block.Type]
+	if !ok {
+		return nil, &ValidationError{Field: "keyPEM", Reason: "unsupported PEM block type " + block.Type}
+	}
+	key, err := parse(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return nil, &ValidationError{Field: "keyPEM", Reason: "the key cannot sign"}
+	}
+	if err := CheckClientKey(signer.Public()); err != nil {
+		return nil, err
+	}
+	return signer, nil
+}
+
+// privateKeyParsers maps a private key's PEM block type to its decoder.
+var privateKeyParsers = map[string]func([]byte) (any, error){
+	"PRIVATE KEY":     x509.ParsePKCS8PrivateKey,
+	"EC PRIVATE KEY":  func(der []byte) (any, error) { return x509.ParseECPrivateKey(der) },
+	"RSA PRIVATE KEY": func(der []byte) (any, error) { return x509.ParsePKCS1PrivateKey(der) },
+}
+
+// publicKeyMatches reports whether signer's public key is pub.
+func publicKeyMatches(signer crypto.Signer, pub crypto.PublicKey) bool {
+	eq, ok := signer.Public().(interface{ Equal(crypto.PublicKey) bool })
+	return ok && eq.Equal(pub)
 }

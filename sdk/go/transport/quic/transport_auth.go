@@ -274,22 +274,6 @@ type permissionCategoryWireResponse struct {
 // Cert wire types
 // ---------------------------------------------------------------------------
 
-// generateCertWireRequest is the JSON wire payload for cert.Generate.
-type generateCertWireRequest struct {
-	Username string `json:"username"`
-	TenantID string `json:"tenantID"`
-	TTL      string `json:"ttl"`
-}
-
-// exportCertWireRequest is the JSON wire payload for cert.Export. The
-// client must supply the PEM-encoded certificate and key received from
-// the generate endpoint, as the server does not retain private keys.
-type exportCertWireRequest struct {
-	CertPEM    string `json:"certPEM"`
-	KeyPEM     string `json:"keyPEM"`
-	Passphrase string `json:"passphrase"`
-}
-
 // revokeCertWireRequest is the JSON wire payload for cert.Revoke.
 type revokeCertWireRequest struct {
 	Serial string `json:"serial"`
@@ -306,21 +290,6 @@ type revokeCertWireResponse struct {
 // listCertsWireRequest is the JSON wire payload for cert.List.
 type listCertsWireRequest struct {
 	TenantID string `json:"tenantID"`
-}
-
-// certBundleWireResponse is the JSON wire representation of a generated
-// certificate bundle containing the PEM-encoded certificate, key, and
-// serial number.
-type certBundleWireResponse struct {
-	CertPEM string `json:"certPEM"`
-	KeyPEM  string `json:"keyPEM"`
-	Serial  string `json:"serial"`
-}
-
-// exportCertWireResponse is the JSON wire representation of a PKCS#12
-// export. The PKCS12 field contains the base64-encoded archive bytes.
-type exportCertWireResponse struct {
-	PKCS12 string `json:"pkcs12"`
 }
 
 // certRecordWireResponse is the JSON wire representation of an issued
@@ -918,66 +887,41 @@ func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermiss
 // CertClient implementation
 // ---------------------------------------------------------------------------
 
-// GenerateCert creates a client certificate signed by the internal CA
-// via the QUIC cert.Generate method.
-func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	payload, err := json.Marshal(generateCertWireRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-		TTL:      req.TTL,
-	})
+// enrollCall sends an issue or enrol request -- whose JSON is the wire
+// payload the server reads -- to op and decodes the bound certificate.
+func (t *Transport) enrollCall(ctx context.Context, method, op, username string, req any) (*transport.EnrolledCert, error) {
+	payload, err := json.Marshal(req)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "GenerateCert", Err: &MarshalError{Err: err}}
+		return nil, &transport.RequestError{Method: method, Err: &MarshalError{Err: err}}
 	}
-
-	data, err := t.call(ctx, "cert.Generate", payload)
+	data, err := t.call(ctx, op, payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "GenerateCert", Err: err}
+		// The only thing either verb can fail to find is the account.
+		return nil, mapUserLookupNotFound(method, username, err)
 	}
-
-	var wire certBundleWireResponse
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return nil, &transport.RequestError{Method: "GenerateCert", Err: &UnmarshalError{Err: err}}
+	var out transport.EnrolledCert
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, &transport.RequestError{Method: method, Err: &UnmarshalError{Err: err}}
 	}
-
-	return &transport.CertBundle{
-		CertPEM: wire.CertPEM,
-		KeyPEM:  wire.KeyPEM,
-		Serial:  wire.Serial,
-	}, nil
+	return &out, nil
 }
 
-// ExportCert exports a certificate and key as a PKCS#12 archive for
-// browser import via the QUIC cert.Export method.
-func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
+// IssueCert issues a certificate from a CSR for an existing account of the
+// caller's own tenant and binds it, via the QUIC cert.Issue method.
+func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	return t.enrollCall(ctx, "IssueCert", "cert.Issue", req.Username, req)
+}
 
-	payload, err := json.Marshal(exportCertWireRequest{
-		CertPEM:    req.CertPEM,
-		KeyPEM:     req.KeyPEM,
-		Passphrase: req.Passphrase,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "ExportCert", Err: &MarshalError{Err: err}}
+// EnrollCert binds a bring-your-own certificate to an existing account of the
+// caller's own tenant, via the QUIC cert.Enroll method.
+func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
-
-	data, err := t.call(ctx, "cert.Export", payload)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "ExportCert", Err: err}
-	}
-
-	var wire exportCertWireResponse
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return nil, &transport.RequestError{Method: "ExportCert", Err: &UnmarshalError{Err: err}}
-	}
-
-	return &transport.ExportCertResponse{PKCS12: wire.PKCS12}, nil
+	return t.enrollCall(ctx, "EnrollCert", "cert.Enroll", req.Username, req)
 }
 
 // RevokeCert marks a certificate serial as revoked via the QUIC

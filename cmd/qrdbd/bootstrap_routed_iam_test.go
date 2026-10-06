@@ -26,17 +26,11 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -49,25 +43,6 @@ import (
 // created for the fail-closed wiring assertion below.
 func newBarrierIAMFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry) {
 	t.Helper()
-
-	dir := t.TempDir()
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": dir}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
 
 	sysStrat, err := seal.NewSoftwareStrategy(context.Background(), []byte("barrier-iam-system-pass"))
 	if err != nil {
@@ -82,16 +57,7 @@ func newBarrierIAMFixture(t *testing.T) (*tenant.TenantService, *seal.BarrierReg
 		t.Fatalf("system Initialize: %v", err)
 	}
 
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(reattachTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+	reg, _, _ := sealtest.PooledRegistry(t, system)
 
 	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, reattachTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{

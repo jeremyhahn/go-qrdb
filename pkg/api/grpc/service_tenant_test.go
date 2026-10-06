@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -199,37 +200,52 @@ func TestGRPC_TenantCreate_NilService(t *testing.T) {
 }
 
 func TestGRPC_TenantCreate_Success(t *testing.T) {
-	svc := newMockTenantService()
+	onboarding := &fakeTenantOnboarding{
+		result: &service.OnboardTenantResult{
+			Tenant: &tenant.TenantInfo{ID: "acme", Name: "ACME Corp"},
+			Admin:  service.TenantAdminCredential{UserID: 1, Username: "admin", Serial: "S1"},
+		},
+	}
 	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithTenantService(svc))
+		WithTenantOnboarding(onboarding))
 	defer cleanup()
 
 	resp, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
 		Id:            "acme",
 		Name:          "ACME Corp",
 		IsolationType: "barrier",
+		AdminUsername: "admin",
+		AdminCsrPem:   "csr-pem",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.GetId() != "acme" {
-		t.Errorf("expected id 'acme', got %q", resp.GetId())
+	if resp.GetTenant().GetId() != "acme" {
+		t.Errorf("expected tenant id 'acme', got %q", resp.GetTenant().GetId())
 	}
-	if resp.GetName() != "ACME Corp" {
-		t.Errorf("expected name 'ACME Corp', got %q", resp.GetName())
+	if resp.GetTenant().GetName() != "ACME Corp" {
+		t.Errorf("expected tenant name 'ACME Corp', got %q", resp.GetTenant().GetName())
+	}
+	if resp.GetAdmin().GetUsername() != "admin" {
+		t.Errorf("expected admin username 'admin', got %q", resp.GetAdmin().GetUsername())
+	}
+	if resp.GetAdmin().GetSerial() != "S1" {
+		t.Errorf("expected admin serial 'S1', got %q", resp.GetAdmin().GetSerial())
+	}
+	if onboarding.gotReq.AdminUsername != "admin" || string(onboarding.gotReq.AdminCSRPEM) != "csr-pem" {
+		t.Errorf("OnboardTenant request = %+v, admin fields not forwarded", onboarding.gotReq)
 	}
 }
 
 func TestGRPC_TenantCreate_AlreadyExists(t *testing.T) {
-	svc := newMockTenantService()
-	svc.createFn = func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
-		return nil, tenant.ErrTenantAlreadyExists
-	}
+	onboarding := &fakeTenantOnboarding{err: tenant.ErrTenantAlreadyExists}
 	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithTenantService(svc))
+		WithTenantOnboarding(onboarding))
 	defer cleanup()
 
-	_, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{Id: "dup", Name: "Dup"})
+	_, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
+		Id: "dup", Name: "Dup", AdminUsername: "admin", AdminCsrPem: "csr-pem",
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -240,12 +256,30 @@ func TestGRPC_TenantCreate_AlreadyExists(t *testing.T) {
 }
 
 func TestGRPC_TenantCreate_StoreError(t *testing.T) {
-	svc := newMockTenantService()
-	svc.createFn = func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
-		return nil, &tenant.StoreError{Op: "put", Err: errors.New("disk full")}
-	}
+	onboarding := &fakeTenantOnboarding{err: &tenant.StoreError{Op: "put", Err: errors.New("disk full")}}
 	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithTenantService(svc))
+		WithTenantOnboarding(onboarding))
+	defer cleanup()
+
+	_, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
+		Id: "t1", Name: "T1", AdminUsername: "admin", AdminCsrPem: "csr-pem",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+// TestGRPC_TenantCreate_FieldError pins the service-layer field validation
+// (admin_username required) as InvalidArgument, now that a tenant is never
+// created without its first admin's identity.
+func TestGRPC_TenantCreate_FieldError(t *testing.T) {
+	onboarding := &fakeTenantOnboarding{err: &service.TenantOnboardingFieldError{Field: "admin_username"}}
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantOnboarding(onboarding))
 	defer cleanup()
 
 	_, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{Id: "t1", Name: "T1"})
@@ -253,8 +287,8 @@ func TestGRPC_TenantCreate_StoreError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.Internal {
-		t.Fatalf("expected Internal, got %s", st.Code())
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
 	}
 }
 

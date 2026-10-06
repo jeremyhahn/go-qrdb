@@ -62,12 +62,17 @@ async function navigateToTenants(page: Page): Promise<void> {
 
 /**
  * Opens the create tenant form by clicking the "Create Tenant" button,
- * fills in the given id and name, then submits the form.
+ * fills in the given id, name, and the required first-admin fields (a CSR,
+ * server-signed), then submits the form. The admin-credential result panel
+ * ("Tenant Created") is dismissed automatically ("Done") so the caller lands
+ * back on the tenant list, as before this feature. Pass
+ * `{ dismiss: false }` to leave the result panel open for inspection.
  */
 async function createTenant(
   page: Page,
   id: string,
   name: string,
+  opts: { dismiss?: boolean } = {},
 ): Promise<void> {
   const main = page.locator("main");
   await main.getByRole("button", { name: "Create Tenant" }).click();
@@ -77,7 +82,26 @@ async function createTenant(
 
   await main.locator("#tenant-id").fill(id);
   await main.locator("#tenant-name").fill(name);
-  await main.getByRole("button", { name: "Create" }).click();
+  await main.getByTestId("create-tenant-admin-username").fill(`${id}-admin`);
+  await main.getByTestId("create-tenant-admin-csr").fill(
+    "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+  );
+  await main.getByTestId("create-tenant-submit").click();
+
+  if (opts.dismiss ?? true) {
+    await expect(main.getByTestId("create-tenant-admin-result")).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await dismissCreatedAdmin(page);
+  }
+}
+
+/**
+ * Dismisses the admin-credential result panel shown after a successful
+ * tenant create, returning to the tenant list.
+ */
+async function dismissCreatedAdmin(page: Page): Promise<void> {
+  await page.locator("main").getByTestId("create-tenant-admin-result-done").click();
 }
 
 // ---------------------------------------------------------------------------
@@ -117,15 +141,22 @@ test.describe("Admin - Tenant CRUD", () => {
   test("create new tenant", async ({ page }) => {
     await navigateToTenants(page);
 
-    await createTenant(page, "acme", "Acme Corp");
+    await createTenant(page, "acme", "Acme Corp", { dismiss: false });
 
     // A success toast must appear.
     const alert = page.locator('[role="alert"]');
     await expect(alert).toBeVisible({ timeout: LOAD_TIMEOUT });
     await expect(alert).toContainText("Acme Corp");
 
-    // After the form closes the list must contain the new tenant.
+    // The admin-credential result panel shows the issued admin cert — never
+    // a key — exactly once. Dismiss it to return to the list.
     const main = page.locator("main");
+    await expect(main.getByTestId("create-tenant-admin-result")).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await dismissCreatedAdmin(page);
+
+    // After the form closes the list must contain the new tenant.
     await expect(
       main.locator("tr").filter({ hasText: "acme" }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
@@ -141,7 +172,8 @@ test.describe("Admin - Tenant CRUD", () => {
       'tenant "default" already exists',
     );
 
-    await createTenant(page, "default", "Default Tenant");
+    // The create fails, so no admin-credential result panel ever appears.
+    await createTenant(page, "default", "Default Tenant", { dismiss: false });
 
     // An error toast must appear describing the conflict.
     const alert = page.locator('[role="alert"]');
@@ -311,6 +343,11 @@ webTest.describe("Admin - Tenant CRUD (web mode / REST route regression)", () =>
               quotas: null,
               createdAt: "2026-01-01T00:00:00Z",
               updatedAt: "2026-01-01T00:00:00Z",
+              admin: {
+                username: "web-mode-admin",
+                cert_pem: "-----BEGIN CERTIFICATE-----\nmock-admin-cert\n-----END CERTIFICATE-----",
+                thumbprint: "mock-admin-thumbprint",
+              },
             }),
           });
         } else {
@@ -362,7 +399,11 @@ webTest.describe("Admin - Tenant CRUD (web mode / REST route regression)", () =>
       await main.getByRole("button", { name: "Create Tenant" }).click();
       await main.locator("#tenant-id").fill("web-mode-tenant");
       await main.locator("#tenant-name").fill("Web Mode Corp");
-      await main.getByRole("button", { name: "Create" }).click();
+      await main.getByTestId("create-tenant-admin-username").fill("web-mode-admin");
+      await main.getByTestId("create-tenant-admin-csr").fill(
+        "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----",
+      );
+      await main.getByTestId("create-tenant-submit").click();
 
       // Assert: no 404 toast must appear.
       const alerts = page.locator('[role="alert"]');

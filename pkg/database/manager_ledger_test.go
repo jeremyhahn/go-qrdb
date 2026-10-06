@@ -77,15 +77,20 @@ func TestManager_RecordDrop_MkdirFailureIsAMetaWriteError(t *testing.T) {
 
 // droppedHere reports *MetaReadError, not "not dropped", when os.Stat fails
 // for a reason OTHER than the tombstone being absent.
+//
+// A permission-denied directory would normally force this, but it does not
+// under a root-running test process (CI containers commonly run as root,
+// which bypasses DAC permission checks entirely): os.Stat would then still
+// succeed in finding nothing, reporting a false negative rather than a read
+// failure. Occupying droppedDir's own path with a plain FILE instead -- the
+// same technique TestManager_RecordDrop_MkdirFailureIsAMetaWriteError uses
+// -- forces ENOTDIR, a structural failure no uid, including root's, can
+// bypass.
 func TestManager_DroppedHere_StatFailureIsAMetaReadError(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	dir := filepath.Join(mgr.dataDir, droppedDir)
-	require.NoError(t, os.MkdirAll(dir, 0o750))
-	// #nosec G302 -- the test removes every permission from a temp directory to force the I/O error path
-	require.NoError(t, os.Chmod(dir, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) // #nosec G302 -- restores the temp directory so t.TempDir can remove it
+	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, droppedDir), []byte("x"), 0o600))
 
 	_, err := mgr.droppedHere("orders")
 	var readErr *MetaReadError
@@ -94,15 +99,19 @@ func TestManager_DroppedHere_StatFailureIsAMetaReadError(t *testing.T) {
 
 // forgetDrop reports *MetaWriteError, not a silent success, when os.Remove
 // fails for a reason OTHER than the tombstone already being gone.
+//
+// A read-only directory would normally force this, but -- same root-bypass
+// problem as TestManager_DroppedHere_StatFailureIsAMetaReadError above --
+// root's CAP_DAC_OVERRIDE ignores the directory's write permission too. A
+// non-empty directory occupying the tombstone's path forces ENOTEMPTY
+// instead: rmdir refusing a non-empty directory is a filesystem invariant,
+// never a permission check, so no uid can bypass it.
 func TestManager_ForgetDrop_RemoveFailureIsAMetaWriteError(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	require.NoError(t, mgr.recordDrop("orders"))
-	dir := filepath.Join(mgr.dataDir, droppedDir)
-	// #nosec G302 -- the test makes a temp directory read-only to force the remove error path
-	require.NoError(t, os.Chmod(dir, 0o500))       // read-only: Stat/readdir fine, Remove refused
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) // #nosec G302 -- restores the temp directory so t.TempDir can remove it
+	path := filepath.Join(mgr.dataDir, droppedDir, "orders")
+	require.NoError(t, os.MkdirAll(filepath.Join(path, "child"), 0o750))
 
 	err := mgr.forgetDrop("orders")
 	var writeErr *MetaWriteError

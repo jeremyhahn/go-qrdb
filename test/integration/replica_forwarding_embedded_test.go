@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -43,8 +44,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -52,6 +55,7 @@ import (
 
 const (
 	efTenant = "ef-t1"
+	efPool   = "default"
 	efWriter = "ef-writer"
 	efReader = "ef-reader"
 
@@ -75,6 +79,12 @@ const (
 type efCluster struct {
 	nodes     []*node.Node
 	raftAddrs []string
+
+	// callerCerts are the configured callers' certificates, by username.
+	callerCerts map[string]tls.Certificate
+	// appRole is the role of the identity the embedding application calls
+	// its node's client as (appContext).
+	appRole string
 }
 
 // efNodeCert issues node i's certificate: a raft member identity and the
@@ -149,9 +159,10 @@ func startEmbeddedFwdCluster(t *testing.T) *efCluster {
 	for i := range efNodes {
 		peerAdmin = append(peerAdmin, qrdbconfig.PeerAdminEntry{RaftAddr: c.raftAddrs[i], AdminURL: fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])})
 	}
+	c.callerCerts = map[string]tls.Certificate{efWriter: efCallerCert(t, ca, pki, efWriter), efReader: efCallerCert(t, ca, pki, efReader)}
 	callers := map[int]node.NodeOption{
-		efWriterNode: node.WithEmbeddedCaller(efCallerCert(t, ca, pki, efWriter)),
-		efReaderNode: node.WithEmbeddedCaller(efCallerCert(t, ca, pki, efReader)),
+		efWriterNode: node.WithEmbeddedCaller(c.callerCerts[efWriter]),
+		efReaderNode: node.WithEmbeddedCaller(c.callerCerts[efReader]),
 	}
 
 	errs := make([]error, efNodes)
@@ -174,6 +185,7 @@ func startEmbeddedFwdCluster(t *testing.T) *efCluster {
 				AllowedIsolationModes:     []string{quota.IsolationModeRaft},
 				AllowDedicatedRaft:        true,
 				AllowSystemManagedBarrier: true,
+				AllowedVolumePools:        []string{efPool},
 			}),
 			node.WithNoSyncWrites(),
 		}
@@ -224,7 +236,7 @@ func efConfig(t *testing.T, i int, raftAddr string, quicPort, adminPort int, pee
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
-	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}}}
+	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: efPool, Path: t.TempDir()}}
 	cfg.Tenant.DefaultQuotas.MaxDatabases = -1
 	cfg.Tenant.DefaultQuotas.MaxRaftGroups = -1
 	cfg.Tenant.DefaultQuotas.MaxReplicasPerGroup = -1
@@ -282,6 +294,22 @@ func (c *efCluster) eventually(t *testing.T, what string, f func(n *node.Node) e
 func (c *efCluster) setUpTenant(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
+	// A raft tenant is placed on a catalog pool (docs/volume-pools, D2): the
+	// nodes map efPool to a directory, but only the operator's catalog
+	// record makes it a pool the tenant can reserve.
+	c.eventually(t, "create volume pool", func(n *node.Node) error {
+		svc := n.Services()
+		catalog, err := volume.NewCatalog(lifecycle.NewVolumeCatalogKVServicer(svc.KV), svc.Transaction, volume.NewRegistry())
+		if err != nil {
+			return err
+		}
+		_, err = catalog.CreatePool(ctx, volume.CreatePoolRequest{Name: efPool})
+		var exists *volume.PoolAlreadyExistsError
+		if errors.As(err, &exists) {
+			return nil
+		}
+		return err
+	})
 	c.eventually(t, "create tenant", func(n *node.Node) error {
 		_, err := n.Services().Tenant.CreateTenant(ctx, efTenant, "Embedded Forwarding", tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
 		if errors.Is(err, tenant.ErrTenantAlreadyExists) {
@@ -312,7 +340,39 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 			}
 			return err
 		})
+		// auth.mtls_binding_policy defaults to "required": the node
+		// authenticates its configured caller, and so forwards, only once
+		// the certificate is enrolled as the user's binding.
+		leaf := c.callerCerts[username].Leaf
+		c.eventually(t, "bind the certificate of "+username, func(n *node.Node) error {
+			tctx := tenant.WithTenantID(ctx, efTenant)
+			u, err := n.Services().User.GetUserByUsername(tctx, efTenant, username)
+			if err != nil {
+				return err
+			}
+			_, err = n.Services().User.AddCertBinding(tctx, u.ID, user.ComputeSPKIThumbprint(leaf), leaf.NotAfter.Unix())
+			return err
+		})
 	}
+	c.eventually(t, "create the application's role", func(n *node.Node) error {
+		r, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{Name: "ef-app-role", TenantID: efTenant,
+			Permissions: []permission.Permission{"kv:put", "kv:get"}})
+		if err != nil {
+			return err
+		}
+		c.appRole = r.ID
+		return nil
+	})
+}
+
+// appContext is the context the embedding application calls its node's
+// client in. The embedded transport authorizes every call against the
+// identity its context carries -- the application's -- and a call it
+// forwards is made as the node's configured caller, whom the replica
+// authorizes.
+func (c *efCluster) appContext() context.Context {
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "ef-app", TenantID: efTenant, Roles: []string{c.appRole}})
+	return tenant.WithTenantID(ctx, efTenant)
 }
 
 // createDatabase creates a raft database of the tenant with replicas
@@ -422,7 +482,7 @@ func isPermissionDenied(err error) bool {
 // NotAReplica and forwards nothing.
 func TestReplicaForwarding_Embedded(t *testing.T) {
 	c := startEmbeddedFwdCluster(t)
-	ctx := tenant.WithTenantID(context.Background(), efTenant)
+	ctx := c.appContext()
 	avoid := c.databasesAvoiding(t, efWriterNode, efReaderNode, efNoCallerNode)
 
 	t.Run("the writer's write reaches the replica", func(t *testing.T) {

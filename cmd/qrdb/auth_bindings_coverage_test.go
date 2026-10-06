@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -203,31 +204,22 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 // ---------------------------------------------------------------------------
 
 type mockCertProvider struct {
-	generateFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
-	exportFn   func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeFn   func(ctx context.Context, serial string) (*cert.RevokeResult, error)
-	isRevoked  func(ctx context.Context, serial string) (bool, error)
-	listFn     func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
-	tenantFn   func(ctx context.Context, serial string) (string, bool, error)
-	caCertFn   func() []byte
+	issueFn   func(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error)
+	revokeFn  func(ctx context.Context, serial string) (*cert.RevokeResult, error)
+	isRevoked func(ctx context.Context, serial string) (bool, error)
+	listFn    func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
+	tenantFn  func(ctx context.Context, serial string) (string, bool, error)
+	caCertFn  func() []byte
 }
 
-func (m *mockCertProvider) GenerateClientCert(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-	if m.generateFn != nil {
-		return m.generateFn(ctx, req)
+func (m *mockCertProvider) IssueClientCert(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	if m.issueFn != nil {
+		return m.issueFn(ctx, req)
 	}
-	return &cert.CertBundle{
+	return &cert.IssuedCert{
 		CertPEM: []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"),
-		KeyPEM:  []byte("-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----\n"),
 		Serial:  "AABBCCDD",
 	}, nil
-}
-
-func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
-	if m.exportFn != nil {
-		return m.exportFn(ctx, certPEM, keyPEM, passphrase)
-	}
-	return []byte("mock-pkcs12-data"), nil
 }
 
 func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
@@ -687,66 +679,89 @@ func TestRoleBinding_ListPermissions_Success(t *testing.T) {
 // CertBinding - connected success path tests
 // ---------------------------------------------------------------------------
 
-func TestCertBinding_Generate_Success(t *testing.T) {
-	conn := newAuthTestConnectionBinding(t, nil, nil, &mockCertProvider{})
+// TestCertBinding_Issue_Success proves that with no CSR in the input, the
+// binding generates a fresh key on this machine (never sent to the server)
+// and returns it beside the issued certificate.
+func TestCertBinding_Issue_Success(t *testing.T) {
+	conn := newAuthTestConnectionBindingWithCertEnroll(t, &fakeCertEnrollment{})
 	b := NewCertBinding(testLogger(t), conn)
 
-	bundle, err := b.Generate(&transport.GenerateCertRequest{
-		Username: "alice",
-		TenantID: "system",
-	})
+	out, err := b.Issue(&IssueCertInput{Username: "alice"})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if bundle == nil {
-		t.Fatal("expected non-nil bundle")
+	if out == nil {
+		t.Fatal("expected non-nil output")
+	}
+	if out.KeyPEM == "" {
+		t.Fatal("expected a locally generated key when the input carried no CSR")
+	}
+	if out.Serial == "" {
+		t.Fatal("expected a non-empty serial")
 	}
 }
 
-func TestCertBinding_Generate_ServiceError(t *testing.T) {
-	prov := &mockCertProvider{
-		generateFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+// TestCertBinding_Issue_WithCSR_Success proves that with a CSR already in
+// the input, the binding generates no key of its own.
+func TestCertBinding_Issue_WithCSR_Success(t *testing.T) {
+	_, csrPEM, err := newClientKeyAndCSR("alice")
+	if err != nil {
+		t.Fatalf("newClientKeyAndCSR: %v", err)
+	}
+	conn := newAuthTestConnectionBindingWithCertEnroll(t, &fakeCertEnrollment{})
+	b := NewCertBinding(testLogger(t), conn)
+
+	out, err := b.Issue(&IssueCertInput{Username: "alice", CSRPEM: string(csrPEM)})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if out.KeyPEM != "" {
+		t.Fatal("expected no locally generated key when the input carried a CSR")
+	}
+}
+
+func TestCertBinding_Issue_ServiceError(t *testing.T) {
+	fe := &fakeCertEnrollment{
+		signFn: func(_ context.Context, _ *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
 			return nil, errors.New("ca key not loaded")
 		},
 	}
-	conn := newAuthTestConnectionBinding(t, nil, nil, prov)
+	conn := newAuthTestConnectionBindingWithCertEnroll(t, fe)
 	b := NewCertBinding(testLogger(t), conn)
 
-	_, err := b.Generate(&transport.GenerateCertRequest{Username: "alice"})
+	_, err := b.Issue(&IssueCertInput{Username: "alice"})
 	if err == nil {
-		t.Fatal("expected error from Generate")
+		t.Fatal("expected error from Issue")
 	}
 }
 
+// TestCertBinding_Export_Success exercises the LOCAL build path: Export
+// never calls the connected server (go-qrdb security review -- no private
+// key may reach a node), so it needs no connection at all, and the cert/key
+// must be a real, matching pair for cert.EncodePKCS12 to accept.
 func TestCertBinding_Export_Success(t *testing.T) {
-	conn := newAuthTestConnectionBinding(t, nil, nil, &mockCertProvider{})
-	b := NewCertBinding(testLogger(t), conn)
+	b := NewCertBinding(testLogger(t), nil)
+	certPEM, keyPEM := generateSelfSignedCertAndKeyPEM(t)
 
-	resp, err := b.Export(&transport.ExportCertRequest{
-		CertPEM:    "cert-pem",
-		KeyPEM:     "key-pem",
+	resp, err := b.Export(&ExportCertInput{
+		CertPEM:    string(certPEM),
+		KeyPEM:     string(keyPEM),
 		Passphrase: "secret",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
+	if resp == nil || resp.PKCS12 == "" {
+		t.Fatal("expected a non-empty PKCS12 response")
 	}
 }
 
-func TestCertBinding_Export_ServiceError(t *testing.T) {
-	prov := &mockCertProvider{
-		exportFn: func(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
-			return nil, errors.New("export failed")
-		},
-	}
-	conn := newAuthTestConnectionBinding(t, nil, nil, prov)
-	b := NewCertBinding(testLogger(t), conn)
+func TestCertBinding_Export_EncodingError(t *testing.T) {
+	b := NewCertBinding(testLogger(t), nil)
 
-	_, err := b.Export(&transport.ExportCertRequest{CertPEM: "x", KeyPEM: "y"})
+	_, err := b.Export(&ExportCertInput{CertPEM: "x", KeyPEM: "y"})
 	if err == nil {
-		t.Fatal("expected error from Export")
+		t.Fatal("expected error from Export over invalid PEM")
 	}
 }
 

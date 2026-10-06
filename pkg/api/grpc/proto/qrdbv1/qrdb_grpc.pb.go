@@ -51,7 +51,10 @@ const (
 	QRDBService_RestoreToRevision_FullMethodName                 = "/qrdb.v1.QRDBService/RestoreToRevision"
 	QRDBService_Transaction_FullMethodName                       = "/qrdb.v1.QRDBService/Transaction"
 	QRDBService_Batch_FullMethodName                             = "/qrdb.v1.QRDBService/Batch"
-	QRDBService_BatchImport_FullMethodName                       = "/qrdb.v1.QRDBService/BatchImport"
+	QRDBService_ImportBegin_FullMethodName                       = "/qrdb.v1.QRDBService/ImportBegin"
+	QRDBService_ImportAppend_FullMethodName                      = "/qrdb.v1.QRDBService/ImportAppend"
+	QRDBService_ImportCommit_FullMethodName                      = "/qrdb.v1.QRDBService/ImportCommit"
+	QRDBService_ImportAbort_FullMethodName                       = "/qrdb.v1.QRDBService/ImportAbort"
 	QRDBService_Watch_FullMethodName                             = "/qrdb.v1.QRDBService/Watch"
 	QRDBService_LeaseGrant_FullMethodName                        = "/qrdb.v1.QRDBService/LeaseGrant"
 	QRDBService_LeaseRevoke_FullMethodName                       = "/qrdb.v1.QRDBService/LeaseRevoke"
@@ -137,8 +140,11 @@ const (
 	QRDBService_ListPermissions_FullMethodName                   = "/qrdb.v1.QRDBService/ListPermissions"
 	QRDBService_ResolveRolePermissions_FullMethodName            = "/qrdb.v1.QRDBService/ResolveRolePermissions"
 	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
-	QRDBService_GenerateCert_FullMethodName                      = "/qrdb.v1.QRDBService/GenerateCert"
-	QRDBService_ExportCert_FullMethodName                        = "/qrdb.v1.QRDBService/ExportCert"
+	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
+	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
+	QRDBService_TrustAnchorAdd_FullMethodName                    = "/qrdb.v1.QRDBService/TrustAnchorAdd"
+	QRDBService_TrustAnchorList_FullMethodName                   = "/qrdb.v1.QRDBService/TrustAnchorList"
+	QRDBService_TrustAnchorRemove_FullMethodName                 = "/qrdb.v1.QRDBService/TrustAnchorRemove"
 	QRDBService_RevokeCert_FullMethodName                        = "/qrdb.v1.QRDBService/RevokeCert"
 	QRDBService_ListCerts_FullMethodName                         = "/qrdb.v1.QRDBService/ListCerts"
 	QRDBService_CreateCollection_FullMethodName                  = "/qrdb.v1.QRDBService/CreateCollection"
@@ -195,6 +201,12 @@ const (
 	QRDBService_TenantUpdateEntitlements_FullMethodName          = "/qrdb.v1.QRDBService/TenantUpdateEntitlements"
 	QRDBService_TenantListDeleted_FullMethodName                 = "/qrdb.v1.QRDBService/TenantListDeleted"
 	QRDBService_TenantReconcileDeleted_FullMethodName            = "/qrdb.v1.QRDBService/TenantReconcileDeleted"
+	QRDBService_VolumePoolList_FullMethodName                    = "/qrdb.v1.QRDBService/VolumePoolList"
+	QRDBService_VolumePoolGet_FullMethodName                     = "/qrdb.v1.QRDBService/VolumePoolGet"
+	QRDBService_VolumePoolCreate_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolCreate"
+	QRDBService_VolumePoolUpdate_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolUpdate"
+	QRDBService_VolumePoolDelete_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolDelete"
+	QRDBService_VolumePoolListTenants_FullMethodName             = "/qrdb.v1.QRDBService/VolumePoolListTenants"
 	QRDBService_CredentialSubmit_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialSubmit"
 	QRDBService_CredentialStrategy_FullMethodName                = "/qrdb.v1.QRDBService/CredentialStrategy"
 	QRDBService_CredentialDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialDelete"
@@ -297,12 +309,29 @@ type QRDBServiceClient interface {
 	Transaction(ctx context.Context, in *TransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error)
 	// Batch executes multiple operations atomically.
 	Batch(ctx context.Context, in *BatchRequest, opts ...grpc.CallOption) (*BatchResponse, error)
-	// BatchImport parses and imports key-value pairs from a file (CSV, JSON,
-	// NDJSON, YAML, or archive) carried in the request. This is a bounded
-	// unary RPC, not a stream; the file must fit within the server's
-	// configured max receive message size (mirrors the REST /batch/import
-	// 100 MB bound).
-	BatchImport(ctx context.Context, in *BatchImportRequest, opts ...grpc.CallOption) (*BatchImportResponse, error)
+	// ImportBegin starts a chunked import session scoped to the caller's
+	// (tenant, database) and (tenant, identity), returning the session ID
+	// passed to ImportAppend/ImportCommit/ImportAbort. Carries a dataset of
+	// any size as many small calls instead of one message no transport's
+	// pre-auth cap can admit -- the replacement for the single-message
+	// BatchImport RPC this service used to carry, deleted outright with no
+	// compat once every transport, SDK and the CLI moved to this session
+	// (go-qrdb#576 part 2). See docs/transactions/architecture.md ("Import
+	// session").
+	ImportBegin(ctx context.Context, in *ImportBeginRequest, opts ...grpc.CallOption) (*ImportBeginResponse, error)
+	// ImportAppend stages chunk as sequence seq of session_id. seq must be
+	// exactly one more than the last appended sequence, or equal to it
+	// with identical bytes (an idempotent replay); any other value is
+	// refused.
+	ImportAppend(ctx context.Context, in *ImportAppendRequest, opts ...grpc.CallOption) (*ImportAppendResponse, error)
+	// ImportCommit applies every staged chunk of session_id atomically,
+	// exactly as the retired BatchImport RPC applied its one file, and
+	// releases the session on success.
+	ImportCommit(ctx context.Context, in *ImportCommitRequest, opts ...grpc.CallOption) (*ImportCommitResponse, error)
+	// ImportAbort releases session_id -- its lease, and therefore its
+	// metadata record and every staged chunk -- without applying
+	// anything.
+	ImportAbort(ctx context.Context, in *ImportAbortRequest, opts ...grpc.CallOption) (*ImportAbortResponse, error)
 	// Watch creates a server-streaming watcher that delivers events for
 	// the specified key or prefix.
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error)
@@ -488,10 +517,23 @@ type QRDBServiceClient interface {
 	// role seeded before it existed -- so nobody would hold the permission
 	// needed to repair that exact absence.
 	ReconcileBuiltInRoles(ctx context.Context, in *ReconcileBuiltInRolesRequest, opts ...grpc.CallOption) (*ReconcileBuiltInRolesResponse, error)
-	// GenerateCert creates a client certificate.
-	GenerateCert(ctx context.Context, in *GenerateCertRequest, opts ...grpc.CallOption) (*CertBundleResponse, error)
-	// ExportCert exports a certificate as PKCS#12.
-	ExportCert(ctx context.Context, in *ExportCertRequest, opts ...grpc.CallOption) (*ExportCertResponse, error)
+	// IssueCert issues a certificate from a CSR for an EXISTING account of the
+	// caller's own tenant, signed by that tenant's own Key B CA, and binds it
+	// to the account. The requester keeps its private key: no RPC generates
+	// one. (GenerateCert, which did, is removed.)
+	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error)
+	// EnrollCert binds a bring-your-own certificate to an EXISTING account of
+	// the caller's own tenant, after verifying it chains to one of the
+	// tenant's registered trust anchors and authenticates as that account.
+	EnrollCert(ctx context.Context, in *EnrollCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error)
+	// TrustAnchorAdd registers CA certificates as trust anchors of
+	// tenant_id, which must be the caller's own tenant.
+	TrustAnchorAdd(ctx context.Context, in *TrustAnchorAddRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error)
+	// TrustAnchorList lists tenant_id's trust anchors (the caller's own).
+	TrustAnchorList(ctx context.Context, in *TrustAnchorListRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error)
+	// TrustAnchorRemove withdraws one of tenant_id's trust anchors (the
+	// caller's own).
+	TrustAnchorRemove(ctx context.Context, in *TrustAnchorRemoveRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// RevokeCert marks a certificate serial as revoked.
 	RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*RevokeCertResponse, error)
 	// ListCerts lists all issued client certificates for a tenant.
@@ -605,7 +647,7 @@ type QRDBServiceClient interface {
 	// CeremonySignCSR submits a CSR for signing during the ceremony.
 	CeremonySignCSR(ctx context.Context, in *CeremonySignCSRRequest, opts ...grpc.CallOption) (*CeremonySignCSRResponse, error)
 	// TenantCreate creates a new tenant with the given ID, name, and isolation type.
-	TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantResponse, error)
+	TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantCreateResponse, error)
 	// TenantGet retrieves a tenant by ID.
 	TenantGet(ctx context.Context, in *TenantGetRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// TenantList returns metadata for all registered tenants.
@@ -630,6 +672,26 @@ type QRDBServiceClient interface {
 	// because it was down, or not hosting the tenant, when the tenant was
 	// deleted. It never removes a directory a live tenant claims.
 	TenantReconcileDeleted(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TenantReconcileDeletedResponse, error)
+	// VolumePoolList lists every pool in the catalog with its aggregate
+	// usage, tenant count and per-node health tally. Not paginated: a
+	// cluster has a handful of pools.
+	VolumePoolList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*VolumePoolListResponse, error)
+	// VolumePoolGet inspects one pool, with one row per node that has
+	// reported it.
+	VolumePoolGet(ctx context.Context, in *VolumePoolGetRequest, opts ...grpc.CallOption) (*VolumePoolDetail, error)
+	// VolumePoolCreate adds a pool to the catalog. The pool is not served
+	// until each node maps it in its own configuration and restarts or
+	// reloads.
+	VolumePoolCreate(ctx context.Context, in *VolumePoolCreateRequest, opts ...grpc.CallOption) (*VolumePool, error)
+	// VolumePoolUpdate changes a pool's description, capacity or overcommit
+	// factor. The provider is immutable.
+	VolumePoolUpdate(ctx context.Context, in *VolumePoolUpdateRequest, opts ...grpc.CallOption) (*VolumePool, error)
+	// VolumePoolDelete removes a pool from the catalog. Refused while any
+	// tenant is assigned to it.
+	VolumePoolDelete(ctx context.Context, in *VolumePoolDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// VolumePoolListTenants lists the tenants assigned to a pool, with each
+	// one's reservation and measured use. Paginated.
+	VolumePoolListTenants(ctx context.Context, in *VolumePoolListTenantsRequest, opts ...grpc.CallOption) (*VolumePoolListTenantsResponse, error)
 	// CredentialSubmit submits a named credential value via the active strategy.
 	CredentialSubmit(ctx context.Context, in *CredentialSubmitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CredentialStrategy returns the active credential management strategy.
@@ -931,10 +993,40 @@ func (c *qRDBServiceClient) Batch(ctx context.Context, in *BatchRequest, opts ..
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BatchImport(ctx context.Context, in *BatchImportRequest, opts ...grpc.CallOption) (*BatchImportResponse, error) {
+func (c *qRDBServiceClient) ImportBegin(ctx context.Context, in *ImportBeginRequest, opts ...grpc.CallOption) (*ImportBeginResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BatchImportResponse)
-	err := c.cc.Invoke(ctx, QRDBService_BatchImport_FullMethodName, in, out, cOpts...)
+	out := new(ImportBeginResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ImportBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ImportAppend(ctx context.Context, in *ImportAppendRequest, opts ...grpc.CallOption) (*ImportAppendResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportAppendResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ImportAppend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ImportCommit(ctx context.Context, in *ImportCommitRequest, opts ...grpc.CallOption) (*ImportCommitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportCommitResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ImportCommit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ImportAbort(ctx context.Context, in *ImportAbortRequest, opts ...grpc.CallOption) (*ImportAbortResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportAbortResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ImportAbort_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1800,20 +1892,50 @@ func (c *qRDBServiceClient) ReconcileBuiltInRoles(ctx context.Context, in *Recon
 	return out, nil
 }
 
-func (c *qRDBServiceClient) GenerateCert(ctx context.Context, in *GenerateCertRequest, opts ...grpc.CallOption) (*CertBundleResponse, error) {
+func (c *qRDBServiceClient) IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CertBundleResponse)
-	err := c.cc.Invoke(ctx, QRDBService_GenerateCert_FullMethodName, in, out, cOpts...)
+	out := new(EnrolledCertResponse)
+	err := c.cc.Invoke(ctx, QRDBService_IssueCert_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *qRDBServiceClient) ExportCert(ctx context.Context, in *ExportCertRequest, opts ...grpc.CallOption) (*ExportCertResponse, error) {
+func (c *qRDBServiceClient) EnrollCert(ctx context.Context, in *EnrollCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ExportCertResponse)
-	err := c.cc.Invoke(ctx, QRDBService_ExportCert_FullMethodName, in, out, cOpts...)
+	out := new(EnrolledCertResponse)
+	err := c.cc.Invoke(ctx, QRDBService_EnrollCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TrustAnchorAdd(ctx context.Context, in *TrustAnchorAddRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TrustAnchorListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TrustAnchorAdd_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TrustAnchorList(ctx context.Context, in *TrustAnchorListRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TrustAnchorListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TrustAnchorList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TrustAnchorRemove(ctx context.Context, in *TrustAnchorRemoveRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TrustAnchorRemove_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2290,9 +2412,9 @@ func (c *qRDBServiceClient) CeremonySignCSR(ctx context.Context, in *CeremonySig
 	return out, nil
 }
 
-func (c *qRDBServiceClient) TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantResponse, error) {
+func (c *qRDBServiceClient) TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantCreateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TenantResponse)
+	out := new(TenantCreateResponse)
 	err := c.cc.Invoke(ctx, QRDBService_TenantCreate_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -2374,6 +2496,66 @@ func (c *qRDBServiceClient) TenantReconcileDeleted(ctx context.Context, in *empt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantReconcileDeletedResponse)
 	err := c.cc.Invoke(ctx, QRDBService_TenantReconcileDeleted_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*VolumePoolListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePoolListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolGet(ctx context.Context, in *VolumePoolGetRequest, opts ...grpc.CallOption) (*VolumePoolDetail, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePoolDetail)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolCreate(ctx context.Context, in *VolumePoolCreateRequest, opts ...grpc.CallOption) (*VolumePool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePool)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolCreate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolUpdate(ctx context.Context, in *VolumePoolUpdateRequest, opts ...grpc.CallOption) (*VolumePool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePool)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolUpdate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolDelete(ctx context.Context, in *VolumePoolDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolDelete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolListTenants(ctx context.Context, in *VolumePoolListTenantsRequest, opts ...grpc.CallOption) (*VolumePoolListTenantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePoolListTenantsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolListTenants_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2903,12 +3085,29 @@ type QRDBServiceServer interface {
 	Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error)
 	// Batch executes multiple operations atomically.
 	Batch(context.Context, *BatchRequest) (*BatchResponse, error)
-	// BatchImport parses and imports key-value pairs from a file (CSV, JSON,
-	// NDJSON, YAML, or archive) carried in the request. This is a bounded
-	// unary RPC, not a stream; the file must fit within the server's
-	// configured max receive message size (mirrors the REST /batch/import
-	// 100 MB bound).
-	BatchImport(context.Context, *BatchImportRequest) (*BatchImportResponse, error)
+	// ImportBegin starts a chunked import session scoped to the caller's
+	// (tenant, database) and (tenant, identity), returning the session ID
+	// passed to ImportAppend/ImportCommit/ImportAbort. Carries a dataset of
+	// any size as many small calls instead of one message no transport's
+	// pre-auth cap can admit -- the replacement for the single-message
+	// BatchImport RPC this service used to carry, deleted outright with no
+	// compat once every transport, SDK and the CLI moved to this session
+	// (go-qrdb#576 part 2). See docs/transactions/architecture.md ("Import
+	// session").
+	ImportBegin(context.Context, *ImportBeginRequest) (*ImportBeginResponse, error)
+	// ImportAppend stages chunk as sequence seq of session_id. seq must be
+	// exactly one more than the last appended sequence, or equal to it
+	// with identical bytes (an idempotent replay); any other value is
+	// refused.
+	ImportAppend(context.Context, *ImportAppendRequest) (*ImportAppendResponse, error)
+	// ImportCommit applies every staged chunk of session_id atomically,
+	// exactly as the retired BatchImport RPC applied its one file, and
+	// releases the session on success.
+	ImportCommit(context.Context, *ImportCommitRequest) (*ImportCommitResponse, error)
+	// ImportAbort releases session_id -- its lease, and therefore its
+	// metadata record and every staged chunk -- without applying
+	// anything.
+	ImportAbort(context.Context, *ImportAbortRequest) (*ImportAbortResponse, error)
 	// Watch creates a server-streaming watcher that delivers events for
 	// the specified key or prefix.
 	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error
@@ -3094,10 +3293,23 @@ type QRDBServiceServer interface {
 	// role seeded before it existed -- so nobody would hold the permission
 	// needed to repair that exact absence.
 	ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error)
-	// GenerateCert creates a client certificate.
-	GenerateCert(context.Context, *GenerateCertRequest) (*CertBundleResponse, error)
-	// ExportCert exports a certificate as PKCS#12.
-	ExportCert(context.Context, *ExportCertRequest) (*ExportCertResponse, error)
+	// IssueCert issues a certificate from a CSR for an EXISTING account of the
+	// caller's own tenant, signed by that tenant's own Key B CA, and binds it
+	// to the account. The requester keeps its private key: no RPC generates
+	// one. (GenerateCert, which did, is removed.)
+	IssueCert(context.Context, *IssueCertRequest) (*EnrolledCertResponse, error)
+	// EnrollCert binds a bring-your-own certificate to an EXISTING account of
+	// the caller's own tenant, after verifying it chains to one of the
+	// tenant's registered trust anchors and authenticates as that account.
+	EnrollCert(context.Context, *EnrollCertRequest) (*EnrolledCertResponse, error)
+	// TrustAnchorAdd registers CA certificates as trust anchors of
+	// tenant_id, which must be the caller's own tenant.
+	TrustAnchorAdd(context.Context, *TrustAnchorAddRequest) (*TrustAnchorListResponse, error)
+	// TrustAnchorList lists tenant_id's trust anchors (the caller's own).
+	TrustAnchorList(context.Context, *TrustAnchorListRequest) (*TrustAnchorListResponse, error)
+	// TrustAnchorRemove withdraws one of tenant_id's trust anchors (the
+	// caller's own).
+	TrustAnchorRemove(context.Context, *TrustAnchorRemoveRequest) (*emptypb.Empty, error)
 	// RevokeCert marks a certificate serial as revoked.
 	RevokeCert(context.Context, *RevokeCertRequest) (*RevokeCertResponse, error)
 	// ListCerts lists all issued client certificates for a tenant.
@@ -3211,7 +3423,7 @@ type QRDBServiceServer interface {
 	// CeremonySignCSR submits a CSR for signing during the ceremony.
 	CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error)
 	// TenantCreate creates a new tenant with the given ID, name, and isolation type.
-	TenantCreate(context.Context, *TenantCreateRequest) (*TenantResponse, error)
+	TenantCreate(context.Context, *TenantCreateRequest) (*TenantCreateResponse, error)
 	// TenantGet retrieves a tenant by ID.
 	TenantGet(context.Context, *TenantGetRequest) (*TenantResponse, error)
 	// TenantList returns metadata for all registered tenants.
@@ -3236,6 +3448,26 @@ type QRDBServiceServer interface {
 	// because it was down, or not hosting the tenant, when the tenant was
 	// deleted. It never removes a directory a live tenant claims.
 	TenantReconcileDeleted(context.Context, *emptypb.Empty) (*TenantReconcileDeletedResponse, error)
+	// VolumePoolList lists every pool in the catalog with its aggregate
+	// usage, tenant count and per-node health tally. Not paginated: a
+	// cluster has a handful of pools.
+	VolumePoolList(context.Context, *emptypb.Empty) (*VolumePoolListResponse, error)
+	// VolumePoolGet inspects one pool, with one row per node that has
+	// reported it.
+	VolumePoolGet(context.Context, *VolumePoolGetRequest) (*VolumePoolDetail, error)
+	// VolumePoolCreate adds a pool to the catalog. The pool is not served
+	// until each node maps it in its own configuration and restarts or
+	// reloads.
+	VolumePoolCreate(context.Context, *VolumePoolCreateRequest) (*VolumePool, error)
+	// VolumePoolUpdate changes a pool's description, capacity or overcommit
+	// factor. The provider is immutable.
+	VolumePoolUpdate(context.Context, *VolumePoolUpdateRequest) (*VolumePool, error)
+	// VolumePoolDelete removes a pool from the catalog. Refused while any
+	// tenant is assigned to it.
+	VolumePoolDelete(context.Context, *VolumePoolDeleteRequest) (*emptypb.Empty, error)
+	// VolumePoolListTenants lists the tenants assigned to a pool, with each
+	// one's reservation and measured use. Paginated.
+	VolumePoolListTenants(context.Context, *VolumePoolListTenantsRequest) (*VolumePoolListTenantsResponse, error)
 	// CredentialSubmit submits a named credential value via the active strategy.
 	CredentialSubmit(context.Context, *CredentialSubmitRequest) (*emptypb.Empty, error)
 	// CredentialStrategy returns the active credential management strategy.
@@ -3418,8 +3650,17 @@ func (UnimplementedQRDBServiceServer) Transaction(context.Context, *TransactionR
 func (UnimplementedQRDBServiceServer) Batch(context.Context, *BatchRequest) (*BatchResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Batch not implemented")
 }
-func (UnimplementedQRDBServiceServer) BatchImport(context.Context, *BatchImportRequest) (*BatchImportResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BatchImport not implemented")
+func (UnimplementedQRDBServiceServer) ImportBegin(context.Context, *ImportBeginRequest) (*ImportBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) ImportAppend(context.Context, *ImportAppendRequest) (*ImportAppendResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportAppend not implemented")
+}
+func (UnimplementedQRDBServiceServer) ImportCommit(context.Context, *ImportCommitRequest) (*ImportCommitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportCommit not implemented")
+}
+func (UnimplementedQRDBServiceServer) ImportAbort(context.Context, *ImportAbortRequest) (*ImportAbortResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ImportAbort not implemented")
 }
 func (UnimplementedQRDBServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error {
 	return status.Error(codes.Unimplemented, "method Watch not implemented")
@@ -3676,11 +3917,20 @@ func (UnimplementedQRDBServiceServer) ResolveRolePermissions(context.Context, *R
 func (UnimplementedQRDBServiceServer) ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRoles not implemented")
 }
-func (UnimplementedQRDBServiceServer) GenerateCert(context.Context, *GenerateCertRequest) (*CertBundleResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GenerateCert not implemented")
+func (UnimplementedQRDBServiceServer) IssueCert(context.Context, *IssueCertRequest) (*EnrolledCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
 }
-func (UnimplementedQRDBServiceServer) ExportCert(context.Context, *ExportCertRequest) (*ExportCertResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ExportCert not implemented")
+func (UnimplementedQRDBServiceServer) EnrollCert(context.Context, *EnrollCertRequest) (*EnrolledCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnrollCert not implemented")
+}
+func (UnimplementedQRDBServiceServer) TrustAnchorAdd(context.Context, *TrustAnchorAddRequest) (*TrustAnchorListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TrustAnchorAdd not implemented")
+}
+func (UnimplementedQRDBServiceServer) TrustAnchorList(context.Context, *TrustAnchorListRequest) (*TrustAnchorListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TrustAnchorList not implemented")
+}
+func (UnimplementedQRDBServiceServer) TrustAnchorRemove(context.Context, *TrustAnchorRemoveRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TrustAnchorRemove not implemented")
 }
 func (UnimplementedQRDBServiceServer) RevokeCert(context.Context, *RevokeCertRequest) (*RevokeCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeCert not implemented")
@@ -3823,7 +4073,7 @@ func (UnimplementedQRDBServiceServer) CeremonyStatus(context.Context, *emptypb.E
 func (UnimplementedQRDBServiceServer) CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CeremonySignCSR not implemented")
 }
-func (UnimplementedQRDBServiceServer) TenantCreate(context.Context, *TenantCreateRequest) (*TenantResponse, error) {
+func (UnimplementedQRDBServiceServer) TenantCreate(context.Context, *TenantCreateRequest) (*TenantCreateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantCreate not implemented")
 }
 func (UnimplementedQRDBServiceServer) TenantGet(context.Context, *TenantGetRequest) (*TenantResponse, error) {
@@ -3849,6 +4099,24 @@ func (UnimplementedQRDBServiceServer) TenantListDeleted(context.Context, *Tenant
 }
 func (UnimplementedQRDBServiceServer) TenantReconcileDeleted(context.Context, *emptypb.Empty) (*TenantReconcileDeletedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantReconcileDeleted not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolList(context.Context, *emptypb.Empty) (*VolumePoolListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolList not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolGet(context.Context, *VolumePoolGetRequest) (*VolumePoolDetail, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolGet not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolCreate(context.Context, *VolumePoolCreateRequest) (*VolumePool, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolCreate not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolUpdate(context.Context, *VolumePoolUpdateRequest) (*VolumePool, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolUpdate not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolDelete(context.Context, *VolumePoolDeleteRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolDelete not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolListTenants(context.Context, *VolumePoolListTenantsRequest) (*VolumePoolListTenantsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolListTenants not implemented")
 }
 func (UnimplementedQRDBServiceServer) CredentialSubmit(context.Context, *CredentialSubmitRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialSubmit not implemented")
@@ -4318,20 +4586,74 @@ func _QRDBService_Batch_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_BatchImport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BatchImportRequest)
+func _QRDBService_ImportBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportBeginRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(QRDBServiceServer).BatchImport(ctx, in)
+		return srv.(QRDBServiceServer).ImportBegin(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: QRDBService_BatchImport_FullMethodName,
+		FullMethod: QRDBService_ImportBegin_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BatchImport(ctx, req.(*BatchImportRequest))
+		return srv.(QRDBServiceServer).ImportBegin(ctx, req.(*ImportBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ImportAppend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportAppendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ImportAppend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ImportAppend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ImportAppend(ctx, req.(*ImportAppendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ImportCommit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportCommitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ImportCommit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ImportCommit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ImportCommit(ctx, req.(*ImportCommitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ImportAbort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportAbortRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ImportAbort(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ImportAbort_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ImportAbort(ctx, req.(*ImportAbortRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -5859,38 +6181,92 @@ func _QRDBService_ReconcileBuiltInRoles_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_GenerateCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GenerateCertRequest)
+func _QRDBService_IssueCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IssueCertRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(QRDBServiceServer).GenerateCert(ctx, in)
+		return srv.(QRDBServiceServer).IssueCert(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: QRDBService_GenerateCert_FullMethodName,
+		FullMethod: QRDBService_IssueCert_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).GenerateCert(ctx, req.(*GenerateCertRequest))
+		return srv.(QRDBServiceServer).IssueCert(ctx, req.(*IssueCertRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_ExportCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ExportCertRequest)
+func _QRDBService_EnrollCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollCertRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(QRDBServiceServer).ExportCert(ctx, in)
+		return srv.(QRDBServiceServer).EnrollCert(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: QRDBService_ExportCert_FullMethodName,
+		FullMethod: QRDBService_EnrollCert_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).ExportCert(ctx, req.(*ExportCertRequest))
+		return srv.(QRDBServiceServer).EnrollCert(ctx, req.(*EnrollCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TrustAnchorAdd_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TrustAnchorAddRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TrustAnchorAdd(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TrustAnchorAdd_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TrustAnchorAdd(ctx, req.(*TrustAnchorAddRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TrustAnchorList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TrustAnchorListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TrustAnchorList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TrustAnchorList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TrustAnchorList(ctx, req.(*TrustAnchorListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TrustAnchorRemove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TrustAnchorRemoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TrustAnchorRemove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TrustAnchorRemove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TrustAnchorRemove(ctx, req.(*TrustAnchorRemoveRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6903,6 +7279,114 @@ func _QRDBService_TenantReconcileDeleted_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_VolumePoolList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolList(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolGet(ctx, req.(*VolumePoolGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolCreate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolCreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolCreate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolCreate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolCreate(ctx, req.(*VolumePoolCreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolUpdate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolUpdateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolUpdate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolUpdate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolUpdate(ctx, req.(*VolumePoolUpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolDeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolDelete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolDelete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolDelete(ctx, req.(*VolumePoolDeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolListTenants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolListTenantsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolListTenants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolListTenants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolListTenants(ctx, req.(*VolumePoolListTenantsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_CredentialSubmit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CredentialSubmitRequest)
 	if err := dec(in); err != nil {
@@ -7825,8 +8309,20 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_Batch_Handler,
 		},
 		{
-			MethodName: "BatchImport",
-			Handler:    _QRDBService_BatchImport_Handler,
+			MethodName: "ImportBegin",
+			Handler:    _QRDBService_ImportBegin_Handler,
+		},
+		{
+			MethodName: "ImportAppend",
+			Handler:    _QRDBService_ImportAppend_Handler,
+		},
+		{
+			MethodName: "ImportCommit",
+			Handler:    _QRDBService_ImportCommit_Handler,
+		},
+		{
+			MethodName: "ImportAbort",
+			Handler:    _QRDBService_ImportAbort_Handler,
 		},
 		{
 			MethodName: "LeaseGrant",
@@ -8165,12 +8661,24 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_ReconcileBuiltInRoles_Handler,
 		},
 		{
-			MethodName: "GenerateCert",
-			Handler:    _QRDBService_GenerateCert_Handler,
+			MethodName: "IssueCert",
+			Handler:    _QRDBService_IssueCert_Handler,
 		},
 		{
-			MethodName: "ExportCert",
-			Handler:    _QRDBService_ExportCert_Handler,
+			MethodName: "EnrollCert",
+			Handler:    _QRDBService_EnrollCert_Handler,
+		},
+		{
+			MethodName: "TrustAnchorAdd",
+			Handler:    _QRDBService_TrustAnchorAdd_Handler,
+		},
+		{
+			MethodName: "TrustAnchorList",
+			Handler:    _QRDBService_TrustAnchorList_Handler,
+		},
+		{
+			MethodName: "TrustAnchorRemove",
+			Handler:    _QRDBService_TrustAnchorRemove_Handler,
 		},
 		{
 			MethodName: "RevokeCert",
@@ -8395,6 +8903,30 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TenantReconcileDeleted",
 			Handler:    _QRDBService_TenantReconcileDeleted_Handler,
+		},
+		{
+			MethodName: "VolumePoolList",
+			Handler:    _QRDBService_VolumePoolList_Handler,
+		},
+		{
+			MethodName: "VolumePoolGet",
+			Handler:    _QRDBService_VolumePoolGet_Handler,
+		},
+		{
+			MethodName: "VolumePoolCreate",
+			Handler:    _QRDBService_VolumePoolCreate_Handler,
+		},
+		{
+			MethodName: "VolumePoolUpdate",
+			Handler:    _QRDBService_VolumePoolUpdate_Handler,
+		},
+		{
+			MethodName: "VolumePoolDelete",
+			Handler:    _QRDBService_VolumePoolDelete_Handler,
+		},
+		{
+			MethodName: "VolumePoolListTenants",
+			Handler:    _QRDBService_VolumePoolListTenants_Handler,
 		},
 		{
 			MethodName: "CredentialSubmit",

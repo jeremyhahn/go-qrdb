@@ -77,22 +77,25 @@ const (
 	// deny marker for a serial the node holds no issued record for.
 	PermissionCertsRevokeCross = permission.CertsRevokeCross
 
-	// PermissionVolumePoolCreate ("volumepool:create") registers a volume
-	// pool.
+	// PermissionVolumePoolCreate ("volume_pools:create") registers a pool
+	// in the replicated catalog.
 	PermissionVolumePoolCreate = permission.VolumePoolCreate
 
-	// PermissionVolumePoolList ("volumepool:list") lists volume pools.
+	// PermissionVolumePoolList ("volume_pools:list") lists every pool in
+	// the catalog.
 	PermissionVolumePoolList = permission.VolumePoolList
 
-	// PermissionVolumePoolRead ("volumepool:read") reads one volume pool's
-	// configuration and utilization.
+	// PermissionVolumePoolRead ("volume_pools:read") inspects one pool's
+	// configuration, usage and per-node health, and lists its assigned
+	// tenants.
 	PermissionVolumePoolRead = permission.VolumePoolRead
 
-	// PermissionVolumePoolUpdate ("volumepool:update") changes a volume
-	// pool's backend set or strategy.
+	// PermissionVolumePoolUpdate ("volume_pools:update") changes a pool's
+	// description, capacity or overcommit factor.
 	PermissionVolumePoolUpdate = permission.VolumePoolUpdate
 
-	// PermissionVolumePoolDelete ("volumepool:delete") removes a volume pool.
+	// PermissionVolumePoolDelete ("volume_pools:delete") removes a pool
+	// from the catalog.
 	PermissionVolumePoolDelete = permission.VolumePoolDelete
 
 	// PermissionRegistrationConfigRead ("registration_config:read") reads the

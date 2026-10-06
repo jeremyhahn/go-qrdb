@@ -40,6 +40,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -60,6 +61,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // Host is the narrow interface the REST server requires for leader
@@ -135,11 +137,14 @@ type Server struct {
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	tenantSvc         tenant.TenantServicer
+	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	certProv          cert.CertProvider
+	certEnrollment    service.CertEnrollmentServicer
+	tenantOnboarding  service.TenantOnboardingServicer
 	authMW            *authmw.AuthMiddleware
 	corsConfig        *CORSConfig
 	gatherer          prometheus.Gatherer
@@ -287,10 +292,67 @@ type Server struct {
 	// *middleware.AwaitingAdminCredentialError. When nil the gate is not
 	// installed and the server behaves as before.
 	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
+
+	// maxBodyBytes bounds every request body this server reads, applied
+	// via http.MaxBytesReader as the outermost middleware layer so it
+	// takes effect before any routing, authentication or handler code
+	// runs. Zero or negative resolves to DefaultMaxBodyBytes. See
+	// WithMaxBodyBytes.
+	maxBodyBytes int64
+
+	// maxConnsPerPeer bounds the number of concurrent TCP connections a
+	// single remote IP may hold open against this server's HTTP/2
+	// listener, AND the number of concurrent QUIC connections against its
+	// HTTP/3 listener -- the same cap, enforced by the same
+	// connlimit.Counter accounting on both (go-qrdb#576). Zero means
+	// unlimited. Has no effect on a WithListener- or WithPacketConn-provided
+	// listener/conn the caller already wrapped itself. See
+	// WithMaxConnsPerPeer.
+	maxConnsPerPeer int
+
+	// http3Listener is the quic-go listener the HTTP/3 server serves via
+	// ServeListener, wrapped in a connlimit.QUICListener when
+	// maxConnsPerPeer is enabled. http3Transport owns the UDP socket
+	// (http3Conn) this listener runs on; both are built by Start and
+	// closed by Stop.
+	http3Listener  connlimit.QUICAcceptor
+	http3Transport *quicgo.Transport
 }
+
+// DefaultMaxBodyBytes is the REST request-body cap applied when no
+// WithMaxBodyBytes option is given. It is the same pre-auth cap every
+// other transport applies by default: a TLS peer that never authenticates
+// still has its request body capped before any handler -- including the
+// authentication middleware itself, which some auth schemes consult the
+// body for -- reads a byte of it (go-qrdb#576). A caller with a larger
+// payload (bulk import) uses the chunked import session API instead of a
+// single oversized request.
+const DefaultMaxBodyBytes = 4 << 20
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithMaxBodyBytes bounds every request body this server reads. n <= 0
+// resolves to DefaultMaxBodyBytes at construction; there is no way to
+// request an unbounded body.
+func WithMaxBodyBytes(n int64) ServerOption {
+	return func(s *Server) { s.maxBodyBytes = n }
+}
+
+// WithMaxConnsPerPeer bounds the number of concurrent TCP connections a
+// single remote IP may hold open against this server's HTTP/2 listener.
+// n <= 0 means unlimited.
+func WithMaxConnsPerPeer(n int) ServerOption {
+	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// resolveMaxBodyBytes returns n if positive, else DefaultMaxBodyBytes.
+func resolveMaxBodyBytes(n int64) int64 {
+	if n <= 0 {
+		return DefaultMaxBodyBytes
+	}
+	return n
+}
 
 // WithGatherer attaches a Prometheus Gatherer for the /metrics endpoint.
 // When nil, the /metrics endpoint is not registered.
@@ -585,6 +647,14 @@ func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantSvc = svc }
 }
 
+// WithVolumeService attaches the volume pool management surface
+// (docs/volume-pools/api.md): list, inspect, create, update, delete a
+// pool, and list a pool's assigned tenants. Every capability is
+// ScopeCross (system tenant only).
+func WithVolumeService(svc volume.Service) ServerOption {
+	return func(s *Server) { s.volumeSvc = svc }
+}
+
 // WithBackupService attaches a BackupServicer for backup lifecycle operations
 // including create, list, get, delete, restore, and verify.
 func WithBackupService(svc service.BackupServicer) ServerOption {
@@ -650,6 +720,18 @@ func WithSODualFactor() ServerOption {
 // operations.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = svc }
+}
+
+// WithCertEnrollment attaches the certificate enrolment service behind
+// POST /certs/issue, POST /certs/enroll and the tenant trust-anchor routes.
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
+	return func(s *Server) { s.certEnrollment = svc }
+}
+
+// WithTenantOnboarding attaches the service behind POST /v1/tenants: a tenant
+// is created with its first admin's login credential, or not at all.
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
+	return func(s *Server) { s.tenantOnboarding = svc }
 }
 
 // WithAuthMiddleware attaches authentication and authorization middleware
@@ -1050,16 +1132,23 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.corsConfig != nil {
 		handler = corsMiddleware(*s.corsConfig, handler)
 	}
-	// OUTERMOST: every layer below -- sealed window, authentication and
-	// authorization, SO dual factor, and chi's routing -- must see the SAME
-	// path. See canonicalPathMiddleware. The HTTP/3 server serves this same
-	// handler, so both listeners get it.
+	// canonicalPathMiddleware must see the SAME path every layer below it
+	// does -- sealed window, authentication and authorization, SO dual
+	// factor, and chi's routing. See its own doc comment. The HTTP/3
+	// server serves this same handler, so both listeners get it.
 	handler = canonicalPathMiddleware(handler)
 	// TRULY outermost: remoteAddrMiddleware wraps even canonicalPathMiddleware,
 	// so it runs ahead of the awaiting-admin-credential gate's bypass to the
 	// raw router above -- the one path a bound identity's own TLS-state
 	// injection (RESTMiddleware) never reaches. See its doc for why.
 	handler = remoteAddrMiddleware(handler)
+
+	// ABSOLUTE OUTERMOST: the request-body cap runs before every layer
+	// above, including canonicalPathMiddleware and CORS, neither of which
+	// reads the body themselves but both of which run before whatever
+	// eventually does. See maxBodyMiddleware's doc comment for why that
+	// ordering -- not merely "before auth" -- is what the cap requires.
+	handler = maxBodyMiddleware(resolveMaxBodyBytes(s.maxBodyBytes), handler)
 
 	s.server = &http.Server{
 		Handler:      handler,
@@ -1108,6 +1197,14 @@ func (s *Server) Start() error {
 		if ln, err = net.Listen("tcp", s.addr); err != nil {
 			return &StartError{Addr: s.addr, Err: err}
 		}
+	}
+
+	// Per-peer connection cap: without it, a single remote IP can open
+	// unlimited concurrent HTTP/2 connections against this listener
+	// (go-qrdb#576). Applied beneath everything else, on the raw TCP
+	// accept, so a refused connection never reaches TLS negotiation.
+	if s.maxConnsPerPeer > 0 {
+		ln = connlimit.New(ln, s.maxConnsPerPeer)
 	}
 
 	// Report every accepted connection to the modules that observe them.
@@ -1195,23 +1292,49 @@ func (s *Server) Start() error {
 
 	if h3Conn != nil {
 		s.http3Conn = h3Conn
+
+		// Build the QUIC listener ourselves, rather than handing h3Conn to
+		// http3.Server.Serve, so the SAME per-peer cap REST's HTTP/2
+		// listener enforces (maxConnsPerPeer, above) also applies to HTTP/3
+		// (go-qrdb#576): http3.Server.ServeListener accepts anything
+		// shaped like a quic.Listener, which connlimit.QUICListener
+		// satisfies directly.
+		h3Transport := &quicgo.Transport{Conn: h3Conn}
+		h3ln, h3LnErr := h3Transport.Listen(http3.ConfigureTLSConfig(s.tlsConfig), http3QUICConfig())
+		if h3LnErr != nil {
+			_ = h3Transport.Close()
+			_ = h3Conn.Close()
+			_ = ln.Close()
+			s.listener = nil
+			s.http3Conn = nil
+			return &HTTP3StartError{Addr: h3Conn.LocalAddr().String(), Err: h3LnErr}
+		}
+		s.http3Transport = h3Transport
+		if s.maxConnsPerPeer > 0 {
+			s.http3Listener = connlimit.NewQUICListener(h3ln, s.maxConnsPerPeer)
+		} else {
+			s.http3Listener = h3ln
+		}
+
 		s.http3Server = &http3.Server{
 			Addr:       h3Conn.LocalAddr().String(),
-			TLSConfig:  s.tlsConfig,
 			Handler:    s.server.Handler,
 			QUICConfig: http3QUICConfig(),
 		}
 		if len(observers) > 0 {
-			// http3.Server accepts QUIC connections itself, so there is no
-			// net.Listener to wrap. ConnContext runs once per accepted
-			// connection, and the connection's own context ends when it closes.
+			// ConnContext runs once per accepted connection, and the
+			// connection's own context ends when it closes.
 			s.http3Server.ConnContext = func(ctx context.Context, c *quicgo.Conn) context.Context {
 				context.AfterFunc(c.Context(), observers.Open(apimodule.TransportHTTP3))
 				return ctx
 			}
 		}
+		// Captured before the goroutine starts: Stop clears s.http3Listener
+		// once it has closed it, and reading the field from here would race
+		// that write.
+		h3srv, h3l := s.http3Server, s.http3Listener
 		go func() {
-			if serveErr := s.http3Server.Serve(h3Conn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+			if serveErr := h3srv.ServeListener(h3l); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
 				slog.Error("HTTP/3 server error", "error", serveErr)
 			}
 		}()
@@ -1327,6 +1450,23 @@ func (s *Server) Stop() {
 		if err := s.http3Server.Close(); err != nil {
 			slog.Error("HTTP/3 server close error", "error", err)
 		}
+	}
+	// Start builds and owns the QUIC listener and transport ServeListener
+	// runs on (so the per-peer cap above applies to them); closing the
+	// listener is the application's responsibility per ServeListener's own
+	// doc, and http3Server.Close does not reach a listener it did not
+	// create itself.
+	if s.http3Listener != nil {
+		if err := s.http3Listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("HTTP/3 listener close error", "error", err)
+		}
+		s.http3Listener = nil
+	}
+	if s.http3Transport != nil {
+		if err := s.http3Transport.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("HTTP/3 transport close error", "error", err)
+		}
+		s.http3Transport = nil
 	}
 	// Start owns the UDP socket, so Stop closes it. http3.Server.Serve
 	// does not close a PacketConn it did not open.
@@ -1706,7 +1846,15 @@ func (s *Server) registerRoutes() {
 
 	// Batch routes.
 	s.route(http.MethodPost, "/batch", permission.BatchExecute, s.handleBatch)
-	s.route(http.MethodPost, "/batch/import", permission.BatchExecute, s.handleBatchImport)
+
+	// Chunked import session routes: the replacement for the retired
+	// single-message POST /batch/import, carrying a dataset of any size
+	// in capped pieces instead of one message no transport's pre-auth
+	// cap can admit.
+	s.route(http.MethodPost, "/batch/import/begin", permission.BatchExecute, s.handleBatchImportBegin)
+	s.route(http.MethodPost, "/batch/import/{session}/append", permission.BatchExecute, s.handleBatchImportAppend)
+	s.route(http.MethodPost, "/batch/import/{session}/commit", permission.BatchExecute, s.handleBatchImportCommit)
+	s.route(http.MethodPost, "/batch/import/{session}/abort", permission.BatchExecute, s.handleBatchImportAbort)
 
 	// Watch route (Server-Sent Events; the middleware chain never wraps the
 	// ResponseWriter, so the handler's http.Flusher assertion holds).
@@ -1926,12 +2074,32 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/v1/tenants/deleted/list", permission.TenantsListDeleted, s.handleListDeletedTenants)
 	s.route(http.MethodPost, "/v1/tenants/deleted/reconcile", permission.TenantsReconcileDeleted, s.handleReconcileDeletedTenants)
 
+	// Volume pool management routes (docs/volume-pools/api.md). Tier 1:
+	// every capability here is also served on gRPC, Unix, QUIC, MCP and the
+	// embedded transport. Every permission is ScopeCross (system tenant
+	// only). Attached unconditionally so the router always returns a
+	// meaningful status (200/501) rather than 404; handlers return 501 when
+	// volumeSvc is nil.
+	s.route(http.MethodGet, "/v1/volume-pools/list", permission.VolumePoolList, s.handleListVolumePools)
+	s.route(http.MethodPost, "/v1/volume-pools", permission.VolumePoolCreate, s.handleCreateVolumePool)
+	s.route(http.MethodGet, "/v1/volume-pools/{pool}", permission.VolumePoolRead, s.handleVolumePoolByName)
+	s.route(http.MethodPut, "/v1/volume-pools/{pool}", permission.VolumePoolUpdate, s.handleVolumePoolByName)
+	s.route(http.MethodDelete, "/v1/volume-pools/{pool}", permission.VolumePoolDelete, s.handleVolumePoolByName)
+	s.route(http.MethodGet, "/v1/volume-pools/{pool}/tenants", permission.VolumePoolRead, s.handleVolumePoolByName)
+
 	// Tenant path-param routes, including the per-tenant barrier plane. The
 	// barrier sub-routes carry tenant-scoped (ScopeTenantOnly) permissions;
 	// the handler additionally validates the {id} against the caller's
 	// tenant. Officer share-claim routes are identity-gated: the registered
 	// officer's mTLS certificate is the credential and the handler enforces
 	// registry lookup, thumbprint match, and nonce signature.
+	// A tenant's trust anchors: the outside CAs that vouch for its users'
+	// bring-your-own login certificates. The tenant is the path's, and every
+	// verb is ScopeSelfStrict -- a tenant manages its own anchors only.
+	anchorsOn := s.certEnrollment != nil
+	s.routeIfTarget(anchorsOn, http.MethodGet, "/v1/tenants/{id}/trust-anchors", permission.TrustAnchorsList, authmw.RESTPathTenant("id"), s.handleListTrustAnchors)
+	s.routeIfTarget(anchorsOn, http.MethodPost, "/v1/tenants/{id}/trust-anchors", permission.TrustAnchorsAdd, authmw.RESTPathTenant("id"), s.handleAddTrustAnchors)
+	s.routeIfTarget(anchorsOn, http.MethodDelete, "/v1/tenants/{id}/trust-anchors/{fingerprint}", permission.TrustAnchorsRemove, authmw.RESTPathTenant("id"), s.handleRemoveTrustAnchor)
 	s.route(http.MethodGet, "/v1/tenants/{id}", permission.TenantsRead, s.handleTenantByID)
 	s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, s.handleTenantByID)
 	s.route(http.MethodDelete, "/v1/tenants/{id}", permission.TenantsDelete, s.handleTenantByID)
@@ -2013,8 +2181,9 @@ func (s *Server) registerRoutes() {
 
 	// Certificate management routes.
 	certsOn := s.certProv != nil
-	s.routeIf(certsOn, http.MethodPost, "/certs/generate", permission.CertsGenerate, s.handleGenerateCert)
-	s.routeIf(certsOn, http.MethodPost, "/certs/export", permission.CertsExport, s.handleExportCert)
+	enrollOn := s.certEnrollment != nil
+	s.routeIf(enrollOn, http.MethodPost, "/certs/issue", permission.CertsIssue, s.handleIssueCert)
+	s.routeIf(enrollOn, http.MethodPost, "/certs/enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.routeIf(certsOn, http.MethodPost, "/certs/revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.routeIf(certsOn, http.MethodGet, "/certs/list", permission.CertsList, s.handleListCerts)
 

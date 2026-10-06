@@ -80,9 +80,13 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 		"--timeout", "20s",
 	}
 	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
-	if out, err := runQRDB(t, cli, connArgs, "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	// `qrdb init` is the only system bootstrap (go-qrdb#548). Its admin
+	// credential goes unused here -- auth is disabled -- but issuing it is
+	// what consumes Key A while ca-key.pem is still on disk.
+	credDir := t.TempDir()
+	bootAdminIdentity(t, cli, caPath, adminPort, "SOPIN12345", "USERPIN12345",
+		filepath.Join(credDir, "admin-cert.pem"), filepath.Join(credDir, "admin-key.pem"), "",
+		"--barrier-strategy", "none")
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
 

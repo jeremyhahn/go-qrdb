@@ -185,7 +185,7 @@ func (m *mockTenantService) TenantBarrierShareClaimComplete(_ context.Context, _
 
 func TestHandleTenantCreate_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{
 		"name": "ACME Corp",
@@ -201,7 +201,7 @@ func TestHandleTenantCreate_EmptyID(t *testing.T) {
 
 func TestHandleTenantCreate_EmptyName(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{
 		"id": "acme",
@@ -226,7 +226,7 @@ func TestHandleTenantCreate_Success(t *testing.T) {
 			UpdatedAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}, nil
 	}
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{
 		"id":             "acme",
@@ -242,15 +242,15 @@ func TestHandleTenantCreate_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var info tenant.TenantInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+	var out tenantCreateResult
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if info.ID != "acme" {
-		t.Errorf("expected id 'acme', got %q", info.ID)
+	if out.Tenant.ID != "acme" {
+		t.Errorf("expected id 'acme', got %q", out.Tenant.ID)
 	}
-	if info.Name != "ACME Corp" {
-		t.Errorf("expected name 'ACME Corp', got %q", info.Name)
+	if out.Tenant.Name != "ACME Corp" {
+		t.Errorf("expected name 'ACME Corp', got %q", out.Tenant.Name)
 	}
 }
 
@@ -259,7 +259,7 @@ func TestHandleTenantCreate_AlreadyExists(t *testing.T) {
 	svc.createFn = func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantAlreadyExists
 	}
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{
 		"id":   "dup",
@@ -283,7 +283,7 @@ func TestHandleTenantCreate_StoreError(t *testing.T) {
 	svc.createFn = func(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
 		return nil, &tenant.StoreError{Op: "put", Err: errors.New("disk full")}
 	}
-	handler := handleTenantCreate(svc)
+	handler := handleTenantCreate(&fakeTenantOnboarding{tenants: svc})
 
 	req := buildCallToolRequest(t, "qrdb_tenant_create", map[string]any{
 		"id":   "t1",

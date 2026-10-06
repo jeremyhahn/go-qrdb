@@ -26,6 +26,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -34,22 +35,38 @@ import (
 // ---------------------------------------------------------------------------
 
 // TenantCreate creates a new tenant via the tenant service.
-func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCreateRequest) (*pb.TenantResponse, error) {
-	if s.tenantSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
+func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCreateRequest) (*pb.TenantCreateResponse, error) {
+	if s.onboarding == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant onboarding"})
 	}
 
-	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal())}
-	if dataRoot := req.GetDataRoot(); dataRoot != "" {
-		opts = append(opts, tenant.WithDataRoot(dataRoot))
-	}
-
-	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()), opts...)
+	result, err := s.onboarding.OnboardTenant(ctx, &service.OnboardTenantRequest{
+		ID:                req.GetId(),
+		Name:              req.GetName(),
+		IsolationType:     tenant.IsolationType(req.GetIsolationType()),
+		BarrierAutoUnseal: req.GetBarrierAutoUnseal(),
+		VolumePool:        req.GetVolumePool(),
+		AdminUsername:     req.GetAdminUsername(),
+		AdminCSRPEM:       []byte(req.GetAdminCsrPem()),
+		AdminCertPEM:      []byte(req.GetAdminCertPem()),
+		AdminChainPEM:     []byte(req.GetAdminChainPem()),
+		TrustAnchorsPEM:   []byte(req.GetTrustAnchorsPem()),
+	})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 
-	return tenantToProto(info), nil
+	return &pb.TenantCreateResponse{
+		Tenant: tenantToProto(result.Tenant),
+		Admin: &pb.TenantAdminCredential{
+			UserId:            result.Admin.UserID,
+			Username:          result.Admin.Username,
+			CertPem:           string(result.Admin.CertPEM),
+			Serial:            result.Admin.Serial,
+			Thumbprint:        result.Admin.Thumbprint,
+			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
+		},
+	}, nil
 }
 
 // TenantGet retrieves a tenant by ID.
@@ -141,7 +158,7 @@ func DeletedTenantsPageToProto(page *tenant.DeletedTenantsPage) *pb.TenantListDe
 			Id:            ts.ID,
 			Name:          ts.Name,
 			IsolationType: string(ts.IsolationType),
-			DataRoot:      ts.DataRoot,
+			VolumePool:    ts.VolumePool,
 		}
 		if !ts.CreatedAt.IsZero() {
 			dt.CreatedAt = ts.CreatedAt.UTC().Format(time.RFC3339)
@@ -274,6 +291,7 @@ func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *p
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 		AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+		AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 	}
 
 	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsSetEntitlements); err != nil {
@@ -301,15 +319,18 @@ func tenantToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 		Id:            info.ID,
 		Name:          info.Name,
 		IsolationType: string(info.EffectiveIsolationType()),
-		DataRoot:      info.DataRoot,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
+		VolumePool:    info.VolumePool,
 	}
 	if info.Quotas != nil {
 		resp.Quotas = quotaToProto(info.Quotas)
 	}
 	if info.Entitlements != nil {
 		resp.Entitlements = entitlementsToProto(info.Entitlements)
+	}
+	if refusal := tenant.RefusalOf(info.Refusal); refusal != nil {
+		resp.Refusal = &pb.TenantRefusal{Code: refusal.Code, Message: refusal.Message}
 	}
 	return resp
 }
@@ -326,6 +347,7 @@ func entitlementsToProto(e *quota.Entitlements) *pb.TenantEntitlements {
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       e.AllowedBarrierModes,
 		AllowDedicatedWal:         e.AllowDedicatedWAL,
+		AllowedVolumePools:        e.AllowedVolumePools,
 	}
 }
 

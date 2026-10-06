@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -138,6 +139,13 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	if err != nil || st == nil || st.Initialized {
 		return rbacErr
 	}
+	// Trust on first init is not trust in ANY certificate of the tenant: a
+	// tenant onboarded with its first admin admits only that admin's
+	// certificate, and under the "required" binding posture a tenant with no
+	// onboarded admin admits nobody.
+	if err := m.checkFirstInitCertificate(ctx, caller, tenantID); err != nil {
+		return err
+	}
 	// The RBAC denial above was already audited; record the final decision
 	// too so the audit trail shows the request was ultimately allowed.
 	//
@@ -147,6 +155,61 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// configured audit failure policy decides, exactly as it does for every
 	// other grant (see auditDecision).
 	return m.grantBootstrapFallback(ctx, caller, permission.TenantBarrierInit)
+}
+
+// PendingTenantAdmins reads the first admin a tenant was onboarded with
+// before its identity records could be written (pkg/tenantadmin).
+// *tenantadmin.KVStore implements it.
+type PendingTenantAdmins interface {
+	Get(ctx context.Context, tenantID string) (*tenantadmin.Pending, error)
+}
+
+// WithPendingTenantAdmins gives the trust-on-first-init window of a tenant
+// barrier the record of the admin each tenant was onboarded with, so the
+// window admits that admin's certificate and no other.
+func WithPendingTenantAdmins(p PendingTenantAdmins) Option {
+	return func(m *AuthMiddleware) { m.pendingAdmins = p }
+}
+
+// checkFirstInitCertificate decides whether the certificate on this request
+// may initialize tenantID's never-initialized barrier through the
+// trust-on-first-init window.
+//
+//   - A tenant onboarded before its barrier existed has a pending admin
+//     record: only a certificate whose SPKI is the onboarded one, naming the
+//     onboarded admin, may initialize -- whoever initializes the barrier is
+//     the admin the platform operator onboarded.
+//   - With no record, the "enrolled" posture keeps the window as it was: any
+//     authenticated identity of the tenant.
+//   - With no record under "required", nobody may: a certificate bound to no
+//     account cannot initialize a tenant barrier under a posture that admits
+//     no unbound certificate anywhere else.
+//
+// A failure to read the record fails closed.
+func (m *AuthMiddleware) checkFirstInitCertificate(ctx context.Context, caller *auth.Identity, tenantID string) error {
+	var pending *tenantadmin.Pending
+	if m.pendingAdmins != nil {
+		p, err := m.pendingAdmins.Get(ctx, tenantID)
+		if err != nil {
+			return &StoreUnavailableError{Err: err}
+		}
+		pending = p
+	}
+	if pending == nil {
+		if m.bindingPolicy == auth.MTLSBindingRequired {
+			return &FirstInitNotOnboardedError{TenantID: tenantID}
+		}
+		return nil
+	}
+	presented := presentedThumbprint(ctx)
+	if presented == "" || presented != pending.Thumbprint || caller.Subject != pending.Username {
+		return &FirstInitCertificateMismatchError{
+			TenantID:            tenantID,
+			Username:            pending.Username,
+			PresentedThumbprint: presented,
+		}
+	}
+	return nil
 }
 
 // AuthorizeTenantBarrierSealedOp authorizes the tenant barrier operations

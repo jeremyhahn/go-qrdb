@@ -309,6 +309,7 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
 		protocol.OpTransaction:      e.handleTransaction,
 		protocol.OpGuarded:          e.handleGuarded,
+		protocol.OpImportStage:      e.handleImportStage,
 	}
 }
 

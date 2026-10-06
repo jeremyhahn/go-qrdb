@@ -39,9 +39,9 @@ func newNeverDeliveringWatcher() *neverDeliveringWatcher {
 }
 
 func (w *neverDeliveringWatcher) Events() <-chan watch.WatchResponse { return w.events }
-func (w *neverDeliveringWatcher) WatchID() int64                    { return 1 }
-func (w *neverDeliveringWatcher) Close() error                      { return nil }
-func (w *neverDeliveringWatcher) Err() error                        { return nil }
+func (w *neverDeliveringWatcher) WatchID() int64                     { return 1 }
+func (w *neverDeliveringWatcher) Close() error                       { return nil }
+func (w *neverDeliveringWatcher) Err() error                         { return nil }
 
 // neverDeliveringAdminWatchSvc implements firstboot.AdminRecordWatcher by
 // handing back a watcher that never delivers an event, so
@@ -77,7 +77,7 @@ func TestBootstrapAuthEnforcement_AdminWatchCancelBeforeWaitPreventsHang(t *test
 	authResult, err := bootstrapAuthEnforcement(
 		context.Background(), mgmt, t.TempDir(), &mockRaftNode{},
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
-		nil, nil, "", "", "required",
+		nil, nil, nil, nil, "", "", "required",
 		firstboot.NewAwaitingAdminCredentialProbe(), neverDeliveringAdminWatchSvc{},
 	)
 	require.NoError(t, err)

@@ -37,7 +37,7 @@ type restTenant struct {
 	ID            string                        `json:"id"`
 	Name          string                        `json:"name"`
 	IsolationType transport.TenantIsolationType `json:"isolation_type,omitempty"`
-	DataRoot      string                        `json:"data_root,omitempty"`
+	VolumePool    string                        `json:"volume_pool,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAtStr  string                        `json:"createdAt"`
@@ -96,7 +96,7 @@ func (r *restTenant) toTenantInfo() transport.TenantInfo {
 		ID:            r.ID,
 		Name:          r.Name,
 		IsolationType: r.IsolationType,
-		DataRoot:      r.DataRoot,
+		VolumePool:    r.VolumePool,
 		Quotas:        r.Quotas,
 		Entitlements:  r.Entitlements,
 	}
@@ -125,11 +125,51 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	var wire restTenant
+	// The 201 body is the tenant's fields with its first admin alongside.
+	var wire struct {
+		restTenant
+		Admin transport.TenantAdminCredential `json:"admin"`
+	}
 	if err := t.postJSONDecode(ctx, "CreateTenant", "/v1/tenants", req, &wire); err != nil {
 		return nil, err
 	}
-	return &transport.CreateTenantResponse{Tenant: wire.toTenantInfo()}, nil
+	return &transport.CreateTenantResponse{Tenant: wire.toTenantInfo(), Admin: wire.Admin}, nil
+}
+
+// AddTrustAnchors registers trust anchors of req.TenantID. Maps to
+// POST /v1/tenants/{id}/trust-anchors.
+func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrustAnchorsRequest) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	var out transport.TrustAnchorList
+	if err := t.postJSONDecode(ctx, "AddTrustAnchors", "/v1/tenants/"+url.PathEscape(req.TenantID)+"/trust-anchors", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListTrustAnchors lists tenantID's trust anchors. Maps to
+// GET /v1/tenants/{id}/trust-anchors.
+func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	var out transport.TrustAnchorList
+	if err := t.getJSONDecode(ctx, "ListTrustAnchors", "/v1/tenants/"+url.PathEscape(tenantID)+"/trust-anchors", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveTrustAnchor withdraws one of tenantID's trust anchors. Maps to
+// DELETE /v1/tenants/{id}/trust-anchors/{fingerprint}.
+func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	return t.deleteNoContent(ctx, "RemoveTrustAnchor",
+		"/v1/tenants/"+url.PathEscape(tenantID)+"/trust-anchors/"+url.PathEscape(fingerprint))
 }
 
 // GetTenant retrieves a tenant by ID. Maps to GET /v1/tenants/{id}.

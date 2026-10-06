@@ -137,6 +137,8 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		qrdbconfig.AuthABACConfig{},
 		nil,        // no cert provider: revocation not enforced
 		nil,        // no cluster CA: issuer-tenant binding not enforced
+		nil,        // no pending tenant admins: first-init window unconfined
+		nil,        // no cert target guard: add_cert_binding not exercised
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
@@ -178,6 +180,8 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		qrdbconfig.AuthABACConfig{},
 		nil,        // no cert provider: revocation not enforced
 		nil,        // no cluster CA: issuer-tenant binding not enforced
+		nil,        // no pending tenant admins: first-init window unconfined
+		nil,        // no cert target guard: add_cert_binding not exercised
 		"",         // revocation cache TTL: default
 		"",         // audit failure policy: default (fail-closed)
 		"enrolled", // mtls binding policy: this test is not about binding
@@ -187,106 +191,6 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
 	assert.Equal(t, "SO authenticator", abe.Step)
-}
-
-// ---------------------------------------------------------------------------
-// volume_pool.go: buildLocalCandidates — Configure error path (line 170-172)
-// ---------------------------------------------------------------------------
-
-// TestBuildLocalCandidates_ConfigureError exercises the error path when
-// s.Configure fails because the provided path contains an invalid element.
-// The local objstore backend's Configure accepts a "path" key; passing an
-// empty string causes Configure to return an error.
-func TestBuildLocalCandidates_ConfigureError(t *testing.T) {
-	// The local objstore backend rejects an empty path string.
-	_, err := buildLocalCandidates("test-pool", []string{""})
-	// A blank path may succeed at MkdirAll (noop) but fail at Configure.
-	// Either outcome is acceptable — just don't panic; verify error if any.
-	if err != nil {
-		var poolErr *VolumePoolPathError
-		// error may be VolumePoolPathError or a lower-level error
-		t.Logf("buildLocalCandidates returned (expected): %v; is VolumePoolPathError: %v",
-			err, errors.As(err, &poolErr))
-	}
-}
-
-// TestBuildLocalCandidates_ValidPath verifies that a valid path results in
-// successful configuration of one local backend (supplemental).
-func TestBuildLocalCandidates_ValidPath(t *testing.T) {
-	dir := t.TempDir()
-	poolDir := filepath.Join(dir, "pool-valid")
-
-	backends, err := buildLocalCandidates("test-pool-valid", []string{poolDir})
-	require.NoError(t, err)
-	require.Len(t, backends, 1)
-}
-
-// TestBuildLocalCandidates_MultiPath verifies that multiple valid paths each
-// get their own local backend (supplemental).
-func TestBuildLocalCandidates_MultiPath(t *testing.T) {
-	dir := t.TempDir()
-	paths := []string{
-		filepath.Join(dir, "bfvol0"),
-		filepath.Join(dir, "bfvol1"),
-		filepath.Join(dir, "bfvol2"),
-	}
-
-	backends, err := buildLocalCandidates("multi-pool-bf", paths)
-	require.NoError(t, err)
-	assert.Len(t, backends, 3)
-}
-
-// ---------------------------------------------------------------------------
-// volume_pool.go: initVolumePoolSubsystem — MkdirAll failure (lines 93-95)
-// ---------------------------------------------------------------------------
-
-// TestInitVolumePoolSubsystem_MkdirAllFails verifies that a non-directory dataDir
-// path (a regular file) causes initVolumePoolSubsystem to return a
-// VolumePoolStorageError (lines 93-95).
-func TestInitVolumePoolSubsystem_MkdirAllFails(t *testing.T) {
-	dir := t.TempDir()
-	// Create a regular file at the path that should be the state directory so
-	// MkdirAll(filepath.Join(dataDir,"volumepool")) fails.
-	badDataDir := filepath.Join(dir, "blocker")
-	require.NoError(t, os.WriteFile(badDataDir, []byte("x"), 0o600))
-
-	pools := []qrdbconfig.VolumePoolConfig{
-		{Name: "pool0", Paths: []string{filepath.Join(dir, "pool0")}, Strategy: ""},
-	}
-
-	_, err := initVolumePoolSubsystem(badDataDir, pools, newDiscardLogger())
-	require.Error(t, err)
-	var poolErr *VolumePoolStorageError
-	require.True(t, errors.As(err, &poolErr),
-		"expected VolumePoolStorageError for blocked stateDir, got %T: %v", err, err)
-}
-
-// TestInitVolumePoolSubsystem_NoPools returns nil subsystem and nil error
-// when the pools slice is empty (fast path, no Pebble opened).
-func TestInitVolumePoolSubsystem_NoPools(t *testing.T) {
-	dir := t.TempDir()
-	sub, err := initVolumePoolSubsystem(dir, nil, newDiscardLogger())
-	require.NoError(t, err)
-	assert.Nil(t, sub)
-}
-
-// TestInitVolumePoolSubsystem_UnknownStrategy returns a VolumePoolStrategyError
-// when a pool specifies an unknown strategy name (covers buildPoolStrategy
-// default branch).
-func TestInitVolumePoolSubsystem_UnknownStrategy(t *testing.T) {
-	dir := t.TempDir()
-	poolPath := filepath.Join(dir, "pooldata")
-
-	pools := []qrdbconfig.VolumePoolConfig{
-		{Name: "bad-pool", Paths: []string{poolPath}, Strategy: "no-such-strategy"},
-	}
-
-	_, err := initVolumePoolSubsystem(dir, pools, newDiscardLogger())
-	require.Error(t, err)
-	var stratErr *VolumePoolStrategyError
-	require.True(t, errors.As(err, &stratErr),
-		"expected VolumePoolStrategyError, got %T: %v", err, err)
-	assert.Equal(t, "no-such-strategy", stratErr.Strategy)
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +678,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 		storageConfig: qrdbconfig.StorageConfig{
 			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Paths: []string{poolPath}, Strategy: ""},
+				{Name: "default", Path: poolPath},
 			},
 		},
 		host: testBindHost,

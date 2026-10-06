@@ -592,7 +592,7 @@ func (e *holderE2E) enrolAndInitialize() {
 			Designated:    req.Designated,
 		})
 	}
-	opts := holderwire.CeremonyInitFrom(&transport.CeremonyInitializeRequest{
+	opts, err := holderwire.CeremonyInitFrom(&transport.CeremonyInitializeRequest{
 		SOPin:     e2eSOPIN,
 		UserPin:   e2eUserPIN,
 		Threshold: e2eThreshold,
@@ -605,6 +605,9 @@ func (e *holderE2E) enrolAndInitialize() {
 		// is used and the returned admin key is otherwise ignored.
 		AdminGenerate: true,
 	})
+	if err != nil {
+		e.t.Fatalf("CeremonyInitFrom: %v", err)
+	}
 	result, err := svc.CeremonyInitialize(ctx, e.ca, opts)
 	if err != nil {
 		e.t.Fatalf("ceremony initialize: %v", err)

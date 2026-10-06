@@ -159,6 +159,17 @@ cors:
   allowed_origins: ["*"]
   allowed_headers: ["Authorization", "Content-Type"]
   max_age: 3600
+
+transport:
+  max_message_bytes: 4194304    # 4 MiB; applied pre-auth, identically on every transport
+  max_conns_per_peer: 256       # REST, gRPC, MCP, and native+HTTP/3 QUIC listeners
+  max_streams_per_conn: 128     # native QUIC transport only
+
+import_session:
+  max_session_bytes: 67108864    # 64 MiB total staged per session
+  max_chunks_per_session: 16384
+  max_sessions_per_tenant: 16
+  session_ttl_seconds: 3600
 ```
 
 ---
@@ -1113,6 +1124,82 @@ tenant:
 - Vector namespaces are tenant-partitioned in both modes; strict mode additionally
   refuses to create a namespace for an identity that has no real tenant (i.e. the
   `system` tenant), preventing accidental shared/un-owned namespaces.
+
+---
+
+### transport
+
+Bounds resources every API transport (REST, gRPC, the Unix domain socket,
+native QUIC, MCP) admits to an unauthenticated TLS peer, before any identity
+is established. These apply identically on every transport; there is no
+larger-message opt-in.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_message_bytes` | int | `4194304` (4 MiB) | Caps a single request or response message any transport accepts or produces: the REST request body, the gRPC and Unix `MaxRecvMsgSize`, the QUIC wire frame payload (checked against this bound before a buffer is allocated for it), and the MCP JSON-RPC request body |
+| `max_conns_per_peer` | int | `256` | Caps the number of concurrent connections a single remote IP may hold open against REST's HTTP/2 listener, gRPC, MCP, native QUIC, and REST's own HTTP/3 (QUIC) listener. A negative value means unlimited |
+| `max_streams_per_conn` | int | `128` | Caps the number of concurrent streams a single QUIC connection may have open against the native QUIC transport. A negative value means unlimited |
+
+**Example configuration:**
+
+```yaml
+transport:
+  max_message_bytes: 4194304
+  max_conns_per_peer: 256
+  max_streams_per_conn: 128
+```
+
+**Notes:**
+
+- A caller with a payload larger than `max_message_bytes` splits it across
+  multiple calls; there is no larger-message exception for any RPC,
+  including bulk import.
+- `max_conns_per_peer` has no effect on the Unix domain socket (no
+  remote-IP concept). On native QUIC and REST's HTTP/3 listener it bounds
+  concurrent CONNECTIONS per peer, the same as on the TCP transports;
+  `max_streams_per_conn` separately bounds concurrent STREAMS within a
+  single admitted QUIC connection.
+- Zero resolves each field to its default; a negative `max_message_bytes`
+  is refused at config validation rather than silently disabling the cap.
+
+---
+
+### import_session
+
+Bounds a chunked bulk-import session (`ImportBegin`/`ImportAppend`/
+`ImportCommit`/`ImportAbort`, see `docs/transactions/`), independently of
+the per-call `transport.max_message_bytes` cap every individual chunk is
+also subject to.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_session_bytes` | int64 | `67108864` (64 MiB) | Total staged bytes a single session may accumulate across all its chunks |
+| `max_chunks_per_session` | int | `16384` | Chunk-count ceiling per session |
+| `max_sessions_per_tenant` | int | `16` | Concurrent (not yet committed, aborted, or expired) sessions a tenant may hold open at once |
+| `session_ttl_seconds` | int64 | `3600` | The session's lease TTL in seconds; renewed on every `ImportAppend`, so only an abandoned session ever expires |
+
+**Example configuration:**
+
+```yaml
+import_session:
+  max_session_bytes: 67108864
+  max_chunks_per_session: 16384
+  max_sessions_per_tenant: 16
+  session_ttl_seconds: 3600
+```
+
+**Notes:**
+
+- Zero or negative resolves each field to its default — there is no way to
+  configure an unbounded session.
+- A session over `max_session_bytes` or `max_chunks_per_session` is
+  refused at the `ImportAppend` that would exceed it; the chunks already
+  staged are not discarded, so a caller that lowered its chunk size can
+  still commit what fits.
+- An abandoned session (the caller never calls `ImportCommit` or
+  `ImportAbort`) is reclaimed when `session_ttl_seconds` elapses, through
+  the same lease-expiry mechanism as any other lease-bound key — see
+  `docs/leases/`.
 
 ---
 

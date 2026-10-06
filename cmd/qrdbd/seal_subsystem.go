@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
@@ -64,6 +65,22 @@ type sealSubsystem struct {
 	// BarrierRegistry manages per-tenant barriers that are layered on
 	// top of the system barrier.
 	BarrierRegistry *seal.BarrierRegistry
+
+	// VolumeLifecycle keeps this node's Lockable pool volumes in step
+	// with SealBarrier's seal state (decision D6). It is built BEFORE
+	// BarrierRegistry below so its OnUnsealed observer -- which unlocks
+	// every tracked volume -- runs before BarrierRegistry's own
+	// OnUnsealed observer, which reopens system-managed tenant stores on
+	// those volumes. The daemon's volume-pool composition (start.go)
+	// Tracks each Lockable volume it opens on this VolumeLifecycle.
+	VolumeLifecycle *seal.VolumeLifecycle
+
+	// TenantHostsHolder is published by start.go once BuildTenantInfra
+	// returns its Hosts field -- see VolumeLifecycle's WithCloseStoresFunc
+	// closure, which reads this holder, not a captured registry, because
+	// the registry does not exist yet when VolumeLifecycle is built
+	// (decision D6's build order).
+	TenantHostsHolder *server.TenantHostRegistryHolder
 
 	// PINBackend holds the node's SO and User PINs, persisted in the seal
 	// sub-store so they are readable while the barrier is sealed.
@@ -255,10 +272,43 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		return nil, &CredentialServiceError{Err: credErr}
 	}
 
+	// Build the volume lifecycle BEFORE the barrier registry (decision
+	// D6): VolumeLifecycle registers its OnUnsealed/OnSealing observers
+	// on sealBarrier at construction, and StorageBarrier runs OnUnsealed
+	// observers in registration order, so building this first is what
+	// makes "unlock before stores open" true by construction order alone
+	// once BarrierRegistry (which reopens tenant stores on unseal)
+	// registers its own observer immediately below.
+	nodeID := strconv.FormatUint(f.replicaID, 10)
+
+	// barrierRegistry is declared here, assigned below, so the
+	// WithCloseStoresFunc closure immediately after can capture the
+	// variable itself (Go closures capture variables, not a value frozen
+	// at definition time) even though BarrierRegistry is constructed
+	// AFTER VolumeLifecycle per decision D6's build order. No seal event
+	// can reach a subsystem still being constructed, so the closure is
+	// never actually invoked before barrierRegistry is assigned.
+	var barrierRegistry *seal.BarrierRegistry
+
+	// Security review item 4(a): the real close-before-lock implementation.
+	// tenantHostsHolder is published by start.go's own call to
+	// BuildTenantInfra, which cannot run until long after this subsystem is
+	// built (it needs the data-plane host and the replicated TenantService)
+	// -- so the closure reads the holder fresh on every Seal rather than
+	// capturing a registry that does not exist yet. See
+	// server.CloseTenantStoresForPool's own doc comment for what it
+	// actually closes and why a nil holder load is a safe no-op.
+	tenantHostsHolder := &server.TenantHostRegistryHolder{}
+	volumeLifecycle := seal.NewVolumeLifecycle(sealBarrier, nodeID, slog.Default(),
+		seal.WithCloseStoresFunc(func(ctx context.Context, pool string) error {
+			return server.CloseTenantStoresForPool(ctx, barrierRegistry.VolumeAllocator(), tenantHostsHolder.Load(), pool)
+		}))
+
 	// Initialize barrier registry for multi-tenant encryption isolation.
 	// The system barrier is the root; tenant barriers are created on
 	// demand when tenants are provisioned via the TenantService API.
-	barrierRegistry, regErr := seal.NewBarrierRegistry(slog.Default(), sealBarrier, seal.WithAuditTrail(complianceAudit))
+	var regErr error
+	barrierRegistry, regErr = seal.NewBarrierRegistry(slog.Default(), sealBarrier, seal.WithAuditTrail(complianceAudit))
 	if regErr != nil {
 		_ = sealStore.Close()
 		return nil, &BarrierRegistryError{Err: regErr}
@@ -275,12 +325,14 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		slog.String("data_dir", sealDataDir))
 
 	return &sealSubsystem{
-		SealStore:       sealStore,
-		SealBarrier:     sealBarrier,
-		CredCoreSvc:     credCoreSvc,
-		BarrierRegistry: barrierRegistry,
-		PINBackend:      pinBackend,
-		SealDataDir:     sealDataDir,
+		SealStore:         sealStore,
+		SealBarrier:       sealBarrier,
+		CredCoreSvc:       credCoreSvc,
+		BarrierRegistry:   barrierRegistry,
+		VolumeLifecycle:   volumeLifecycle,
+		TenantHostsHolder: tenantHostsHolder,
+		PINBackend:        pinBackend,
+		SealDataDir:       sealDataDir,
 	}, nil
 }
 

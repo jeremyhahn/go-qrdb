@@ -25,14 +25,15 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // tenantTools returns the MCP tool registrations for tenant lifecycle
 // management: create, get, list, update, delete, and quota management.
-func tenantTools(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) []serverTool {
+func tenantTools(svc tenant.TenantServicer, onboarding service.TenantOnboardingServicer, mw *authmw.AuthMiddleware) []serverTool {
 	return []serverTool{
-		{Tool: toolTenantCreate(), Perm: permission.TenantsCreate, Handler: handleTenantCreate(svc)},
+		{Tool: toolTenantCreate(), Perm: permission.TenantsCreate, Handler: handleTenantCreate(onboarding)},
 		{Tool: toolTenantGet(), Perm: permission.TenantsRead, Handler: handleTenantGet(svc, mw)},
 		{Tool: toolTenantList(), Perm: permission.TenantsList, Handler: handleTenantList(svc, mw)},
 		{Tool: toolTenantUpdate(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdate(svc, mw)},
@@ -117,15 +118,52 @@ func toolTenantCreate() mcp.Tool {
 		mcp.WithBoolean("barrier_auto_unseal",
 			mcp.Description("Opt a dedicated-isolation tenant (barrier/volume) into the system-managed auto-unseal key-management mode (entitlement-gated). Default false = self-managed."),
 		),
-		mcp.WithString("data_root",
-			mcp.Description("Pin an IsolationVolume/IsolationRaft tenant's dedicated filesystem DataRoot to this absolute path instead of pool allocation. Empty (default) allocates from the configured volume pool."),
+		mcp.WithString("volume_pool",
+			mcp.Description("The named volume pool an IsolationVolume/IsolationRaft tenant is placed on. Empty (default) uses the tenant's default pool, the first entry of its AllowedVolumePools."),
+		),
+		mcp.WithString("admin_username",
+			mcp.Required(),
+			mcp.Description("The tenant's first admin. A tenant is created with its first admin's login credential, or not at all."),
+		),
+		mcp.WithString("admin_csr_pem",
+			mcp.Description("The admin's PEM certificate signing request, signed by the tenant's own CA; the admin keeps its key. Exactly one of this and admin_cert_pem."),
+		),
+		mcp.WithString("admin_cert_pem",
+			mcp.Description("The admin's own PEM certificate, leaf first; it must chain to one of trust_anchors_pem."),
+		),
+		mcp.WithString("admin_chain_pem",
+			mcp.Description("Optional PEM intermediates for admin_cert_pem."),
+		),
+		mcp.WithString("trust_anchors_pem",
+			mcp.Description("A PEM bundle of CA certificates to register as the tenant's trust anchors."),
 		),
 	)
 }
 
-// handleTenantCreate returns a tool handler that creates a new tenant.
-func handleTenantCreate(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+// tenantCreateResult is qrdb_tenant_create's result: the tenant and its first
+// admin's credential. There is never a private key.
+type tenantCreateResult struct {
+	Tenant *tenant.TenantInfo        `json:"tenant"`
+	Admin  tenantAdminCredentialJSON `json:"admin"`
+}
+
+// tenantAdminCredentialJSON is a tenant's first admin as onboarding left it.
+type tenantAdminCredentialJSON struct {
+	UserID            uint64 `json:"user_id,omitempty,string"`
+	Username          string `json:"username"`
+	CertPEM           string `json:"cert_pem"`
+	Serial            string `json:"serial,omitempty"`
+	Thumbprint        string `json:"thumbprint"`
+	AwaitsBarrierInit bool   `json:"awaits_barrier_init,omitempty"`
+}
+
+// handleTenantCreate returns a tool handler that onboards a new tenant with
+// its first admin.
+func handleTenantCreate(svc service.TenantOnboardingServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if svc == nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: &service.TenantOnboardingNotConfiguredError{}}
+		}
 		id := mcp.ParseString(req, "id", "")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
@@ -136,20 +174,33 @@ func handleTenantCreate(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		isolationType := tenant.IsolationType(mcp.ParseString(req, "isolation_type", ""))
-		barrierAutoUnseal := mcp.ParseBoolean(req, "barrier_auto_unseal", false)
-
-		opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(barrierAutoUnseal)}
-		if dataRoot := mcp.ParseString(req, "data_root", ""); dataRoot != "" {
-			opts = append(opts, tenant.WithDataRoot(dataRoot))
-		}
-
-		info, err := svc.CreateTenant(ctx, id, name, isolationType, opts...)
+		result, err := svc.OnboardTenant(ctx, &service.OnboardTenantRequest{
+			ID:                id,
+			Name:              name,
+			IsolationType:     tenant.IsolationType(mcp.ParseString(req, "isolation_type", "")),
+			BarrierAutoUnseal: mcp.ParseBoolean(req, "barrier_auto_unseal", false),
+			VolumePool:        mcp.ParseString(req, "volume_pool", ""),
+			AdminUsername:     mcp.ParseString(req, "admin_username", ""),
+			AdminCSRPEM:       []byte(mcp.ParseString(req, "admin_csr_pem", "")),
+			AdminCertPEM:      []byte(mcp.ParseString(req, "admin_cert_pem", "")),
+			AdminChainPEM:     []byte(mcp.ParseString(req, "admin_chain_pem", "")),
+			TrustAnchorsPEM:   []byte(mcp.ParseString(req, "trust_anchors_pem", "")),
+		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(tenantCreateResult{
+			Tenant: result.Tenant,
+			Admin: tenantAdminCredentialJSON{
+				UserID:            result.Admin.UserID,
+				Username:          result.Admin.Username,
+				CertPEM:           string(result.Admin.CertPEM),
+				Serial:            result.Admin.Serial,
+				Thumbprint:        result.Admin.Thumbprint,
+				AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
+			},
+		})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: jsonErr}
 		}

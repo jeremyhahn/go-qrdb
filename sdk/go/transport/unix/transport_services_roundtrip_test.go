@@ -139,13 +139,14 @@ var _ tenantpkg.TenantServicer = (*mockTenantSvc)(nil)
 
 func TestUnixRT_CreateTenant(t *testing.T) {
 	svc := &mockTenantSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
+	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc), unixserver.WithTenantOnboarding(onboardingFromTenant(svc)))
 	defer cleanup()
 
 	resp, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
 		ID:            "t1",
 		Name:          "acme",
 		IsolationType: transport.TenantIsolationType("barrier"),
+		AdminUsername: "admin",
 	})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)

@@ -39,7 +39,9 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
 // errMCPCertGateRefused is the recording authorizer's refusal, distinguishable
@@ -76,8 +78,8 @@ type refusingMCPCertProvider struct {
 	t *testing.T
 }
 
-func (p *refusingMCPCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
-	p.t.Fatal("GenerateClientCert ran although the tenancy gate refused")
+func (p *refusingMCPCertProvider) IssueClientCert(context.Context, *cert.IssueRequest) (*cert.IssuedCert, error) {
+	p.t.Fatal("IssueClientCert ran although the tenancy gate refused")
 	return nil, nil
 }
 
@@ -95,6 +97,35 @@ func (p *refusingMCPCertProvider) TenantForSerial(context.Context, string) (stri
 	return "globex", true, nil
 }
 
+// refusingMCPCertEnroll fails loudly if any of its methods run: every gate
+// test that wires it expects the tenancy gate to refuse FIRST.
+type refusingMCPCertEnroll struct{ t *testing.T }
+
+func (f *refusingMCPCertEnroll) SignCertificate(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	f.t.Fatal("SignCertificate ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingMCPCertEnroll) EnrollCertificate(context.Context, *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	f.t.Fatal("EnrollCertificate ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingMCPCertEnroll) AddTrustAnchors(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
+	f.t.Fatal("AddTrustAnchors ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingMCPCertEnroll) ListTrustAnchors(context.Context, string) ([]trustanchor.Anchor, error) {
+	f.t.Fatal("ListTrustAnchors ran although the tenancy gate refused")
+	return nil, nil
+}
+
+func (f *refusingMCPCertEnroll) RemoveTrustAnchor(context.Context, string, string) error {
+	f.t.Fatal("RemoveTrustAnchor ran although the tenancy gate refused")
+	return nil
+}
+
 // certToolCall builds a CallToolRequest carrying the given arguments.
 func certToolCall(name string, args map[string]any) mcp.CallToolRequest {
 	var req mcp.CallToolRequest
@@ -103,19 +134,55 @@ func certToolCall(name string, args map[string]any) mcp.CallToolRequest {
 	return req
 }
 
-// TestMCPCertGenerate_ConsultsTheTenancyGate proves the mint is gated here.
-func TestMCPCertGenerate_ConsultsTheTenancyGate(t *testing.T) {
+// TestMCPCertIssue_ConsultsTheTenancyGate proves the issuance tool is gated
+// here. qrdb_cert_issue carries no tenant_id of its own (the account must
+// exist in the CALLER's tenant), so the gate is always asked about the
+// caller's own tenant, "acme".
+func TestMCPCertIssue_ConsultsTheTenancyGate(t *testing.T) {
 	mw, authz := newMCPCertGate()
-	handler := handleCertGenerate(&refusingMCPCertProvider{t: t}, mw)
+	handler := handleCertIssue(&refusingMCPCertEnroll{t: t}, mw)
 
-	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_generate", map[string]any{
-		"username":  "b-user",
-		"tenant_id": "globex",
+	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_issue", map[string]any{
+		"username": "a-user",
+		"csr_pem":  "csr-pem",
 	}))
 	if !errors.Is(err, errMCPCertGateRefused) {
 		t.Fatalf("err = %v, want the gate's refusal", err)
 	}
-	assertMCPGateAsked(t, authz, permission.CertsGenerate)
+	assertMCPGateAsked(t, authz, permission.CertsIssue)
+}
+
+// TestMCPCertEnroll_ConsultsTheTenancyGate is qrdb_cert_issue's twin.
+func TestMCPCertEnroll_ConsultsTheTenancyGate(t *testing.T) {
+	mw, authz := newMCPCertGate()
+	handler := handleCertEnroll(&refusingMCPCertEnroll{t: t}, mw)
+
+	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_cert_enroll", map[string]any{
+		"username": "a-user",
+		"cert_pem": "leaf-pem",
+	}))
+	if !errors.Is(err, errMCPCertGateRefused) {
+		t.Fatalf("err = %v, want the gate's refusal", err)
+	}
+	assertMCPGateAsked(t, authz, permission.CertsEnroll)
+}
+
+// TestMCPTrustAnchorAdd_ConsultsTheTenancyGate is the cross-tenant case
+// qrdb_cert_generate used to cover: qrdb_trust_anchor_add still carries a
+// tenant_id argument of its own, so this is where this transport could still
+// mint against another tenant's trust store if the gate were bypassed.
+func TestMCPTrustAnchorAdd_ConsultsTheTenancyGate(t *testing.T) {
+	mw, authz := newMCPCertGate()
+	handler := handleTrustAnchorAdd(&refusingMCPCertEnroll{t: t}, mw)
+
+	_, err := handler(mcpCertGateCtx(), certToolCall("qrdb_trust_anchor_add", map[string]any{
+		"tenant_id": "globex",
+		"certs_pem": "ca-pem",
+	}))
+	if !errors.Is(err, errMCPCertGateRefused) {
+		t.Fatalf("err = %v, want the gate's refusal", err)
+	}
+	assertMCPGateAsked(t, authz, permission.TrustAnchorsAdd)
 }
 
 // TestMCPCertRevoke_ConsultsTheTenancyGate proves the headline verb is gated.

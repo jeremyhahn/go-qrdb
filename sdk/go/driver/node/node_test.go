@@ -25,6 +25,8 @@ import (
 	"slices"
 	"testing"
 
+	gomysql "github.com/go-sql-driver/mysql"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -286,9 +288,9 @@ func TestNode_UniqueIndexRejectsDuplicate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the duplicate email to be rejected by the unique index")
 	}
-	var stateErr *qrdbdriver.SQLStateError
-	if !errors.As(err, &stateErr) {
-		t.Fatalf("error = %v (%T), want *SQLStateError", err, err)
+	stateErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want *mysql.MySQLError", err, err)
 	}
 	if stateErr.Number != 1062 {
 		t.Errorf("error number = %d, want 1062 (ER_DUP_ENTRY)", stateErr.Number)

@@ -44,14 +44,36 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
-// StartFunc starts the transport under test with mw as its auth middleware
-// and tenants as BOTH its tenant service and its tenant-barrier service, and
-// returns a client connection to it. It registers its own cleanup.
-type StartFunc func(t *testing.T, mw *authmw.AuthMiddleware, tenants tenant.TenantServicer) *grpc.ClientConn
+// StartFunc starts the transport under test with mw as its auth middleware,
+// tenants as BOTH its tenant service and its tenant-barrier service, and
+// onboarding as the service behind TenantCreate, and returns a client
+// connection to it. It registers its own cleanup.
+type StartFunc func(t *testing.T, mw *authmw.AuthMiddleware, tenants tenant.TenantServicer, onboarding service.TenantOnboardingServicer) *grpc.ClientConn
+
+// fakeOnboarding adapts tenant.TenantServicer.CreateTenant to
+// service.TenantOnboardingServicer for this suite, which exercises tenant
+// SCOPE permission wiring on TenantCreate -- not the onboarding business
+// rules (first-admin credential issuance), which pkg/service and
+// pkg/bootstrap test directly against the real TenantOnboardingService. It
+// ignores the admin fields entirely, so a request naming none, as every
+// scenario here does, still reaches tenants.CreateTenant and the same
+// ID/name validation the production handler always delegated to it.
+type fakeOnboarding struct {
+	tenants tenant.TenantServicer
+}
+
+func (f *fakeOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	info, err := f.tenants.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+	if err != nil {
+		return nil, err
+	}
+	return &service.OnboardTenantResult{Tenant: info}, nil
+}
 
 // fixture is one started transport holding the system tenant, acme and
 // globex, with an acme Admin as the caller until as() rebinds it.
@@ -68,7 +90,7 @@ func newFixture(t *testing.T, start StartFunc, opts ...authmw.Option) *fixture {
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
 	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
-	conn := start(t, mw, tenants)
+	conn := start(t, mw, tenants, &fakeOnboarding{tenants: tenants})
 	return &fixture{
 		tenants: tenants,
 		caller:  caller,

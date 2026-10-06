@@ -720,7 +720,7 @@ func TestApplyConfigToFlags_StorageConfig(t *testing.T) {
 	cfg := &qrdbconfig.Config{
 		Storage: qrdbconfig.StorageConfig{
 			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "fast", Paths: []string{filepath.Join(dir, "fast")}, Strategy: "round_robin"},
+				{Name: "fast", Path: filepath.Join(dir, "fast")},
 			},
 		},
 	}

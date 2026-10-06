@@ -139,14 +139,21 @@ func startMultiProtocolSealCluster(t *testing.T, lease, poll, ack string) *multi
 	}
 
 	// Sealed-window: initialize and unseal the passphrase barrier on all n
-	// nodes in parallel, exactly as start3NodeMultiProtocolCluster does.
+	// nodes in parallel, exactly as start3NodeMultiProtocolCluster does. The
+	// admin certificate the ceremony binds is the ONE every CLI call below
+	// presents: under mtls_binding_policy "required" (the default) a
+	// certificate no ceremony bound is refused, however valid its chain.
+	var clientCert, clientKey string
 	var sealWg sync.WaitGroup
 	sealWg.Add(n)
 	for i := range n {
 		go func(idx int) {
 			defer sealWg.Done()
 			waitForBarrierStatusReachable(t, ca, h.nodes[idx].restPort, 90*time.Second)
-			initAndUnsealBarrier(t, ca, h.nodes[idx].restPort, h.nodes[idx].passphrase)
+			cp, kp := initAndUnsealBarrier(t, ca, h.nodes[idx].restPort, h.nodes[idx].passphrase)
+			if idx == 0 {
+				clientCert, clientKey = cp, kp
+			}
 		}(i)
 	}
 	sealWg.Wait()
@@ -157,7 +164,6 @@ func startMultiProtocolSealCluster(t *testing.T, lease, poll, ack string) *multi
 	}
 	warmupWrite(t, ca, waitForLeaderViaAdmin(t, ca, h.ports(), 60*time.Second), 15*time.Second)
 
-	clientCert, clientKey := ca.generateAdminClientCert(t, t.TempDir())
 	for _, node := range h.nodes {
 		node.clientCert = clientCert
 		node.clientKey = clientKey
@@ -293,7 +299,7 @@ func TestBarrierClusterUnseal_CLI_PerProtocol(t *testing.T) {
 			// Seal through a follower, over REST: any node may receive it,
 			// and this is setup, not the behavior under test.
 			followerIdx := (leaderIdx + 1) % len(h.nodes)
-			sealOut, err := runCLIProto(t, h.nodes[followerIdx].multiProtoNode, restProto, "barrier", "seal", "--assume-yes")
+			sealOut, err := runCLIProto(t, h.nodes[followerIdx].multiProtoNode, restProto, "barrier", "seal", "--assume-yes", "--so-pin", harnessSOPIN)
 			if err != nil {
 				t.Fatalf("barrier seal (node %d): %v\noutput: %s", followerIdx+1, err, sealOut)
 			}

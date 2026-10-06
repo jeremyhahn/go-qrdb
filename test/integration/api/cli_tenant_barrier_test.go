@@ -88,8 +88,9 @@ func TestCLIMultiProtocolTenantSetEntitlement(t *testing.T) {
 
 			// Step 1: create the tenant (default prefix isolation; entitlements
 			// are unset until set-entitlement is called).
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"tenant", "create", "--id", tenantID, "--name", tenantName)
+			adminArgs := adminCSRArgsForTenant(t, cfg, proto, tenantID+"-admin")
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, append([]string{
+				"tenant", "create", "--id", tenantID, "--name", tenantName}, adminArgs...)...)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -235,8 +236,9 @@ func TestCLIMultiProtocolTenantBarrierInitRequiresTenantScope(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
 			})
 
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"tenant", "create", "--id", tenantID, "--name", tenantName)
+			adminArgs := adminCSRArgsForTenant(t, cfg, proto, tenantID+"-admin")
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, append([]string{
+				"tenant", "create", "--id", tenantID, "--name", tenantName}, adminArgs...)...)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -288,8 +290,9 @@ func TestCLIMultiProtocolTenantBarrierUnsealRequiresTenantScope(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
 			})
 
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"tenant", "create", "--id", tenantID, "--name", tenantName)
+			adminArgs := adminCSRArgsForTenant(t, cfg, proto, tenantID+"-admin")
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, append([]string{
+				"tenant", "create", "--id", tenantID, "--name", tenantName}, adminArgs...)...)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)

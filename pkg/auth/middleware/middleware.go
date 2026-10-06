@@ -58,6 +58,11 @@ type AuthMiddleware struct {
 	// tenant.
 	roles role.RoleServicer
 
+	// certTargets is the certificate target guard users:add_cert_binding is
+	// held to (AuthorizeCertBindingTarget). Optional: without it such a write
+	// is refused.
+	certTargets CertTargetGuard
+
 	// auditFailure is what authorize() does when m.audit cannot record a
 	// decision. Its ZERO VALUE is audit.FailClosed, so an AuthMiddleware built
 	// without WithAuditFailurePolicy refuses rather than grants -- see
@@ -76,6 +81,12 @@ type AuthMiddleware struct {
 	// (auth.mtls_binding_policy, go-qrdb#517). Its zero value is
 	// auth.MTLSBindingEnrolled -- the behaviour before the setting existed.
 	bindingPolicy auth.MTLSBindingPolicy
+
+	// pendingAdmins holds the first admin each tenant was onboarded with
+	// before its identity records could be written; the trust-on-first-init
+	// window of a tenant barrier admits only that admin's certificate (see
+	// checkFirstInitCertificate). Nil reads as "no tenant has one".
+	pendingAdmins PendingTenantAdmins
 
 	// revocation gates the ON-BEHALF forwarding path, which bypasses the
 	// authenticator chain entirely and therefore does not inherit the mTLS

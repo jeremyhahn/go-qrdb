@@ -16,8 +16,8 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
-	"io"
 	"strconv"
 	"testing"
 	"time"
@@ -398,6 +398,14 @@ type recBatch struct {
 	service.BatchServicer
 	lastKeys         []string
 	lastImportPrefix string
+
+	// lastImportSessionCall records the sessionID the inner service actually
+	// received for whichever of ImportAppend/ImportCommit/ImportAbort was
+	// last called, or "" if none has been. The cross-database tests below
+	// assert against this to prove checkSessionNamespace refused BEFORE
+	// forwarding -- a call the inner service never sees -- rather than only
+	// checking the wrapper's returned error.
+	lastImportSessionCall string
 }
 
 func (m *recBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
@@ -407,9 +415,32 @@ func (m *recBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpRes
 	return []service.OpResponse{{Kvs: []*kv.KeyValue{{Key: []byte("p/k")}}}}, nil
 }
 
-func (m *recBatch) Import(_ context.Context, _ io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+func (m *recBatch) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
 	m.lastImportPrefix = opts.KeyPrefix
-	return &service.ImportResult{Total: 1, Succeeded: 1}, nil
+	return "", nil
+}
+
+func (m *recBatch) ImportAppend(_ context.Context, sessionID string, _ uint64, _ []byte) error {
+	m.lastImportSessionCall = sessionID
+	return nil
+}
+
+func (m *recBatch) ImportCommit(_ context.Context, sessionID string) (*service.ImportResult, error) {
+	m.lastImportSessionCall = sessionID
+	return nil, nil
+}
+
+func (m *recBatch) ImportAbort(_ context.Context, sessionID string) error {
+	m.lastImportSessionCall = sessionID
+	return nil
+}
+
+// encodeTestSessionID mirrors pkg/service's own (unexported) encodeSessionID
+// exactly -- base64.RawURLEncoding of the internal id -- so these tests can
+// construct an external session ID for a chosen internal namespace prefix
+// without reaching into pkg/service's internals.
+func encodeTestSessionID(internalID string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(internalID))
 }
 
 func TestNamespacedBatch_PrefixesAndStrips(t *testing.T) {
@@ -430,26 +461,120 @@ func TestNamespacedBatch_PrefixesAndStrips(t *testing.T) {
 func TestNamespacedBatch_ImportSetsPrefix(t *testing.T) {
 	rec := &recBatch{}
 	w := newNamespacedBatchService(rec, "p/")
-	res, err := w.Import(context.Background(), nil, service.ImportOptions{})
-	if err != nil {
-		t.Fatalf("Import: %v", err)
+	if _, err := w.ImportBegin(context.Background(), service.ImportOptions{}); err != nil {
+		t.Fatalf("ImportBegin: %v", err)
 	}
 	if rec.lastImportPrefix != "p/" {
 		t.Errorf("inner import KeyPrefix = %q, want p/", rec.lastImportPrefix)
-	}
-	if res.Succeeded != 1 {
-		t.Errorf("result Succeeded = %d, want 1", res.Succeeded)
 	}
 }
 
 func TestNamespacedBatch_ImportComposesPrefix(t *testing.T) {
 	rec := &recBatch{}
 	w := newNamespacedBatchService(rec, "t/db/")
-	if _, err := w.Import(context.Background(), nil, service.ImportOptions{KeyPrefix: "extra/"}); err != nil {
-		t.Fatalf("Import: %v", err)
+	if _, err := w.ImportBegin(context.Background(), service.ImportOptions{KeyPrefix: "extra/"}); err != nil {
+		t.Fatalf("ImportBegin: %v", err)
 	}
 	if rec.lastImportPrefix != "t/db/extra/" {
 		t.Errorf("inner import KeyPrefix = %q, want t/db/extra/", rec.lastImportPrefix)
+	}
+}
+
+// TestNamespacedBatch_ImportAppendAllowsSameDatabaseSession is the control
+// for the cross-database refusal tests below: a session ID whose internal
+// form DOES start with this wrapper's own namespace prefix is forwarded.
+func TestNamespacedBatch_ImportAppendAllowsSameDatabaseSession(t *testing.T) {
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "acme/db1/")
+	sessionID := encodeTestSessionID("acme/db1/sess1")
+
+	if err := w.ImportAppend(context.Background(), sessionID, 0, []byte("x")); err != nil {
+		t.Fatalf("ImportAppend: %v", err)
+	}
+	if rec.lastImportSessionCall != sessionID {
+		t.Errorf("inner ImportAppend was not called with the same-database session")
+	}
+}
+
+// TestNamespacedBatch_ImportCommitAndAbortAllowSameDatabaseSession is the
+// control for the cross-database refusals of ImportCommit and ImportAbort: a
+// session minted in this wrapper's own namespace reaches the inner service
+// unchanged, so the namespace check refuses only what it should.
+func TestNamespacedBatch_ImportCommitAndAbortAllowSameDatabaseSession(t *testing.T) {
+	sessionID := encodeTestSessionID("acme/db1/sess1")
+
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "acme/db1/")
+	if _, err := w.ImportCommit(context.Background(), sessionID); err != nil {
+		t.Fatalf("ImportCommit: %v", err)
+	}
+	if rec.lastImportSessionCall != sessionID {
+		t.Errorf("inner ImportCommit got session %q, want %q", rec.lastImportSessionCall, sessionID)
+	}
+
+	rec = &recBatch{}
+	w = newNamespacedBatchService(rec, "acme/db1/")
+	if err := w.ImportAbort(context.Background(), sessionID); err != nil {
+		t.Fatalf("ImportAbort: %v", err)
+	}
+	if rec.lastImportSessionCall != sessionID {
+		t.Errorf("inner ImportAbort got session %q, want %q", rec.lastImportSessionCall, sessionID)
+	}
+}
+
+// TestNamespacedBatch_ImportAppendRefusesCrossDatabaseSession proves a
+// session ID minted through one namespaced database wrapper's ImportBegin
+// (acme/db1/) is refused by ImportAppend on a DIFFERENT namespaced database
+// wrapper of the same tenant (acme/db2/) -- go-qrdb#576's security review:
+// checkSessionOwner inside the inner service checks only (tenant, identity),
+// never which database ImportBegin was called through, so without
+// checkSessionNamespace a session begun in one database could be appended
+// to, committed, or aborted through another.
+func TestNamespacedBatch_ImportAppendRefusesCrossDatabaseSession(t *testing.T) {
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "acme/db2/")
+	sessionID := encodeTestSessionID("acme/db1/sess1")
+
+	err := w.ImportAppend(context.Background(), sessionID, 0, []byte("x"))
+	if !errors.As(err, new(*service.ImportSessionNotFoundError)) {
+		t.Fatalf("error = %T (%v), want *service.ImportSessionNotFoundError", err, err)
+	}
+	if rec.lastImportSessionCall != "" {
+		t.Errorf("inner ImportAppend was called with a cross-database session; it must be refused before forwarding")
+	}
+}
+
+// TestNamespacedBatch_ImportCommitRefusesCrossDatabaseSession is
+// TestNamespacedBatch_ImportAppendRefusesCrossDatabaseSession for
+// ImportCommit.
+func TestNamespacedBatch_ImportCommitRefusesCrossDatabaseSession(t *testing.T) {
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "acme/db2/")
+	sessionID := encodeTestSessionID("acme/db1/sess1")
+
+	_, err := w.ImportCommit(context.Background(), sessionID)
+	if !errors.As(err, new(*service.ImportSessionNotFoundError)) {
+		t.Fatalf("error = %T (%v), want *service.ImportSessionNotFoundError", err, err)
+	}
+	if rec.lastImportSessionCall != "" {
+		t.Errorf("inner ImportCommit was called with a cross-database session; it must be refused before forwarding")
+	}
+}
+
+// TestNamespacedBatch_ImportAbortRefusesCrossDatabaseSession is
+// TestNamespacedBatch_ImportAppendRefusesCrossDatabaseSession for
+// ImportAbort.
+func TestNamespacedBatch_ImportAbortRefusesCrossDatabaseSession(t *testing.T) {
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "acme/db2/")
+	sessionID := encodeTestSessionID("acme/db1/sess1")
+
+	err := w.ImportAbort(context.Background(), sessionID)
+	if !errors.As(err, new(*service.ImportSessionNotFoundError)) {
+		t.Fatalf("error = %T (%v), want *service.ImportSessionNotFoundError", err, err)
+	}
+	if rec.lastImportSessionCall != "" {
+		t.Errorf("inner ImportAbort was called with a cross-database session; it must be refused before forwarding")
 	}
 }
 

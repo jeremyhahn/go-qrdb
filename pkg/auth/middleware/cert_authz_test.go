@@ -49,7 +49,7 @@ func (r *certAuthzRoles) ResolvePermissions(context.Context, []string) ([]permis
 
 func newCertAuthzMiddleware() *AuthMiddleware {
 	return New(rbac.New(&certAuthzRoles{perms: []permission.Permission{
-		permission.CertsGenerate,
+		permission.CertsIssue,
 		permission.CertsRevoke,
 		permission.CertsRevokeCross,
 		permission.CertsList,
@@ -87,18 +87,18 @@ var _ CertSerialResolver = (*stubSerialResolver)(nil)
 func TestAuthorizeCertTenant_OwnTenantIsAdmitted(t *testing.T) {
 	mw := newCertAuthzMiddleware()
 
-	if err := mw.AuthorizeCertTenant(certAuthzCtx("acme"), "acme", permission.CertsGenerate); err != nil {
+	if err := mw.AuthorizeCertTenant(certAuthzCtx("acme"), "acme", permission.CertsIssue); err != nil {
 		t.Fatalf("a tenant acting on itself must be admitted: %v", err)
 	}
 }
 
 // TestAuthorizeCertTenant_ForeignTenantIsRefused is the decision the route
-// permission could not make: the caller holds certs:generate, and the target
+// permission could not make: the caller holds certs:issue, and the target
 // is not its tenant.
 func TestAuthorizeCertTenant_ForeignTenantIsRefused(t *testing.T) {
 	mw := newCertAuthzMiddleware()
 
-	err := mw.AuthorizeCertTenant(certAuthzCtx("acme"), "globex", permission.CertsGenerate)
+	err := mw.AuthorizeCertTenant(certAuthzCtx("acme"), "globex", permission.CertsIssue)
 	if err == nil {
 		t.Fatal("a tenant naming another tenant as its target must be refused")
 	}
@@ -114,7 +114,7 @@ func TestAuthorizeCertTenant_SystemTenantIsConfinedToItself(t *testing.T) {
 	mw := newCertAuthzMiddleware()
 	sys := certAuthzCtx(tenantid.System)
 
-	for _, perm := range []permission.Permission{permission.CertsGenerate, permission.CertsList} {
+	for _, perm := range []permission.Permission{permission.CertsIssue, permission.CertsList} {
 		err := mw.AuthorizeCertTenant(sys, "globex", perm)
 		if !errors.Is(err, auth.ErrUnauthorized) {
 			t.Errorf("%s on globex from the system tenant: err = %v, want an authorization denial", perm, err)
@@ -130,7 +130,7 @@ func TestAuthorizeCertTenant_SystemTenantIsConfinedToItself(t *testing.T) {
 func TestAuthorizeCertTenant_UnauthenticatedIsRefused(t *testing.T) {
 	mw := newCertAuthzMiddleware()
 
-	err := mw.AuthorizeCertTenant(context.Background(), "acme", permission.CertsGenerate)
+	err := mw.AuthorizeCertTenant(context.Background(), "acme", permission.CertsIssue)
 	if !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("err = %v, want ErrUnauthenticated", err)
 	}

@@ -162,11 +162,23 @@ func (c *serviceConnector) Connect(_ context.Context) (driver.Conn, error) {
 		}
 	}
 
+	// The baseline resetSessionVariables restores a reused connection to is
+	// this session's variables right now -- after the DSN's own overrides
+	// above, not the registry's generic defaults. qrdb_concurrency is why:
+	// a node://...&concurrency=pessimistic DSN sets it once, here, to a
+	// value that differs from that variable's registered default ("database")
+	// for the connection's whole life, and ResetSession resetting it back to
+	// that generic default on every pooled reuse would silently drop the DSN
+	// back to database-default concurrency after the connection's first
+	// checkout.
+	baseline := session.GetAllSessionVariables()
+
 	return &embeddedConn{
 		engine:   eng,
 		database: c.cfg.Database,
 		session:  session,
 		loc:      loc,
+		baseline: baseline,
 	}, nil
 }
 

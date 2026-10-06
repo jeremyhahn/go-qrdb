@@ -29,27 +29,26 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -120,38 +119,7 @@ func newTestBarrier(t *testing.T) (
 // fixture; required because the plain newTestBarrier registry has no pool.
 func newPooledRegistry(t *testing.T, system *seal.StorageBarrier) *seal.BarrierRegistry {
 	t.Helper()
-
-	localStore := local.New()
-	if err := localStore.Configure(map[string]string{"path": t.TempDir()}); err != nil {
-		t.Fatalf("Configure local backend: %v", err)
-	}
-	mgr := objpool.NewManager()
-
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	rr := &objpool.RoundRobinStrategy{State: state}
-	if err := mgr.Register("default", []common.Storage{localStore}, rr); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
-
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(slog.Default(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry (pooled): %v", err)
-	}
+	reg, _, _ := sealtest.PooledRegistry(t, system)
 	return reg
 }
 
@@ -248,6 +216,62 @@ func TestBuildServices_SealGatedServicesNonNil(t *testing.T) {
 				t.Errorf("%s is nil", tc.name)
 			}
 		})
+	}
+}
+
+// TestBuildServices_MigratesLegacyTenantMetadataIntoTheReplicatedStore pins
+// the upgrade path: older builds kept TenantInfo in the node-local seal store,
+// where a follower could never see it. BuildServices copies any such record
+// into the replicated store once, so the tenant survives the upgrade and is
+// served by the new tenant service, and reports how many it moved.
+func TestBuildServices_MigratesLegacyTenantMetadataIntoTheReplicatedStore(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	barrier, registry, credSvc := newTestBarrier(t)
+	ctx := context.Background()
+
+	legacy, err := json.Marshal(tenant.TenantInfo{ID: "legacy", Name: "Legacy Co", IsolationType: tenant.IsolationPrefix})
+	if err != nil {
+		t.Fatalf("marshal legacy TenantInfo: %v", err)
+	}
+	// The key older builds wrote TenantInfo under in the node-local seal store.
+	if err := barrier.Put(ctx, "__sys:tenants/legacy", legacy); err != nil {
+		t.Fatalf("seed legacy record: %v", err)
+	}
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		Logger:            log,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(ctx) }()
+
+	info, err := node.Tenant.GetTenant(ctx, "legacy")
+	if err != nil {
+		t.Fatalf("legacy tenant not served after BuildServices: %v", err)
+	}
+	if info.Name != "Legacy Co" {
+		t.Fatalf("migrated tenant name = %q, want %q", info.Name, "Legacy Co")
+	}
+
+	rec := findLogRecord(t, buf.String(), "migrated tenant metadata from local seal store to replicated store")
+	if rec == nil {
+		t.Fatalf("no migration record logged; log:\n%s", buf.String())
+	}
+	if rec["count"] != float64(1) {
+		t.Fatalf("logged count = %v, want 1", rec["count"])
 	}
 }
 
@@ -658,6 +682,82 @@ func TestBuildServices_NilWatchHubError(t *testing.T) {
 	var target *lifecycle.NilWatchHubError
 	if !errors.As(err, &target) {
 		t.Errorf("expected *NilWatchHubError, got %T: %v", err, err)
+	}
+}
+
+// softwareIDKeyWrapProvider is a keywrap.Provider claiming the built-in
+// "software" provider ID. Wrap/Unwrap are never reached by these tests.
+type softwareIDKeyWrapProvider struct{}
+
+func (softwareIDKeyWrapProvider) ProviderID() string { return keywrap.SoftwareProviderID }
+func (softwareIDKeyWrapProvider) Wrap(context.Context, string, []byte) ([]byte, error) {
+	return nil, errors.New("softwareIDKeyWrapProvider: Wrap is not used by this test")
+}
+func (softwareIDKeyWrapProvider) Unwrap(context.Context, string, []byte) ([]byte, error) {
+	return nil, errors.New("softwareIDKeyWrapProvider: Unwrap is not used by this test")
+}
+
+// TestBuildServices_KeyWrapProviderCollidingWithTheDefaultIsRefused: an
+// injected key-wrap provider that claims the ID of the built-in software
+// provider would silently shadow (or be shadowed by) it in every backup
+// envelope, so BuildServices refuses the node with *BackupServiceError rather
+// than booting with an ambiguous provider ID.
+func TestBuildServices_KeyWrapProviderCollidingWithTheDefaultIsRefused(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		KeyWrapProvider: softwareIDKeyWrapProvider{},
+	})
+	if node != nil {
+		t.Fatal("BuildServices returned a node despite the provider-ID collision")
+	}
+	var target *lifecycle.BackupServiceError
+	if !errors.As(err, &target) {
+		t.Fatalf("BuildServices error = %T (%v), want *BackupServiceError", err, err)
+	}
+	if target.Unwrap() == nil {
+		t.Fatal("BackupServiceError carries no cause")
+	}
+	if !strings.Contains(target.Error(), "backup service initialization failed") {
+		t.Fatalf("Error() = %q, want it to name the backup service", target.Error())
+	}
+}
+
+// TestBuildServices_KeyWrapProviderJoinsAnInjectedRegistry is the control: the
+// same provider ID is NOT a collision when the composer supplies its own
+// registry, because the built-in software provider is registered only into
+// the default one. The node builds and the provider is resolvable by its ID.
+func TestBuildServices_KeyWrapProviderJoinsAnInjectedRegistry(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	reg := keywrap.NewRegistry()
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		KeyWrapRegistry: reg,
+		KeyWrapProvider: softwareIDKeyWrapProvider{},
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+
+	p, err := reg.Lookup(keywrap.SoftwareProviderID)
+	if err != nil {
+		t.Fatalf("injected provider not registered in the composer's registry: %v", err)
+	}
+	if _, ok := p.(softwareIDKeyWrapProvider); !ok {
+		t.Fatalf("registry resolved %T, want the injected provider", p)
 	}
 }
 
@@ -1909,5 +2009,53 @@ func TestBuildServices_NoClusterCAKey_InjectedProviderWins(t *testing.T) {
 
 	if node.ClusterCAProv != cakey.Provider(injected) {
 		t.Fatalf("ClusterCAProv = %v, want the injected provider %v even with NoClusterCAKey set", node.ClusterCAProv, injected)
+	}
+}
+
+// newLeasedMVCCHost creates an in-memory LocalBackend over an MVCCEngine
+// with a lessor attached, for a test that needs a host supporting leases
+// and chunked import sessions -- a capability newLocalHost's bare KVEngine
+// does not claim.
+func newLeasedMVCCHost(t *testing.T) *backend.LocalBackend {
+	t.Helper()
+	eng, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCLessor(lease.NewLessor()))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	return backend.NewLocalBackend(eng)
+}
+
+// TestBuildServices_ImportSessionConfigWired proves Infra.ImportSession
+// actually reaches the constructed Batch service (go-qrdb#576: previously
+// nothing called service.WithImportSessionLimits in production, so
+// config.ImportSessionConfig -- "import_session:" in YAML -- did nothing).
+// A tenant limited to one concurrent session is refused a second
+// ImportBegin only when that limit was actually threaded through
+// BuildServices.
+func TestBuildServices_ImportSessionConfigWired(t *testing.T) {
+	host := newLeasedMVCCHost(t)
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:          host,
+		WatchHub:      hub,
+		DataDir:       t.TempDir(),
+		ImportSession: qrdbconfig.ImportSessionConfig{MaxSessionsPerTenant: 1},
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{TenantID: "acme", Subject: "alice"})
+	opts := service.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"}
+
+	if _, err := node.Batch.ImportBegin(ctx, opts); err != nil {
+		t.Fatalf("first ImportBegin: %v", err)
+	}
+	if _, err := node.Batch.ImportBegin(ctx, opts); !errors.As(err, new(*service.ImportQuotaExceededError)) {
+		t.Fatalf("second ImportBegin error = %T (%v), want *service.ImportQuotaExceededError -- Infra.ImportSession was not applied", err, err)
 	}
 }

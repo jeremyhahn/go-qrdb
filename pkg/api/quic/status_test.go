@@ -238,7 +238,7 @@ var conditions = []conditionRow{
 
 	// --- the rate-limit family PR #443 recorded as a named exclusion ---
 	{"tenant quota exceeded", &tenant.QuotaExceededError{TenantID: "t", Resource: "replicas"}, wire.StatusResourceExhausted, codes.ResourceExhausted},
-	{"import input too large", &service.ImportInputTooLargeError{Max: 1}, wire.StatusResourceExhausted, codes.ResourceExhausted},
+	{"import archive expanded too large", &service.ImportArchiveExpandedTooLargeError{Max: 1}, wire.StatusResourceExhausted, codes.ResourceExhausted},
 	{"PIN locked out", pin.ErrPINLocked, wire.StatusResourceExhausted, codes.ResourceExhausted},
 	{"caller throttled", &authmw.RateLimitedError{
 		Permission: permission.KVPut, Subject: "a", TenantID: "t", RetryAfter: time.Second,

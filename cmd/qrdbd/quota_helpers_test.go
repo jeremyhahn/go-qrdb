@@ -54,7 +54,7 @@ func TestBuildQuotaReconciler_NotSetter(t *testing.T) {
 	if acct == nil {
 		t.Fatal("precondition: accountant must be non-nil")
 	}
-	if rec := buildQuotaReconciler(acct, &mockTenantServicer{}, qrdbconfig.TenantConfig{}); rec != nil {
+	if rec := buildQuotaReconciler(acct, &mockTenantServicer{}, qrdbconfig.TenantConfig{}, nil); rec != nil {
 		t.Errorf("expected nil reconciler for non-setter tenant service, got %v", rec)
 	}
 }
@@ -67,7 +67,7 @@ func TestBuildQuotaReconciler_RealService(t *testing.T) {
 	if acct == nil {
 		t.Fatal("precondition: accountant must be non-nil")
 	}
-	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{})
+	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{}, nil)
 	if rec == nil {
 		t.Fatal("expected non-nil reconciler for a SetQuotaUsage-capable tenant service")
 	}
@@ -80,7 +80,7 @@ func TestBuildQuotaReconciler_RealService(t *testing.T) {
 // the early-return and reaches quota.NewReconciler with a nil acct.
 func TestBuildQuotaReconciler_NilAccountant_Error(t *testing.T) {
 	svc := &quotaErrTenantSvc{mockTenantServicer: &mockTenantServicer{}}
-	rec := buildQuotaReconciler(nil, svc, qrdbconfig.TenantConfig{})
+	rec := buildQuotaReconciler(nil, svc, qrdbconfig.TenantConfig{}, nil)
 	if rec != nil {
 		t.Errorf("expected nil reconciler when accountant is nil, got %v", rec)
 	}
@@ -96,7 +96,7 @@ func TestBuildQuotaReconciler_InvalidInterval(t *testing.T) {
 		t.Fatal("precondition: accountant must be non-nil")
 	}
 	cfg := qrdbconfig.TenantConfig{QuotaReconcileInterval: "not-a-duration"}
-	rec := buildQuotaReconciler(acct, svc, cfg)
+	rec := buildQuotaReconciler(acct, svc, cfg, nil)
 	if rec == nil {
 		t.Fatal("expected non-nil reconciler despite invalid interval (default fallback)")
 	}

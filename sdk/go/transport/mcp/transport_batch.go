@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
-	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -81,12 +80,6 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	}, nil
 }
 
-// maxMCPImportFileSize bounds the file payload accepted by ImportFile so the
-// client fails fast with a clear typed error instead of base64-encoding an
-// oversized file only to have the server reject it. Mirrors the 100MB bound
-// enforced server-side (see pkg/api/mcp/tools_batch.go maxImportFileSize).
-const maxMCPImportFileSize = 100 << 20
-
 // serverImportError mirrors the JSON encoding of service.ImportError, which
 // carries lowercase json tags.
 type serverImportError struct {
@@ -105,53 +98,18 @@ type serverImportResult struct {
 	Errors    []serverImportError `json:"Errors"`
 }
 
-// ImportFile reads filename's entire contents from data, base64-encodes it,
-// and imports it as key-value pairs by calling the qrdb_batch_import MCP
-// tool. The active database scope is carried automatically by callTool for
-// data-plane tools (see isDataPlaneTool), so no explicit database argument
-// is set here.
-func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	file, err := io.ReadAll(data)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
-	}
-	if len(file) > maxMCPImportFileSize {
-		return nil, &transport.RequestError{
-			Method: "ImportFile",
-			Err:    &importFileTooLargeError{Size: len(file), Max: maxMCPImportFileSize},
-		}
-	}
-
-	args := map[string]any{
-		"file":          base64.StdEncoding.EncodeToString(file),
-		"format":        opts.Format,
-		"filename":      filename,
-		"key_field":     opts.KeyField,
-		"value_mode":    opts.ValueMode,
-		"value_field":   opts.ValueField,
-		"skip_header":   opts.SkipHeader,
-		"transactional": opts.Transactional,
-	}
-
-	text, callErr := t.callTool(ctx, "qrdb_batch_import", args)
-	if callErr != nil {
-		return nil, callErr
-	}
-
+// importResultFromJSON decodes text as a serverImportResult, the JSON shape
+// qrdb_batch_import, qrdb_batch_import_commit, and qrdb_batch_import_begin's
+// (the server ImportResult type has no json tags) response text all share.
+func importResultFromJSON(method, text string) (*transport.ImportResult, error) {
 	var raw serverImportResult
-	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: &jsonDecodeError{Err: jsonErr}}
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return nil, &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: err}}
 	}
-
 	errs := make([]transport.ImportError, len(raw.Errors))
 	for i, e := range raw.Errors {
 		errs[i] = transport.ImportError{Row: e.Row, Key: e.Key, Message: e.Message}
 	}
-
 	return &transport.ImportResult{
 		Total:     raw.Total,
 		Succeeded: raw.Succeeded,
@@ -160,14 +118,103 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 	}, nil
 }
 
-// importFileTooLargeError is returned when ImportFile's file exceeds
-// maxMCPImportFileSize.
-type importFileTooLargeError struct {
-	Size int
-	Max  int
+// ImportFile reads filename's entire contents from data and imports it as
+// key-value pairs by driving a chunked import session (ImportBegin/
+// ImportAppend/ImportCommit below) -- see transport.ImportFileChunked. The
+// active database scope is carried automatically by callTool for
+// data-plane tools (see isDataPlaneTool), so no explicit database argument
+// is set on any call.
+//
+// It chunks at transport.DefaultMCPImportChunkBytes, not the
+// transport-agnostic transport.DefaultImportChunkBytes every other
+// transport's ImportFile uses: ImportAppend below carries the chunk as
+// base64 text in a JSON-RPC body, which has no binary framing to absorb
+// base64's 4/3 expansion the way a protobuf `bytes` field or a QUIC wire
+// frame does.
+func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return transport.ImportFileChunked(ctx, t, filename, data, opts, transport.DefaultMCPImportChunkBytes)
 }
 
-// Error returns a human-readable description.
-func (e *importFileTooLargeError) Error() string {
-	return "mcp: import file too large: " + strconv.Itoa(e.Size) + " bytes exceeds max " + strconv.Itoa(e.Max) + " bytes"
+// serverImportBeginResult mirrors the JSON encoding of
+// pkg/api/mcp.handleImportBegin's response.
+type serverImportBeginResult struct {
+	SessionID string `json:"session_id"`
+}
+
+// ImportBegin starts a chunked import session by calling the
+// qrdb_batch_import_begin MCP tool.
+func (t *Transport) ImportBegin(ctx context.Context, opts transport.ImportOptions) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"format":        opts.Format,
+		"filename":      opts.Filename,
+		"key_field":     opts.KeyField,
+		"value_mode":    opts.ValueMode,
+		"value_field":   opts.ValueField,
+		"skip_header":   opts.SkipHeader,
+		"transactional": opts.Transactional,
+	}
+
+	text, callErr := t.callTool(ctx, "qrdb_batch_import_begin", args)
+	if callErr != nil {
+		return "", callErr
+	}
+
+	var raw serverImportBeginResult
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return "", &transport.RequestError{Method: "ImportBegin", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return raw.SessionID, nil
+}
+
+// ImportAppend stages a base64-encoded chunk of a chunked import session
+// by calling the qrdb_batch_import_append MCP tool.
+func (t *Transport) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"session_id": sessionID,
+		"seq":        float64(seq),
+		"chunk":      base64.StdEncoding.EncodeToString(chunk),
+	}
+
+	if _, callErr := t.callTool(ctx, "qrdb_batch_import_append", args); callErr != nil {
+		return callErr
+	}
+	return nil
+}
+
+// ImportCommit applies every staged chunk of a chunked import session
+// atomically by calling the qrdb_batch_import_commit MCP tool.
+func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, callErr := t.callTool(ctx, "qrdb_batch_import_commit", map[string]any{"session_id": sessionID})
+	if callErr != nil {
+		return nil, callErr
+	}
+	return importResultFromJSON("ImportCommit", text)
+}
+
+// ImportAbort discards a chunked import session without applying anything
+// by calling the qrdb_batch_import_abort MCP tool.
+func (t *Transport) ImportAbort(ctx context.Context, sessionID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	if _, callErr := t.callTool(ctx, "qrdb_batch_import_abort", map[string]any{"session_id": sessionID}); callErr != nil {
+		return callErr
+	}
+	return nil
 }

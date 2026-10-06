@@ -17,524 +17,264 @@
 package gorm
 
 import (
-	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
-	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
+
+	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
+	_ "github.com/jeremyhahn/go-qrdb/sdk/go/driver/node"
 )
 
-// --- a minimal, fully offline database/sql driver, used only to obtain a
-// *sql.DB (which implements gorm.ConnPool for free) without opening any
-// network connection or spawning a real qrdb engine. ---
-
-const fakeDriverName = "qrdbgorm-fake-test-driver"
-
-func init() {
-	sql.Register(fakeDriverName, fakeDriverImpl{})
-}
-
-// fakeDriverImpl is a driver.Driver whose only behavior is answering
-// "SELECT VERSION()" with a canned string; every other statement fails.
-type fakeDriverImpl struct{}
-
-func (fakeDriverImpl) Open(name string) (driver.Conn, error) {
-	if name == "fail-to-open" {
-		return nil, errors.New("fakeDriverImpl: refusing to open")
-	}
-	return &fakeConn{}, nil
-}
-
-type fakeConn struct{}
-
-func (fakeConn) Prepare(query string) (driver.Stmt, error) {
-	return nil, errors.New("fakeConn: Prepare not supported")
-}
-func (fakeConn) Close() error              { return nil }
-func (fakeConn) Begin() (driver.Tx, error) { return nil, errors.New("fakeConn: Begin not supported") }
-
-// QueryContext implements driver.QueryerContext so database/sql issues
-// QueryRowContext without going through Prepare.
-func (fakeConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	return &fakeVersionRows{}, nil
-}
-
-type fakeVersionRows struct {
-	done bool
-}
-
-func (r *fakeVersionRows) Columns() []string { return []string{"VERSION()"} }
-func (r *fakeVersionRows) Close() error      { return nil }
-func (r *fakeVersionRows) Next(dest []driver.Value) error {
-	if r.done {
-		return io.EOF
-	}
-	r.done = true
-	dest[0] = "8.0.11-qrdb-fake"
-	return nil
-}
-
-// openFakeConnPool returns a *sql.DB backed by fakeDriverImpl, usable
-// directly as Config.Conn.
-func openFakeConnPool(t *testing.T) *sql.DB {
+// openGORM opens dsn through Open and gorm.Open, closing the pool at cleanup.
+func openGORM(t *testing.T, dsn string) *gorm.DB {
 	t.Helper()
-	pool, err := sql.Open(fakeDriverName, "fake")
+	dialector, err := Open(dsn)
 	if err != nil {
-		t.Fatalf("sql.Open(%q): %v", fakeDriverName, err)
+		t.Fatalf("Open(%q): %v", dsn, err)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{TranslateError: true})
+	if err != nil {
+		t.Fatalf("gorm.Open(%q): %v", dsn, err)
+	}
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatalf("db.DB: %v", err)
 	}
 	t.Cleanup(func() { _ = pool.Close() })
-	return pool
+	return db
 }
 
-// --- Name ---
-
-func TestName_DefaultsToMySQL(t *testing.T) {
-	dialector := New(Config{})
-	if got := dialector.Name(); got != "mysql" {
-		t.Errorf("Name() = %q, want %q", got, "mysql")
+func TestNewConfig_SetsTheQRDBDefaults(t *testing.T) {
+	cfg := NewConfig()
+	if cfg.DriverName != DriverName {
+		t.Errorf("DriverName = %q, want %q", cfg.DriverName, DriverName)
 	}
-}
-
-func TestName_OverriddenByDialectName(t *testing.T) {
-	dialector := New(Config{DialectName: "qrdb-custom"})
-	if got := dialector.Name(); got != "qrdb-custom" {
-		t.Errorf("Name() = %q, want %q", got, "qrdb-custom")
+	if cfg.DefaultStringSize != DefaultStringSize {
+		t.Errorf("DefaultStringSize = %d, want %d", cfg.DefaultStringSize, DefaultStringSize)
 	}
-}
-
-func TestName_ZeroValueDialectorFallsBackToMySQL(t *testing.T) {
-	var dialector Dialector
-	if got := dialector.Name(); got != DefaultDialectName {
-		t.Errorf("Name() = %q, want %q", got, DefaultDialectName)
+	if cfg.DefaultDatetimePrecision == nil || *cfg.DefaultDatetimePrecision != DefaultDatetimePrecision {
+		t.Errorf("DefaultDatetimePrecision = %v, want %d", cfg.DefaultDatetimePrecision, DefaultDatetimePrecision)
+	}
+	if cfg.DSN != "" || cfg.Conn != nil {
+		t.Errorf("DSN = %q, Conn = %v; NewConfig must leave both to the caller", cfg.DSN, cfg.Conn)
 	}
 }
 
-// --- Open / New defaults ---
-
-func TestNew_FillsDocumentedDefaults(t *testing.T) {
-	dialector := New(Config{}).(Dialector)
-
-	if dialector.DriverName != DefaultDriverName {
-		t.Errorf("DriverName = %q, want %q", dialector.DriverName, DefaultDriverName)
-	}
-	if dialector.DialectName != DefaultDialectName {
-		t.Errorf("DialectName = %q, want %q", dialector.DialectName, DefaultDialectName)
-	}
-	if dialector.DefaultStringSize != defaultStringSize {
-		t.Errorf("DefaultStringSize = %d, want %d", dialector.DefaultStringSize, defaultStringSize)
-	}
-	if dialector.DefaultDatetimePrecision == nil || *dialector.DefaultDatetimePrecision != defaultDatetimePrecision {
-		t.Errorf("DefaultDatetimePrecision = %v, want pointer to %d", dialector.DefaultDatetimePrecision, defaultDatetimePrecision)
+func TestNewConfig_ReturnsAnUnsharedPrecision(t *testing.T) {
+	first, second := NewConfig(), NewConfig()
+	*first.DefaultDatetimePrecision = 0
+	if *second.DefaultDatetimePrecision != DefaultDatetimePrecision {
+		t.Fatalf("changing one Config's precision changed another's to %d", *second.DefaultDatetimePrecision)
 	}
 }
 
-func TestNew_PreservesCallerSuppliedValues(t *testing.T) {
-	precision := 6
-	dialector := New(Config{
-		DriverName:                "custom-driver",
-		DialectName:               "custom-dialect",
-		DefaultStringSize:         64,
-		DefaultDatetimePrecision:  &precision,
-		DontSupportForShareClause: false,
-	}).(Dialector)
-
-	if dialector.DriverName != "custom-driver" {
-		t.Errorf("DriverName = %q, want %q", dialector.DriverName, "custom-driver")
-	}
-	if dialector.DialectName != "custom-dialect" {
-		t.Errorf("DialectName = %q, want %q", dialector.DialectName, "custom-dialect")
-	}
-	if dialector.DefaultStringSize != 64 {
-		t.Errorf("DefaultStringSize = %d, want %d", dialector.DefaultStringSize, 64)
-	}
-	if dialector.DefaultDatetimePrecision != &precision {
-		t.Error("DefaultDatetimePrecision was replaced instead of preserved")
-	}
-}
-
-func TestOpen_SetsDSN(t *testing.T) {
-	dialector := Open("embedded://memory?database=x").(Dialector)
-	if dialector.DSN != "embedded://memory?database=x" {
-		t.Errorf("DSN = %q, want %q", dialector.DSN, "embedded://memory?database=x")
-	}
-}
-
-// --- Apply ---
-
-func TestApply_InstallsRoundingNowFunc(t *testing.T) {
-	dialector := New(Config{}).(Dialector)
-	cfg := &gorm.Config{}
-
-	if err := dialector.Apply(cfg); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if cfg.NowFunc == nil {
-		t.Fatal("Apply() did not install a NowFunc")
-	}
-
-	got := cfg.NowFunc()
-	unit := time.Duration(1)
-	for i := 0; i < 9-defaultDatetimePrecision; i++ {
-		unit *= 10
-	}
-	if got.Nanosecond()%int(unit) != 0 {
-		t.Errorf("NowFunc() = %v, want rounded to %d fractional digits", got, defaultDatetimePrecision)
-	}
-}
-
-// TestApply_NowFuncMatchesColumnPrecision pins the invariant the rounding
-// exists for: the NowFunc must not produce a timestamp finer than the
-// DATETIME column defaultDatetimePrecision declares, or a value written and
-// read back compares unequal on the digits the column truncated.
-func TestApply_NowFuncMatchesColumnPrecision(t *testing.T) {
-	dialector := New(Config{}).(Dialector)
-	cfg := &gorm.Config{}
-	if err := dialector.Apply(cfg); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-
-	field := parseField(t, &struct{ F time.Time }{})
-	if got, want := dialector.DataTypeOf(field), "datetime(6) NULL"; got != want {
-		t.Fatalf("DataTypeOf() = %q, want %q", got, want)
-	}
-	if field.Precision != defaultDatetimePrecision {
-		t.Errorf("field.Precision = %d, want %d", field.Precision, defaultDatetimePrecision)
-	}
-}
-
-func TestApply_DoesNotOverrideExistingNowFunc(t *testing.T) {
-	sentinel := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	cfg := &gorm.Config{NowFunc: func() time.Time { return sentinel }}
-
-	dialector := New(Config{}).(Dialector)
-	if err := dialector.Apply(cfg); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if got := cfg.NowFunc(); !got.Equal(sentinel) {
-		t.Errorf("NowFunc() = %v, want unchanged sentinel %v", got, sentinel)
-	}
-}
-
-// --- Initialize ---
-
-func TestInitialize_RejectsRESTTransport(t *testing.T) {
-	_, err := gorm.Open(Open("rest://localhost:63001/mydb"), &gorm.Config{})
-
-	var target *UnsupportedTransportError
-	if !errors.As(err, &target) {
-		t.Fatalf("err = %v (%T), want *UnsupportedTransportError", err, err)
-	}
-	if target.Scheme != "rest" {
-		t.Errorf("Scheme = %q, want %q", target.Scheme, "rest")
-	}
-}
-
-func TestInitialize_RejectsGRPCTransport(t *testing.T) {
-	_, err := gorm.Open(Open("grpc://localhost:63000/mydb"), &gorm.Config{})
-
-	var target *UnsupportedTransportError
-	if !errors.As(err, &target) {
-		t.Fatalf("err = %v (%T), want *UnsupportedTransportError", err, err)
-	}
-	if target.Scheme != "grpc" {
-		t.Errorf("Scheme = %q, want %q", target.Scheme, "grpc")
-	}
-}
-
-func TestInitialize_RejectsMalformedDSN(t *testing.T) {
-	_, err := gorm.Open(Open(""), &gorm.Config{})
-	if err == nil {
-		t.Fatal("expected an error for an empty DSN")
-	}
-}
-
-func TestInitialize_OpensEmbeddedDSNThroughSQLOpen(t *testing.T) {
-	// Exercises the sql.Open(driverName, DSN) branch and its default
-	// DriverName, using qrdb's own embedded:// transport, which is
-	// in-process and offline (no network, no external server).
-	db, err := gorm.Open(New(Config{DSN: "embedded://memory?database=initializetest"}), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatalf("db.DB() error = %v", err)
-	}
-	if err := sqlDB.Ping(); err != nil {
-		t.Errorf("Ping() error = %v", err)
-	}
-}
-
-func TestInitialize_UsesSuppliedConnDirectly(t *testing.T) {
-	pool := openFakeConnPool(t)
-
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: true})
-	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-
-	got, err := db.DB()
-	if err != nil {
-		t.Fatalf("db.DB() error = %v", err)
-	}
-	if got != pool {
-		t.Error("Initialize did not use the supplied Conn directly")
-	}
-}
-
-func TestInitialize_QueriesVersionUnlessSkipped(t *testing.T) {
-	pool := openFakeConnPool(t)
-
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: false})
-	if _, err := gorm.Open(dialector, &gorm.Config{}); err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-}
-
-func TestInitialize_VersionQueryFailureFailsInitialize(t *testing.T) {
-	pool, err := sql.Open(fakeDriverName, "fail-to-open")
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = pool.Close() })
-
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: false})
-	if _, err := gorm.Open(dialector, &gorm.Config{}); err == nil {
-		t.Fatal("expected Initialize to fail when the version probe fails")
-	}
-}
-
-func TestInitialize_RegistersDefaultClauseBuildersWithoutOverwritingExisting(t *testing.T) {
-	sentinelCalled := false
-	sentinel := clause.ClauseBuilder(func(c clause.Clause, b clause.Builder) { sentinelCalled = true })
-
-	pool := openFakeConnPool(t)
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: true})
-
-	db, err := gorm.Open(dialector, &gorm.Config{
-		ClauseBuilders: map[string]clause.ClauseBuilder{ClauseOnConflict: sentinel},
-	})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-
-	got, ok := db.ClauseBuilders[ClauseOnConflict]
-	if !ok {
-		t.Fatal("ClauseOnConflict builder is missing")
-	}
-	got(clause.Clause{}, nil) //nolint:errcheck // the sentinel ignores its arguments
-	if !sentinelCalled {
-		t.Error("Initialize overwrote the pre-existing ON CONFLICT builder")
-	}
-
-	if _, ok := db.ClauseBuilders[ClauseValues]; !ok {
-		t.Error("Initialize did not register the VALUES builder")
-	}
-}
-
-// --- BindVarTo ---
-
-func TestBindVarTo_WritesQuestionMark(t *testing.T) {
-	dialector := New(Config{})
-	stmt := newTestStatement(dialector.(Dialector))
-
-	dialector.BindVarTo(stmt, stmt, "ignored")
-	if got := stmt.SQL.String(); got != "?" {
-		t.Errorf("BindVarTo wrote %q, want %q", got, "?")
-	}
-}
-
-// --- QuoteTo ---
-
-func TestQuoteTo(t *testing.T) {
+func TestOpen_RefusesNetworkSQLTransports(t *testing.T) {
 	tests := []struct {
-		name string
-		in   string
-		want string
+		dsn    string
+		scheme string
 	}{
-		// Every case below is checked against go-gorm/mysql's own QuoteTo
-		// output for the identical input, since this implementation is a
-		// verbatim copy of its state machine and go-gorm/mysql's own test
-		// suite is the ground truth for what "correct" means here,
-		// including for inputs (an empty string, a leading or trailing
-		// dot) that are not realistic SQL identifiers.
-		{"bare identifier", "x", "`x`"},
-		{"empty string", "", "`"},
-		{"dotted table.column", "a.b", "`a`.`b`"},
-		{"three-part path", "a.b.c", "`a`.`b`.`c`"},
-		{"already backtick-quoted", "`a`", "`a`"},
-		{"quoted table, bare column", "`a`.b", "`a`.`b`"},
-		{"bare table, quoted column", "a.`b`", "`a`.`b`"},
-		{"quoted path", "`a`.`b`", "`a`.`b`"},
-		{"embedded backtick", "a`b", "`a``b`"},
-		{"embedded backtick after dot", "a.b`c", "`a`.`b``c`"},
-		{"unicode identifier", "日本語", "`日本語`"},
-		{"unicode with dot", "テーブル.カラム", "`テーブル`.`カラム`"},
-		{"trailing dot", "a.", "`a`.`"},
-		{"leading dot", ".a", "`.`a`"},
-		{"double embedded backtick", "a``b", "`a``b`"},
-		{"underscore and digits", "col_1", "`col_1`"},
-		{"quoted table with embedded backtick", "`a``b`.c", "`a``b`.`c`"},
-		{"single backtick only", "`", "```"},
-		{"two backticks only", "``", "```"},
-		{"mixed case", "MyTable", "`MyTable`"},
-		{"database.table with backtick in second segment", "datadase.table`User", "`datadase`.`table``User`"},
-		{"quoted table, trailing backtick on column", "`a`.b`", "`a`.`b```"},
-		{"quoted table, embedded backtick then plain in column", "`a`.b`c", "`a`.`b``c`"},
-		{"quoted table, quoted-then-trailing column", "`a`.`b`c`", "`a`.`b``c`"},
-		{"triple backtick inside quotes", "`a```b`", "`a````b`"},
-		{"whole identifier already quoted with dot inside", "`a.b`", "`a.b`"},
+		{dsn: "rest://db.example.com:8080/app", scheme: qrdbdriver.SchemeREST},
+		{dsn: "grpc://db.example.com:9090/app", scheme: qrdbdriver.SchemeGRPC},
 	}
-
-	dialector := New(Config{})
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var sb clauseStringBuilder
-			dialector.QuoteTo(&sb, tt.in)
-			if got := sb.String(); got != tt.want {
-				t.Errorf("QuoteTo(%q) = %q, want %q", tt.in, got, tt.want)
+		t.Run(tt.scheme, func(t *testing.T) {
+			dialector, err := Open(tt.dsn)
+			var transportErr *UnsupportedTransportError
+			if !errors.As(err, &transportErr) {
+				t.Fatalf("Open(%q) error = %v (%T), want *UnsupportedTransportError", tt.dsn, err, err)
+			}
+			if transportErr.Scheme != tt.scheme {
+				t.Errorf("Scheme = %q, want %q", transportErr.Scheme, tt.scheme)
+			}
+			if dialector != nil {
+				t.Errorf("dialector = %v, want nil on error", dialector)
 			}
 		})
 	}
 }
 
-// --- DefaultValueOf ---
+func TestOpen_ReportsAMalformedDSN(t *testing.T) {
+	_, err := Open("")
+	var parseErr *qrdbdriver.DSNParseError
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("Open(\"\") error = %v (%T), want *driver.DSNParseError", err, err)
+	}
+}
 
-func TestDefaultValueOf(t *testing.T) {
-	dialector := New(Config{})
-	got := dialector.DefaultValueOf(nil)
+func TestOpen_ReportsAnUnregisteredScheme(t *testing.T) {
+	_, err := Open("nosuchscheme://memory?database=app")
+	var schemeErr *qrdbdriver.UnsupportedSchemeError
+	if !errors.As(err, &schemeErr) {
+		t.Fatalf("Open error = %v (%T), want *driver.UnsupportedSchemeError", err, err)
+	}
+}
 
-	expr, ok := got.(clause.Expr)
+func TestOpen_ReturnsTheStockDialectorConfiguredForQRDB(t *testing.T) {
+	tests := []string{
+		"node://memory?database=app",
+		"embedded://memory?database=app",
+	}
+	for _, dsn := range tests {
+		t.Run(dsn, func(t *testing.T) {
+			dialector, err := Open(dsn)
+			if err != nil {
+				t.Fatalf("Open(%q): %v", dsn, err)
+			}
+			if dialector.Name() != "mysql" {
+				t.Errorf("Name() = %q, want the stock dialector's %q", dialector.Name(), "mysql")
+			}
+			if dialector.DSN != dsn || dialector.DriverName != DriverName {
+				t.Errorf("DSN = %q, DriverName = %q; want %q, %q", dialector.DSN, dialector.DriverName, dsn, DriverName)
+			}
+			if dialector.DefaultStringSize != DefaultStringSize || *dialector.DefaultDatetimePrecision != DefaultDatetimePrecision {
+				t.Errorf("defaults = %d, %d; want %d, %d", dialector.DefaultStringSize,
+					*dialector.DefaultDatetimePrecision, DefaultStringSize, DefaultDatetimePrecision)
+			}
+		})
+	}
+}
+
+// TestOpen_ServerVersionSelectsTheMySQL8Path pins what gorm.io/driver/mysql
+// reads from SELECT VERSION() during Initialize. A 5.x or MariaDB version
+// string would switch off RENAME COLUMN, RENAME INDEX, FOR SHARE and DATETIME
+// precision for every qrdb caller.
+func TestOpen_ServerVersionSelectsTheMySQL8Path(t *testing.T) {
+	db := openGORM(t, "node://memory?database=version")
+	dialector, ok := db.Dialector.(*mysql.Dialector)
 	if !ok {
-		t.Fatalf("DefaultValueOf() returned %T, want clause.Expr", got)
+		t.Fatalf("db.Dialector is %T, want *mysql.Dialector", db.Dialector)
 	}
-	if expr.SQL != "DEFAULT" {
-		t.Errorf("DefaultValueOf().SQL = %q, want %q", expr.SQL, "DEFAULT")
+	if !strings.HasPrefix(dialector.ServerVersion, "8.") {
+		t.Fatalf("ServerVersion = %q, want an 8.x version", dialector.ServerVersion)
 	}
-}
-
-// --- Explain ---
-
-func TestExplain(t *testing.T) {
-	dialector := New(Config{})
-	got := dialector.Explain("SELECT * FROM users WHERE name = ?", "bob")
-
-	want := "SELECT * FROM users WHERE name = 'bob'"
-	if got != want {
-		t.Errorf("Explain() = %q, want %q", got, want)
+	if dialector.DisableDatetimePrecision || dialector.DontSupportRenameColumn ||
+		dialector.DontSupportRenameIndex || dialector.DontSupportForShareClause {
+		t.Errorf("Initialize took a legacy-server path for %q: %+v", dialector.ServerVersion, *dialector.Config)
 	}
 }
 
-// --- SavePoint / RollbackTo ---
-
-func TestSavePoint_ValidName(t *testing.T) {
-	pool := openFakeConnPool(t)
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: true})
-	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-
-	// fakeConn refuses Prepare/Begin, so the SAVEPOINT statement itself
-	// cannot succeed; this only exercises name validation passing through
-	// to tx.Exec, not a real savepoint.
-	err = dialector.(gorm.SavePointerDialectorInterface).SavePoint(db, "sp1")
-	var invalid *InvalidSavePointNameError
-	if errors.As(err, &invalid) {
-		t.Errorf("SavePoint() rejected a valid name %q", "sp1")
-	}
+type widget struct {
+	ID        uint   `gorm:"primaryKey"`
+	Name      string `gorm:"unique"`
+	Note      string
+	UpdatedAt time.Time
 }
 
-func TestSavePoint_InvalidName(t *testing.T) {
-	pool := openFakeConnPool(t)
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: true})
-	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
+func TestOpen_NodeDSNMigratesWritesAndReads(t *testing.T) {
+	db := openGORM(t, "node://memory?database=widgets")
+	if err := db.AutoMigrate(&widget{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
+	if err := db.AutoMigrate(&widget{}); err != nil {
+		t.Fatalf("second AutoMigrate: %v", err)
+	}
+	if err := db.Create(&widget{Name: "sprocket", Note: "n"}).Error; err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 
-	tests := []string{"", "1sp", "sp-1", "sp 1", "sp;DROP TABLE x"}
-	for _, name := range tests {
-		t.Run(name, func(t *testing.T) {
-			err := dialector.(gorm.SavePointerDialectorInterface).SavePoint(db, name)
-			var invalid *InvalidSavePointNameError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("SavePoint(%q) error = %v (%T), want *InvalidSavePointNameError", name, err, err)
-			}
-			if invalid.Name != name {
-				t.Errorf("Name = %q, want %q", invalid.Name, name)
-			}
-		})
+	var got widget
+	if err := db.Where("name = ?", "sprocket").First(&got).Error; err != nil {
+		t.Fatalf("First: %v", err)
+	}
+	if got.UpdatedAt.Nanosecond()%int(time.Microsecond) != 0 {
+		t.Errorf("UpdatedAt = %v carries sub-microsecond digits; NowFunc must round to %d places",
+			got.UpdatedAt, DefaultDatetimePrecision)
+	}
+
+	err := db.Create(&widget{Name: "sprocket"}).Error
+	if !errors.Is(err, gorm.ErrDuplicatedKey) {
+		t.Fatalf("duplicate Create = %v (%T), want gorm.ErrDuplicatedKey", err, err)
 	}
 }
 
-func TestRollbackTo_InvalidName(t *testing.T) {
-	pool := openFakeConnPool(t)
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: true})
-	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-
-	err = dialector.(gorm.SavePointerDialectorInterface).RollbackTo(db, "bad name")
-	var invalid *InvalidSavePointNameError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("RollbackTo() error = %v (%T), want *InvalidSavePointNameError", err, err)
+func TestOpen_EmbeddedDSNRefusesDDL(t *testing.T) {
+	db := openGORM(t, "embedded://memory?database=kvonly")
+	if err := db.AutoMigrate(&widget{}); err == nil {
+		t.Fatal("AutoMigrate on embedded:// succeeded; embedded is KV-only and must refuse CREATE TABLE")
 	}
 }
 
-func TestRollbackTo_ValidName(t *testing.T) {
-	pool := openFakeConnPool(t)
-	dialector := New(Config{Conn: pool, SkipInitializeWithVersion: true})
-	db, err := gorm.Open(dialector, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
+// TestOpen_CraftedSavePointNameRunsNoSecondStatement pins why a savepoint name
+// the stock dialector concatenates into its SQL cannot smuggle in a second
+// statement: qrdb's in-process driver refuses multi-statement text.
+func TestOpen_CraftedSavePointNameRunsNoSecondStatement(t *testing.T) {
+	db := openGORM(t, "node://memory?database=savepoints")
+	if err := db.AutoMigrate(&widget{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
 	}
 
-	// fakeConn refuses Prepare/Begin, so the ROLLBACK TO SAVEPOINT statement
-	// itself cannot succeed; this only exercises name validation passing
-	// through to tx.Exec, not a real rollback.
-	err = dialector.(gorm.SavePointerDialectorInterface).RollbackTo(db, "sp1")
-	var invalid *InvalidSavePointNameError
-	if errors.As(err, &invalid) {
-		t.Errorf("RollbackTo() rejected a valid name %q", "sp1")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return tx.SavePoint("sp1; DROP TABLE widgets").Error
+	})
+	if err == nil {
+		t.Fatal("SavePoint with a second statement in its name succeeded")
+	}
+	if !db.Migrator().HasTable(&widget{}) {
+		t.Fatal("the statement after the savepoint name ran: widgets was dropped")
 	}
 }
 
-// --- compile-time interface assertions, exercised at test-build time ---
-
-func TestDialector_ImplementsGormInterfaces(t *testing.T) {
-	var (
-		_ gorm.Dialector                     = Dialector{}
-		_ gorm.ErrorTranslator               = Dialector{}
-		_ gorm.SavePointerDialectorInterface = Dialector{}
-	)
+type priced struct {
+	ID    uint    `gorm:"primaryKey"`
+	Price float64 `gorm:"type:decimal(10,2)"`
 }
 
-// clauseStringBuilder is a minimal clause.Writer backed by a strings.Builder,
-// used to capture QuoteTo and BindVarTo output directly without a full
-// *gorm.Statement.
-type clauseStringBuilder struct {
-	buf []byte
+// recordRawSQL records every statement db issues through the raw callback,
+// which is how the migrator issues ALTER TABLE.
+func recordRawSQL(t *testing.T, db *gorm.DB) *[]string {
+	t.Helper()
+	var statements []string
+	if err := db.Callback().Raw().After("gorm:raw").Register("qrdbgorm_test:record", func(tx *gorm.DB) {
+		statements = append(statements, tx.Statement.SQL.String())
+	}); err != nil {
+		t.Fatalf("register callback: %v", err)
+	}
+	return &statements
 }
 
-func (w *clauseStringBuilder) WriteByte(c byte) error {
-	w.buf = append(w.buf, c)
-	return nil
+// TestOpen_DecimalColumnReportsLikeMySQL pins the metadata the stock migrator
+// compares a decimal field against. These are MySQL 8's values for a
+// decimal(10,2) column.
+func TestOpen_DecimalColumnReportsLikeMySQL(t *testing.T) {
+	db := openGORM(t, "node://memory?database=decimals")
+	if err := db.AutoMigrate(&priced{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
+
+	var columnType, dataType string
+	var precision, scale sql.NullInt64
+	var datetimePrecision sql.NullInt64
+	if err := db.Raw("SELECT column_type, data_type, numeric_precision, numeric_scale, datetime_precision "+
+		"FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?",
+		"decimals", "priceds", "price").Row().Scan(&columnType, &dataType, &precision, &scale, &datetimePrecision); err != nil {
+		t.Fatalf("information_schema: %v", err)
+	}
+	if columnType != "decimal(10,2)" || dataType != "decimal" || precision.Int64 != 10 || scale.Int64 != 2 || datetimePrecision.Valid {
+		t.Fatalf("reported %q %q precision=%v scale=%v datetime_precision=%v; want MySQL's decimal(10,2) decimal 10 2 NULL",
+			columnType, dataType, precision, scale, datetimePrecision)
+	}
 }
 
-func (w *clauseStringBuilder) WriteString(s string) (int, error) {
-	w.buf = append(w.buf, s...)
-	return len(s), nil
-}
+// TestOpen_DeclaredDecimalTypeMigratesIdempotently shows the documented form
+// of a decimal field issues no ALTER on a second AutoMigrate.
+func TestOpen_DeclaredDecimalTypeMigratesIdempotently(t *testing.T) {
+	db := openGORM(t, "node://memory?database=idempotent")
+	if err := db.AutoMigrate(&priced{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
 
-func (w *clauseStringBuilder) String() string {
-	return string(w.buf)
+	statements := recordRawSQL(t, db)
+	if err := db.AutoMigrate(&priced{}); err != nil {
+		t.Fatalf("second AutoMigrate: %v", err)
+	}
+	for _, statement := range *statements {
+		if strings.Contains(strings.ToUpper(statement), "ALTER") {
+			t.Errorf("second AutoMigrate issued %q", statement)
+		}
+	}
 }

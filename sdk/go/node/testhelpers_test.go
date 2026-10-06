@@ -23,8 +23,27 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
+
+// createDefaultPool registers the "default" pool in n's replicated volume
+// catalog. A pool record is a management-plane object an operator creates
+// explicitly (qrdb volume-pool create, docs/volume-pools/cli.md) -- it is
+// NOT derived from storage.volume_pools, which only tells THIS node which
+// local directory to map a pool name onto. Tests that configure a volume
+// pool and then create an IsolationVolume/IsolationRaft tenant must create
+// the pool first, exactly as an operator would.
+func createDefaultPool(t *testing.T, n *Node) {
+	t.Helper()
+	svc := n.Services()
+	require.NotNil(t, svc, "precondition: the node must have booted a service graph")
+	catalog, err := volume.NewCatalog(lifecycle.NewVolumeCatalogKVServicer(svc.KV), svc.Transaction, n.volumeRegistry)
+	require.NoError(t, err)
+	_, err = catalog.CreatePool(context.Background(), volume.CreatePoolRequest{Name: "default"})
+	require.NoError(t, err)
+}
 
 // testhelpers_test.go holds test helpers shared across build-tag boundaries
 // inside this package.
@@ -108,7 +127,7 @@ func newTenantIsolationConfig(t *testing.T) *qrdbconfig.Config {
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{
-		{Name: "default", Paths: []string{poolDir}},
+		{Name: "default", Path: poolDir},
 	}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
@@ -130,5 +149,6 @@ func volumeEntitlements() *quota.Entitlements {
 		AllowedIsolationModes:     []string{quota.IsolationModeVolume},
 		AllowVolumeStorage:        true,
 		AllowSystemManagedBarrier: true,
+		AllowedVolumePools:        []string{"default"},
 	}
 }

@@ -159,7 +159,10 @@ func (s *Server) buildHandlers() {
 
 	// Batch
 	s.handle("batch.Batch", permission.BatchExecute, s.handleBatch)
-	s.handle("batch.Import", permission.BatchExecute, s.handleBatchImport)
+	s.handle("batch.ImportBegin", permission.BatchExecute, s.handleImportBegin)
+	s.handle("batch.ImportAppend", permission.BatchExecute, s.handleImportAppend)
+	s.handle("batch.ImportCommit", permission.BatchExecute, s.handleImportCommit)
+	s.handle("batch.ImportAbort", permission.BatchExecute, s.handleImportAbort)
 
 	// Watch is server-streaming: handled by handleWatchStream in the stream
 	// dispatch path (see handleStream + isWatchMethod), NOT registered here as
@@ -256,8 +259,8 @@ func (s *Server) buildHandlers() {
 	s.handle("role.ReconcileBuiltIn", permission.RolesCreate, s.handleReconcileRoles)
 
 	// Certificate management
-	s.handle("cert.Generate", permission.CertsGenerate, s.handleGenerateCert)
-	s.handle("cert.Export", permission.CertsExport, s.handleExportCert)
+	s.handle("cert.Issue", permission.CertsIssue, s.handleIssueCert)
+	s.handle("cert.Enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.handle("cert.Revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.handle("cert.List", permission.CertsList, s.handleListCerts)
 
@@ -341,6 +344,9 @@ func (s *Server) buildHandlers() {
 
 	// Tenant management
 	s.handle("tenant.Create", permission.TenantsCreate, s.handleTenantCreate)
+	s.handle("tenant.TrustAnchorAdd", permission.TrustAnchorsAdd, s.handleTrustAnchorAdd)
+	s.handle("tenant.TrustAnchorList", permission.TrustAnchorsList, s.handleTrustAnchorList)
+	s.handle("tenant.TrustAnchorRemove", permission.TrustAnchorsRemove, s.handleTrustAnchorRemove)
 	s.handle("tenant.Get", permission.TenantsRead, s.handleTenantGet)
 	s.handle("tenant.List", permission.TenantsList, s.handleTenantList)
 	s.handle("tenant.Update", permission.TenantsUpdate, s.handleTenantUpdate)
@@ -349,6 +355,14 @@ func (s *Server) buildHandlers() {
 	s.handle("tenant.UpdateEntitlements", permission.TenantsSetEntitlements, s.handleTenantUpdateEntitlements)
 	s.handle("tenant.ListDeleted", permission.TenantsListDeleted, s.handleTenantListDeleted)
 	s.handle("tenant.ReconcileDeleted", permission.TenantsReconcileDeleted, s.handleTenantReconcileDeleted)
+
+	// Volume pool management (docs/volume-pools/api.md)
+	s.handle("volumepool.List", permission.VolumePoolList, s.handleVolumePoolList)
+	s.handle("volumepool.Get", permission.VolumePoolRead, s.handleVolumePoolGet)
+	s.handle("volumepool.Create", permission.VolumePoolCreate, s.handleVolumePoolCreate)
+	s.handle("volumepool.Update", permission.VolumePoolUpdate, s.handleVolumePoolUpdate)
+	s.handle("volumepool.Delete", permission.VolumePoolDelete, s.handleVolumePoolDelete)
+	s.handle("volumepool.ListTenants", permission.VolumePoolRead, s.handleVolumePoolListTenants)
 
 	// Credential management
 	credOn := s.credentialSvc != nil

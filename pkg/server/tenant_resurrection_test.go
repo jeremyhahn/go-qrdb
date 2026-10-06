@@ -21,21 +21,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -121,24 +116,6 @@ func newTenantFixture(t *testing.T, wireTeardown bool) *tenantFixture {
 func newAllIsolationTenantService(t *testing.T) (*tenant.TenantService, *seal.BarrierRegistry) {
 	t.Helper()
 
-	c := local.New()
-	if err := c.Configure(map[string]string{"path": t.TempDir()}); err != nil {
-		t.Fatalf("configure local backend: %v", err)
-	}
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("open state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-	mgr := objpool.NewManager()
-	if err := mgr.Register("default", []common.Storage{c}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
-
 	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("tenant-delete-system-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
@@ -152,16 +129,7 @@ func newAllIsolationTenantService(t *testing.T) (*tenant.TenantService, *seal.Ba
 		t.Fatalf("system Initialize: %v", err)
 	}
 
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(reattachTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+	reg, _, allocator := sealtest.PooledRegistry(t, system)
 
 	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, reattachTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
@@ -173,7 +141,10 @@ func newAllIsolationTenantService(t *testing.T) (*tenant.TenantService, *seal.Ba
 			AllowVolumeStorage:        true,
 			AllowDedicatedRaft:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -451,13 +422,13 @@ func TestTenantDelete_VolumeIdIsRetiredAndTheDataRootIsGone(t *testing.T) {
 	hostReg := NewTenantHostRegistryFromLookup(breg, svc, reattachTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 
-	info, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationVolume,
-		tenant.WithBarrierAutoUnseal(true))
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationVolume,
+		tenant.WithBarrierAutoUnseal(true)); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if info.DataRoot == "" {
-		t.Fatal("a volume tenant must be given a DataRoot")
+	dataRoot, err := breg.LocalTenantDataRoot(ctx, "acme")
+	if err != nil || dataRoot == "" {
+		t.Fatalf("a volume tenant must be given a DataRoot: %v", err)
 	}
 	svcs, err := hostReg.Services(ctx, "acme")
 	if err != nil {
@@ -476,7 +447,7 @@ func TestTenantDelete_VolumeIdIsRetiredAndTheDataRootIsGone(t *testing.T) {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
 
-	assertDataRootGone(t, info.DataRoot)
+	assertDataRootGone(t, dataRoot)
 
 	var deleted *tenant.TenantDeletedError
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme Two", tenant.IsolationVolume,
@@ -492,11 +463,14 @@ func TestTenantDelete_VolumeIdIsRetiredAndTheDataRootIsGone(t *testing.T) {
 // initialize (already is) nor unseal (nobody holds the first credential).
 func TestTenantDelete_SelfManagedVolumeIdIsRetired(t *testing.T) {
 	ctx := context.Background()
-	svc, _ := newAllIsolationTenantService(t)
+	svc, breg := newAllIsolationTenantService(t)
 
-	info, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationVolume)
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationVolume); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
+	}
+	dataRoot, err := breg.LocalTenantDataRoot(ctx, "acme")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot: %v", err)
 	}
 	if _, err := svc.TenantBarrierInit(ctx, "acme", []byte("first-tenant-passphrase"), 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
@@ -505,7 +479,7 @@ func TestTenantDelete_SelfManagedVolumeIdIsRetired(t *testing.T) {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
 
-	assertDataRootGone(t, info.DataRoot)
+	assertDataRootGone(t, dataRoot)
 
 	var deleted *tenant.TenantDeletedError
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme Two", tenant.IsolationVolume); !errors.As(err, &deleted) {
@@ -519,22 +493,22 @@ func TestTenantDelete_SelfManagedVolumeIdIsRetired(t *testing.T) {
 // per-tenant barrier -- and this asserts that rather than assuming it.
 func TestTenantDelete_RaftIdIsRetiredAndTheDataRootIsGone(t *testing.T) {
 	ctx := context.Background()
-	svc, _ := newAllIsolationTenantService(t)
+	svc, breg := newAllIsolationTenantService(t)
 
-	info, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationRaft,
-		tenant.WithBarrierAutoUnseal(true))
-	if err != nil {
+	if _, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationRaft,
+		tenant.WithBarrierAutoUnseal(true)); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if info.DataRoot == "" {
-		t.Fatal("a raft tenant must be given a DataRoot")
+	dataRoot, err := breg.LocalTenantDataRoot(ctx, "acme")
+	if err != nil || dataRoot == "" {
+		t.Fatalf("a raft tenant must be given a DataRoot: %v", err)
 	}
 
 	if err := svc.DeleteTenant(ctx, "acme"); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
 
-	assertDataRootGone(t, info.DataRoot)
+	assertDataRootGone(t, dataRoot)
 
 	var deleted *tenant.TenantDeletedError
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme Two", tenant.IsolationRaft,

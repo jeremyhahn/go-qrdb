@@ -234,10 +234,10 @@ func TestWriteJournal_CreateTempErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	if err := os.Chmod(dir, 0o500); err != nil { // r-x: no write
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	err = e.writeJournal([]byte("x"))
 	var jwe *JournalWriteError
@@ -263,10 +263,10 @@ func TestClearJournal_RemoveErrorPropagates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, journalFileName), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil { // r-x: no write
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- r-x: the directory's own permission bits are the fault this negative-permission test injects, not a secret file's mode
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the mode t.TempDir() needs to remove the directory; not a secret file's mode
 
 	err = e.clearJournal()
 	var jwe *JournalWriteError

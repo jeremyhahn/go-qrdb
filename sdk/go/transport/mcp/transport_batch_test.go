@@ -15,9 +15,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +49,17 @@ type mockBatchSvc struct {
 
 	resp       []service.OpResponse
 	importResp *service.ImportResult
+
+	sessions    map[string]*mockImportSession
+	nextSession int
+}
+
+// mockImportSession accumulates the chunks ImportAppend stages for a session
+// started by ImportBegin, so ImportCommit can hand the assembled file to
+// Import exactly as the real chunked session does.
+type mockImportSession struct {
+	opts service.ImportOptions
+	buf  []byte
 }
 
 var _ service.BatchServicer = (*mockBatchSvc)(nil)
@@ -162,6 +175,56 @@ func (m *mockBatchSvc) Import(_ context.Context, file io.Reader, opts service.Im
 		return m.importResp, nil
 	}
 	return &service.ImportResult{}, nil
+}
+
+func (m *mockBatchSvc) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sessions == nil {
+		m.sessions = make(map[string]*mockImportSession)
+	}
+	m.nextSession++
+	sessionID := strconv.Itoa(m.nextSession)
+	m.sessions[sessionID] = &mockImportSession{opts: opts}
+	return sessionID, nil
+}
+
+func (m *mockBatchSvc) ImportAppend(_ context.Context, sessionID string, _ uint64, chunk []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	sess.buf = append(sess.buf, chunk...)
+	return nil
+}
+
+func (m *mockBatchSvc) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	m.mu.Lock()
+	sess, ok := m.sessions[sessionID]
+	if ok {
+		delete(m.sessions, sessionID)
+	}
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	return m.Import(ctx, bytes.NewReader(sess.buf), sess.opts)
+}
+
+func (m *mockBatchSvc) ImportAbort(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.sessions[sessionID]; !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	delete(m.sessions, sessionID)
+	return nil
 }
 
 // ---------------------------------------------------------------------------

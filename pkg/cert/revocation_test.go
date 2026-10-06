@@ -23,6 +23,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 )
 
 // ---------------------------------------------------------------------------
@@ -33,7 +35,7 @@ func TestFormatSerial_MatchesIssuedRecordKey(t *testing.T) {
 	p, kv, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -93,7 +95,7 @@ func TestRevokeCert_MarkerCarriesCertificateExpiry(t *testing.T) {
 	p, kv, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{
+	bundle, err := generateForTest(ctx, p, &testRequest{
 		Username: "alice", TenantID: "acme", TTL: 2 * time.Hour,
 	})
 	if err != nil {
@@ -151,12 +153,104 @@ func TestRevokeCert_KnownSerial_ReportsSuccess(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert(known serial) = %v, want nil", err)
+	}
+}
+
+// TestRevokeCert_EmitsCertRevoke pins the owner ruling: RevokeCert emits
+// cert.revoke on the compliance trail for a KNOWN serial, carrying the
+// record's own tenant and record_found=true.
+func TestRevokeCert_EmitsCertRevoke(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	p, _, _ := initializeProvider(t, WithAuditLogger(ring))
+	ctx := context.Background()
+
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+		t.Fatalf("RevokeCert: %v", err)
+	}
+
+	evs := ring.Snapshot()
+	var ev *audit.AuditEvent
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Action == "cert.revoke" {
+			ev = &evs[i]
+			break
+		}
+	}
+	if ev == nil {
+		t.Fatalf("no cert.revoke event recorded; events = %+v", evs)
+	}
+	if ev.Outcome != audit.OutcomeSuccess {
+		t.Errorf("cert.revoke Outcome = %q, want success", ev.Outcome)
+	}
+	if ev.Attributes["serial"] != bundle.Serial {
+		t.Errorf("cert.revoke serial = %v, want %q", ev.Attributes["serial"], bundle.Serial)
+	}
+	if ev.Attributes["record_found"] != true {
+		t.Errorf("cert.revoke record_found = %v, want true", ev.Attributes["record_found"])
+	}
+	if ev.Attributes["tenant_id"] != "acme" {
+		t.Errorf("cert.revoke tenant_id = %v, want acme", ev.Attributes["tenant_id"])
+	}
+	if ev.Resource != "cert:"+bundle.Serial {
+		t.Errorf("cert.revoke Resource = %q, want cert:%s", ev.Resource, bundle.Serial)
+	}
+}
+
+// TestRevokeCert_DenyBySerial_EmitsCertRevoke proves deny-by-serial -- a
+// serial this node holds no record for -- is audited too (FedRAMP AU-2,
+// PCI-DSS 10.2 call for a trail of every revocation, not only the ones this
+// node issued), with record_found=false and no tenant named.
+func TestRevokeCert_DenyBySerial_EmitsCertRevoke(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	p, _, _ := initializeProvider(t, WithAuditLogger(ring))
+	ctx := context.Background()
+
+	if _, err := p.RevokeCert(ctx, "deadbeef"); err != nil {
+		t.Fatalf("RevokeCert(unknown serial) = %v, want nil", err)
+	}
+
+	evs := ring.Snapshot()
+	var ev *audit.AuditEvent
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Action == "cert.revoke" {
+			ev = &evs[i]
+			break
+		}
+	}
+	if ev == nil {
+		t.Fatalf("no cert.revoke event recorded; events = %+v", evs)
+	}
+	if ev.Attributes["record_found"] != false {
+		t.Errorf("cert.revoke record_found = %v, want false", ev.Attributes["record_found"])
+	}
+	if ev.Attributes["tenant_id"] != "" {
+		t.Errorf("cert.revoke tenant_id = %v, want empty for deny-by-serial", ev.Attributes["tenant_id"])
+	}
+}
+
+// TestRevokeCert_NoAuditLogger_DoesNotPanic proves emitAudit is a no-op,
+// not a nil-pointer panic, when no audit logger is configured -- the
+// default for every provider WithAuditLogger is not applied to.
+func TestRevokeCert_NoAuditLogger_DoesNotPanic(t *testing.T) {
+	p, _, _ := initializeProvider(t)
+	ctx := context.Background()
+
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+		t.Fatalf("RevokeCert: %v", err)
 	}
 }
 
@@ -308,7 +402,7 @@ func TestRevokeCert_ReapsExpiredMarkers(t *testing.T) {
 
 	putEntry(t, kv, "stale", time.Now().UTC().Add(-time.Hour))
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -337,7 +431,7 @@ func TestRevokeCert_ReapFailureIsWarnedNotReturned(t *testing.T) {
 
 	putEntry(t, kv, "stale", time.Now().UTC().Add(-time.Hour))
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "bob", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "bob", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}

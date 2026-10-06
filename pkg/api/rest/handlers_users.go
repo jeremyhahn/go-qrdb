@@ -491,6 +491,11 @@ func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 
+	// Binding a thumbprint binds a key: the certificate target rule applies.
+	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, userID); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	u, err := s.userSvc.AddCertBinding(ctx, userID, req.Thumbprint, req.NotAfterUnix)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

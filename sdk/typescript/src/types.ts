@@ -1569,27 +1569,83 @@ export interface ListPermissionsResponse {
 // Certificate management types
 // ---------------------------------------------------------------------------
 
-/** Parameters for generating a client certificate. */
-export interface GenerateCertRequest {
-    /** Username to embed in the certificate subject. */
+/**
+ * Parameters for issuing a certificate from a certificate signing request,
+ * for an EXISTING account of the caller's own tenant. The caller keeps its
+ * private key: the server only ever sees the CSR, and the certificate names
+ * the account whatever the CSR's Subject says.
+ *
+ * Wire field names (csrPEM) mirror the Go transport's literal JSON tags
+ * (`sdk/go/transport/auth_types.go` `IssueCertRequest`) rather than the
+ * SDK's usual snake_case-on-the-wire convention, so these fields are sent
+ * verbatim without the camelCase→snake_case transform.
+ */
+export interface IssueCertRequest {
+    /** Username of the existing account to issue the certificate for. */
     readonly username: string;
-    /** Target tenant ID. */
-    readonly tenantId?: string;
-    /** Certificate validity duration (e.g. "8760h"). */
+    /** PEM-encoded certificate signing request. */
+    readonly csrPEM: string;
+    /** Certificate validity duration (e.g. "8760h"); empty uses the issuer's default. */
     readonly ttl?: string;
 }
 
 /**
- * PEM-encoded certificate and private key returned after generating a
- * client certificate.
+ * Enrolls a bring-your-own certificate on an EXISTING account of the
+ * caller's own tenant. CertPEM holds the leaf first; any further
+ * certificates in it, and all of ChainPEM, are offered as intermediates. It
+ * must chain to one of the tenant's registered trust anchors.
+ *
+ * Wire field names (certPEM, chainPEM) mirror the Go transport's literal
+ * JSON tags (`EnrollCertRequest`); see {@link IssueCertRequest}.
  */
-export interface CertBundle {
-    /** PEM-encoded X.509 certificate. */
+export interface EnrollCertRequest {
+    /** Username of the existing account to enroll the certificate on. */
+    readonly username: string;
+    /** PEM-encoded certificate (leaf first). */
     readonly certPEM: string;
-    /** PEM-encoded private key. */
+    /** PEM-encoded intermediate certificate chain. */
+    readonly chainPEM?: string;
+}
+
+/**
+ * A certificate now bound to an account. There is no key: the requester
+ * keeps its own. Serial is empty for a bring-your-own certificate, which the
+ * cluster did not issue.
+ *
+ * Wire field names (userID, tenantID, certPEM, notAfter) mirror the Go
+ * transport's literal JSON tags (`EnrolledCert`); see
+ * {@link IssueCertRequest}. userID crosses the wire as a string
+ * (`json:"userID,string"`) because uint64 Snowflakes exceed JavaScript's
+ * `Number.MAX_SAFE_INTEGER`, matching {@link User.id}.
+ */
+export interface EnrolledCert {
+    /** Account ID the certificate is bound to. */
+    readonly userID: string;
+    /** Username of the bound account. */
+    readonly username: string;
+    /** Tenant ID the account belongs to. */
+    readonly tenantID: string;
+    /** PEM-encoded certificate. */
+    readonly certPEM: string;
+    /** Certificate serial number; empty for a bring-your-own certificate. */
+    readonly serial?: string;
+    /** Base64url SHA-256 thumbprint of the certificate's public key. */
+    readonly thumbprint: string;
+    /** RFC 3339 expiration timestamp. */
+    readonly notAfter: string;
+}
+
+/**
+ * An issued certificate together with the private key generated for it on
+ * this machine. The key is generated LOCALLY and never sent to, or
+ * retained by, the server — only the resulting CSR crosses the wire.
+ * Desktop (Wails) transport only; mirrors `cmd/qrdb/bindings_certs.go`
+ * `IssuedCertOutput`. The REST transport has no local keypair generation
+ * capability and throws DesktopOnlyError.
+ */
+export interface IssuedCertWithKey extends EnrolledCert {
+    /** PEM-encoded private key generated locally for this certificate. */
     readonly keyPEM: string;
-    /** Certificate serial number. */
-    readonly serial: string;
 }
 
 /** Parameters for exporting a certificate as PKCS#12. */
@@ -2856,6 +2912,12 @@ export interface TenantEntitlements {
      * `allowed_barrier_modes`.
      */
     readonly allowedBarrierModes?: string[];
+    /**
+     * Named volume pools (pkg/volume's catalog) a volume/raft tenant may be
+     * placed on; the first entry is its default. Fail-closed: empty
+     * entitles no pool. Wire name: `allowed_volume_pools`.
+     */
+    readonly allowedVolumePools?: string[];
 }
 
 /**
@@ -2888,14 +2950,32 @@ export interface TenantInfo {
     /** Feature entitlements for this tenant, if configured. */
     readonly entitlements?: TenantEntitlements;
     /**
-     * Dedicated filesystem root for an IsolationVolume/IsolationRaft tenant.
-     * Empty for prefix/barrier tenants.
+     * Named volume pool for an IsolationVolume/IsolationRaft tenant. Empty
+     * for prefix/barrier tenants.
      */
-    readonly dataRoot?: string;
+    readonly volumePool?: string;
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last-updated timestamp. */
     readonly updatedAt: string;
+    /**
+     * Set when the answering node will not serve this tenant's data;
+     * undefined otherwise. Another node may still serve the tenant; a
+     * caller that needs the cluster view reads the pool's per-node health
+     * instead.
+     */
+    readonly refusal?: TenantRefusal;
+}
+
+/**
+ * The answering node's own view of why it will not serve a tenant's
+ * dedicated-isolation data (see `TenantInfo.refusal`).
+ */
+export interface TenantRefusal {
+    /** Stable code: `"pool_unavailable"` | `"provider_missing"`. */
+    readonly code: string;
+    /** The typed error's text, for display only -- never parsed. */
+    readonly message: string;
 }
 
 /** Request to create a new tenant. */
@@ -2917,12 +2997,62 @@ export interface CreateTenantRequest {
      */
     readonly barrierAutoUnseal?: boolean;
     /**
-     * Pins an IsolationVolume/IsolationRaft tenant's dedicated filesystem data
-     * root to this operator-supplied absolute path instead of pool
-     * allocation. Empty (the default) allocates from the configured volume
-     * pool. Rejected by the server for prefix/barrier isolation.
+     * Names the volume pool a volume/raft tenant is placed on. Empty (the
+     * default) uses the tenant's default pool, the first entry of its
+     * `allowedVolumePools`; with none entitled, creation is refused.
+     * Ignored for prefix/barrier isolation.
      */
-    readonly dataRoot?: string;
+    readonly volumePool?: string;
+    /**
+     * The tenant's first admin. Required: a tenant is created with its first
+     * admin's login credential, or not at all.
+     */
+    readonly adminUsername: string;
+    /**
+     * The admin's certificate signing request, signed by the tenant's own
+     * CA; the admin keeps its key. Exactly one of this and {@link adminCertPem}.
+     */
+    readonly adminCsrPem?: string;
+    /**
+     * The admin's own certificate, leaf first; it must chain to one of
+     * {@link trustAnchorsPem}. Exactly one of this and {@link adminCsrPem}.
+     */
+    readonly adminCertPem?: string;
+    /** Intermediate certificate chain for {@link adminCertPem}. */
+    readonly adminChainPem?: string;
+    /** Registers the tenant's trust anchors with it. */
+    readonly trustAnchorsPem?: string;
+}
+
+/**
+ * A tenant's first admin and the login certificate bound to it, as
+ * onboarding left it. There is never a private key: the admin keeps its
+ * own.
+ *
+ * userId crosses the wire as a string (`json:"user_id,omitempty,string"`)
+ * because uint64 Snowflakes exceed JavaScript's `Number.MAX_SAFE_INTEGER`,
+ * matching {@link User.id} and {@link EnrolledCert.userID}.
+ */
+export interface TenantAdminCredential {
+    /** Account ID of the admin; absent while {@link awaitsBarrierInit}. */
+    readonly userId?: string;
+    /** Admin's username. */
+    readonly username: string;
+    /**
+     * Admin's certificate: signed from the CSR, or the bring-your-own one as
+     * enrolled.
+     */
+    readonly certPem: string;
+    /** Certificate serial number; empty for a bring-your-own certificate. */
+    readonly serial?: string;
+    /** Base64url SHA-256 thumbprint of the certificate's public key. */
+    readonly thumbprint: string;
+    /**
+     * True when the tenant keeps its identity records behind its own
+     * barrier, so the admin's account is created only when the admin
+     * initializes it — which only this certificate may do.
+     */
+    readonly awaitsBarrierInit?: boolean;
 }
 
 /** Request to apply a partial update to an existing tenant. */
@@ -2946,6 +3076,36 @@ export interface UpdateTenantResponse {
 export interface CreateTenantResponse {
     /** The created tenant. */
     readonly tenant: TenantInfo;
+    /** The tenant's first admin, as onboarding left it. */
+    readonly admin: TenantAdminCredential;
+}
+
+/**
+ * One of a tenant's registered trust anchors: a CA that may vouch for that
+ * tenant's users' bring-your-own login certificates, and no other tenant's.
+ */
+export interface TrustAnchor {
+    /**
+     * Lowercase hex SHA-256 of the certificate's DER; the handle
+     * {@link TenantClient.removeTrustAnchor} takes.
+     */
+    readonly fingerprint: string;
+    /** Certificate subject. */
+    readonly subject: string;
+    /** RFC 3339 validity start. */
+    readonly notBefore: string;
+    /** RFC 3339 validity end. */
+    readonly notAfter: string;
+    /** PEM-encoded certificate. */
+    readonly certPem: string;
+    /** RFC 3339 registration timestamp; absent for an anchor store that does not record it. */
+    readonly addedAt?: string;
+}
+
+/** A tenant's trust anchors. */
+export interface TrustAnchorList {
+    /** The tenant's registered trust anchors. */
+    readonly anchors: readonly TrustAnchor[];
 }
 
 /** Response from fetching a single tenant. */
@@ -3056,6 +3216,136 @@ export interface UpdateTenantEntitlementsRequest {
 export interface UpdateTenantEntitlementsResponse {
     /** The updated tenant. */
     readonly tenant: TenantInfo;
+}
+
+// ---------------------------------------------------------------------------
+// Volume pool types (docs/volume-pools/api.md). Tier 1: every capability is
+// on all six transports. Every operation requires a system-tenant identity
+// holding the matching `volume_pools:*` permission.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-node health tally for a pool: how many of the nodes that have
+ * reported it are ready, locked, unavailable, or (always 0 in this
+ * release) unmapped.
+ */
+export interface VolumePoolNodeCounts {
+    readonly ready: number;
+    readonly locked: number;
+    readonly unavailable: number;
+    readonly unmapped: number;
+}
+
+/**
+ * A pool's catalog record plus the aggregate view every list/get response
+ * reports: measured usage, assigned-tenant count, and a per-node health
+ * tally.
+ */
+export interface VolumePool {
+    /** The pool name. */
+    readonly name: string;
+    /** The volume provider every node uses for this pool (e.g. "dir"). */
+    readonly provider: string;
+    /** Free operator text. */
+    readonly description?: string;
+    /**
+     * Allocatable capacity in bytes. Zero means it is derived from health
+     * reports rather than set by the operator.
+     */
+    readonly capacityBytes: number;
+    /** Sum of every assignment's reservation on this pool, in bytes. */
+    readonly reservedBytes: number;
+    /** Measured usage in bytes. */
+    readonly usedBytes: number;
+    /** Number of tenants currently assigned to this pool. */
+    readonly tenantCount: number;
+    /** Per-node health tally. */
+    readonly nodes: VolumePoolNodeCounts;
+    /** Reservations may reach capacity x overcommit; always >= 1.0. */
+    readonly overcommit: number;
+    /** ISO 8601 creation timestamp. */
+    readonly createdAt?: string;
+    /** ISO 8601 last-updated timestamp. */
+    readonly updatedAt?: string;
+}
+
+/**
+ * One node's report, scoped to a single pool. `state` is `"ready"`,
+ * `"locked"`, `"unavailable"`, `"unmapped"` (the node's last report said
+ * it does not map the pool) or `"no_report"` (the report is older than
+ * the catalog's lease TTL; `sizeBytes`, `freeBytes` and `detail` are
+ * zeroed rather than shown stale).
+ */
+export interface VolumePoolNodeReport {
+    readonly nodeId: string;
+    readonly state: string;
+    readonly sizeBytes?: number;
+    readonly freeBytes?: number;
+    readonly detail?: string;
+    readonly reportedAt?: string;
+}
+
+/** Response from inspecting one pool: a VolumePool plus one row per node
+ * that has reported it. */
+export interface VolumePoolDetail extends VolumePool {
+    readonly nodeReports: VolumePoolNodeReport[];
+}
+
+/** Response containing every pool in the catalog. Not paginated. */
+export interface ListVolumePoolsResponse {
+    readonly pools: VolumePool[];
+}
+
+/** Request to add a pool to the catalog. */
+export interface CreateVolumePoolRequest {
+    /** The pool name. */
+    readonly name: string;
+    /**
+     * The volume provider every node uses for this pool; must be
+     * registered on the node handling the request. Default `"dir"`.
+     */
+    readonly provider?: string;
+    /** Free text. */
+    readonly description?: string;
+    /**
+     * Allocatable capacity in bytes; unset means the smallest size a
+     * healthy node reports.
+     */
+    readonly capacityBytes?: number;
+    /** Reservations may reach capacity x overcommit; must be >= 1.0. Default 1.0. */
+    readonly overcommit?: number;
+}
+
+/**
+ * Request to change a pool's description, capacity or overcommit. The
+ * provider is immutable. Absent fields are unchanged; `capacityBytes: 0`
+ * returns to the derived value.
+ */
+export interface UpdateVolumePoolRequest {
+    readonly description?: string;
+    readonly capacityBytes?: number;
+    readonly overcommit?: number;
+}
+
+/** One row of a pool's assigned-tenant listing. */
+export interface VolumePoolTenant {
+    readonly tenantId: string;
+    /** This tenant's reservation on the pool, in bytes. */
+    readonly reservedBytes: number;
+}
+
+/** Request to page through the tenants assigned to a pool. */
+export interface ListVolumePoolTenantsRequest {
+    /** Rows per page. 0 or absent uses the server default. */
+    readonly pageSize?: number;
+    /** Resume after a previous page's `nextPageToken`. */
+    readonly pageToken?: string;
+}
+
+/** One page of a pool's assigned tenants. */
+export interface ListVolumePoolTenantsResponse {
+    readonly tenants: VolumePoolTenant[];
+    readonly nextPageToken?: string;
 }
 
 // ---------------------------------------------------------------------------

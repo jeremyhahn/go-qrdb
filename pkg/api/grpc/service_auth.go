@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-	"encoding/base64"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -27,6 +26,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -129,6 +132,10 @@ func (s *qrdbServiceServer) AddCertBinding(ctx context.Context, req *pb.AddCertB
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	// Binding a thumbprint binds a key: the certificate target rule applies.
+	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, req.GetUserId()); err != nil {
+		return nil, mapServiceError(err)
+	}
 	u, err := s.userSvc.AddCertBinding(ctx, req.GetUserId(), req.GetThumbprint(), req.GetNotAfterUnix())
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -588,64 +595,138 @@ func (s *qrdbServiceServer) authorizeCertRevoke(ctx context.Context, serial stri
 	return s.authMW.AuthorizeCertRevoke(ctx, serial, s.certProv)
 }
 
-// GenerateCert creates a client certificate.
-func (s *qrdbServiceServer) GenerateCert(ctx context.Context, req *pb.GenerateCertRequest) (*pb.CertBundleResponse, error) {
-	if s.certProv == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert"})
-	}
+// callerTenant is the tenant every certificate enrolment RPC acts on: the
+// caller's own. The certs verbs are ScopeSelfStrict, so no request names
+// another.
+func callerTenant(ctx context.Context) string {
+	return tenantid.Normalize(tenant.FromContext(ctx))
+}
 
-	genReq := &cert.GenerateRequest{
-		Username: req.GetUsername(),
-		TenantID: req.GetTenantId(),
+func enrolledToProto(e *service.EnrolledCertificate) *pb.EnrolledCertResponse {
+	return &pb.EnrolledCertResponse{
+		UserId:     e.UserID,
+		Username:   e.Username,
+		TenantId:   e.TenantID,
+		CertPem:    string(e.CertPEM),
+		Serial:     e.Serial,
+		Thumbprint: e.Thumbprint,
+		NotAfter:   e.NotAfter.UTC().Format(time.RFC3339),
 	}
+}
 
+// IssueCert issues a certificate from a CSR for an existing account of the
+// caller's own tenant and binds it. The requester keeps its key.
+func (s *qrdbServiceServer) IssueCert(ctx context.Context, req *pb.IssueCertRequest) (*pb.EnrolledCertResponse, error) {
+	if s.certEnroll == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert enrollment"})
+	}
+	var ttl time.Duration
 	if req.GetTtl() != "" {
-		ttl, err := time.ParseDuration(req.GetTtl())
+		d, err := time.ParseDuration(req.GetTtl())
 		if err != nil {
 			return nil, mapServiceError(&TTLParseError{Value: req.GetTtl(), Err: err})
 		}
-		genReq.TTL = ttl
+		ttl = d
 	}
-
-	// The request's tenant_id becomes the certificate's Subject OU, and the
-	// mTLS authenticator derives an identity's tenant from that OU. An
-	// unchecked cross-tenant mint hands the caller a CA-signed credential for
-	// another tenant.
-	if err := s.authorizeCertTenant(ctx, genReq.TenantID, permission.CertsGenerate); err != nil {
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsIssue); err != nil {
 		return nil, authmw.GRPCError(err, codes.PermissionDenied)
 	}
-
-	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
+	enrolled, err := s.certEnroll.SignCertificate(ctx, &service.SignCertificateRequest{
+		TenantID: tenantID,
+		Username: req.GetUsername(),
+		CSRPEM:   []byte(req.GetCsrPem()),
+		TTL:      ttl,
+	})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-
-	return &pb.CertBundleResponse{
-		CertPem: string(bundle.CertPEM),
-		KeyPem:  string(bundle.KeyPEM),
-		Serial:  bundle.Serial,
-	}, nil
+	return enrolledToProto(enrolled), nil
 }
 
-// ExportCert exports a certificate as PKCS#12.
-func (s *qrdbServiceServer) ExportCert(ctx context.Context, req *pb.ExportCertRequest) (*pb.ExportCertResponse, error) {
-	if s.certProv == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert"})
+// EnrollCert binds a bring-your-own certificate to an existing account of the
+// caller's own tenant, verified against the tenant's trust anchors.
+func (s *qrdbServiceServer) EnrollCert(ctx context.Context, req *pb.EnrollCertRequest) (*pb.EnrolledCertResponse, error) {
+	if s.certEnroll == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert enrollment"})
 	}
-
-	p12Bytes, err := s.certProv.ExportPKCS12(
-		ctx,
-		[]byte(req.GetCertPem()),
-		[]byte(req.GetKeyPem()),
-		req.GetPassphrase(),
-	)
+	tenantID := callerTenant(ctx)
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsEnroll); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+	enrolled, err := s.certEnroll.EnrollCertificate(ctx, &service.EnrollCertificateRequest{
+		TenantID: tenantID,
+		Username: req.GetUsername(),
+		CertPEM:  []byte(req.GetCertPem()),
+		ChainPEM: []byte(req.GetChainPem()),
+	})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
+	return enrolledToProto(enrolled), nil
+}
 
-	return &pb.ExportCertResponse{
-		Pkcs12: base64.StdEncoding.EncodeToString(p12Bytes),
-	}, nil
+func anchorsToProto(anchors []trustanchor.Anchor) *pb.TrustAnchorListResponse {
+	out := &pb.TrustAnchorListResponse{Anchors: make([]*pb.TrustAnchor, 0, len(anchors))}
+	for _, a := range anchors {
+		ta := &pb.TrustAnchor{
+			Fingerprint: a.Fingerprint,
+			Subject:     a.Subject,
+			NotBefore:   a.NotBefore.UTC().Format(time.RFC3339),
+			NotAfter:    a.NotAfter.UTC().Format(time.RFC3339),
+			CertPem:     string(a.CertPEM),
+		}
+		if !a.AddedAt.IsZero() {
+			ta.AddedAt = a.AddedAt.UTC().Format(time.RFC3339)
+		}
+		out.Anchors = append(out.Anchors, ta)
+	}
+	return out
+}
+
+// TrustAnchorAdd registers trust anchors of tenant_id, the caller's own.
+func (s *qrdbServiceServer) TrustAnchorAdd(ctx context.Context, req *pb.TrustAnchorAddRequest) (*pb.TrustAnchorListResponse, error) {
+	if s.certEnroll == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert enrollment"})
+	}
+	if err := s.authorizeCertTenant(ctx, req.GetTenantId(), permission.TrustAnchorsAdd); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+	anchors, err := s.certEnroll.AddTrustAnchors(ctx, req.GetTenantId(), []byte(req.GetCertsPem()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return anchorsToProto(anchors), nil
+}
+
+// TrustAnchorList lists tenant_id's trust anchors, the caller's own.
+func (s *qrdbServiceServer) TrustAnchorList(ctx context.Context, req *pb.TrustAnchorListRequest) (*pb.TrustAnchorListResponse, error) {
+	if s.certEnroll == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert enrollment"})
+	}
+	if err := s.authorizeCertTenant(ctx, req.GetTenantId(), permission.TrustAnchorsList); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+	anchors, err := s.certEnroll.ListTrustAnchors(ctx, req.GetTenantId())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return anchorsToProto(anchors), nil
+}
+
+// TrustAnchorRemove withdraws one of tenant_id's trust anchors, the
+// caller's own.
+func (s *qrdbServiceServer) TrustAnchorRemove(ctx context.Context, req *pb.TrustAnchorRemoveRequest) (*emptypb.Empty, error) {
+	if s.certEnroll == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert enrollment"})
+	}
+	if err := s.authorizeCertTenant(ctx, req.GetTenantId(), permission.TrustAnchorsRemove); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+	if err := s.certEnroll.RemoveTrustAnchor(ctx, req.GetTenantId(), req.GetFingerprint()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
 }
 
 // RevokeCert marks a certificate serial as revoked and reports whether this

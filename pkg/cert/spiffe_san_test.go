@@ -52,7 +52,7 @@ var oidSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
 // issueParsed generates a client certificate and returns it parsed.
 func issueParsed(t *testing.T, p *DefaultCertProvider, tenantID, username string) *x509.Certificate {
 	t.Helper()
-	bundle, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: username, TenantID: tenantID})
+	bundle, err := generateForTest(context.Background(), p, &testRequest{Username: username, TenantID: tenantID})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestGenerateClientCert_TrustDomain_RefusesSANThatWouldDisagreeWithOU(t *tes
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p, kv, _ := initializeProvider(t, WithTrustDomain(tc.domain))
-			bundle, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: tc.username, TenantID: tc.tenant})
+			bundle, err := generateForTest(context.Background(), p, &testRequest{Username: tc.username, TenantID: tc.tenant})
 			var sidErr *SPIFFEIdentityError
 			if !errors.As(err, &sidErr) {
 				t.Fatalf("GenerateClientCert = (%v, %v), want *SPIFFEIdentityError", bundle, err)

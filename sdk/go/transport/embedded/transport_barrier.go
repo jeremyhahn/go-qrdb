@@ -474,17 +474,6 @@ func (t *Transport) barrierService() (service.BarrierServicer, error) {
 	return t.barrierSvc, nil
 }
 
-// contextOptionalThumbprint returns the verified TLS client certificate's
-// thumbprint carried on ctx, or "" when there is none. A quorum submission
-// does not require one; when present the mtls factor binds to it.
-func contextOptionalThumbprint(ctx context.Context) string {
-	thumb, err := contextCertThumbprint(ctx)
-	if err != nil {
-		return ""
-	}
-	return thumb
-}
-
 // registerHolder enrols a holder of domain.
 func (t *Transport) registerHolder(ctx context.Context, domain seal.QuorumDomain, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	svc, err := t.barrierService()

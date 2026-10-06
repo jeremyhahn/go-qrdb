@@ -15,12 +15,9 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -28,36 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
-
-// maxImportFileSize is the maximum size for imported files (100MB),
-// mirroring the REST /batch/import bound. Unlike REST and gRPC (bounded by
-// grpc.MaxRecvMsgSize), the MCP HTTP transport has no framework-level request
-// size cap, so this handler enforces the bound itself -- both on the
-// base64-encoded "file" argument (before decoding, see
-// maxEncodedImportFileSize) and again on the decoded result.
-//
-// The earlier wording said REST was "bounded by http.MaxBytesReader" without
-// qualification. That was true of /batch/import and of nothing else: five REST
-// handlers read their bodies with no bound at all, and the sentence read as a
-// statement about the transport (#231). A comment asserting a property six
-// handlers did not have is worse than no comment, because the next person to
-// add a handler reads it as established and does not look -- which is exactly
-// what happened to the three endpoints PR #230 added.
-//
-// Every REST handler that buffers a body now goes through readBoundedBody, so
-// the claim is true today. It is still written per-endpoint rather than as a
-// property of the transport, because that is what it is: the bound lives in
-// each handler, not in a framework.
-const maxImportFileSize = 100 << 20
-
-// maxEncodedImportFileSize is the largest base64-encoded "file" argument
-// handleBatchImport will attempt to decode. Rejecting an oversized encoded
-// payload BEFORE decoding avoids allocating a full decoded buffer for input
-// that was always going to be rejected: base64.StdEncoding.DecodeString
-// allocates its entire output up front, so checking len(file) only AFTER
-// decoding lets an attacker's multi-GB base64 argument OOM the process
-// before the size gate ever runs.
-var maxEncodedImportFileSize = base64.StdEncoding.EncodedLen(maxImportFileSize)
 
 // batchTools returns the MCP tool registrations for batch operations.
 func batchTools(batchSvc service.BatchServicer) []serverTool {
@@ -68,9 +35,24 @@ func batchTools(batchSvc service.BatchServicer) []serverTool {
 			Handler: handleBatchExecute(batchSvc),
 		},
 		{
-			Tool:    toolBatchImport(),
+			Tool:    toolImportBegin(),
 			Perm:    permission.BatchExecute,
-			Handler: handleBatchImport(batchSvc),
+			Handler: handleImportBegin(batchSvc),
+		},
+		{
+			Tool:    toolImportAppend(),
+			Perm:    permission.BatchExecute,
+			Handler: handleImportAppend(batchSvc),
+		},
+		{
+			Tool:    toolImportCommit(),
+			Perm:    permission.BatchExecute,
+			Handler: handleImportCommit(batchSvc),
+		},
+		{
+			Tool:    toolImportAbort(),
+			Perm:    permission.BatchExecute,
+			Handler: handleImportAbort(batchSvc),
 		},
 	}
 }
@@ -122,17 +104,23 @@ func handleBatchExecute(batchSvc service.BatchServicer) mcpserver.ToolHandlerFun
 	}
 }
 
-// toolBatchImport defines the qrdb_batch_import tool schema. The file
-// contents are carried as a base64-encoded string argument, the same
-// convention used for binary payloads elsewhere in the MCP surface (e.g.
-// qrdb_backup_create's encryption_key).
-func toolBatchImport() mcp.Tool {
-	return mcp.NewTool("qrdb_batch_import",
-		mcp.WithDescription("Parse and import key-value pairs from a base64-encoded CSV, JSON, NDJSON, YAML, or archive file. This is a bounded, non-streaming call; the decoded file must not exceed 100MB."),
-		mcp.WithString("file",
-			mcp.Required(),
-			mcp.Description("Base64-encoded file contents."),
-		),
+// ---------------------------------------------------------------------------
+// Chunked import session tools
+//
+// See docs/transactions/architecture.md ("Import session"). MCP has no
+// native binary framing -- every argument is JSON-RPC text -- so a chunk
+// travels as base64 in a string argument, the same convention used for
+// binary payloads elsewhere in the MCP surface (e.g. qrdb_backup_create's
+// encryption_key). There is no separate pre-decode size gate here: the
+// universal pre-auth request-body cap (transport.max_message_bytes)
+// already bounds the whole call, chunk included, before this handler ever
+// runs.
+// ---------------------------------------------------------------------------
+
+// toolImportBegin defines the qrdb_batch_import_begin tool schema.
+func toolImportBegin() mcp.Tool {
+	return mcp.NewTool("qrdb_batch_import_begin",
+		mcp.WithDescription("Start a chunked import session for a dataset larger than one pre-auth message. Returns a session_id for qrdb_batch_import_append/_commit/_abort."),
 		mcp.WithString("format",
 			mcp.Required(),
 			mcp.Description(`File format: "csv", "json", "ndjson", "yaml", "archive", or "auto".`),
@@ -160,19 +148,15 @@ func toolBatchImport() mcp.Tool {
 	)
 }
 
-// handleBatchImport returns a tool handler that decodes the base64 file
-// argument and delegates to batchSvc.Import.
-func handleBatchImport(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc {
+// handleImportBegin returns a tool handler that delegates to
+// batchSvc.ImportBegin.
+func handleImportBegin(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		batchSvc, rerr := resolveBatch(ctx, batchSvc)
 		if rerr != nil {
 			return nil, rerr
 		}
 
-		encoded := mcp.ParseString(req, "file", "")
-		if encoded == "" {
-			return mcp.NewToolResultError("file is required"), nil
-		}
 		format := mcp.ParseString(req, "format", "")
 		if format == "" {
 			return mcp.NewToolResultError("format is required"), nil
@@ -186,28 +170,6 @@ func handleBatchImport(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc
 			return mcp.NewToolResultError("value_mode is required"), nil
 		}
 
-		// Reject an oversized encoded payload before it is ever decoded --
-		// see maxEncodedImportFileSize.
-		if len(encoded) > maxEncodedImportFileSize {
-			return mcp.NewToolResultError((&ImportFileTooLargeError{Size: len(encoded), Max: maxEncodedImportFileSize}).Error()), nil
-		}
-
-		// Decode through a bounded streaming reader (rather than
-		// base64.StdEncoding.DecodeString, which allocates its entire
-		// decoded output up front) as defense in depth: the encoded-length
-		// check above already rejects any input whose base64 form implies
-		// a decoded size over maxImportFileSize, but base64 padding/newline
-		// variance means it is not an exact bound, so this ensures decoding
-		// itself can never allocate more than maxImportFileSize+1 bytes.
-		dec := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
-		file, decodeErr := io.ReadAll(io.LimitReader(dec, int64(maxImportFileSize)+1))
-		if decodeErr != nil {
-			return mcp.NewToolResultError((&ImportFileDecodeError{Err: decodeErr}).Error()), nil
-		}
-		if len(file) > maxImportFileSize {
-			return mcp.NewToolResultError((&ImportFileTooLargeError{Size: len(file), Max: maxImportFileSize}).Error()), nil
-		}
-
 		opts := service.ImportOptions{
 			Format:        format,
 			Filename:      mcp.ParseString(req, "filename", ""),
@@ -218,16 +180,144 @@ func handleBatchImport(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc
 			Transactional: mcp.ParseBoolean(req, "transactional", false),
 		}
 
-		result, importErr := batchSvc.Import(ctx, bytes.NewReader(file), opts)
-		if importErr != nil {
-			return nil, &ToolError{Tool: "qrdb_batch_import", Err: importErr}
+		sessionID, err := batchSvc.ImportBegin(ctx, opts)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_batch_import_begin", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(struct {
+			SessionID string `json:"session_id"`
+		}{SessionID: sessionID})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_batch_import_begin", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolImportAppend defines the qrdb_batch_import_append tool schema.
+func toolImportAppend() mcp.Tool {
+	return mcp.NewTool("qrdb_batch_import_append",
+		mcp.WithDescription("Stage a base64-encoded chunk of a chunked import session. seq must be exactly one more than the last appended sequence, or equal to it with identical content (an idempotent replay)."),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description("The session ID returned by qrdb_batch_import_begin."),
+		),
+		mcp.WithNumber("seq",
+			mcp.Required(),
+			mcp.Description("The chunk's sequence number, starting at 0."),
+		),
+		mcp.WithString("chunk",
+			mcp.Required(),
+			mcp.Description("Base64-encoded chunk contents."),
+		),
+	)
+}
+
+// handleImportAppend returns a tool handler that decodes the base64 chunk
+// argument and delegates to batchSvc.ImportAppend.
+func handleImportAppend(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		batchSvc, rerr := resolveBatch(ctx, batchSvc)
+		if rerr != nil {
+			return nil, rerr
+		}
+
+		sessionID := mcp.ParseString(req, "session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id is required"), nil
+		}
+		seq := mcp.ParseInt64(req, "seq", -1)
+		if seq < 0 {
+			return mcp.NewToolResultError("seq is required and must be >= 0"), nil
+		}
+		encoded := mcp.ParseString(req, "chunk", "")
+		if encoded == "" {
+			return mcp.NewToolResultError("chunk is required"), nil
+		}
+
+		chunk, decodeErr := base64.StdEncoding.DecodeString(encoded)
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ImportFileDecodeError{Err: decodeErr}).Error()), nil
+		}
+
+		if err := batchSvc.ImportAppend(ctx, sessionID, uint64(seq), chunk); err != nil {
+			return nil, &ToolError{Tool: "qrdb_batch_import_append", Err: err}
+		}
+
+		return mcp.NewToolResultText("{}"), nil
+	}
+}
+
+// toolImportCommit defines the qrdb_batch_import_commit tool schema.
+func toolImportCommit() mcp.Tool {
+	return mcp.NewTool("qrdb_batch_import_commit",
+		mcp.WithDescription("Apply every staged chunk of a chunked import session atomically, the same parsing and per-row semantics a single-message import would use, and release the session on success."),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description("The session ID returned by qrdb_batch_import_begin."),
+		),
+	)
+}
+
+// handleImportCommit returns a tool handler that delegates to
+// batchSvc.ImportCommit.
+func handleImportCommit(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		batchSvc, rerr := resolveBatch(ctx, batchSvc)
+		if rerr != nil {
+			return nil, rerr
+		}
+
+		sessionID := mcp.ParseString(req, "session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id is required"), nil
+		}
+
+		result, err := batchSvc.ImportCommit(ctx, sessionID)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_batch_import_commit", Err: err}
 		}
 
 		data, jsonErr := json.Marshal(result)
 		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_batch_import", Err: jsonErr}
+			return nil, &ToolError{Tool: "qrdb_batch_import_commit", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolImportAbort defines the qrdb_batch_import_abort tool schema.
+func toolImportAbort() mcp.Tool {
+	return mcp.NewTool("qrdb_batch_import_abort",
+		mcp.WithDescription("Discard a chunked import session -- its staged chunks and its lease -- without applying anything."),
+		mcp.WithString("session_id",
+			mcp.Required(),
+			mcp.Description("The session ID returned by qrdb_batch_import_begin."),
+		),
+	)
+}
+
+// handleImportAbort returns a tool handler that delegates to
+// batchSvc.ImportAbort.
+func handleImportAbort(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		batchSvc, rerr := resolveBatch(ctx, batchSvc)
+		if rerr != nil {
+			return nil, rerr
+		}
+
+		sessionID := mcp.ParseString(req, "session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id is required"), nil
+		}
+
+		if err := batchSvc.ImportAbort(ctx, sessionID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_batch_import_abort", Err: err}
+		}
+
+		return mcp.NewToolResultText("{}"), nil
 	}
 }

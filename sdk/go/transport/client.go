@@ -17,7 +17,22 @@ package transport
 import (
 	"context"
 	"io"
+	"math"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
+
+// DefaultClientMaxRecvMessageBytes is the response size the gRPC and Unix
+// transports' clients accept, overriding grpc-go's own CLIENT-side default
+// (4 MiB) -- a limit unrelated to, and unaffected by, the server's pre-auth
+// MaxRecvMsgSize (go-qrdb#576 bounds what an unauthenticated peer can force
+// the SERVER to allocate on receive; it says nothing about a response the
+// server itself chooses to send, such as a `kv range`/`scan` whose matches
+// exceed 4 MiB). It matches grpc-go's own SERVER-side MaxSendMsgSize default
+// (math.MaxInt32), so a client built on either transport never truncates a
+// response its server was willing to send, consistent with REST and QUIC
+// having no response-size cap of their own.
+const DefaultClientMaxRecvMessageBytes = math.MaxInt32
 
 // ---------------------------------------------------------------------------
 // Basic KV operations
@@ -251,7 +266,125 @@ type BatchClient interface {
 	// reader. The filename parameter is used for format auto-detection
 	// when opts.Format is "auto" or empty. Returns statistics about
 	// the import operation.
+	//
+	// Internally this drives ImportBegin/ImportAppend/ImportCommit below,
+	// splitting data into chunks no larger than the transport's pre-auth
+	// message cap -- there is no single-message import RPC on any
+	// transport, and there is no larger-message opt-in. A caller that
+	// wants finer control (streaming from a live source, managing its
+	// own retry of a dropped chunk) drives the four session methods
+	// directly instead of calling ImportFile.
 	ImportFile(ctx context.Context, filename string, data io.Reader, opts ImportOptions) (*ImportResult, error)
+
+	// ImportBegin starts a chunked import session and returns its ID.
+	// See docs/transactions/architecture.md ("Import session").
+	ImportBegin(ctx context.Context, opts ImportOptions) (string, error)
+
+	// ImportAppend stages chunk as sequence seq of sessionID. seq must
+	// be exactly one more than the last appended sequence, or equal to
+	// it with identical bytes (an idempotent replay of a call whose
+	// response the caller may not have seen).
+	ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error
+
+	// ImportCommit applies every staged chunk of sessionID atomically
+	// and releases the session on success.
+	ImportCommit(ctx context.Context, sessionID string) (*ImportResult, error)
+
+	// ImportAbort releases sessionID without applying anything.
+	ImportAbort(ctx context.Context, sessionID string) error
+}
+
+// DefaultImportChunkBytes is the chunk size ImportFile splits its input
+// into on a transport that carries the chunk as raw bytes (a protobuf
+// `bytes` field on gRPC/Unix, a wire frame on QUIC, a multipart field on
+// REST). It is comfortably under config.DefaultTransportMaxMessageBytes
+// (4 MiB, the universal pre-auth cap every transport applies by default),
+// leaving headroom for that framing itself, so a chunk at this size is
+// never itself refused as oversized.
+//
+// A transport that must re-encode the chunk before it is wire-sized --
+// MCP, whose JSON-RPC body carries it as base64 text -- does NOT use this
+// constant: base64 alone expands n bytes to 4n/3, so this chunk size would
+// already consume the entire cap with no room left for the request's own
+// envelope. See DefaultMCPImportChunkBytes.
+const DefaultImportChunkBytes = 3 << 20
+
+// mcpImportEnvelopeMargin is the space DefaultMCPImportChunkBytes reserves,
+// out of config.DefaultTransportMaxMessageBytes, for everything in an
+// ImportAppend call that is not the base64-encoded chunk itself: the
+// surrounding JSON-RPC 2.0 request (method, id, params), the tool name,
+// and the session_id and seq arguments. 64 KiB is generous for all of
+// that combined -- a session ID is a short opaque token and seq is a
+// single integer -- so the margin is headroom, not a tight fit.
+const mcpImportEnvelopeMargin = 64 << 10
+
+// ImportChunkBytesForEncodedMessage returns the largest raw chunk size
+// whose base64 encoding, plus margin bytes reserved for everything else in
+// the request, fits within maxMessageBytes. It floors to a multiple of 3
+// so the encoding needs no padding, making the arithmetic exact rather
+// than a worst-case estimate: base64 encodes exactly 4n/3 bytes for n a
+// multiple of 3. A maxMessageBytes no larger than margin yields 0.
+func ImportChunkBytesForEncodedMessage(maxMessageBytes, margin int) int {
+	usable := maxMessageBytes - margin
+	if usable <= 0 {
+		return 0
+	}
+	return (usable / 4) * 3
+}
+
+// DefaultMCPImportChunkBytes is the chunk size ImportFile splits its input
+// into on the MCP transport, whose JSON-RPC body has no binary framing and
+// so carries each chunk as base64 text (see mcp.Transport.ImportAppend):
+// derived from config.DefaultTransportMaxMessageBytes so that the encoded
+// chunk, plus mcpImportEnvelopeMargin for the rest of the call, never
+// itself exceeds the universal pre-auth body cap every transport applies
+// by default (go-qrdb#576: the previous, transport-agnostic
+// DefaultImportChunkBytes encoded to exactly the cap's size, leaving zero
+// room for the envelope around it).
+var DefaultMCPImportChunkBytes = ImportChunkBytesForEncodedMessage(config.DefaultTransportMaxMessageBytes, mcpImportEnvelopeMargin)
+
+// ImportFileChunked is the shared implementation of BatchClient.ImportFile:
+// it drives client's own ImportBegin/ImportAppend/ImportCommit/ImportAbort
+// to carry data as a chunked session, so every transport's ImportFile is a
+// one-line call to this function rather than five separate copies of the
+// same chunking loop. chunkSize <= 0 resolves to DefaultImportChunkBytes.
+//
+// A failure appending any chunk aborts the session (best-effort -- the
+// abort's own error is not returned, since the append error is the one
+// that matters to the caller) rather than leaving it to expire on its
+// lease TTL.
+func ImportFileChunked(ctx context.Context, client BatchClient, filename string, data io.Reader, opts ImportOptions, chunkSize int) (*ImportResult, error) {
+	if chunkSize <= 0 {
+		chunkSize = DefaultImportChunkBytes
+	}
+	opts.Filename = filename
+
+	sessionID, err := client.ImportBegin(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, chunkSize)
+	var seq uint64
+	for {
+		n, readErr := io.ReadFull(data, buf)
+		if n > 0 {
+			if appendErr := client.ImportAppend(ctx, sessionID, seq, buf[:n]); appendErr != nil {
+				_ = client.ImportAbort(ctx, sessionID)
+				return nil, appendErr
+			}
+			seq++
+		}
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			break
+		}
+		if readErr != nil {
+			_ = client.ImportAbort(ctx, sessionID)
+			return nil, &RequestError{Method: "ImportFile", Err: readErr}
+		}
+	}
+
+	return client.ImportCommit(ctx, sessionID)
 }
 
 // ---------------------------------------------------------------------------
@@ -583,12 +716,18 @@ type RoleClient interface {
 
 // CertClient provides certificate management operations.
 type CertClient interface {
-	// GenerateCert creates a client certificate signed by the internal CA.
-	GenerateCert(ctx context.Context, req *GenerateCertRequest) (*CertBundle, error)
+	// IssueCert issues a certificate from a CSR for an existing account of
+	// the caller's own tenant, signed by that tenant's own CA, and binds it
+	// to the account. No private key leaves the caller.
+	//
+	// BREAKING: this replaces GenerateCert, which had the server generate
+	// the client's private key and return it.
+	IssueCert(ctx context.Context, req *IssueCertRequest) (*EnrolledCert, error)
 
-	// ExportCert exports a certificate and key as a PKCS#12 archive for
-	// browser import.
-	ExportCert(ctx context.Context, req *ExportCertRequest) (*ExportCertResponse, error)
+	// EnrollCert binds a bring-your-own certificate to an existing account of
+	// the caller's own tenant, after verifying it chains to one of the
+	// tenant's trust anchors and authenticates as that account.
+	EnrollCert(ctx context.Context, req *EnrollCertRequest) (*EnrolledCert, error)
 
 	// RevokeCert marks a certificate serial as revoked and reports what the
 	// target node found: RevokeResult.RecordFound distinguishes a
@@ -863,6 +1002,19 @@ type TenantClient interface {
 	// UpdateTenantEntitlements sets the feature entitlements for a tenant.
 	UpdateTenantEntitlements(ctx context.Context, req *UpdateTenantEntitlementsRequest) (*UpdateTenantEntitlementsResponse, error)
 
+	// AddTrustAnchors registers CA certificates as trust anchors of
+	// req.TenantID, which must be the caller's own tenant: certificates
+	// chaining to one may then be enrolled on, and log in as, that tenant's
+	// accounts -- no other tenant's.
+	AddTrustAnchors(ctx context.Context, req *AddTrustAnchorsRequest) (*TrustAnchorList, error)
+
+	// ListTrustAnchors lists tenantID's trust anchors (the caller's own).
+	ListTrustAnchors(ctx context.Context, tenantID string) (*TrustAnchorList, error)
+
+	// RemoveTrustAnchor withdraws one of tenantID's trust anchors (the
+	// caller's own) by fingerprint; it stops vouching for logins at once.
+	RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error
+
 	// TenantBarrierInit initializes a per-tenant barrier. For the Shamir
 	// strategy the response carries the generated M-of-N shares; for
 	// none/passphrase the share fields are empty.
@@ -940,4 +1092,5 @@ type Client interface {
 	RebalanceClient
 	SealStoreClient
 	TenantClient
+	VolumePoolClient
 }

@@ -252,7 +252,7 @@ func TestRunStart_AuthDisabled_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 		storageConfig: qrdbconfig.StorageConfig{
 			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Paths: []string{filepath.Join(dir, "vol1")}, Strategy: ""},
+				{Name: "default", Path: filepath.Join(dir, "vol1")},
 			},
 		},
 		host: testBindHost,
@@ -503,7 +503,7 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 		// (lines 897-902) is exercised during sealed-window boot.
 		storageConfig: qrdbconfig.StorageConfig{
 			VolumePools: []qrdbconfig.VolumePoolConfig{
-				{Name: "default", Paths: []string{filepath.Join(dir, "vol1")}, Strategy: ""},
+				{Name: "default", Path: filepath.Join(dir, "vol1")},
 			},
 		},
 		host: testBindHost,

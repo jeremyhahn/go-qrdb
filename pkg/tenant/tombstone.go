@@ -87,11 +87,11 @@ type Tombstone struct {
 	// re-derive it from a record that no longer exists.
 	IsolationType IsolationType `json:"isolation_type,omitempty"`
 
-	// DataRoot is the dedicated filesystem root the deleted tenant occupied,
+	// VolumePool is the named volume pool the deleted tenant was placed on,
 	// empty for prefix and barrier isolation. It is recorded for the same
 	// reason IsolationType is: an operator inspecting a leaked directory can
 	// map it back to the deletion that abandoned it.
-	DataRoot string `json:"data_root,omitempty"`
+	VolumePool string `json:"volume_pool,omitempty"`
 
 	// CreatedAt is when the deleted tenant was created.
 	CreatedAt time.Time `json:"created_at,omitempty"`
@@ -111,7 +111,7 @@ func newTombstone(info *TenantInfo, now time.Time) *Tombstone {
 		t.ID = info.ID
 		t.Name = info.Name
 		t.IsolationType = info.IsolationType
-		t.DataRoot = info.DataRoot
+		t.VolumePool = info.VolumePool
 		t.CreatedAt = info.CreatedAt
 	}
 	return t

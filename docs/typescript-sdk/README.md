@@ -74,9 +74,9 @@ determine whether to render the corresponding views.
 | `VectorClient`         | 20      | Namespace CRUD, vector CRUD, search (4 modes), index maintenance, compaction |
 | `UserClient`           | 7       | create, get, update, delete, list, enable, disable |
 | `RoleClient`           | 8       | create, get, update, delete, list, assign, unassign, listPermissions |
-| `CertClient`           | 4       | generate, export, revoke, list               |
-| `SealClient`           | 6       | initialize, initializeShamir, unseal, seal, status, enableEncryption |
-| `OfficerClient`        | 9       | share-holder administration: register(Recovery/Tenant)Officer, list(Tenant)Officers, start(Tenant)Rekey, revoke(Tenant)Officer |
+| `CertClient`           | 6       | issueCert, enrollCert, issueCertWithLocalKey (desktop only), export, revoke, list |
+| `SealClient`           | 7       | initialize, initializeShamir, unseal, seal, status, clusterUnseal, enableEncryption |
+| `OfficerClient`        | 15      | share-holder administration: register(Recovery/Tenant/Database)Officer, list(Tenant/Database)Officers, start(Tenant/Database)Rekey, revoke(Tenant/Database)Officer, initializeDatabaseShamir, unenrolDatabaseOfficer |
 | `WizardClient`         | 4       | isFirstRun, saveState, loadState, getConfigDir |
 | `EmbeddedServerClient` | 3       | startEmbedded, stopEmbedded, isEmbedded      |
 

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -789,33 +788,34 @@ func TestRESTBatch_ExecuteBatch_Closed(t *testing.T) {
 	}
 }
 
-func TestRESTBatch_ImportFile_MultipartRoundTrip(t *testing.T) {
+func TestRESTBatch_ImportFile_ChunkedRoundTrip(t *testing.T) {
 	const fileBody = "key,val\nk1,v1\nk2,v2\n"
 
-	var gotFile, gotFormat, gotKeyField, gotValueMode, gotContentType string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotContentType = r.Header.Get("Content-Type")
-		// #nosec G120 -- an httptest handler defined inside this test and reached only by the request this test makes. gosec flags every ParseMultipartForm on an *http.Request regardless of any limit applied, as its own G120 sample acknowledges.
-		if err := r.ParseMultipartForm(1 << 20); err != nil {
-			t.Fatalf("ParseMultipartForm: %v", err)
-		}
-		f, _, err := r.FormFile("file")
-		if err != nil {
-			t.Fatalf("FormFile: %v", err)
-		}
-		defer func() { _ = f.Close() }()
-		raw, _ := io.ReadAll(f)
-		gotFile = string(raw)
-		gotFormat = r.FormValue("format")
-		gotKeyField = r.FormValue("keyField")
-		gotValueMode = r.FormValue("valueMode")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"total": 2, "succeeded": 2, "failed": 0,
-		})
-	}))
-	defer srv.Close()
+	rt, rs, _ := newExtTransport(t)
 
-	rt := newWiredTransport(srv)
+	var gotFormat, gotKeyField, gotValueMode string
+	var staged bytes.Buffer
+	rs.handle(exactPath(http.MethodPost, "/batch/import/begin"), func(w http.ResponseWriter, r *http.Request) {
+		var req importBeginWireRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode ImportBegin request: %v", err)
+		}
+		gotFormat, gotKeyField, gotValueMode = req.Format, req.KeyField, req.ValueMode
+		writeJSON(w, importBeginWireResponse{SessionID: "sess-1"})
+	})
+	rs.handle(pathPrefix(http.MethodPost, "/batch/import/sess-1/"), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/append"):
+			raw, _ := io.ReadAll(r.Body)
+			staged.Write(raw)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/commit"):
+			writeJSON(w, batchImportWireResponse{Total: 2, Succeeded: 2, Failed: 0})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	res, err := rt.ImportFile(context.Background(), "data.csv",
 		strings.NewReader(fileBody),
 		transport.ImportOptions{
@@ -829,41 +829,46 @@ func TestRESTBatch_ImportFile_MultipartRoundTrip(t *testing.T) {
 	if res.Total != 2 || res.Succeeded != 2 || res.Failed != 0 {
 		t.Fatalf("result = %+v, want total=2 succeeded=2 failed=0", res)
 	}
-	if !strings.HasPrefix(gotContentType, "multipart/form-data") {
-		t.Errorf("Content-Type = %q, want multipart/form-data", gotContentType)
-	}
-	if gotFile != fileBody {
-		t.Errorf("uploaded file body = %q, want %q", gotFile, fileBody)
+	if staged.String() != fileBody {
+		t.Errorf("staged chunks = %q, want %q", staged.String(), fileBody)
 	}
 	if gotFormat != "csv" || gotKeyField != "key" || gotValueMode != "field" {
-		t.Errorf("form fields format=%q keyField=%q valueMode=%q, want csv/key/field",
+		t.Errorf("ImportBegin fields format=%q keyField=%q valueMode=%q, want csv/key/field",
 			gotFormat, gotKeyField, gotValueMode)
 	}
 }
 
-func TestRESTBatch_ImportFile_EmptyFilenameStillUploadsAsFile(t *testing.T) {
-	// An empty filename (stdin imports) must still arrive as a multipart
-	// FILE part, not a value part: Go's ParseMultipartForm keys parts as
-	// files only when Content-Disposition carries a non-empty filename.
-	var sawFile bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// #nosec G120 -- an httptest handler defined inside this test and reached only by the request this test makes. gosec flags every ParseMultipartForm on an *http.Request regardless of any limit applied, as its own G120 sample acknowledges.
-		if err := r.ParseMultipartForm(1 << 20); err != nil {
-			t.Fatalf("ParseMultipartForm: %v", err)
-		}
-		_, _, err := r.FormFile("file")
-		sawFile = err == nil
-		_ = json.NewEncoder(w).Encode(map[string]any{"total": 1, "succeeded": 1, "failed": 0})
-	}))
-	defer srv.Close()
+func TestRESTBatch_ImportFile_EmptyFilenameStillSent(t *testing.T) {
+	// An empty filename (stdin imports) must still be forwarded as an
+	// explicit empty "filename" field on ImportBegin, not omitted -- the
+	// wire struct carries no `omitempty` tag specifically so the server
+	// can distinguish "no filename" from "field missing" the same way for
+	// every caller.
+	rt, rs, _ := newExtTransport(t)
 
-	rt := newWiredTransport(srv)
+	var sawFilenameField bool
+	rs.handle(exactPath(http.MethodPost, "/batch/import/begin"), func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		sawFilenameField = strings.Contains(string(raw), `"filename":""`)
+		writeJSON(w, importBeginWireResponse{SessionID: "sess-2"})
+	})
+	rs.handle(pathPrefix(http.MethodPost, "/batch/import/sess-2/"), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/append"):
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/commit"):
+			writeJSON(w, batchImportWireResponse{Total: 1, Succeeded: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	if _, err := rt.ImportFile(context.Background(), "", strings.NewReader("{\"id\":\"x\"}\n"),
 		transport.ImportOptions{Format: "ndjson", KeyField: "id", ValueMode: "row"}); err != nil {
 		t.Fatalf("ImportFile: %v", err)
 	}
-	if !sawFile {
-		t.Fatal("empty filename was not delivered as a multipart file part")
+	if !sawFilenameField {
+		t.Fatal("empty filename was not sent as an explicit \"filename\":\"\" field on ImportBegin")
 	}
 }
 

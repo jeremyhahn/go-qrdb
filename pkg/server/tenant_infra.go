@@ -23,10 +23,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	pool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -45,10 +45,10 @@ func listTenantsWhenReady(ctx context.Context, tenantSvc tenant.TenantServicer) 
 
 // TenantInfra is the assembled per-tenant isolation stack for one node. All
 // three fields are optional — a nil field means the corresponding subsystem
-// was not configured (e.g. no VolumePool or no shared Host).
+// was not configured (e.g. no VolumePoolConfigured or no shared Host).
 type TenantInfra struct {
 	// Hosts is the IsolationVolume registry; non-nil when BarrierReg,
-	// TenantSvc, and VolumePool are all present in TenantInfraConfig.
+	// TenantSvc are present, and VolumePoolConfigured is true, in TenantInfraConfig.
 	Hosts *TenantHostRegistry
 
 	// Raft is the IsolationRaft factory; non-nil when Hosts is non-nil AND
@@ -83,12 +83,12 @@ type TenantInfraConfig struct {
 	ClusterSealer clusterseal.Sealer
 
 	// BarrierReg is the per-tenant barrier registry. Its presence (non-nil)
-	// AND VolumePool's presence gate the entire IsolationVolume build.
+	// AND VolumePoolConfigured gate the entire IsolationVolume build.
 	BarrierReg *seal.BarrierRegistry
 
 	// TenantSvc provides the cluster-replicated tenant metadata (DataRoot,
 	// isolation type, auto-unseal flag). Its presence AND BarrierReg AND
-	// VolumePool gate the IsolationVolume host registry build.
+	// VolumePoolConfigured gate the IsolationVolume host registry build.
 	TenantSvc tenant.TenantServicer
 
 	// TenantLookup is the tenant-metadata lookup the LONG-LIVED registries
@@ -104,9 +104,10 @@ type TenantInfraConfig struct {
 	// TenantSvc (go-qrdb#383).
 	TenantLookup TenantLookup
 
-	// VolumePool is the per-tenant storage subsystem. Its presence (non-nil)
-	// gates the entire IsolationVolume + IsolationRaft build.
-	VolumePool *pool.VolumePoolSubsystem
+	// VolumePoolConfigured reports whether BarrierReg has a volume
+	// allocator and resolver attached (seal.BarrierRegistry.HasVolumePool).
+	// It gates the entire IsolationVolume + IsolationRaft build.
+	VolumePoolConfigured bool
 
 	// Logger is the structured logger. Defaults to slog.Default() when nil.
 	Logger *slog.Logger
@@ -142,6 +143,12 @@ type TenantInfraConfig struct {
 	// FeatureGate, when non-nil, decides when the IsolationRaft shards on
 	// Host may be sent guarded writes. Required when Host has a transport.
 	FeatureGate *featuregate.Gate
+
+	// ImportSession bounds a chunked import session on every database this
+	// builds, IsolationVolume and IsolationRaft alike (config.ImportSession,
+	// "import_session:" in YAML). The zero value resolves to the package
+	// defaults WithImportSessionLimits documents, not unbounded staging.
+	ImportSession qrdbconfig.ImportSessionConfig
 }
 
 // BuildTenantInfra assembles the per-tenant isolation stack from cfg and
@@ -171,7 +178,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 
 	// Validate the configuration contract before any side effect: the barrier
 	// restore below is not undone by an error return.
-	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil && cfg.TenantLookup == nil {
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePoolConfigured && cfg.TenantLookup == nil {
 		return nil, &TenantInfraConfigError{
 			Field:   "TenantLookup",
 			Message: "required when the IsolationVolume registry is built; the registry outlives a single tenant service",
@@ -211,7 +218,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil {
 		reconcileDeletedTenantsAtBoot(cfg.Ctx, cfg.TenantSvc, logger)
 	}
-	if cfg.BarrierReg != nil && cfg.VolumePool != nil {
+	if cfg.BarrierReg != nil && cfg.VolumePoolConfigured {
 		if err := cfg.BarrierReg.RestoreVolumeTenants(cfg.Ctx); err != nil {
 			logger.Warn("start: RestoreVolumeTenants failed; some tenant barriers may be deferred",
 				slog.Any("error", err))
@@ -223,8 +230,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// DEK. Boot re-attach eagerly rebuilds the Host of each volume tenant
 	// whose barrier is locally available so persisted data is reachable after
 	// a restart; tenants with no local barrier are deferred to lazy attach.
-	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil {
-		ti.Hosts = NewTenantHostRegistryFromLookup(cfg.BarrierReg, cfg.TenantLookup, logger)
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePoolConfigured {
+		ti.Hosts = NewTenantHostRegistryFromLookup(cfg.BarrierReg, cfg.TenantLookup, logger,
+			WithTenantHostImportSessionConfig(cfg.ImportSession))
 		if cfg.ClusterSealer != nil {
 			logger.Info("start: volume tenants attach on first access; their cluster seal records are not read yet")
 		} else if err := reattachVolumeTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Hosts, logger); err != nil {
@@ -251,7 +259,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 			Message: "required when Host is set; IsolationRaft needs a database manager to track shard metadata",
 		}
 	}
-	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil && cfg.Host != nil {
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePoolConfigured && cfg.Host != nil {
 		var raftOpts []RaftBackendOption
 		if cfg.PlacementStore != nil {
 			raftOpts = append(raftOpts,
@@ -263,6 +271,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		if cfg.FeatureGate != nil {
 			raftOpts = append(raftOpts, WithFeatureGate(cfg.FeatureGate))
 		}
+		raftOpts = append(raftOpts, WithImportSessionConfig(cfg.ImportSession))
 		ti.Raft = NewRaftBackendFactoryFromManager(
 			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, logger, raftOpts...)
 
@@ -386,7 +395,7 @@ func reattachVolumeTenants(
 		}
 		logger.Info("re-attached volume tenant",
 			slog.String("tenant", t.ID),
-			slog.String("data_root", t.DataRoot))
+			slog.String("volume_pool", t.VolumePool))
 	}
 	return nil
 }

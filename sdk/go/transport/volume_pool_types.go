@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,101 +14,129 @@
 
 package transport
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
-// ---------------------------------------------------------------------------
-// VolumePoolClient types
-// ---------------------------------------------------------------------------
-//
-// The volume pool primitive lives in go-objstore (Layer 0). qrdb wires
-// its configured Manager into the seal.BarrierRegistry so per-tenant
-// barrier-mode tenants land on independent Pebble instances at
-// pool-assigned local paths. Phase 3 exposes the read surface (List /
-// Pick) plus an admin RegisterPool gate so SDK consumers can drive the
-// pool without depending on the objstore package directly.
+// VolumePoolNodeCounts tallies a pool's per-node health: how many of the
+// nodes that have reported it are ready, locked, unavailable, or (always 0
+// in this release) unmapped.
+type VolumePoolNodeCounts struct {
+	Ready       int `json:"ready"`
+	Locked      int `json:"locked"`
+	Unavailable int `json:"unavailable"`
+	Unmapped    int `json:"unmapped"`
+}
 
-// VolumePool is the SDK projection of an objstore pool.Pool.
+// VolumePool is one pool's catalog record plus the aggregate view every
+// list/get response reports: measured usage, assigned-tenant count, and a
+// per-node health tally (docs/volume-pools/api.md).
 type VolumePool struct {
-	// Name is the pool's unique identifier.
+	Name          string               `json:"name"`
+	Provider      string               `json:"provider"`
+	Description   string               `json:"description,omitempty"`
+	CapacityBytes int64                `json:"capacityBytes"`
+	ReservedBytes int64                `json:"reservedBytes"`
+	UsedBytes     int64                `json:"usedBytes"`
+	TenantCount   int                  `json:"tenantCount"`
+	Nodes         VolumePoolNodeCounts `json:"nodes"`
+	Overcommit    float64              `json:"overcommit"`
+	CreatedAt     time.Time            `json:"createdAt,omitempty"`
+	UpdatedAt     time.Time            `json:"updatedAt,omitempty"`
+}
+
+// VolumePoolNodeReport is one node's report, scoped to a single pool.
+// State is "ready", "locked", "unavailable", "unmapped" (the node's last
+// report said it does not map the pool) or "no_report" (the report is
+// older than the catalog's lease TTL; SizeBytes, FreeBytes and Detail are
+// zeroed rather than shown stale).
+type VolumePoolNodeReport struct {
+	NodeID     string    `json:"nodeId"`
+	State      string    `json:"state"`
+	SizeBytes  int64     `json:"sizeBytes,omitempty"`
+	FreeBytes  int64     `json:"freeBytes,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
+	ReportedAt time.Time `json:"reportedAt,omitempty"`
+}
+
+// VolumePoolDetail is VolumePoolGet's response: a VolumePool plus one row
+// per node that has reported it.
+type VolumePoolDetail struct {
+	VolumePool
+	NodeReports []VolumePoolNodeReport `json:"nodeReports"`
+}
+
+// CreateVolumePoolRequest adds a pool to the catalog.
+type CreateVolumePoolRequest struct {
 	Name string `json:"name"`
-
-	// Strategy is the canonical strategy name (e.g. "round_robin",
-	// "least_utilization").
-	Strategy string `json:"strategy"`
-
-	// BackendCount is the number of registered candidates in the pool.
-	BackendCount int `json:"backendCount"`
-
-	// LocalPaths is the set of LocalPath() values returned by the
-	// pool's candidates that satisfy the PathAccessor interface.
-	// Cloud-only pools return an empty slice. Useful for operator
-	// diagnostics — answering "where will the next tenant land?".
-	LocalPaths []string `json:"localPaths,omitempty"`
+	// Provider defaults to "dir" when empty.
+	Provider    string `json:"provider,omitempty"`
+	Description string `json:"description,omitempty"`
+	// CapacityBytes of 0 means derived from health reports.
+	CapacityBytes int64 `json:"capacityBytes,omitempty"`
+	// Overcommit defaults to 1.0 when 0; must be >= 1.0 otherwise.
+	Overcommit float64 `json:"overcommit,omitempty"`
 }
 
-// VolumePoolHint mirrors objstore pool.Hint. Every field is optional;
-// strategies ignore fields they do not consume.
-type VolumePoolHint struct {
-	// TenantID is a sticky-placement signal a future strategy could use
-	// to keep the same tenant on the same backend across restarts.
-	TenantID string `json:"tenantID,omitempty"`
-
-	// SizeHint is the expected payload size in bytes.
-	SizeHint int64 `json:"sizeHint,omitempty"`
-
-	// Region is a preferred region tag (e.g. "us-east-1").
-	Region string `json:"region,omitempty"`
+// UpdateVolumePoolRequest changes a pool's description, capacity or
+// overcommit. The provider is immutable. A nil field leaves the
+// corresponding property unchanged; CapacityBytes of a non-nil, zero
+// value returns the pool to the derived capacity.
+type UpdateVolumePoolRequest struct {
+	Name          string   `json:"name"`
+	Description   *string  `json:"description,omitempty"`
+	CapacityBytes *int64   `json:"capacityBytes,omitempty"`
+	Overcommit    *float64 `json:"overcommit,omitempty"`
 }
 
-// VolumePoolBackend is the SDK projection of an objstore Storage that
-// was returned from Pick. Only the local path is exposed today — pool
-// consumers that need a richer view should compose with a deeper
-// objstore SDK call.
-type VolumePoolBackend struct {
-	// PoolName is the pool that produced this backend.
-	PoolName string `json:"poolName"`
-
-	// LocalPath is the absolute filesystem path backing the picked
-	// storage. Empty for cloud-only candidates.
-	LocalPath string `json:"localPath,omitempty"`
+// VolumePoolTenant is one row of ListVolumePoolTenantsResponse: an
+// assigned tenant's reservation and measured use on the pool.
+type VolumePoolTenant struct {
+	TenantID      string `json:"tenantId"`
+	ReservedBytes int64  `json:"reservedBytes"`
 }
 
-// RegisterVolumePoolRequest is the input to VolumePoolClient.RegisterPool.
-// It is admin-gated by the cross-scope volumepool:create permission and
-// is therefore only callable by identities in the system tenant.
-type RegisterVolumePoolRequest struct {
-	// Name is the pool's unique identifier.
-	Name string `json:"name"`
-
-	// Paths is the set of local-filesystem paths that back the pool.
-	// Each path is wrapped in an objstore local-filesystem Storage and
-	// added as a candidate.
-	Paths []string `json:"paths"`
-
-	// Strategy is the canonical strategy name. An empty value defaults
-	// to "round_robin" — the only strategy with a concrete implementation
-	// today.
-	Strategy string `json:"strategy,omitempty"`
+// ListVolumePoolTenantsRequest pages through the tenants assigned to a
+// pool. PageSize 0 means the server default; PageToken is the previous
+// response's NextPageToken.
+type ListVolumePoolTenantsRequest struct {
+	Pool      string `json:"pool"`
+	PageToken string `json:"page_token,omitempty"`
+	PageSize  int    `json:"page_size,omitempty"`
 }
 
-// ---------------------------------------------------------------------------
-// VolumePoolClient interface
-// ---------------------------------------------------------------------------
+// ListVolumePoolTenantsResponse is one page of a pool's assigned tenants.
+type ListVolumePoolTenantsResponse struct {
+	Tenants       []VolumePoolTenant `json:"tenants"`
+	NextPageToken string             `json:"next_page_token,omitempty"`
+}
 
-// VolumePoolClient exposes the objstore volume-pool primitive used by
-// qrdb to place per-tenant barrier-mode Pebble instances.
+// VolumePoolClient is the volume pool management surface
+// (docs/volume-pools/api.md): list, inspect, create, update, delete a
+// pool, and list a pool's assigned tenants. Tier 1: every transport
+// implements it. Every capability is ScopeCross (system tenant only).
 type VolumePoolClient interface {
-	// List returns every registered pool sorted by name.
-	List(ctx context.Context) ([]VolumePool, error)
+	// ListPools lists every pool in the catalog. Not paginated: a cluster
+	// has a handful of pools.
+	ListPools(ctx context.Context) ([]VolumePool, error)
 
-	// Pick selects one backend from the named pool using its
-	// configured strategy. Returns PoolNotConfiguredError when the
-	// pool name is unknown and PoolEmptyError when the pool has no
-	// candidates.
-	Pick(ctx context.Context, poolName string, hint VolumePoolHint) (*VolumePoolBackend, error)
+	// GetPool inspects one pool, with one row per node that has reported
+	// it.
+	GetPool(ctx context.Context, name string) (*VolumePoolDetail, error)
 
-	// RegisterPool adds a new pool. Admin-only — the underlying
-	// implementation may gate the call behind volumepool:create which
-	// is a cross-scope permission reserved for the system tenant.
-	RegisterPool(ctx context.Context, req RegisterVolumePoolRequest) error
+	// CreatePool adds a pool to the catalog. The pool is not served until
+	// each node maps it in its own configuration and restarts or reloads.
+	CreatePool(ctx context.Context, req *CreateVolumePoolRequest) (*VolumePool, error)
+
+	// UpdatePool changes a pool's description, capacity or overcommit.
+	UpdatePool(ctx context.Context, req *UpdateVolumePoolRequest) (*VolumePool, error)
+
+	// DeletePool removes a pool from the catalog. Refused while any
+	// tenant is assigned to it.
+	DeletePool(ctx context.Context, name string) error
+
+	// ListPoolTenants lists the tenants assigned to a pool, with each
+	// one's reservation and measured use.
+	ListPoolTenants(ctx context.Context, req *ListVolumePoolTenantsRequest) (*ListVolumePoolTenantsResponse, error)
 }

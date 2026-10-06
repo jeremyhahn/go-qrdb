@@ -16,9 +16,7 @@ package mcp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -34,8 +32,8 @@ import (
 //
 // The Perm on each registration is authorized against the CALLER's tenant by
 // AuthorizeMCP. It cannot authorize the tenant the TOOL CALL names, and three
-// of these four name theirs — tenant_id on generate, tenant_id on list, and,
-// indirectly, the serial revoke resolves. So mw is threaded into the handlers
+// of these name theirs — tenant_id on list and, indirectly, the serial revoke
+// resolves. (Issuing and enrolling are enrollmentTools.) So mw is threaded into the handlers
 // for the second question, answered by the one cross-transport home of the
 // rule (pkg/auth/middleware/cert_authz.go).
 //
@@ -46,19 +44,6 @@ import (
 // mw may be nil (no-auth deployments), in which case the gates are no-ops.
 func certTools(svc cert.CertProvider, mw *authmw.AuthMiddleware) []serverTool {
 	return []serverTool{
-		{
-			Tool:    toolCertGenerate(),
-			Perm:    permission.CertsGenerate,
-			Handler: handleCertGenerate(svc, mw),
-		},
-		{
-			Tool: toolCertExport(),
-			Perm: permission.CertsExport,
-			// No tenancy gate: export re-encodes the certificate and key the
-			// CALLER supplied and reads no server-held material, so it names
-			// no tenant and there is nothing for a gate to protect.
-			Handler: handleCertExport(svc),
-		},
 		{
 			Tool:    toolCertRevoke(),
 			Perm:    permission.CertsRevoke,
@@ -89,126 +74,6 @@ func authorizeCertRevokeTool(ctx context.Context, mw *authmw.AuthMiddleware, svc
 		return nil
 	}
 	return mw.AuthorizeCertRevoke(ctx, serial, svc)
-}
-
-// toolCertGenerate defines the qrdb_cert_generate tool schema.
-func toolCertGenerate() mcp.Tool {
-	return mcp.NewTool("qrdb_cert_generate",
-		mcp.WithDescription("Generate a client X.509 certificate signed by the internal CA for mTLS authentication."),
-		mcp.WithString("username",
-			mcp.Required(),
-			mcp.Description("The username to set as the certificate Common Name (CN)."),
-		),
-		mcp.WithString("tenant_id",
-			mcp.Description("The tenant ID to set as the certificate Organizational Unit (OU). Defaults to the system default tenant when empty."),
-		),
-		mcp.WithString("ttl",
-			mcp.Description(`Certificate validity period as a Go duration string (e.g., "8760h" for one year). Defaults to the provider's default when empty.`),
-		),
-	)
-}
-
-// handleCertGenerate returns a tool handler that delegates to
-// svc.GenerateClientCert.
-func handleCertGenerate(svc cert.CertProvider, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		username := mcp.ParseString(req, "username", "")
-		if username == "" {
-			return mcp.NewToolResultError("username is required"), nil
-		}
-
-		genReq := &cert.GenerateRequest{
-			Username: username,
-			TenantID: mcp.ParseString(req, "tenant_id", ""),
-		}
-
-		ttlStr := mcp.ParseString(req, "ttl", "")
-		if ttlStr != "" {
-			ttl, err := time.ParseDuration(ttlStr)
-			if err != nil {
-				return mcp.NewToolResultError("invalid ttl duration: " + err.Error()), nil
-			}
-			genReq.TTL = ttl
-		}
-
-		// The call's tenant_id becomes the certificate's Subject OU, and the
-		// mTLS authenticator derives an identity's tenant from that OU.
-		if err := authorizeCertTenantTool(ctx, mw, genReq.TenantID, permission.CertsGenerate); err != nil {
-			return nil, &ToolError{Tool: "qrdb_cert_generate", Err: err}
-		}
-
-		bundle, err := svc.GenerateClientCert(ctx, genReq)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_cert_generate", Err: err}
-		}
-
-		data, jsonErr := json.Marshal(bundle)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_cert_generate", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolCertExport defines the qrdb_cert_export tool schema.
-func toolCertExport() mcp.Tool {
-	return mcp.NewTool("qrdb_cert_export",
-		mcp.WithDescription("Export a certificate and private key as a PKCS#12 (.p12) bundle for browser import. Returns the bundle as base64-encoded data."),
-		mcp.WithString("cert_pem",
-			mcp.Required(),
-			mcp.Description("The PEM-encoded X.509 client certificate."),
-		),
-		mcp.WithString("key_pem",
-			mcp.Required(),
-			mcp.Description("The PEM-encoded private key."),
-		),
-		mcp.WithString("passphrase",
-			mcp.Required(),
-			mcp.Description("The passphrase to protect the PKCS#12 bundle."),
-		),
-	)
-}
-
-// certExportResponse is the JSON envelope for a PKCS#12 export result.
-type certExportResponse struct {
-	// P12Base64 is the PKCS#12 bundle encoded as base64.
-	P12Base64 string `json:"p12_base64"`
-}
-
-// handleCertExport returns a tool handler that delegates to
-// svc.ExportPKCS12.
-func handleCertExport(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		certPEM := mcp.ParseString(req, "cert_pem", "")
-		if certPEM == "" {
-			return mcp.NewToolResultError("cert_pem is required"), nil
-		}
-		keyPEM := mcp.ParseString(req, "key_pem", "")
-		if keyPEM == "" {
-			return mcp.NewToolResultError("key_pem is required"), nil
-		}
-		passphrase := mcp.ParseString(req, "passphrase", "")
-		if passphrase == "" {
-			return mcp.NewToolResultError("passphrase is required"), nil
-		}
-
-		p12, err := svc.ExportPKCS12(ctx, []byte(certPEM), []byte(keyPEM), passphrase)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_cert_export", Err: err}
-		}
-
-		resp := certExportResponse{
-			P12Base64: base64.StdEncoding.EncodeToString(p12),
-		}
-
-		data, jsonErr := json.Marshal(resp)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_cert_export", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
 }
 
 // toolCertRevoke defines the qrdb_cert_revoke tool schema.

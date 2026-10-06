@@ -21,6 +21,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -147,17 +149,17 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 
 // mockCertProvider is a configurable mock for cert.CertProvider.
 type mockCertProvider struct {
-	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
-	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
-	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
-	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
-	tenantForSerialFn    func(ctx context.Context, serial string) (string, bool, error)
-	caCertPEMFn          func() []byte
+	issueClientCertFn func(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error)
+	exportPKCS12Fn    func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
+	revokeCertFn      func(ctx context.Context, serial string) (*cert.RevokeResult, error)
+	isRevokedFn       func(ctx context.Context, serial string) (bool, error)
+	listCertsFn       func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
+	tenantForSerialFn func(ctx context.Context, serial string) (string, bool, error)
+	caCertPEMFn       func() []byte
 }
 
-func (m *mockCertProvider) GenerateClientCert(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error) {
-	return m.generateClientCertFn(ctx, req)
+func (m *mockCertProvider) IssueClientCert(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	return m.issueClientCertFn(ctx, req)
 }
 
 func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
@@ -229,4 +231,30 @@ func (m *mockCertProvider) TenantForSerial(ctx context.Context, serial string) (
 		return m.tenantForSerialFn(ctx, serial)
 	}
 	return "", false, nil
+}
+
+// ---------------------------------------------------------------------------
+// fakeTenantOnboarding
+// ---------------------------------------------------------------------------
+
+// fakeTenantOnboarding adapts tenant.TenantServicer.CreateTenant to
+// service.TenantOnboardingServicer for handler tests that exercise
+// handleTenantCreate's request/response mapping rather than the onboarding
+// business rules (first-admin credential issuance), which pkg/service and
+// pkg/bootstrap test directly against the real TenantOnboardingService. No
+// build constraint: it is used from both the tagged (handlers_tenant_test.go)
+// and untagged (handlers_coverage_extra2_test.go) tenant test files, so its
+// own constraint must be the superset -- none at all.
+type fakeTenantOnboarding struct {
+	tenants tenant.TenantServicer
+}
+
+var _ service.TenantOnboardingServicer = (*fakeTenantOnboarding)(nil)
+
+func (f *fakeTenantOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	info, err := f.tenants.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+	if err != nil {
+		return nil, err
+	}
+	return &service.OnboardTenantResult{Tenant: info}, nil
 }

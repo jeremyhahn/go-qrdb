@@ -194,6 +194,22 @@ func (m *mockBatchService) Import(ctx context.Context, file io.Reader, opts serv
 	return nil, nil
 }
 
+func (m *mockBatchService) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (m *mockBatchService) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (m *mockBatchService) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
+	return nil, nil
+}
+
+func (m *mockBatchService) ImportAbort(_ context.Context, _ string) error {
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Mock: WatchServicer
 // ---------------------------------------------------------------------------
@@ -3029,8 +3045,12 @@ func TestTransactionTools_ReturnsCorrectCount(t *testing.T) {
 func TestBatchTools_ReturnsCorrectCount(t *testing.T) {
 	svc := &mockBatchService{}
 	tools := batchTools(svc)
-	if len(tools) != 2 {
-		t.Errorf("expected 2 batch tools, got %d", len(tools))
+	// qrdb_batch_execute and the four chunked import session tools
+	// (qrdb_batch_import_begin/_append/_commit/_abort --
+	// docs/transactions/architecture.md "Import session"). The retired
+	// single-message qrdb_batch_import tool these four replace is gone.
+	if len(tools) != 5 {
+		t.Errorf("expected 5 batch tools, got %d", len(tools))
 	}
 }
 

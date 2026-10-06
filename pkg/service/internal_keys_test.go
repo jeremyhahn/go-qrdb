@@ -111,6 +111,11 @@ func TestInternalKeyPrefixes_TracksTheKeyLayout(t *testing.T) {
 		"idx:metric:",
 		"idx:tag:",
 		"retention:",
+		// A chunked import session's metadata and staged chunks are
+		// deliberately absent: they no longer live in the MVCC/KV
+		// engine's keyspace at all (pkg/importstage's raw, lease-bound
+		// records), so there is nothing here for this guard to filter.
+		// See internal_keys.go's comment at this same point.
 	}
 	for _, p := range want {
 		if !slices.Contains(got, p) {

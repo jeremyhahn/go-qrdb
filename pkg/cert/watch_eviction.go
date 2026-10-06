@@ -42,6 +42,17 @@ var watchReestablishBackoff = 2 * time.Second
 // exponential backoff may grow.
 var watchReestablishBackoffCap = 1 * time.Minute
 
+// WatchPrefixer is the one method WatchForDeletions needs from a watch
+// service: a prefix watcher. Declared locally, narrower than
+// service.WatchServicer, so this package depends only on pkg/watch rather
+// than the whole pkg/service -- which itself depends on pkg/bootstrap,
+// which depends back on pkg/cert for the onboarding seam
+// (bootstrap.ProvisionTenant), an import cycle service.WatchServicer would
+// otherwise close. Any service.WatchServicer satisfies this implicitly.
+type WatchPrefixer interface {
+	WatchPrefix(ctx context.Context, prefix string, opts ...watch.WatchOption) (watch.Watcher, error)
+}
+
 // WatchForDeletions starts two background watchers -- over __sys:cert_ca/
 // for DELETE events and over the tenant tombstone prefix
 // (tenant.TombstonePrefix) for PUT events -- that evict this provider's

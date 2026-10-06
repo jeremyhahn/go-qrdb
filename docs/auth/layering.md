@@ -28,7 +28,7 @@ membership from qrdb via the SDK.
   - audit log access (read, query, stream)
   - KV / MVCC / transaction / batch / watch / lease / index / time-series / vector / lock operations
   - cryptographic keys (sign, verify, encrypt, decrypt, wrap, unwrap, create, rotate, delete, derive)
-  - certificate management (generate, export, revoke, list, read)
+  - certificate management (issue, enroll, export, revoke, list, read) and trust anchors (add, list, remove)
   - certificate authority (CA) and ACME operations
   - seal/barrier operations and recovery
   - ceremony and custodian operations

@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // RegisterOption configures optional service dependencies for RegisterService.
@@ -173,6 +174,18 @@ func WithRegisterCertProvider(svc cert.CertProvider) RegisterOption {
 	return func(s *qrdbServiceServer) { s.certProv = svc }
 }
 
+// WithRegisterCertEnrollment attaches the certificate issue/enrol and
+// trust-anchor service for the registered gRPC service.
+func WithRegisterCertEnrollment(svc service.CertEnrollmentServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.certEnroll = svc }
+}
+
+// WithRegisterTenantOnboarding attaches the tenant-create service for the
+// registered gRPC service.
+func WithRegisterTenantOnboarding(svc service.TenantOnboardingServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.onboarding = svc }
+}
+
 // WithRegisterAuthMiddleware attaches the auth middleware the registered gRPC
 // service needs for its HANDLER-level tenancy gates — the certs surface, whose
 // target tenant is in the request rather than in the caller's identity. It is
@@ -201,6 +214,12 @@ func WithRegisterLockService(svc service.LockServicer) RegisterOption {
 // WithRegisterTenantService attaches a tenant management service for the registered gRPC service.
 func WithRegisterTenantService(svc tenant.TenantServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.tenantSvc = svc }
+}
+
+// WithRegisterVolumeService attaches the volume pool management surface
+// (docs/volume-pools/api.md) for the registered gRPC service.
+func WithRegisterVolumeService(svc volume.Service) RegisterOption {
+	return func(s *qrdbServiceServer) { s.volumeSvc = svc }
 }
 
 // WithRegisterBackupService attaches a backup management service for the registered gRPC service.

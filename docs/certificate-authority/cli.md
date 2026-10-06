@@ -1,6 +1,6 @@
 # Certificate Authority — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 Command group: `qrdb ca` — post-init Certificate Authority operations. **This
 is the canonical CA surface; it replaces the legacy `certs` group.**
@@ -13,22 +13,73 @@ All verbs accept the root persistent flags documented in
 
 ## `qrdb ca issue`
 
-Issue a new client certificate. The CN becomes the username and the OU becomes
-the tenant, so this call mints an identity.
+Issue a client certificate for an **existing** account of your own tenant,
+signed by your tenant's own CA, and bind it to the account. The CN is the
+account's username and the OU is your tenant, so this call mints an identity.
+The server only ever sees a certificate signing request: **the private key
+never leaves the machine that made it.**
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--username` | string | — | username for the certificate subject (CN) |
-| `--tenant-id` | string | `system` | tenant (OU) |
+| `--username` | string | — | required; the existing account the certificate is for |
+| `--csr` | string | — | a PEM certificate signing request to issue for |
 | `--ttl` | string | provider default (1 year) | validity duration, e.g. `8760h` |
-| `--out` | string | — | output directory for `cert.pem` and `key.pem` |
+| `--out` | string | — | output directory for `cert.pem` (and `key.pem` when the key is generated here) |
+
+Two ways to run it:
+
+- **With `--csr`**, the certificate is issued for that CSR's key, which stays
+  wherever the CSR was made. With `--out` the certificate is written as
+  `cert.pem`; without, it is printed.
+- **Without `--csr`**, the CLI generates an ECDSA P-256 key **on this
+  machine**, sends only a CSR for it, and writes `key.pem` and `cert.pem` to
+  `--out`, which is then required.
 
 ```bash
 qrdb ca issue --username alice --out ./alice
-qrdb ca issue --username svc-import --tenant-id acme --ttl 720h --out ./svc
+qrdb ca issue --username svc-import --csr svc-import.csr --ttl 720h --out ./svc
 ```
 
-The certificate carries `ClientAuth` extended key usage only.
+There is no `--tenant-id`: the tenant is always yours. Only the CSR's key is
+used — the certificate names the account you pass, whatever the CSR's Subject
+says. The certificate carries `ClientAuth` extended key usage only.
+
+**BREAKING:** `qrdb ca issue` no longer has the server generate the key, and
+its `--tenant-id` flag is removed.
+
+## `qrdb ca enroll`
+
+Bind a certificate you already hold — issued by your own CA — to an
+**existing** account of your own tenant. It must chain to one of your tenant's
+trust anchors ([../trust-anchors/cli.md](../trust-anchors/cli.md)), its CN must
+be the username, and it must name your tenant.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--username` | string | required; the existing account |
+| `--cert` | string | required; the PEM certificate, leaf first |
+| `--chain` | string | optional PEM intermediates |
+
+```bash
+qrdb ca enroll --username alice --cert alice.pem --chain issuing-ca.pem
+```
+
+## `qrdb ca csr`
+
+Generate an ECDSA P-256 key and a certificate signing request **locally**, with
+no server involved. Writes `key.pem` and `csr.pem` to `--out`. This is how a
+tenant's first admin produces the CSR the platform operator passes to
+`qrdb tenant create --admin-csr`, and how anyone produces one for
+`qrdb ca issue --csr`.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--username` | string | required; the CSR's Subject CN (the issuer names the account regardless) |
+| `--out` | string | required; output directory |
+
+```bash
+qrdb ca csr --username alice --out ./alice
+```
 
 ## `qrdb ca list`
 
@@ -104,22 +155,25 @@ cannot tell the two apart on its own.
 
 ### Which certificates you may act on
 
-`issue`, `revoke` and `list` are authorized against the tenant the COMMAND
-names, not the tenant your credential is in:
+`issue` and `enroll` act on your own tenant and name no other. `revoke` and
+`list` are authorized against the tenant the COMMAND reaches, not the tenant
+your credential is in:
 
-| Command | Refused with `PERMISSION_DENIED` when |
+| Command | Refused when |
 |---|---|
-| `ca issue --tenant-id <t>` | `<t>` is not your tenant — whoever you are, `system` included |
-| `ca list --tenant-id <t>` | `<t>` is not your tenant — whoever you are, `system` included |
-| `ca revoke --serial <s>` | `<s>` belongs to another tenant, or matches no record and you lack `certs:revoke:cross` |
+| `ca issue --username <u>` / `ca enroll --username <u>` | `<u>` is not an account of your tenant (not found) |
+| `ca list --tenant-id <t>` | `<t>` is not your tenant — whoever you are, `system` included (`PERMISSION_DENIED`) |
+| `ca revoke --serial <s>` | `<s>` belongs to another tenant, or matches no record and you lack `certs:revoke:cross` (`PERMISSION_DENIED`) |
 
-`ca issue` is the one to watch: `--tenant-id` becomes the certificate's OU, and
-the OU is where an mTLS login reads the tenant from. Issuing into a tenant is
-issuing a credential FOR that tenant.
+The OU of an issued certificate is where an mTLS login reads the tenant from,
+which is why issuance takes no tenant: issuing into a tenant is issuing a
+credential FOR that tenant.
 
 An operator in the `system` tenant is confined to the `system` tenant like
 everyone else: it cannot issue a certificate for, list, or revoke the
-certificates of a customer tenant. Each tenant's own Admin does that.
+certificates of a customer tenant. Each tenant's own Admin does that. A new
+tenant's **first** admin certificate is the one exception, and it is issued at
+tenant creation — see [../multi-tenancy/cli.md](../multi-tenancy/cli.md).
 
 `ca export-bundle` names no tenant: it re-encodes the certificate and key you
 supply, and the server holds neither.
@@ -163,14 +217,16 @@ That route exists only when a bootstrap certificate is configured — see
 barrier-sealed error, because the CA private key is destroyed in memory on seal.
 Unseal first: [../barrier-seal/cli.md](../barrier-seal/cli.md).
 
-## After issuing
+## Before issuing, and after
 
-A certificate alone does not authorize anything. Bind it to a user and give the
-user a role:
+`issue` and `enroll` need the account to exist, and they bind the certificate
+to it themselves. A certificate still authorizes nothing until the account has
+a role:
 
 ```bash
-qrdb users create --username alice           # if the user does not exist
-qrdb roles assign --username alice --role Operator
+qrdb users create --username alice --email alice@example.com   # before issuing
+qrdb ca issue --username alice --out ./alice
+qrdb roles assign --user <user-id> --role <role-id>
 ```
 
 See [../identity-rbac/cli.md](../identity-rbac/cli.md).

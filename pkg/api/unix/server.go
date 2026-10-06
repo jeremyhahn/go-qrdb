@@ -55,6 +55,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // Server is a gRPC server that listens on a Unix domain socket. It
@@ -69,6 +70,8 @@ type Server struct {
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
+	certEnroll        service.CertEnrollmentServicer
+	onboarding        service.TenantOnboardingServicer
 	barrierSvc        service.BarrierServicer
 	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
@@ -90,6 +93,7 @@ type Server struct {
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
 	tenantSvc         tenant.TenantServicer
+	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
 	authFactorSvc     service.AuthFactorServicer
@@ -128,6 +132,11 @@ type Server struct {
 	// cap. Zero means grpcpkg.DefaultMaxConcurrentStreams; see
 	// WithMaxConcurrentStreams.
 	maxConcurrentStreams uint32
+
+	// maxMessageBytes bounds a single gRPC message this server accepts or
+	// produces. Zero or negative resolves to grpcpkg.DefaultMaxMessageBytes.
+	// See WithMaxMessageBytes.
+	maxMessageBytes int
 }
 
 // ServerOption configures optional Server dependencies.
@@ -150,6 +159,16 @@ func WithReplicaForwarding(cfg replicaforward.Config) ServerOption {
 		c := cfg
 		s.replicaForwarding = &c
 	}
+}
+
+// WithMaxMessageBytes bounds a single gRPC message this server accepts or
+// produces. n <= 0 resolves to grpcpkg.DefaultMaxMessageBytes at Start;
+// there is no way to request an unbounded message. The Unix domain socket
+// carries no remote-IP concept, so unlike the TCP gRPC server there is no
+// corresponding per-peer connection cap here: the socket file's mode bits
+// already bound who can dial it at all.
+func WithMaxMessageBytes(n int) ServerOption {
+	return func(s *Server) { s.maxMessageBytes = n }
 }
 
 // WithTLS configures the Unix socket gRPC server with TLS credentials.
@@ -241,6 +260,18 @@ func WithSOGate(gate *authmw.SOGate) ServerOption {
 // WithCertProvider configures the Unix socket server with a certificate provider.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = svc }
+}
+
+// WithCertEnrollment configures the Unix socket server with the certificate
+// issue/enrol and trust-anchor service.
+func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
+	return func(s *Server) { s.certEnroll = svc }
+}
+
+// WithTenantOnboarding configures the Unix socket server with the tenant-create
+// service.
+func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
+	return func(s *Server) { s.onboarding = svc }
 }
 
 // WithBarrierService configures the Unix socket server with a barrier service.
@@ -426,6 +457,12 @@ func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 // WithTenantService configures the Unix socket server with a tenant management service.
 func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithVolumeService configures the Unix socket server with the volume pool
+// management surface (docs/volume-pools/api.md).
+func WithVolumeService(svc volume.Service) ServerOption {
+	return func(s *Server) { s.volumeSvc = svc }
 }
 
 // WithBackupService configures the Unix socket server with a backup management service.
@@ -647,10 +684,14 @@ func (s *Server) Start() error {
 	if maxStreams == 0 {
 		maxStreams = grpcpkg.DefaultMaxConcurrentStreams
 	}
+	maxMsgBytes := grpcpkg.ResolveMaxMessageBytes(s.maxMessageBytes)
 	serverOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(unaryChain),
 		grpc.StreamInterceptor(streamChain),
-		grpc.MaxRecvMsgSize(grpcpkg.DefaultMaxRecvMsgSize),
+		// MaxRecvMsgSize only -- see pkg/api/grpc.Server's identical option
+		// list for why a response this server chooses to send is not
+		// capped at the same pre-auth receive-side bound.
+		grpc.MaxRecvMsgSize(maxMsgBytes),
 		grpc.MaxConcurrentStreams(maxStreams),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             grpcpkg.DefaultKeepaliveMinTime,
@@ -687,6 +728,12 @@ func (s *Server) Start() error {
 	}
 	if s.certProv != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCertProvider(s.certProv))
+	}
+	if s.certEnroll != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterCertEnrollment(s.certEnroll))
+	}
+	if s.onboarding != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterTenantOnboarding(s.onboarding))
 	}
 	if s.barrierSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterBarrierService(s.barrierSvc))
@@ -750,6 +797,9 @@ func (s *Server) Start() error {
 	}
 	if s.tenantSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterTenantService(s.tenantSvc))
+	}
+	if s.volumeSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterVolumeService(s.volumeSvc))
 	}
 	if s.backupSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterBackupService(s.backupSvc))

@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 ## Exported surface
 
@@ -274,12 +274,16 @@ the identity fails.
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
 | `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
 
-`ScopeSelfStrict` holds the `escrow:*` and `certs:*` families
-(`pkg/permission/self_strict_scope.go`; `certs:revoke:cross` alone stays
-`ScopeCross`). `certs:*` moved there from `ScopeSelf` because a certificate
-minted for another tenant's user authenticates as that user, so the
-system-tenant lift on `certs:generate` was a lift to every tenant's identities
-(**BREAKING**). `TestCertsPermissions_AreSelfStrict` pins it.
+`ScopeSelfStrict` holds the `escrow:*`, `certs:*` and `trust_anchors:*`
+families (`pkg/permission/self_strict_scope.go`; `certs:revoke:cross` alone
+stays `ScopeCross`). `certs:*` moved there from `ScopeSelf` because a
+certificate minted for another tenant's user authenticates as that user, so
+the system-tenant lift on the former `certs:generate` was a lift to every
+tenant's identities (**BREAKING**). `TestCertsPermissions_AreSelfStrict` pins
+it. `certs:generate` is now removed altogether, replaced by `certs:issue`
+(sign a CSR for an existing account) and `certs:enroll` (bind a
+bring-your-own certificate), both held by the built-in SO and Admin roles
+(**BREAKING**).
 
 The audit query is not decided by scope at all: its permission is checked
 against the caller, and the filter is then confined to the caller's own tenant

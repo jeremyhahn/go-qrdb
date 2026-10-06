@@ -33,7 +33,7 @@ type mcpTenantInfo struct {
 	ID            string                        `json:"id"`
 	Name          string                        `json:"name"`
 	IsolationType transport.TenantIsolationType `json:"isolation_type,omitempty"`
-	DataRoot      string                        `json:"data_root,omitempty"`
+	VolumePool    string                        `json:"volume_pool,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAt     string                        `json:"created_at"`
@@ -80,8 +80,19 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if req.BarrierAutoUnseal {
 		args["barrier_auto_unseal"] = true
 	}
-	if req.DataRoot != "" {
-		args["data_root"] = req.DataRoot
+	if req.VolumePool != "" {
+		args["volume_pool"] = req.VolumePool
+	}
+	args["admin_username"] = req.AdminUsername
+	for name, value := range map[string]string{
+		"admin_csr_pem":     req.AdminCSRPEM,
+		"admin_cert_pem":    req.AdminCertPEM,
+		"admin_chain_pem":   req.AdminChainPEM,
+		"trust_anchors_pem": req.TrustAnchorsPEM,
+	} {
+		if value != "" {
+			args[name] = value
+		}
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_create", args)
@@ -89,12 +100,62 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
 	}
 
-	var info mcpTenantInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+	var result struct {
+		Tenant mcpTenantInfo                   `json:"tenant"`
+		Admin  transport.TenantAdminCredential `json:"admin"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
+	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin}, nil
+}
+
+// trustAnchorTool calls a trust-anchor tool and decodes the tenant's
+// anchors; the tool's JSON is transport.TrustAnchorList's.
+func (t *Transport) trustAnchorTool(ctx context.Context, method, tool string, args map[string]any) (*transport.TrustAnchorList, error) {
+	text, err := t.callTool(ctx, tool, args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	var out transport.TrustAnchorList
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		return nil, &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &out, nil
+}
+
+// AddTrustAnchors registers trust anchors of req.TenantID by calling the
+// qrdb_trust_anchor_add MCP tool.
+func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrustAnchorsRequest) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return t.trustAnchorTool(ctx, "AddTrustAnchors", "qrdb_trust_anchor_add",
+		map[string]any{"tenant_id": req.TenantID, "certs_pem": req.CertsPEM})
+}
+
+// ListTrustAnchors lists tenantID's trust anchors by calling the
+// qrdb_trust_anchor_list MCP tool.
+func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return t.trustAnchorTool(ctx, "ListTrustAnchors", "qrdb_trust_anchor_list",
+		map[string]any{"tenant_id": tenantID})
+}
+
+// RemoveTrustAnchor withdraws one of tenantID's trust anchors by calling the
+// qrdb_trust_anchor_remove MCP tool.
+func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if _, err := t.callTool(ctx, "qrdb_trust_anchor_remove",
+		map[string]any{"tenant_id": tenantID, "fingerprint": fingerprint}); err != nil {
+		return &transport.RequestError{Method: "RemoveTrustAnchor", Err: err}
+	}
+	return nil
 }
 
 // GetTenant retrieves a tenant by ID by calling the qrdb_tenant_get MCP tool.
@@ -439,7 +500,7 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		ID:            m.ID,
 		Name:          m.Name,
 		IsolationType: m.IsolationType,
-		DataRoot:      m.DataRoot,
+		VolumePool:    m.VolumePool,
 		Quotas:        m.Quotas,
 		Entitlements:  m.Entitlements,
 	}

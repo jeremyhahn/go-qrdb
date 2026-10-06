@@ -19,58 +19,13 @@ import {
   secondLaunchEmbeddedState,
   injectError,
 } from "./fixtures/wails-mock.ts";
-import type { Page } from "@playwright/test";
+import {
+  waitForConnectionManager,
+  waitForDashboard,
+  completeEmbeddedWizardNoBarrier,
+} from "./fixtures/embedded-wizard-steps.ts";
 
 const TIMEOUT = 10_000;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function waitForDashboard(page: Page): Promise<void> {
-  await expect(
-    page.locator(".breadcrumbs").getByText("Dashboard"),
-  ).toBeVisible({ timeout: TIMEOUT });
-}
-
-async function gotoAndWaitForConnectionManager(page: Page): Promise<void> {
-  await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "No servers configured", exact: true }),
-  ).toBeVisible({ timeout: TIMEOUT });
-}
-
-async function completeEmbeddedWizardNoBarrier(
-  page: Page,
-  name = "Test Local Server",
-): Promise<void> {
-  await page.getByRole("button", { name: "Create Embedded Server" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Create Embedded Server" }),
-  ).toBeVisible({ timeout: TIMEOUT });
-
-  await expect(page.locator("#emb-name")).toBeVisible({ timeout: TIMEOUT });
-  await page.locator("#emb-name").fill(name);
-  await page.getByRole("button", { name: "Next" }).click();
-
-  await expect(
-    page.locator("button").filter({ hasText: "Standalone" }).first(),
-  ).toBeVisible({ timeout: TIMEOUT });
-  await page.locator("button").filter({ hasText: "Standalone" }).first().click();
-  await page.getByRole("button", { name: "Next" }).click();
-
-  await expect(
-    page.locator("button").filter({ hasText: "None" }).first(),
-  ).toBeVisible({ timeout: TIMEOUT });
-  await page.locator("button").filter({ hasText: "None" }).first().click();
-  await page.getByRole("button", { name: "Next" }).click();
-
-  await expect(
-    page.getByText("Review your server configuration before creating it."),
-  ).toBeVisible({ timeout: TIMEOUT });
-  await page.getByRole("button", { name: "Create Server" }).click();
-  await waitForDashboard(page);
-}
 
 // ---------------------------------------------------------------------------
 // Bug 1: No-encryption wizard → sidebar navigation works (no "Connection failed")
@@ -82,7 +37,8 @@ test.describe("Bug 1 - no-barrier wizard sidebar navigation", () => {
   test("completing no-barrier wizard lands on Dashboard without Connection failed toast", async ({
     page,
   }) => {
-    await gotoAndWaitForConnectionManager(page);
+    await page.goto("/");
+    await waitForConnectionManager(page);
     await completeEmbeddedWizardNoBarrier(page, "Bug1 Server");
 
     // We must be on the Dashboard with no error toast
@@ -100,7 +56,8 @@ test.describe("Bug 1 - no-barrier wizard sidebar navigation", () => {
   test("no-barrier wizard completion puts app in admin context with admin sidebar items", async ({
     page,
   }) => {
-    await gotoAndWaitForConnectionManager(page);
+    await page.goto("/");
+    await waitForConnectionManager(page);
     await completeEmbeddedWizardNoBarrier(page, "Bug1 NavCtx Server");
 
     // After wizard, should be in server-admin context (Dashboard visible)
@@ -496,7 +453,8 @@ test.describe("Bug 6 - duplicate dataDir rejected", () => {
   test("second embedded server creation with same dataDir is rejected", async ({
     page,
   }) => {
-    await gotoAndWaitForConnectionManager(page);
+    await page.goto("/");
+    await waitForConnectionManager(page);
 
     // Override SaveProfile to simulate DuplicateDataDirError on second call
     await page.evaluate(() => {

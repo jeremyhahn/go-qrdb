@@ -31,29 +31,13 @@ import (
 // only seam is the directory removal itself, in the one test that needs a
 // removal to fail.
 
-// putTenantRootRecord writes a raw tenant-root record -- the state of a node
-// holding a record for an id, in whatever form it was written.
-func putTenantRootRecord(t *testing.T, svc *TenantService, id string, rec map[string]any) {
+// assignmentExists reports whether the registry's catalog still holds an
+// Assignment for id -- the durable record DropTenantRecords removes, and
+// whose survival after a failed removal is what lets the next pass retry.
+func assignmentExists(t *testing.T, reg *seal.BarrierRegistry, id string) bool {
 	t.Helper()
-	raw, err := json.Marshal(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.registry.SystemBarrier().Put(context.Background(), "__registry:tenant_root/"+id, raw); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func recordExists(t *testing.T, svc *TenantService, id string) bool {
-	t.Helper()
-	_, err := svc.registry.SystemBarrier().Get(context.Background(), "__registry:tenant_root/"+id)
-	if err == nil {
-		return true
-	}
-	if !errors.Is(err, seal.ErrSecretNotFound) {
-		t.Fatal(err)
-	}
-	return false
+	_, err := reg.LocalTenantDataRoot(context.Background(), id)
+	return err == nil
 }
 
 // TestReconcileDeletedTenants_CorruptLiveRecordAbortsThePass is B1. A live
@@ -63,10 +47,14 @@ func recordExists(t *testing.T, svc *TenantService, id string) bool {
 // tenant's data; the reconcile must fail closed instead.
 func TestReconcileDeletedTenants_CorruptLiveRecordAbortsThePass(t *testing.T) {
 	ctx := context.Background()
-	svc, _, store := newReconcileService(t)
+	svc, reg, store := newReconcileService(t)
 	gone, err := svc.CreateTenant(ctx, "vgone", "Gone", IsolationVolume)
 	if err != nil {
 		t.Fatal(err)
+	}
+	dataRoot, err := reg.LocalTenantDataRoot(ctx, "vgone")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vgone): %v", err)
 	}
 	retireElsewhere(t, store, gone)
 	// A live tenant whose record is unreadable and whose DataRoot is, in
@@ -80,7 +68,7 @@ func TestReconcileDeletedTenants_CorruptLiveRecordAbortsThePass(t *testing.T) {
 	if !errors.As(err, &re) || re.Op != "list-tenants" {
 		t.Fatalf("ReconcileDeletedTenants = %v; want *ResidueReconcileError{list-tenants}", err)
 	}
-	if !dirExists(t, gone.DataRoot) {
+	if !dirExists(t, dataRoot) {
 		t.Fatal("the reconcile removed a directory while a live tenant's record was unreadable")
 	}
 }
@@ -90,10 +78,14 @@ func TestReconcileDeletedTenants_CorruptLiveRecordAbortsThePass(t *testing.T) {
 // that will not decode stops the reclamation of that id.
 func TestReconcileDeletedTenants_UndecodableRecordForTheRetiredIdIsStillLive(t *testing.T) {
 	ctx := context.Background()
-	svc, _, store := newReconcileService(t)
-	gone, err := svc.CreateTenant(ctx, "vboth", "Both", IsolationVolume)
+	svc, reg, store := newReconcileService(t)
+	_, err := svc.CreateTenant(ctx, "vboth", "Both", IsolationVolume)
 	if err != nil {
 		t.Fatal(err)
+	}
+	dataRoot, err := reg.LocalTenantDataRoot(ctx, "vboth")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vboth): %v", err)
 	}
 	ts, _ := json.Marshal(&Tombstone{ID: "vboth", DeletedAt: time.Now().UTC()})
 	if err := store.Put(ctx, tombstoneKey("vboth"), ts); err != nil {
@@ -112,7 +104,7 @@ func TestReconcileDeletedTenants_UndecodableRecordForTheRetiredIdIsStillLive(t *
 	if len(report.Skipped) != 1 || report.Skipped[0].Reason != SkipLiveTenantRecord {
 		t.Fatalf("report = %+v; want the id skipped as %s", report, SkipLiveTenantRecord)
 	}
-	if !dirExists(t, gone.DataRoot) {
+	if !dirExists(t, dataRoot) {
 		t.Fatal("an id with an existing record had its directory removed")
 	}
 }
@@ -120,15 +112,19 @@ func TestReconcileDeletedTenants_UndecodableRecordForTheRetiredIdIsStillLive(t *
 // TestReconcileDeletedTenants_FailedRemovalIsFinishedByTheNextPass is B2. The
 // records that locate a directory are dropped only after it is removed, so a
 // removal that fails leaves the record, and the next pass finds the directory
-// again.
+// again. Dropping the records first orphaned a pool-allocated DataRoot that
+// nothing named any more.
 func TestReconcileDeletedTenants_FailedRemovalIsFinishedByTheNextPass(t *testing.T) {
 	ctx := context.Background()
-	svc, _, store := newReconcileService(t)
+	svc, reg, store := newReconcileService(t)
 	gone, err := svc.CreateTenant(ctx, "vgone", "Gone", IsolationVolume)
 	if err != nil {
 		t.Fatal(err)
 	}
-	explicit := gone.DataRoot
+	dataRoot, err := reg.LocalTenantDataRoot(ctx, "vgone")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vgone): %v", err)
+	}
 	retireElsewhere(t, store, gone)
 
 	boom := errors.New("device busy")
@@ -147,10 +143,10 @@ func TestReconcileDeletedTenants_FailedRemovalIsFinishedByTheNextPass(t *testing
 	if !errors.As(err, &re) || re.Op != "remove" || !errors.Is(err, boom) {
 		t.Fatalf("first pass = %v; want *ResidueReconcileError{remove}", err)
 	}
-	if !dirExists(t, explicit) {
+	if !dirExists(t, dataRoot) {
 		t.Fatal("precondition: the failed removal removed the directory")
 	}
-	if !recordExists(t, svc, "vgone") {
+	if !assignmentExists(t, reg, "vgone") {
 		t.Fatal("the record naming the directory was dropped although its removal failed")
 	}
 
@@ -158,14 +154,56 @@ func TestReconcileDeletedTenants_FailedRemovalIsFinishedByTheNextPass(t *testing
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
-	if dirExists(t, explicit) {
+	if dirExists(t, dataRoot) {
 		t.Fatal("the second pass did not reclaim the directory the first one failed on")
 	}
-	if len(report.Reclaimed) != 1 || report.Reclaimed[0].Path != explicit {
+	if len(report.Reclaimed) != 1 || report.Reclaimed[0].Path != filepath.Clean(dataRoot) {
 		t.Fatalf("second pass report = %+v", report)
 	}
-	if recordExists(t, svc, "vgone") {
+	if assignmentExists(t, reg, "vgone") {
 		t.Fatal("the record survived a successful reclamation")
+	}
+}
+
+// TestReconcileDeletedTenants_PeerCreateDuringThePassIsHonoured is N1: the live
+// set is re-read right before each removal, so a tenant created on a peer
+// after the pass began, at the directory a stale record names, keeps it. The
+// peer's create is applied from inside the runtime closer, which runs after
+// the pass has read its guards and before it removes anything.
+func TestReconcileDeletedTenants_PeerCreateDuringThePassIsHonoured(t *testing.T) {
+	ctx := context.Background()
+	svc, reg, store := newReconcileService(t)
+	gone, err := svc.CreateTenant(ctx, "vgone", "Gone", IsolationVolume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contested, err := reg.LocalTenantDataRoot(ctx, "vgone")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(vgone): %v", err)
+	}
+	retireElsewhere(t, store, gone)
+
+	allocator := volumeAllocatorFor(t, reg)
+	svc.SetTenantRuntimeCloser(closerFunc(func(context.Context, string) error {
+		// "vpeer" lands at the SAME tenant-relative path "vgone" resolves to
+		// -- a direct Reserve, mirroring what a peer's CreateTenant racing
+		// the delete would commit to the replicated catalog.
+		if _, err := allocator.Reserve(ctx, "vpeer", "default", "vgone", 0); err != nil {
+			return err
+		}
+		rec, _ := json.Marshal(&TenantInfo{ID: "vpeer", Name: "Peer", IsolationType: IsolationVolume, VolumePool: "default"})
+		return store.Put(ctx, metadataPrefix+"vpeer", rec)
+	}))
+
+	report, err := svc.ReconcileDeletedTenants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirExists(t, contested) {
+		t.Fatal("a directory a tenant created mid-pass now claims was removed")
+	}
+	if len(report.Skipped) != 1 || report.Skipped[0].Reason != SkipOverlapsLiveTenant {
+		t.Fatalf("report = %+v; want the contested directory skipped", report)
 	}
 }
 
@@ -173,37 +211,85 @@ type closerFunc func(context.Context, string) error
 
 func (f closerFunc) CloseTenantRuntime(ctx context.Context, id string) error { return f(ctx, id) }
 
-// TestReconcileDeletedTenants_RecordNamingAPathIsNeverRemoved: a retired id's
-// tenant-root record that names a path -- however canonical it looks -- is
-// refused, and the pass removes nothing for it. Only this node's own pool
-// directory for the id is ever a candidate.
-func TestReconcileDeletedTenants_RecordNamingAPathIsNeverRemoved(t *testing.T) {
+// TestReconcileDeletedTenants_RecordNamingAPathIsNeverRemoved covered a
+// retired id's tenant-root record naming a path -- however canonical it
+// looked -- refused with *seal.AbsoluteDataRootRecordError, via a raw
+// record injected with putTenantRootRecord. Neither the helper nor the
+// error type exist any more: a tenant-root record now holds {pool, slot},
+// never a path (volume.Catalog's Assignment is the only durable record,
+// and Reserve validates its path component's shape before it is ever
+// written -- docs/volume-pools D9), so there is no longer a record shape
+// this test's injection could even construct. The still-reachable
+// property -- a candidate path is judged canonical before anything is
+// removed -- is covered directly below by exercising removeResidue's own
+// guard, the defense in depth it is.
+
+// TestRemoveResidue_NonCanonicalPathIsNeverRemoved is N2: a candidate path
+// that is relative or not canonical is skipped, not resolved against the
+// process's working directory and removed.
+//
+// The candidate used to come from a raw persisted "tenant root" record,
+// which a corrupt write could carry any string in. Every candidate
+// removeResidue sees today comes from BarrierRegistry.TenantDataRootCandidates,
+// which reconstructs it from a catalog Assignment whose path component the
+// Allocator validated at Reserve time (docs/volume-pools D9) -- so the
+// registry itself can no longer hand removeResidue a non-canonical
+// candidate. The guard inside removeResidue is exercised directly instead,
+// as the defense in depth it is.
+func TestRemoveResidue_NonCanonicalPathIsNeverRemoved(t *testing.T) {
 	ctx := context.Background()
-	svc, _, store := newReconcileService(t)
-	foreign := filepath.Join(t.TempDir(), "another-node", "vlegacy")
-	if err := os.MkdirAll(filepath.Join(foreign, "barrier"), 0o700); err != nil {
+	svc, _ := newTestService(t)
+	for _, path := range []string{"relative/dir", "./also-relative"} {
+		reason, rerr, err := svc.removeResidue(ctx, "vrel", path, &residueGuards{})
+		if err != nil || rerr != nil || reason != SkipNotCanonical {
+			t.Fatalf("removeResidue(%q) = %q, %v, %v; want %s, nil, nil", path, reason, rerr, err, SkipNotCanonical)
+		}
+	}
+}
+
+// TestRemoveResidue_DottedAbsolutePathIsNeverRemoved: an absolute candidate
+// carrying a ".." segment names its PARENT once cleaned. It must be judged
+// not canonical, so skipped -- and never cleaned into a different, existing
+// directory and removed.
+func TestRemoveResidue_DottedAbsolutePathIsNeverRemoved(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	parent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(parent, "a"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	putTenantRootRecord(t, svc, "vlegacy", map[string]any{"pool": "default", "slot": 0, "data_root": foreign})
-	retireElsewhere(t, store, &TenantInfo{ID: "vlegacy", IsolationType: IsolationVolume})
+	dotted := filepath.Join(parent, "a") + "/.."
 
-	report, err := svc.ReconcileDeletedTenants(ctx)
-	var agg *ResidueReconcileFailuresError
-	if !errors.As(err, &agg) || len(agg.Errors) != 1 || agg.Errors[0].TenantID != "vlegacy" {
-		t.Fatalf("ReconcileDeletedTenants = %v; want vlegacy's record refused", err)
+	reason, rerr, err := svc.removeResidue(ctx, "vdotted", dotted, &residueGuards{})
+	if err != nil || rerr != nil || reason != SkipNotCanonical {
+		t.Fatalf("removeResidue(%q) = %q, %v, %v; want %s, nil, nil", dotted, reason, rerr, err, SkipNotCanonical)
 	}
-	var abs *seal.AbsoluteDataRootRecordError
-	if !errors.As(err, &abs) {
-		t.Fatalf("the failure is %v; want *seal.AbsoluteDataRootRecordError", err)
+	if !dirExists(t, parent) {
+		t.Fatalf("removeResidue touched %s, the parent a dotted candidate resolves to", parent)
 	}
-	if report == nil || len(report.Reclaimed) != 0 {
-		t.Fatalf("report = %+v; want nothing reclaimed", report)
+}
+
+// TestRemoveResidue_ReservedDataRootOverlapIsSkipped is N3: a reserved data
+// root is guarded by overlap in BOTH directions, so a directory INSIDE the
+// reserved root is refused too -- unless it also lies strictly inside a pool
+// base, where every tenant's pool directory lies by construction (see
+// TestReconcileDeletedTenants_PoolDirectoryInsideAReservedRootIsReclaimed).
+// This path is in no pool, so it is refused.
+func TestRemoveResidue_ReservedDataRootOverlapIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	reserved := t.TempDir()
+	inside := filepath.Join(reserved, "system-data")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !dirExists(t, foreign) {
-		t.Fatal("the directory a refused record named was removed")
+
+	reason, rerr, err := svc.removeResidue(ctx, "vsys", inside, &residueGuards{reserved: []string{reserved}})
+	if err != nil || rerr != nil || reason != SkipOverlapsReservedRoot {
+		t.Fatalf("removeResidue(%q) = %q, %v, %v; want %s, nil, nil", inside, reason, rerr, err, SkipOverlapsReservedRoot)
 	}
-	if !recordExists(t, svc, "vlegacy") {
-		t.Fatal("the refused record was dropped")
+	if !dirExists(t, inside) {
+		t.Fatal("removeResidue removed a directory inside a reserved data root")
 	}
 }
 
@@ -250,12 +336,39 @@ func TestTenantService_TenantRuntimeCloserAccessor(t *testing.T) {
 	}
 }
 
+// TestCreateTenant_RefusesARootAStaleRecordStillClaims covered CreateTenant
+// refusing an explicit --data-root that collided with a not-yet-reclaimed
+// retired tenant's recorded root (*DataRootOverlapError, the
+// retiredResidueRemedy). CreateTenant no longer accepts an explicit disk
+// path: a volume tenant's reserved path is always its own tenant id
+// (reserveAndRegisterVolumeTenant Reserves at id, never a caller-supplied
+// path), so two DIFFERENT tenant ids can never contend for the same literal
+// path through this API -- the collision this test built is no longer
+// constructible. The analogous collision that IS still reachable -- a stale
+// Assignment naming a path a LIVE tenant's own directory also occupies -- is
+// covered on the reconcile side by
+// TestReconcileDeletedTenants_StaleAssignmentNamingALiveDirectoryIsSkipped in
+// deleted_tenants_test.go.
+
 func TestVolumeRegisterError_MapsEachCause(t *testing.T) {
-	if err := volumeRegisterError("a", "register-volume", seal.ErrTenantAlreadyExists); !errors.Is(err, ErrTenantAlreadyExists) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	if err := svc.volumeRegisterError(ctx, "a", "register-volume", seal.ErrTenantAlreadyExists); !errors.Is(err, ErrTenantAlreadyExists) {
 		t.Fatalf("already exists = %v", err)
 	}
 	var be *BarrierError
-	if err := volumeRegisterError("a", "register-raft", errors.New("x")); !errors.As(err, &be) || be.Op != "register-raft" {
+	if err := svc.volumeRegisterError(ctx, "a", "register-raft", errors.New("x")); !errors.As(err, &be) || be.Op != "register-raft" {
 		t.Fatalf("other = %v", err)
 	}
 }
+
+// TestVolumeRegisterError_LiveClaimantHasNoRemedy and
+// TestVolumeRegisterError_TombstoneReadFailureIsReported covered the branch of
+// volumeRegisterError that inspected a *seal.DataRootClaimedError and
+// consulted the tombstone store to decide whether to name the
+// reconcile-deleted remedy. The catalog-backed Allocator validates a path's
+// shape at Reserve time (docs/volume-pools D9), so a registration can no
+// longer fail with a raw claimed-path error for volumeRegisterError to
+// classify -- that type is gone, and with it the branch; the only causes
+// volumeRegisterError maps today are covered by
+// TestVolumeRegisterError_MapsEachCause.

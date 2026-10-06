@@ -260,8 +260,10 @@ export type {
     ListPermissionsResponse,
 
     // Certificate management
-    GenerateCertRequest,
-    CertBundle,
+    IssueCertRequest,
+    EnrollCertRequest,
+    EnrolledCert,
+    IssuedCertWithKey,
     ExportCertRequest,
     ExportCertResponse,
     CertRecord,
@@ -380,6 +382,9 @@ export type {
     UpdateTenantQuotasResponse,
     UpdateTenantEntitlementsRequest,
     UpdateTenantEntitlementsResponse,
+    TenantAdminCredential,
+    TrustAnchor,
+    TrustAnchorList,
 
     // Server config
     ConfigInitializedResponse,

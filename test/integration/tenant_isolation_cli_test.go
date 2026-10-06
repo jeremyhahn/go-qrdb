@@ -65,6 +65,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,13 +79,44 @@ import (
 // tenant_cli_test.go.
 func createTenant(t *testing.T, node *multiProtoNode, proto multiProtocol, id, name, isolationType string, autoUnseal bool) {
 	t.Helper()
+	adminArgs := adminCSRArgsForTenant(t, node, proto, id+"-admin")
 	args := []string{"tenant", "create", "--id", id, "--name", name, "--isolation-type", isolationType}
 	if autoUnseal {
 		args = append(args, "--barrier-auto-unseal")
 	}
+	args = append(args, adminArgs...)
 	if out, err := runCLIProto(t, node, proto, args...); err != nil {
 		t.Fatalf("[%s] tenant create %s (isolation=%s): %v\noutput: %s", proto.name, id, isolationType, err, out)
 	}
+}
+
+// createTenantWithAdminCert is createTenant, but keeps the first admin's
+// own key and issued certificate (rather than discarding them inside
+// adminCSRArgsForTenant) and returns their paths: trust-on-first-init
+// admits only that exact certificate (see docs/multi-tenancy, the
+// pending-admin record), never any other authenticated identity of the
+// tenant, so a test driving the pre-RBAC window must authenticate AS the
+// admin it onboarded, not a separately-minted tenant identity.
+func createTenantWithAdminCert(t *testing.T, node *multiProtoNode, proto multiProtocol, id, name, isolationType string, autoUnseal bool, adminUsername string) (certPath, keyPath string) {
+	t.Helper()
+	adminArgs := adminCSRArgsForTenant(t, node, proto, adminUsername)
+	// adminCSRArgsForTenant's last element is the CSR path; its key.pem
+	// sibling is the matching private key.
+	keyPath = filepath.Join(filepath.Dir(adminArgs[len(adminArgs)-1]), "key.pem")
+
+	certDir := t.TempDir()
+	args := []string{"tenant", "create", "--id", id, "--name", name, "--isolation-type", isolationType}
+	if autoUnseal {
+		args = append(args, "--barrier-auto-unseal")
+	}
+	args = append(args, adminArgs...)
+	args = append(args, "--out", certDir)
+	out, err := runCLIProto(t, node, proto, args...)
+	if err != nil {
+		t.Fatalf("[%s] tenant create %s (isolation=%s): %v\noutput: %s", proto.name, id, isolationType, err, out)
+	}
+	certPath = filepath.Join(certDir, "admin-cert.pem")
+	return certPath, keyPath
 }
 
 // provisionTenantIdentity grants a tenant's mTLS identity (CN=admin,

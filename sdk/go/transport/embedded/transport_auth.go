@@ -16,13 +16,12 @@ package embedded
 
 import (
 	"context"
-	"encoding/base64"
 	"time"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -156,6 +155,10 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 		return nil, &transport.NotImplementedError{Method: "AddCertBinding"}
 	}
 	if err := t.authorizeUserTarget(ctx, userID, permission.UsersAddCertBinding); err != nil {
+		return nil, err
+	}
+	// Binding a thumbprint binds a key: the certificate target rule applies.
+	if err := t.authMW.AuthorizeCertBindingTarget(ctx, t.userSvc, userID); err != nil {
 		return nil, err
 	}
 	u, err := t.userSvc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
@@ -510,75 +513,86 @@ func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermiss
 // CertClient implementation
 // ---------------------------------------------------------------------------
 
-// GenerateCert creates a client certificate via the embedded cert provider.
-//
-// The certificate authenticates as req.Username in req.TenantID. Two
-// independent checks gate it, run in this order:
-//
-//  1. tenant.Confine -- a STRUCTURAL guarantee, not an authorization policy:
-//     a certificate this CA signs authenticates as the tenant its Subject
-//     names, so minting one for another tenant would be minting someone
-//     else's identity. It runs unconditionally, with or without RBAC,
-//     exactly like finalizeIdentity's tenant fold on every network
-//     transport.
-//  2. AuthMiddleware.AuthorizeCertTenant -- the RBAC grant, the SAME shared
-//     gate the network transports use (pkg/auth/middleware/cert_authz.go):
-//     certs:generate's ScopeSelfStrict admits only the caller's own tenant,
-//     the system tenant included. A nil AuthMiddleware authorizes
-//     everything here, matching every other permission gate in this file.
-func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
-	if err := t.gate("GenerateCert"); err != nil {
-		return nil, err
+// enrolledToTransport converts a bound certificate.
+func enrolledToTransport(e *service.EnrolledCertificate) *transport.EnrolledCert {
+	return &transport.EnrolledCert{
+		UserID:     e.UserID,
+		Username:   e.Username,
+		TenantID:   e.TenantID,
+		CertPEM:    string(e.CertPEM),
+		Serial:     e.Serial,
+		Thumbprint: e.Thumbprint,
+		NotAfter:   e.NotAfter,
 	}
-	if t.certProv == nil {
-		return nil, &transport.NotImplementedError{Method: "GenerateCert"}
-	}
-	if _, err := tenant.Confine(ctx, req.TenantID, "generate a certificate"); err != nil {
-		return nil, err
-	}
-	if err := t.authorizeCertTenant(ctx, req.TenantID, permission.CertsGenerate); err != nil {
-		return nil, err
-	}
-	genReq := &cert.GenerateRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-	}
-	if req.TTL != "" {
-		ttl, err := time.ParseDuration(req.TTL)
-		if err != nil {
-			return nil, err
-		}
-		genReq.TTL = ttl
-	}
-	bundle, err := t.certProv.GenerateClientCert(ctx, genReq)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.CertBundle{
-		CertPEM: string(bundle.CertPEM),
-		KeyPEM:  string(bundle.KeyPEM),
-		Serial:  bundle.Serial,
-	}, nil
 }
 
-// ExportCert exports a certificate as PKCS#12 via the embedded cert provider.
-func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
-	if err := t.gate("ExportCert"); err != nil {
+// IssueCert issues a certificate from a CSR for an existing account of the
+// caller's own tenant, signed by that tenant's own CA, and binds it. The
+// tenant is the caller's (tenant.Confine of the context's own), and
+// certs:issue's ScopeSelfStrict is enforced here through
+// AuthMiddleware.AuthorizeCertTenant, the same shared gate every network
+// transport authorizes this verb through.
+func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
+	if err := t.gate("IssueCert"); err != nil {
 		return nil, err
 	}
-	if err := t.authorize(ctx, "ExportCert"); err != nil {
-		return nil, err
+	if t.certEnroll == nil {
+		return nil, &transport.NotImplementedError{Method: "IssueCert"}
 	}
-	if t.certProv == nil {
-		return nil, &transport.NotImplementedError{Method: "ExportCert"}
-	}
-	p12Bytes, err := t.certProv.ExportPKCS12(ctx, []byte(req.CertPEM), []byte(req.KeyPEM), req.Passphrase)
+	tenantID, err := tenant.Confine(ctx, "", "issue a certificate")
 	if err != nil {
 		return nil, err
 	}
-	return &transport.ExportCertResponse{
-		PKCS12: base64.StdEncoding.EncodeToString(p12Bytes),
-	}, nil
+	if err := t.authorizeCertTenant(ctx, tenantID, permission.CertsIssue); err != nil {
+		return nil, err
+	}
+	var ttl time.Duration
+	if req.TTL != "" {
+		if ttl, err = time.ParseDuration(req.TTL); err != nil {
+			return nil, err
+		}
+	}
+	enrolled, err := t.certEnroll.SignCertificate(ctx, &service.SignCertificateRequest{
+		TenantID: tenantID,
+		Username: req.Username,
+		CSRPEM:   []byte(req.CSRPEM),
+		TTL:      ttl,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return enrolledToTransport(enrolled), nil
+}
+
+// EnrollCert binds a bring-your-own certificate to an existing account of the
+// caller's own tenant, verified against the tenant's trust anchors.
+// certs:enroll's ScopeSelfStrict is enforced through
+// AuthMiddleware.AuthorizeCertTenant, the same shared gate every network
+// transport authorizes this verb through.
+func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
+	if err := t.gate("EnrollCert"); err != nil {
+		return nil, err
+	}
+	if t.certEnroll == nil {
+		return nil, &transport.NotImplementedError{Method: "EnrollCert"}
+	}
+	tenantID, err := tenant.Confine(ctx, "", "enrol a certificate")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorizeCertTenant(ctx, tenantID, permission.CertsEnroll); err != nil {
+		return nil, err
+	}
+	enrolled, err := t.certEnroll.EnrollCertificate(ctx, &service.EnrollCertificateRequest{
+		TenantID: tenantID,
+		Username: req.Username,
+		CertPEM:  []byte(req.CertPEM),
+		ChainPEM: []byte(req.ChainPEM),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return enrolledToTransport(enrolled), nil
 }
 
 // RevokeCert marks a certificate serial as revoked via the embedded cert

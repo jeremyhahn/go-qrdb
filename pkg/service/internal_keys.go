@@ -173,6 +173,19 @@ var internalKeyPrefixes = []internalKeyPrefix{
 	{prefix: timeseries.KeyPrefixMetricIndex},
 	{prefix: timeseries.KeyPrefixTagIndex},
 	{prefix: timeseries.KeyPrefixRetention},
+
+	// A chunked import session's metadata and staged chunks
+	// (batch_import_session.go, pkg/importstage) are deliberately NOT
+	// listed here: go-qrdb#576's security review found the earlier design
+	// (a hidden MVCC key filtered only here, at enumeration) was a
+	// discovery guard, not storage isolation -- reachable and forgeable
+	// through plain Get/Range/Put in a dedicated-raft database's own
+	// store. The record now lives in the state machine's reserved raw
+	// keyspace, written only through protocol.OpImportStage and read only
+	// through its own query types (ImportStageMetaQuery and friends,
+	// pkg/statemachine), exactly like the lease table (pkg/lease) --
+	// never through the MVCC store or the KV engine's own Get/Put/List/
+	// Scan path at all, so there is no enumeration surface here to guard.
 }
 
 // InternalKeyPrefixes returns a copy of the canonical internal key prefixes.

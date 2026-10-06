@@ -82,7 +82,10 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_mvcc_restore_to_revision":       permission.MVCCRestore,
 	"qrdb_tx_execute":                     permission.TransactionExecute,
 	"qrdb_batch_execute":                  permission.BatchExecute,
-	"qrdb_batch_import":                   permission.BatchExecute,
+	"qrdb_batch_import_begin":             permission.BatchExecute,
+	"qrdb_batch_import_append":            permission.BatchExecute,
+	"qrdb_batch_import_commit":            permission.BatchExecute,
+	"qrdb_batch_import_abort":             permission.BatchExecute,
 	"qrdb_watch":                          permission.WatchWatch,
 	"qrdb_lease_grant":                    permission.LeaseGrant,
 	"qrdb_lease_revoke":                   permission.LeaseRevoke,
@@ -162,8 +165,11 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_permissions_list":               permission.PermissionsList,
 	"qrdb_permissions_resolve":            permission.PermissionsResolve,
 	"qrdb_role_reconcile_builtin":         permission.RolesCreate,
-	"qrdb_cert_generate":                  permission.CertsGenerate,
-	"qrdb_cert_export":                    permission.CertsExport,
+	"qrdb_cert_issue":                     permission.CertsIssue,
+	"qrdb_cert_enroll":                    permission.CertsEnroll,
+	"qrdb_trust_anchor_add":               permission.TrustAnchorsAdd,
+	"qrdb_trust_anchor_list":              permission.TrustAnchorsList,
+	"qrdb_trust_anchor_remove":            permission.TrustAnchorsRemove,
 	"qrdb_cert_revoke":                    permission.CertsRevoke,
 	"qrdb_cert_list":                      permission.CertsList,
 	"qrdb_tenant_create":                  permission.TenantsCreate,
@@ -353,16 +359,6 @@ func (guardAuditLogger) Query(context.Context, audit.Filter) (*audit.Page, error
 }
 func (guardAuditLogger) Close() error { return nil }
 
-// guardMCPAllowAuthorizer permits everything and counts calls.
-type guardMCPAllowAuthorizer struct {
-	calls int
-}
-
-func (a *guardMCPAllowAuthorizer) Authorize(context.Context, *auth.Identity, string, string) error {
-	a.calls++
-	return nil
-}
-
 // newFullyWiredGuardServer builds a *Server with every optional service
 // wired so every conditional addTools group in NewServer fires, reusing the
 // package's existing test doubles where they are visible under the plain
@@ -384,6 +380,7 @@ func newFullyWiredGuardServer(t *testing.T, extra ...ServerOption) *Server {
 		WithUserService(&mockUserService{}),
 		WithRoleService(&mockRoleService{}),
 		WithCertProvider(&mockCertProvider{}),
+		WithCertEnrollment(&fakeCertEnrollTool{}),
 		WithCollectionService(newMockCollectionService()),
 		WithDatabaseService(newMockDatabaseService()),
 		WithBarrierService(newCovMockBarrierSvc()),

@@ -958,7 +958,7 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 		}
 	}
 
-	return s.mutateCertBindings(ctx, "add_cert_binding", userID, func(u *User) ([]CertBinding, bool, error) {
+	updated, err := s.mutateCertBindings(ctx, "add_cert_binding", userID, func(u *User) ([]CertBinding, bool, error) {
 		// A thumbprint resolves to exactly one identity within a tenant. Reject
 		// binding a thumbprint that is already bound to a different user in the
 		// same tenant — silently overwriting it would let a caller hijack
@@ -985,12 +985,44 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 		if notAfterUnix > 0 {
 			b.NotAfter = time.Unix(notAfterUnix, 0).UTC()
 		}
+		// Already bound with identical fields: report no change instead of
+		// re-committing the same bytes. This is the difference between a
+		// genuinely idempotent retry and one that merely LOOKS idempotent --
+		// without it, every loser of a concurrent first-boot race (an N-node
+		// genesis cluster, each binding the identical shared admin
+		// certificate to the identical admin user, go-qrdb flaky-cluster
+		// incident) still re-attempts a CAS write on every retry instead of
+		// recognizing the winner's commit, so the retry budget is consumed by
+		// a race that re-occurs on every attempt rather than resolving after
+		// one.
+		for _, existing := range u.CertBindings {
+			if existing.Thumbprint == b.Thumbprint && existing.Kind == b.Kind && existing.NotAfter.Equal(b.NotAfter) {
+				// No write means updateUserAt never runs its own
+				// IsBootstrapAdmin(existing) branch, so the bootstrap
+				// admin's expiry posture is refreshed here instead --
+				// same observability a real commit would have produced,
+				// without the write.
+				s.observeBootstrapAdmin(u)
+				return u.CertBindings, false, nil
+			}
+		}
 		// u is a local decode of the committed record; mutating it writes
 		// nothing. AddCertBinding de-duplicates by thumbprint, so re-binding an
 		// existing thumbprint refreshes its expiry rather than doubling it.
 		u.AddCertBinding(b)
 		return u.CertBindings, true, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.emitAudit(ctx, "add_cert_binding", userID, map[string]any{
+		"username":   updated.Username,
+		"tenantID":   updated.TenantID,
+		"thumbprint": thumbprint,
+		"expires":    notAfterUnix > 0,
+	})
+	return updated, nil
 }
 
 // RemoveCertBinding withdraws the binding for thumbprint from the user: the

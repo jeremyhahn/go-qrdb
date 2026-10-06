@@ -513,6 +513,22 @@ func (s *fullBatchExecSvc) Import(_ context.Context, _ io.Reader, _ service.Impo
 	return &service.ImportResult{}, nil
 }
 
+func (s *fullBatchExecSvc) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (s *fullBatchExecSvc) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (s *fullBatchExecSvc) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
+	return nil, nil
+}
+
+func (s *fullBatchExecSvc) ImportAbort(_ context.Context, _ string) error {
+	return nil
+}
+
 // stubReader is a stand-in to keep imports minimal; will be substituted below.
 
 // ===========================================================================

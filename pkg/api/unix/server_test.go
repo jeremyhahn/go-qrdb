@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -769,6 +770,29 @@ func TestWithCertProvider_Applied(t *testing.T) {
 	}
 }
 
+// TestWithCertEnrollment_Applied asserts that an injected
+// service.CertEnrollmentServicer is reachable from the server, independent
+// of WithCertProvider.
+func TestWithCertEnrollment_Applied(t *testing.T) {
+	ce := &stubCertEnroll{}
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithCertEnrollment(ce),
+		WithTLS(selfSignedTLSConfig(t)))
+	if srv.certEnroll != ce {
+		t.Fatal("expected certEnroll to be the supplied instance")
+	}
+}
+
+// TestWithCertEnrollment_NilIsNil is the control.
+func TestWithCertEnrollment_NilIsNil(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithCertEnrollment(nil),
+		WithTLS(selfSignedTLSConfig(t)))
+	if srv.certEnroll != nil {
+		t.Fatal("expected nil certEnroll")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Start with optional services exercises the non-nil branches in Start()
 // ---------------------------------------------------------------------------
@@ -828,10 +852,30 @@ func (s *stubRoleSvc) ResolvePermissions(_ context.Context, _ []string) ([]permi
 	return nil, nil
 }
 
+// stubCertEnroll satisfies service.CertEnrollmentServicer for option
+// propagation tests.
+type stubCertEnroll struct{}
+
+func (s *stubCertEnroll) SignCertificate(_ context.Context, _ *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	return nil, nil
+}
+func (s *stubCertEnroll) EnrollCertificate(_ context.Context, _ *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	return nil, nil
+}
+func (s *stubCertEnroll) AddTrustAnchors(_ context.Context, _ string, _ []byte) ([]trustanchor.Anchor, error) {
+	return nil, nil
+}
+func (s *stubCertEnroll) ListTrustAnchors(_ context.Context, _ string) ([]trustanchor.Anchor, error) {
+	return nil, nil
+}
+func (s *stubCertEnroll) RemoveTrustAnchor(_ context.Context, _, _ string) error { return nil }
+
+var _ service.CertEnrollmentServicer = (*stubCertEnroll)(nil)
+
 // stubCertProv satisfies cert.CertProvider for option propagation tests.
 type stubCertProv struct{}
 
-func (s *stubCertProv) GenerateClientCert(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (s *stubCertProv) IssueClientCert(_ context.Context, _ *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, nil
 }
 func (s *stubCertProv) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
@@ -852,6 +896,7 @@ func TestStart_WithAllOptionalServices(t *testing.T) {
 		WithUserService(&stubUserSvc{}),
 		WithRoleService(&stubRoleSvc{}),
 		WithCertProvider(&stubCertProv{}),
+		WithCertEnrollment(&stubCertEnroll{}),
 		WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
@@ -1267,6 +1312,22 @@ func (s *stubBatchSvc) ExecuteEntity(_ context.Context, _ *service.BatchEntityRe
 }
 func (s *stubBatchSvc) Import(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
 	return nil, nil
+}
+
+func (s *stubBatchSvc) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (s *stubBatchSvc) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (s *stubBatchSvc) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
+	return nil, nil
+}
+
+func (s *stubBatchSvc) ImportAbort(_ context.Context, _ string) error {
+	return nil
 }
 
 // stubWatchSvc satisfies service.WatchServicer for option propagation tests.

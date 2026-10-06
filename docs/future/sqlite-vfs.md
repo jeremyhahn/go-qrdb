@@ -39,7 +39,8 @@ Virtual tables cannot deliver that: an application's own `CREATE TABLE`
 lands in the local SQLite database, not in qrdb, and virtual-table modules
 only exist inside the process that registers them. No amount of gateway
 work closes that gap. Applications migrating their SQL layer to qrdb are
-served today by the MySQL/PostgreSQL wire protocols and the GORM dialector;
+served today by the MySQL/PostgreSQL wire protocols and GORM (on the stock
+MySQL dialector);
 this proposal is for applications that must keep the SQLite engine itself.
 
 ## The mechanism: SQLite's VFS layer
@@ -184,7 +185,7 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 ## Non-goals
 
 - Reintroducing the virtual-table gateway in any form.
-- SQL-dialect compatibility work — that is the MySQL/PG wire + GORM
-  dialector's charter.
+- SQL-dialect compatibility work — that is the MySQL/PG wire protocols'
+  charter, which GORM reaches through the stock MySQL dialector.
 - Emulating SQLite file-format compatibility on disk; the page store is
   authoritative and only SQLite (through this VFS) interprets it.

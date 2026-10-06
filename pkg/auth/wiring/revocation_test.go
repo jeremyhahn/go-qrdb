@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -120,7 +121,7 @@ func newRevocationFixture(t *testing.T, username, tenantID string) *revocationFi
 	ctx := context.Background()
 	require.NoError(t, provider.Initialize(ctx))
 
-	bundle, err := provider.GenerateClientCert(ctx, &cert.GenerateRequest{
+	bundle, err := certtest.Generate(ctx, provider, &certtest.Request{
 		Username: username,
 		TenantID: tenantID,
 	})

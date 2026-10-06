@@ -26,33 +26,25 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
-	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/raftharness"
 )
 
 // ---------------------------------------------------------------------------
@@ -76,6 +68,19 @@ func passphraseBuffer(t *testing.T, pp string) *secure.Buffer {
 	}
 	t.Cleanup(buf.Destroy)
 	return buf
+}
+
+// validAdminCSR returns a syntactically and cryptographically valid CSR PEM
+// -- planAdmin now parses and signature-checks the CSR (cert.ParseCSR)
+// before anything is written, so every cert-mode ProvisionTenant test needs
+// a real one rather than a placeholder string.
+func validAdminCSR(t *testing.T) []byte {
+	t.Helper()
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
+	return csrPEM
 }
 
 // realCertPEM generates a valid self-signed certificate PEM for cert-binding
@@ -116,37 +121,13 @@ func newRegistry(t *testing.T, strategies ...seal.SealingStrategy) *seal.Barrier
 }
 
 // newPooledRegistry builds a BarrierRegistry with a durable local volume
-// pool, a Pebble-backed pool state store, and a per-tenant Pebble registry
-// wired via seal.WithVolumePool / seal.WithPerTenantRegistry — mirroring
-// pkg/seal's own newPooledRegistry test helper. Used to prove
-// InitializeTenantBarrier registers tenants against a DURABLE backend (not
-// seal.NewMemoryBackend()) when the registry is configured for it.
+// pool (via sealtest.PooledRegistry: a real "dir"-provider volume plus an
+// in-memory replicated catalog) and a per-tenant Pebble registry. Used to
+// prove InitializeTenantBarrier registers tenants against a DURABLE
+// backend (not seal.NewMemoryBackend()) when the registry is configured
+// for it.
 func newPooledRegistry(t *testing.T) (*seal.BarrierRegistry, pebblestore.PerTenantRegistry) {
 	t.Helper()
-
-	poolDir := t.TempDir()
-	poolStore := local.New()
-	if err := poolStore.Configure(map[string]string{"path": poolDir}); err != nil {
-		t.Fatalf("configure pool backend: %v", err)
-	}
-
-	stateDir := t.TempDir()
-	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: stateDir})
-	if err != nil {
-		t.Fatalf("open pool state-store Pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = stateStorage.Close() })
-
-	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
-	if err != nil {
-		t.Fatalf("NewPebbleStateStore: %v", err)
-	}
-
-	mgr := objpool.NewManager()
-	rr := &objpool.RoundRobinStrategy{State: state}
-	if err := mgr.Register("default", []common.Storage{poolStore}, rr); err != nil {
-		t.Fatalf("pool Register: %v", err)
-	}
 
 	system, err := seal.NewStorageBarrier(discardLogger(), seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "system/root-key"}, seal.NewNoneStrategy())
@@ -154,18 +135,8 @@ func newPooledRegistry(t *testing.T) (*seal.BarrierRegistry, pebblestore.PerTena
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 
-	perTenantReg := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
-
-	reg, err := seal.NewBarrierRegistry(
-		discardLogger(),
-		system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
-	)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
+	reg, _, _ := sealtest.PooledRegistry(t, system)
+	perTenantReg := reg.PerTenantPebbleRegistry()
 	return reg, perTenantReg
 }
 
@@ -177,6 +148,15 @@ type fakeTenants struct {
 	createCalls      []createTenantCall
 	createErr        error
 	createAlreadyErr bool
+	deleteCalls      []string
+	deleteErr        error
+}
+
+// DeleteTenant implements tenantDeleter so an Exclusive ProvisionTenant's
+// undo stack can be exercised against this double.
+func (f *fakeTenants) DeleteTenant(_ context.Context, id string) error {
+	f.deleteCalls = append(f.deleteCalls, id)
+	return f.deleteErr
 }
 
 type createTenantCall struct {
@@ -201,6 +181,15 @@ type fakeUsers struct {
 	createErr   error
 	exists      bool
 	nextID      uint64
+	deleteCalls []uint64
+	deleteErr   error
+}
+
+// DeleteUser implements userDeleter so an Exclusive ProvisionTenant's undo
+// stack can be exercised against this double.
+func (f *fakeUsers) DeleteUser(_ context.Context, id uint64) error {
+	f.deleteCalls = append(f.deleteCalls, id)
+	return f.deleteErr
 }
 
 func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -636,27 +625,34 @@ func TestBootstrapSystem_FirstBootErrorWrapped(t *testing.T) {
 func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
 	certPEM := realCertPEM(t)
-	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
+	signer := &fakeSigner{cert: certPEM}
 	binder := &fakeBinder{}
 
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID:    "acme",
 		DisplayName: "Acme Corp",
+		// Isolation pinned to prefix: barrier/volume/raft isolation keeps IAM
+		// behind the tenant's own barrier (tenant.IAMBehindTenantBarrier), so
+		// cert-mode provisioning for one of those takes the pending-admin
+		// path (provisionPendingAdmin) and creates no role or user at all --
+		// covered by its own tests. This test is about the direct path.
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
-		CA: ca, Binder: binder, Logger: discardLogger(),
+		Signer: signer, Binder: binder, Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
 	}
 
-	// Tenant record created with barrier isolation default.
+	// Tenant record created with the requested isolation.
 	if len(tenants.createCalls) != 1 {
 		t.Fatalf("tenant createCalls = %d, want 1", len(tenants.createCalls))
 	}
 	tc := tenants.createCalls[0]
-	if tc.id != "acme" || tc.name != "Acme Corp" || tc.isolationType != tenant.IsolationBarrier {
-		t.Errorf("tenant create = %+v, want acme/Acme Corp/barrier", tc)
+	if tc.id != "acme" || tc.name != "Acme Corp" || tc.isolationType != tenant.IsolationPrefix {
+		t.Errorf("tenant create = %+v, want acme/Acme Corp/prefix", tc)
 	}
 
 	// Tenant-scoped roles seeded.
@@ -689,8 +685,8 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	}
 
 	// Cert enrolled + bound.
-	if ca.lastID != "acme" || ca.lastSubj != "admin" {
-		t.Errorf("CA invoked with (%q,%q), want (acme,admin)", ca.lastID, ca.lastSubj)
+	if signer.called.Load() != 1 {
+		t.Errorf("SignAdminCSR called %d times, want 1", signer.called.Load())
 	}
 	if result.AdminCertThumbprint == "" || binder.thumbprint != result.AdminCertThumbprint {
 		t.Error("tenant-admin cert thumbprint not bound")
@@ -705,12 +701,21 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 
 // TestProvisionTenant_DoesNotInitTenantBarrier asserts the system-admin
 // provisioning path never touches the barrier registry: no tenant barrier is
-// registered and none is initialized.
+// registered and none is initialized. The default isolation (barrier) keeps
+// IAM behind the tenant's own barrier, so this exercises the pending-admin
+// path (deps.PendingAdmins) rather than direct role/user creation -- which
+// is exactly the case most likely to tempt a caller into touching Barriers.
 func TestProvisionTenant_DoesNotInitTenantBarrier(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
+	signer := &fakeSigner{cert: realCertPEM(t)}
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
 
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: signer, Binder: &fakeBinder{}, PendingAdmins: pending,
 		Barriers: reg, Logger: discardLogger(),
 	})
 	if err != nil {
@@ -727,15 +732,15 @@ func TestProvisionTenant_DoesNotInitTenantBarrier(t *testing.T) {
 func TestProvisionTenant_CSRSignPathKeepsAdminKey(t *testing.T) {
 	certPEM := realCertPEM(t)
 	signer := &fakeSigner{cert: certPEM}
-	ca := &fakeCA{cert: realCertPEM(t), key: []byte("CA-KEY")}
 	binder := &fakeBinder{}
 
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID:    "acme",
-		AdminCSRPEM: []byte("THE-CSR"),
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		CA: ca, Signer: signer, Binder: binder, Logger: discardLogger(),
+		Signer: signer, Binder: binder, Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
@@ -743,11 +748,11 @@ func TestProvisionTenant_CSRSignPathKeepsAdminKey(t *testing.T) {
 	if signer.called.Load() != 1 {
 		t.Errorf("SignAdminCSR called %d times, want 1", signer.called.Load())
 	}
-	if ca.called.Load() != 0 {
-		t.Errorf("CA called %d times, want 0 (CSR path wins)", ca.called.Load())
-	}
-	if result.AdminKeyPEM != nil {
-		t.Error("AdminKeyPEM must be nil on CSR-sign path (admin keeps key)")
+	// BREAKING: ProvisionTenant never generates or returns an admin private
+	// key -- the admin keeps its own, whether the CSR or the BYOC path was
+	// used. TenantProvisionResult has no AdminKeyPEM field at all.
+	if result.AdminCertPEM == nil {
+		t.Error("AdminCertPEM must be set on the CSR-sign path")
 	}
 	if result.AdminCertThumbprint == "" || binder.thumbprint != result.AdminCertThumbprint {
 		t.Error("CSR-signed cert not bound by thumbprint")
@@ -762,7 +767,6 @@ func TestProvisionTenant_CSRSignPathKeepsAdminKey(t *testing.T) {
 // invitation.
 func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
 	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
-	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
 	signer := &fakeSigner{cert: realCertPEM(t)}
 	binder := &fakeBinder{}
 
@@ -771,7 +775,7 @@ func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
 		AdminEnrollment: AdminEnrollDeferred,
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
-		CA: ca, Signer: signer, Binder: binder,
+		Signer: signer, Binder: binder,
 		AdminFactors: &fakeFactorChecker{}, Logger: discardLogger(),
 	})
 	if err != nil {
@@ -799,15 +803,14 @@ func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
 		t.Errorf("admin RoleIDs = %v, want [%q]", adminReq.RoleIDs, wantRoleID)
 	}
 
-	// No credential exists: cert seams untouched, nothing bound.
-	if ca.called.Load() != 0 || signer.called.Load() != 0 {
-		t.Errorf("cert seams invoked (ca=%d signer=%d), want none in deferred mode",
-			ca.called.Load(), signer.called.Load())
+	// No credential exists: the signer is untouched, nothing bound.
+	if signer.called.Load() != 0 {
+		t.Errorf("SignAdminCSR invoked %d times, want none in deferred mode", signer.called.Load())
 	}
 	if binder.thumbprint != "" || binder.userID != 0 {
 		t.Errorf("cert bound (thumbprint=%q userID=%d), want no binding", binder.thumbprint, binder.userID)
 	}
-	if result.AdminCertPEM != nil || result.AdminKeyPEM != nil || result.AdminCertThumbprint != "" {
+	if result.AdminCertPEM != nil || result.AdminCertThumbprint != "" {
 		t.Error("result carries cert material in deferred mode, want none")
 	}
 
@@ -828,13 +831,15 @@ func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
 // reports a non-pending admin with the role id populated.
 func TestProvisionTenant_CertModeUnchanged(t *testing.T) {
 	users := &fakeUsers{}
-	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
+	signer := &fakeSigner{cert: realCertPEM(t)}
 
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
-		TenantID: "acme",
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{},
-		CA: ca, Binder: &fakeBinder{}, Logger: discardLogger(),
+		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant: %v", err)
@@ -1229,16 +1234,46 @@ func TestProvisionTenant_InvalidEnrollmentModeRejected(t *testing.T) {
 	}
 }
 
-func TestProvisionTenant_NoCAOrSignerSkipsCert(t *testing.T) {
-	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+// TestProvisionTenant_NoCredentialRejected asserts cert-mode provisioning
+// with neither an admin CSR nor an admin certificate is refused before
+// anything is written: a tenant is onboarded with its first admin's login
+// credential, or not at all. This is the retired Path A (generate-and-
+// distribute via Dependencies.CA) made unreachable, not merely unused:
+// ProvisionTenant no longer references CA at all.
+func TestProvisionTenant_NoCredentialRejected(t *testing.T) {
+	tenants := &fakeTenants{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Logger: discardLogger(),
 	})
-	if err != nil {
-		t.Fatalf("ProvisionTenant: %v", err)
+	var want *MissingAdminCredentialError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingAdminCredentialError", err)
 	}
-	if result.AdminCertPEM != nil || result.AdminCertThumbprint != "" {
-		t.Error("cert enrolled without a CA/Signer; want skipped")
+	if len(tenants.createCalls) != 0 {
+		t.Error("tenant created despite a missing admin credential; validation must precede writes")
+	}
+}
+
+// TestProvisionTenant_ConflictingCredentialRejected asserts supplying both
+// an admin CSR and an admin certificate is refused before anything is
+// written: exactly one names the admin's key.
+func TestProvisionTenant_ConflictingCredentialRejected(t *testing.T) {
+	tenants := &fakeTenants{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:     "acme",
+		AdminCSRPEM:  validAdminCSR(t),
+		AdminCertPEM: realCertPEM(t),
+	}, Dependencies{
+		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *ConflictingAdminCredentialError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *ConflictingAdminCredentialError", err)
+	}
+	if len(tenants.createCalls) != 0 {
+		t.Error("tenant created despite a conflicting admin credential; validation must precede writes")
 	}
 }
 
@@ -1255,8 +1290,13 @@ func TestProvisionTenant_EmptyTenantIDRejected(t *testing.T) {
 
 func TestProvisionTenant_TenantCreateErrorWrapped(t *testing.T) {
 	sentinel := errors.New("not leader")
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{createErr: sentinel}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
 		Logger: discardLogger(),
 	})
 	var want *TenantRecordCreationError
@@ -1275,17 +1315,22 @@ func TestProvisionTenant_IdempotentReRun(t *testing.T) {
 		role.RoleNameUser: true, role.RoleNameAuditor: true,
 	}}
 	users := &fakeUsers{exists: true}
-	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
+	signer := &fakeSigner{cert: realCertPEM(t)}
 
-	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Tenants: tenants, Users: users, Roles: roles, CA: ca, Logger: discardLogger(),
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("ProvisionTenant (idempotent): %v", err)
 	}
 	// Admin already existed -> no cert rotation.
-	if ca.called.Load() != 0 {
-		t.Errorf("CA called %d times on idempotent re-run, want 0", ca.called.Load())
+	if signer.called.Load() != 0 {
+		t.Errorf("SignAdminCSR called %d times on idempotent re-run, want 0", signer.called.Load())
 	}
 	if result.AdminCertPEM != nil {
 		t.Error("AdminCertPEM set on idempotent re-run; want nil (no rotation)")
@@ -1310,8 +1355,13 @@ func TestProvisionTenant_RoleIDCollisionVerifiedIdempotent(t *testing.T) {
 	}}
 	users := &fakeUsers{exists: true}
 
-	if _, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
-		Tenants: tenants, Users: users, Roles: roles, Logger: discardLogger(),
+	if _, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{}, Logger: discardLogger(),
 	}); err != nil {
 		t.Fatalf("ProvisionTenant (id-collision, verified identical): %v", err)
 	}
@@ -1331,191 +1381,19 @@ func TestProvisionTenant_RoleCollisionMismatchFails(t *testing.T) {
 		{"id collision", &fakeRoles{mismatch: true, existsByID: map[string]bool{role.SystemRoleID("acme", role.RoleNameSO): true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+				TenantID:    "acme",
+				Isolation:   tenant.IsolationPrefix,
+				AdminCSRPEM: validAdminCSR(t),
+			}, Dependencies{
 				Tenants: &fakeTenants{createAlreadyErr: true}, Users: &fakeUsers{exists: true}, Roles: tc.roles,
-				Logger: discardLogger(),
+				Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{}, Logger: discardLogger(),
 			})
 			var want *TenantAdminRoleCreationError
 			if !errors.As(err, &want) {
 				t.Fatalf("err = %v, want *TenantAdminRoleCreationError", err)
 			}
 		})
-	}
-}
-
-// concurrentFakeTenants is fakeTenants made safe for concurrent callers: the
-// FIRST CreateTenant call for an id creates it; every other call — from
-// another goroutine racing the same tenant, exactly as N nodes' own
-// ProvisionTenant calls would — gets tenant.ErrTenantAlreadyExists, exactly
-// as the real tenant.TenantServicer answers a racing create.
-type concurrentFakeTenants struct {
-	mu      sync.Mutex
-	created map[string]bool
-}
-
-func (f *concurrentFakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.created == nil {
-		f.created = map[string]bool{}
-	}
-	if f.created[id] {
-		return nil, tenant.ErrTenantAlreadyExists
-	}
-	f.created[id] = true
-	return &tenant.TenantInfo{ID: id, Name: name, IsolationType: isolationType}, nil
-}
-
-// concurrentFakeUsers is fakeUsers made safe for concurrent callers: the
-// FIRST CreateUser call for a tenant+username pair creates it; every other
-// call gets user.UsernameExistsError, exactly as the real user.UserServicer
-// answers a racing create.
-type concurrentFakeUsers struct {
-	mu      sync.Mutex
-	nextID  uint64
-	created map[string]bool
-}
-
-func (f *concurrentFakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	key := req.TenantID + "/" + req.Username
-	if f.created == nil {
-		f.created = map[string]bool{}
-	}
-	if f.created[key] {
-		return nil, &user.UsernameExistsError{Username: req.Username, TenantID: req.TenantID}
-	}
-	f.created[key] = true
-	f.nextID++
-	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive}, nil
-}
-
-// TestProvisionTenant_ConcurrentCallersConverge is the regression test for
-// the firstboot role race's second root cause: seedTenantRoles, reached
-// through ProvisionTenant, racing ANOTHER concurrent ProvisionTenant call
-// for the SAME new tenant under the SAME deterministic built-in role ids.
-//
-// Runs over a REAL go-quicraft cluster (raftharness), not a fake, for the
-// same reason TestRegisterBuiltInRoles_ConcurrentSeedersConverge
-// (pkg/firstboot) and TestReconcileBuiltInRoles_ConcurrentCallersConverge
-// (pkg/role) do: the defect is a visibility-lag race between a create
-// collision (reported authoritatively by the Raft LEADER) and the
-// verifying read's own StaleRead, which a single-process fake cannot model.
-// Tenants/Users are concurrency-safe fakes (the race under test is
-// specifically about ROLES); Roles is a REAL, WithAtomicIdentity role.Store
-// per caller, one per cluster host, exactly as production composes it.
-func TestProvisionTenant_ConcurrentCallersConverge(t *testing.T) {
-	const callers = 3
-	const shardID = uint64(9201)
-	const tenantID = "concurrent-tenant"
-
-	c := raftharness.NewCluster(t, callers)
-	members := make(map[uint64]string, callers)
-	for i := range callers {
-		members[uint64(i+1)] = c.Addrs[i]
-	}
-	for i := range callers {
-		if err := c.Hosts[i].StartShard(members, false, c.CreateFn(), quicraftconfig.Config{
-			ShardID: shardID, ReplicaID: uint64(i + 1), MemberIdentities: c.Identities,
-		}); err != nil {
-			t.Fatalf("StartShard(host %d): %v", i, err)
-		}
-	}
-	waitShardReadableWithin(t, c.Hosts, shardID, extraShardReadyBound)
-
-	roleSvcs := make([]role.RoleServicer, callers)
-	for i := range callers {
-		host := raftbackend.New(c.Hosts[i])
-		guarded, err := lifecycle.NewGuardedKVStoreAdapter(
-			service.NewKVService(host, shardID),
-			service.NewIndexService(host, shardID),
-			service.NewTransactionService(host, shardID),
-		)
-		if err != nil {
-			t.Fatalf("NewGuardedKVStoreAdapter(host %d): %v", i, err)
-		}
-		idx, err := tenant.NewIdentityIndex(guarded)
-		if err != nil {
-			t.Fatalf("NewIdentityIndex(host %d): %v", i, err)
-		}
-		svc, err := role.NewStore(guarded, role.WithIdentityIndex(idx), role.WithAtomicIdentity())
-		if err != nil {
-			t.Fatalf("role.NewStore(host %d): %v", i, err)
-		}
-		roleSvcs[i] = svc
-	}
-
-	tenants := &concurrentFakeTenants{}
-	users := &concurrentFakeUsers{}
-
-	var wg sync.WaitGroup
-	errs := make([]error, callers)
-	for i := range callers {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: tenantID}, Dependencies{
-				Tenants: tenants, Users: users, Roles: roleSvcs[i], Logger: discardLogger(),
-			})
-			errs[i] = err
-		}(i)
-	}
-	wg.Wait()
-
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("caller %d: ProvisionTenant: %v", i, err)
-		}
-	}
-	if t.Failed() {
-		return
-	}
-
-	for _, want := range role.BuiltInRoles(tenantID) {
-		for i := range callers {
-			got, err := roleSvcs[i].GetRoleByName(context.Background(), tenantID, want.Name)
-			if err != nil {
-				t.Fatalf("host %d: GetRoleByName(%q): %v", i, want.Name, err)
-			}
-			if got.ID != want.ID || got.TenantID != want.TenantID || got.System != want.System {
-				t.Errorf("host %d: role %q = %+v, want canonical %+v", i, want.Name, got, want)
-			}
-		}
-	}
-}
-
-// extraShardReadyBound bounds waitShardReadableWithin's wait for THIS
-// test's own second shard (every raftharness.NewCluster host already forms
-// and waits out shard.ShardKV's own election under raftharness.Bound, 2
-// minutes, before this test starts). Longer than raftharness.Bound: under
-// `make coverage`'s instrumentation overhead and full-suite parallel load,
-// a SECOND election on the same hosts was observed to miss that window
-// (two observed timeouts in pkg/firstboot's identical test shape, each
-// resolving on a bare retry under lighter load) -- a genuine host-contention
-// risk, not a defect in the election itself, so the fix is more patience,
-// not a different algorithm.
-const extraShardReadyBound = 5 * time.Minute
-
-// waitShardReadableWithin is raftharness.Cluster.WaitReadable with a wait
-// bound this test controls directly, rather than the package's own fixed
-// raftharness.Bound -- see extraShardReadyBound.
-func waitShardReadableWithin(t testing.TB, hosts []*quicraft.Host, shardID uint64, bound time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(bound)
-	for _, host := range hosts {
-		for {
-			ctx, cancel := context.WithTimeout(context.Background(), bound)
-			_, err := host.SyncGetShardMembership(ctx, shardID)
-			cancel()
-			if err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("waitShardReadableWithin: shard %d membership never became readable: %v", shardID, err)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
 	}
 }
 
@@ -1583,7 +1461,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 // TestInitializeTenantBarrier_FailsClosedWithoutDurablePool is the direct
 // regression test for the memory-backend footgun: when the registry is not
 // configured with a durable volume pool / per-tenant registry (see
-// seal.WithVolumePool / WithPerTenantRegistry), InitializeTenantBarrier must
+// seal.WithVolumeAllocator / WithPerTenantRegistry), InitializeTenantBarrier must
 // fail closed rather than silently falling back to a non-durable
 // seal.NewMemoryBackend(), whose wrapped-root-key/epoch bookkeeping would be
 // lost on restart and make the tenant's barrier-encrypted IAM unrecoverable.
@@ -1885,10 +1763,11 @@ func TestEnrollAdminCert_SignerError(t *testing.T) {
 	signer := &fakeSignerErr{err: sentinel}
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID:    "acme",
-		AdminCSRPEM: []byte("THE-CSR"),
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: signer, Logger: discardLogger(),
+		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -1899,23 +1778,23 @@ func TestEnrollAdminCert_SignerError(t *testing.T) {
 	}
 }
 
-// TestEnrollAdminCert_SignerReturnsEmptyCert covers the len(certPEM)==0 guard
-// after SignAdminCSR returns an empty slice.
+// TestEnrollAdminCert_SignerReturnsEmptyCert covers issue()'s propagation of
+// trustanchor.ParseCertificates' *EmptyBundleError when the Signer reports
+// success with no certificate: a defective Signer must fail provisioning
+// rather than silently proceed with no credential bound.
 func TestEnrollAdminCert_SignerReturnsEmptyCert(t *testing.T) {
-	// Signer returns empty cert bytes — should be a no-op (return nil).
 	signer := &fakeSignerEmpty{}
-	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID:    "acme",
-		AdminCSRPEM: []byte("THE-CSR"),
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		Signer: signer, Logger: discardLogger(),
+		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
-	if err != nil {
-		t.Fatalf("ProvisionTenant (empty cert from signer): %v", err)
-	}
-	if result.AdminCertPEM != nil || result.AdminCertThumbprint != "" {
-		t.Error("cert data set despite signer returning empty cert; want no-op")
+	var want *TenantAdminCertError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantAdminCertError", err)
 	}
 }
 
@@ -1923,12 +1802,16 @@ func TestEnrollAdminCert_SignerReturnsEmptyCert(t *testing.T) {
 func TestEnrollAdminCert_BinderError(t *testing.T) {
 	sentinel := errors.New("bind store down")
 	certPEM := realCertPEM(t)
-	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
+	signer := &fakeSigner{cert: certPEM}
 	binder := &fakeBinder{err: sentinel}
 
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		CA: ca, Binder: binder, Logger: discardLogger(),
+		Signer: signer, Binder: binder, Logger: discardLogger(),
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {
@@ -1948,11 +1831,15 @@ func TestEnrollAdminCert_BinderError(t *testing.T) {
 // bytes are syntactically invalid.
 func TestSPKIThumbprintFromCertPEM_BadDER(t *testing.T) {
 	badDER := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not valid DER")})
-	ca := &fakeCA{cert: badDER, key: []byte("KEY")}
+	signer := &fakeSigner{cert: badDER}
 
-	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		Isolation:   tenant.IsolationPrefix,
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
-		CA: ca, Logger: discardLogger(),
+		Signer: signer, Binder: &fakeBinder{}, Logger: discardLogger(),
 	})
 	var want *TenantAdminCertError
 	if !errors.As(err, &want) {

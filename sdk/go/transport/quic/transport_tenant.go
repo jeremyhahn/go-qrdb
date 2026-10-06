@@ -23,6 +23,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
@@ -36,13 +37,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &transport.ClosedError{}
 	}
 
-	payload, err := proto.Marshal(&pb.TenantCreateRequest{
-		Id:                req.ID,
-		Name:              req.Name,
-		IsolationType:     string(req.IsolationType),
-		BarrierAutoUnseal: req.BarrierAutoUnseal,
-		DataRoot:          req.DataRoot,
-	})
+	payload, err := proto.Marshal(enrollconv.TenantCreateRequest(req))
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
 	}
@@ -52,12 +47,67 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
 	}
 
-	var resp pb.TenantResponse
+	var resp pb.TenantCreateResponse
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
 	}
 
-	return &transport.CreateTenantResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
+	return &transport.CreateTenantResponse{
+		Tenant: quicProtoToTenantInfo(resp.GetTenant()),
+		Admin:  enrollconv.AdminCredential(resp.GetAdmin()),
+	}, nil
+}
+
+// trustAnchorCall sends a trust-anchor request to op and decodes the
+// tenant's anchors, when the op answers with them.
+func (t *Transport) trustAnchorCall(ctx context.Context, method, op string, req proto.Message, decode bool) (*transport.TrustAnchorList, error) {
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	respBytes, err := t.call(ctx, op, payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	if !decode {
+		return nil, nil
+	}
+	var resp pb.TrustAnchorListResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	return enrollconv.TrustAnchors(&resp), nil
+}
+
+// AddTrustAnchors registers trust anchors of req.TenantID via the QUIC
+// tenant.TrustAnchorAdd handler.
+func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrustAnchorsRequest) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return t.trustAnchorCall(ctx, "AddTrustAnchors", "tenant.TrustAnchorAdd",
+		&pb.TrustAnchorAddRequest{TenantId: req.TenantID, CertsPem: req.CertsPEM}, true)
+}
+
+// ListTrustAnchors lists tenantID's trust anchors via the QUIC
+// tenant.TrustAnchorList handler.
+func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*transport.TrustAnchorList, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return t.trustAnchorCall(ctx, "ListTrustAnchors", "tenant.TrustAnchorList",
+		&pb.TrustAnchorListRequest{TenantId: tenantID}, true)
+}
+
+// RemoveTrustAnchor withdraws one of tenantID's trust anchors via the QUIC
+// tenant.TrustAnchorRemove handler.
+func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.trustAnchorCall(ctx, "RemoveTrustAnchor", "tenant.TrustAnchorRemove",
+		&pb.TrustAnchorRemoveRequest{TenantId: tenantID, Fingerprint: fingerprint}, false)
+	return err
 }
 
 // GetTenant retrieves a tenant by ID via the QUIC tenant.Get handler.
@@ -257,6 +307,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
 			AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
 			AllowDedicatedWal:         req.Entitlements.AllowDedicatedWAL,
+			AllowedVolumePools:        req.Entitlements.AllowedVolumePools,
 		},
 	})
 	if err != nil {
@@ -492,7 +543,10 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 		ID:            resp.GetId(),
 		Name:          resp.GetName(),
 		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
-		DataRoot:      resp.GetDataRoot(),
+		VolumePool:    resp.GetVolumePool(),
+	}
+	if r := resp.GetRefusal(); r != nil {
+		info.Refusal = &transport.TenantRefusal{Code: r.GetCode(), Message: r.GetMessage()}
 	}
 
 	if pbQ := resp.GetQuotas(); pbQ != nil {
@@ -524,6 +578,7 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 			AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 			AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+			AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 		}
 	}
 

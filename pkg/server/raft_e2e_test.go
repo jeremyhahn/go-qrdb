@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // alwaysAbsentCatalog is a DatabaseCatalog that reports every database as
@@ -96,13 +97,18 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 	// newVolumePooledRegistry already initializes (and so unseals) the
 	// system barrier.
 	reg := newVolumePooledRegistry(t)
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	allocator := allocVal.(volume.Allocator)
 
 	tenants, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, volTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
 			AllowedIsolationModes:     []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 			AllowDedicatedRaft:        true,
 			AllowSystemManagedBarrier: true,
-		}))
+			AllowedVolumePools:        []string{"default"},
+		}),
+		tenant.WithVolumeAllocator(allocator),
+	)
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -127,6 +133,7 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 		service.WithTenantInfoLookup(tenants),
 		service.WithQuotaChecker(quotaSvc),
 		service.WithQuotaUsageRecorder(tenants),
+		service.WithTenantDataRootResolver(reg),
 	)
 
 	host, _ := newSharedTestHost(t)
@@ -168,9 +175,12 @@ func (s *raftE2EStack) createRaftTenantDB(t *testing.T, tenantID, db string) (st
 	if err != nil {
 		t.Fatalf("CreateForTenant(%s/%s): %v", tenantID, db, err)
 	}
-	ti, err := s.tenants.GetTenant(ctx, tenantID)
-	if err != nil {
+	if _, err := s.tenants.GetTenant(ctx, tenantID); err != nil {
 		t.Fatalf("GetTenant(%s): %v", tenantID, err)
 	}
-	return ti.DataRoot, info
+	dataRoot, err := s.reg.LocalTenantDataRoot(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot(%s): %v", tenantID, err)
+	}
+	return dataRoot, info
 }

@@ -23,7 +23,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // migrateTestTenant registers an UNENCRYPTED (StrategyNone) IsolationVolume
@@ -33,9 +32,7 @@ func migrateTestTenant(t *testing.T, id string) (*seal.BarrierRegistry, *TenantH
 	reg := newVolumePooledRegistryWith(t, seal.NewNoneStrategy())
 	dataRoot, _ := registerVolumeTenant(t, reg, id)
 
-	source := &lookupDataRootSource{lookup: &fakeVolumeTenantSvc{
-		info: &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationVolume, DataRoot: dataRoot},
-	}}
+	source := &lookupDataRootSource{registry: reg}
 	hostReg := NewTenantHostRegistry(reg, source, volTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 	return reg, hostReg, dataRoot

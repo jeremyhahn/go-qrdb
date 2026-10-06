@@ -55,6 +55,7 @@ type mockBarrierService struct {
 	quorumSubmitFn       func(ctx context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error)
 	rekeyStartFn         func(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error)
 	officerRevokeFn      func(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error)
+	clusterUnsealFn      func(ctx context.Context) (*clusterseal.Report, error)
 	// soPINs records the SO PIN each rekey or revocation handed the service.
 	soPINs []string
 }
@@ -145,9 +146,77 @@ func (m *mockBarrierService) BarrierOfficerList(ctx context.Context, domain seal
 	return nil, errMockUnset
 }
 
-// BarrierClusterUnseal answers as a node without cluster sealing does.
-func (m *mockBarrierService) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+// BarrierClusterUnseal answers as a node without cluster sealing does unless
+// clusterUnsealFn overrides it.
+func (m *mockBarrierService) BarrierClusterUnseal(ctx context.Context) (*clusterseal.Report, error) {
+	if m.clusterUnsealFn != nil {
+		return m.clusterUnsealFn(ctx)
+	}
 	return nil, clusterseal.ErrInactive
+}
+
+func TestHandleBarrierClusterUnseal(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		fn        func(context.Context) (*clusterseal.Report, error)
+		wantCode  int
+		wantState clusterseal.Report
+	}{
+		{
+			name: "active report is returned verbatim",
+			fn: func(context.Context) (*clusterseal.Report, error) {
+				return &clusterseal.Report{Active: true, Epoch: 7, Principal: "admin", Node: "n1", At: at}, nil
+			},
+			wantCode:  http.StatusOK,
+			wantState: clusterseal.Report{Active: true, Epoch: 7, Principal: "admin", Node: "n1", At: at},
+		},
+		{
+			name:      "nil report renders as inactive, never null",
+			fn:        func(context.Context) (*clusterseal.Report, error) { return nil, nil },
+			wantCode:  http.StatusOK,
+			wantState: clusterseal.Report{},
+		},
+		{
+			name:     "inactive cluster seal is a failed precondition",
+			fn:       func(context.Context) (*clusterseal.Report, error) { return nil, clusterseal.ErrInactive },
+			wantCode: http.StatusConflict,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0",
+				WithBarrierService(&mockBarrierService{clusterUnsealFn: tc.fn}))
+			rr := httptest.NewRecorder()
+			srv.handleBarrierClusterUnseal(rr, httptest.NewRequest(http.MethodPost, "/v1/barrier/cluster/unseal", nil))
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, tc.wantCode, rr.Body.String())
+			}
+			if tc.wantCode != http.StatusOK {
+				return
+			}
+			var got clusterseal.Report
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode %q: %v", rr.Body.String(), err)
+			}
+			if !got.At.Equal(tc.wantState.At) {
+				t.Fatalf("At = %v, want %v", got.At, tc.wantState.At)
+			}
+			got.At, tc.wantState.At = time.Time{}, time.Time{}
+			if got != tc.wantState {
+				t.Fatalf("report = %+v, want %+v", got, tc.wantState)
+			}
+		})
+	}
+}
+
+func TestHandleBarrierClusterUnseal_NoBarrierServiceIsNotImplemented(t *testing.T) {
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0")
+	rr := httptest.NewRecorder()
+	srv.handleBarrierClusterUnseal(rr, httptest.NewRequest(http.MethodPost, "/v1/barrier/cluster/unseal", nil))
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", rr.Code)
+	}
 }
 
 func (m *mockBarrierService) BarrierShareClaimBegin(ctx context.Context, domain seal.QuorumDomain, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {

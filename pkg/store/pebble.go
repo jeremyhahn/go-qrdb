@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -139,6 +140,11 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpCompareAndDelete: pebbleHandleCompareAndDelete,
 		protocol.OpCompareAndSwap:   pebbleHandleCompareAndSwap,
 		protocol.OpGuarded:          pebbleHandleGuarded,
+
+		// Chunked import session staging (go-qrdb#576): a reserved,
+		// lease-bound raw keyspace (pkg/importstage), never through the
+		// base KV Put path above -- see pebbleHandleImportStage.
+		protocol.OpImportStage: pebbleHandleImportStage,
 
 		// Lease operations.
 		protocol.OpLeaseGrant:     pebbleHandleLeaseGrant,
@@ -526,11 +532,20 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 	case *statemachine.PrefixQuery:
 		return s.scanPrefix(q)
 
+	case service.ImportStageMetaQuery:
+		return s.getStagedKey(importstage.MetaKey(q.SessionID))
+
+	case service.ImportStageChunkQuery:
+		return s.getStagedKey(importstage.ChunkKey(q.SessionID, q.Seq))
+
+	case service.ImportStageOpenSessionsQuery:
+		return countOpenImportSessions(s.db, q.TenantID)
+
 	case []byte:
-		return s.getKey(q)
+		return s.getClientKey(q)
 
 	case string:
-		return s.getKey([]byte(q))
+		return s.getClientKey([]byte(q))
 
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
@@ -652,6 +667,45 @@ func prefixUpperBound(prefix []byte) []byte {
 	return nil
 }
 
+// getClientKey performs a point lookup for a plain client Get/BytesLookup --
+// the Lookup query carries the raw key itself, with no structured type
+// naming it, unlike the lease table's own lease.LeaseTimeToLiveQuery or the
+// import-staging queries above. It refuses -- reading as absent, exactly as
+// listKeys and scanPrefix already exclude these keys from enumeration -- any
+// key in the reserved 0x00 namespace: the lease table, the compaction
+// table, and (go-qrdb#576) the import-staging table are state-machine
+// bookkeeping, not client data, and the identical literal key must not be
+// readable this way. ReservedKeyRefusal already refuses a client WRITE to
+// one of these keys; this is that guard's read-side counterpart, which
+// getKey alone does not provide (go-qrdb#576's security review: a plain Get
+// of an import session's literal key answered with its data on sm_type
+// pebble, the daemon's default).
+func (s *PebbleStateMachine) getClientKey(key []byte) ([]byte, error) {
+	if len(key) > 0 && key[0] == 0x00 {
+		return nil, &kv.KeyNotFoundError{Key: string(key)}
+	}
+	return s.getKey(key)
+}
+
+// getStagedKey reads an import-staging record (pkg/importstage) by its
+// literal key, translating getKey's *kv.KeyNotFoundError into (nil, nil) --
+// found/not-found as a nil slice, not an error -- which is the contract
+// pkg/service.BatchService.getSessionMeta/getSessionChunk read against.
+// Unlike getClientKey it is reached only from the two ImportStage* query
+// types above, never from a client-named raw key, so it does not refuse the
+// reserved namespace itself.
+func (s *PebbleStateMachine) getStagedKey(key []byte) ([]byte, error) {
+	v, err := s.getKey(key)
+	if err != nil {
+		var notFound *kv.KeyNotFoundError
+		if errors.As(err, &notFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return v, nil
+}
+
 // getKey retrieves a single key's value, returning a defensive copy.
 func (s *PebbleStateMachine) getKey(key []byte) ([]byte, error) {
 	val, closer, err := s.db.Get(key)
@@ -678,7 +732,11 @@ func (s *PebbleStateMachine) BytesLookup(key []byte) ([]byte, error) {
 		return nil, &NotOpenError{}
 	}
 
-	return s.getKey(key)
+	// go-quicraft's rsm routes a []byte query here rather than to Lookup,
+	// so the reserved namespace must be refused here too -- see
+	// getClientKey, the identical guard Lookup's own []byte/string cases
+	// use.
+	return s.getClientKey(key)
 }
 
 // Sync flushes all pending writes to durable storage. Called before snapshot
@@ -1636,6 +1694,119 @@ func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload 
 	}
 
 	return sm.Result{Value: uint64(leaseID)}, nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Chunked import session staging (go-qrdb#576)
+//
+// A session's metadata and staged chunks are written directly into
+// PebbleDB through batch.Set, exactly like the lease table above -- never
+// through the base KV Put path -- so the record is in the reserved 0x00
+// namespace ReservedKeyRefusal already refuses a client write to, and
+// getClientKey already refuses a client read of. See pkg/importstage and
+// pkg/engine/mvcc_import_stage.go (the identical design on the "mvcc"
+// raft.sm_type).
+// ---------------------------------------------------------------------------
+
+// pebbleHandleImportStage writes a session's metadata or one staged chunk.
+func pebbleHandleImportStage(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	cmd, err := protocol.DecodeImportStage(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if s.lessor == nil {
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
+	}
+	// A staged record with no lease would never be reclaimed, so NoLease is
+	// refused here rather than treated as "no lease named" the way an
+	// ordinary put's optional lease is (statemachine.LeaseRefusal's own
+	// rule, which this deliberately does not reuse).
+	if cmd.LeaseID == lease.NoLease || !s.lessor.Has(cmd.LeaseID) {
+		return statemachine.RefusalResult(&service.LeaseNotFoundError{LeaseID: cmd.LeaseID}), nil, nil
+	}
+
+	type write struct {
+		key   []byte
+		value []byte
+	}
+	var writes []write
+	switch cmd.Kind {
+	case protocol.ImportStageSetMeta:
+		// Count and write commit at the SAME log position: Update() applies
+		// every entry it was given, including a later ImportBegin packed
+		// into the same batched call, strictly in order, so two concurrent
+		// ImportBegin proposals can never both observe room for the last
+		// slot of MaxSessions. countOpenImportSessions reads batch (the
+		// in-flight apply batch merged over s.db), not s.db directly, so an
+		// earlier entry in this SAME Update() call is already visible --
+		// exactly the reason getKeyInBatch exists.
+		if cmd.MaxSessions > 0 {
+			open, err := countOpenImportSessions(batch, cmd.TenantID)
+			if err != nil {
+				return sm.Result{}, nil, err
+			}
+			if open >= int(cmd.MaxSessions) {
+				return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, "import session quota exceeded")}, nil, nil
+			}
+		}
+		writes = []write{
+			{importstage.MetaKey(cmd.SessionID), cmd.Body},
+			// The tenant-index entry commits in the SAME batch as the
+			// metadata record, and is bound to the SAME lease, so it is
+			// counted and reclaimed exactly in step with the session it
+			// indexes -- see countOpenImportSessions and
+			// pkg/importstage.TenantIndexKey.
+			{importstage.TenantIndexKey(cmd.TenantID, cmd.SessionID), nil},
+		}
+	case protocol.ImportStageSetChunk:
+		writes = []write{{importstage.ChunkKey(cmd.SessionID, cmd.Seq), cmd.Body}}
+		if len(cmd.MetaBody) > 0 {
+			// The chunk and the metadata that now accounts for it commit in
+			// the SAME batch, exactly as putRawBatch committed them as one
+			// Raft command before this package existed.
+			writes = append(writes, write{importstage.MetaKey(cmd.SessionID), cmd.MetaBody})
+		}
+	default:
+		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "import stage: unknown kind"}
+	}
+
+	for _, w := range writes {
+		if err := batch.Set(w.key, w.value, pebble.Sync); err != nil {
+			return sm.Result{}, nil, &WriteError{Err: err}
+		}
+		if err := s.bindLease(batch, w.key, cmd.LeaseID); err != nil {
+			return sm.Result{}, nil, err
+		}
+	}
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// countOpenImportSessions counts tenantID's open sessions via its tenant
+// index (pkg/importstage.TenantIndexKey), reading only keys -- iter.Key(),
+// never iter.ValueAndErr() -- so the cost is independent of how many bytes
+// those sessions have staged (go-qrdb#576's security review measured the
+// previous MVCC-range implementation, which read every chunk's value, at up
+// to ~1 GiB per call at default limits). r is batch during
+// pebbleHandleImportStage's own apply (an indexed *pebble.Batch, whose
+// NewIter merges the batch's uncommitted writes over s.db -- see
+// getKeyInBatch) or s.db for a Lookup query; *pebble.Batch and *pebble.DB
+// both satisfy pebble.Reader.
+func countOpenImportSessions(r pebble.Reader, tenantID string) (int, error) {
+	prefix := importstage.TenantIndexScanPrefix(tenantID)
+	iter, err := r.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
+	if err != nil {
+		return 0, &ReadError{Key: string(prefix), Err: err}
+	}
+	defer func() { _ = iter.Close() }()
+
+	count := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		count++
+	}
+	if err := iter.Error(); err != nil {
+		return 0, &ReadError{Key: string(prefix), Err: err}
+	}
+	return count, nil
 }
 
 // ---------------------------------------------------------------------------

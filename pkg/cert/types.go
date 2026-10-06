@@ -19,32 +19,44 @@
 // while unsealed.
 package cert
 
-import "time"
+import (
+	"crypto"
+	"time"
+)
 
-// GenerateRequest carries the parameters for client certificate generation.
-type GenerateRequest struct {
+// IssueRequest carries the parameters of a client certificate issued for a
+// public key whose private half the requester holds. The provider never
+// generates a client's key: it signs the one the requester proved it holds
+// (ParseCSR), so no private key ever leaves the client.
+type IssueRequest struct {
 	// Username sets the certificate Common Name (CN).
 	Username string
 
-	// TenantID sets the certificate Organizational Unit (OU).
+	// TenantID sets the certificate Organizational Unit (OU) and, with a
+	// trust domain configured, its SPIFFE SAN. It also selects the tenant's
+	// own Key B CA that signs.
 	TenantID string
+
+	// PublicKey is the key the certificate certifies. It must pass
+	// CheckClientKey.
+	PublicKey crypto.PublicKey
 
 	// TTL is the certificate validity period. Zero means the provider's
 	// default TTL is used.
 	TTL time.Duration
 }
 
-// CertBundle holds the PEM-encoded certificate and private key returned
-// after generating a client certificate.
-type CertBundle struct {
+// IssuedCert is a signed client certificate. It carries no private key: the
+// requester keeps that.
+type IssuedCert struct {
 	// CertPEM is the PEM-encoded X.509 client certificate.
 	CertPEM []byte
 
-	// KeyPEM is the PEM-encoded ECDSA private key.
-	KeyPEM []byte
-
 	// Serial is the hexadecimal serial number of the certificate.
 	Serial string
+
+	// NotAfter is the end of the certificate's validity window.
+	NotAfter time.Time
 }
 
 // RevokeOutcome reports what RevokeCert (or RevokeCertResult) found when it

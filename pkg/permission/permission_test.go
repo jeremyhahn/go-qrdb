@@ -206,7 +206,7 @@ func TestIsRegistered_Exists(t *testing.T) {
 		TSWrite, TSQuery,
 		VectorUpsert, VectorSearchSimilar,
 		UsersCreate, RolesCreate,
-		CertsGenerate, SealBootstrap,
+		CertsIssue, SealBootstrap,
 		TenantsCreate,
 	}
 	for _, p := range tests {
@@ -330,7 +330,7 @@ func TestAll_ContainsAllConstants(t *testing.T) {
 		AdminSnapshot, AdminDrain, AdminCapabilities,
 		UsersCreate, UsersRead, UsersUpdate, UsersDelete, UsersList, UsersEnable, UsersDisable,
 		RolesCreate, RolesRead, RolesUpdate, RolesDelete, RolesList, RolesAssign, RolesUnassign,
-		CertsGenerate, CertsRevoke, CertsList,
+		CertsIssue, CertsRevoke, CertsList,
 		SealBootstrap, SealUnseal, SealSeal, SealStatus,
 		TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
 	}
@@ -564,7 +564,15 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 1 cluster join-token minting perm (cluster:join_token) = 377 total.
 	// + 1 seal:store_manage, the generic secret store a seal strategy keeps
 	//   for its own state (embedded-SDK-only; no network route) = 378 total.
-	const expectedTotal = 378
+	// + certs:generate retired for certs:issue (no client key is generated
+	//   server-side any more; net 0), + certs:enroll + trust_anchors:add/
+	//   list/remove (net +4) = 382 total.
+	// - 1 certs:export retired entirely: no node may receive a private key
+	//   to encode on a caller's behalf (go-qrdb security review). A PKCS#12
+	//   archive is now built LOCALLY, by whoever already holds the key
+	//   (pkg/cert.EncodePKCS12), never through any permission-gated verb
+	//   = 381 total.
+	const expectedTotal = 381
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

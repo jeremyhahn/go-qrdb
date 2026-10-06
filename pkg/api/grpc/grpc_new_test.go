@@ -216,6 +216,22 @@ func (m *mockBatchService) Import(_ context.Context, _ io.Reader, _ service.Impo
 	return nil, nil
 }
 
+func (m *mockBatchService) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (m *mockBatchService) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (m *mockBatchService) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
+	return &service.ImportResult{}, nil
+}
+
+func (m *mockBatchService) ImportAbort(_ context.Context, _ string) error {
+	return nil
+}
+
 // mockWatchServiceImpl implements service.WatchServicer for testing.
 type mockWatchServiceImpl struct {
 	watcher watch.Watcher

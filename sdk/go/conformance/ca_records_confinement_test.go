@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -72,6 +73,23 @@ func certCARecordKeys(prefix string) []string {
 // a confinement test over the KV/MVCC/Watch surface needs its own,
 // explicitly-granted role -- one broad enough that a refusal the test
 // observes is confinement, not an incidental RBAC denial.
+// issueThroughNode mints a certificate through the node's own certificate
+// provider -- the software CA directly, bypassing the account-must-exist
+// CertEnrollmentServicer layer -- the way a test forces Key B material to
+// actually exist for tenantID without needing a provisioned account.
+func issueThroughNode(t *testing.T, n *node.Node, username, tenantID string) string {
+	t.Helper()
+	prov := n.Services().CertProv
+	if prov == nil {
+		t.Fatal("the node has no certificate provider")
+	}
+	bundle, err := certtest.Generate(boundedCtx(t), prov, &certtest.Request{Username: username, TenantID: tenantID})
+	if err != nil {
+		t.Fatalf("issue %s/%s: %v", tenantID, username, err)
+	}
+	return bundle.Serial
+}
+
 func grantKV(t *testing.T, n *node.Node, tenantID, username string) string {
 	t.Helper()
 	svc := n.Services()

@@ -49,6 +49,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -1126,6 +1127,77 @@ func TestWithCertProvider(t *testing.T) {
 	}
 }
 
+// mockCertEnrollmentServicer is a no-op service.CertEnrollmentServicer double,
+// used only to prove WithCertEnrollment assigns the field it configures.
+type mockCertEnrollmentServicer struct{}
+
+func (mockCertEnrollmentServicer) SignCertificate(context.Context, *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
+	return nil, nil
+}
+
+func (mockCertEnrollmentServicer) EnrollCertificate(context.Context, *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
+	return nil, nil
+}
+
+func (mockCertEnrollmentServicer) AddTrustAnchors(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
+	return nil, nil
+}
+
+func (mockCertEnrollmentServicer) ListTrustAnchors(context.Context, string) ([]trustanchor.Anchor, error) {
+	return nil, nil
+}
+
+func (mockCertEnrollmentServicer) RemoveTrustAnchor(context.Context, string, string) error {
+	return nil
+}
+
+func TestWithCertEnrollment_Nil(t *testing.T) {
+	var opts serverOptions
+	opt := WithCertEnrollment(nil)
+	opt(&opts)
+	if opts.certEnroll != nil {
+		t.Error("expected nil certEnroll")
+	}
+}
+
+func TestWithCertEnrollment_NonNil(t *testing.T) {
+	var opts serverOptions
+	svc := mockCertEnrollmentServicer{}
+	opt := WithCertEnrollment(svc)
+	opt(&opts)
+	if opts.certEnroll != svc {
+		t.Error("expected certEnroll to be set to the supplied CertEnrollmentServicer")
+	}
+}
+
+// mockTenantOnboardingServicer is a no-op service.TenantOnboardingServicer
+// double, used only to prove WithTenantOnboarding assigns the field it
+// configures.
+type mockTenantOnboardingServicer struct{}
+
+func (mockTenantOnboardingServicer) OnboardTenant(context.Context, *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	return nil, nil
+}
+
+func TestWithTenantOnboarding_Nil(t *testing.T) {
+	var opts serverOptions
+	opt := WithTenantOnboarding(nil)
+	opt(&opts)
+	if opts.onboarding != nil {
+		t.Error("expected nil onboarding")
+	}
+}
+
+func TestWithTenantOnboarding_NonNil(t *testing.T) {
+	var opts serverOptions
+	svc := mockTenantOnboardingServicer{}
+	opt := WithTenantOnboarding(svc)
+	opt(&opts)
+	if opts.onboarding != svc {
+		t.Error("expected onboarding to be set to the supplied TenantOnboardingServicer")
+	}
+}
+
 func TestWithAuthMiddleware(t *testing.T) {
 	var opts serverOptions
 	opt := WithAuthMiddleware(nil)
@@ -1219,7 +1291,7 @@ func (s *stubRoleService) ResolvePermissions(_ context.Context, _ []string) ([]p
 // stubCertProvider is a minimal cert.CertProvider for option propagation tests.
 type stubCertProvider struct{}
 
-func (s *stubCertProvider) GenerateClientCert(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+func (s *stubCertProvider) IssueClientCert(_ context.Context, _ *cert.IssueRequest) (*cert.IssuedCert, error) {
 	return nil, nil
 }
 func (s *stubCertProvider) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {

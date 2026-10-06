@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,24 +20,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // BarrierRegistry manages the system barrier and per-tenant barriers.
 // It provides a centralized registry for creating, initializing, and
 // looking up tenant-specific barriers.
 //
-// When configured with WithVolumePool and WithPerTenantRegistry, the
-// registry can satisfy RegisterTenant calls that pass a nil backend
-// by allocating a path from the configured volume pool, opening a
-// per-tenant Pebble at that path, and wrapping it as the per-tenant
-// StorageBackend. This is the integration point that gives barrier-mode
-// tenants their own independent Pebble instances.
+// When configured with WithVolumeAllocator, WithVolumeResolver and
+// WithPerTenantRegistry, the registry can satisfy RegisterTenant calls
+// that pass a nil backend by resolving tenantID's already-reserved
+// catalog Assignment to a local path, opening a per-tenant Pebble there,
+// and wrapping it as the per-tenant StorageBackend. This is the
+// integration point that gives barrier-mode tenants their own
+// independent Pebble instances.
 type BarrierRegistry struct {
 	logger  *slog.Logger
 	system  *StorageBarrier
@@ -55,31 +55,10 @@ type BarrierRegistry struct {
 	// unsealGate, when set, vetoes a tenant's re-unseal (WithTenantUnsealGate).
 	unsealGate func(tenantID string) bool
 
-	// tenantDataRoots records the on-disk DataRoot assigned to each tenant
-	// registered via RegisterVolumeTenant. It is consulted by
-	// LocalTenantDataRoot so follower replicas can recover the DataRoot of an
-	// already-registered tenant without re-running the round-robin pool.Pick.
-	// Key: tenantID (string) → value: dataRoot (string).
-	tenantDataRoots sync.Map
-
-	// poolMu guards pool/perTenantReg/defaultPoolName/slotStore which may be
+	// poolMu guards perTenantReg/volumeAllocator/volumeResolver, which may be
 	// attached either at construction (Options) or post-hoc via Attach.
-	poolMu          sync.RWMutex
-	pool            objpool.Manager
-	poolStateStore  objpool.StateStore // retained for diagnostics; also pins lifetime
-	defaultPoolName string
-	perTenantReg    pebblestore.PerTenantRegistry
-
-	// slotStore records the cluster-wide tenant→relative-slot assignment in
-	// the replicated system shard (Phase 2). When non-nil (clustered mode),
-	// the pooled-allocation path resolves a tenant's relative slot from this
-	// store instead of running a node-local pool.Pick — so every replica
-	// realizes the SAME relative slot (at its own local pool base) for a
-	// tenant. When nil (standalone), each node Picks node-locally, preserving
-	// the single-node behavior. The recorded assignment is the single
-	// replicated decision; the round-robin cursor that chooses the slot for a
-	// new tenant is likewise replicated (see pool.ReplicatedStateStore).
-	slotStore StorageBackend
+	poolMu       sync.RWMutex
+	perTenantReg pebblestore.PerTenantRegistry
 
 	// remover is the filesystem tenant directories are reclaimed through; nil
 	// means the operating system. See WithDirectoryRemover.
@@ -94,6 +73,43 @@ type BarrierRegistry struct {
 	// auditTrail is the compliance trail every tenant barrier records on
 	// (WithAuditTrail). Guarded by poolMu.
 	auditTrail audit.AuditLogger
+
+	// volumeAllocator resolves (Reserve/Resolve/Release) a tenant's named
+	// volume pool and tenant-relative path -- the catalog built over
+	// pkg/volume (see WithVolumeAllocator). It replaces the node-local
+	// round-robin pool/slot-assignment machinery above: the catalog already
+	// gives every node the SAME answer for a tenant, so there is no slot to
+	// translate. Guarded by poolMu like the rest of the boot-wired fields.
+	volumeAllocator volume.Allocator
+
+	// volumeResolver resolves a pool name to THIS node's own opened volume
+	// root directory (see WithVolumeResolver). pkg/seal does not open
+	// volumes itself -- the composition layer does, from node configuration
+	// -- so this is injected exactly as MigrationRecoverer is.
+	volumeResolver VolumeResolver
+}
+
+// VolumeResolver resolves a pool name to this node's own opened volume
+// root directory (pkg/volume.Volume.Root()). It is injected via
+// WithVolumeResolver because pkg/seal cannot open volumes itself: the
+// composition layer does, from node configuration, and tracks the
+// Lockable ones in a VolumeLifecycle beside it (decision D6).
+//
+// Returns *volume.PoolUnavailableError-shaped errors for a pool this node
+// does not map, mapped but failed to open, or mapped and open but
+// currently locked/unavailable (a Lockable volume before its first
+// unlock, after a failed unlock, or after a re-seal); BarrierRegistry
+// treats all three as "this tenant's pool is unavailable on this node"
+// and refuses only that tenant, never the whole node. Root must never
+// fall through to the bare mount point for a volume it cannot confirm is
+// unlocked.
+type VolumeResolver interface {
+	Root(ctx context.Context, pool string) (string, error)
+
+	// Pools returns the name of every pool this node has open, for the
+	// deleted-tenant reconcile's "never remove a path under a pool root"
+	// guard (replaces the old PoolBasePaths).
+	Pools() []string
 }
 
 // MigrationRecoverer reconciles an interrupted encryption migration whose
@@ -153,31 +169,6 @@ func (r *BarrierRegistry) PendingTenantUnseals() map[string]error {
 	return out
 }
 
-// WithVolumePool attaches a volume pool manager and its state store
-// to the registry. After this option is applied, RegisterTenant calls
-// that pass a nil backend will pull a per-tenant path from the named
-// pool. The state store is retained as a lifetime pin and for
-// diagnostics — strategies that need to read/write cursors do so via
-// the manager.
-//
-// Passing nil for any argument is a no-op for that argument; both
-// must be set before RegisterTenant can satisfy a nil-backend call.
-func WithVolumePool(mgr objpool.Manager, state objpool.StateStore, defaultPoolName string) Option {
-	return func(r *BarrierRegistry) {
-		r.poolMu.Lock()
-		defer r.poolMu.Unlock()
-		if mgr != nil {
-			r.pool = mgr
-		}
-		if state != nil {
-			r.poolStateStore = state
-		}
-		if defaultPoolName != "" {
-			r.defaultPoolName = defaultPoolName
-		}
-	}
-}
-
 // WithPerTenantRegistry attaches the per-tenant Pebble registry. It
 // is the second half of the pool-driven RegisterTenant flow: once a
 // path is picked from the volume pool, the registry opens (or returns
@@ -191,57 +182,6 @@ func WithPerTenantRegistry(reg pebblestore.PerTenantRegistry) Option {
 			r.perTenantReg = reg
 		}
 	}
-}
-
-// WithReplicatedSlotStore attaches the replicated system-shard store used to
-// record and resolve the cluster-wide tenant→relative-slot assignment. After
-// this option is applied (clustered mode), pooled tenant provisioning resolves
-// a tenant's slot from this store rather than running a node-local pool.Pick,
-// so every replica realizes the same relative slot. The store must provide
-// cross-node-atomic PutIfAbsent (a Raft-backed KV) so the first writer wins
-// when two nodes race to assign the same tenant.
-//
-// Passing nil is a no-op. When never configured, the registry falls back to
-// node-local Pick (single-node / standalone behavior).
-func WithReplicatedSlotStore(store StorageBackend) Option {
-	return func(r *BarrierRegistry) {
-		r.poolMu.Lock()
-		defer r.poolMu.Unlock()
-		if store != nil {
-			r.slotStore = store
-		}
-	}
-}
-
-// DetachReplicatedSlotStore clears the replicated slot store attached by
-// WithReplicatedSlotStore, returning the registry to node-local Pick.
-// Callers retract the attachment when the store it wraps (the replicated
-// system KV) has been stopped -- a boot attempt that attached it and then
-// failed -- so neither this registry nor a caller holding a reference to it
-// is left pointing at the stopped backend. This is defensive hygiene, not a
-// fallback that serves a request on the node's behalf: a clustered SDK boot
-// that failed this far along has already re-sealed the node (see
-// Node.completeClusteredBoot's failure defer in sdk/go/node), and
-// TenantService.CreateTenant -- the supported entry point into tenant
-// provisioning -- reads through the system barrier before it reaches a slot
-// store at all, so it fails closed (seal.ErrSealed) regardless of whether a
-// slot store happens to be attached. RegisterVolumeTenant/ReattachVolumeTenant
-// on this registry do NOT carry the same check if called directly, bypassing
-// TenantService; detaching here narrows that window but does not close it.
-// Idempotent: calling it when no slot store is attached is a no-op.
-func (r *BarrierRegistry) DetachReplicatedSlotStore() {
-	r.poolMu.Lock()
-	defer r.poolMu.Unlock()
-	r.slotStore = nil
-}
-
-// HasReplicatedSlotStore reports whether a replicated slot store is
-// currently attached (via WithReplicatedSlotStore or Attach), as opposed to
-// the registry resolving a pooled tenant's slot through node-local Pick.
-// Exported for callers that need to assert the attachment state directly,
-// such as a test proving DetachReplicatedSlotStore actually cleared it.
-func (r *BarrierRegistry) HasReplicatedSlotStore() bool {
-	return r.replicatedSlotStore() != nil
 }
 
 // WithMigrationRecoverer attaches the crash-recovery hook RegisterVolumeTenant
@@ -261,6 +201,233 @@ func WithMigrationRecoverer(rec MigrationRecoverer) Option {
 			r.migrationRecoverer = rec
 		}
 	}
+}
+
+// WithVolumeAllocator attaches the catalog (pkg/volume.Catalog, typed as
+// its narrower volume.Allocator seam) RegisterTenant's nil-backend flow and
+// RegisterVolumeTenant/ReattachVolumeTenant resolve a tenant's pool and
+// tenant-relative path through. Passing nil is a no-op.
+func WithVolumeAllocator(allocator volume.Allocator) Option {
+	return func(r *BarrierRegistry) {
+		r.poolMu.Lock()
+		defer r.poolMu.Unlock()
+		if allocator != nil {
+			r.volumeAllocator = allocator
+		}
+	}
+}
+
+// WithVolumeResolver attaches the resolver that maps a pool name to this
+// node's own opened volume root directory (typically *volume.OpenVolumes).
+// Passing nil is a no-op. Both WithVolumeAllocator and WithVolumeResolver
+// must be set before a nil-backend RegisterTenant call, or
+// RegisterVolumeTenant/ReattachVolumeTenant, can succeed.
+func WithVolumeResolver(resolver VolumeResolver) Option {
+	return func(r *BarrierRegistry) {
+		r.poolMu.Lock()
+		defer r.poolMu.Unlock()
+		if resolver != nil {
+			r.volumeResolver = resolver
+		}
+	}
+}
+
+// volumeResources returns the configured volume allocator and resolver
+// under a read lock.
+func (r *BarrierRegistry) volumeResources() (volume.Allocator, VolumeResolver) {
+	r.poolMu.RLock()
+	defer r.poolMu.RUnlock()
+	return r.volumeAllocator, r.volumeResolver
+}
+
+// HasVolumePool reports whether this registry has BOTH a volume.Allocator
+// and a VolumeResolver attached -- the precondition every IsolationVolume /
+// IsolationRaft pool-resolution path (RequireInsideLocalPool and everything
+// built on it) requires. Composition layers (pkg/server.TenantInfraConfig,
+// cmd/qrdbd, sdk/go/node) use it as the single presence gate for whether to
+// build the volume/raft tenant host registries at all, replacing the old
+// "is a *pool.VolumePoolSubsystem configured" check now that there is no
+// such subsystem.
+func (r *BarrierRegistry) HasVolumePool() bool {
+	allocator, resolver := r.volumeResources()
+	return allocator != nil && resolver != nil
+}
+
+// VolumeAllocator returns the volume.Allocator attached to this registry
+// (seal.WithVolumeAllocator / Attach), or nil when none is configured. The
+// TenantService's own volume-pool reservation (reserveAndRegisterVolumeTenant)
+// needs the SAME allocator the registry resolves tenant placement through,
+// so a composition layer that builds a TenantService over this registry
+// (pkg/server/lifecycle.BuildServices) wires this straight into
+// tenant.WithVolumeAllocator rather than threading a second copy of the
+// allocator through its own Infra field.
+func (r *BarrierRegistry) VolumeAllocator() volume.Allocator {
+	allocator, _ := r.volumeResources()
+	return allocator
+}
+
+// VolumeService returns the attached allocator's volume.Service view (pool
+// management: CreatePool, ListPools, GetPool, UpdatePool, DeletePool,
+// ListAssignments) when the concrete value attached via WithVolumeAllocator
+// also implements it -- true for *volume.Catalog, the only production
+// implementation, which satisfies both the narrow Allocator seam this
+// registry resolves tenant placement through and the full management
+// surface docs/volume-pools/api.md describes. Composition layers
+// (cmd/qrdbd, sdk/go/node) use this to wire every transport's volume-pool
+// management endpoints from the SAME catalog instance, without threading a
+// second copy of it through their own boot-time variables. ok is false
+// when no allocator is attached, or the attached one does not also
+// implement Service (a narrower test double, for example).
+func (r *BarrierRegistry) VolumeService() (svc volume.Service, ok bool) {
+	allocator, _ := r.volumeResources()
+	if allocator == nil {
+		return nil, false
+	}
+	svc, ok = allocator.(volume.Service)
+	return svc, ok
+}
+
+// RequireInsideLocalPool resolves tenantID's assignment through allocator,
+// resolves its Assignment.Pool to this node's own mount through resolver,
+// and joins Assignment.Path onto it, verifying the result is strictly
+// inside that root (invariant 2). This is the renamed, catalog-backed
+// successor to the pre-catalog recovery fix's unexported
+// containedTenantPath: it is now the single place every tenant-directory
+// operation -- registration, removal, reconcile -- resolves a tenant's
+// local directory, replacing the node-local round-robin pool/slot
+// machinery entirely. The catalog already gives every node the SAME
+// Assignment (Reserve is one Raft transaction), so there is nothing left
+// to translate per node beyond its own mount for the named pool.
+//
+// Symbolic links in the pool's root are rejected once, at volume-open
+// time, by the Provider that built it (pkg/volume's "dir" provider calls
+// validation.AbsoluteCanonicalPath); this function does not re-resolve
+// the ROOT on every call, since Volume.Root() does not change for the
+// lifetime of an open Volume. The TENANT directory under that root is a
+// different matter: it is created (and can be replaced) long after the
+// pool was opened, so every call also Lstats the joined tenant path and,
+// when it exists, requires it to be a real directory whose fully
+// symlink-resolved location is EXACTLY resolvedRoot/<Assignment.Path> --
+// never anywhere else. Without this, an operator (or a compromised
+// writer) who plants a symlink at the tenant's path could redirect
+// create/open/reattach/delete outside the pool entirely, or onto a
+// sibling tenant's directory (deleting tenant A would actually delete
+// tenant B). A tenant directory that does not exist yet -- the common
+// case on first create -- has nothing to resolve and is accepted as-is.
+//
+// Returns *volume.AssignmentNotFoundError when tenantID has no assignment,
+// whatever resolver.Root returns (typically *volume.PoolUnavailableError)
+// when this node cannot resolve the assignment's pool, and
+// *TenantPathIsSymlinkError when the tenant directory itself is, or
+// resolves through, a symlink.
+func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, tenantID string) (string, error) {
+	allocator, resolver := r.volumeResources()
+	if allocator == nil || resolver == nil {
+		return "", ErrPoolNotConfigured
+	}
+	assignment, err := allocator.Resolve(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	root, err := resolver.Root(ctx, assignment.Pool)
+	if err != nil {
+		return "", err
+	}
+
+	joined := filepath.Join(root, assignment.Path)
+	rel, err := filepath.Rel(root, joined)
+	if err != nil {
+		return "", ErrTenantPathEscapesPool
+	}
+	// The tenant directory must be exactly one path component below the
+	// root: not the root itself ("."), not above it (".." prefix), and
+	// not nested deeper (a separator in the relative path).
+	if rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
+		strings.ContainsRune(rel, filepath.Separator) {
+		return "", ErrTenantPathEscapesPool
+	}
+	if err := requireNotSymlinked(root, joined, assignment.Path, tenantID); err != nil {
+		return "", err
+	}
+	return joined, nil
+}
+
+// requireNotSymlinked refuses joined (root's assignment.Path child) when it
+// is a symlink, or when its fully symlink-resolved location is not EXACTLY
+// resolvedRoot/<assignmentPath>. A path that does not exist yet has
+// nothing to resolve and is accepted.
+func requireNotSymlinked(root, joined, assignmentPath, tenantID string) error {
+	fi, statErr := os.Lstat(joined)
+	if statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return nil
+		}
+		return &TenantPathIsSymlinkError{TenantID: tenantID, Path: joined, Err: statErr}
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return &TenantPathIsSymlinkError{TenantID: tenantID, Path: joined}
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return &TenantPathIsSymlinkError{TenantID: tenantID, Path: joined, Err: err}
+	}
+	resolvedJoined, err := filepath.EvalSymlinks(joined)
+	if err != nil {
+		return &TenantPathIsSymlinkError{TenantID: tenantID, Path: joined, Err: err}
+	}
+	if resolvedJoined != filepath.Join(resolvedRoot, assignmentPath) {
+		return &TenantPathIsSymlinkError{TenantID: tenantID, Path: joined}
+	}
+	return nil
+}
+
+// isUnresolvableAssignment reports whether err means "this tenant has no
+// directory to remove on this node" rather than a real failure: either no
+// Assignment exists at all (*volume.AssignmentNotFoundError), or the
+// Assignment is a D9 interim-shaped record ({pool, slot}, no Path field)
+// that Resolve refuses per decision D9 (*volume.InvalidAssignmentPathError).
+// Both cases are "nothing resolvable here," not "something is wrong" --
+// callers that distinguish "no record at all" from "a record exists but
+// is unusable" (HasTenantState) check the two types separately instead of
+// using this helper.
+func isUnresolvableAssignment(err error) bool {
+	var notFound *volume.AssignmentNotFoundError
+	if errors.As(err, &notFound) {
+		return true
+	}
+	var invalidPath *volume.InvalidAssignmentPathError
+	return errors.As(err, &invalidPath)
+}
+
+// PoolBasePaths returns the local-filesystem root of every pool this node
+// has open, via the configured VolumeResolver. These are the roots under
+// which pool-allocated tenant directories are realized
+// ({poolRoot}/{tenantID}); the deleted-tenant reconcile's residue guard
+// must never remove a path that is or contains one. Returns an empty
+// slice (nil error) when no resolver is configured, so callers can range
+// over the result unconditionally.
+func (r *BarrierRegistry) PoolBasePaths(ctx context.Context) ([]string, error) {
+	_, resolver := r.volumeResources()
+	if resolver == nil {
+		return nil, nil
+	}
+	names := resolver.Pools()
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		root, err := resolver.Root(ctx, name)
+		if err != nil {
+			// A pool that was open a moment ago and failed since is reported
+			// by health, not here; skip it rather than failing every other
+			// pool's guard along with it.
+			if r.logger != nil {
+				r.logger.Warn("registry: pool base path unavailable", slog.String("pool", name), slog.Any("error", err))
+			}
+			continue
+		}
+		out = append(out, root)
+	}
+	return out, nil
 }
 
 // NewBarrierRegistry creates a new BarrierRegistry with the given
@@ -344,17 +511,16 @@ func (r *BarrierRegistry) PerTenantPebbleRegistry() pebblestore.PerTenantRegistr
 // is the keyspace-mode flow and the legacy direct-construction path
 // used by every existing caller.
 //
-// When base is nil, the registry pulls a path from its configured
-// volume pool (see WithVolumePool), opens or returns an existing
-// per-tenant Pebble at that path via the configured PerTenantRegistry
-// (see WithPerTenantRegistry), and wraps the resulting Pebble as the
-// per-tenant StorageBackend. This is the barrier-mode flow.
+// When base is nil, the registry resolves tenantID's already-reserved
+// catalog Assignment (see WithVolumeAllocator / WithVolumeResolver),
+// opens or returns an existing per-tenant Pebble at the resolved path via
+// the configured PerTenantRegistry (see WithPerTenantRegistry), and wraps
+// the resulting Pebble as the per-tenant StorageBackend. This is the
+// barrier-mode flow.
 //
-// Returns ErrTenantAlreadyExists if the tenant id is already
-// registered, ErrPoolNotConfigured / ErrPerTenantRegistryNotConfigured
-// when the pooled flow is requested but the registry isn't wired for
-// it, and ErrPoolBackendNotLocal when the pool returns a backend that
-// can't host a Pebble.
+// Returns ErrTenantAlreadyExists if the tenant id is already registered,
+// and ErrPoolNotConfigured / ErrPerTenantRegistryNotConfigured when the
+// pooled flow is requested but the registry isn't wired for it.
 func (r *BarrierRegistry) RegisterTenant(
 	ctx context.Context,
 	tenantID string,
@@ -395,25 +561,32 @@ func (r *BarrierRegistry) RegisterTenant(
 	return tb, nil
 }
 
-// allocatePooledBackend resolves the local volume-pool base for the tenant
-// (cluster-wide relative slot in clustered mode, node-local Pick otherwise),
-// opens a per-tenant Pebble at the resolved local path, and wraps it as a
-// StorageBackend.
+// allocatePooledBackend resolves the local directory the catalog's
+// Assignment names for tenantID -- this node's own mount for the
+// Assignment's pool, joined with the Assignment's tenant-relative path --
+// opens a per-tenant Pebble there, and wraps it as a StorageBackend. For a
+// tenant.Service-registered tenant the Assignment already exists:
+// reserving it is that caller's job (pkg/tenant.CreateTenant, via
+// volume.Allocator.Reserve) before RegisterTenant is ever called, exactly
+// as architecture.md's Data flow section orders it -- entitlement and
+// reservation precede registration. For the generic, pool-name-free
+// registration primitives (RegisterTenantPooled and friends, below)
+// ensureGenericPoolAssignment reserves one on demand.
 func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID string) (StorageBackend, error) {
-	pool, defaultPoolName, perTenantReg := r.poolResources()
-	if pool == nil {
-		return nil, ErrPoolNotConfigured
-	}
+	// Checked before ensureGenericPoolAssignment's Reserve below: a Reserve
+	// that then can't be used because no per-tenant registry exists would
+	// leak a capacity reservation for a registration that was always going
+	// to fail.
+	perTenantReg := r.perTenantRegistry()
 	if perTenantReg == nil {
 		return nil, ErrPerTenantRegistryNotConfigured
 	}
 
-	base, err := r.resolveTenantPoolBase(ctx, tenantID)
-	if err != nil {
+	if err := r.ensureGenericPoolAssignment(ctx, tenantID); err != nil {
 		return nil, err
 	}
 
-	tenantPath, err := containedTenantPath(base, tenantID)
+	tenantPath, err := r.RequireInsideLocalPool(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -422,249 +595,48 @@ func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID st
 		return nil, err
 	}
 	if r.logger != nil {
-		r.logger.Info("barrier-mode tenant assigned to volume pool path",
+		r.logger.Info("barrier-mode tenant resolved through its volume pool assignment",
 			slog.String("tenant", tenantID),
-			slog.String("path", tenantPath),
-			slog.String("pool", defaultPoolName))
+			slog.String("path", tenantPath))
 	}
 
 	return NewStorageAdapter(storage), nil
 }
 
-// slotAssignmentPrefix is the key prefix under which the cluster-wide
-// tenant→relative-slot assignment is recorded in the replicated system shard.
-// Key: slotAssignmentPrefix + tenantID; Value: JSON-encoded slotAssignment.
-// It shares the __sys:volumepool/ namespace with the round-robin cursor so all
-// pool state is identifiable in one prefix scan.
-const slotAssignmentPrefix = "__sys:volumepool/assign/"
-
-// slotAssignment is the replicated record of a tenant's pool placement. Slot is
-// the RELATIVE candidate index within the named pool — every node realizes it
-// at its OWN local candidate path (homogeneous topology), so the absolute path
-// differs per node while the relative slot is identical cluster-wide.
-type slotAssignment struct {
-	Pool string `json:"pool"`
-	Slot int    `json:"slot"`
-}
-
-// replicatedSlotStore returns the configured replicated slot-assignment store,
-// or nil when the registry runs node-local (standalone) pool selection.
-func (r *BarrierRegistry) replicatedSlotStore() StorageBackend {
-	r.poolMu.RLock()
-	defer r.poolMu.RUnlock()
-	return r.slotStore
-}
-
-// resolveTenantPoolBase resolves the local pool BASE directory under which a
-// tenant's dedicated storage is realized (the path the tenant id is later
-// joined onto).
-//
-// In clustered mode (a replicated slot store is attached) it first resolves the
-// cluster-wide relative slot recorded for the tenant and realizes it at THIS
-// node's own candidate path, WITHOUT advancing the round-robin cursor — so a
-// follower / failover leader uses the same relative slot the original assigner
-// chose instead of double-Picking. When no assignment exists yet (first
-// provision, on the leader) it Picks a slot (advancing the replicated cursor),
-// records the assignment, and returns the picked base; if a concurrent writer
-// records first, that writer's slot is resolved and returned so all replicas
-// converge.
-//
-// In standalone mode (no slot store) it always Picks node-locally, preserving
-// single-node behavior.
-func (r *BarrierRegistry) resolveTenantPoolBase(ctx context.Context, tenantID string) (string, error) {
-	pool, defaultPoolName, _ := r.poolResources()
-	if pool == nil {
-		return "", ErrPoolNotConfigured
+// ensureGenericPoolAssignment reserves tenantID a path on this node's
+// lexicographically-first local pool when it has no catalog Assignment
+// yet. It exists only for the generic, pool-name-free registration
+// primitives (RegisterTenantPooled, RegisterTenantPooledWithStrategy,
+// RegisterTenantPooledShamir) that predate per-tenant, entitlement-gated
+// pool selection (pkg/tenant.CreateTenant) and carry no quota of their
+// own; the reservation it writes is capacity 0 (untracked against the
+// pool's capacity), matching those primitives' historical behavior of
+// drawing from whatever single pool the composer configured, with no
+// entitlement check -- they are trusted, in-process callers (e.g.
+// pkg/bootstrap), not tenant-create requests. A tenant.Service-registered
+// tenant never reaches here with a missing Assignment, since it has
+// already Reserved one (with its own entitled pool and real quota) before
+// calling RegisterTenant; for it this is a no-op, because Resolve already
+// succeeds.
+func (r *BarrierRegistry) ensureGenericPoolAssignment(ctx context.Context, tenantID string) error {
+	allocator, resolver := r.volumeResources()
+	if allocator == nil || resolver == nil {
+		return ErrPoolNotConfigured
 	}
-	slotStore := r.replicatedSlotStore()
-
-	// Clustered: resolve a previously-recorded assignment first (no Pick).
-	if slotStore != nil {
-		rec, found, err := r.loadSlotAssignment(ctx, tenantID)
-		if err != nil && r.logger != nil {
-			r.logger.Warn("registry: slot assignment read failed; falling back to pick",
-				slog.String("tenant", tenantID), slog.Any("error", err))
-		}
-		if found {
-			if base, lerr := r.localBaseForSlot(ctx, rec.Pool, rec.Slot); lerr == nil {
-				return base, nil
-			} else if r.logger != nil {
-				r.logger.Warn("registry: recorded slot unresolvable; re-picking",
-					slog.String("tenant", tenantID),
-					slog.Int("slot", rec.Slot),
-					slog.Any("error", lerr))
-			}
+	if _, err := allocator.Resolve(ctx, tenantID); err == nil {
+		return nil
+	} else {
+		var notFound *volume.AssignmentNotFoundError
+		if !errors.As(err, &notFound) {
+			return err
 		}
 	}
-
-	// Pick a slot. In clustered mode the cursor is replicated, so this is a
-	// single cluster-wide advance; in standalone mode it is the node-local
-	// Pebble cursor.
-	picked, err := pool.Pick(ctx, defaultPoolName, objpool.Hint{TenantID: tenantID})
-	if err != nil {
-		return "", err
+	pools := resolver.Pools()
+	if len(pools) == 0 {
+		return ErrPoolNotConfigured
 	}
-	accessor, ok := picked.(common.PathAccessor)
-	if !ok {
-		return "", ErrPoolBackendNotLocal
-	}
-	base := accessor.LocalPath()
-
-	// Clustered: record the assignment. If another node recorded first, defer
-	// to its slot so every replica converges on one relative slot.
-	if slotStore != nil {
-		base = r.recordSlotAssignment(ctx, tenantID, defaultPoolName, base)
-	}
-	return base, nil
-}
-
-// loadSlotAssignment reads the replicated slot assignment for tenantID. A
-// missing record returns (zero, false, nil).
-func (r *BarrierRegistry) loadSlotAssignment(ctx context.Context, tenantID string) (slotAssignment, bool, error) {
-	slotStore := r.replicatedSlotStore()
-	if slotStore == nil {
-		return slotAssignment{}, false, nil
-	}
-	data, err := slotStore.Get(ctx, slotAssignmentPrefix+tenantID)
-	if err != nil {
-		if errors.Is(err, ErrSecretNotFound) {
-			return slotAssignment{}, false, nil
-		}
-		return slotAssignment{}, false, err
-	}
-	var rec slotAssignment
-	if uerr := json.Unmarshal(data, &rec); uerr != nil {
-		// Corrupt entry: treat as absent so a fresh assignment can overwrite.
-		return slotAssignment{}, false, nil
-	}
-	return rec, true, nil
-}
-
-// recordSlotAssignment maps pickedBase to its relative slot index and records
-// the tenant→slot assignment in the replicated store via PutIfAbsent. It
-// returns the BASE the caller should use: the picked base when this node won
-// the assignment (or recording was best-effort-skipped), or the winning node's
-// resolved base when a concurrent writer recorded first. All failures are
-// non-fatal — the picked base is returned and the tenant is still provisioned.
-func (r *BarrierRegistry) recordSlotAssignment(ctx context.Context, tenantID, poolName, pickedBase string) string {
-	slotStore := r.replicatedSlotStore()
-	if slotStore == nil {
-		return pickedBase
-	}
-	slot, ok := r.slotForBase(ctx, poolName, pickedBase)
-	if !ok {
-		if r.logger != nil {
-			r.logger.Warn("registry: picked pool base not found among candidates; assignment not recorded",
-				slog.String("tenant", tenantID), slog.String("base", pickedBase))
-		}
-		return pickedBase
-	}
-	blob, err := json.Marshal(slotAssignment{Pool: poolName, Slot: slot})
-	if err != nil {
-		return pickedBase
-	}
-	stored, err := slotStore.PutIfAbsent(ctx, slotAssignmentPrefix+tenantID, blob)
-	if err != nil {
-		if r.logger != nil {
-			r.logger.Warn("registry: failed to record slot assignment; using node-local pick",
-				slog.String("tenant", tenantID), slog.Any("error", err))
-		}
-		return pickedBase
-	}
-	if stored {
-		if r.logger != nil {
-			r.logger.Info("registry: recorded cluster-wide volume-pool slot assignment",
-				slog.String("tenant", tenantID),
-				slog.String("pool", poolName),
-				slog.Int("slot", slot))
-		}
-		return pickedBase
-	}
-	// Lost the race: another node recorded first. Resolve its slot so all
-	// replicas converge.
-	rec, found, rerr := r.loadSlotAssignment(ctx, tenantID)
-	if rerr != nil || !found {
-		return pickedBase
-	}
-	if base, lerr := r.localBaseForSlot(ctx, rec.Pool, rec.Slot); lerr == nil {
-		return base
-	}
-	return pickedBase
-}
-
-// slotForBase returns the relative candidate index whose local path equals base
-// within the named pool, or ok=false when the pool or base is not found.
-func (r *BarrierRegistry) slotForBase(ctx context.Context, poolName, base string) (int, bool) {
-	pool, _, _ := r.poolResources()
-	if pool == nil {
-		return 0, false
-	}
-	pools, err := pool.List(ctx)
-	if err != nil {
-		return 0, false
-	}
-	for _, p := range pools {
-		if p.Name != poolName {
-			continue
-		}
-		for i, cand := range p.Candidates {
-			if accessor, ok := cand.(common.PathAccessor); ok && accessor.LocalPath() == base {
-				return i, true
-			}
-		}
-	}
-	return 0, false
-}
-
-// localBaseForSlot resolves the relative slot index to THIS node's local
-// candidate path within the named pool. Returns ErrPoolSlotUnresolved when the
-// pool is missing, the slot is out of range, or the candidate is not local.
-func (r *BarrierRegistry) localBaseForSlot(ctx context.Context, poolName string, slot int) (string, error) {
-	pool, _, _ := r.poolResources()
-	if pool == nil {
-		return "", ErrPoolNotConfigured
-	}
-	pools, err := pool.List(ctx)
-	if err != nil {
-		return "", err
-	}
-	for _, p := range pools {
-		if p.Name != poolName {
-			continue
-		}
-		if slot < 0 || slot >= len(p.Candidates) {
-			return "", ErrPoolSlotUnresolved
-		}
-		accessor, ok := p.Candidates[slot].(common.PathAccessor)
-		if !ok {
-			return "", ErrPoolBackendNotLocal
-		}
-		return accessor.LocalPath(), nil
-	}
-	return "", ErrPoolSlotUnresolved
-}
-
-// containedTenantPath joins tenantID onto the volume-pool root and
-// verifies the result is a strict child of the root. The tenant service
-// rejects path-unsafe ids at creation time; this is the fail-closed
-// defense at the filesystem sink — a traversal id (one containing path
-// separators or ".." components) returns ErrTenantPathEscapesPool
-// instead of opening a Pebble store outside the pool.
-func containedTenantPath(root, tenantID string) (string, error) {
-	joined := filepath.Join(root, tenantID)
-	rel, err := filepath.Rel(root, joined)
-	if err != nil {
-		return "", ErrTenantPathEscapesPool
-	}
-	// The tenant directory must be exactly one path component below the
-	// root: not the root itself ("."), not above it (".." prefix), and
-	// not nested deeper (a separator in the relative path).
-	if rel == "." || rel == ".." ||
-		strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
-		strings.ContainsRune(rel, filepath.Separator) {
-		return "", ErrTenantPathEscapesPool
-	}
-	return joined, nil
+	_, err := allocator.Reserve(ctx, tenantID, pools[0], tenantID, 0)
+	return err
 }
 
 // assertTenantStorePresent verifies a tenant's persisted barrier Pebble
@@ -687,44 +659,13 @@ func assertTenantStorePresent(tenantID, barrierPath string) error {
 	return nil
 }
 
-// PoolBasePaths returns the local-filesystem base path of every candidate in
-// every configured volume pool. These are the roots under which pool-allocated
-// tenant DataRoots are realized ({poolBase}/{tenantID}); an operator-supplied
-// dedicated DataRoot must not overlap them, or a dedicated disk could nest
-// inside the pool and cause data-confusion. Returns an empty slice (nil error)
-// when no volume pool is configured, so callers can range over the result
-// unconditionally.
-func (r *BarrierRegistry) PoolBasePaths(ctx context.Context) ([]string, error) {
-	pool, _, _ := r.poolResources()
-	if pool == nil {
-		return nil, nil
-	}
-	pools, err := pool.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, p := range pools {
-		for _, cand := range p.Candidates {
-			accessor, ok := cand.(common.PathAccessor)
-			if !ok {
-				continue
-			}
-			if lp := accessor.LocalPath(); lp != "" {
-				out = append(out, lp)
-			}
-		}
-	}
-	return out, nil
-}
-
-// poolResources returns the configured volume-pool manager, default pool
-// name, and per-tenant Pebble registry under a read lock. It is the shared
-// accessor used by allocatePooledBackend and the IsolationVolume path.
-func (r *BarrierRegistry) poolResources() (objpool.Manager, string, pebblestore.PerTenantRegistry) {
+// perTenantRegistry returns the configured per-tenant Pebble registry
+// under a read lock. It is the shared accessor used by
+// allocatePooledBackend and registerVolumeTenant.
+func (r *BarrierRegistry) perTenantRegistry() pebblestore.PerTenantRegistry {
 	r.poolMu.RLock()
 	defer r.poolMu.RUnlock()
-	return r.pool, r.defaultPoolName, r.perTenantReg
+	return r.perTenantReg
 }
 
 // migrationRecovererHook returns the configured MigrationRecoverer (nil when
@@ -735,169 +676,126 @@ func (r *BarrierRegistry) migrationRecovererHook() MigrationRecoverer {
 	return r.migrationRecoverer
 }
 
-// LocalTenantDataRoot returns tenantID's DataRoot on THIS node: the tenant's
-// recorded volume pool and slot, resolved against this node's own candidate
-// path for that slot, joined with the tenant id. The record holds no path, so
-// every node resolves its own directory and none ever opens another's.
+// LocalTenantDataRoot returns the local volume-pool DataRoot for tenantID,
+// resolved fresh through RequireInsideLocalPool on every call: the
+// catalog's Assignment is already the durable, cluster-wide answer (no
+// node-local Pick to avoid re-running), so there is nothing to cache.
 //
-// Returns ErrPoolNotConfigured when no volume pool is attached,
-// ErrTenantNotFound when the tenant has no record, *AbsoluteDataRootRecordError
-// for a record that names a path, and *TenantRootUnresolvedError when the
-// recorded pool and slot do not exist on this node.
+// Returns *volume.AssignmentNotFoundError when the tenant has not been
+// placed on a pool, and whatever RequireInsideLocalPool's resolution step
+// returns (typically *volume.PoolUnavailableError) when this node cannot
+// resolve the assignment's pool.
 func (r *BarrierRegistry) LocalTenantDataRoot(ctx context.Context, tenantID string) (string, error) {
-	pool, _, _ := r.poolResources()
-	if pool == nil {
-		return "", ErrPoolNotConfigured
-	}
-	if v, ok := r.tenantDataRoots.Load(tenantID); ok {
-		return v.(string), nil //nolint:errcheck // type assertion on a value this container only ever holds
-	}
-	rec, ok, err := r.loadTenantRoot(ctx, tenantID)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", ErrTenantNotFound
-	}
-	root, err := r.resolveTenantRoot(ctx, tenantID, rec)
-	if err != nil {
-		return "", err
-	}
-	r.tenantDataRoots.Store(tenantID, root)
-	return root, nil
+	return r.RequireInsideLocalPool(ctx, tenantID)
 }
 
-// resolveTenantRoot resolves a tenant-root record to this node's directory:
-// this node's candidate path for the recorded slot of the recorded pool, with
-// the tenant id joined on.
-func (r *BarrierRegistry) resolveTenantRoot(ctx context.Context, tenantID string, rec *tenantRootRecord) (string, error) {
-	base, err := r.localBaseForSlot(ctx, rec.Pool, rec.Slot)
-	if err != nil {
-		return "", &TenantRootUnresolvedError{TenantID: tenantID, Pool: rec.Pool, Slot: rec.Slot, Err: err}
-	}
-	return containedTenantPath(base, tenantID)
-}
-
-// tenantRootStorePrefix is the key prefix under which per-tenant location
-// records are persisted in the system barrier, from which every node resolves
-// the tenant's directory after a restart without a new pool.Pick call (which
-// would advance the round-robin cursor).
+// tenantBarrierPostureStorePrefix is the key prefix under which a volume or
+// raft tenant's barrier key-management posture is persisted in the system
+// barrier store: the one bit about such a tenant pkg/seal still needs
+// that nothing else in its reach can supply. WHERE the tenant lives comes
+// entirely from the catalog now (volume.Allocator); this is the only
+// state that survives the migration off the old tenantRootRecord, because
+// AutoUnseal is a pkg/seal key-management concept, not a volume-pools
+// location concept, and pkg/seal cannot read pkg/tenant's TenantInfo
+// (pkg/tenant already imports pkg/seal, so the reverse would cycle).
 //
-// Key: tenantRootStorePrefix + tenantID
-// Value: JSON-encoded tenantRootRecord.
-const tenantRootStorePrefix = "__registry:tenant_root/"
+// Key: tenantBarrierPostureStorePrefix + tenantID
+// Value: JSON-encoded tenantBarrierPosture.
+const tenantBarrierPostureStorePrefix = "__registry:tenant_posture/"
 
-// tenantRootRecord is the persisted form of a volume-tenant assignment. It is
-// replicated state, so it records where the tenant lives in terms every node
-// can resolve against its own disks -- a pool name and a relative slot -- and
-// never a path.
-type tenantRootRecord struct {
-	// Pool is the volume pool the tenant was allocated from.
-	Pool string `json:"pool"`
-	// Slot is the relative candidate index within Pool; each node realizes it
-	// at its own candidate path.
-	Slot int `json:"slot"`
+// tenantBarrierPosture is the persisted form of a volume/raft tenant's
+// barrier key-management posture.
+type tenantBarrierPosture struct {
 	// AutoUnseal indicates whether the tenant uses the system barrier as its
 	// unseal authority (true) or self-manages unseal credentials (false).
 	AutoUnseal bool `json:"auto_unseal"`
-	// DataRoot is never written. A record that carries one names one node's
-	// path and is refused (*AbsoluteDataRootRecordError).
-	DataRoot string `json:"data_root,omitempty"`
 }
 
-// persistTenantRoot writes the tenant's pool, slot and AutoUnseal flag to the
-// system barrier store. The record is what every restart resolves the tenant
-// from, so a registration that cannot write it fails: every failure,
-// including a sealed or absent system barrier (ErrSealed), is
-// *TenantRootPersistError.
-func (r *BarrierRegistry) persistTenantRoot(ctx context.Context, tenantID string, loc slotAssignment, autoUnseal bool) error {
+// persistTenantBarrierPosture writes tenantID's AutoUnseal flag to the
+// system barrier store. The system barrier must be unsealed; a sealed
+// barrier is silently skipped (the session can still operate, but the
+// entry will be missing on the next restart).
+func (r *BarrierRegistry) persistTenantBarrierPosture(ctx context.Context, tenantID string, autoUnseal bool) error {
 	if r.system == nil || r.system.IsSealed() {
-		return &TenantRootPersistError{TenantID: tenantID, Err: ErrSealed}
+		return nil
 	}
-	blob, err := json.Marshal(tenantRootRecord{Pool: loc.Pool, Slot: loc.Slot, AutoUnseal: autoUnseal})
+	blob, err := json.Marshal(tenantBarrierPosture{AutoUnseal: autoUnseal})
 	if err != nil {
-		return &TenantRootPersistError{TenantID: tenantID, Err: err}
+		return err
 	}
-	if err := r.system.Put(ctx, tenantRootStorePrefix+tenantID, blob); err != nil {
-		return &TenantRootPersistError{TenantID: tenantID, Err: err}
-	}
-	return nil
+	return r.system.Put(ctx, tenantBarrierPostureStorePrefix+tenantID, blob)
 }
 
-// loadTenantRoot reads the persisted DataRoot record for tenantID from the
-// system barrier store. Returns (nil, false, nil) when the key is absent.
-func (r *BarrierRegistry) loadTenantRoot(ctx context.Context, tenantID string) (*tenantRootRecord, bool, error) {
+// loadTenantBarrierPosture reads the persisted posture record for
+// tenantID. Returns (false, false, nil) when the key is absent or the
+// system barrier is sealed: the caller's fail-closed default (self-managed)
+// applies either way.
+func (r *BarrierRegistry) loadTenantBarrierPosture(ctx context.Context, tenantID string) (autoUnseal, found bool, err error) {
 	if r.system == nil || r.system.IsSealed() {
-		return nil, false, nil
+		return false, false, nil
 	}
-	data, err := r.system.Get(ctx, tenantRootStorePrefix+tenantID)
+	data, err := r.system.Get(ctx, tenantBarrierPostureStorePrefix+tenantID)
 	if err != nil {
 		if errors.Is(err, ErrSecretNotFound) {
-			return nil, false, nil
+			return false, false, nil
 		}
-		return nil, false, err
+		return false, false, err
 	}
-	var rec tenantRootRecord
+	var rec tenantBarrierPosture
 	if uerr := json.Unmarshal(data, &rec); uerr != nil {
-		// Corrupt entry: treat as not found so a fresh registration can overwrite.
-		return nil, false, nil
+		// Corrupt entry: treat as absent so a fresh registration can overwrite,
+		// and the fail-closed (self-managed) default applies in the meantime.
+		return false, false, nil
 	}
-	if rec.DataRoot != "" {
-		return nil, false, &AbsoluteDataRootRecordError{TenantID: tenantID, DataRoot: rec.DataRoot}
-	}
-	return &rec, true, nil
+	return rec.AutoUnseal, true, nil
 }
 
-// RestoreVolumeTenants re-registers all IsolationVolume / IsolationRaft
-// tenant barriers whose DataRoot records were persisted to the system barrier
-// store (by RegisterVolumeTenant during a prior run). Each tenant that is not
-// yet in the in-memory registry is re-registered at its stored DataRoot path
-// and, for system-managed (auto-unseal) tenants, unsealed credential-free.
+// RestoreVolumeTenants re-registers every IsolationVolume / IsolationRaft
+// tenant barrier this node can resolve: every Assignment the catalog
+// holds, for a pool this node maps, that is not yet in the in-memory
+// registry. Each one is re-registered via ReattachVolumeTenant and, for
+// system-managed (auto-unseal) tenants, unsealed credential-free.
 //
 // This is the boot-time complement to reattachRaftTenants: while
-// reattachRaftTenants handles the node that was the cluster leader during the
-// original tenant CREATE (it has TenantInfo in its local seal store),
-// RestoreVolumeTenants handles FOLLOWER nodes that received key delivery but
-// never stored TenantInfo. Their barrier key material is persisted on-disk at
-// the recorded DataRoot; this method re-opens it.
+// reattachRaftTenants handles the node that was the cluster leader during
+// the original tenant CREATE (it has TenantInfo in its local seal store),
+// RestoreVolumeTenants handles FOLLOWER nodes that received key delivery
+// but never stored TenantInfo. Their barrier key material is persisted
+// on-disk under the pool; this method re-opens it.
 //
 // The method is idempotent: tenants already present in the registry are
-// skipped. Individual re-registration failures are logged and skipped rather
-// than aborting; the caller's reconciler will retry on the next pass.
+// skipped, and an Assignment for a pool this node does not map is skipped
+// quietly -- some other node serves it. Individual re-registration
+// failures are logged and skipped rather than aborting; the caller's
+// reconciler retries on the next pass.
 func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 	if r.system == nil || r.system.IsSealed() {
 		return nil
 	}
-	keys, err := r.system.List(ctx, tenantRootStorePrefix)
+	allocator, resolver := r.volumeResources()
+	if allocator == nil || resolver == nil {
+		return nil
+	}
+	assignments, err := allocator.ListAll(ctx)
 	if err != nil {
 		return err
 	}
-	prefixLen := len(tenantRootStorePrefix)
-	for _, key := range keys {
-		if len(key) <= prefixLen {
-			continue
-		}
-		tenantID := key[prefixLen:]
-		// Skip if already registered in the in-memory registry (e.g., the R1
-		// leader node that ran reattachRaftTenants successfully).
+	for _, a := range assignments {
+		tenantID := a.TenantID
 		if _, rerr := r.GetTenant(tenantID); rerr == nil {
-			continue
+			continue // already registered (e.g. this node was the create leader)
 		}
-		rec, found, lerr := r.loadTenantRoot(ctx, tenantID)
-		if lerr != nil || !found {
-			r.logger.Error("registry: restore: tenant root record unusable, skipping",
-				slog.String("tenant", tenantID),
-				slog.Any("error", lerr))
-			continue
+		if _, rerr := resolver.Root(ctx, a.Pool); rerr != nil {
+			continue // this node does not map (or cannot open) a.Pool; another node serves it
 		}
-		dataRoot, rerr := r.resolveTenantRoot(ctx, tenantID, rec)
-		if rerr != nil {
-			r.logger.Error("registry: restore: tenant location does not resolve on this node, skipping",
-				slog.String("tenant", tenantID),
-				slog.Any("error", rerr))
-			continue
+
+		autoUnseal, _, perr := r.loadTenantBarrierPosture(ctx, tenantID)
+		if perr != nil {
+			r.logger.Warn("registry: restore: failed to read tenant barrier posture; defaulting to self-managed",
+				slog.String("tenant", tenantID), slog.Any("error", perr))
 		}
-		if _, _, rerr := r.ReattachVolumeTenant(ctx, tenantID, rec.AutoUnseal); rerr != nil {
+
+		if _, _, rerr := r.ReattachVolumeTenant(ctx, tenantID, autoUnseal); rerr != nil {
 			if errors.Is(rerr, ErrTenantAlreadyExists) {
 				continue // registered concurrently
 			}
@@ -910,17 +808,17 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 				// the volume.
 				r.logger.Error("registry: restore: tenant barrier store absent; dedicated mount likely not present — refusing fresh empty barrier",
 					slog.String("tenant", tenantID),
-					slog.String("data_root", dataRoot),
+					slog.String("pool", a.Pool),
 					slog.Any("error", rerr))
 				continue
 			}
 			r.logger.Warn("registry: restore: failed to register tenant",
 				slog.String("tenant", tenantID),
-				slog.String("data_root", dataRoot),
+				slog.String("pool", a.Pool),
 				slog.Any("error", rerr))
 			continue
 		}
-		if !rec.AutoUnseal {
+		if !autoUnseal {
 			// Self-managed: leave sealed; the tenant admin drives unseal.
 			r.logger.Info("registry: restore: self-managed tenant registered, waiting for tenant unseal",
 				slog.String("tenant", tenantID))
@@ -934,7 +832,7 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 		}
 		r.logger.Info("registry: restore: tenant barrier restored and unsealed",
 			slog.String("tenant", tenantID),
-			slog.String("data_root", dataRoot))
+			slog.String("pool", a.Pool))
 	}
 	return nil
 }
@@ -950,9 +848,19 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 //	{poolRoot}/{tenantID}/barrier      — barrier IAM Pebble (this registration)
 //	{poolRoot}/{tenantID}/databases    — per-tenant Raft host state (caller)
 //
-// The DataRoot is allocated from the configured volume pool, and the pool and
-// relative slot -- never the path -- are recorded, so every node resolves the
-// same tenant to its own directory.
+// tenantID's Assignment must already exist (the caller reserved it via
+// volume.Allocator.Reserve before calling this); there is no "pick a fresh
+// path" branch left, because the catalog -- not this call -- is where a
+// tenant's pool and path are decided. Reserve itself is one Raft
+// transaction, so there is no "Assignment written, barrier registration
+// still to come" window a crash or a write failure could ever observe
+// half-done the way the pre-catalog tenant-root record could: that record
+// was a second, separate write this call made AFTER choosing a path, and a
+// fault injected into it (*seal.TenantRootPersistError, removed with the
+// record itself) is what the deleted TestRegisterVolumeTenant_TenantRootWriteFailureFailsTheCreate
+// covered. The property it proved -- a registration that cannot durably
+// record its placement is undone, not served until the next restart loses
+// it -- is now true by construction, not by a rollback this call performs.
 //
 // autoUnseal selects the tenant's key-management posture: when true the tenant
 // DEK is wrapped under the SYSTEM barrier (SystemBarrierStrategy) so it can be
@@ -961,22 +869,23 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 // admin self-manages init/unseal. Either way the returned barrier is registered
 // but NOT initialized or unsealed; the caller drives that (Initialize on create
 // for auto-unseal tenants, Unseal on re-attach; self-managed tenants are left
-// sealed for the tenant admin), mirroring the IsolationBarrier flow.
+// sealed for the tenant admin), mirroring the IsolationBarrier flow. The
+// posture is persisted here so RestoreVolumeTenants can recover it at boot.
 //
 // RegisterVolumeTenant is the CREATE path: it never asserts the on-disk store
-// already exists, because a newly allocated tenant is legitimately fresh. The
-// boot RE-ATTACH path must instead REQUIRE the store to pre-exist; that is
+// already exists, because a freshly-reserved Assignment is legitimately new.
+// The boot RE-ATTACH path must instead REQUIRE the store to pre-exist; that is
 // ReattachVolumeTenant.
 func (r *BarrierRegistry) RegisterVolumeTenant(ctx context.Context, tenantID string, autoUnseal bool) (string, *TenantBarrier, error) {
 	return r.registerVolumeTenant(ctx, tenantID, autoUnseal, false)
 }
 
 // ReattachVolumeTenant re-registers an EXISTING IsolationVolume / IsolationRaft
-// tenant barrier during boot, at the directory its recorded pool and slot
-// resolve to on this node. It is identical to RegisterVolumeTenant except that
-// it REQUIRES the tenant's record and its on-disk barrier store to already be
-// present: {dataRoot}/barrier MUST exist. When it is absent — typically because
-// the pool's mount is not mounted at boot — it returns
+// tenant barrier at its catalog-resolved DataRoot during boot. It is identical
+// to RegisterVolumeTenant except that it REQUIRES the tenant's on-disk barrier
+// store to already be present: the Assignment was reserved on a prior run, so
+// {dataRoot}/barrier MUST exist. When it is absent — typically because the
+// operator's dedicated disk/mount is not mounted at boot — it returns
 // DataRootMountMissingError instead of letting perTenantReg.Open create a
 // fresh, empty barrier on the underlying root filesystem (a fail-open
 // availability and data-confusion hazard).
@@ -992,62 +901,26 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	if tenantID == "" {
 		return "", nil, ErrEmptyTenantID
 	}
-	pool, defaultPoolName, perTenantReg := r.poolResources()
-	if pool == nil {
-		return "", nil, ErrPoolNotConfigured
-	}
+	perTenantReg := r.perTenantRegistry()
 	if perTenantReg == nil {
 		return "", nil, ErrPerTenantRegistryNotConfigured
 	}
 
 	// Refuse while the system barrier is sealed, rather than proceeding to
-	// pick a pool slot and open a Pebble store for it: the tenant-root record
-	// this registration resolves from, and must write, lives behind the
-	// system barrier, and a sealed barrier would read as "no record" and
-	// allocate a second location for a tenant that already has one.
+	// resolve the assignment and open a Pebble store for it.
 	// TenantService.CreateTenant already fails closed here (its tombstone
 	// check reads through the system barrier itself), so this only matters
 	// for a caller on this registry directly, bypassing TenantService --
 	// which is exactly the case that must fail closed too. Checked after the
-	// wiring preconditions above (empty id, no pool, no per-tenant registry)
-	// so a misconfigured-but-unsealed call still reports ITS OWN error.
+	// wiring precondition above (no per-tenant registry) so a
+	// misconfigured-but-unsealed call still reports ITS OWN error.
 	if r.system == nil || r.system.IsSealed() {
 		return "", nil, ErrSealed
 	}
 
-	var (
-		dataRoot string
-		loc      slotAssignment
-	)
-	// A recorded tenant already has a location: re-attach, and a create that
-	// finds a record (a follower importing a tenant the leader allocated, or
-	// a repeated delivery), resolve it against this node's own pool rather
-	// than picking a new slot.
-	rec, found, err := r.loadTenantRoot(ctx, tenantID)
+	dataRoot, err := r.RequireInsideLocalPool(ctx, tenantID)
 	if err != nil {
 		return "", nil, err
-	}
-	switch {
-	case found:
-		if dataRoot, err = r.resolveTenantRoot(ctx, tenantID, rec); err != nil {
-			return "", nil, err
-		}
-		loc = slotAssignment{Pool: rec.Pool, Slot: rec.Slot}
-	case mustExist:
-		return "", nil, ErrTenantNotFound
-	default:
-		base, err := r.resolveTenantPoolBase(ctx, tenantID)
-		if err != nil {
-			return "", nil, err
-		}
-		slot, ok := r.slotForBase(ctx, defaultPoolName, base)
-		if !ok {
-			return "", nil, ErrPoolSlotUnresolved
-		}
-		loc = slotAssignment{Pool: defaultPoolName, Slot: slot}
-		if dataRoot, err = containedTenantPath(base, tenantID); err != nil {
-			return "", nil, err
-		}
 	}
 
 	barrierPath := filepath.Join(dataRoot, "barrier")
@@ -1088,33 +961,21 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	if err != nil {
 		return "", nil, err
 	}
-	// Cache this node's resolved DataRoot so LocalTenantDataRoot can serve it
-	// without a second pool.Pick call (which would advance the round-robin
-	// cursor).
-	r.tenantDataRoots.Store(tenantID, dataRoot)
-	// Persist the pool and slot to the system barrier so that follower nodes
-	// (and any node after a restart) resolve the tenant to their own directory
-	// via RestoreVolumeTenants without re-running pool.Pick.
-	//
-	// A tenant whose record did not land would serve now and be lost at the
-	// next restart, so the registration is undone and fails. Only the
-	// in-memory registration and the open store are released: whether the
-	// write reached the store is unknown, and the durable records are the
-	// tenant service's to roll back.
-	if perr := r.persistTenantRoot(ctx, tenantID, loc, autoUnseal); perr != nil {
-		if rerr := r.ReleaseTenant(ctx, tenantID); rerr != nil && r.logger != nil {
-			r.logger.Error("registry: release after a failed tenant-root write failed",
+	// Persist the posture so RestoreVolumeTenants can recover it on this or
+	// any other node after a restart; WHERE the tenant lives needs nothing
+	// persisted here -- the catalog's Assignment already is that record.
+	if perr := r.persistTenantBarrierPosture(ctx, tenantID, autoUnseal); perr != nil {
+		if r.logger != nil {
+			r.logger.Warn("registry: failed to persist tenant barrier posture; restart re-attach may default to self-managed",
 				slog.String("tenant", tenantID),
-				slog.Any("error", rerr))
+				slog.Any("error", perr))
 		}
-		return "", nil, perr
 	}
 	if r.logger != nil {
-		r.logger.Info("volume-mode tenant assigned to volume pool path",
+		r.logger.Info("volume-mode tenant resolved through its volume pool assignment",
 			slog.String("tenant", tenantID),
 			slog.String("data_root", dataRoot),
-			slog.String("barrier_path", barrierPath),
-			slog.String("pool", defaultPoolName))
+			slog.String("barrier_path", barrierPath))
 	}
 	return dataRoot, tb, nil
 }
@@ -1134,7 +995,7 @@ func (r *BarrierRegistry) RegisterTenantDefault(tenantID string) (*TenantBarrier
 // tenant. It mirrors RegisterTenantDefault but passes a nil base backend
 // so RegisterTenant takes the pool-driven flow: a per-tenant path is
 // pulled from the configured volume pool and a dedicated per-tenant Pebble
-// is opened at that path (see WithVolumePool / WithPerTenantRegistry). The
+// is opened at that path (see WithVolumeAllocator / WithVolumeResolver / WithPerTenantRegistry). The
 // tenant inherits the system barrier's sealing strategies so its DEK is
 // wrapped with the same posture as the system barrier.
 //
@@ -1161,7 +1022,7 @@ func (r *BarrierRegistry) RegisterTenantPooled(ctx context.Context, tenantID str
 // This is the registration path for IsolationBarrier tenants that supply
 // their own sealing strategy (e.g. TPM2 or Shamir): the per-tenant path is
 // pulled from the configured volume pool and a dedicated per-tenant Pebble
-// is opened at that path (see WithVolumePool / WithPerTenantRegistry). When
+// is opened at that path (see WithVolumeAllocator / WithVolumeResolver / WithPerTenantRegistry). When
 // the volume pool / per-tenant registry is not configured, RegisterTenant
 // returns ErrPoolNotConfigured / ErrPerTenantRegistryNotConfigured.
 //
@@ -1304,49 +1165,41 @@ func (r *BarrierRegistry) UnregisterTenant(tenantID string) error {
 //
 // UnregisterTenant seals and forgets the in-memory barrier, which is the
 // right operation for a node shutting a tenant down. It is NOT the right
-// operation for a tenant that has been deleted: the DataRoot record under
-// "__registry:tenant_root/" and the volume-pool slot assignment survive it,
-// and RestoreVolumeTenants reads exactly those records at boot -- so a
-// deleted volume or raft tenant's barrier is re-registered on the next
-// restart, at the same DataRoot, over the same on-disk store (go-qrdb#413).
+// operation for a tenant that has been deleted: the catalog's Assignment and
+// the tenant barrier posture record survive it, and RestoreVolumeTenants
+// reads exactly those records at boot -- so a deleted volume or raft
+// tenant's barrier is re-registered on the next restart, at the same
+// location, over the same on-disk store (go-qrdb#413).
 //
 // It also removes the tenant's dedicated DataRoot from disk. That directory
 // holds the tenant's own Raft state machines and its barrier store; nothing
 // names it once the records above are gone, so leaving it is a permanent
 // filesystem leak of the deleted tenant's (now key-less) ciphertext.
 //
-// The steps run in the order that survives a failure at any point: release
-// the in-memory barrier and close the store, remove the bytes, and only then
-// drop the records that name them. A failed removal therefore leaves the
-// record in place, so the next call knows where the directory is and finishes
-// the job; dropping the records first would orphan an operator-supplied
-// DataRoot that nothing names any more. DestroyTenant is idempotent and an
-// already-destroyed tenant returns ErrTenantNotFound only when it was not
-// registered here at all.
+// The steps run in the order that survives a failure at any point: resolve
+// where the data is, release the in-memory barrier and close the store,
+// remove the bytes, and only then drop the records that name them. A
+// failed removal therefore leaves the record in place, so the next call
+// knows where the directory is and finishes the job; dropping the records
+// first would orphan a directory that nothing names any more. DestroyTenant
+// is idempotent and an already-destroyed tenant returns ErrTenantNotFound
+// only when it was not registered here at all.
 //
 // A tenant that is registered but has no DataRoot (IsolationBarrier in
 // keyspace mode, or a memory-backed test tenant) skips the filesystem step.
+// A resolution failure that is NOT "no assignment" (e.g. the pool is
+// temporarily unavailable on this node) is returned rather than treated as
+// "nothing to remove": releasing the catalog reservation while the data is
+// merely unreachable right now, not absent, would orphan it.
 func (r *BarrierRegistry) DestroyTenant(ctx context.Context, tenantID string) error {
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
 
-	dataRoot, hasRoot := r.tenantDataRoots.Load(tenantID)
-	if !hasRoot {
-		// Not registered on this node in this process (a follower, or a
-		// restart that has not re-attached yet). The persisted record is
-		// still authoritative for where the data is.
-		rec, found, err := r.loadTenantRoot(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if found {
-			root, rerr := r.resolveTenantRoot(ctx, tenantID, rec)
-			if rerr != nil {
-				return rerr
-			}
-			dataRoot, hasRoot = root, true
-		}
+	root, rootErr := r.RequireInsideLocalPool(ctx, tenantID)
+	hasRoot := rootErr == nil
+	if rootErr != nil && !isUnresolvableAssignment(rootErr) {
+		return rootErr
 	}
 
 	removeErr := r.ReleaseTenant(ctx, tenantID)
@@ -1355,16 +1208,13 @@ func (r *BarrierRegistry) DestroyTenant(ctx context.Context, tenantID string) er
 	}
 
 	if hasRoot {
-		root, _ := dataRoot.(string)
-		if root != "" {
-			if err := r.RemoveDataRoot(ctx, root); err != nil {
-				return &TenantDataRootRemoveError{TenantID: tenantID, DataRoot: root, Err: err}
-			}
-			if r.logger != nil {
-				r.logger.Info("registry: destroyed tenant data root",
-					slog.String("tenant", tenantID),
-					slog.String("data_root", root))
-			}
+		if err := r.RemoveDataRoot(ctx, root); err != nil {
+			return &TenantDataRootRemoveError{TenantID: tenantID, DataRoot: root, Err: err}
+		}
+		if r.logger != nil {
+			r.logger.Info("registry: destroyed tenant data root",
+				slog.String("tenant", tenantID),
+				slog.String("data_root", root))
 		}
 	}
 
@@ -1391,8 +1241,7 @@ func (r *BarrierRegistry) ReleaseTenant(ctx context.Context, tenantID string) er
 	if removeErr != nil && !errors.Is(removeErr, ErrTenantNotFound) {
 		return removeErr
 	}
-	r.tenantDataRoots.Delete(tenantID)
-	if _, _, perTenantReg := r.poolResources(); perTenantReg != nil {
+	if perTenantReg := r.perTenantRegistry(); perTenantReg != nil {
 		if err := perTenantReg.Close(ctx, tenantID); err != nil {
 			return &TenantStoreCloseError{TenantID: tenantID, Err: err}
 		}
@@ -1401,10 +1250,10 @@ func (r *BarrierRegistry) ReleaseTenant(ctx context.Context, tenantID string) er
 }
 
 // DropTenantRecords deletes the two durable records the boot path restores a
-// tenant barrier from: the tenant-root record naming its pool and slot, and
-// the volume-pool slot assignment. A missing record is success; a live failure is
-// not, because leaving either behind resurrects the barrier at the next
-// restart.
+// tenant barrier from: the tenant barrier posture record and the catalog's
+// Assignment (released, which also returns the tenant's reservation to its
+// pool). A missing record is success; a live failure is not, because
+// leaving either behind resurrects the barrier at the next restart.
 //
 // Run it LAST, after the directories the records name have been removed: the
 // record is how a retried reclamation finds a directory whose removal failed.
@@ -1413,82 +1262,48 @@ func (r *BarrierRegistry) DropTenantRecords(ctx context.Context, tenantID string
 		return ErrEmptyTenantID
 	}
 	if r.system != nil && !r.system.IsSealed() {
-		if err := r.system.Delete(ctx, tenantRootStorePrefix+tenantID); err != nil &&
+		if err := r.system.Delete(ctx, tenantBarrierPostureStorePrefix+tenantID); err != nil &&
 			!errors.Is(err, ErrSecretNotFound) {
-			return &TenantRecordDeleteError{TenantID: tenantID, Record: "tenant-root", Err: err}
+			return &TenantRecordDeleteError{TenantID: tenantID, Record: "tenant-barrier-posture", Err: err}
 		}
 	}
-	if slotStore := r.replicatedSlotStore(); slotStore != nil {
-		if err := slotStore.Delete(ctx, slotAssignmentPrefix+tenantID); err != nil &&
-			!errors.Is(err, ErrSecretNotFound) {
-			return &TenantRecordDeleteError{TenantID: tenantID, Record: "slot-assignment", Err: err}
+	if allocator, _ := r.volumeResources(); allocator != nil {
+		if err := allocator.Release(ctx, tenantID); err != nil {
+			return &TenantRecordDeleteError{TenantID: tenantID, Record: "volume-pool-assignment", Err: err}
 		}
 	}
 	return nil
 }
 
-// TenantDataRootCandidates returns every local directory that holds, or would
-// hold, tenantID's data on THIS node: the DataRoot it is registered at in this
-// process, the DataRoot its local tenant-root record names, and
-// {poolBase}/{tenantID} under every local volume-pool base. None is checked
-// for existence.
+// TenantDataRootCandidates returns every local directory that holds, or
+// would hold, tenantID's data on THIS node. The catalog gives a tenant at
+// most one Assignment (invariant 3), so there is at most one candidate now
+// -- the directory RequireInsideLocalPool resolves -- where the pre-catalog
+// model had to probe every configured pool base for a match.
 //
-// Paths are returned AS RECORDED -- never cleaned -- and de-duplicated on
-// their cleaned form. That is deliberate: a recorded "/srv/qrdb/x/.." cleans
-// to "/srv/qrdb", a different and existing directory, so a caller deciding
-// what to remove must validate the path it was given before it cleans
-// anything, and it can only do that if it is given the raw path.
-//
-// It reads, and changes nothing. A caller deciding what to remove must weigh
-// each path itself -- in particular a recorded DataRoot is whatever was
-// recorded, and an operator-supplied one can later be reused by another
-// tenant.
+// An absent Assignment is reported as no candidates (nil, nil), the direct
+// analog of "no record found." Any other resolution failure (e.g. the
+// pool is temporarily unavailable on this node) is returned rather than
+// treated as "nothing here": the caller must not conclude there is
+// nothing to reclaim when the truth is merely "cannot see it right now".
 func (r *BarrierRegistry) TenantDataRootCandidates(ctx context.Context, tenantID string) ([]string, error) {
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID
 	}
-	seen := make(map[string]struct{})
-	var out []string
-	add := func(p string) {
-		if p == "" {
-			return
-		}
-		key := filepath.Clean(p)
-		if _, dup := seen[key]; dup {
-			return
-		}
-		seen[key] = struct{}{}
-		out = append(out, p)
-	}
-	if v, ok := r.tenantDataRoots.Load(tenantID); ok {
-		root, _ := v.(string)
-		add(root)
-	}
-	rec, found, err := r.loadTenantRoot(ctx, tenantID)
+	path, err := r.RequireInsideLocalPool(ctx, tenantID)
 	if err != nil {
+		if isUnresolvableAssignment(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	if found {
-		if root, rerr := r.resolveTenantRoot(ctx, tenantID, rec); rerr == nil {
-			add(root)
-		}
-	}
-	bases, err := r.PoolBasePaths(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, base := range bases {
-		if p, cerr := containedTenantPath(base, tenantID); cerr == nil {
-			add(p)
-		}
-	}
-	return out, nil
+	return []string{path}, nil
 }
 
 // HasTenantState reports whether this node still holds ANY registry state
-// for tenantID: a barrier registered in memory, a tenant-root record, or a
-// volume-pool slot assignment. A retired id with none of these and no
-// directory on disk has been fully reclaimed here.
+// for tenantID: a barrier registered in memory, or a catalog Assignment. A
+// retired id with neither and no directory on disk has been fully
+// reclaimed here.
 func (r *BarrierRegistry) HasTenantState(ctx context.Context, tenantID string) (bool, error) {
 	if tenantID == "" {
 		return false, ErrEmptyTenantID
@@ -1496,21 +1311,27 @@ func (r *BarrierRegistry) HasTenantState(ctx context.Context, tenantID string) (
 	if _, ok := r.tenants.Load(tenantID); ok {
 		return true, nil
 	}
-	if r.system != nil && !r.system.IsSealed() {
-		if _, err := r.system.Get(ctx, tenantRootStorePrefix+tenantID); err == nil {
-			return true, nil
-		} else if !errors.Is(err, ErrSecretNotFound) {
-			return false, err
-		}
+	allocator, _ := r.volumeResources()
+	if allocator == nil {
+		return false, nil
 	}
-	if slotStore := r.replicatedSlotStore(); slotStore != nil {
-		if _, err := slotStore.Get(ctx, slotAssignmentPrefix+tenantID); err == nil {
-			return true, nil
-		} else if !errors.Is(err, ErrSecretNotFound) {
-			return false, err
-		}
+	_, err := allocator.Resolve(ctx, tenantID)
+	if err == nil {
+		return true, nil
 	}
-	return false, nil
+	var notFound *volume.AssignmentNotFoundError
+	if errors.As(err, &notFound) {
+		return false, nil // no record at all
+	}
+	var invalidPath *volume.InvalidAssignmentPathError
+	if errors.As(err, &invalidPath) {
+		// A D9 interim-shaped record ({pool, slot}, refused by Resolve's
+		// own ValidateAssignmentPath check): the record genuinely EXISTS
+		// (it is state that still needs reclaiming via
+		// DestroyTenant/reconcile), it is simply unusable.
+		return true, nil
+	}
+	return false, err
 }
 
 // InitializeTenant initializes the tenant barrier identified by tenantID.
@@ -1619,9 +1440,12 @@ func (r *BarrierRegistry) TenantStatus(tenantID string) (*BarrierStatus, error) 
 // It is the high-level entry point for bootstrapping follower replicas in a
 // multi-node tenant Raft group.
 //
-// The tenant is registered via RegisterVolumeTenant, which resolves the
-// tenant's cluster-wide pool slot to this node's own directory.
-// After registration, one of two initialization paths is taken:
+// The tenant is registered via RegisterVolumeTenant, resolved through the
+// catalog's Assignment exactly as the leader that created the tenant
+// resolved it: there is no "allocate a fresh path" branch here, because
+// every follower sees the SAME Assignment and is opening its own
+// per-tenant Pebble under it for the first time. After registration, one
+// of two initialization paths is taken:
 //
 //   - autoUnseal=true (system-managed): calls ImportRootKey with the supplied
 //     ImportedKey; the root key is re-sealed under this node's system barrier

@@ -27,8 +27,8 @@ import (
 // Vitess only defines ERAccessDeniedError (1045), which is the connection-time
 // code. A statement refused for lack of a privilege on an object uses the
 // object-level codes, which is what a MySQL client -- and therefore
-// go-sql-driver/mysql's *mysql.MySQLError, and qrdb's own
-// driver.SQLStateError -- expects to classify the failure by.
+// go-sql-driver/mysql's *mysql.MySQLError, which qrdb's own driver returns
+// too -- expects to classify the failure by.
 const (
 	// ErrCodeDatabaseAccessDenied is ER_DBACCESS_DENIED_ERROR.
 	ErrCodeDatabaseAccessDenied = 1044

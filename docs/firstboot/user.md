@@ -248,7 +248,16 @@ you. See [../barrier-seal/user.md](../barrier-seal/user.md).
 their permissions are fixed. Create additional roles instead:
 [../identity-rbac/user.md](../identity-rbac/user.md).
 
-**You lost the admin certificate.** Whether this call can help you depends
+**You lost the admin certificate.** If another account in the `system`
+tenant already holds a role permitted to issue certificates (`certs:issue`),
+it can mint you a new one directly: `qrdb ca issue --username admin --out
+./admin` (the key is generated on their machine), or with `--csr` for a CSR
+you made with `qrdb ca csr`; the certificate is bound to the account in the
+same call — see
+[../certificate-authority/user.md](../certificate-authority/user.md) and
+[../identity-rbac/user.md](../identity-rbac/user.md).
+
+When no other such account exists, whether THIS call can help you depends
 on whether the admin account's EXISTING binding is still live (unexpired),
 not merely on whether you still hold the private key:
 

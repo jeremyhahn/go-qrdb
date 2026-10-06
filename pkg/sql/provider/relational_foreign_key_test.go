@@ -80,7 +80,7 @@ func fkParentChild(t *testing.T, h *ddlHarness) *Provider {
 // assertFKViolation asserts err is the given foreign key violation, both as
 // go-mysql-server's own error kind and as the MySQL error number a client
 // actually receives -- 1452 for a child row with no parent, 1451 for a
-// parent row that still has children. sdk/go/gorm's error translator matches
+// parent row that still has children. gorm.io/driver/mysql's error translator matches
 // on those numbers to produce gorm.ErrForeignKeyViolated, so the number is
 // as much part of the contract as the kind is.
 //

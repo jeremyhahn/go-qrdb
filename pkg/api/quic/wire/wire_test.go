@@ -498,6 +498,121 @@ func TestReadRequestPayloadTooLargeOnWire(t *testing.T) {
 	}
 }
 
+// TestReadRequestLimitedRefusesBeforeAllocating proves the go-qrdb#576 fix:
+// a 19-byte header (methodLen + "put" + dbLen=0 + requestID + payloadLen)
+// declaring a 64 MiB payload is refused by a 4 MiB cap WITHOUT the function
+// ever trying to read (and therefore allocate a buffer for) the claimed 64
+// MiB -- the frame below carries no bytes past the header, so a buggy
+// implementation that allocated first and read second would fail with
+// *ReadError (short read), not *PayloadTooLargeError.
+func TestReadRequestLimitedRefusesBeforeAllocating(t *testing.T) {
+	var frame bytes.Buffer
+	_ = binary.Write(&frame, binary.BigEndian, uint16(3))
+	frame.Write([]byte("put"))
+	_ = binary.Write(&frame, binary.BigEndian, uint16(0)) // dbLen = 0
+	_ = binary.Write(&frame, binary.BigEndian, uint64(1)) // requestID
+	_ = binary.Write(&frame, binary.BigEndian, uint32(64<<20))
+	// Deliberately NOT writing any of the claimed 64 MiB payload bytes.
+
+	if frame.Len() != 19 {
+		t.Fatalf("test frame header = %d bytes, want 19", frame.Len())
+	}
+
+	const preAuthCap = 4 << 20
+	_, _, _, _, err := ReadRequestLimited(&frame, preAuthCap)
+	if err == nil {
+		t.Fatal("ReadRequestLimited() expected an error for a 64 MiB payload under a 4 MiB cap, got nil")
+	}
+	var ptlErr *PayloadTooLargeError
+	if !errors.As(err, &ptlErr) {
+		t.Fatalf("error type = %T, want *PayloadTooLargeError (any other error type -- notably *ReadError -- means the function tried to read the claimed payload before checking it)", err)
+	}
+	if ptlErr.Size != 64<<20 {
+		t.Errorf("PayloadTooLargeError.Size = %d, want %d", ptlErr.Size, 64<<20)
+	}
+	if ptlErr.Max != preAuthCap {
+		t.Errorf("PayloadTooLargeError.Max = %d, want %d", ptlErr.Max, preAuthCap)
+	}
+}
+
+// TestReadRequestLimitedAllocatesNoMoreThanTheCap asserts the bound with an
+// actual allocation measurement, not just a returned error: a payload at
+// (not over) the cap is read and the bytes allocated for it never exceed
+// the cap, however large the frame's declared length is permitted to claim
+// up to the protocol ceiling.
+func TestReadRequestLimitedAllocatesNoMoreThanTheCap(t *testing.T) {
+	const cap1MiB = 1 << 20
+	payload := bytes.Repeat([]byte{0xAB}, cap1MiB)
+
+	var frame bytes.Buffer
+	_ = binary.Write(&frame, binary.BigEndian, uint16(3))
+	frame.Write([]byte("put"))
+	_ = binary.Write(&frame, binary.BigEndian, uint16(0))
+	_ = binary.Write(&frame, binary.BigEndian, uint64(1))
+	_ = binary.Write(&frame, binary.BigEndian, uint32(len(payload)))
+	frame.Write(payload)
+
+	_, _, _, got, err := ReadRequestLimited(&frame, cap1MiB)
+	if err != nil {
+		t.Fatalf("ReadRequestLimited() unexpected error: %v", err)
+	}
+	if len(got) != cap1MiB {
+		t.Errorf("payload length = %d, want %d", len(got), cap1MiB)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Error("payload bytes did not round-trip")
+	}
+}
+
+// TestReadRequestLimitedClampsCapAboveProtocolCeiling proves a caller
+// cannot opt into a bound larger than the protocol's own MaxPayloadSize by
+// passing an oversized maxPayload -- a configuration mistake must not
+// widen the wire-format ceiling.
+func TestReadRequestLimitedClampsCapAboveProtocolCeiling(t *testing.T) {
+	var frame bytes.Buffer
+	_ = binary.Write(&frame, binary.BigEndian, uint16(3))
+	frame.Write([]byte("put"))
+	_ = binary.Write(&frame, binary.BigEndian, uint16(0))
+	_ = binary.Write(&frame, binary.BigEndian, uint64(1))
+	_ = binary.Write(&frame, binary.BigEndian, uint32(MaxPayloadSize+1))
+
+	_, _, _, _, err := ReadRequestLimited(&frame, MaxPayloadSize+1_000_000)
+	if err == nil {
+		t.Fatal("ReadRequestLimited() expected an error: maxPayload above MaxPayloadSize must clamp to MaxPayloadSize")
+	}
+	var ptlErr *PayloadTooLargeError
+	if !errors.As(err, &ptlErr) {
+		t.Fatalf("error type = %T, want *PayloadTooLargeError", err)
+	}
+	if ptlErr.Max != MaxPayloadSize {
+		t.Errorf("PayloadTooLargeError.Max = %d, want the clamped %d", ptlErr.Max, MaxPayloadSize)
+	}
+}
+
+// TestReadRequestUsesProtocolCeiling proves ReadRequest (the unbounded
+// convenience wrapper used by clients reading their own responses) still
+// enforces MaxPayloadSize when no caller-supplied cap applies.
+func TestReadRequestUsesProtocolCeiling(t *testing.T) {
+	var frame bytes.Buffer
+	_ = binary.Write(&frame, binary.BigEndian, uint16(3))
+	frame.Write([]byte("put"))
+	_ = binary.Write(&frame, binary.BigEndian, uint16(0))
+	_ = binary.Write(&frame, binary.BigEndian, uint64(1))
+	_ = binary.Write(&frame, binary.BigEndian, uint32(MaxPayloadSize+1))
+
+	_, _, _, _, err := ReadRequest(&frame)
+	if err == nil {
+		t.Fatal("ReadRequest() expected an error for a payload over MaxPayloadSize")
+	}
+	var ptlErr *PayloadTooLargeError
+	if !errors.As(err, &ptlErr) {
+		t.Fatalf("error type = %T, want *PayloadTooLargeError", err)
+	}
+	if ptlErr.Max != MaxPayloadSize {
+		t.Errorf("PayloadTooLargeError.Max = %d, want %d", ptlErr.Max, MaxPayloadSize)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // WriteResponse tests
 // ---------------------------------------------------------------------------

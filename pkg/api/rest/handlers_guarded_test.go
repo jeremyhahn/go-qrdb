@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -705,25 +706,18 @@ func TestDecodeGuardedRequest_LegalKeyThatEscapesIsNotRefused(t *testing.T) {
 // decisive for what it still claims: no GUARDED VERB's own precise ceiling
 // ever asks the state machine to propose more than one Raft entry, on any
 // transport, regardless of that transport's own wire-level request limit.
-// Each transport's wire-level limit, for reference -- not all of them sit
-// above the 8 MiB entry ceiling any more, which is exactly the
-// cross-transport gap noted in TestGuardedBounds_NeverExceedOneRaftEntry's
-// doc comment:
 //
-//	gRPC     4 MiB  pkg/api/grpc.DefaultMaxRecvMsgSize (go-qrdb#576 removed
-//	                the former 101 MiB BatchImport opt-in; nothing currently
-//	                restores a larger bound for guarded verbs specifically)
-//	unix     4 MiB  the same constant
-//	QUIC    64 MiB  pkg/api/quic/wire.MaxPayloadSize
-//	REST    16 MiB  maxGuardedRequestBytes, and this one is MEASURED rather
-//	                than inspected: TestMaxGuardedRequestBytes_AdmitsTheWorstLegalRequest
-//	                hands it the worst legal request instead of trusting the
-//	                arithmetic above it.
-//
-// gRPC and Unix's 4 MiB default is now BELOW REST's 16 MiB coarse bound, so
-// a guarded request between the two sizes succeeds over REST and is
-// refused over gRPC/Unix -- stated here rather than hidden, and left to the
-// chunked-import redesign that owns this bound going forward.
+// Every transport's wire-level limit now sits BELOW the entry ceiling,
+// because go-qrdb#576 gave all of them the same small pre-auth message cap
+// (REST's DefaultMaxBodyBytes, gRPC/Unix's DefaultMaxMessageBytes, QUIC's
+// wire.DefaultMaxPayloadBytes, MCP's own body cap -- all 4 MiB by default),
+// applied before any guarded-verb-specific, Raft-entry-derived coarse bound
+// (REST's maxGuardedRequestBytes) ever runs. TestGuardedBounds_NotMorePermissiveThanGRPC
+// proves REST's cap and gRPC's cap are the same constant, closing the gap a
+// previous revision of this comment left open for the chunked-import
+// redesign to resolve: the pre-auth cap is that resolution, and a caller
+// with a larger payload (bulk import) now uses the chunked import session
+// API instead of a single oversized request on any transport.
 //
 // A payload that encodes within one entry is accepted by all of them; a payload
 // that does not is refused by all of them. Standing up two servers to exchange
@@ -824,36 +818,44 @@ func TestMaxGuardedRequestBytes_AdmitsTheWorstLegalRequest(t *testing.T) {
 	}
 	if int64(len(body)) > maxGuardedRequestBytes {
 		t.Fatalf("the worst legal request encodes to %d bytes, over the %d-byte coarse bound — "+
-			"REST would refuse it before the precise checks ran, while gRPC, unix and QUIC "+
-			"carry it", len(body), maxGuardedRequestBytes)
+			"REST would refuse it before the precise, per-verb checks ran even if the "+
+			"universal pre-auth cap (DefaultMaxBodyBytes) were raised enough to let it "+
+			"reach this check at all", len(body), maxGuardedRequestBytes)
 	}
 	t.Logf("worst legal request: %d encoded bytes against a %d-byte coarse bound",
 		len(body), maxGuardedRequestBytes)
 }
 
-// The entry-ceiling claim, asserted rather than stated.
+// The parity claim, asserted rather than stated.
 //
-// The PR that added these endpoints claimed the bound mirrors gRPC's wire
-// bound. That comparison no longer holds the way it once did:
-// go-qrdb#576 removed the gRPC/Unix servers' unconditional 101 MiB
-// BatchImport bound, so their default wire bound
-// (grpcapi.DefaultMaxRecvMsgSize, 4 MiB) is now SMALLER than REST's coarse
-// guarded-request bound (maxGuardedRequestBytes, derived from one Raft
-// entry) -- the opposite of the relationship this test used to check, and
-// the opt-in that used to restore it (WithMaxImportMessageSize/
-// WithGRPCMaxImportMessageSize) is gone, owned going forward by the
-// chunked-import redesign rather than carried here as a wire-bound opt-in.
-// A guarded request between the two bounds now succeeds over REST and is
-// refused over gRPC/Unix with ResourceExhausted -- a real, currently
-// untracked cross-transport difference, left for that redesign to resolve
-// rather than papered over here with a wire-bound comparison that would no
-// longer be true.
+// go-qrdb#576 gave every transport the SAME small pre-auth message cap
+// (DefaultMaxBodyBytes here, grpcapi.DefaultMaxMessageBytes on gRPC and
+// Unix, wire.DefaultMaxPayloadBytes on QUIC), applied before the guarded
+// handler's own, larger, Raft-entry-derived coarse bound
+// (maxGuardedRequestBytes) ever runs. That earlier bound is what used to
+// make the two transports agree ("neither can carry a guarded request past
+// one Raft entry, so the entry ceiling is the operative limit on both");
+// now the universal pre-auth cap is tighter than the entry ceiling on
+// every transport, so IT is the operative limit everywhere, and it is by
+// construction identical across transports -- there is no transport to be
+// more permissive than.
 //
-// What remains true, and is what this test still checks: no guarded verb's
-// PRECISE per-request ceiling admits a payload bigger than one Raft entry,
-// which is the state machine's own universal limit regardless of transport
-// or either transport's wire-level message-size default.
-func TestGuardedBounds_NeverExceedOneRaftEntry(t *testing.T) {
+// What still has to hold, and what this test still asserts: the
+// guarded-specific per-verb ceilings must stay under what the state
+// machine can propose, so a request this package's OWN finer-grained
+// checks accept is never one Raft refuses regardless of which transport
+// carried it.
+func TestGuardedBounds_NotMorePermissiveThanGRPC(t *testing.T) {
+	if DefaultMaxBodyBytes != int64(grpcapi.DefaultMaxMessageBytes) {
+		t.Fatalf("REST's pre-auth body cap (%d) and gRPC's pre-auth message cap (%d) have "+
+			"diverged; go-qrdb#576 requires one small cap, identical on every transport",
+			DefaultMaxBodyBytes, grpcapi.DefaultMaxMessageBytes)
+	}
+	// REST must not admit a payload the state machine cannot propose, which
+	// is the only way it could be more permissive than another transport
+	// reaching the same state machine. The per-verb ceilings are all
+	// strictly under one entry by construction;
+	// TestGuardedCeilings_AgreeWithTheEncoders proves it against the encoders.
 	for _, req := range []guardedRequest{
 		putIfAbsentRequest{}, compareAndDeleteRequest{}, compareAndSwapRequest{},
 	} {

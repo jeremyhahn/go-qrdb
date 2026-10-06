@@ -35,6 +35,7 @@ package integration_test
 // per-node volume pools.
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -43,6 +44,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // writeNoneSealClusterConfig writes a daemon config whose system barrier is
@@ -65,9 +69,7 @@ func writeNoneSealClusterConfig(t *testing.T, volumePoolDir, credDir string, pee
 storage:
   volume_pools:
     - name: default
-      paths:
-        - %s
-      strategy: round_robin
+      path: %s
 %s`, credDir, volumePoolDir, peerAdminSection)
 
 	dir := t.TempDir()
@@ -101,9 +103,7 @@ func writeNoneSealRaftClusterConfig(t *testing.T, volumePoolDir, credDir string,
 storage:
   volume_pools:
     - name: default
-      paths:
-        - %s
-      strategy: round_robin
+      path: %s
 tenant:
   default_entitlements:
     allowed_isolation_modes:
@@ -112,6 +112,8 @@ tenant:
     allow_dedicated_raft: true
     allow_system_managed_barrier: true
     allow_dedicated_wal: true
+    allowed_volume_pools:
+      - default
   default_quotas:
     max_databases: -1
     max_raft_groups: -1
@@ -385,29 +387,64 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 	t.Logf("cluster healthy, leader on admin port %d", leaderPort)
 
-	// Create a self-managed (auto_unseal=false) IsolationRaft tenant.
-	if b, s := iraftAPIPost(t, sysClient,
+	createVolumePoolREST(t, sysClient, leaderPort, "default")
+
+	// Create a self-managed (auto_unseal=false) IsolationRaft tenant with
+	// its first admin: a tenant is created with its first admin, or not at
+	// all. The admin keeps its own key -- only the CSR crosses the wire.
+	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
+	createBody, s := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{"id": tenantID, "name": "Raft Tenant", "isolation_type": "raft", "barrier_auto_unseal": false},
-	); s != http.StatusCreated && s != http.StatusOK {
-		t.Fatalf("create tenant: status %d, body: %s", s, b)
+		map[string]interface{}{
+			"id": tenantID, "name": "Raft Tenant", "isolation_type": "raft", "barrier_auto_unseal": false,
+			"admin_username": tenantID + "-admin", "admin_csr_pem": string(adminCSRPEM),
+		},
+	)
+	if s != http.StatusCreated && s != http.StatusOK {
+		t.Fatalf("create tenant: status %d, body: %s", s, createBody)
+	}
+	var createResp struct {
+		Admin struct {
+			CertPEM string `json:"cert_pem"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(createBody, &createResp); err != nil || createResp.Admin.CertPEM == "" {
+		t.Fatalf("decode tenant create admin cert: %v body=%s", err, createBody)
 	}
 
 	// The tenant's dedicated barrier must be initialized BEFORE any of its
 	// IAM can exist (the tenant's roles and users are encrypted under the
 	// tenant DEK; the store resolver fails closed until the barrier is up).
-	// The init itself is trust-on-first-init by the tenant's own identity —
-	// see pkg/api/rest authorizeTenantBarrierInit.
-	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
-	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
+	// The init itself is trust-on-first-init by the EXACT certificate the
+	// tenant's first admin was onboarded with above, never any other
+	// authenticated identity of the tenant — see pkg/api/rest
+	// authorizeTenantBarrierInit.
+	adminTLSCert, err := tls.X509KeyPair([]byte(createResp.Admin.CertPEM), adminKeyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair for the onboarded admin: %v", err)
+	}
+	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
 
 	// Initialize the dedicated barrier as none (unsealed) on the leader.
-	if b, s := iraftAPIPost(t, tenantClient,
+	if b, s := iraftAPIPost(t, onboardedAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", leaderPort, tenantID),
 		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
 	); s != http.StatusOK && s != http.StatusNoContent && s != http.StatusCreated {
 		t.Fatalf("tenant barrier init: status %d, body: %s", s, b)
 	}
+
+	// The onboarded admin's account carries only the pending-admin
+	// completion's own role, not the data-plane permissions the rest of
+	// this test needs: the tenant's generic (CN=admin, OU=tenantID)
+	// identity, provisioned below with its own role, drives everything
+	// from here on -- the same two-identity split
+	// tenant_barrier_sealed_window_cli_test.go uses for the identical
+	// reason.
+	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
+	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
 
 	// Role + user, created AFTER the barrier init so the records land in the
 	// tenant's own encrypted IAM store.

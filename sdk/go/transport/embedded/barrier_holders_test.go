@@ -22,10 +22,6 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
-	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -34,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -296,22 +291,7 @@ func newTenantHolderTransport(t *testing.T) (*Transport, *tenant.TenantService) 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// A barrier-isolated tenant lives on a volume of the pool, in its own
 	// Pebble, both under t-scoped temporary directories.
-	vol := local.New()
-	if err := vol.Configure(map[string]string{"path": t.TempDir()}); err != nil {
-		t.Fatal(err)
-	}
-	state := newMemStateStore()
-	pools := objpool.NewManager()
-	if err := pools.Register("default", []common.Storage{vol}, &objpool.RoundRobinStrategy{State: state}); err != nil {
-		t.Fatal(err)
-	}
-	perTenant := pebblestore.NewPerTenantRegistry()
-	t.Cleanup(func() { _ = perTenant.CloseAll(context.Background()) })
-	reg, err := seal.NewBarrierRegistry(logger, sealtest.UnsealedBarrier(t),
-		seal.WithVolumePool(pools, state, "default"), seal.WithPerTenantRegistry(perTenant))
-	if err != nil {
-		t.Fatal(err)
-	}
+	reg, _, _ := sealtest.PooledRegistry(t, sealtest.UnsealedBarrier(t))
 	ca, _ := ceremonytest.NewCA(t, "Embedded Tenant Holder CA")
 	svc, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, logger, tenant.WithTenantHolderDeps(ceremony.HolderDeps{CA: ca}))
 	if err != nil {

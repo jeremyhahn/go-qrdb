@@ -39,8 +39,6 @@ func TestMissingAuthErrors_Messages(t *testing.T) {
 		{"factor service", &MissingUserAuthFactorServiceError{}, "user auth-factor service"},
 		{"login resolver", &MissingLoginResolverError{}, "login resolver is not configured"},
 		{"session issuer", &MissingSessionIssuerError{}, "session issuer is not configured"},
-		{"pool manager", &MissingVolumePoolManagerError{}, "volume pool manager is not configured"},
-		{"pool state store", &MissingVolumePoolStateStoreError{}, "volume pool state store"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,22 +170,6 @@ func TestPermissionClient_List_ContextCancelled(t *testing.T) {
 }
 
 // Pool-mapping unknown error pass-through.
-func TestMapPoolError_PassThrough(t *testing.T) {
-	got := mapPoolError("x", errors.New("unknown"))
-	if got == nil {
-		t.Fatal("expected pass-through error")
-	}
-}
-
-// Empty pool name in RegisterPool surfaces InvalidPoolNameError.
-func TestVolumePoolClient_RegisterPool_EmptyName_Direct(t *testing.T) {
-	tr, _ := newVolumePoolTransport(t, nil)
-	err := tr.VolumePoolClient().RegisterPool(context.Background(), transport.RegisterVolumePoolRequest{Name: ""})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 // Closed-transport coverage on RBAC operations.
 func TestRBACClient_Authorize_Closed(t *testing.T) {
 	tr := newRBACTransport(t, rbacRoleSvc())
@@ -299,34 +281,6 @@ func TestFactorClient_Verify_InvalidType(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected FactorTypeUnsupportedError")
-	}
-}
-
-// VolumePool closed-transport coverage.
-func TestVolumePoolClient_List_Closed(t *testing.T) {
-	tr, _ := newVolumePoolTransport(t, nil)
-	_ = tr.Close()
-	_, err := tr.VolumePoolClient().List(context.Background())
-	if err == nil {
-		t.Fatal("expected ClosedError")
-	}
-}
-
-func TestVolumePoolClient_Pick_Closed(t *testing.T) {
-	tr, _ := newVolumePoolTransport(t, nil)
-	_ = tr.Close()
-	_, err := tr.VolumePoolClient().Pick(context.Background(), "x", transport.VolumePoolHint{})
-	if err == nil {
-		t.Fatal("expected ClosedError")
-	}
-}
-
-func TestVolumePoolClient_RegisterPool_Closed(t *testing.T) {
-	tr, _ := newVolumePoolTransport(t, nil)
-	_ = tr.Close()
-	err := tr.VolumePoolClient().RegisterPool(context.Background(), transport.RegisterVolumePoolRequest{Name: "x"})
-	if err == nil {
-		t.Fatal("expected ClosedError")
 	}
 }
 

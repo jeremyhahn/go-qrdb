@@ -17,13 +17,11 @@ package quic
 import (
 	"context"
 	"io"
-	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -499,42 +497,28 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	}, nil
 }
 
-// maxQUICImportFileSize bounds the file payload accepted by ImportFile so
-// the client fails fast with a clear typed error instead of buffering an
-// oversized file only to have the wire protocol reject the frame with
-// wire.PayloadTooLargeError. It leaves headroom under wire.MaxPayloadSize
-// (64MB) for the request's other BatchImportRequest fields and protobuf
-// framing overhead. This is lower than the 100MB bound used by REST/gRPC
-// because the native QUIC wire protocol's MaxPayloadSize is a pre-existing,
-// transport-wide limit shared by every QUIC RPC, not specific to batch
-// import.
-const maxQUICImportFileSize = wire.MaxPayloadSize - (1 << 20)
-
 // ImportFile reads filename's entire contents from data and imports it as
-// key-value pairs through the QUIC transport's unary batch.Import method.
-// The active database scope is carried by the transport's wire-frame
-// database field (the same mechanism used by every other data-plane call),
-// so no explicit database field is sent in the payload.
+// key-value pairs by driving a chunked import session (ImportBegin/
+// ImportAppend/ImportCommit below) -- see transport.ImportFileChunked. The
+// active database scope is carried by the transport's wire-frame database
+// field (the same mechanism used by every other data-plane call), so no
+// explicit database field is sent in any payload.
 func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	return transport.ImportFileChunked(ctx, t, filename, data, opts, 0)
+}
 
-	file, err := io.ReadAll(data)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
-	}
-	if len(file) > maxQUICImportFileSize {
-		return nil, &transport.RequestError{
-			Method: "ImportFile",
-			Err:    &importFileTooLargeError{Size: len(file), Max: maxQUICImportFileSize},
-		}
+// ImportBegin starts a chunked import session.
+func (t *Transport) ImportBegin(ctx context.Context, opts transport.ImportOptions) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
 	}
 
-	payload, err := proto.Marshal(&pb.BatchImportRequest{
-		File:          file,
+	payload, err := proto.Marshal(&pb.ImportBeginRequest{
 		Format:        opts.Format,
-		Filename:      filename,
+		Filename:      opts.Filename,
 		KeyField:      opts.KeyField,
 		ValueMode:     opts.ValueMode,
 		ValueField:    opts.ValueField,
@@ -542,28 +526,68 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 		Transactional: opts.Transactional,
 	})
 	if err != nil {
+		return "", &marshalError{Err: err}
+	}
+
+	resp, err := t.call(ctx, "batch.ImportBegin", payload)
+	if err != nil {
+		return "", err
+	}
+
+	var pbResp pb.ImportBeginResponse
+	if err := proto.Unmarshal(resp, &pbResp); err != nil {
+		return "", &unmarshalError{Err: err}
+	}
+	return pbResp.GetSessionId(), nil
+}
+
+// ImportAppend stages a chunk of a chunked import session.
+func (t *Transport) ImportAppend(ctx context.Context, sessionID string, seq uint64, chunk []byte) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.ImportAppendRequest{
+		SessionId: sessionID,
+		Seq:       seq,
+		Chunk:     chunk,
+	})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+
+	if _, err := t.call(ctx, "batch.ImportAppend", payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ImportCommit applies every staged chunk of a chunked import session
+// atomically.
+func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.ImportCommitRequest{SessionId: sessionID})
+	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
 
-	resp, err := t.call(ctx, "batch.Import", payload)
+	resp, err := t.call(ctx, "batch.ImportCommit", payload)
 	if err != nil {
 		return nil, err
 	}
 
-	var pbResp pb.BatchImportResponse
+	var pbResp pb.ImportCommitResponse
 	if err := proto.Unmarshal(resp, &pbResp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
 
 	errs := make([]transport.ImportError, len(pbResp.GetErrors()))
 	for i, e := range pbResp.GetErrors() {
-		errs[i] = transport.ImportError{
-			Row:     int(e.GetRow()),
-			Key:     e.GetKey(),
-			Message: e.GetMessage(),
-		}
+		errs[i] = transport.ImportError{Row: int(e.GetRow()), Key: e.GetKey(), Message: e.GetMessage()}
 	}
-
 	return &transport.ImportResult{
 		Total:     int(pbResp.GetTotal()),
 		Succeeded: int(pbResp.GetSucceeded()),
@@ -572,16 +596,21 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 	}, nil
 }
 
-// importFileTooLargeError is returned when ImportFile's file exceeds
-// maxQUICImportFileSize.
-type importFileTooLargeError struct {
-	Size int
-	Max  int
-}
+// ImportAbort discards a chunked import session without applying anything.
+func (t *Transport) ImportAbort(ctx context.Context, sessionID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
 
-// Error returns a human-readable description.
-func (e *importFileTooLargeError) Error() string {
-	return "quic: import file too large: " + strconv.Itoa(e.Size) + " bytes exceeds max " + strconv.Itoa(e.Max) + " bytes"
+	payload, err := proto.Marshal(&pb.ImportAbortRequest{SessionId: sessionID})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+
+	if _, err := t.call(ctx, "batch.ImportAbort", payload); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

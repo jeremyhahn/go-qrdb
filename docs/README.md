@@ -70,6 +70,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 |---|---|
 | [databases](databases/) | multi-database lifecycle, per-database protocol, raft and barrier config |
 | [storage-engines](storage-engines/) | the `Engine` interface, file/memory/pebble/namespace, volume pools |
+| [volume-pools](volume-pools/) | *(proposed, awaiting sign-off)* named volume pools: per-node mounts, tenant placement, entitlements and capacity, management, the `VolumeProvider` seam |
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
@@ -89,6 +90,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [firstboot](firstboot/) | system tenant, built-in roles, the platform admin, admin credential paths |
 | [trust-bootstrap](trust-bootstrap/) | client-side CA trust establishment *(command shape only — see its docs)* |
 | [certificate-authority](certificate-authority/) | client certificate issuance, export, revocation |
+| [trust-anchors](trust-anchors/) | per-tenant registered CA certificates for bring-your-own certificate enrollment |
 | [credentials](credentials/) | named credentials, versioned rotation, secret resolution |
 | [key-wrapping](key-wrapping/) | the KEK provider seam (`keywrap.Provider`), the software implementation, the registry, backup's envelope encryption |
 | [tenant-dek](tenant-dek/) | the per-tenant versioned data encryption keyring: encrypt, decrypt, rewrap, rotate, retire |

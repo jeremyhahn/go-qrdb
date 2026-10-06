@@ -301,11 +301,32 @@ func WriteRequest(w io.Writer, method, database string, requestID uint64, payloa
 	return nil
 }
 
-// ReadRequest reads a request frame from the reader.
+// ReadRequest reads a request frame from the reader, bounding its payload
+// at MaxPayloadSize, the protocol's absolute wire-format ceiling.
 //
 // Returns the method name, database scope, request ID, payload bytes, and any
 // error.
 func ReadRequest(r io.Reader) (method, database string, requestID uint64, payload []byte, err error) {
+	return ReadRequestLimited(r, MaxPayloadSize)
+}
+
+// ReadRequestLimited reads a request frame from the reader exactly like
+// ReadRequest, except the payload is bounded by maxPayload rather than the
+// protocol-wide MaxPayloadSize. maxPayload must not exceed MaxPayloadSize;
+// a larger value is clamped to it, since that constant is the absolute
+// wire-format ceiling no caller can raise.
+//
+// The server uses this with a small, configurable cap (see
+// Server.maxPayloadBytes) applied BEFORE any request on the connection has
+// been authenticated: the frame's declared payload length is checked
+// against maxPayload before a buffer of that size is ever allocated, so an
+// unauthenticated TLS peer cannot force a large allocation merely by
+// claiming a large length (go-qrdb#576).
+func ReadRequestLimited(r io.Reader, maxPayload int) (method, database string, requestID uint64, payload []byte, err error) {
+	if maxPayload <= 0 || maxPayload > MaxPayloadSize {
+		maxPayload = MaxPayloadSize
+	}
+
 	// Read method length (2 bytes)
 	var methodLenBuf [2]byte
 	if _, err = io.ReadFull(r, methodLenBuf[:]); err != nil {
@@ -358,8 +379,11 @@ func ReadRequest(r io.Reader) (method, database string, requestID uint64, payloa
 	}
 	payloadLen := int(binary.BigEndian.Uint32(plenBuf[:]))
 
-	if payloadLen > MaxPayloadSize {
-		return "", "", 0, nil, &PayloadTooLargeError{Size: payloadLen, Max: MaxPayloadSize}
+	// Checked against maxPayload, and BEFORE the allocation below, so a
+	// peer that declares a huge length is refused without the server ever
+	// sizing a buffer to it.
+	if payloadLen > maxPayload {
+		return "", "", 0, nil, &PayloadTooLargeError{Size: payloadLen, Max: maxPayload}
 	}
 
 	// Read payload

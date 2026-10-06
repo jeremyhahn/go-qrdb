@@ -384,6 +384,24 @@ type TenantBarrierLookup interface {
 	GetTenant(tenantID string) (*seal.TenantBarrier, error)
 }
 
+// TenantDataRootResolver resolves an IsolationVolume / IsolationRaft
+// tenant's local DataRoot through its catalog Assignment -- the pool it is
+// placed on, joined with its tenant-relative path onto this node's own
+// mount for that pool. It is satisfied by
+// (*seal.BarrierRegistry).LocalTenantDataRoot.
+type TenantDataRootResolver interface {
+	LocalTenantDataRoot(ctx context.Context, tenantID string) (string, error)
+}
+
+// WithTenantDataRootResolver sets the resolver CreateDatabase uses to route
+// an IsolationVolume / IsolationRaft tenant's per-database DataDir under
+// its catalog-resolved DataRoot. Without it, such a database's DataDir is
+// never overridden and falls back to the catalog's own default (the
+// system data dir), which is only correct for prefix/barrier tenants.
+func WithTenantDataRootResolver(resolver TenantDataRootResolver) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.dataRootResolver = resolver }
+}
+
 // deliverTenantKeyToReplica ships the tenant barrier key to dst via
 // deliverer, resolving the tenant's StorageBarrier through lookup. It
 // constructs a single-replica Placement containing only dst so that
@@ -744,6 +762,7 @@ type DatabaseService struct {
 	placementScheduler *placement.Scheduler
 	keyDistributor     KeyDistributor
 	barrierLookup      TenantBarrierLookup
+	dataRootResolver   TenantDataRootResolver
 	localNodeID        string
 	raftHost           RaftHost
 	logger             *slog.Logger
@@ -1339,6 +1358,22 @@ var isolationBarrierDataPath = map[tenant.IsolationType]string{
 	tenant.IsolationRaft:   database.ServedByRaftTenantGroup,
 }
 
+// resolveTenantDataRoot resolves an IsolationVolume / IsolationRaft
+// tenant's local DataRoot via the configured TenantDataRootResolver.
+// Returns ("", nil) when no resolver is configured or volumePool is empty
+// (prefix/barrier tenant, or a composition that has not wired resolution
+// yet), matching CreateDatabase's existing fallback to database.Manager's
+// own default path. A configured resolver's own failure (e.g.
+// *volume.PoolUnavailableError) is returned rather than swallowed: silently
+// falling back to the default path would place the tenant's database
+// outside its dedicated, encrypted storage.
+func (s *DatabaseService) resolveTenantDataRoot(ctx context.Context, tenantID, volumePool string) (string, error) {
+	if s.dataRootResolver == nil || volumePool == "" {
+		return "", nil
+	}
+	return s.dataRootResolver.LocalTenantDataRoot(ctx, tenantID)
+}
+
 // CreateForTenant creates a new database scoped to the context's tenant
 // and returns its runtime information. Equivalent to
 // CreateForTenantWithCredentials with an empty seal.Credentials -- barrier
@@ -1430,8 +1465,10 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 					return nil, err
 				}
 			}
-			if info.DataRoot != "" {
-				cfg.DataDir = filepath.Join(info.DataRoot, "databases", cfg.Name)
+			if root, rerr := s.resolveTenantDataRoot(ctx, tenantID, info.VolumePool); rerr != nil {
+				return nil, rerr
+			} else if root != "" {
+				cfg.DataDir = filepath.Join(root, "databases", cfg.Name)
 			}
 		case tenant.IsolationRaft:
 			if s.entitlementChecker != nil {
@@ -1451,8 +1488,10 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 			} else if cfg.Raft.ClusterMode == "" {
 				cfg.Raft.ClusterMode = database.RaftLocal
 			}
-			if info.DataRoot != "" {
-				cfg.DataDir = filepath.Join(info.DataRoot, "databases", cfg.Name)
+			if root, rerr := s.resolveTenantDataRoot(ctx, tenantID, info.VolumePool); rerr != nil {
+				return nil, rerr
+			} else if root != "" {
+				cfg.DataDir = filepath.Join(root, "databases", cfg.Name)
 			}
 			// Capture the barrier mode for the Phase 4c-1c key delivery below.
 			tenantBarrierAutoUnseal = info.BarrierAutoUnseal

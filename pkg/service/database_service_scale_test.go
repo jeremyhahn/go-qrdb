@@ -36,7 +36,7 @@ const scaleTenantID = "scale-tenant"
 // scaleRaftTenant returns a fresh IsolationRaft TenantInfo for scale tests.
 func scaleRaftTenant(t *testing.T) *tenant.TenantInfo {
 	t.Helper()
-	return &tenant.TenantInfo{ID: scaleTenantID, IsolationType: tenant.IsolationRaft, DataRoot: t.TempDir()}
+	return &tenant.TenantInfo{ID: scaleTenantID, IsolationType: tenant.IsolationRaft}
 }
 
 // scaleCtx returns a context carrying scaleTenantID.

@@ -113,6 +113,15 @@ type parsedFile struct {
 // *token.FileSet so callers can resolve positions.
 func walkGoFiles(t *testing.T, root string, fset *token.FileSet, dirs ...string) (walked int, parsed []parsedFile) {
 	t.Helper()
+	// Rooted at root so the file read below cannot be redirected by a
+	// symlink swapped in between WalkDir's directory read and this read
+	// (G122): rel is resolved under rootFS, not through the bare path a
+	// concurrent mutation of the tree could have retargeted.
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatalf("opening root %s: %v", root, err)
+	}
+	defer func() { _ = rootFS.Close() }()
 	for _, dir := range dirs {
 		start := filepath.Join(root, dir)
 		err := filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
@@ -141,8 +150,11 @@ func walkGoFiles(t *testing.T, root string, fset *token.FileSet, dirs ...string)
 			if !strings.HasSuffix(path, ".go") {
 				return nil
 			}
-			// #nosec G304 -- path comes from walking this repository's own checkout.
-			src, readErr := os.ReadFile(path)
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			src, readErr := rootFS.ReadFile(rel)
 			if readErr != nil {
 				if os.IsPermission(readErr) {
 					t.Logf("walkGoFiles: skipping unreadable file %s: %v", path, readErr)
@@ -159,10 +171,6 @@ func walkGoFiles(t *testing.T, root string, fset *token.FileSet, dirs ...string)
 				// A file that fails to parse is a build break the compiler
 				// will already catch; this gate is not the place to report it.
 				return nil
-			}
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				return relErr
 			}
 			parsed = append(parsed, parsedFile{rel: filepath.ToSlash(rel), file: file})
 			return nil
@@ -228,13 +236,21 @@ func TestNoGoSourceDeclaresDeprecated(t *testing.T) {
 // the `deprecated = true` field or file option.
 func TestNoProtoDeclaresDeprecated(t *testing.T) {
 	root := repoRoot(t)
+	// Rooted at root for the same reason walkGoFiles is (G122): the read
+	// below is confined to rootFS instead of following the bare walked
+	// path, so a symlink swapped in mid-walk cannot redirect it.
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatalf("opening root %s: %v", root, err)
+	}
+	defer func() { _ = rootFS.Close() }()
 	walked := 0
 	type hit struct {
 		rel, detail string
 		line        int
 	}
 	var hits []hit
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// See walkGoFiles: an unreadable leftover artifact has no .proto
 			// content for this gate to see either way.
@@ -256,13 +272,12 @@ func TestNoProtoDeclaresDeprecated(t *testing.T) {
 		if !strings.HasSuffix(path, ".proto") {
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, path)
+		relNative, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
 		}
-		rel = filepath.ToSlash(rel)
-		// #nosec G304 -- path comes from walking this repository's own checkout.
-		src, readErr := os.ReadFile(path)
+		rel := filepath.ToSlash(relNative)
+		src, readErr := rootFS.ReadFile(relNative)
 		if readErr != nil {
 			return readErr
 		}

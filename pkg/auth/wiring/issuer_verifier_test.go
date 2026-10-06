@@ -82,7 +82,12 @@ func (f *wiringFakeIssuerVerifier) VerifyPeerChain(context.Context, *x509.Certif
 	return nil, errors.New("wiringFakeIssuerVerifier: VerifyPeerChain not implemented")
 }
 
-func (f *wiringFakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
+func (f *wiringFakeIssuerVerifier) VerifyIssuer(ctx context.Context, tenantID string, chain []*x509.Certificate) error {
+	// Like the real Pool, the Key A and Key B checks judge the direct issuer.
+	var issuer *x509.Certificate
+	if len(chain) > 1 {
+		issuer = chain[1]
+	}
 	if f.IsClusterCA(ctx, issuer) {
 		return nil
 	}

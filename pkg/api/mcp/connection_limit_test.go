@@ -89,3 +89,48 @@ func TestServer_MaxConnections_BoundsListener(t *testing.T) {
 		t.Fatalf("second connection read = %v, want a read-deadline timeout (never served)", err)
 	}
 }
+
+// TestServer_MaxConnsPerPeer_RefusesOverCapPeer proves WithMaxConnsPerPeer is
+// enforced on the listener Start builds (go-qrdb#576): with a per-peer cap of
+// 1, a second connection from the same IP is closed outright while the first
+// is held, whereas without the option the same second connection is accepted
+// and left waiting for its TLS ClientHello.
+func TestServer_MaxConnsPerPeer_RefusesOverCapPeer(t *testing.T) {
+	secondConnRead := func(t *testing.T, opts ...ServerOption) error {
+		t.Helper()
+		s := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
+			append([]ServerOption{WithTLS(testTLSConfig(t))}, opts...)...)
+		if err := s.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer s.Stop()
+
+		held, err := net.DialTimeout("tcp", s.Addr(), 2*time.Second)
+		if err != nil {
+			t.Fatalf("first dial: %v", err)
+		}
+		defer held.Close()
+
+		second, err := net.DialTimeout("tcp", s.Addr(), 2*time.Second)
+		if err != nil {
+			t.Fatalf("second dial: %v", err)
+		}
+		defer second.Close()
+		if err := second.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+			t.Fatalf("SetReadDeadline: %v", err)
+		}
+		_, err = second.Read(make([]byte, 1))
+		return err
+	}
+
+	err := secondConnRead(t, WithMaxConnsPerPeer(1))
+	var netErr net.Error
+	if err == nil || (errors.As(err, &netErr) && netErr.Timeout()) {
+		t.Fatalf("capped: second read = %v, want the connection closed by the server", err)
+	}
+
+	err = secondConnRead(t)
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("uncapped: second read = %v, want a read-deadline timeout (accepted, awaiting TLS)", err)
+	}
+}

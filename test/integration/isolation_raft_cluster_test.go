@@ -184,19 +184,13 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	// System-admin mTLS client (CN=admin, OU=system).
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
+	createVolumePoolREST(t, sysClient, leaderPort, "default")
+
 	// ---------------------------------------------------------------------------
 	// Phase 2: Create tenant "t1" with IsolationRaft + barrier_auto_unseal.
 	// ---------------------------------------------------------------------------
 	t.Log("creating tenant t1 with IsolationRaft + barrier_auto_unseal")
-	tenantBody, tenantStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
-		map[string]interface{}{
-			"id":                  iraftTenantID,
-			"name":                "Test Tenant 1",
-			"isolation_type":      "raft",
-			"barrier_auto_unseal": true,
-		},
-	)
+	tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, iraftTenantID, "Test Tenant 1")
 	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tenantStatus, tenantBody)
 	}

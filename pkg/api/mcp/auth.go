@@ -151,18 +151,20 @@ func (s *Server) authenticateHandler(next http.Handler) http.Handler {
 	})
 }
 
-// maxRequestBodyBytes bounds an MCP HTTP request body. The largest legitimate
-// request is a batch import, whose base64 "file" argument is at most
-// maxEncodedImportFileSize; the 1 MiB above it is the JSON-RPC envelope's
-// headroom. mcp-go reads and decodes the whole body before any tool handler
-// runs, so the bound has to be applied here, at the HTTP layer.
-var maxRequestBodyBytes = int64(maxEncodedImportFileSize) + 1<<20
+// defaultMaxRequestBodyBytes bounds an authenticated MCP HTTP request body
+// when the server was not given WithMaxBodyBytes. It is the same pre-auth
+// cap every other transport applies by default: mcp-go reads and decodes
+// the whole body before any tool handler runs, so the bound has to be
+// applied here, at the HTTP layer, and there is no larger-message opt-in
+// (go-qrdb#576) -- a caller with a larger payload (bulk import) uses the
+// chunked import session API instead of a single oversized request.
+const defaultMaxRequestBodyBytes = int64(4 << 20)
 
 // maxAnonymousRequestBodyBytes bounds an MCP request body on a listener with
 // no authentication: the boot-time sealed-window listener, or a node with
 // authentication off. Its callers are anonymous, and everything it serves
 // them -- initialize, tools/list and the sealed-window tools -- is a small
-// JSON-RPC document, so they get 1 MiB, not the batch-import bound.
+// JSON-RPC document, so they get 1 MiB regardless of the authenticated cap.
 const maxAnonymousRequestBodyBytes = int64(1 << 20)
 
 // requestBodyLimit is the body bound for this server's MCP endpoint.
@@ -170,7 +172,10 @@ func (s *Server) requestBodyLimit() int64 {
 	if s.authMW == nil || s.sealedWindowListener != nil {
 		return maxAnonymousRequestBodyBytes
 	}
-	return maxRequestBodyBytes
+	if s.maxBodyBytes > 0 {
+		return s.maxBodyBytes
+	}
+	return defaultMaxRequestBodyBytes
 }
 
 // boundedBodyHandler caps every request body at limit before next reads it.

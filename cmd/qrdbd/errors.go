@@ -25,7 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
@@ -419,26 +418,6 @@ func (e *CeremonyCAError) Error() string {
 func (e *CeremonyCAError) Unwrap() error {
 	return e.Err
 }
-
-// VolumePoolStorageError is returned when the volume-pool state store (the
-// dedicated Pebble that persists round-robin cursors) fails to open. Aliased
-// from pkg/storage/pool so the canonical type is shared with the SDK node
-// builder.
-type VolumePoolStorageError = qrdbpool.VolumePoolStorageError
-
-// VolumePoolRegisterError is returned when objstore's pool.Manager rejects a
-// Register call (typically duplicate name or empty candidates). Aliased from
-// pkg/storage/pool.
-type VolumePoolRegisterError = qrdbpool.VolumePoolRegisterError
-
-// VolumePoolStrategyError is returned when a volume-pool YAML config
-// references an unknown strategy name. Aliased from pkg/storage/pool.
-type VolumePoolStrategyError = qrdbpool.VolumePoolStrategyError
-
-// VolumePoolPathError is returned when one of the configured local paths
-// cannot be created or wrapped as an objstore Backend. Aliased from
-// pkg/storage/pool.
-type VolumePoolPathError = qrdbpool.VolumePoolPathError
 
 // VolumeReattachError is returned when an IsolationVolume tenant cannot be
 // re-bound to its on-disk state during daemon boot. Aliased from pkg/server.

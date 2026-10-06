@@ -87,6 +87,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -133,10 +134,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -205,6 +206,36 @@ func WithAuthorizerWrapper(wrap func(inner auth.Authorizer) auth.Authorizer) Nod
 	return func(o *nodeOptions) { o.authorizerWrapper = wrap }
 }
 
+// WithVolumeProvider registers an extra volume.Provider into this node's
+// volume.Registry, alongside the built-in "dir" provider, so a composer
+// with its own storage backend (e.g. go-xkms's luks2) can serve a named
+// pool without go-qrdb importing it (layer ownership, see CLAUDE.md).
+// Passing nil is a no-op. Registering two providers under the same
+// Provider.Name() fails node construction with the registry's own
+// *volume.ProviderAlreadyRegisteredError, exactly as calling Register
+// directly would.
+func WithVolumeProvider(p volume.Provider) NodeOption {
+	return func(o *nodeOptions) {
+		if p != nil {
+			o.volumeProviders = append(o.volumeProviders, p)
+		}
+	}
+}
+
+// WithVolumeKeyProvider replaces the volume.KeyProvider this node's
+// seal.VolumeLifecycle derives every Lockable volume's Unlock key through,
+// in place of the default software HKDF-from-barrier-root derivation. A
+// composer with its own key custody (hardware-rooted, a remote KMS, ...)
+// injects its own implementation here; go-qrdb never imports that custody
+// code. Passing nil is a no-op.
+func WithVolumeKeyProvider(p volume.KeyProvider) NodeOption {
+	return func(o *nodeOptions) {
+		if p != nil {
+			o.volumeKeyProvider = p
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Node options
 // ---------------------------------------------------------------------------
@@ -241,6 +272,18 @@ type nodeOptions struct {
 	// synchronisation. Use only in testing environments where overlay2/Docker
 	// fsync latency causes Raft proposal timeouts. Never use in production.
 	noSyncWrites bool
+
+	// volumeProviders are extra volume.Provider implementations registered
+	// into this node's volume.Registry alongside the built-in "dir"
+	// provider, so a composer with its own storage backend (e.g. go-xkms's
+	// luks2) can serve a named pool without go-qrdb importing it. See
+	// WithVolumeProvider.
+	volumeProviders []volume.Provider
+
+	// volumeKeyProvider replaces the software HKDF-from-barrier-root
+	// derivation VolumeLifecycle uses to unlock a Lockable volume. See
+	// WithVolumeKeyProvider.
+	volumeKeyProvider volume.KeyProvider
 
 	// extraAuthenticators are embedder-supplied authenticators appended to
 	// the auth middleware's chain after the built-in mTLS authenticator.
@@ -506,10 +549,35 @@ type nodeSealSubsystem struct {
 	// (lifecycle.NewSealStorePINBackend). It is the node's PIN backend
 	// unless the caller injects one through server.WithPINBackend.
 	pinBackend pin.PINBackend
-	// volumePool is non-nil when the config declares at least one volume pool.
-	// It is closed during node shutdown after the per-tenant registry is
-	// drained, mirroring the daemon's shutdown ordering.
-	volumePool *qrdbpool.VolumePoolSubsystem
+	// volumeLifecycle keeps this node's Lockable pool volumes in step with
+	// barrier's seal state (decision D6). It is built BEFORE barrierRegistry
+	// so its OnUnsealed observer -- which unlocks every tracked volume --
+	// runs before barrierRegistry's own OnUnsealed observer, which reopens
+	// system-managed tenant stores on those volumes. Every Lockable volume
+	// this subsystem opens below is Tracked on it before returning.
+	volumeLifecycle *seal.VolumeLifecycle
+	// tenantHostsHolder is published by completeStandaloneBoot /
+	// completeClusteredBoot once BuildTenantInfra returns its Hosts field
+	// -- see volumeLifecycle's WithCloseStoresFunc closure, which reads
+	// this holder, not a captured registry, because the registry does not
+	// exist yet when volumeLifecycle is built (decision D6's build order).
+	tenantHostsHolder *server.TenantHostRegistryHolder
+	// volumeRegistry maps provider names to Providers for this node's
+	// configured volume pools (storage.volume_pools). Non-nil whenever at
+	// least one pool is configured.
+	volumeRegistry volume.Registry
+	// openVolumes satisfies seal.VolumeResolver: it resolves a pool name to
+	// this node's local directory for every successfully opened pool.
+	openVolumes *volume.OpenVolumes
+	// volumePoolRows is one row per configured pool entry, in configuration
+	// order, recording whether it opened; used to build this node's
+	// volume.NodeReport and to close every opened volume on shutdown.
+	volumePoolRows []openedVolumePool
+	// perTenantReg backs barrier-mode (IsolationBarrier) tenants and the
+	// generic pooled-tenant primitives. It is closed during node shutdown
+	// before the opened volumes are closed, mirroring the daemon's shutdown
+	// ordering.
+	perTenantReg pebbleStorage.PerTenantRegistry
 }
 
 // adoptSealSubsystem installs sub's seal-layer objects on n. Both node
@@ -520,7 +588,12 @@ func (n *Node) adoptSealSubsystem(sub *nodeSealSubsystem) {
 	n.barrierRegistry.Store(sub.barrierRegistry)
 	n.sealStore = sub.sealStore
 	n.credCoreSvc = sub.credCoreSvc
-	n.volumePool = sub.volumePool
+	n.volumeLifecycle = sub.volumeLifecycle
+	n.tenantHostsHolder = sub.tenantHostsHolder
+	n.volumeRegistry = sub.volumeRegistry
+	n.openVolumes = sub.openVolumes
+	n.volumePoolRows = sub.volumePoolRows
+	n.perTenantReg = sub.perTenantReg
 	if sub.pinBackend != nil {
 		n.sealPINBackend = sub.pinBackend
 	}
@@ -624,10 +697,10 @@ func (n *Node) buildSealServices(ctx context.Context, infra lifecycle.Infra, cfg
 	return lifecycle.BuildSealServicesOnly(ctx, infra)
 }
 
-// close releases the seal store and the volume-pool state store (in that
+// close releases the seal store and every opened volume pool (in that
 // order, matching the daemon's shutdown path). The per-tenant registry is
-// closed separately via closeVolumePool so callers can log progress.
-// Safe to call when sealStore is nil.
+// drained separately by the caller (mirrors Node.Close's ordering) so
+// callers can log progress. Safe to call when sealStore is nil.
 func (s *nodeSealSubsystem) close() error {
 	if s == nil {
 		return nil
@@ -637,14 +710,12 @@ func (s *nodeSealSubsystem) close() error {
 		firstErr = s.sealStore.Close()
 		s.sealStore = nil
 	}
-	// Guard the call site for parity with Node.Close: volumePool is nil when no
-	// volume pools are configured. VolumePoolSubsystem.Close already nil-guards
-	// its receiver, so this is defensive consistency, not a correctness fix.
-	if s.volumePool != nil {
-		if err := s.volumePool.Close(); err != nil && firstErr == nil {
+	if s.perTenantReg != nil {
+		if err := s.perTenantReg.CloseAll(context.Background()); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
+	closeOpenedVolumes(context.Background(), s.volumePoolRows, slog.Default())
 	return firstErr
 }
 
@@ -821,10 +892,29 @@ type Node struct {
 	sealPINBackend  pin.PINBackend
 	barrier         atomic.Pointer[seal.StorageBarrier]
 	barrierRegistry atomic.Pointer[seal.BarrierRegistry]
-	// volumePool is non-nil when the config declares at least one volume pool.
-	// Its PerTenantRegistry is drained before the sealStore is closed on
-	// shutdown, mirroring cmd/qrdbd/start.go's shutdown ordering.
-	volumePool *qrdbpool.VolumePoolSubsystem
+	// volumeLifecycle, volumeRegistry, openVolumes, volumePoolRows and
+	// perTenantReg are the volume-pools composition built by
+	// buildNodeSealSubsystem and adopted via adoptSealSubsystem; see their
+	// doc comments on nodeSealSubsystem. perTenantReg is drained and every
+	// opened volume is closed before the sealStore is closed on shutdown,
+	// mirroring cmd/qrdbd/start.go's shutdown ordering.
+	volumeLifecycle *seal.VolumeLifecycle
+	// tenantHostsHolder is published by completeStandaloneBoot /
+	// completeClusteredBoot once BuildTenantInfra returns its Hosts field
+	// (stored alongside tenantHosts below) -- see
+	// volumeLifecycle's WithCloseStoresFunc closure, which reads this
+	// holder, not tenantHosts directly, because the holder is wired into
+	// volumeLifecycle before tenantHosts exists (decision D6's build
+	// order).
+	tenantHostsHolder *server.TenantHostRegistryHolder
+	volumeRegistry    volume.Registry
+	openVolumes       *volume.OpenVolumes
+	volumePoolRows    []openedVolumePool
+	perTenantReg      pebbleStorage.PerTenantRegistry
+	// volumeReporter publishes this node's volume-pool health on a lease
+	// once the data-plane services exist (see startVolumeReporter). Nil
+	// when no volume pool is configured.
+	volumeReporter *volume.Reporter
 	// credCoreSvc is the *credentials.CredentialService built during the seal
 	// subsystem phase. It is kept here so completeBoot can thread it into
 	// lifecycle.BuildServices.Infra.CredentialCoreSvc without needing to
@@ -1238,6 +1328,17 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	profile := profileCfg.EffectiveCapabilities()
 	profile.WarnUnencryptedAtRest(n.logger)
 
+	// Attach the volume-pool catalog BEFORE buildServices: the TenantService
+	// it constructs needs the allocator at construction time. See
+	// attachVolumeCatalog's doc comment.
+	if err := n.attachVolumeCatalog(localHost); err != nil {
+		_ = localHost.Close()
+		_ = n.stg.Close()
+		n.stg = nil
+		n.closeDatabaseManager()
+		return err
+	}
+
 	svcNode, err := n.buildServices(ctx, lifecycle.Infra{
 		Host:              localHost,
 		WatchHub:          watchHub,
@@ -1284,6 +1385,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
+		// And an injected trust store for the tenants' trust anchors.
+		TrustAnchors: server.ResolveCryptoOptions(pending.serverOpts...).TrustAnchors,
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
 		_ = localHost.Close()
@@ -1294,6 +1397,11 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	}
 	n.svcNode.Store(svcNode)
 	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
+	// An engine that keeps no leases (file, objstore) has nothing to publish
+	// the lease-backed volume-pool health report on.
+	if lifecycle.LocalEngineKeepsLeases(pending.backendType) {
+		n.startVolumeReporter(ctx, svcNode, strconv.FormatUint(pending.cfg.Raft.ReplicaID, 10))
+	}
 
 	// Build the IsolationVolume tenant stack when the caller opted in via
 	// WithTenantIsolation and the prerequisites are all present. The guard
@@ -1301,7 +1409,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	// the in-process recycle triggered by an encryption migration (where
 	// n.tenantHosts is already set and the tenant Hosts keep running through
 	// the system data-plane tear-down and rebuild).
-	if n.tenantIsolation && barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
+	if n.tenantIsolation && barrierRegistry != nil && barrierRegistry.HasVolumePool() && svcNode.Tenant != nil && n.tenantHosts == nil {
 		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
 			Ctx:        ctx,
 			BarrierReg: barrierRegistry,
@@ -1310,14 +1418,15 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			// migration rebuilds the service graph in place and keeps the tenant
 			// Hosts running, so the registry resolves the tenant service live
 			// rather than capturing this one (go-qrdb#383).
-			TenantLookup: &nodeTenantResolver{node: n},
-			VolumePool:   n.volumePool,
-			Logger:       n.logger,
+			TenantLookup:         &nodeTenantResolver{node: n},
+			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
+			Logger:               n.logger,
 			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
 			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
 			// is not wired in the embedded standalone node yet (Phase 2).
 		})
 		if tiErr != nil {
+			n.stopVolumeReporter()
 			_ = svcNode.Stop(context.Background())
 			_ = localHost.Close()
 			_ = n.stg.Close()
@@ -1326,6 +1435,13 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			return &TenantInfraError{Err: tiErr}
 		}
 		n.tenantHosts = ti.Hosts
+		// Security review item 4(a): publish the just-built registry to
+		// volumeLifecycle's close-before-lock closure, which has been
+		// reading this holder (empty until now) since the seal subsystem
+		// was constructed, long before ti.Hosts existed.
+		if n.tenantHostsHolder != nil {
+			n.tenantHostsHolder.Store(ti.Hosts)
+		}
 	} else if n.tenantHosts != nil && svcNode.Tenant != nil {
 		// A system-scope recycle rebuilt the tenant service; the runtimes
 		// survived it. Hand the new service the closer BuildTenantInfra gave
@@ -1335,6 +1451,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, true); err != nil {
+		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		_ = localHost.Close()
 		_ = n.stg.Close()
@@ -1631,23 +1748,14 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			}
 			n.bgWG.Wait()
 			n.bgCtx = nil
-			// The replicated volume-pool cursor and the cluster-wide slot
-			// store were, if this attempt got that far, bound/attached over
-			// the svcNode just stopped above; detach them so neither holds a
-			// dangling reference to it. This is defensive hygiene, not a
-			// fallback that serves a request: a failed boot leaves the node
-			// in its pre-boot SEALED state, and the seal-only Services()
-			// this defer restores is backed by the system barrier itself,
-			// which fails every read and write while sealed (seal.ErrSealed)
-			// -- CreateTenant's tombstone check is the first such read, so
-			// provisioning a tenant through it fails closed before any pool
-			// slot is picked or any tenant barrier is opened, local or not.
-			if n.volumePool != nil && n.volumePool.ReplicatedState != nil {
-				n.volumePool.ReplicatedState.Unbind()
-			}
-			if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
-				barrierRegistry.DetachReplicatedSlotStore()
-			}
+			// attachVolumeCatalog's volume.Allocator, if this attempt got
+			// that far, wraps a KV/Transaction pair built directly over the
+			// host just closed above. A retried Unseal calls
+			// attachVolumeCatalog again over the freshly built host, which
+			// re-Attaches a fresh allocator before any tenant data is read
+			// -- the seal-only Services() this defer restores fails every
+			// read and write while sealed (seal.ErrSealed), so there is no
+			// window where the stale allocator could be reached first.
 		}
 	}()
 
@@ -1715,6 +1823,16 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	n.featureGate = gate
 	hostAdapter := raftbackend.New(host, raftbackend.WithFeatureGate(gate))
 
+	// Attach the volume-pool catalog BEFORE buildServices: the TenantService
+	// it constructs needs the allocator at construction time. See
+	// attachVolumeCatalog's doc comment.
+	if err := n.attachVolumeCatalog(hostAdapter); err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		n.dbManager = nil
+		return err
+	}
+
 	// Per-instance effective capability profile: the raft composition,
 	// narrowed to the state machine this node runs.
 	profile, err := clusteredProfile(pending.cfg)
@@ -1744,6 +1862,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		SealBarrier:       barrier,
 		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
+		RaftAddrToNodeID:  raftAddrToNodeIDMap(pending.members),
 		CredentialCoreSvc: n.credCoreSvc,
 		// Key A: either an injected HSM/TPM/KMS provider, or in-memory
 		// bootstrap material for the built-in cakey.SoftwareProvider to
@@ -1784,6 +1903,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
+		// And an injected trust store for the tenants' trust anchors.
+		TrustAnchors: server.ResolveCryptoOptions(pending.serverOpts...).TrustAnchors,
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
 		_ = host.Close()
@@ -1792,10 +1913,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
-
-	// Phase 2: bind the cluster-wide replicated volume-pool state now that the
-	// replicated system KV is available. Mirrors cmd/qrdbd/start.go.
-	n.bindReplicatedVolumePool(svcNode)
+	n.startVolumeReporter(ctx, svcNode, strconv.FormatUint(pending.cfg.Raft.ReplicaID, 10))
 
 	// reconciler is started only once the cluster seal monitor is installed;
 	// see below.
@@ -1808,16 +1926,16 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// only the standalone path rebuilds via completeStandaloneBoot). In the
 	// clustered path there is no in-process system-migration recycle today, but
 	// the guard matches the standalone pattern for consistency.
-	if n.tenantIsolation && barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
+	if n.tenantIsolation && barrierRegistry != nil && barrierRegistry.HasVolumePool() && svcNode.Tenant != nil && n.tenantHosts == nil {
 		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
 			Ctx:        ctx,
 			BarrierReg: barrierRegistry,
 			TenantSvc:  svcNode.Tenant,
 			// Resolved live for the same reason as the standalone path; see
 			// completeStandaloneBoot (go-qrdb#383).
-			TenantLookup: &nodeTenantResolver{node: n},
-			VolumePool:   n.volumePool,
-			Logger:       n.logger,
+			TenantLookup:         &nodeTenantResolver{node: n},
+			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
+			Logger:               n.logger,
 			// Host is the shared quicraft.Host that carries IsolationRaft shards.
 			// Passing it here enables NewRaftBackendFactoryFromManager and
 			// reattachRaftTenants so clustered embedded nodes gain full
@@ -1839,6 +1957,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			ClusterSealer:  n.clusterSeal,
 		})
 		if tiErr != nil {
+			n.stopVolumeReporter()
 			_ = svcNode.Stop(context.Background())
 			_ = host.Close()
 			_ = dbManager.Close()
@@ -1846,6 +1965,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			return &TenantInfraError{Err: tiErr}
 		}
 		n.tenantHosts = ti.Hosts
+		// Security review item 4(a): publish the just-built registry to
+		// volumeLifecycle's close-before-lock closure, which has been
+		// reading this holder (empty until now) since the seal subsystem
+		// was constructed, long before ti.Hosts existed.
+		if n.tenantHostsHolder != nil {
+			n.tenantHostsHolder.Store(ti.Hosts)
+		}
 		n.raftBackend = ti.Raft
 		// Wire the IsolationRaft factory into the already-built backup
 		// service as its ShardRestarter, enabling ONLINE restore for
@@ -1880,6 +2006,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		n.svcNode.Store(nil)
 		if n.raftBackend != nil {
@@ -1925,6 +2052,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		n.svcNode.Store(nil)
 		// Stop IsolationRaft shards BEFORE closing the shared host — mirrors
@@ -1974,25 +2102,97 @@ func (n *Node) wholeNodeDatabases() service.BarrierDatabases {
 	return n.dbManager
 }
 
-// bindReplicatedVolumePool wires the cluster-wide volume-pool state (Phase 2)
-// once the replicated system KV is available: it binds the pool's round-robin
-// cursor store to the replicated KV and attaches the replicated tenant→slot
-// assignment store to the barrier registry. It is a no-op when the node has no
-// volume pool, runs standalone (ReplicatedState is nil), or has no KV service.
-func (n *Node) bindReplicatedVolumePool(svcNode *lifecycle.Node) {
-	if n.volumePool == nil || svcNode == nil || svcNode.KV == nil {
-		return
+// attachVolumeCatalog builds the replicated volume-pool catalog directly
+// over host (the SAME service.Host that will become lifecycle.Infra.Host a
+// moment later -- a LocalBackend or a Raft host adapter; the catalog's
+// narrow KVServicer/TransactionServicer interfaces are satisfied by the
+// service.KVService/TransactionService built over either), and attaches it
+// as the registry's volume.Allocator so RequireInsideLocalPool -- and
+// everything built on it, including RestoreVolumeTenants and the
+// TenantService's own volume-pool reservation -- resolves tenant placement
+// through it. Mirrors cmd/qrdbd/start.go. It MUST run before
+// n.buildServices: BuildServices constructs the TenantService, which reads
+// this allocator off the registry at construction time
+// (pkg/server/lifecycle.buildTenantServiceOpts). A no-op when the node has
+// no volume pool configured.
+func (n *Node) attachVolumeCatalog(host service.Host) error {
+	barrierRegistry := n.barrierRegistry.Load()
+	if barrierRegistry == nil || n.volumeRegistry == nil || host == nil {
+		return nil
 	}
-	if n.volumePool.ReplicatedState != nil {
-		if err := n.volumePool.ReplicatedState.Bind(lifecycle.NewKVStoreAdapter(svcNode.KV)); err != nil && n.logger != nil {
-			n.logger.Warn("node: failed to bind replicated volume-pool cursor; falling back to node-local pick",
-				slog.Any("error", err))
+	// A FRESH KV/Transaction pair built directly over host, not
+	// svcNode.KV/Transaction: this runs BEFORE lifecycle.BuildServices,
+	// because the TenantService BuildServices constructs needs this
+	// allocator AT CONSTRUCTION TIME
+	// (pkg/server/lifecycle.buildTenantServiceOpts reads it straight off
+	// the registry). volume.NewCatalog does no I/O at construction -- only
+	// Reserve/Resolve calls made later, once an operator actually creates a
+	// tenant, touch the shard -- so this is safe well before the shard is
+	// ready to serve a linearizable read.
+	catalogKV := lifecycle.NewVolumeCatalogKVServicer(service.NewKVService(host, shard.ShardKV))
+	catalogTx := service.NewTransactionService(host, shard.ShardKV)
+	catalog, err := volume.NewCatalog(catalogKV, catalogTx, n.volumeRegistry)
+	if err != nil {
+		return err
+	}
+	barrierRegistry.Attach(seal.WithVolumeAllocator(catalog))
+	// Security review finding 7: a pool this node opened under a
+	// different provider than the catalog recorded for it (a
+	// misconfigured node, e.g. "dir" where the cluster expects "luks2")
+	// must never silently serve that pool's tenants under the wrong
+	// storage semantics. Only available now that the catalog exists;
+	// refuses just the mismatched pool (invariant 6), never the node's
+	// boot.
+	for _, mismatchErr := range checkProviderConsistency(context.Background(), catalog, n.openVolumes, n.volumePoolRows) {
+		if n.logger != nil {
+			n.logger.Error("volume pool: provider mismatch; pool will not be served on this node",
+				slog.Any("error", mismatchErr))
 		}
 	}
-	if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
-		barrierRegistry.Attach(seal.WithReplicatedSlotStore(
-			lifecycle.NewReplicatedSealBackend(svcNode.KV, svcNode.Transaction)))
+	return nil
+}
+
+// stopVolumeReporter closes n.volumeReporter, if started. Reporter.Close is
+// synchronous (it cancels its refresh goroutine and waits for it to exit
+// before returning), so this is safe to call before svcNode.Stop / host.Close
+// -- and MUST run before them: the refresh goroutine calls svcNode.MVCC /
+// Lease on every tick, and a tick landing after the host closes fails with
+// "quicraft: host closed" instead of exiting cleanly. Logs a close failure
+// rather than returning it, since every call site here is pure cleanup.
+func (n *Node) stopVolumeReporter() {
+	if n.volumeReporter == nil {
+		return
 	}
+	if err := n.volumeReporter.Close(); err != nil && n.logger != nil {
+		n.logger.Warn("node: failed to close volume-pool Reporter", slog.Any("error", err))
+	}
+	n.volumeReporter = nil
+}
+
+// startVolumeReporter publishes this node's own volume-pool health on a
+// lease, the SAME mechanism cluster.Advertiser uses to publish a
+// cluster.Member: a dead node reports nothing (engine-level lease expiry),
+// not a reader-side staleness guess. Unlike attachVolumeCatalog, this
+// genuinely needs the data-plane services (MVCC writes, lease grants), so it
+// runs once svcNode exists. A no-op when the node has no volume pool
+// configured, or MVCC/Lease are unavailable.
+func (n *Node) startVolumeReporter(ctx context.Context, svcNode *lifecycle.Node, nodeID string) {
+	if n.volumeRegistry == nil || svcNode == nil || svcNode.MVCC == nil || svcNode.Lease == nil {
+		return
+	}
+	reporter, err := volume.NewReporter(svcNode.MVCC, svcNode.Lease, nodeID)
+	if err != nil {
+		n.logger.Warn("node: failed to construct volume-pool Reporter", slog.Any("error", err))
+		return
+	}
+	rows := n.volumePoolRows
+	if serr := reporter.Start(ctx, func() volume.NodeReport {
+		return buildNodeReport(ctx, nodeID, rows)
+	}); serr != nil {
+		n.logger.Warn("node: failed to start volume-pool Reporter", slog.Any("error", serr))
+		return
+	}
+	n.volumeReporter = reporter
 }
 
 // retractDataPlaneServices clears the service handles that belong to the
@@ -2088,6 +2288,9 @@ func (n *Node) Close() error {
 	}
 	record(n.stopFeatureGate())
 	record(n.stopMemberRecord())
+	// Stop the volume-pool Reporter's refresh goroutine before svcNode/host
+	// below: see stopVolumeReporter's doc comment.
+	n.stopVolumeReporter()
 
 	// Retract every handle this node published BEFORE stopping what backs
 	// them. A caller that loads one after Close gets nil rather than a
@@ -2153,11 +2356,11 @@ func (n *Node) Close() error {
 	barrier := n.barrier.Swap(nil)
 	record(service.SealWholeNode(barrierRegistry, barrier, n.wholeNodeDatabases()))
 	n.credCoreSvc = nil
-	// Drain per-tenant Pebble instances before closing the volume-pool state
-	// store. Mirrors cmd/qrdbd/start.go shutdown ordering.
-	if n.volumePool != nil && n.volumePool.PerTenantRegistry != nil {
-		closed := n.volumePool.PerTenantRegistry.List()
-		if err := n.volumePool.PerTenantRegistry.CloseAll(context.Background()); err != nil {
+	// Drain per-tenant Pebble instances before closing the opened volume
+	// pools. Mirrors cmd/qrdbd/start.go shutdown ordering.
+	if n.perTenantReg != nil {
+		closed := n.perTenantReg.List()
+		if err := n.perTenantReg.CloseAll(context.Background()); err != nil {
 			n.logger.Error("per-tenant pebble close-all failed",
 				slog.Any("error", err),
 				slog.Int("count", len(closed)))
@@ -2165,11 +2368,10 @@ func (n *Node) Close() error {
 			n.logger.Info("closed per-tenant pebbles on shutdown",
 				slog.Int("count", len(closed)))
 		}
+		n.perTenantReg = nil
 	}
-	if n.volumePool != nil {
-		record(n.volumePool.Close())
-		n.volumePool = nil
-	}
+	closeOpenedVolumes(context.Background(), n.volumePoolRows, n.logger)
+	n.volumePoolRows = nil
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
@@ -2279,11 +2481,11 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	// Build the seal subsystem BEFORE data-plane storage so that, once
-	// unsealed, the data-plane PebbleDB can be opened on top of encfs.
-	// Standalone nodes run on a LocalBackend (no replicated KV), so the volume
-	// pool cursor stays node-local (clustered=false).
+	// unsealed, the data-plane PebbleDB can be opened on top of encfs. The
+	// volume-pool catalog is attached in completeStandaloneBoot, directly
+	// over the local host and before buildServices (attachVolumeCatalog).
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, false, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
 		if err != nil {
 			return nil, err
 		}
@@ -2390,6 +2592,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(cfg),
+		// And an injected trust store for the tenants' trust anchors.
+		TrustAnchors: server.ResolveCryptoOptions(serverOpts...).TrustAnchors,
 	}, cfg, serverOpts)
 	if err != nil {
 		_ = localHost.Close()
@@ -2495,7 +2699,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// nodes run on a Raft host, so the volume pool cursor lives in the
 	// replicated system KV (clustered=true), bound once the data plane is up.
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, true, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
 		if err != nil {
 			return nil, err
 		}
@@ -2590,6 +2794,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		Profile:           &profile,
 		Logger:            log,
 		SealEnabled:       cfg.Seal.Enabled,
+		RaftAddrToNodeID:  raftAddrToNodeIDMap(members),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
@@ -2646,7 +2851,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 // with the barrier instead of the built-in deferred-software fallback. This
 // is the injection path for cloud KMS (awskms, vault, gcpkms, azurekv) and
 // hardware (tpm2, pkcs11) strategies constructed by higher-level composers.
-func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, clustered bool, trail audit.AuditLogger) (*nodeSealSubsystem, error) {
+func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, trail audit.AuditLogger) (*nodeSealSubsystem, error) {
 	sealDataDir := filepath.Join(dataDir, "seal")
 	// SyncWrites is forced on for the seal store: DefaultConfig defaults it
 	// to false on the premise that the Raft WAL provides durability, but the
@@ -2660,6 +2865,23 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// every file the previous root key encrypted.
 	sealCfg := pebbleStorage.DefaultConfig(sealDataDir)
 	sealCfg.SyncWrites = true
+	// resolveBackend returns dataDir == "" ONLY for an explicitly ephemeral
+	// node (database.BackendMemory with no raft.data_dir configured, its
+	// one caller): a node in that shape has no concept of "this node's
+	// directory" to persist anything under. filepath.Join("", "seal")
+	// silently resolves to the bare relative path "seal", which Pebble then
+	// creates wherever the process's current working directory happens to
+	// be -- the source tree itself during `go test`
+	// (TestNewStandaloneNode_MemoryBackend caught this: a real, persisted
+	// Pebble store landing in sdk/go/node/seal/, not a test artifact) and an
+	// unspecified, operator-uncontrolled location in production. An
+	// explicitly ephemeral node's seal/barrier state must be exactly as
+	// ephemeral as its data plane: an in-memory Pebble FS, never a path
+	// resolved relative to wherever the process happened to be launched
+	// from.
+	if dataDir == "" {
+		sealCfg.FS = vfs.NewMem()
+	}
 	sealStore, err := pebbleStorage.New(sealCfg)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: "seal", Err: err}
@@ -2760,42 +2982,114 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		return nil, &StorageCreateError{Backend: "seal-credentials", Err: credErr}
 	}
 
-	barrierRegistry, regErr := seal.NewBarrierRegistry(log, barrier, seal.WithAuditTrail(trail))
+	// Build the volume lifecycle BEFORE the barrier registry (decision D6):
+	// VolumeLifecycle registers its OnUnsealed/OnSealing observers on
+	// barrier at construction, and StorageBarrier runs OnUnsealed observers
+	// in registration order, so building this first is what makes "unlock
+	// before stores open" true by construction order alone once
+	// barrierRegistry (which reopens tenant stores on unseal) registers its
+	// own observer immediately below.
+	nodeID := strconv.FormatUint(cfg.Raft.ReplicaID, 10)
+	var volumeLifecycleOpts []seal.VolumeLifecycleOption
+	if nOpts != nil && nOpts.volumeKeyProvider != nil {
+		volumeLifecycleOpts = append(volumeLifecycleOpts, seal.WithVolumeKeyProvider(nOpts.volumeKeyProvider))
+	}
+
+	// barrierRegistry is declared here, assigned below, so the
+	// WithCloseStoresFunc closure immediately after can capture the
+	// variable itself (Go closures capture variables, not a value frozen
+	// at definition time) even though BarrierRegistry is constructed
+	// AFTER VolumeLifecycle per decision D6's build order. No seal event
+	// can reach a subsystem still being constructed, so the closure is
+	// never actually invoked before barrierRegistry is assigned.
+	var barrierRegistry *seal.BarrierRegistry
+
+	// Security review item 4(a): the real close-before-lock implementation.
+	// tenantHostsHolder is published by completeStandaloneBoot/
+	// completeClusteredBoot once BuildTenantInfra returns its Hosts field,
+	// which cannot run until long after this subsystem is built -- so the
+	// closure reads the holder fresh on every Seal rather than capturing a
+	// registry that does not exist yet. See
+	// server.CloseTenantStoresForPool's own doc comment for what it
+	// actually closes and why a nil holder load is a safe no-op.
+	tenantHostsHolder := &server.TenantHostRegistryHolder{}
+	volumeLifecycleOpts = append(volumeLifecycleOpts, seal.WithCloseStoresFunc(func(ctx context.Context, pool string) error {
+		return server.CloseTenantStoresForPool(ctx, barrierRegistry.VolumeAllocator(), tenantHostsHolder.Load(), pool)
+	}))
+	volumeLifecycle := seal.NewVolumeLifecycle(barrier, nodeID, log, volumeLifecycleOpts...)
+
+	var regErr error
+	barrierRegistry, regErr = seal.NewBarrierRegistry(log, barrier, seal.WithAuditTrail(trail))
 	if regErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-registry", Err: regErr}
 	}
 
-	// Build the volume-pool subsystem when the config declares pools. This
-	// mirrors the daemon's initVolumePoolSubsystem path (cmd/qrdbd/start.go)
-	// so embedders (go-quicbaas, go-xkms) get per-tenant barrier isolation
-	// without requiring the daemon binary.
-	vp, vpErr := qrdbpool.BuildVolumePoolSubsystem(dataDir, cfg.Storage.VolumePools, log, clustered)
-	if vpErr != nil {
+	// Open every pool this node's configuration maps (storage.volume_pools)
+	// through a fresh volume.Registry. This mirrors the daemon's
+	// equivalent composition (cmd/qrdbd/start.go) so embedders (go-quicbaas,
+	// go-xkms) get per-tenant barrier isolation without requiring the
+	// daemon binary. A Lockable volume is Tracked on volumeLifecycle HERE,
+	// before any unseal attempt: volumeLifecycle's OnUnsealed observer was
+	// registered before barrierRegistry's own (decision D6), so "unlock
+	// before stores open" holds by construction order, but only if the
+	// Lockable is tracked before unseal actually runs. The replicated
+	// catalog backing seal.WithVolumeAllocator is attached later, by each
+	// node builder's own completeBoot (attachVolumeCatalog, called directly
+	// over the host before buildServices): it needs this node's own host,
+	// which does not exist until the data-plane construction further down
+	// each builder's boot sequence.
+	var extraVolumeProviders []volume.Provider
+	if nOpts != nil {
+		extraVolumeProviders = nOpts.volumeProviders
+	}
+	var volumeRegistry volume.Registry
+	volumeRegistry, regErr = newVolumeRegistry(extraVolumeProviders...)
+	if regErr != nil {
 		_ = sealStore.Close()
-		return nil, &StorageCreateError{Backend: "volume-pool", Err: vpErr}
+		return nil, &StorageCreateError{Backend: "volume-pool", Err: regErr}
 	}
-	if vp != nil {
-		barrierRegistry.Attach(
-			seal.WithVolumePool(vp.Manager, vp.StateStore, vp.DefaultPoolName),
-			seal.WithPerTenantRegistry(vp.PerTenantRegistry),
-		)
+	openVolumes, volumePoolRows := openConfiguredVolumes(ctx, nodeID, cfg.Storage.VolumePools, volumeRegistry, log)
+	for _, row := range volumePoolRows {
+		if lockable, ok := row.vol.(volume.Lockable); ok {
+			if terr := volumeLifecycle.Track(row.name, lockable); terr != nil {
+				closeOpenedVolumes(ctx, volumePoolRows, log)
+				_ = sealStore.Close()
+				return nil, &StorageCreateError{Backend: "volume-pool", Err: terr}
+			}
+		}
 	}
+
+	// Barrier-mode (IsolationBarrier) tenants that use the generic,
+	// pool-name-free registration primitives still need a per-tenant Pebble
+	// registry; attach it now so it is available even before the
+	// replicated catalog is (below).
+	perTenantReg := pebbleStorage.NewPerTenantRegistry()
+	barrierRegistry.Attach(
+		seal.WithVolumeResolver(openVolumes),
+		seal.WithPerTenantRegistry(perTenantReg),
+	)
 
 	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend)
 	if pinErr != nil {
+		closeOpenedVolumes(ctx, volumePoolRows, log)
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-pin", Err: pinErr}
 	}
 
 	return &nodeSealSubsystem{
-		barrier:         barrier,
-		credCoreSvc:     credCoreSvc,
-		barrierRegistry: barrierRegistry,
-		sealStore:       sealStore,
-		sealDataDir:     sealDataDir,
-		pinBackend:      pinBackend,
-		volumePool:      vp,
+		barrier:           barrier,
+		credCoreSvc:       credCoreSvc,
+		barrierRegistry:   barrierRegistry,
+		sealStore:         sealStore,
+		sealDataDir:       sealDataDir,
+		pinBackend:        pinBackend,
+		volumeLifecycle:   volumeLifecycle,
+		tenantHostsHolder: tenantHostsHolder,
+		volumeRegistry:    volumeRegistry,
+		openVolumes:       openVolumes,
+		volumePoolRows:    volumePoolRows,
+		perTenantReg:      perTenantReg,
 	}, nil
 }
 
@@ -3152,6 +3446,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		n.trustPool.SetClusterCA(clusterCA)
 	}
 	n.trustPool.SetKeyBProvider(svcNode.CertProv)
+	// Every tenant's registered trust anchors join the same pool -- trusted
+	// at the TLS layer and bound to their own tenant at the auth layer.
+	svcNode.WireTrustAnchors(n.trustPool)
 
 	// n.trustPool is ALWAYS handed to the auth layer as the enforcement
 	// source, regardless of whether a cluster CA was resolved above: that
@@ -3186,12 +3483,14 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// *tls.Config further down, so Key B is never trusted at the TLS
 		// layer without this binding also being enforced here and on the
 		// on-behalf forwarding path (go-qrdb#560 review, B2-1/B2-2).
-		IssuerVerifier:     issuerVerifier,
-		RevocationCacheTTL: revocationTTL,
-		MTLSBindingPolicy:  bindingPolicy,
-		PeerAttestation:    n.peerAttestation,
-		RateLimitPolicies:  n.rateLimitPolicies,
-		RateLimiter:        n.rateLimiter,
+		IssuerVerifier:      issuerVerifier,
+		PendingTenantAdmins: svcNode.PendingAdmins,
+		CertTargetGuard:     svcNode.CertTargets,
+		RevocationCacheTTL:  revocationTTL,
+		MTLSBindingPolicy:   bindingPolicy,
+		PeerAttestation:     n.peerAttestation,
+		RateLimitPolicies:   n.rateLimitPolicies,
+		RateLimiter:         n.rateLimiter,
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
@@ -3539,6 +3838,26 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.Tenant != nil {
 		opts = append(opts, embedded.WithTenantService(svcNode.Tenant))
 	}
+	// Volume pool management (docs/volume-pools/api.md), derived from the
+	// SAME catalog instance already attached to the barrier registry as
+	// its volume.Allocator -- see seal.BarrierRegistry.VolumeService.
+	if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
+		if volumeSvc, ok := barrierRegistry.VolumeService(); ok {
+			opts = append(opts, embedded.WithVolumeService(volumeSvc))
+		}
+	}
+	// Certificates and tenant onboarding, as on every network transport of
+	// the same node: issue/enrol, trust anchors, and tenant create with its
+	// first admin.
+	if svcNode.CertProv != nil {
+		opts = append(opts, embedded.WithCertProvider(svcNode.CertProv))
+	}
+	if svcNode.CertEnrollment != nil {
+		opts = append(opts, embedded.WithCertEnrollment(svcNode.CertEnrollment))
+	}
+	if svcNode.TenantOnboarding != nil {
+		opts = append(opts, embedded.WithTenantOnboarding(svcNode.TenantOnboarding))
+	}
 	if n.auditLogger != nil {
 		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))
 	}
@@ -3794,6 +4113,12 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.CertProv != nil {
 		opts = append(opts, server.WithCertProvider(svcNode.CertProv))
+	}
+	if svcNode.CertEnrollment != nil {
+		opts = append(opts, server.WithCertEnrollment(svcNode.CertEnrollment))
+	}
+	if svcNode.TenantOnboarding != nil {
+		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
 	}
 	if svcNode.Embedding != nil {
 		opts = append(opts, server.WithEmbedding(svcNode.Embedding))
@@ -4112,13 +4437,13 @@ func (n *Node) closeSeal() {
 	barrier := n.barrier.Swap(nil)
 	_ = service.SealWholeNode(barrierRegistry, barrier, n.wholeNodeDatabases())
 	n.credCoreSvc = nil
-	if n.volumePool != nil {
-		if n.volumePool.PerTenantRegistry != nil {
-			_ = n.volumePool.PerTenantRegistry.CloseAll(context.Background())
-		}
-		_ = n.volumePool.Close()
-		n.volumePool = nil
+	n.stopVolumeReporter()
+	if n.perTenantReg != nil {
+		_ = n.perTenantReg.CloseAll(context.Background())
+		n.perTenantReg = nil
 	}
+	closeOpenedVolumes(context.Background(), n.volumePoolRows, n.logger)
+	n.volumePoolRows = nil
 	if n.sealStore != nil {
 		_ = n.sealStore.Close()
 		n.sealStore = nil

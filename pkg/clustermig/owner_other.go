@@ -32,8 +32,9 @@ func fileOwner(fs.FileInfo) (int, bool) { return 0, false }
 var errNoSafeOpen = errors.New("clustermig: credential files cannot be opened safely on this platform")
 
 // openCredentialDir refuses off unix, where the directory cannot be opened
-// without following a symlink.
-func openCredentialDir(string) (*os.File, error) { return nil, errNoSafeOpen }
+// without following a symlink. A var, matching owner_unix.go's seam, so a
+// test can override it identically on every platform.
+var openCredentialDir = func(string) (*os.File, error) { return nil, errNoSafeOpen }
 
 // openCredentialAt refuses off unix; it is never reached there, because
 // openCredentialDir refuses first.

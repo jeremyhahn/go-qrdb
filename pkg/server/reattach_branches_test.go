@@ -60,7 +60,7 @@ func TestReattachVolumeTenants_SkipsUnprovisioned(t *testing.T) {
 			// A non-volume tenant must be skipped before the registry lookup.
 			{ID: "prefix-t", IsolationType: tenant.IsolationPrefix},
 			// Not registered in reg: must be skipped (deferred to lazy attach).
-			{ID: "vol-t", IsolationType: tenant.IsolationVolume, DataRoot: "/foreign/path"},
+			{ID: "vol-t", IsolationType: tenant.IsolationVolume, VolumePool: "default"},
 		}, nil
 	}}
 
@@ -95,7 +95,7 @@ func TestReattachRaftTenants_SkipsUnprovisioned(t *testing.T) {
 		return []tenant.TenantInfo{
 			{ID: "prefix-t", IsolationType: tenant.IsolationPrefix},
 			// Not registered in reg: must be skipped (deferred to reconciler).
-			{ID: "raft-t", IsolationType: tenant.IsolationRaft, DataRoot: "/foreign/path"},
+			{ID: "raft-t", IsolationType: tenant.IsolationRaft, VolumePool: "default"},
 		}, nil
 	}}
 

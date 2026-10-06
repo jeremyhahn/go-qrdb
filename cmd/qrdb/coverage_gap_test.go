@@ -30,17 +30,17 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// writeCertBundle
+// writePEMFiles (certs.go; replaced writeCertBundle when server-side keygen
+// was retired -- see cmd/qrdb/certs.go newCertsIssueCmd)
 // ---------------------------------------------------------------------------
 
-func TestWriteCertBundle_Success(t *testing.T) {
+func TestWritePEMFiles_Success(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "certs")
-	bundle := &transport.CertBundle{
-		CertPEM: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
-		KeyPEM:  "-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----\n",
-		Serial:  "AABB",
+	files := map[string][]byte{
+		"cert.pem": []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"),
+		"key.pem":  []byte("-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----\n"),
 	}
-	if err := writeCertBundle(dir, bundle); err != nil {
+	if err := writePEMFiles(dir, files); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
@@ -48,23 +48,31 @@ func TestWriteCertBundle_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read cert.pem: %v", err)
 	}
-	if string(certData) != bundle.CertPEM {
+	if string(certData) != string(files["cert.pem"]) {
 		t.Fatalf("cert.pem content mismatch: got %q", certData)
 	}
 
-	keyData, err := os.ReadFile(filepath.Join(dir, "key.pem"))
+	keyPath := filepath.Join(dir, "key.pem")
+	keyData, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatalf("failed to read key.pem: %v", err)
 	}
-	if string(keyData) != bundle.KeyPEM {
+	if string(keyData) != string(files["key.pem"]) {
 		t.Fatalf("key.pem content mismatch: got %q", keyData)
+	}
+
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat key.pem: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Fatalf("expected key.pem mode 0600, got %o", perm)
 	}
 }
 
-func TestWriteCertBundle_DirectoryCreateError(t *testing.T) {
+func TestWritePEMFiles_DirectoryCreateError(t *testing.T) {
 	// Use a path under /dev/null to force MkdirAll to fail.
-	bundle := &transport.CertBundle{CertPEM: "x", KeyPEM: "y", Serial: "z"}
-	err := writeCertBundle("/dev/null/impossible", bundle)
+	err := writePEMFiles("/dev/null/impossible", map[string][]byte{"cert.pem": []byte("x")})
 	if err == nil {
 		t.Fatal("expected error when directory cannot be created")
 	}
@@ -74,7 +82,7 @@ func TestWriteCertBundle_DirectoryCreateError(t *testing.T) {
 	}
 }
 
-func TestWriteCertBundle_CertWriteError(t *testing.T) {
+func TestWritePEMFiles_WriteError(t *testing.T) {
 	dir := t.TempDir()
 	targetDir := filepath.Join(dir, "certs")
 	if err := os.MkdirAll(targetDir, 0700); err != nil {
@@ -88,8 +96,7 @@ func TestWriteCertBundle_CertWriteError(t *testing.T) {
 		t.Fatalf("mkdir cert.pem: %v", err)
 	}
 
-	bundle := &transport.CertBundle{CertPEM: "cert", KeyPEM: "key", Serial: "s"}
-	err := writeCertBundle(targetDir, bundle)
+	err := writePEMFiles(targetDir, map[string][]byte{"cert.pem": []byte("cert")})
 	if err == nil {
 		t.Fatal("expected error when cert.pem cannot be written")
 	}
@@ -261,10 +268,11 @@ func TestCertRecordRow_Revoked(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// printCertBundle
+// printEnrolledCert (certs.go; replaced printCertBundle when server-side
+// keygen was retired -- there is no key to print any more)
 // ---------------------------------------------------------------------------
 
-func TestPrintCertBundle_DefaultFormat(t *testing.T) {
+func TestPrintEnrolledCert_DefaultFormat(t *testing.T) {
 	origWriter := outputWriter
 	origFormat := outputFormat
 	t.Cleanup(func() {
@@ -276,12 +284,14 @@ func TestPrintCertBundle_DefaultFormat(t *testing.T) {
 	outputWriter = &buf
 	outputFormat = "table"
 
-	b := &transport.CertBundle{
-		Serial:  "SER123",
-		CertPEM: "-----BEGIN CERTIFICATE-----\nDATA\n-----END CERTIFICATE-----\n",
-		KeyPEM:  "-----BEGIN EC PRIVATE KEY-----\nKEY\n-----END EC PRIVATE KEY-----\n",
+	e := &transport.EnrolledCert{
+		Username:   "alice",
+		TenantID:   "system",
+		Serial:     "SER123",
+		Thumbprint: "thumb123",
+		CertPEM:    "-----BEGIN CERTIFICATE-----\nDATA\n-----END CERTIFICATE-----\n",
 	}
-	if err := printCertBundle(b); err != nil {
+	if err := printEnrolledCert(e); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	output := buf.String()
@@ -291,12 +301,12 @@ func TestPrintCertBundle_DefaultFormat(t *testing.T) {
 	if !strings.Contains(output, "--- Certificate ---") {
 		t.Fatalf("expected certificate header, got: %q", output)
 	}
-	if !strings.Contains(output, "--- Private Key ---") {
-		t.Fatalf("expected private key header, got: %q", output)
+	if strings.Contains(output, "PRIVATE KEY") {
+		t.Fatalf("expected no private key in output: the server never holds one, got: %q", output)
 	}
 }
 
-func TestPrintCertBundle_JSONFormat(t *testing.T) {
+func TestPrintEnrolledCert_JSONFormat(t *testing.T) {
 	origWriter := outputWriter
 	origFormat := outputFormat
 	t.Cleanup(func() {
@@ -308,12 +318,12 @@ func TestPrintCertBundle_JSONFormat(t *testing.T) {
 	outputWriter = &buf
 	outputFormat = "json"
 
-	b := &transport.CertBundle{
-		Serial:  "JSON-SERIAL",
-		CertPEM: "cert-pem-data",
-		KeyPEM:  "key-pem-data",
+	e := &transport.EnrolledCert{
+		Username: "alice",
+		Serial:   "JSON-SERIAL",
+		CertPEM:  "cert-pem-data",
 	}
-	if err := printCertBundle(b); err != nil {
+	if err := printEnrolledCert(e); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	output := buf.String()
@@ -322,7 +332,7 @@ func TestPrintCertBundle_JSONFormat(t *testing.T) {
 	}
 }
 
-func TestPrintCertBundle_YAMLFormat(t *testing.T) {
+func TestPrintEnrolledCert_YAMLFormat(t *testing.T) {
 	origWriter := outputWriter
 	origFormat := outputFormat
 	t.Cleanup(func() {
@@ -334,12 +344,12 @@ func TestPrintCertBundle_YAMLFormat(t *testing.T) {
 	outputWriter = &buf
 	outputFormat = "yaml"
 
-	b := &transport.CertBundle{
-		Serial:  "YAML-SERIAL",
-		CertPEM: "yaml-cert",
-		KeyPEM:  "yaml-key",
+	e := &transport.EnrolledCert{
+		Username: "alice",
+		Serial:   "YAML-SERIAL",
+		CertPEM:  "yaml-cert",
 	}
-	if err := printCertBundle(b); err != nil {
+	if err := printEnrolledCert(e); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	output := buf.String()

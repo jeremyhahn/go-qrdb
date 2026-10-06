@@ -491,7 +491,7 @@ func TestBatchService_translateProposeError_WrappedNotLeaderError(t *testing.T) 
 func TestBatchService_Import_InvalidFormat(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	_, err := svc.Import(context.Background(), strings.NewReader(""), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(""), ImportOptions{
 		Format:    "xml",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -509,7 +509,7 @@ func TestBatchService_Import_InvalidFormat(t *testing.T) {
 func TestBatchService_Import_MissingKeyField(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	_, err := svc.Import(context.Background(), strings.NewReader(""), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(""), ImportOptions{
 		Format:    "csv",
 		KeyField:  "",
 		ValueMode: "row",
@@ -524,7 +524,7 @@ func TestBatchService_Import_MissingKeyField(t *testing.T) {
 func TestBatchService_Import_InvalidValueMode(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	_, err := svc.Import(context.Background(), strings.NewReader(""), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(""), ImportOptions{
 		Format:    "csv",
 		KeyField:  "id",
 		ValueMode: "invalid",
@@ -539,7 +539,7 @@ func TestBatchService_Import_InvalidValueMode(t *testing.T) {
 func TestBatchService_Import_MissingValueFieldWhenFieldMode(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	_, err := svc.Import(context.Background(), strings.NewReader(""), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(""), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -569,7 +569,7 @@ func TestBatchService_Import_CSV_Success(t *testing.T) {
 
 	csvData := "id,name,value\nkey1,Alice,100\nkey2,Bob,200\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -624,7 +624,7 @@ func TestBatchService_Import_CSV_RowMode(t *testing.T) {
 
 	csvData := "id,name,value\nkey1,Alice,100\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "row",
@@ -663,7 +663,7 @@ func TestBatchService_Import_CSV_NoSkipHeader(t *testing.T) {
 	// When skipHeader is false, the header row is treated as data.
 	csvData := "id,name,value\nkey1,Alice,100\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -685,7 +685,7 @@ func TestBatchService_Import_CSV_EmptyFile(t *testing.T) {
 
 	svc := NewBatchService(host, 1)
 
-	result, err := svc.Import(context.Background(), strings.NewReader(""), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(""), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "row",
@@ -711,7 +711,7 @@ func TestBatchService_Import_CSV_MissingKeyField(t *testing.T) {
 
 	csvData := "name,value\nAlice,100\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id", // Not in CSV
 		ValueMode:  "row",
@@ -750,7 +750,7 @@ func TestBatchService_Import_JSON_Array(t *testing.T) {
 
 	jsonData := `[{"id":"key1","value":"v1"},{"id":"key2","value":"v2"}]`
 
-	result, err := svc.Import(context.Background(), strings.NewReader(jsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(jsonData), ImportOptions{
 		Format:     "json",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -779,7 +779,7 @@ func TestBatchService_Import_JSON_SingleObject(t *testing.T) {
 
 	jsonData := `{"id":"key1","value":"v1"}`
 
-	result, err := svc.Import(context.Background(), strings.NewReader(jsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(jsonData), ImportOptions{
 		Format:     "json",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -807,7 +807,7 @@ func TestBatchService_Import_JSON_NDJSON(t *testing.T) {
 {"id":"key2","value":"v2"}
 {"id":"key3","value":"v3"}`
 
-	result, err := svc.Import(context.Background(), strings.NewReader(ndjsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(ndjsonData), ImportOptions{
 		Format:     "json",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -825,7 +825,7 @@ func TestBatchService_Import_JSON_NDJSON(t *testing.T) {
 func TestBatchService_Import_JSON_Empty(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	result, err := svc.Import(context.Background(), strings.NewReader(""), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(""), ImportOptions{
 		Format:    "json",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -842,7 +842,7 @@ func TestBatchService_Import_JSON_Empty(t *testing.T) {
 func TestBatchService_Import_JSON_InvalidFormat(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	_, err := svc.Import(context.Background(), strings.NewReader("not json"), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte("not json"), ImportOptions{
 		Format:    "json",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -869,7 +869,7 @@ func TestBatchService_Import_JSON_NonStringValue(t *testing.T) {
 	// JSON with non-string values (number, boolean, null).
 	jsonData := `{"id":"key1","count":42,"active":true,"data":null}`
 
-	result, err := svc.Import(context.Background(), strings.NewReader(jsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(jsonData), ImportOptions{
 		Format:    "json",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -912,7 +912,7 @@ func TestBatchService_Import_Archive_Zip(t *testing.T) {
 	_, _ = fw.Write([]byte("id,value\nkey1,v1\nkey2,v2\n"))
 	_ = zw.Close()
 
-	result, err := svc.Import(context.Background(), bytes.NewReader(buf.Bytes()), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), buf.Bytes(), ImportOptions{
 		Format:     "archive",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -953,7 +953,7 @@ func TestBatchService_Import_Archive_TarGz(t *testing.T) {
 	_ = tw.Close()
 	_ = gw.Close()
 
-	result, err := svc.Import(context.Background(), bytes.NewReader(buf.Bytes()), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), buf.Bytes(), ImportOptions{
 		Format:     "archive",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -985,7 +985,7 @@ func TestBatchService_Import_Archive_ZipWithJSON(t *testing.T) {
 	_, _ = fw.Write([]byte(`[{"id":"key1","value":"v1"}]`))
 	_ = zw.Close()
 
-	result, err := svc.Import(context.Background(), bytes.NewReader(buf.Bytes()), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), buf.Bytes(), ImportOptions{
 		Format:     "archive",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -1003,7 +1003,7 @@ func TestBatchService_Import_Archive_ZipWithJSON(t *testing.T) {
 func TestBatchService_Import_Archive_InvalidFormat(t *testing.T) {
 	svc := NewBatchService(&mockHost{}, 1)
 
-	_, err := svc.Import(context.Background(), strings.NewReader("not an archive"), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte("not an archive"), ImportOptions{
 		Format:    "archive",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -1030,7 +1030,7 @@ func TestBatchService_Import_Transactional_Success(t *testing.T) {
 
 	csvData := "id,value\nkey1,v1\nkey2,v2\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -1052,7 +1052,7 @@ func TestBatchService_Import_Transactional_AbortOnMissingKey(t *testing.T) {
 
 	csvData := "name,value\nAlice,v1\n"
 
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id", // Missing from CSV.
 		ValueMode:     "row",
@@ -1074,7 +1074,7 @@ func TestBatchService_Import_Transactional_AbortOnMissingValueField(t *testing.T
 
 	csvData := "id,name\nkey1,Alice\n"
 
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -1103,7 +1103,7 @@ func TestBatchService_Import_Transactional_ProposeError(t *testing.T) {
 
 	csvData := "id,value\nkey1,v1\n"
 
-	_, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -1134,7 +1134,7 @@ func TestBatchService_Import_NonTransactional_ContinuesOnMissingKey(t *testing.T
 	// First row missing 'id', second row has it.
 	csvData := "id,name,value\n,Alice,v1\nkey2,Bob,v2\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -1160,6 +1160,14 @@ func TestBatchService_Import_NonTransactional_ContinuesOnMissingKey(t *testing.T
 	}
 }
 
+// TestBatchService_Import_NonTransactional_ProposeError proves a genuine
+// propose-level fault -- SyncPropose itself failing, outcome unknown -- is
+// NEVER downgraded to a per-row failure, in EITHER transactional mode
+// (go-qrdb#576's security review finding 4): the entry may or may not have
+// actually committed, so recording it as "these rows failed" and reporting
+// overall success (the previous behavior this test asserted) could both
+// under-report what was stored and let ImportCommit revoke a session whose
+// unresolved chunk was never retried.
 func TestBatchService_Import_NonTransactional_ProposeError(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
@@ -1171,7 +1179,7 @@ func TestBatchService_Import_NonTransactional_ProposeError(t *testing.T) {
 
 	csvData := "id,value\nkey1,v1\nkey2,v2\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:        "csv",
 		KeyField:      "id",
 		ValueMode:     "field",
@@ -1180,15 +1188,14 @@ func TestBatchService_Import_NonTransactional_ProposeError(t *testing.T) {
 		Transactional: false,
 	})
 
-	// Should not return error, but record failures.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected an error for an outcome-unknown propose fault")
 	}
-	if result.Succeeded != 0 {
-		t.Fatalf("expected Succeeded=0, got %d", result.Succeeded)
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Errorf("error = %v, want errors.Is(err, ErrOutcomeUnknown)", err)
 	}
-	if result.Failed != 2 {
-		t.Fatalf("expected Failed=2, got %d", result.Failed)
+	if result != nil {
+		t.Errorf("result = %+v, want nil on an aborted import", result)
 	}
 }
 
@@ -1202,7 +1209,7 @@ func TestBatchService_Import_EmptyRecords(t *testing.T) {
 	// CSV with only header.
 	csvData := "id,value\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "row",
@@ -1239,7 +1246,7 @@ func TestBatchService_Import_LargeFile(t *testing.T) {
 		sb.WriteString("\n")
 	}
 
-	result, err := svc.Import(context.Background(), strings.NewReader(sb.String()), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(sb.String()), ImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -1277,7 +1284,7 @@ func TestBatchService_Import_Auto_DetectsJSONByFilename(t *testing.T) {
 
 	jsonData := `[{"id":"k1","value":"v1"},{"id":"k2","value":"v2"}]`
 
-	result, err := svc.Import(context.Background(), strings.NewReader(jsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(jsonData), ImportOptions{
 		Format:     "auto",
 		Filename:   "records.json",
 		KeyField:   "id",
@@ -1306,7 +1313,7 @@ func TestBatchService_Import_Auto_DetectsCSVByFilename(t *testing.T) {
 
 	csvData := "id,value\nk1,v1\nk2,v2\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(csvData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
 		Format:     "auto",
 		Filename:   "data.csv",
 		KeyField:   "id",
@@ -1337,7 +1344,7 @@ func TestBatchService_Import_Auto_EmptyFormatDetectsJSONByContent(t *testing.T) 
 	jsonData := `{"id":"k1","value":"hello"}`
 
 	// Empty Format and Filename: must probe content.
-	result, err := svc.Import(context.Background(), strings.NewReader(jsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(jsonData), ImportOptions{
 		Format:     "",
 		Filename:   "",
 		KeyField:   "id",
@@ -1358,7 +1365,7 @@ func TestBatchService_Import_Auto_UnknownFormatReturnsParseError(t *testing.T) {
 	// Binary data that cannot be detected.
 	data := []byte{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8}
 
-	_, err := svc.Import(context.Background(), bytes.NewReader(data), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), data, ImportOptions{
 		Format:    "auto",
 		Filename:  "unknown.bin",
 		KeyField:  "id",
@@ -1388,7 +1395,7 @@ func TestBatchService_Import_YAML_Sequence(t *testing.T) {
 
 	yamlData := "- id: k1\n  value: v1\n- id: k2\n  value: v2\n"
 
-	result, err := svc.Import(context.Background(), strings.NewReader(yamlData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(yamlData), ImportOptions{
 		Format:     "yaml",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -1412,7 +1419,7 @@ func TestBatchService_Import_YAML_InvalidData(t *testing.T) {
 	// must return an ImportParseError.
 	yamlData := ": invalid: yaml: ]["
 
-	_, err := svc.Import(context.Background(), strings.NewReader(yamlData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(yamlData), ImportOptions{
 		Format:    "yaml",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -1441,7 +1448,7 @@ func TestBatchService_Import_NDJSON_MultipleObjects(t *testing.T) {
 {"id":"k2","value":"v2"}
 {"id":"k3","value":"v3"}`
 
-	result, err := svc.Import(context.Background(), strings.NewReader(ndjsonData), ImportOptions{
+	result, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(ndjsonData), ImportOptions{
 		Format:     "ndjson",
 		KeyField:   "id",
 		ValueMode:  "field",
@@ -1464,7 +1471,7 @@ func TestBatchService_Import_NDJSON_InvalidJSON(t *testing.T) {
 	ndjsonData := `{"id":"k1"}
 not-valid-json`
 
-	_, err := svc.Import(context.Background(), strings.NewReader(ndjsonData), ImportOptions{
+	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(ndjsonData), ImportOptions{
 		Format:    "ndjson",
 		KeyField:  "id",
 		ValueMode: "row",

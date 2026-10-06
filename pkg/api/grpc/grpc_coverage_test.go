@@ -17,7 +17,6 @@
 package grpc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -128,6 +127,7 @@ type mockCeremonyService struct {
 	initResult       *service.CeremonyInitResult
 	initErr          error
 	capturedInitOpts *service.CeremonyInitializeOptions
+	capturedSecret   []byte
 	capturedCA       ceremony.CeremonyCA
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
@@ -158,13 +158,19 @@ func newMockCeremonyService() *mockCeremonyService {
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
-	// The handler wipes opts.Secret's backing array (go-qrdb#560 review
-	// item 7, follow-up) once it has finished using it, which runs before
-	// this call returns to the test -- captured is a shallow copy with an
-	// independent clone of Secret, so the test can still inspect what was
-	// forwarded after the wipe has already run.
+	// The handler destroys opts.Secret once it has finished using it, which
+	// runs before this call returns to the test -- capturedSecret clones the
+	// plaintext out while the Buffer is still live, so the test can still
+	// inspect what was forwarded after the handler's own Destroy has already
+	// run.
 	captured := *opts
-	captured.Secret = bytes.Clone(opts.Secret)
+	m.capturedSecret = nil
+	if opts.Secret != nil {
+		_ = opts.Secret.WithBytes(func(b []byte) error {
+			m.capturedSecret = append([]byte(nil), b...)
+			return nil
+		})
+	}
 	m.capturedInitOpts = &captured
 	m.capturedCA = ca
 	if m.initErr != nil {
@@ -1440,8 +1446,8 @@ func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	if !got.AdminGenerate {
 		t.Error("AdminGenerate not forwarded")
 	}
-	if string(got.Secret) != "barrier-secret" {
-		t.Errorf("Secret = %q, want %q", got.Secret, "barrier-secret")
+	if string(ceremonySvc.capturedSecret) != "barrier-secret" {
+		t.Errorf("Secret = %q, want %q", ceremonySvc.capturedSecret, "barrier-secret")
 	}
 	if resp.GetAdminCertPem() != "admin-cert" || string(resp.GetAdminKeyPem()) != "admin-key" || resp.GetAdminCredentialSource() != "generated" {
 		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",

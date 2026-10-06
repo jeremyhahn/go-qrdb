@@ -89,7 +89,7 @@ func TestBuildQuotaReconciler_RunOnceDrivesClosures(t *testing.T) {
 	if acct == nil {
 		t.Fatal("expected non-nil accountant")
 	}
-	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{})
+	rec := buildQuotaReconciler(acct, svc, qrdbconfig.TenantConfig{}, nil)
 	if rec == nil {
 		t.Fatal("expected non-nil reconciler")
 	}

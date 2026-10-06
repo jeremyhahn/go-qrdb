@@ -177,7 +177,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignsThroughInjectedProvider(t *tes
 	p := NewDefaultProvider(kv, barrier, WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 	ctx := context.Background()
 
-	bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"})
+	bundle, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestDefaultCertProvider_WithKeyProvider_SignerError(t *testing.T) {
 	hsm.signErr = errors.New("device unavailable")
 	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
-	_, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "bob", TenantID: "acme"})
+	_, err := generateForTest(context.Background(), p, &testRequest{Username: "bob", TenantID: "acme"})
 	if err == nil {
 		t.Fatal("expected error when the injected provider's Signer fails")
 	}
@@ -245,7 +245,7 @@ func TestDefaultCertProvider_WithKeyProvider_CertificateError(t *testing.T) {
 	hsm.certErr = errors.New("device unavailable")
 	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(singleTenantHSMFactory("acme", hsm)))
 
-	_, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "bob", TenantID: "acme"})
+	_, err := generateForTest(context.Background(), p, &testRequest{Username: "bob", TenantID: "acme"})
 	if err == nil {
 		t.Fatal("expected error when the injected provider's Certificate fails")
 	}
@@ -260,7 +260,7 @@ func TestDefaultCertProvider_CACertPEMs_BuiltInMultiTenant(t *testing.T) {
 	ctx := context.Background()
 
 	for _, tenantID := range []string{"acme", "globex"} {
-		if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: tenantID}); err != nil {
+		if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: tenantID}); err != nil {
 			t.Fatalf("GenerateClientCert(%s): %v", tenantID, err)
 		}
 	}
@@ -354,7 +354,7 @@ func TestDefaultCertProvider_CACertPEMs_ScanError(t *testing.T) {
 // non-blocking).
 func TestDefaultCertProvider_CACertPEMs_BarrierSealed(t *testing.T) {
 	p, _, barrier := initializeProvider(t)
-	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "alice", TenantID: "system"}); err != nil {
+	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "alice", TenantID: "system"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
@@ -418,8 +418,8 @@ func TestDefaultCertProvider_CACertPEMs_SkipsNonMaterialKeys(t *testing.T) {
 	p := NewDefaultProvider(kv, newMockBarrier())
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"}); err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"}); err != nil {
+		t.Fatalf("IssueClientCert: %v", err)
 	}
 	// A sibling record under the same tenant's CA prefix that is NOT the
 	// "/material" record.
@@ -497,7 +497,7 @@ func TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails(t *testing.T) 
 	// A second, healthy tenant alongside the corrupt one, so a pass here
 	// is not merely "the only tenant was skipped and nothing was ever
 	// enumerated" -- it proves the healthy tenant's own anchor survives.
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "healthy-tenant"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "healthy-tenant"}); err != nil {
 		t.Fatalf("establish the healthy tenant's own Key B CA: %v", err)
 	}
 
@@ -521,7 +521,7 @@ func TestDefaultCertProvider_IsTenantIssuer_OwnCAMatches(t *testing.T) {
 	p, _, _ := newTestProvider()
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	pems, err := p.CACertPEMs(ctx)
@@ -544,7 +544,7 @@ func TestDefaultCertProvider_IsTenantIssuer_ForeignCADoesNotMatch(t *testing.T) 
 	ctx := context.Background()
 
 	for _, tenantID := range []string{"acme", "globex"} {
-		if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: tenantID}); err != nil {
+		if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: tenantID}); err != nil {
 			t.Fatalf("GenerateClientCert(%s): %v", tenantID, err)
 		}
 	}
@@ -582,11 +582,11 @@ func TestDefaultCertProvider_IsTenantIssuer_InjectedFactory_ForeignTenantDoesNot
 	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProviderFactory(factory))
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "tenant-x"}); err != nil {
-		t.Fatalf("GenerateClientCert(tenant-x): %v", err)
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "tenant-x"}); err != nil {
+		t.Fatalf("IssueClientCert(tenant-x): %v", err)
 	}
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "bob", TenantID: "tenant-y"}); err != nil {
-		t.Fatalf("GenerateClientCert(tenant-y): %v", err)
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "bob", TenantID: "tenant-y"}); err != nil {
+		t.Fatalf("IssueClientCert(tenant-y): %v", err)
 	}
 
 	tenantXIssuer := hsmX.cert
@@ -643,7 +643,7 @@ func TestDefaultCertProvider_IsTenantIssuer_EmptyTenantFoldsToSystem(t *testing.
 	p, _, _ := newTestProvider()
 	ctx := context.Background()
 
-	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "system"}); err != nil {
+	if _, err := generateForTest(ctx, p, &testRequest{Username: "alice", TenantID: "system"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 	_, systemCA, err := p.getCAMaterial(ctx, "system")
@@ -767,7 +767,7 @@ func TestDefaultCertProvider_ConcurrentFirstIssuanceSharesOneCA(t *testing.T) {
 	const n = 16
 
 	type result struct {
-		bundle *CertBundle
+		bundle *testBundle
 		err    error
 	}
 	results := make([]result, n)
@@ -776,7 +776,7 @@ func TestDefaultCertProvider_ConcurrentFirstIssuanceSharesOneCA(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{
+			bundle, err := generateForTest(ctx, p, &testRequest{
 				Username: "user" + strconv.Itoa(i),
 				TenantID: tenantID,
 			})

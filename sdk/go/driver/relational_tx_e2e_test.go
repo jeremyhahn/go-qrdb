@@ -20,11 +20,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"errors"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+
+	gomysql "github.com/go-sql-driver/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -622,14 +623,14 @@ func TestEmbeddedRelational_ConcurrentUpdate_OneGets1213(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected transaction B's commit to fail with a conflict")
 	}
-	var stateErr *SQLStateError
-	if !errors.As(err, &stateErr) {
-		t.Fatalf("error = %v (%T), want *SQLStateError", err, err)
+	stateErr, ok := err.(*gomysql.MySQLError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want *mysql.MySQLError", err, err)
 	}
 	if stateErr.Number != 1213 {
 		t.Errorf("error number = %d, want 1213 (ER_LOCK_DEADLOCK)", stateErr.Number)
 	}
-	if stateErr.SQLState != "40001" {
+	if string(stateErr.SQLState[:]) != "40001" {
 		t.Errorf("SQLSTATE = %q, want 40001", stateErr.SQLState)
 	}
 

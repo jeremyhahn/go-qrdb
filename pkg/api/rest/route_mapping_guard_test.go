@@ -100,6 +100,7 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithAuthFactorService(&stubAuthFactorSvc{}),
 		WithUserAuthFactorService(&mockUserAuthFactorService{}),
 		WithCertProvider(&mockCertProvider{}),             // gates /certs/*
+		WithCertEnrollment(&fakeCertEnroll{}),             // gates /certs/issue, /certs/enroll, trust-anchors
 		WithCABootstrap([]byte(guardCACertPEM)),           // gates /v1/ca/bootstrap
 		WithClusterKeyReceiver(&fakeClusterKeyReceiver{}), // gates /v1/cluster/*
 		WithBarrierService(&mockBarrierService{}),         // gates /v1/barrier/*
@@ -214,7 +215,10 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		// Core data plane.
 		{"POST", "/tx", permission.TransactionExecute},
 		{"POST", "/batch", permission.BatchExecute},
-		{"POST", "/batch/import", permission.BatchExecute},
+		{"POST", "/batch/import/begin", permission.BatchExecute},
+		{"POST", "/batch/import/sess1/append", permission.BatchExecute},
+		{"POST", "/batch/import/sess1/commit", permission.BatchExecute},
+		{"POST", "/batch/import/sess1/abort", permission.BatchExecute},
 		{"GET", "/watch", permission.WatchWatch},
 
 		// Lease + lock.
@@ -326,10 +330,15 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"DELETE", "/roles/r-1", permission.RolesDelete},
 
 		// Certificates.
-		{"POST", "/certs/generate", permission.CertsGenerate},
-		{"POST", "/certs/export", permission.CertsExport},
+		{"POST", "/certs/issue", permission.CertsIssue},
+		{"POST", "/certs/enroll", permission.CertsEnroll},
 		{"POST", "/certs/revoke", permission.CertsRevoke},
 		{"GET", "/certs/list", permission.CertsList},
+
+		// Trust anchors, tenant-scoped.
+		{"GET", "/v1/tenants/acme/trust-anchors", permission.TrustAnchorsList},
+		{"POST", "/v1/tenants/acme/trust-anchors", permission.TrustAnchorsAdd},
+		{"DELETE", "/v1/tenants/acme/trust-anchors/fp-1", permission.TrustAnchorsRemove},
 
 		// Tenants, including the per-tenant barrier plane.
 		{"POST", "/v1/tenants", permission.TenantsCreate},

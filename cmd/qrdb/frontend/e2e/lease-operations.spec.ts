@@ -196,8 +196,12 @@ test.describe("Lease Operations", () => {
     await expect(page.getByText(/revoked|Lease \d+ revoked/i).first()).toBeVisible({
       timeout: 5_000,
     });
-    // Lease row should be gone
-    await expect(page.getByText("90s")).not.toBeVisible({ timeout: 5_000 });
+    // Lease row should be gone from the list. Scoped to the table body: the
+    // success toast at line 177 reads "...TTL 90s." too and can still be
+    // visible here, which an unscoped getByText("90s") also matches.
+    await expect(
+      page.locator("table tbody").getByText("90s"),
+    ).not.toBeVisible({ timeout: 5_000 });
   });
 
   test("shows error when revoke fails", async ({ page }) => {

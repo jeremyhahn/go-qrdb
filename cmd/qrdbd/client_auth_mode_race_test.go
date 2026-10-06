@@ -93,7 +93,7 @@ func TestSetClientAuthMode_RaceFreeAgainstConcurrentHandshakes(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			conn, derr := tls.Dial("tcp", ln.Addr().String(), &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})
+			conn, derr := tls.Dial("tcp", ln.Addr().String(), &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}) // #nosec G402 -- dials this test's own local listener; exercises the server's concurrent client-auth-mode switch, not certificate trust
 			if derr != nil {
 				return
 			}

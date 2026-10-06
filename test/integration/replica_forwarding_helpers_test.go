@@ -35,9 +35,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -83,6 +86,20 @@ type fwdCluster struct {
 	noKVCert, noKVKey     string
 	otherCert, otherKey   string
 	tenant                *http.Client
+
+	// writerID and writerRole are fwdWriter's user and role.
+	writerID   uint64
+	writerRole string
+}
+
+// writerContext is a context an embedded node's in-process call is made in as
+// fwdWriter: the embedded transport authorizes every call against the
+// identity its context carries.
+func (c *fwdCluster) writerContext() context.Context {
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
+		Subject: fwdWriter, TenantID: fwdTenantID, Roles: []string{c.writerRole},
+	})
+	return tenant.WithTenantID(ctx, fwdTenantID)
 }
 
 // startFwdCluster starts and unseals n qrdbd nodes, creates the raft tenant
@@ -247,28 +264,51 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 
 	c.sys = mtlsHTTPClient(t, ca, 15*time.Second)
 	base := fmt.Sprintf("https://127.0.0.1:%d", adminPorts[c.creator])
+	// A raft tenant is placed on a catalog pool (docs/volume-pools, D2):
+	// every node maps "default" to a directory, but only the operator's
+	// catalog record makes it a pool a tenant can reserve.
+	createVolumePoolREST(t, c.sys, adminPorts[c.creator], "default")
+	// A tenant is created with its first admin, or not at all (go-qrdb
+	// tenant onboarding): the admin keeps its own key, only the CSR crosses
+	// the wire.
+	_, adminCSRPEM, err := certtest.NewCSR(fwdTenantID + "-admin")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR: %v", err)
+	}
 	if body, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
 		"id": fwdTenantID, "name": "Replica Forwarding Tenant",
 		"isolation_type": "raft", "barrier_auto_unseal": true,
+		"admin_username": fwdTenantID + "-admin", "admin_csr_pem": string(adminCSRPEM),
 	}); st != http.StatusCreated && st != http.StatusOK {
 		t.Fatalf("create tenant through node %d: status %d, body %s", c.creator+1, st, body)
 	}
 	writerRole := c.createRole(t, base, "kv-writer", "databases:create", "databases:create_raft", "databases:read",
 		"databases:list", "databases:delete", "kv:put", "kv:get", "kv:delete", "watch:watch")
 	listerRole := c.createRole(t, base, "db-lister", "databases:list")
-	for user, role := range map[string]string{fwdWriter: writerRole, fwdNoKV: listerRole} {
-		if body, st := iraftAPIPost(t, c.sys, base+"/users", map[string]interface{}{
-			"username": user, "email": user + "@" + fwdTenantID + ".example.com",
-			"tenant_id": fwdTenantID, "role_ids": []string{role},
-		}); st != http.StatusCreated && st != http.StatusOK {
-			t.Fatalf("create user %s: status %d, body %s", user, st, body)
-		}
-	}
+	// The certs below authenticate as CN=admin/CN=lister, OU=fwd-t1, signed
+	// by this suite's own harness CA (not the tenant's Key B login CA the
+	// onboarded admin's CSR was signed by above) -- a BYOC-shaped identity
+	// distinct from the pending-admin account OnboardTenant created. Under
+	// the default auth.mtls_binding_policy "required" it authenticates
+	// nothing until its own account exists and its SPKI thumbprint is
+	// explicitly bound (createBoundUser, the same pattern
+	// cluster_enable_encryption_test.go's tenantClient uses), so the certs
+	// are minted BEFORE the user that binds them.
 	c.writerCert, c.writerKey = ca.generateClientCertForTenant(t, fwdTenantID)
 	kp := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(fwdNoKV, fwdTenantID))
 	c.noKVCert, c.noKVKey = kp.CertPath, kp.KeyPath
 	kp = ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(fwdWriter, "fwd-unknown-tenant"))
 	c.otherCert, c.otherKey = kp.CertPath, kp.KeyPath
+	// auth.mtls_binding_policy defaults to "required": a tenant user's
+	// certificate authenticates only once it is enrolled as their binding.
+	newUser := func(username, roleID, certPath string) uint64 {
+		return createBoundUser(t, c.sys, adminPorts[c.creator], map[string]any{
+			"username": username, "email": username + "@" + fwdTenantID + ".example.com",
+			"tenant_id": fwdTenantID, "role_ids": []string{roleID},
+		}, certPath)
+	}
+	c.writerID, c.writerRole = newUser(fwdWriter, writerRole, c.writerCert), writerRole
+	newUser(fwdNoKV, listerRole, c.noKVCert)
 	c.tenant = mtlsHTTPClientFromFiles(t, ca, c.writerCert, c.writerKey, 30*time.Second)
 
 	c.createDatabase(t, "fwd-anchor", n)
@@ -443,11 +483,12 @@ func fwdEmbeddedConfig(t *testing.T, n *fwdNode, i int, dataDir string, quicPort
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
-	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}, Strategy: "round_robin"}}
+	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
 	cfg.Tenant.DefaultEntitlements.AllowedIsolationModes = []string{"prefix", "raft"}
 	cfg.Tenant.DefaultEntitlements.AllowDedicatedRaft = true
 	cfg.Tenant.DefaultEntitlements.AllowSystemManagedBarrier = true
 	cfg.Tenant.DefaultEntitlements.AllowDedicatedWAL = true
+	cfg.Tenant.DefaultEntitlements.AllowedVolumePools = []string{"default"}
 	cfg.Tenant.DefaultQuotas.MaxDatabases = -1
 	cfg.Tenant.DefaultQuotas.MaxRaftGroups = -1
 	cfg.Tenant.DefaultQuotas.MaxReplicasPerGroup = -1

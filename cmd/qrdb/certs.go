@@ -15,7 +15,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,76 +22,188 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// newCertsGenerateCmd creates the "certs generate" subcommand. Reused by
-// ca.go: the "certs" command group itself was removed (renamed to "ca"
-// per docs/08-bootstrap-auth-architecture.md §6), but these builders
-// remain the canonical implementation the "ca" subcommands wrap.
-func newCertsGenerateCmd() *cobra.Command {
+// newCertsIssueCmd creates the "certs issue" subcommand (canonical name
+// "ca issue"): a certificate, signed by your tenant's own CA, for an existing
+// account of your own tenant, bound to the account. The private key never
+// leaves this machine: with --csr it is wherever the CSR came from; without,
+// a fresh key is generated here and written to --out beside the certificate.
+//
+// The "certs" command group itself was removed (renamed to "ca" per
+// docs/08-bootstrap-auth-architecture.md §6, and the orphaned "certs"
+// aggregator deleted outright per the no-backward-compatibility ruling); this
+// builder, and the enroll/csr/export/revoke/list builders below it, remain
+// the canonical implementation newCACmd wraps.
+func newCertsIssueCmd() *cobra.Command {
 	var (
 		username string
-		tenantID string
+		csrFile  string
 		ttl      string
 		outDir   string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "generate",
-		Short: "Generate a client certificate",
-		Args:  cobra.NoArgs,
+		Use:   "issue",
+		Short: "Issue a client certificate for an account of your own tenant",
+		Long: `Issue a client certificate, signed by your own tenant's CA, for an existing
+account of your own tenant, and bind it to the account. The server only ever
+sees a certificate signing request: the private key stays here.
+
+  --csr FILE   issue for an existing CSR (its key stays with whoever made it)
+  (no --csr)   generate a fresh key here, write key.pem and cert.pem to --out`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := &transport.GenerateCertRequest{
-				Username: username,
-				TenantID: tenantID,
-				TTL:      ttl,
+			var csrPEM, keyPEM []byte
+			if csrFile != "" {
+				data, err := os.ReadFile(csrFile)
+				if err != nil {
+					return &FileReadError{Path: csrFile, Err: err}
+				}
+				csrPEM = data
+			} else {
+				if outDir == "" {
+					return &MissingOutDirError{Reason: "without --csr a key is generated here, and it is written only to --out"}
+				}
+				var err error
+				if keyPEM, csrPEM, err = newClientKeyAndCSR(username); err != nil {
+					return err
+				}
 			}
 
-			bundle, err := client.Certs().GenerateCert(cmd.Context(), req)
+			issued, err := client.Certs().IssueCert(cmd.Context(), &transport.IssueCertRequest{
+				Username: username,
+				CSRPEM:   string(csrPEM),
+				TTL:      ttl,
+			})
 			if err != nil {
 				return err
 			}
-
-			// Write PEM files to disk when --out is specified.
-			if outDir != "" {
-				if err := writeCertBundle(outDir, bundle); err != nil {
-					return err
-				}
-				_, _ = fmt.Fprintf(outputWriter, "Certificate written to %s/cert.pem\n", outDir)
-				_, _ = fmt.Fprintf(outputWriter, "Private key written to %s/key.pem\n", outDir)
-				_, _ = fmt.Fprintf(outputWriter, "Serial: %s\n", bundle.Serial)
-				return nil
-			}
-
-			return printCertBundle(bundle)
+			return finishEnrolledCert(outDir, keyPEM, issued)
 		},
 	}
 
-	cmd.Flags().StringVar(&username, "username", "", "Username for the certificate subject")
+	cmd.Flags().StringVar(&username, "username", "", "The existing account the certificate is for")
 	_ = cmd.MarkFlagRequired("username")
-	cmd.Flags().StringVar(&tenantID, "tenant-id", tenantid.System, "Tenant ID")
+	cmd.Flags().StringVar(&csrFile, "csr", "", "A PEM certificate signing request to issue for")
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Certificate validity duration (e.g. 8760h)")
-	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for cert.pem and key.pem")
+	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for cert.pem (and key.pem when the key is generated here)")
 
 	return cmd
 }
 
-// newCertsExportCmd creates the "certs export" subcommand.
+// newCertsEnrollCmd creates the "certs enroll" subcommand (canonical name
+// "ca enroll"): binds a bring-your-own certificate, which must chain to one of
+// your tenant's trust anchors, to an existing account of your own tenant.
+func newCertsEnrollCmd() *cobra.Command {
+	var (
+		username  string
+		certFile  string
+		chainFile string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "enroll",
+		Short: "Enrol a bring-your-own certificate on an account of your own tenant",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			certPEM, err := os.ReadFile(certFile)
+			if err != nil {
+				return &FileReadError{Path: certFile, Err: err}
+			}
+			var chainPEM []byte
+			if chainFile != "" {
+				if chainPEM, err = os.ReadFile(chainFile); err != nil {
+					return &FileReadError{Path: chainFile, Err: err}
+				}
+			}
+			enrolled, err := client.Certs().EnrollCert(cmd.Context(), &transport.EnrollCertRequest{
+				Username: username,
+				CertPEM:  string(certPEM),
+				ChainPEM: string(chainPEM),
+			})
+			if err != nil {
+				return err
+			}
+			return printEnrolledCert(enrolled)
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "The existing account the certificate is enrolled on")
+	_ = cmd.MarkFlagRequired("username")
+	cmd.Flags().StringVar(&certFile, "cert", "", "The PEM certificate, leaf first")
+	_ = cmd.MarkFlagRequired("cert")
+	cmd.Flags().StringVar(&chainFile, "chain", "", "Optional PEM intermediates for the certificate's chain")
+
+	return cmd
+}
+
+// newCertsCSRCmd creates the "certs csr" subcommand (canonical name
+// "ca csr"): generates a key and a certificate signing request HERE, with no
+// server involved. It is how a tenant's first admin produces the CSR the
+// platform operator passes to "tenant create --admin-csr", and how anyone
+// produces one for "ca issue --csr".
+func newCertsCSRCmd() *cobra.Command {
+	var (
+		username string
+		outDir   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "csr",
+		Short: "Generate a key and a certificate signing request locally",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			keyPEM, csrPEM, err := newClientKeyAndCSR(username)
+			if err != nil {
+				return err
+			}
+			if err := writePEMFiles(outDir, map[string][]byte{"key.pem": keyPEM, "csr.pem": csrPEM}); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(outputWriter, "Private key written to %s\n", filepath.Join(outDir, "key.pem"))
+			_, _ = fmt.Fprintf(outputWriter, "CSR written to %s\n", filepath.Join(outDir, "csr.pem"))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "The account name the CSR is for (its Subject CN; the issuer names the account regardless)")
+	_ = cmd.MarkFlagRequired("username")
+	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for key.pem and csr.pem")
+	_ = cmd.MarkFlagRequired("out")
+
+	return cmd
+}
+
+// newCertsExportCmd creates the "certs export" subcommand (canonical name
+// "ca export-bundle"): it builds the PKCS#12 archive ENTIRELY LOCALLY, from
+// PEM files already on this machine, and never calls the server at all. No
+// node may receive a private key to encode on a caller's behalf (go-qrdb
+// security review): encoding a PKCS#12 archive needs the key, so the only
+// place it can safely happen is wherever the key already is.
 func newCertsExportCmd() *cobra.Command {
 	var (
 		certPEMFile string
 		keyPEMFile  string
+		caPEMFile   string
 		passphrase  string
 		outFile     string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export a certificate as PKCS#12",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Short: "Build a PKCS#12 archive locally from a certificate and key (no server call)",
+		Long: `Build a PKCS#12 (.p12) archive from a certificate and its private key, both
+already on this machine, and write it to --out. This never contacts the
+server: the key leaves this machine inside the archive you asked for, never
+over the wire.
+
+  --ca-pem FILE   optionally embed an issuer certificate in the archive's chain`,
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
 			certPEM, err := os.ReadFile(certPEMFile)
 			if err != nil {
 				return &FileReadError{Path: certPEMFile, Err: err}
@@ -103,24 +214,30 @@ func newCertsExportCmd() *cobra.Command {
 				return &FileReadError{Path: keyPEMFile, Err: err}
 			}
 
-			req := &transport.ExportCertRequest{
-				CertPEM:    string(certPEM),
-				KeyPEM:     string(keyPEM),
-				Passphrase: passphrase,
+			var caPEM []byte
+			if caPEMFile != "" {
+				if caPEM, err = os.ReadFile(caPEMFile); err != nil {
+					return &FileReadError{Path: caPEMFile, Err: err}
+				}
 			}
 
-			resp, err := client.Certs().ExportCert(cmd.Context(), req)
+			pkcs12Data, err := cert.EncodePKCS12(certPEM, keyPEM, caPEM, passphrase)
 			if err != nil {
 				return err
 			}
 
-			// Decode base64 PKCS#12 and write to output file.
-			pkcs12Data, err := base64.StdEncoding.DecodeString(resp.PKCS12)
+			// Confine the write to the resolved parent directory via os.Root
+			// rather than handing the user-supplied --out path straight to
+			// os.WriteFile: the directory is opened once, pinned, and the
+			// write can only land inside it, with no later component able
+			// to escape it through a symlink or a traversal segment.
+			outDir := filepath.Dir(outFile)
+			root, err := os.OpenRoot(outDir)
 			if err != nil {
-				return &PKCS12DecodeError{Err: err}
+				return &FileWriteError{Path: outFile, Err: err}
 			}
-
-			if err := os.WriteFile(outFile, pkcs12Data, 0600); err != nil {
+			defer func() { _ = root.Close() }()
+			if err := root.WriteFile(filepath.Base(outFile), pkcs12Data, 0600); err != nil {
 				return &FileWriteError{Path: outFile, Err: err}
 			}
 
@@ -133,6 +250,7 @@ func newCertsExportCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("cert-pem")
 	cmd.Flags().StringVar(&keyPEMFile, "key-pem", "", "Path to private key PEM file")
 	_ = cmd.MarkFlagRequired("key-pem")
+	cmd.Flags().StringVar(&caPEMFile, "ca-pem", "", "Optional path to an issuer certificate PEM file to embed in the archive's chain")
 	cmd.Flags().StringVar(&passphrase, "passphrase", "", "Passphrase for the PKCS#12 archive")
 	_ = cmd.MarkFlagRequired("passphrase")
 	cmd.Flags().StringVar(&outFile, "out", "", "Output file path for PKCS#12 archive")
@@ -210,19 +328,47 @@ func newCertsListCmd() *cobra.Command {
 	return cmd
 }
 
-// printCertBundle prints a CertBundle in the current output format.
-func printCertBundle(b *transport.CertBundle) error {
+// printEnrolledCert prints a certificate bound to an account in the current
+// output format.
+func printEnrolledCert(e *transport.EnrolledCert) error {
 	switch outputFormat {
 	case "json":
-		return printJSON(b)
+		return printJSON(e)
 	case "yaml":
-		return printYAML(b)
+		return printYAML(e)
 	default:
-		_, _ = fmt.Fprintf(outputWriter, "Serial: %s\n\n", b.Serial)
-		_, _ = fmt.Fprintf(outputWriter, "--- Certificate ---\n%s\n", b.CertPEM)
-		_, _ = fmt.Fprintf(outputWriter, "--- Private Key ---\n%s\n", b.KeyPEM)
+		_, _ = fmt.Fprintf(outputWriter, "Account: %s (tenant %s)\n", e.Username, e.TenantID)
+		if e.Serial != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Serial: %s\n", e.Serial)
+		}
+		_, _ = fmt.Fprintf(outputWriter, "Thumbprint: %s\n", e.Thumbprint)
+		_, _ = fmt.Fprintf(outputWriter, "Not after: %s\n\n", e.NotAfter.UTC().Format("2006-01-02T15:04:05Z"))
+		_, _ = fmt.Fprintf(outputWriter, "--- Certificate ---\n%s\n", e.CertPEM)
 		return nil
 	}
+}
+
+// finishEnrolledCert writes an issued certificate (and the key generated for
+// it here, if any) to outDir, or prints it when no directory was given.
+func finishEnrolledCert(outDir string, keyPEM []byte, e *transport.EnrolledCert) error {
+	if outDir == "" {
+		return printEnrolledCert(e)
+	}
+	files := map[string][]byte{"cert.pem": []byte(e.CertPEM)}
+	if keyPEM != nil {
+		files["key.pem"] = keyPEM
+	}
+	if err := writePEMFiles(outDir, files); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(outputWriter, "Certificate written to %s\n", filepath.Join(outDir, "cert.pem"))
+	if keyPEM != nil {
+		_, _ = fmt.Fprintf(outputWriter, "Private key written to %s\n", filepath.Join(outDir, "key.pem"))
+	}
+	if e.Serial != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Serial: %s\n", e.Serial)
+	}
+	return nil
 }
 
 // certRecordRow converts a CertRecord into a table row for tabular output.
@@ -237,21 +383,17 @@ func certRecordRow(c *transport.CertRecord) []string {
 	}
 }
 
-// writeCertBundle writes a CertBundle's PEM files to the specified directory.
-func writeCertBundle(dir string, bundle *transport.CertBundle) error {
+// writePEMFiles writes each named file into dir, creating dir 0700 and every
+// file 0600: a key among them is a secret.
+func writePEMFiles(dir string, files map[string][]byte) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return &DirectoryCreateError{Path: dir, Err: err}
 	}
-
-	certPath := filepath.Join(dir, "cert.pem")
-	if err := os.WriteFile(certPath, []byte(bundle.CertPEM), 0600); err != nil {
-		return &FileWriteError{Path: certPath, Err: err}
+	for name, data := range files {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			return &FileWriteError{Path: path, Err: err}
+		}
 	}
-
-	keyPath := filepath.Join(dir, "key.pem")
-	if err := os.WriteFile(keyPath, []byte(bundle.KeyPEM), 0600); err != nil {
-		return &FileWriteError{Path: keyPath, Err: err}
-	}
-
 	return nil
 }

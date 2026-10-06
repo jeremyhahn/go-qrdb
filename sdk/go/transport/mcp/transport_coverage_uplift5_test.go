@@ -21,6 +21,7 @@ import (
 	"context"
 	"testing"
 
+	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -122,31 +123,19 @@ type testError struct{ msg string }
 func (e testError) Error() string { return e.msg }
 
 // ---------------------------------------------------------------------------
-// GenerateCert path exercise (85.0%)
+// IssueCert path exercise (85.0%)
 // ---------------------------------------------------------------------------
 
-func TestMCP_Auth_GenerateCert_PathExercise(t *testing.T) {
-	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), nil, newMockCertProvider())
+func TestMCP_Auth_IssueCert_PathExercise(t *testing.T) {
+	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), nil, nil, mcpapi.WithCertEnrollment(newMockCertEnrollmentServicer()))
 	defer cleanup()
 
-	_, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	_, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{
 		Username: "alice",
-		TenantID: "t1",
+		CSRPEM:   "csr-bytes",
 		TTL:      "24h",
 	})
 	// May succeed or fail depending on mock; just no panic
-	_ = err
-}
-
-// ---------------------------------------------------------------------------
-// ExportCert path exercise (88.9%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_Auth_ExportCert_PathExercise(t *testing.T) {
-	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), nil, newMockCertProvider())
-	defer cleanup()
-
-	_, err := tr.ExportCert(context.Background(), &transport.ExportCertRequest{CertPEM: "aa:bb"})
 	_ = err
 }
 

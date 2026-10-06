@@ -125,6 +125,22 @@ func (f *fakeBatchServicer) Import(_ context.Context, _ io.Reader, _ service.Imp
 	return &service.ImportResult{}, nil
 }
 
+func (f *fakeBatchServicer) ImportBegin(_ context.Context, _ service.ImportOptions) (string, error) {
+	return "", nil
+}
+
+func (f *fakeBatchServicer) ImportAppend(_ context.Context, _ string, _ uint64, _ []byte) error {
+	return nil
+}
+
+func (f *fakeBatchServicer) ImportCommit(_ context.Context, _ string) (*service.ImportResult, error) {
+	return &service.ImportResult{}, nil
+}
+
+func (f *fakeBatchServicer) ImportAbort(_ context.Context, _ string) error {
+	return nil
+}
+
 // ===========================================================================
 // fakeAuthFactorServicer
 // ===========================================================================

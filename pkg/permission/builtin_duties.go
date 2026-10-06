@@ -97,7 +97,7 @@ func registerCryptoUseDuties() {
 //     FIPS 140-3 assigns to the Security Officer — not the module performing
 //     a primitive on a requester's data.
 //   - ceremony:sign_csr signs a Security Officer's login-certificate CSR with
-//     the cluster CA, and certs:generate signs a certificate: issuance is a
+//     the cluster CA, and certs:issue signs a certificate: issuance is a
 //     governance decision about identity, and the Security Officer is the
 //     identity authority.
 //   - keys:import / keys:export are key entry and key output, the Crypto
@@ -120,8 +120,10 @@ func registerGovernanceDuties() {
 		// Shamir ceremony (SO-exclusive).
 		CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		// Certificate administration.
-		CertsGenerate, CertsExport, CertsRevoke,
+		CertsIssue, CertsEnroll, CertsRevoke,
 		CertsList, CertsRead,
+		// Trust anchors: which outside CAs vouch for this tenant's logins.
+		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		// Role and permission administration (SO-exclusive).
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
