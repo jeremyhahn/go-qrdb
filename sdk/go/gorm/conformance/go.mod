@@ -29,7 +29,7 @@ go 1.27.0
 require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/uuid v1.6.0
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.42.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.43.0-alpha
 	github.com/jinzhu/now v1.1.5
 	github.com/lib/pq v1.12.3
 	github.com/stretchr/testify v1.12.1
@@ -142,7 +142,7 @@ require (
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
 	github.com/jeremyhahn/go-enclave v0.7.0-alpha // indirect
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha // indirect
-	github.com/jeremyhahn/go-qrdb v0.42.0-alpha // indirect
+	github.com/jeremyhahn/go-qrdb v0.43.0-alpha // indirect
 	github.com/jeremyhahn/go-quicraft v0.17.0 // indirect
 	github.com/jeremyhahn/go-truststrap v0.4.0-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect

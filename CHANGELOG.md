@@ -11,6 +11,38 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.43.0-alpha] - 2026-10-06
+
+Compliance credentials, tenant onboarding, replica forwarding, chunked import, volume pools and backup encryption; main's CI is fully green again. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Compliance credentials.**
+  - `sign-csr` issues holder certificates only.
+  - `mtls_binding_policy` defaults to `required`.
+  - A node boots into "awaiting admin credential" instead of refusing to boot.
+  - Sensitive ceremony secrets live in `secure.Buffer`.
+- **Tenant onboarding.**
+  - A tenant's first admin is created at tenant create, from a CSR or a certificate.
+  - Tenant trust anchors and cert enrollment.
+  - The admin cert-binding guard, and `cert.revoke` audit events.
+- **Replica forwarding.** A node that holds no replica forwards to the placement leader on REST, gRPC and QUIC; streams are refused.
+- **Chunked import.**
+  - Chunked unary import sessions replace BatchImport, with staging unreachable from the client data plane.
+  - Commits are retry-safe across leader changes.
+  - Per-peer connection caps on every transport, including native QUIC and HTTP/3.
+- **Volume pools.**
+  - Per-tenant volume pools with a `KeyProvider` hook (software default; go-xkms supplies hardware).
+  - Placement filtering, and stores closed before a volume is locked.
+- **Backups.** Backups are encrypted by default through the `keywrap` hook; there's a restore path and an opt-in for plaintext.
+- **Embedded authorization.** Every embedded-transport method is authorized; forwarded calls are checked twice.
+- **Storage.** The file backend uses a hashed flat layout, with a global 64 KiB key cap.
+- **GORM.** The stock gorm mysql dialector; the custom dialector is deleted.
+- **Fixes.**
+  - Concurrent first boot no longer kills losing nodes on the admin cert binding.
+  - Memory-backend nodes keep their seal store in memory.
+  - Path traversal in `qrdb certs export`.
+  - HTTP/3 shutdown race.
+  - The cluster integration suite is now required on every PR.
+
 ### Added
 
 - **Replica forwarding** (docs/replica-forwarding). A node that holds no
