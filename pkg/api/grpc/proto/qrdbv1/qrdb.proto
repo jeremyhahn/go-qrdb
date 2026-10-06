@@ -463,6 +463,12 @@ service QRDBService {
         option (qrdb.v1.permission) = "admin:remove_member";
     }
 
+    // PromoteMember promotes a committed observer of a shard to a voter,
+    // keeping the address and identity the shard already committed for it.
+    rpc PromoteMember(PromoteMemberRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:add_member";
+    }
+
     // RequestSnapshot triggers a snapshot for the given shard.
     rpc RequestSnapshot(RequestSnapshotMessage) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "admin:snapshot";
@@ -515,6 +521,41 @@ service QRDBService {
     // no built-in role carries cluster:join_token by default.
     rpc MintJoinToken(MintJoinTokenRequest) returns (MintJoinTokenResponse) {
         option (qrdb.v1.permission) = "cluster:join_token";
+    }
+
+    // AddObserverMember adds a new replica to a shard as a non-voting
+    // observer rather than a voter; see PromoteMember for turning it into a
+    // voter later.
+    rpc AddObserverMember(AddObserverMemberRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:add_member";
+    }
+
+    // ListPendingJoinRequests lists tokenless member-side CSR join requests
+    // awaiting an operator's approval or rejection (see
+    // pkg/clusterenroll's approval queue). ScopeCross, platform-only, the
+    // same admission decision cluster:join_token already gates.
+    rpc ListPendingJoinRequests(google.protobuf.Empty) returns (ListPendingJoinRequestsResponse) {
+        option (qrdb.v1.permission) = "cluster:join_token";
+    }
+
+    // ApproveJoinRequest binds a queued CSR to an operator-chosen node
+    // identity; the leaf is signed the next time the joiner's own retry
+    // reaches the join listener, not by this call.
+    rpc ApproveJoinRequest(ApproveJoinRequestRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "cluster:join_token";
+    }
+
+    // RejectJoinRequest records a terminal refusal of a queued CSR.
+    rpc RejectJoinRequest(RejectJoinRequestRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "cluster:join_token";
+    }
+
+    // RetireJoinIdentity permanently refuses any future admission for a
+    // node identity (see pkg/clusterenroll.RetireJoinIdentity). ScopeCross,
+    // platform-only: no built-in role carries cluster:join_identity_retire
+    // by default.
+    rpc RetireJoinIdentity(RetireJoinIdentityRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "cluster:join_identity_retire";
     }
 
     // -----------------------------------------------------------------------
@@ -692,6 +733,30 @@ service QRDBService {
     // ListCerts lists all issued client certificates for a tenant.
     rpc ListCerts(ListCertsRequest) returns (ListCertsResponse) {
         option (qrdb.v1.permission) = "certs:list";
+    }
+
+    // -----------------------------------------------------------------------
+    // Invitation self-enrolment
+    // -----------------------------------------------------------------------
+
+    // InviteUser creates a pending account in the caller's own tenant -- or
+    // re-invites one that is still pending -- and returns a single-use
+    // enrolment token, returned exactly once.
+    rpc InviteUser(InviteUserRequest) returns (InvitationResponse) {
+        option (qrdb.v1.permission) = "users:invite";
+    }
+
+    // RedeemInvitation is PUBLIC: an invited user holds no credential yet, so
+    // the token from InviteUser is the authority. No Connect/authentication
+    // is required first; the server registers this method with
+    // AuthMiddleware.RegisterPublicGRPCMethods, which bypasses both
+    // authentication and authorization for it alone, before this option is
+    // ever looked up. The "identity:public" sentinel is declared anyway so
+    // the default-deny completeness guard
+    // (TestGRPCPermissions_EveryMethodMapped) accounts for this RPC rather
+    // than treating it the same as a forgotten annotation.
+    rpc RedeemInvitation(RedeemInvitationRequest) returns (EnrolledCertResponse) {
+        option (qrdb.v1.permission) = "identity:public";
     }
 
     // -----------------------------------------------------------------------
@@ -2217,6 +2282,12 @@ message RemoveMemberRequest {
     uint64 replica_id = 2;
 }
 
+// PromoteMemberRequest is the request payload for PromoteMember.
+message PromoteMemberRequest {
+    uint64 shard_id = 1;
+    uint64 replica_id = 2;
+}
+
 // RequestSnapshotMessage is the request payload for RequestSnapshot.
 message RequestSnapshotMessage {
     uint64 shard_id = 1;
@@ -2234,6 +2305,55 @@ message MintJoinTokenRequest {
 message MintJoinTokenResponse {
     string token      = 1;
     string expires_at = 2;  // RFC3339
+}
+
+// AddObserverMemberRequest is the request payload for AddObserverMember.
+message AddObserverMemberRequest {
+    uint64 shard_id = 1;
+    uint64 replica_id = 2;
+    string raft_address = 3;
+    // member_identity is the operator-supplied Raft member identity
+    // (spki:<sha256-hex>) of the replica. Empty means "the identity the
+    // cluster has already committed for this replica or its host".
+    string member_identity = 4;
+}
+
+// PendingJoinRequestMessage describes one queued, tokenless member-side
+// CSR join request awaiting a decision -- see ListPendingJoinRequests.
+message PendingJoinRequestMessage {
+    string id = 1;
+    // node_uri is the joiner's OWN self-reported identity, informational
+    // only: it plays no part in the identity ApproveJoinRequest eventually
+    // binds the leaf to.
+    string node_uri = 2;
+    uint64 replica_id = 3;
+    repeated string features = 4;
+    string submitted_at = 5;  // RFC3339
+    string expires_at = 6;    // RFC3339
+}
+
+// ListPendingJoinRequestsResponse is returned by ListPendingJoinRequests.
+message ListPendingJoinRequestsResponse {
+    repeated PendingJoinRequestMessage requests = 1;
+}
+
+// ApproveJoinRequestRequest is the request payload for ApproveJoinRequest.
+message ApproveJoinRequestRequest {
+    string id      = 1;
+    string node_id = 2;
+}
+
+// RejectJoinRequestRequest is the request payload for RejectJoinRequest.
+message RejectJoinRequestRequest {
+    string id     = 1;
+    string reason = 2;
+}
+
+// RetireJoinIdentityRequest is the request payload for RetireJoinIdentity.
+// reason is an optional, free-text operator note carried for audit only.
+message RetireJoinIdentityRequest {
+    string node_id = 1;
+    string reason   = 2;
 }
 
 // CapabilitiesRequest is the request payload for Capabilities.
@@ -3088,6 +3208,46 @@ message CertRecord {
 // ListCertsResponse holds a list of issued certificate records.
 message ListCertsResponse {
     repeated CertRecord certs = 1;
+}
+
+// InviteUserRequest creates a pending account in the caller's own tenant --
+// or re-invites one that is still pending.
+message InviteUserRequest {
+    string username = 1;
+    string email = 2;
+    string name = 3;
+    repeated string role_ids = 4;
+    // key_pin_fingerprint, when set, pins the invitation to one key: the SPKI
+    // thumbprint the invited user sent out of band.
+    string key_pin_fingerprint = 5;
+}
+
+// InvitationResponse carries the one-time enrolment token. It is the only
+// time the token is ever returned.
+message InvitationResponse {
+    uint64 id = 1;
+    string token = 2;
+    // expires_at is RFC 3339.
+    string expires_at = 3;
+    uint64 user_id = 4;
+    string username = 5;
+    string tenant_id = 6;
+    // created reports that the account was created by this invitation rather
+    // than re-invited.
+    bool created = 7;
+    string key_pin_fingerprint = 8;
+}
+
+// RedeemInvitationRequest redeems token in tenant_id. csr_pem is always
+// required: it carries the proof that the redeemer holds the key. cert_pem
+// (leaf first) and chain_pem, when given, are a bring-your-own certificate
+// over that same key.
+message RedeemInvitationRequest {
+    string tenant_id = 1;
+    string token = 2;
+    string csr_pem = 3;
+    string cert_pem = 4;
+    string chain_pem = 5;
 }
 
 // ===========================================================================
@@ -5065,18 +5225,26 @@ service TenantBarrierService {
 }
 
 // TenantBarrierInitRequest initializes the barrier for tenant_id.
-// passphrase is `bytes` so callers can zeroize it.
+// passphrase is `bytes` so callers can zeroize it. officers, when non-empty,
+// is the inline Shamir share-holder roster to validate and register
+// atomically with initialization (shamir strategy only; refused on any
+// other); policy is the factor policy those officers enrol under ("" =
+// designated).
 message TenantBarrierInitRequest {
     string tenant_id  = 1;
     bytes  passphrase = 2;
     int32  threshold  = 3;
     int32  shares     = 4;
     string strategy   = 5;
+    repeated CeremonyOfficer officers = 6;
+    string policy = 7;
 }
 
 // TenantBarrierInitResponse carries the init outcome. For the Shamir strategy
 // share_count indicates how many officer shares were sealed into enclaves;
-// share bytes are never returned in the wire response.
+// share bytes are never returned in the wire response. holders carries the
+// certificate issued to each officer in an inline roster (request.officers),
+// in roster order; empty when no roster was supplied.
 message TenantBarrierInitResponse {
     string tenant_id    = 1;
     string strategy     = 2;
@@ -5085,6 +5253,7 @@ message TenantBarrierInitResponse {
     int32  threshold    = 4;
     int32  total_shares = 5;
     int32  share_count  = 6;
+    repeated CeremonyHolderCert holders = 7;
 }
 
 // TenantBarrierUnsealRequest carries single-key unseal material.

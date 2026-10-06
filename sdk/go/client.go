@@ -166,6 +166,25 @@ func (c *Client) Certs() transport.CertClient {
 	return capability[transport.CertClient](c, "Certs")
 }
 
+// Invitations returns an InvitationClient for invitation self-enrolment:
+// InviteUser (authenticated, the caller's own tenant) and RedeemInvitation
+// (unauthenticated -- the one call a transport serves to an unconnected
+// caller holding no credential at all).
+func (c *Client) Invitations() transport.InvitationClient {
+	return capability[transport.InvitationClient](c, "Invitations")
+}
+
+// SupportsInvitations reports whether the underlying transport carries
+// invitation self-enrolment. Unlike the other capability interfaces, a
+// caller (the CLI's "users invite") chooses the transport at RUN time, not
+// at wiring time, so it checks here first rather than letting Invitations
+// panic on a transport -- gRPC or the Unix socket, today -- that does not
+// carry the verb yet.
+func (c *Client) SupportsInvitations() bool {
+	_, ok := c.transport.(transport.InvitationClient)
+	return ok
+}
+
 // Database returns a DatabaseClient for database management operations
 // including creation, inspection, listing, and deletion.
 func (c *Client) Database() transport.DatabaseClient {

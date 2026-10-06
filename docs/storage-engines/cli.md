@@ -1,6 +1,7 @@
 # Storage Engines and Volume Pools — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-05
 
 **No dedicated CLI verb group.** Storage engines are a server configuration
 concern, and volume pools have an SDK surface but no `qrdb` verbs.
@@ -104,3 +105,28 @@ make build WITH_AWS_S3=1 WITH_MINIO=1 WITH_GCP_STORAGE=1 \
 Nothing in this feature has a `CommandDefinition`, because nothing here has a
 `qrdb` verb. The database verbs that select a backend are covered in
 [../databases/cli.md](../databases/cli.md).
+
+## Target design: configuring the LSM segment layout
+
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout).
+**Not implemented.** The `qrdb database create ... --backend objstore` verb
+itself does not change; what changes is what the node does with it:
+
+```yaml
+storage:
+  engine: objstore
+  objstore:
+    provider: s3          # local | memory | s3 | gcs | azure | minio
+    settings:
+      bucket: qrdb-data
+      prefix: "node-a/db-1"   # qrdb-controlled identifier, never a raw key
+    local_dir: /var/lib/qrdb/objstore   # WAL, MANIFEST, local block cache
+    create_on_shared: all    # all | lower | none
+```
+
+`local_dir` is drawn from the same local-only volume pool the `pebble` engine
+already uses (see "Volume pools" above) — there is still no CLI verb for
+volume pools, and this design adds none. `glacier` and `azurearchive` remain
+build-tag-gated archive destinations reachable only through
+`qrdb backup create` (see [../backup-restore/cli.md](../backup-restore/cli.md)),
+never through `storage.engine: objstore`.

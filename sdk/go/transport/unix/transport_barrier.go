@@ -17,13 +17,12 @@ package unix
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
-
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 )
 
 // Compile-time interface assertion.

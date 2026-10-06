@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -125,12 +126,17 @@ func StartClusterJoin(ctx context.Context, n *Node, c ClusterJoinConfig) (*Clust
 	if !c.Enabled {
 		return j, nil
 	}
+	var advertiser clusterenroll.FeatureAdvertiser
+	if a := joinadvertise.New(n.Lease, n.MVCC); a != nil {
+		advertiser = a
+	}
 	srv, err := clusterenroll.StartJoinServer(n.ClusterCAProv, clusterenroll.JoinServerOptions{
 		Host:        c.ListenHost,
 		Port:        c.ListenPort,
 		Store:       store,
 		TrustDomain: c.TrustDomain,
 		AdminPort:   c.AdminPort,
+		Advertiser:  advertiser,
 	}, c.DataDir, logger)
 	if err != nil {
 		return nil, err
@@ -176,7 +182,11 @@ func (e *JoinIdentityRecordError) Unwrap() error { return e.Err }
 // recomputed from configuration: the committed identity is whatever was
 // baked into the certificate at generation (Resolve's single-node/first-
 // node paths, or Join's token path), which must not silently drift from a
-// later change to --raft-address or --cluster-trust-domain.
+// later change to --raft-address or --cluster-trust-domain. The leaf's own
+// NotAfter and serial are read back the same way and threaded into
+// MarkJoinIdentityAdmitted, so this node's own identity can later be
+// detected as LAPSED (and renewed) exactly like one admitted through the
+// token path.
 //
 // A leaf with no node SPIFFE URI SAN at all -- an operator-supplied
 // certificate from explicit TLS files (--tls-ca/--tls-cert/--tls-key),
@@ -207,7 +217,7 @@ func recordOwnJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, cer
 		// certificate was never going to carry a cluster-join identity.
 		return nil
 	}
-	if err := clusterenroll.MarkJoinIdentityAdmitted(ctx, store, identity.String()); err != nil {
+	if err := clusterenroll.MarkJoinIdentityAdmitted(ctx, store, identity.String(), cert.NotAfter, cert.SerialNumber.String()); err != nil {
 		return &JoinIdentityRecordError{Err: err}
 	}
 	return nil

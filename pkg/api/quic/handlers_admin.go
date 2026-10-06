@@ -160,6 +160,30 @@ func (s *Server) handleRemoveMember(ctx context.Context, payload []byte) ([]byte
 	return resp, nil
 }
 
+// handlePromoteMember unmarshals a PromoteMemberRequest, promotes the
+// committed observer via the admin service's MemberPromoter capability, and
+// returns an empty serialized response.
+func (s *Server) handlePromoteMember(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.PromoteMemberRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	promoter, ok := s.adminSvc.(service.MemberPromoter)
+	if !ok {
+		return nil, &service.MemberPromotionUnsupportedError{}
+	}
+	if err := promoter.PromoteMember(ctx, req.GetShardId(), req.GetReplicaId()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
 // handleRequestSnapshot unmarshals a RequestSnapshotMessage, triggers a
 // snapshot for the given shard, and returns an empty serialized response.
 func (s *Server) handleRequestSnapshot(ctx context.Context, payload []byte) ([]byte, error) {
@@ -362,6 +386,137 @@ func (s *Server) handleMintJoinToken(ctx context.Context, payload []byte) ([]byt
 		Token:     token,
 		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleAddObserverMember unmarshals an AddObserverMemberRequest, adds the
+// new member as a non-voting observer via the admin service's
+// ObserverMemberAdder capability, and returns an empty serialized response.
+func (s *Server) handleAddObserverMember(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.AddObserverMemberRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	adder, ok := s.adminSvc.(service.ObserverMemberAdder)
+	if !ok {
+		return nil, &service.ClusterJoinRequestReviewUnsupportedError{}
+	}
+	if err := adder.AddObserverMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress(), req.GetMemberIdentity()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleListPendingJoinRequests calls the admin service's
+// JoinRequestReviewer capability and returns a serialized
+// ListPendingJoinRequestsResponse. The payload is ignored.
+func (s *Server) handleListPendingJoinRequests(ctx context.Context, _ []byte) ([]byte, error) {
+	reviewer, ok := s.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, &service.ClusterJoinRequestReviewUnsupportedError{}
+	}
+	pending, err := reviewer.ListPendingJoinRequests(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	requests := make([]*pb.PendingJoinRequestMessage, 0, len(pending))
+	for _, p := range pending {
+		requests = append(requests, &pb.PendingJoinRequestMessage{
+			Id:          p.ID,
+			NodeUri:     p.NodeURI,
+			ReplicaId:   p.ReplicaID,
+			Features:    p.Features,
+			SubmittedAt: p.SubmittedAt.UTC().Format(time.RFC3339),
+			ExpiresAt:   p.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
+
+	resp, err := proto.Marshal(&pb.ListPendingJoinRequestsResponse{Requests: requests})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleApproveJoinRequest unmarshals an ApproveJoinRequestRequest, binds
+// the queued CSR to the named node identity via the admin service's
+// JoinRequestReviewer capability, and returns an empty serialized response.
+func (s *Server) handleApproveJoinRequest(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.ApproveJoinRequestRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	reviewer, ok := s.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, &service.ClusterJoinRequestReviewUnsupportedError{}
+	}
+	if err := reviewer.ApproveJoinRequest(ctx, req.GetId(), req.GetNodeId()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleRejectJoinRequest unmarshals a RejectJoinRequestRequest, records a
+// terminal refusal via the admin service's JoinRequestReviewer capability,
+// and returns an empty serialized response.
+func (s *Server) handleRejectJoinRequest(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.RejectJoinRequestRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	reviewer, ok := s.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, &service.ClusterJoinRequestReviewUnsupportedError{}
+	}
+	if err := reviewer.RejectJoinRequest(ctx, req.GetId(), req.GetReason()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleRetireJoinIdentity unmarshals a RetireJoinIdentityRequest,
+// permanently refuses any future admission for the named node identity via
+// the admin service's JoinIdentityRetirer capability, and returns an empty
+// serialized response. s.adminSvc not implementing service.
+// JoinIdentityRetirer (member-side CSR join never configured on this node)
+// reports the same typed error the REST, gRPC and embedded transports do.
+func (s *Server) handleRetireJoinIdentity(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.RetireJoinIdentityRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	retirer, ok := s.adminSvc.(service.JoinIdentityRetirer)
+	if !ok {
+		return nil, &service.ClusterJoinTokenNotConfiguredError{}
+	}
+	if err := retirer.RetireJoinIdentity(ctx, req.GetNodeId(), req.GetReason()); err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&emptypb.Empty{})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

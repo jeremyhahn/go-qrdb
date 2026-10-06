@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -82,6 +84,11 @@ type PebbleStateMachine struct {
 
 	// lessor manages lease lifecycle. Nil if leases are not enabled.
 	lessor *lease.Lessor
+
+	// auditChain is the in-memory authority for the replicated audit hash
+	// chain (protocol.OpAuditAppend). Nil if the replicated audit trail is
+	// not enabled, exactly as a nil lessor means leases are not enabled.
+	auditChain *audit.Chain
 
 	// indexes holds registered secondary indexes by name.
 	indexes map[string]index.Index
@@ -151,6 +158,10 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpLeaseRevoke:    pebbleHandleLeaseRevoke,
 		protocol.OpLeaseKeepAlive: pebbleHandleLeaseKeepAlive,
 
+		// Replicated audit chain (append and retention prune, one opcode,
+		// two sub-types -- see protocol.OpAuditAppend).
+		protocol.OpAuditAppend: s.pebbleHandleAuditAppend,
+
 		// Index operations.
 		protocol.OpIndexCreate: s.pebbleHandleIndexCreate,
 		protocol.OpIndexDrop:   s.pebbleHandleIndexDrop,
@@ -192,7 +203,23 @@ func (s *PebbleStateMachine) dispatch(batch *pebble.Batch, cmd []byte) (sm.Resul
 // is applied through dispatch only when every compare holds. A refused guard
 // is a successful application that changes nothing (see protocol.OpGuarded).
 func pebbleHandleGuarded(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	inner, refusal, err := protocol.OpenGuarded(payload, func(key []byte) ([]byte, error) {
+	compares, inner, err := protocol.DecodeGuarded(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	// Checked BEFORE the guard is evaluated, and as a REFUSAL rather than
+	// through the GuardReader below: a reserved key reaching the reader
+	// would surface as *protocol.GuardReadError only on a genuine storage
+	// fault, which halts apply -- the wrong answer for a condition every
+	// replica reaches identically from the same committed command. A
+	// compare's result is also observable to the proposer (whether it held
+	// at all), so letting one evaluate against a reserved key would make an
+	// ordinary guarded write an extraction oracle over state no caller may
+	// read directly.
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(compares)...); refused {
+		return res, nil, nil
+	}
+	refusedKey, ok, err := protocol.EvaluateGuard(compares, func(key []byte) ([]byte, error) {
 		val, gerr := s.getKeyInBatch(batch, key)
 		if gerr != nil {
 			var notFound *kv.KeyNotFoundError
@@ -206,8 +233,8 @@ func pebbleHandleGuarded(s *PebbleStateMachine, batch *pebble.Batch, payload []b
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
-	if refusal != nil {
-		return sm.Result{Data: refusal}, nil, nil
+	if !ok {
+		return sm.Result{Data: protocol.EncodeGuardRefusal(refusedKey)}, nil, nil
 	}
 	return s.dispatch(batch, inner)
 }
@@ -235,6 +262,23 @@ func (s *PebbleStateMachine) Lessor() *lease.Lessor {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.lessor
+}
+
+// SetAuditChain attaches a replicated audit Chain to the store. When set,
+// protocol.OpAuditAppend commands are processed. Must be called before the
+// store is opened.
+func (s *PebbleStateMachine) SetAuditChain(c *audit.Chain) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditChain = c
+}
+
+// AuditChain returns the attached replicated audit Chain. Returns nil if none
+// is set.
+func (s *PebbleStateMachine) AuditChain() *audit.Chain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.auditChain
 }
 
 // SetTimeSeries attaches a time-series storage engine to the store.
@@ -317,6 +361,16 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 		return 0, &OpenError{Dir: initialDir, Err: err}
 	}
 
+	// The replicated audit chain's head is kept in memory exactly like the
+	// lessor's state, and for the same reason: a disk state machine resumes
+	// from lastApplied rather than replaying the log.
+	if err := s.restoreAuditChain(); err != nil {
+		_ = s.db.Close()
+		s.db = nil
+		s.ts = nil
+		return 0, &OpenError{Dir: initialDir, Err: err}
+	}
+
 	return lastApplied, nil
 }
 
@@ -327,6 +381,16 @@ func (s *PebbleStateMachine) restoreLessor() error {
 		return nil
 	}
 	return s.lessor.Restore(pebbleStorage.NewFromDB(s.db, true))
+}
+
+// restoreAuditChain rebuilds the attached replicated audit Chain, if any,
+// from the audit table persisted in the database. The CALLER MUST HOLD s.mu
+// for writing.
+func (s *PebbleStateMachine) restoreAuditChain() error {
+	if s.auditChain == nil {
+		return nil
+	}
+	return s.auditChain.Restore(pebbleStorage.NewFromDB(s.db, true))
 }
 
 // readLastApplied reads the persisted last applied index from the metadata key.
@@ -901,6 +965,13 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
+	// The snapshot carried the replicated audit table with the data it
+	// governs, for exactly the same reason: a recovering replica never saw
+	// the log that produced it.
+	if err := s.restoreAuditChain(); err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+
 	return nil
 }
 
@@ -1417,6 +1488,14 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	if res, refused := statemachine.ReservedKeyRefusal(append(statemachine.OpKeys(txn.SuccessOps), statemachine.OpKeys(txn.FailureOps)...)...); refused {
 		return res, nil, nil
 	}
+	// The compare side needs the identical refusal, not only the write side:
+	// a compare's result is observable to the proposer (which branch ran,
+	// and for an ordering target, which way it leaned), so evaluating one
+	// against a reserved key would make an ordinary transaction an
+	// extraction oracle over state no caller may read directly.
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(txn.Compares)...); refused {
+		return res, nil, nil
+	}
 
 	// Reject revision-based compares BEFORE evaluating anything. This state
 	// machine keeps no MVCC revisions, so a create/mod-revision compare has
@@ -1694,6 +1773,98 @@ func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload 
 	}
 
 	return sm.Result{Value: uint64(leaseID)}, nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Replicated audit chain handler
+// ---------------------------------------------------------------------------
+
+// pebbleHandleAuditAppend applies one protocol.OpAuditAppend command: either
+// sub-type, append or prune, against the attached audit.Chain. The sequence
+// number and hash digest for an append are assigned by Chain.Append itself,
+// never read from the payload, which is what makes every replica compute the
+// identical chain from the identical committed entry.
+func (s *PebbleStateMachine) pebbleHandleAuditAppend(_ *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	subtype, tenantID, body, err := protocol.DecodeAuditCommand(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if s.auditChain == nil {
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "audit"}), nil, nil
+	}
+
+	switch subtype {
+	case protocol.AuditSubtypeAppend:
+		var ev audit.AuditEvent
+		if unmarshalErr := json.Unmarshal(body, &ev); unmarshalErr != nil {
+			// The outer command decoded fine -- this is a well-formed body
+			// that merely fails to unmarshal as an AuditEvent, a
+			// deterministic consequence of the committed entry's own bytes
+			// that every replica reaches identically, so it is a refusal,
+			// not a halt. Contrast the unknown-subtype and truncated-framing
+			// cases, which stay halts: those name a shape this binary does
+			// not recognize at all, the same class as protocol.UnknownOpError.
+			return statemachine.RefusalResult(&protocol.InvalidCommandError{Reason: "audit append: malformed event: " + unmarshalErr.Error()}), nil, nil
+		}
+		seq, appendErr := s.auditChain.Append(pebbleAuditWriter{batch: batch}, tenantID, ev)
+		if appendErr != nil {
+			// A table-write fault is local to this replica and must halt
+			// apply, never be answered as a refusal its peers did not make --
+			// exactly the lease-table TableWriteError rule. Everything else
+			// Append can return (a missing Timestamp, an event that will not
+			// re-marshal) is a deterministic consequence of the bytes in the
+			// committed entry: every replica reaches the identical refusal
+			// from the identical input, so it is encoded as an application
+			// result, the same way an invalid lease TTL is, rather than
+			// returned as a Go error that would stall Raft on a command every
+			// replica is equally unable to apply.
+			var twe *audit.TableWriteError
+			if errors.As(appendErr, &twe) {
+				return sm.Result{}, nil, appendErr
+			}
+			return statemachine.RefusalResult(appendErr), nil, nil
+		}
+		return sm.Result{Value: seq}, nil, nil
+
+	case protocol.AuditSubtypePrune:
+		if len(body) != 8 {
+			return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "audit prune: cutoff malformed"}
+		}
+		cutoff := binary.BigEndian.Uint64(body)
+		// Prune computes its delete range from the Chain's own in-memory
+		// head alone -- never from a storage read -- which is what makes it
+		// independent of how many committed entries this Update call's
+		// batch happens to pack together; see pkg/audit.Chain.Prune's doc
+		// comment (go-qrdb audit-replicated review, B1). Every error it can
+		// return is a fault in THIS replica's own storage, never a property
+		// of the cutoff value, so there is nothing here that is a
+		// legitimate per-replica refusal: it always halts apply.
+		deleted, pruneErr := s.auditChain.Prune(pebbleAuditWriter{batch: batch}, tenantID, cutoff)
+		if pruneErr != nil {
+			return sm.Result{}, nil, pruneErr
+		}
+		return sm.Result{Value: uint64(deleted)}, nil, nil
+
+	default:
+		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "audit command: unknown sub-type"}
+	}
+}
+
+// pebbleAuditWriter adapts a *pebble.Batch to audit.Writer, mirroring
+// pebbleLeaseWriter exactly.
+type pebbleAuditWriter struct {
+	batch *pebble.Batch
+}
+
+// Set stages key = value.
+func (w pebbleAuditWriter) Set(key, value []byte) error {
+	return w.batch.Set(key, value, pebble.Sync)
+}
+
+// Delete stages the removal of key.
+func (w pebbleAuditWriter) Delete(key []byte) error {
+	return w.batch.Delete(key, pebble.Sync)
 }
 
 // ---------------------------------------------------------------------------
@@ -2076,6 +2247,14 @@ func (s *PebbleStateMachine) keyIsAbsentInBatch(batch *pebble.Batch, key []byte)
 // Reading the database directly would make that packing — which is decided by
 // each node's local timing — visible in the resulting state.
 func (s *PebbleStateMachine) getKeyInBatch(batch *pebble.Batch, key []byte) ([]byte, error) {
+	// Backstop: every caller (CAS, CAD, OpGuarded's reader) already checks
+	// ReservedKeyRefusal on this exact key before reaching here, but the
+	// check belongs on the read itself too, not only at each call site, so
+	// a future caller that forgets it fails closed rather than silently
+	// reading the raw table.
+	if statemachine.IsReservedKey(key) {
+		return nil, &kv.KeyNotFoundError{Key: string(key)}
+	}
 	val, closer, err := batch.Get(key)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {

@@ -111,12 +111,10 @@ func (e *SystemTenantRequiredError) Error() string {
 	return "user: system flag requires the system tenant, got: " + e.TenantID
 }
 
-// RoleBindingTenantError is returned when a write would give a non-system
-// user a RoleBinding naming a tenant other than its own. A binding grants only
-// on a request whose target is the tenant it names, and RBAC refuses a
-// non-system identity every request outside its own tenant before any binding
-// is consulted, so such a binding could never grant anything. It is refused at
-// write rather than stored as a dead grant that reads as a live one.
+// RoleBindingTenantError is returned when a write would give a user a
+// RoleBinding naming a tenant other than its own. A binding may name only its
+// holder's own tenant, the system tenant's users included, so no binding
+// grants anything outside its holder's tenant.
 type RoleBindingTenantError struct {
 	UserID          uint64
 	UserTenantID    string
@@ -126,9 +124,9 @@ type RoleBindingTenantError struct {
 // Error returns a human-readable description of the refused binding.
 func (e *RoleBindingTenantError) Error() string {
 	return "user: role binding in tenant " + e.BindingTenantID +
-		" can never apply to user " + strconv.FormatUint(e.UserID, 10) +
+		" refused for user " + strconv.FormatUint(e.UserID, 10) +
 		" of tenant " + e.UserTenantID +
-		": only a system-tenant user may hold a binding outside its own tenant"
+		": a role binding may name only its holder's own tenant"
 }
 
 // SystemUserAlreadyExistsError is returned when a caller asks to create or
@@ -302,6 +300,10 @@ func (e *IndexCompensationError) Unwrap() error { return e.Cause }
 // KVStore behind a user store implements kvstore.AtomicKVStore.
 var ErrStoreNotAtomic = errors.New("user: store cannot claim unique handles atomically")
 
+// ErrActivationUnsupported reports a user store that cannot activate an
+// account with its first certificate binding (CertActivator).
+var ErrActivationUnsupported = errors.New("user: store cannot activate an account with a certificate binding")
+
 // HandleReclaimedError reports that a compensation could not put a released
 // username or email key back, because another caller has legitimately claimed
 // it in the meantime.
@@ -427,6 +429,30 @@ func (e *InvalidLifecycleError) Error() string {
 // into an authenticating account by a concurrent enable, and reporting the
 // refusal as a typed error is what lets a caller distinguish "you may not" from
 // "the store failed".
+// AccountNotPendingError is returned by ActivateWithCertBinding for an
+// account that is not awaiting its first credential: it is not pending, or
+// it already holds a certificate binding. Activation is the single point at
+// which an invited account gets a credential, so whichever activation
+// commits first wins and every other one is refused with this error.
+type AccountNotPendingError struct {
+	// ID is the account.
+	ID uint64
+
+	// Lifecycle is the state the account holds.
+	Lifecycle Lifecycle
+
+	// HasCredential reports a pending account that already holds a binding.
+	HasCredential bool
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *AccountNotPendingError) Error() string {
+	if e.HasCredential {
+		return "user: account " + strconv.FormatUint(e.ID, 10) + " already holds a certificate binding"
+	}
+	return "user: account " + strconv.FormatUint(e.ID, 10) + " is " + string(e.Lifecycle) + ", not pending"
+}
+
 type LifecycleTransitionError struct {
 	// ID is the user whose transition was refused.
 	ID uint64

@@ -30,15 +30,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
 // TestServiceOptionsLandOnTheServer covers the option setters that had no

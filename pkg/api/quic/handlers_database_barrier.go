@@ -17,11 +17,10 @@ package quic
 import (
 	"context"
 
-	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
-
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )

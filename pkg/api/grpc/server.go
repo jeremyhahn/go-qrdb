@@ -124,6 +124,7 @@ type Server struct {
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
+	invitationSvc     service.InvitationServicer
 	onboarding        service.TenantOnboardingServicer
 	collectionSvc     service.CollectionServicer
 	backupSvc         service.BackupServicer
@@ -451,6 +452,12 @@ func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(s *Server) { s.certEnroll = svc }
 }
 
+// WithInvitations configures the invitation self-enrolment service behind
+// InviteUser and the PUBLIC RedeemInvitation.
+func WithInvitations(svc service.InvitationServicer) ServerOption {
+	return func(s *Server) { s.invitationSvc = svc }
+}
+
 // WithTenantOnboarding configures the service behind TenantCreate.
 func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
 	return func(s *Server) { s.onboarding = svc }
@@ -644,6 +651,17 @@ func (s *Server) Start() error {
 				return err
 			}
 		}
+		// RedeemInvitation is the one PUBLIC built-in RPC (not a module): an
+		// invited user holds no credential yet, so the token from InviteUser
+		// is the authority, exactly as REST's RESTRoutePublic and QUIC's
+		// RegisterPublic skip auth for their own redemption route.
+		if s.invitationSvc != nil {
+			if err := s.authMW.RegisterPublicGRPCMethods([]string{pb.QRDBService_RedeemInvitation_FullMethodName}); err != nil {
+				_ = ln.Close()
+				s.listener = nil
+				return err
+			}
+		}
 	}
 
 	// Build interceptor chains for both unary and streaming RPCs.
@@ -665,9 +683,6 @@ func (s *Server) Start() error {
 		DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
-		if err := s.authMW.RegisterGRPCTargets(IdentityTargets()); err != nil {
-			return err
-		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
 	// The SO gate installs whenever there is one, auth middleware or not:
@@ -783,6 +798,7 @@ func (s *Server) Start() error {
 		roleSvc:           s.roleSvc,
 		certProv:          s.certProv,
 		certEnroll:        s.certEnroll,
+		invitationSvc:     s.invitationSvc,
 		onboarding:        s.onboarding,
 		collectionSvc:     s.collectionSvc,
 		backupSvc:         s.backupSvc,

@@ -82,12 +82,12 @@ func NewTenantStore(resolver tenant.StoreResolver) (*TenantStore, error) {
 
 // Create issues an invitation for a user in the named tenant and returns the
 // plaintext token, which is returned exactly once.
-func (s *TenantStore) Create(ctx context.Context, userID, tenantID string, ttl time.Duration) (string, *Entity, error) {
+func (s *TenantStore) Create(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...CreateOption) (string, *Entity, error) {
 	store, err := s.storeFor(ctx, tenantID)
 	if err != nil {
 		return "", nil, err
 	}
-	return store.Create(ctx, userID, tenantID, ttl)
+	return store.Create(ctx, userID, tenantID, ttl, opts...)
 }
 
 // Lookup resolves a token within the named tenant without consuming it.

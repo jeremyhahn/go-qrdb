@@ -526,6 +526,30 @@ implemented here; do not describe this as enclave-protected until it is.
    `Unseal` runs again
 
 
+## Per-replica tenant keys — ruled
+
+> **Status: RULED (2026-10-01) — not implemented.** The multi-tenancy design
+> [Strict tenant isolation](../multi-tenancy/architecture.md#per-replica-tenant-keys)
+> replaces the shared tenant root key of a `raft` tenant's replicas with an
+> **independent replica key per node**:
+>
+> - Each key is born on its node, under the tenant's credential presented to
+>   that node, and never leaves it.
+> - `ExportRootKeyContext`, `ImportRootKey`, `ImportSealedBlob` and the
+>   tenant-key modes of `pkg/clusterkeys` are removed. `clusterkeys` keeps
+>   node-identity checks and delivers only a credential verifier to a new
+>   replica.
+> - Init, unseal and rekey of a tenant barrier are sent by the client to every
+>   node in the tenant's serving set (client fan-out). No node relays a
+>   credential, share or key to another.
+> - A per-node tenant bootstrap record (sealed replica-key blob, credential
+>   verifier, unseal roster, SO PIN commitment) sits beside the sealed blob in
+>   the tenant's node-local barrier store. It is MAC-bound to the replica key.
+>
+> This constrains the cluster-wide sealing design: its unseal model for the
+> tenant scope must be per node, with client fan-out, rather than delivery of
+> a root-key context from the unsealing node.
+
 ## Trust boundaries
 
 - **Sealed means refused, not degraded.** Once sealed, the data path returns

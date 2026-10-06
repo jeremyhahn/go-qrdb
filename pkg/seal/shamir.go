@@ -47,14 +47,15 @@ import (
 // ErrRestartRequired. Should the rollback itself fail, the error is a
 // *ShamirInitRollbackError carrying both failures.
 func (b *StorageBarrier) InitializeShamir(ctx context.Context, policy FactorPolicy) (*ShamirInitParams, error) {
-	if b.config.Shamir == nil || b.ShamirStrategy() == nil {
+	cfg := b.shamirConfig()
+	if cfg == nil || b.ShamirStrategy() == nil {
 		return nil, ErrShamirNotConfigured
 	}
 	if b.distributor == nil {
 		return nil, ErrCeremonyDistributorNotConfigured
 	}
-	threshold := b.config.Shamir.Threshold
-	total := b.config.Shamir.TotalShares
+	threshold := cfg.Threshold
+	total := cfg.TotalShares
 	if threshold < 2 || threshold > total {
 		return nil, ErrShamirThresholdInvalid
 	}

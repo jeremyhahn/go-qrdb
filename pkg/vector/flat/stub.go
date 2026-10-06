@@ -22,9 +22,8 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
 
 // Stub errors for when vector support is not compiled in.
@@ -86,6 +85,16 @@ func (idx *Index) Delete(id uint64) error {
 // Search performs k-nearest neighbor search.
 func (idx *Index) Search(query []float32, k int) ([]SearchResult, error) {
 	return nil, ErrNotCompiled
+}
+
+// Marshal serializes the index to bytes.
+func (idx *Index) Marshal() ([]byte, error) {
+	return nil, ErrNotCompiled
+}
+
+// Unmarshal restores the index from bytes produced by Marshal.
+func (idx *Index) Unmarshal(data []byte) error {
+	return ErrNotCompiled
 }
 
 // Count returns the number of vectors currently in the index.

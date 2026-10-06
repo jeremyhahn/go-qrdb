@@ -22,6 +22,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // minRSABits is the smallest RSA key a client certificate is issued for.
@@ -59,6 +61,18 @@ func ParseCSR(csrPEM []byte) (crypto.PublicKey, error) {
 		return nil, err
 	}
 	return csr.PublicKey, nil
+}
+
+// CSRKeyFingerprint verifies csrPEM (ParseCSR) and returns its key's SPKI
+// thumbprint -- the base64url SHA-256 of the SubjectPublicKeyInfo, the same
+// value a certificate issued for that key is bound by. It is what a user
+// sends their inviter to pin an invitation to their key.
+func CSRKeyFingerprint(csrPEM []byte) (string, error) {
+	pub, err := ParseCSR(csrPEM)
+	if err != nil {
+		return "", err
+	}
+	return user.PublicKeySPKIThumbprint(pub)
 }
 
 // CheckClientKey reports whether pub is a key a client certificate is issued

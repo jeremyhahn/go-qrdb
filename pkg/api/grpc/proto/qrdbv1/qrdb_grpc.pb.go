@@ -107,6 +107,7 @@ const (
 	QRDBService_Peers_FullMethodName                             = "/qrdb.v1.QRDBService/Peers"
 	QRDBService_AddMember_FullMethodName                         = "/qrdb.v1.QRDBService/AddMember"
 	QRDBService_RemoveMember_FullMethodName                      = "/qrdb.v1.QRDBService/RemoveMember"
+	QRDBService_PromoteMember_FullMethodName                     = "/qrdb.v1.QRDBService/PromoteMember"
 	QRDBService_RequestSnapshot_FullMethodName                   = "/qrdb.v1.QRDBService/RequestSnapshot"
 	QRDBService_Drain_FullMethodName                             = "/qrdb.v1.QRDBService/Drain"
 	QRDBService_Capabilities_FullMethodName                      = "/qrdb.v1.QRDBService/Capabilities"
@@ -117,6 +118,11 @@ const (
 	QRDBService_GetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/GetNodeCompaction"
 	QRDBService_SetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/SetNodeCompaction"
 	QRDBService_MintJoinToken_FullMethodName                     = "/qrdb.v1.QRDBService/MintJoinToken"
+	QRDBService_AddObserverMember_FullMethodName                 = "/qrdb.v1.QRDBService/AddObserverMember"
+	QRDBService_ListPendingJoinRequests_FullMethodName           = "/qrdb.v1.QRDBService/ListPendingJoinRequests"
+	QRDBService_ApproveJoinRequest_FullMethodName                = "/qrdb.v1.QRDBService/ApproveJoinRequest"
+	QRDBService_RejectJoinRequest_FullMethodName                 = "/qrdb.v1.QRDBService/RejectJoinRequest"
+	QRDBService_RetireJoinIdentity_FullMethodName                = "/qrdb.v1.QRDBService/RetireJoinIdentity"
 	QRDBService_CreateUser_FullMethodName                        = "/qrdb.v1.QRDBService/CreateUser"
 	QRDBService_GetUser_FullMethodName                           = "/qrdb.v1.QRDBService/GetUser"
 	QRDBService_GetUserByUsername_FullMethodName                 = "/qrdb.v1.QRDBService/GetUserByUsername"
@@ -147,6 +153,8 @@ const (
 	QRDBService_TrustAnchorRemove_FullMethodName                 = "/qrdb.v1.QRDBService/TrustAnchorRemove"
 	QRDBService_RevokeCert_FullMethodName                        = "/qrdb.v1.QRDBService/RevokeCert"
 	QRDBService_ListCerts_FullMethodName                         = "/qrdb.v1.QRDBService/ListCerts"
+	QRDBService_InviteUser_FullMethodName                        = "/qrdb.v1.QRDBService/InviteUser"
+	QRDBService_RedeemInvitation_FullMethodName                  = "/qrdb.v1.QRDBService/RedeemInvitation"
 	QRDBService_CreateCollection_FullMethodName                  = "/qrdb.v1.QRDBService/CreateCollection"
 	QRDBService_GetCollectionInfo_FullMethodName                 = "/qrdb.v1.QRDBService/GetCollectionInfo"
 	QRDBService_ListCollections_FullMethodName                   = "/qrdb.v1.QRDBService/ListCollections"
@@ -438,6 +446,9 @@ type QRDBServiceClient interface {
 	AddMember(ctx context.Context, in *AddMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// RemoveMember removes a node from a shard.
 	RemoveMember(ctx context.Context, in *RemoveMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// PromoteMember promotes a committed observer of a shard to a voter,
+	// keeping the address and identity the shard already committed for it.
+	PromoteMember(ctx context.Context, in *PromoteMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// RequestSnapshot triggers a snapshot for the given shard.
 	RequestSnapshot(ctx context.Context, in *RequestSnapshotMessage, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Drain transitions the node into drain mode.
@@ -462,6 +473,26 @@ type QRDBServiceClient interface {
 	// token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
 	// no built-in role carries cluster:join_token by default.
 	MintJoinToken(ctx context.Context, in *MintJoinTokenRequest, opts ...grpc.CallOption) (*MintJoinTokenResponse, error)
+	// AddObserverMember adds a new replica to a shard as a non-voting
+	// observer rather than a voter; see PromoteMember for turning it into a
+	// voter later.
+	AddObserverMember(ctx context.Context, in *AddObserverMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListPendingJoinRequests lists tokenless member-side CSR join requests
+	// awaiting an operator's approval or rejection (see
+	// pkg/clusterenroll's approval queue). ScopeCross, platform-only, the
+	// same admission decision cluster:join_token already gates.
+	ListPendingJoinRequests(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListPendingJoinRequestsResponse, error)
+	// ApproveJoinRequest binds a queued CSR to an operator-chosen node
+	// identity; the leaf is signed the next time the joiner's own retry
+	// reaches the join listener, not by this call.
+	ApproveJoinRequest(ctx context.Context, in *ApproveJoinRequestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// RejectJoinRequest records a terminal refusal of a queued CSR.
+	RejectJoinRequest(ctx context.Context, in *RejectJoinRequestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// RetireJoinIdentity permanently refuses any future admission for a
+	// node identity (see pkg/clusterenroll.RetireJoinIdentity). ScopeCross,
+	// platform-only: no built-in role carries cluster:join_identity_retire
+	// by default.
+	RetireJoinIdentity(ctx context.Context, in *RetireJoinIdentityRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CreateUser creates a new passwordless user.
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// GetUser retrieves a user by ID.
@@ -538,6 +569,20 @@ type QRDBServiceClient interface {
 	RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*RevokeCertResponse, error)
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(ctx context.Context, in *ListCertsRequest, opts ...grpc.CallOption) (*ListCertsResponse, error)
+	// InviteUser creates a pending account in the caller's own tenant -- or
+	// re-invites one that is still pending -- and returns a single-use
+	// enrolment token, returned exactly once.
+	InviteUser(ctx context.Context, in *InviteUserRequest, opts ...grpc.CallOption) (*InvitationResponse, error)
+	// RedeemInvitation is PUBLIC: an invited user holds no credential yet, so
+	// the token from InviteUser is the authority. No Connect/authentication
+	// is required first; the server registers this method with
+	// AuthMiddleware.RegisterPublicGRPCMethods, which bypasses both
+	// authentication and authorization for it alone, before this option is
+	// ever looked up. The "identity:public" sentinel is declared anyway so
+	// the default-deny completeness guard
+	// (TestGRPCPermissions_EveryMethodMapped) accounts for this RPC rather
+	// than treating it the same as a forgotten annotation.
+	RedeemInvitation(ctx context.Context, in *RedeemInvitationRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error)
 	// CreateCollection creates a new document collection in a database.
 	CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CollectionInfoResponse, error)
 	// GetCollectionInfo returns metadata about a specific collection.
@@ -1562,6 +1607,16 @@ func (c *qRDBServiceClient) RemoveMember(ctx context.Context, in *RemoveMemberRe
 	return out, nil
 }
 
+func (c *qRDBServiceClient) PromoteMember(ctx context.Context, in *PromoteMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_PromoteMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) RequestSnapshot(ctx context.Context, in *RequestSnapshotMessage, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -1656,6 +1711,56 @@ func (c *qRDBServiceClient) MintJoinToken(ctx context.Context, in *MintJoinToken
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MintJoinTokenResponse)
 	err := c.cc.Invoke(ctx, QRDBService_MintJoinToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) AddObserverMember(ctx context.Context, in *AddObserverMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_AddObserverMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListPendingJoinRequests(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListPendingJoinRequestsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPendingJoinRequestsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListPendingJoinRequests_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ApproveJoinRequest(ctx context.Context, in *ApproveJoinRequestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_ApproveJoinRequest_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) RejectJoinRequest(ctx context.Context, in *RejectJoinRequestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_RejectJoinRequest_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) RetireJoinIdentity(ctx context.Context, in *RetireJoinIdentityRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_RetireJoinIdentity_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1956,6 +2061,26 @@ func (c *qRDBServiceClient) ListCerts(ctx context.Context, in *ListCertsRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListCertsResponse)
 	err := c.cc.Invoke(ctx, QRDBService_ListCerts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) InviteUser(ctx context.Context, in *InviteUserRequest, opts ...grpc.CallOption) (*InvitationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InvitationResponse)
+	err := c.cc.Invoke(ctx, QRDBService_InviteUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) RedeemInvitation(ctx context.Context, in *RedeemInvitationRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrolledCertResponse)
+	err := c.cc.Invoke(ctx, QRDBService_RedeemInvitation_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3214,6 +3339,9 @@ type QRDBServiceServer interface {
 	AddMember(context.Context, *AddMemberRequest) (*emptypb.Empty, error)
 	// RemoveMember removes a node from a shard.
 	RemoveMember(context.Context, *RemoveMemberRequest) (*emptypb.Empty, error)
+	// PromoteMember promotes a committed observer of a shard to a voter,
+	// keeping the address and identity the shard already committed for it.
+	PromoteMember(context.Context, *PromoteMemberRequest) (*emptypb.Empty, error)
 	// RequestSnapshot triggers a snapshot for the given shard.
 	RequestSnapshot(context.Context, *RequestSnapshotMessage) (*emptypb.Empty, error)
 	// Drain transitions the node into drain mode.
@@ -3238,6 +3366,26 @@ type QRDBServiceServer interface {
 	// token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
 	// no built-in role carries cluster:join_token by default.
 	MintJoinToken(context.Context, *MintJoinTokenRequest) (*MintJoinTokenResponse, error)
+	// AddObserverMember adds a new replica to a shard as a non-voting
+	// observer rather than a voter; see PromoteMember for turning it into a
+	// voter later.
+	AddObserverMember(context.Context, *AddObserverMemberRequest) (*emptypb.Empty, error)
+	// ListPendingJoinRequests lists tokenless member-side CSR join requests
+	// awaiting an operator's approval or rejection (see
+	// pkg/clusterenroll's approval queue). ScopeCross, platform-only, the
+	// same admission decision cluster:join_token already gates.
+	ListPendingJoinRequests(context.Context, *emptypb.Empty) (*ListPendingJoinRequestsResponse, error)
+	// ApproveJoinRequest binds a queued CSR to an operator-chosen node
+	// identity; the leaf is signed the next time the joiner's own retry
+	// reaches the join listener, not by this call.
+	ApproveJoinRequest(context.Context, *ApproveJoinRequestRequest) (*emptypb.Empty, error)
+	// RejectJoinRequest records a terminal refusal of a queued CSR.
+	RejectJoinRequest(context.Context, *RejectJoinRequestRequest) (*emptypb.Empty, error)
+	// RetireJoinIdentity permanently refuses any future admission for a
+	// node identity (see pkg/clusterenroll.RetireJoinIdentity). ScopeCross,
+	// platform-only: no built-in role carries cluster:join_identity_retire
+	// by default.
+	RetireJoinIdentity(context.Context, *RetireJoinIdentityRequest) (*emptypb.Empty, error)
 	// CreateUser creates a new passwordless user.
 	CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error)
 	// GetUser retrieves a user by ID.
@@ -3314,6 +3462,20 @@ type QRDBServiceServer interface {
 	RevokeCert(context.Context, *RevokeCertRequest) (*RevokeCertResponse, error)
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(context.Context, *ListCertsRequest) (*ListCertsResponse, error)
+	// InviteUser creates a pending account in the caller's own tenant -- or
+	// re-invites one that is still pending -- and returns a single-use
+	// enrolment token, returned exactly once.
+	InviteUser(context.Context, *InviteUserRequest) (*InvitationResponse, error)
+	// RedeemInvitation is PUBLIC: an invited user holds no credential yet, so
+	// the token from InviteUser is the authority. No Connect/authentication
+	// is required first; the server registers this method with
+	// AuthMiddleware.RegisterPublicGRPCMethods, which bypasses both
+	// authentication and authorization for it alone, before this option is
+	// ever looked up. The "identity:public" sentinel is declared anyway so
+	// the default-deny completeness guard
+	// (TestGRPCPermissions_EveryMethodMapped) accounts for this RPC rather
+	// than treating it the same as a forgotten annotation.
+	RedeemInvitation(context.Context, *RedeemInvitationRequest) (*EnrolledCertResponse, error)
 	// CreateCollection creates a new document collection in a database.
 	CreateCollection(context.Context, *CreateCollectionRequest) (*CollectionInfoResponse, error)
 	// GetCollectionInfo returns metadata about a specific collection.
@@ -3818,6 +3980,9 @@ func (UnimplementedQRDBServiceServer) AddMember(context.Context, *AddMemberReque
 func (UnimplementedQRDBServiceServer) RemoveMember(context.Context, *RemoveMemberRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveMember not implemented")
 }
+func (UnimplementedQRDBServiceServer) PromoteMember(context.Context, *PromoteMemberRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method PromoteMember not implemented")
+}
 func (UnimplementedQRDBServiceServer) RequestSnapshot(context.Context, *RequestSnapshotMessage) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestSnapshot not implemented")
 }
@@ -3847,6 +4012,21 @@ func (UnimplementedQRDBServiceServer) SetNodeCompaction(context.Context, *SetNod
 }
 func (UnimplementedQRDBServiceServer) MintJoinToken(context.Context, *MintJoinTokenRequest) (*MintJoinTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MintJoinToken not implemented")
+}
+func (UnimplementedQRDBServiceServer) AddObserverMember(context.Context, *AddObserverMemberRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddObserverMember not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListPendingJoinRequests(context.Context, *emptypb.Empty) (*ListPendingJoinRequestsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPendingJoinRequests not implemented")
+}
+func (UnimplementedQRDBServiceServer) ApproveJoinRequest(context.Context, *ApproveJoinRequestRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveJoinRequest not implemented")
+}
+func (UnimplementedQRDBServiceServer) RejectJoinRequest(context.Context, *RejectJoinRequestRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RejectJoinRequest not implemented")
+}
+func (UnimplementedQRDBServiceServer) RetireJoinIdentity(context.Context, *RetireJoinIdentityRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetireJoinIdentity not implemented")
 }
 func (UnimplementedQRDBServiceServer) CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
@@ -3937,6 +4117,12 @@ func (UnimplementedQRDBServiceServer) RevokeCert(context.Context, *RevokeCertReq
 }
 func (UnimplementedQRDBServiceServer) ListCerts(context.Context, *ListCertsRequest) (*ListCertsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCerts not implemented")
+}
+func (UnimplementedQRDBServiceServer) InviteUser(context.Context, *InviteUserRequest) (*InvitationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InviteUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) RedeemInvitation(context.Context, *RedeemInvitationRequest) (*EnrolledCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RedeemInvitation not implemented")
 }
 func (UnimplementedQRDBServiceServer) CreateCollection(context.Context, *CreateCollectionRequest) (*CollectionInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateCollection not implemented")
@@ -5587,6 +5773,24 @@ func _QRDBService_RemoveMember_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_PromoteMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PromoteMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).PromoteMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_PromoteMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).PromoteMember(ctx, req.(*PromoteMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_RequestSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RequestSnapshotMessage)
 	if err := dec(in); err != nil {
@@ -5763,6 +5967,96 @@ func _QRDBService_MintJoinToken_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).MintJoinToken(ctx, req.(*MintJoinTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_AddObserverMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddObserverMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).AddObserverMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_AddObserverMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).AddObserverMember(ctx, req.(*AddObserverMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListPendingJoinRequests_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListPendingJoinRequests(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListPendingJoinRequests_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListPendingJoinRequests(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ApproveJoinRequest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveJoinRequestRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ApproveJoinRequest(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ApproveJoinRequest_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ApproveJoinRequest(ctx, req.(*ApproveJoinRequestRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_RejectJoinRequest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RejectJoinRequestRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).RejectJoinRequest(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_RejectJoinRequest_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).RejectJoinRequest(ctx, req.(*RejectJoinRequestRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_RetireJoinIdentity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetireJoinIdentityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).RetireJoinIdentity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_RetireJoinIdentity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).RetireJoinIdentity(ctx, req.(*RetireJoinIdentityRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6303,6 +6597,42 @@ func _QRDBService_ListCerts_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).ListCerts(ctx, req.(*ListCertsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_InviteUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InviteUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).InviteUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_InviteUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).InviteUser(ctx, req.(*InviteUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_RedeemInvitation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RedeemInvitationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).RedeemInvitation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_RedeemInvitation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).RedeemInvitation(ctx, req.(*RedeemInvitationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8529,6 +8859,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_RemoveMember_Handler,
 		},
 		{
+			MethodName: "PromoteMember",
+			Handler:    _QRDBService_PromoteMember_Handler,
+		},
+		{
 			MethodName: "RequestSnapshot",
 			Handler:    _QRDBService_RequestSnapshot_Handler,
 		},
@@ -8567,6 +8901,26 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MintJoinToken",
 			Handler:    _QRDBService_MintJoinToken_Handler,
+		},
+		{
+			MethodName: "AddObserverMember",
+			Handler:    _QRDBService_AddObserverMember_Handler,
+		},
+		{
+			MethodName: "ListPendingJoinRequests",
+			Handler:    _QRDBService_ListPendingJoinRequests_Handler,
+		},
+		{
+			MethodName: "ApproveJoinRequest",
+			Handler:    _QRDBService_ApproveJoinRequest_Handler,
+		},
+		{
+			MethodName: "RejectJoinRequest",
+			Handler:    _QRDBService_RejectJoinRequest_Handler,
+		},
+		{
+			MethodName: "RetireJoinIdentity",
+			Handler:    _QRDBService_RetireJoinIdentity_Handler,
 		},
 		{
 			MethodName: "CreateUser",
@@ -8687,6 +9041,14 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCerts",
 			Handler:    _QRDBService_ListCerts_Handler,
+		},
+		{
+			MethodName: "InviteUser",
+			Handler:    _QRDBService_InviteUser_Handler,
+		},
+		{
+			MethodName: "RedeemInvitation",
+			Handler:    _QRDBService_RedeemInvitation_Handler,
 		},
 		{
 			MethodName: "CreateCollection",

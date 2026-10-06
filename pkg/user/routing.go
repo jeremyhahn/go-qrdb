@@ -29,6 +29,7 @@ import (
 
 // Compile-time interface check.
 var _ UserServicer = (*routingUserService)(nil)
+var _ CertActivator = (*routingUserService)(nil)
 
 // routingUserService is a UserServicer decorator that routes each call to
 // the per-tenant kvUserStore backed by the KVStore the StoreResolver
@@ -388,6 +389,24 @@ func (r *routingUserService) AddCertBinding(ctx context.Context, userID uint64, 
 		return nil, err
 	}
 	return svc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
+}
+
+// ActivateWithCertBinding routes on the tenant that holds the user id, as
+// AddCertBinding does.
+func (r *routingUserService) ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error) {
+	target, err := r.targetTenant(ctx, userID, "activate user with certificate")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	activator, ok := svc.(CertActivator)
+	if !ok {
+		return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "store", Err: ErrActivationUnsupported}
+	}
+	return activator.ActivateWithCertBinding(ctx, userID, thumbprint, notAfterUnix)
 }
 
 // RemoveCertBinding routes on the tenant that holds the user id, exactly as

@@ -1,6 +1,6 @@
 # Rate Limiting — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 A single request-throttling engine, enforced at the one place every
 transport already authorizes a request, so a caller is limited identically
@@ -115,6 +115,15 @@ comes and goes rather than staying fixed.
   permissive, never less** (see `pkg/ratelimit`'s package documentation for
   the exact race and why the direction it fails in is the correct one for a
   capacity control rather than a security boundary).
+- **Invitation redemption throttles OUTSIDE this mechanism**, on the same
+  `ratelimit.Limiter`/`Policy` primitives but not through the per-permission
+  Registry `AuthMiddleware.authorize` consults: redemption is
+  UNAUTHENTICATED, so there is no subject and no permission to key a bucket
+  by. `service.InvitationService` draws directly on two buckets of its own
+  — the caller's source address, then the tenant the request names
+  (`auth.invitation_redeem_limit.{per_source,per_tenant}`) — before any
+  other check runs. See
+  [../identity-rbac/architecture.md#invitation-self-enrolment](../identity-rbac/architecture.md#invitation-self-enrolment).
 
 ## What this feature deliberately does not do
 

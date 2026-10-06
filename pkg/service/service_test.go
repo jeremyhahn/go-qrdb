@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -37,11 +38,13 @@ type mockHost struct {
 	// memberships, membershipErr and nodeIdentity model the committed
 	// memberships and transport identity member-identity resolution reads;
 	// addedIdentities records every identity an add committed.
-	memberships     map[uint64]*quicraft.Membership
-	membershipErr   error
-	nodeIdentity    string
-	addedIdentities []string
-	addedReplicaIDs []uint64
+	memberships             map[uint64]*quicraft.Membership
+	membershipErr           error
+	nodeIdentity            string
+	addedIdentities         []string
+	addedReplicaIDs         []uint64
+	addedObserverIdentities []string
+	addedObserverReplicaIDs []uint64
 
 	idFn                  func() string
 	raftAddressFn         func() string
@@ -53,6 +56,7 @@ type mockHost struct {
 	syncProposeFn         func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error)
 	syncReadFn            func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
 	requestAddNodeFn      func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
+	requestAddObserverFn  func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
 	requestRemoveNodeFn   func(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error)
 	requestSnapshotFn     func(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
 	proposeWithModeFn     func(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error)
@@ -134,6 +138,15 @@ func (m *mockHost) RequestAddNodeWithIdentity(ctx context.Context, shardID, repl
 	m.addedReplicaIDs = append(m.addedReplicaIDs, replicaID)
 	if m.requestAddNodeFn != nil {
 		return m.requestAddNodeFn(ctx, shardID, replicaID, addr)
+	}
+	return nil, nil
+}
+
+func (m *mockHost) RequestAddObserverWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error) {
+	m.addedObserverIdentities = append(m.addedObserverIdentities, identity)
+	m.addedObserverReplicaIDs = append(m.addedObserverReplicaIDs, replicaID)
+	if m.requestAddObserverFn != nil {
+		return m.requestAddObserverFn(ctx, shardID, replicaID, addr)
 	}
 	return nil, nil
 }
@@ -1054,6 +1067,204 @@ func TestAdminService_RemoveMember_ResultError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
+
+	var me *MembershipError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *MembershipError, got %T: %v", err, err)
+	}
+	if !errors.Is(me.Unwrap(), resultErr) {
+		t.Fatalf("expected underlying result error, got %v", me.Unwrap())
+	}
+}
+
+// promoteMember type-asserts svc's MemberPromoter capability, which
+// NewAdminService's AdminServicer return type does not expose directly, and
+// calls it -- mirroring how every transport binding reaches PromoteMember.
+func promoteMember(t *testing.T, svc AdminServicer, shardID, replicaID uint64) error {
+	t.Helper()
+	promoter, ok := svc.(MemberPromoter)
+	if !ok {
+		t.Fatalf("expected %T to implement MemberPromoter", svc)
+	}
+	return promoter.PromoteMember(context.Background(), shardID, replicaID)
+}
+
+func TestAdminService_PromoteMember_Success(t *testing.T) {
+	host := &mockHost{
+		memberships: map[uint64]*quicraft.Membership{
+			1: {
+				Observers:  map[uint64]string{3: "127.0.0.1:5000"},
+				Identities: map[uint64]string{3: "spki:abc"},
+			},
+		},
+		requestAddNodeFn: func(_ context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error) {
+			if shardID != 1 {
+				t.Fatalf("expected shardID 1, got %d", shardID)
+			}
+			if replicaID != 3 {
+				t.Fatalf("expected replicaID 3, got %d", replicaID)
+			}
+			if addr != "127.0.0.1:5000" {
+				t.Fatalf("expected committed address, got %s", addr)
+			}
+			return newCompletedRequestState(quicraft.RequestResult{}), nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	if err := promoteMember(t, svc, 1, 3); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(host.addedIdentities) != 1 || host.addedIdentities[0] != "spki:abc" {
+		t.Fatalf("expected the observer's committed identity to be reused, got %v", host.addedIdentities)
+	}
+}
+
+func TestAdminService_PromoteMember_NotObserver(t *testing.T) {
+	host := &mockHost{
+		memberships: map[uint64]*quicraft.Membership{
+			1: {Nodes: map[uint64]string{3: "127.0.0.1:5000"}},
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := promoteMember(t, svc, 1, 3)
+
+	var noe *MemberNotObserverError
+	if !errors.As(err, &noe) {
+		t.Fatalf("expected *MemberNotObserverError, got %T: %v", err, err)
+	}
+	if noe.ShardID != 1 || noe.ReplicaID != 3 {
+		t.Fatalf("expected shard 1 replica 3, got %+v", noe)
+	}
+}
+
+func TestAdminService_PromoteMember_AbsentReplicaRefused(t *testing.T) {
+	host := &mockHost{}
+
+	svc := NewAdminService(host)
+	err := promoteMember(t, svc, 1, 3)
+
+	var noe *MemberNotObserverError
+	if !errors.As(err, &noe) {
+		t.Fatalf("expected *MemberNotObserverError, got %T: %v", err, err)
+	}
+}
+
+func TestAdminService_PromoteMember_MembershipReadError(t *testing.T) {
+	sentinel := errors.New("membership unreadable")
+	host := &mockHost{membershipErr: sentinel}
+
+	svc := NewAdminService(host)
+	err := promoteMember(t, svc, 1, 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var me *MembershipError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *MembershipError, got %T: %v", err, err)
+	}
+	if me.Op != "promote" {
+		t.Fatalf("expected op promote, got %s", me.Op)
+	}
+}
+
+func TestAdminService_PromoteMember_RequestError(t *testing.T) {
+	sentinel := errors.New("not leader")
+	host := &mockHost{
+		memberships: map[uint64]*quicraft.Membership{
+			1: {Observers: map[uint64]string{3: "127.0.0.1:5000"}},
+		},
+		requestAddNodeFn: func(_ context.Context, _, _ uint64, _ string) (*quicraft.RequestState, error) {
+			return nil, sentinel
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := promoteMember(t, svc, 1, 3)
+
+	var me *MembershipError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *MembershipError, got %T: %v", err, err)
+	}
+	if me.Op != "promote" {
+		t.Fatalf("expected op promote, got %s", me.Op)
+	}
+}
+
+func TestAdminService_PromoteMember_ResultError(t *testing.T) {
+	resultErr := errors.New("membership change in progress")
+	host := &mockHost{
+		memberships: map[uint64]*quicraft.Membership{
+			1: {Observers: map[uint64]string{3: "127.0.0.1:5000"}},
+		},
+		requestAddNodeFn: func(_ context.Context, _, _ uint64, _ string) (*quicraft.RequestState, error) {
+			return newCompletedRequestState(quicraft.RequestResult{Err: resultErr}), nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := promoteMember(t, svc, 1, 3)
+
+	var me *MembershipError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *MembershipError, got %T: %v", err, err)
+	}
+	if !errors.Is(me.Unwrap(), resultErr) {
+		t.Fatalf("expected underlying result error, got %v", me.Unwrap())
+	}
+}
+
+// TestAdminService_AddObserverMember_Success confirms AddObserverMember
+// adds through RequestAddObserverWithIdentity, never
+// RequestAddNodeWithIdentity -- the whole point of the distinct verb is
+// that the new replica comes up non-voting.
+func TestAdminService_AddObserverMember_Success(t *testing.T) {
+	host := &mockHost{
+		requestAddObserverFn: func(_ context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error) {
+			if shardID != 1 {
+				t.Fatalf("expected shardID 1, got %d", shardID)
+			}
+			if replicaID != 4 {
+				t.Fatalf("expected replicaID 4, got %d", replicaID)
+			}
+			if addr != "10.0.0.4:9100" {
+				t.Fatalf("expected addr 10.0.0.4:9100, got %s", addr)
+			}
+			return newCompletedRequestState(quicraft.RequestResult{}), nil
+		},
+	}
+
+	testSPKIIdentity := "spki:" + strings.Repeat("ab12cd34", 8)
+
+	svc := NewAdminService(host)
+	adder, ok := svc.(ObserverMemberAdder)
+	if !ok {
+		t.Fatalf("expected %T to implement ObserverMemberAdder", svc)
+	}
+	if err := adder.AddObserverMember(context.Background(), 1, 4, "10.0.0.4:9100", testSPKIIdentity); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(host.addedObserverIdentities) != 1 || host.addedObserverIdentities[0] != testSPKIIdentity {
+		t.Fatalf("expected the observer identity to be committed, got %v", host.addedObserverIdentities)
+	}
+	if len(host.addedIdentities) != 0 {
+		t.Fatalf("AddObserverMember must never go through RequestAddNodeWithIdentity, got %v", host.addedIdentities)
+	}
+}
+
+func TestAdminService_AddObserverMember_ResultError(t *testing.T) {
+	resultErr := errors.New("membership change in progress")
+	host := &mockHost{
+		requestAddObserverFn: func(_ context.Context, _, _ uint64, _ string) (*quicraft.RequestState, error) {
+			return newCompletedRequestState(quicraft.RequestResult{Err: resultErr}), nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	adder := svc.(ObserverMemberAdder)
+	err := adder.AddObserverMember(context.Background(), 1, 4, "10.0.0.4:9100", "spki:"+strings.Repeat("ab12cd34", 8))
 
 	var me *MembershipError
 	if !errors.As(err, &me) {

@@ -243,12 +243,16 @@ func TestValidate_ClusterJoinAndBootstrapJoin(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "bootstrap join configured with no token source",
+			// No token source is a valid configuration: it means "submit
+			// through the signing member's replicated approval queue"
+			// rather than "present an admission secret" -- see
+			// clusterenroll.BootstrapOptions.JoinToken's own doc comment.
+			name: "bootstrap join configured with no token source uses the approval queue",
 			mutate: func(c *Config) {
 				c.Bootstrap.JoinAddr = "127.0.0.1:63007"
 				c.Bootstrap.JoinKey = "aa"
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "bootstrap join fully configured",

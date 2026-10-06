@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -131,6 +132,18 @@ func LocalEngineKeepsLeases(backendType database.BackendType) bool {
 	return backendType != database.BackendFile && backendType != database.BackendObjstore
 }
 
+// The MVCC engine also always gets a fresh replicated audit.Chain
+// (engine.WithMVCCAuditChain): unlike hub and lr, nothing outside the engine
+// needs to share this instance, so one is constructed here rather than
+// threaded in from the caller. It is attached unconditionally for the same
+// reason the raft composition in cmd/qrdbd/start.go attaches one
+// unconditionally to every mvcc/pebble state machine: a standalone node is a
+// single replica, so there is no sibling to diverge from, but the opcode
+// handler itself has no notion of "standalone" and would otherwise refuse
+// every protocol.OpAuditAppend this composition root receives with
+// *statemachine.ServiceNotConfiguredError. The file and objstore (KV) engines
+// do not support the replicated audit chain at all (pkg/engine/kv_engine.go)
+// and are unaffected.
 func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
 	if !LocalEngineKeepsLeases(backendType) {
 		kvOpts := []engine.KVOption{}
@@ -140,7 +153,7 @@ func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *
 		return engine.NewKVEngine(stg, kvOpts...), nil
 	}
 
-	var mvccOpts []engine.MVCCOption
+	mvccOpts := []engine.MVCCOption{engine.WithMVCCAuditChain(audit.NewChain())}
 	if lr != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCLessor(lr))
 	}

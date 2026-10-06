@@ -11,6 +11,346 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Removed
+
+- **`seal.AbsoluteDataRootRecordError` and `seal.TenantRootUnresolvedError`.**
+  Both were pre-catalog leftovers: a tenant's location has been a volume pool
+  name and slot resolved on each node since the catalog landed, so neither a
+  tenant-root record naming a path nor an unresolved pool/slot pair is a
+  shape production code can still construct. `pkg/api/errclass`'s
+  classification table and tests are updated to match.
+
+### Added
+
+- **`tenant barrier-init --strategy shamir` takes its Security Officer/
+  custodian roster inline** (`--officers`/`--custodians`,
+  `username=path/to/csr.pem`, repeatable), mirroring `qrdb init`'s own
+  inline roster for the system barrier: a dedicated tenant's own IAM is
+  encrypted behind the very barrier its officers exist to help
+  initialize, so standalone `tenant barrier-officer register` cannot
+  reach it beforehand. The roster is validated as one pure batch (the
+  same validator the system barrier's own M-of-N init path uses,
+  `ceremony.ScopedCeremonyService.InitializeShamirWithRoster`) and
+  registered atomically with initialization; any later failure --
+  registration, signing, or the barrier's own Shamir split -- rolls
+  every already-registered officer back, leaving nothing persisted. A
+  roster supplied on any strategy but Shamir is refused outright, not
+  silently discarded, as is an invalid factor policy. Re-initializing an
+  already-initialized Shamir tenant barrier is refused before touching
+  the registry or any officer, leaving the original threshold,
+  configuration and holder set unchanged. Available on every transport:
+  REST, gRPC, QUIC, MCP, Unix and the embedded transport.
+
+### Fixed
+
+- **A dedicated tenant's Shamir barrier could not be initialized at all**
+  on a tenant whose barrier shell `tenant create` had already registered
+  under the node's default strategy: `tenant barrier-init --strategy
+  shamir` always failed closed with `qrdb/seal: shamir not configured`.
+  `seal.BarrierRegistry.ReconfigureTenantShamir` now installs the Shamir
+  strategy and configuration on an existing shell, honoring an explicit
+  `--strategy shamir` choice exactly like `InitializeTenantWithStrategy`
+  already does for passphrase/none.
+- **A data race on the per-barrier Shamir configuration** between
+  `SetShamirConfig`/`ReconfigureTenantShamir` and a concurrent `Status()`
+  poll, quorum TTL lookup, or `InitializeShamir` call, caught by `go test
+  -race` (none of these guarded `config.Shamir` before this). A
+  dedicated mutex now guards every access; a published `*ShamirConfig`
+  is replaced, never mutated in place.
+
+### Changed
+
+- **BREAKING:** `tenant.TenantServicer.TenantBarrierInitWithStrategy`
+  gained a trailing `roster *tenant.TenantBarrierShamirRoster` parameter.
+  Every existing caller passing `nil` is unaffected; nil (or an empty
+  roster) keeps the pre-existing behavior of initializing against
+  officers already enrolled standalone.
+
+- **Promote member** (docs/clustering). A new `service.MemberPromoter`
+  capability (`AdminService.PromoteMember`) promotes a committed observer of
+  a shard to a voter in place, keeping its committed address and identity;
+  nothing restarts. Served on every transport: `POST /membership/promote`
+  (REST, with leader forwarding), gRPC/Unix `PromoteMember`, QUIC
+  `admin.PromoteMember`, the `qrdb_promote_member` MCP tool, the embedded
+  transport's `PromoteMember`, `Client.Cluster().PromoteReplica` in the Go
+  SDK, and `qrdb admin member promote <replica-id> --shard-id`, gated by
+  `admin:add_member` (the same grant `member add` needs). Server-side it is a
+  distinct interface from `AdminServicer`, not a method on it, mirroring
+  `ClusterJoinTokenMinter`: every existing `AdminServicer` test double keeps
+  compiling. Client-side, since every SDK transport now implements it for
+  real, it is a plain method on `transport.AdminClient` like
+  `AddMember`/`RemoveMember` — no capability type assertion needed.
+
+- **A CSR-enrolled node is admissible once a cluster feature has activated**
+  (docs/clustering, `pkg/joinadvertise`). Previously, once any
+  `pkg/cluster/featuregate` feature activated, `qrdb admin member add` of a
+  node that joined through `qrdb enroll` / member-side CSR join was refused
+  with `*featuregate.UnsupportedReplicaError` until the node itself started
+  and advertised — which, not yet being a member, it generally could not do
+  first; the engineering doc had documented this as a known gap. The joiner
+  now sends its own replica ID and claimed features
+  (`featuregate.SupportedNames()`) in its join request, and
+  `clusterenroll.HandleJoinRequest`, once it has signed and admitted the
+  leaf, publishes a short-lived (15-minute) pre-membership advertisement for
+  it through the new `clusterenroll.FeatureAdvertiser` interface
+  (implemented by `pkg/joinadvertise.Advertiser` over the node's own lease
+  and MVCC-protocol KV surfaces, wired in by both `pkg/server/lifecycle`'s
+  Noise_NK listener and `pkg/server`'s REST `/v1/enroll/join` route), filtered
+  to the feature names the signing member's own binary knows. `member add`
+  then sees a live advertisement and admits the node normally. A failure to
+  advertise is logged, not fatal: the certificate is still issued, and
+  `member add` surfaces the same refusal it always would with no advertiser
+  configured.
+
+- **Invitation self-enrolment** (docs/identity-rbac): the way an ordinary
+  user gets a first certificate for a key nobody else ever held.
+  `users:invite` (ScopeSelfStrict, Admin and SO) creates a PENDING account
+  in the caller's own tenant -- or re-invites one still pending -- and
+  returns a single-use, short-lived enrolment token exactly once; only its
+  SHA-256 digest is stored. Redemption is UNAUTHENTICATED on REST
+  (`POST /invitations/redeem`, a public route), native QUIC
+  (`invitation.Redeem`, the one frame method served with no permission at
+  all), MCP (a separate public `/mcp/enroll` endpoint carrying exactly that
+  one tool, since `/mcp` itself answers nothing to an unauthenticated
+  caller) and embedded; the redeemer presents the tenant, the token and a
+  CSR for their own key (or a bring-your-own certificate over it, verified
+  against the tenant's trust anchors), and the account is activated with
+  the binding in the one conditional commit that requires it still pending
+  (`user.CertActivator.ActivateWithCertBinding`). Every refusal from token
+  lookup onward collapses into one opaque, unauthenticated answer, so a
+  bad, expired, already-used or ceremony-role-held token cannot be told
+  apart.
+  - Optional key pinning (`invite.WithKeyPin`): an invitation may be pinned
+    to the invited user's SPKI thumbprint, sent out of band, so a stolen
+    token redeems with no key but the one it was pinned to.
+    `auth.invitation_require_key_pin` refuses every unpinned invitation.
+  - Redemption is throttled per source address and per tenant
+    (`auth.invitation_redeem_limit.{per_source,per_tenant}`, token-bucket
+    policies on `pkg/ratelimit`); a throttled redemption gets the same
+    opaque answer as a bad token.
+  - `auth.invitation_ttl` (default `24h`, capped at 7 days) bounds how long
+    a token stays redeemable.
+  - New Go SDK surface: `transport.InvitationClient` (`InviteUser`,
+    `RedeemInvitation`), implemented by the embedded, REST and native QUIC
+    transports.
+  - Not yet implemented: gRPC and the Unix socket (blocked on `protoc`
+    availability in the environment this was built in), the TypeScript SDK,
+    desktop bindings, and the CLI.
+
+- **Replicated audit chain, phase 1** (docs/audit). `protocol.OpAuditAppend`,
+  gated by the new cluster feature `featuregate.AuditAppend`, assigns the
+  sequence number and hash digest at apply time in both engine families
+  (`pkg/store/pebble.go`, `pkg/engine/mvcc_engine.go`), so every replica
+  computes the identical chain from the identical committed entry. Pruning
+  carries a low-watermark in the head record and reads nothing from
+  storage, so the deleted range is identical regardless of how
+  `go-quicraft` happens to pack a batch; it never deletes the newest event
+  and is capped per command (`audit.MaxPrunePerCommand`). The reserved
+  raw-keyspace table (`pkg/audit.TablePrefix`) rides the same
+  snapshot/restore path as the lease table, tested across restart and
+  snapshot install on both state machine kinds, and is unreachable through
+  a direct `Get`, a transaction compare or an `OpGuarded` compare on every
+  engine family (`statemachine.IsReservedKey`, `CompareKeys`), closing the
+  same leak the lease table already had on `main`. Both composition roots
+  (`cmd/qrdbd/start.go`'s raft wiring and
+  `pkg/server/lifecycle.NewLocalEngine`'s standalone wiring) attach the
+  chain to every mvcc/pebble state machine unconditionally, exactly like
+  the lessor, so no per-node configuration can make one replica of a group
+  diverge from another. The service-layer wiring that composes this into
+  the existing `AuditLogger` interface -- the opt-in entitlement check, the
+  `EmitGated`/`EmitBestEffort` routing, the NDJSON-export-only rewiring --
+  is not yet implemented; nothing proposes the new opcode yet. See
+  [docs/audit/architecture.md](docs/audit/architecture.md#cluster-wide-replicated-trail).
+- **A role binding names only its holder's own tenant (owner ruling,
+  superseding the cross-tenant part of #192).** No binding grants anything
+  outside its holder's own tenant, and a tenant's own administrators act only
+  in their tenant. A system-tenant user could hold a `RoleBinding` naming any
+  tenant, and through it administer that tenant's users and roles on every
+  transport. Writing a binding that names any tenant other than the user's
+  own is now refused with `*user.RoleBindingTenantError` (400 /
+  `InvalidArgument`) on REST, gRPC, the unix socket, QUIC, MCP and embedded,
+  and by the user store itself, with or without RBAC. The role-assignment
+  gate refuses it after authorizing `roles:assign` in the user's tenant,
+  before any role is resolved.
+  Known gap: a system-tenant Admin can still administer a tenant's users and
+  roles through its ordinary roles. Strict tenant isolation, which closes it,
+  has not landed.
+
+- **Role bindings are own-tenant only, and the route-level target
+  resolution that cross-tenant bindings needed is removed.** Every
+  transport's entry permission check now runs in the caller's own tenant.
+  Operations that act on a tenant the request names keep their
+  handler-level re-check: tenant barrier, tenant record, certificates,
+  audit query and enable-encryption. For a caller outside the system tenant,
+  a request naming another tenant's user or role is answered not-found, and
+  one naming another tenant on a create, list or name lookup is refused with
+  `*tenant.CrossTenantDeniedError`.
+  Removed from `pkg/auth/middleware`:
+  - `Target`, `SelfTarget`, `TenantTarget`, `UserTarget`, `RoleTarget`,
+    `ResolveTarget`, `AuthorizeTarget` and `WithRoleService`;
+  - `RegisterGRPCTargets` and `GRPCTargetFunc`;
+  - `RESTTargetFunc`, `RESTRouteRegistry.SetTarget`, `RESTPathUser`,
+    `RESTPathRole`, `RESTPathTenant`, `RESTQueryTenant`, `RESTBody` and
+    `RESTTargetBodyLimit`;
+  - `QUICTargetFunc`, `MCPTargetFunc` and both registries' `SetTarget`;
+  - `TargetBodyInvalidError`, `TargetBodyTooLargeError` and
+    `InvalidGRPCTargetError`.
+
+  Also removed: `pkg/api/grpc.IdentityTargets`. `AuthorizeQUIC` and
+  `AuthorizeMCP` lose their payload and argument parameters.
+
+  The REST create, lookup and role-assignment routes keep a 1 MiB body bound
+  (413) at the handler. There is no compatibility path for a cross-tenant
+  binding already stored: clear it before upgrading
+  (`qrdb users update --clear-role-bindings`), and administer that tenant
+  from an account in it holding its role.
+
+- **Strict tenant isolation: ruled design (docs only).** `docs/multi-tenancy/`
+  now carries the owner-ruled contract (2026-10-01, S4 ruled 2026-10-02) for
+  keeping a strict tenant's records out of the system tenant. Nothing in the
+  design is implemented yet, except where noted below.
+  - **Home store.** Every per-tenant record the platform does not need in
+    order to place, route, size or retire the tenant moves into a per-tenant
+    home store. For `raft` and `barrier` tenants this is a replicated tenant
+    home group.
+  - **Per-node keys.** Each node holds its own replica key, and no tenant key
+    is transported between nodes.
+  - **Passthrough.** A node that does not serve a tenant relays the client's
+    still-encrypted connection to one that does, routed by SNI.
+  - **Isolation floor.** A cluster floor (`strict` by default, or
+    `operator-access`) can only be tightened, and a tenant may opt into
+    `strict`. A strict tenant always has storage of its own.
+  - **First admin (S7) already shipped independently of this ruling**, on
+    2026-10-03, as part of tenant onboarding: `admin_username` plus a CSR or
+    bring-your-own certificate is required at `tenant create` today, and
+    barrier init admits only that admin's certificate. The design doc is
+    corrected accordingly; what remains unshipped is the home store, the
+    per-node replica keys and the client fan-out across a serving set.
+  - **Inventory and plan.** The documents record where every per-tenant record
+    lives today, the closed list of records that stay in the system tenant,
+    the rulings and a phased implementation plan. Under S4, a strict tenant's
+    Raft log is under the tenant key from day one, on a mandatory,
+    fail-closed dedicated WAL.
+  - **Defects found**, independent of the policy: the etcd listener admits
+    the system tenant; a system identity can mint certificates for another
+    tenant; audit query is unconfined; system-tenant users may hold bindings
+    in any tenant; shard ids are allocated per node.
+- **Object storage target design: Pebble remote-storage LSM (docs only).**
+  `docs/storage-engines/` records the owner-ruled target design (2026-10-02)
+  for `pkg/storage/objstore`: move from one go-objstore object per key — which
+  hits go-objstore's NUL-byte, 1024-byte and 255-byte-segment key limits, and
+  costs one PUT per write plus listing cost — to an LSM segment layout, by
+  composing Pebble v2's `objstorage`/`remote` support (already a qrdb
+  dependency) over go-objstore rather than writing a new LSM. Segment object
+  names become short and opaque instead of key-derived. Seven decisions still
+  need the owner (OS-1..OS-7), each recorded with a recommendation, alongside
+  a phased implementation plan and acceptance tests. Design only; no code
+  changes.
+
+### Security
+
+- **BREAKING: user key-value keys beginning `__vec:` are refused on every
+  write verb and on Get, on both engines.** Put, PutIfAbsent, Delete,
+  CompareAndSwap, CompareAndDelete, Batch, Transaction and Guarded now refuse
+  a key in that namespace before staging anything, on `MVCCEngine` and
+  `KVEngine` alike; an exact-key Get of one is refused the same way. This
+  closes two residual gaps the phase-1 fix (B3, below) did not reach: a
+  transaction COMPARE and an `OpGuarded` compare could still read a raw
+  `__vec:` key's stored bytes, and the compare's own result
+  (`CompareResultLess`/`Greater`, or whether the guard held) answered a
+  binary-search probe against them -- an extraction oracle, not merely an
+  unauthorized write (go-qrdb vector-replicated re-review, B3-residual). Both
+  engines now refuse every compare key in a transaction or a guard before any
+  compare is evaluated. A `*vector.ForgedKeyError` now classifies as
+  PermissionDenied on every transport (`pkg/api/errclass`); it previously fell
+  through to each transport's generic, inconsistent default.
+  - **Pre-upgrade user data stored under a key beginning `__vec:` is not
+    migrated.** No prior release reserved this namespace, so no prior release
+    could have written vector records there, but an operator's own data could
+    coincidentally begin with those bytes. Old systems are obsolete and ship
+    no migration code or scanner for this (consistent with
+    `docs/databases/architecture.md` OD-11, superseded in the phase-1 entry
+    below): an upgrade that carries such a key will have it refused on the
+    first read or write after upgrading, not migrated or deleted automatically.
+
+### Added
+
+- **Vector index, checkpoint and determinism (lane 1B, phase 2 of 5).** Every
+  committed vector command now applies a post-commit effect to an in-memory
+  ANN index (`pkg/engine.VectorIndexManager`), on both `MVCCEngine` and
+  `KVEngine`: HNSW layer assignment and IVF k-means seeding are pure
+  functions of the namespace and ID/training generation
+  (`vector.DeterministicLayer`, `vector.DeterministicSeed`), never a clock or
+  a shared random source, so every replica builds the identical index from
+  the identical log. A namespace's index is checkpointed to
+  `<dir>/vector-index/<ns>/<seq>.idx` (temp name, synced, renamed; stale
+  checkpoints removed) through the binding's `atrest.Encryptor`, and on open
+  (`WarmVectorIndex`) a namespace loads its newest valid checkpoint and
+  replays the mutation log from there, or rebuilds from the vector records
+  when no checkpoint validates -- a checkpoint is a cache, never the only
+  copy of anything: deleting one costs a rebuild, never data. A namespace
+  whose index is not yet ready answers a search with the new, retryable
+  `service.VectorIndexWarmingError`; get, list and metadata search are
+  unaffected. `service.VectorSearchQuery` is the new engine `Lookup` query
+  this is served through. `WithMVCCVectorIndex` / `WithKVVectorIndex`
+  configure a checkpoint directory and encryptor on an engine; without them
+  an engine behaves exactly as it did in phase 1. Still not wired to a real
+  database binding, Raft snapshot, or any transport -- phases 3 and 4.
+- **Vector engine foundation (lane 1B, phase 1 of 5).** New Raft opcodes
+  (`protocol.OpVectorNamespaceCreate` and seven siblings, 70-77), a
+  `vector-engine` cluster feature gate (`pkg/cluster/featuregate`), and apply
+  handlers on both `MVCCEngine` and `KVEngine` (`pkg/engine/vector_handlers.go`)
+  that read and write vector namespaces, vectors, and their metadata index
+  entirely inside the shared `storage.Batch` -- the same apply path every
+  other engine command uses, on every local backend (memory, file, pebble,
+  objstore). This is additive: nothing existing is wired to it yet, and the
+  node-local Pebble vector store (`pkg/server/lifecycle`) is untouched and
+  still serves production traffic pending the remaining phases (index +
+  checkpoint + determinism; Raft snapshot + multi-node parity; service-layer
+  rewrite and transport parity; backup/restore). See
+  [docs/vectors/engineering.md](docs/vectors/engineering.md) "Target: the
+  vector engine".
+- `pkg/vector`: namespace and vector record types, their binary encoding, and
+  the `__vec:` key layout, independent of `pkg/engine` and `pkg/storage`
+  (go-qrdb vector-replicated audit, 2026-10-02).
+
+### Fixed
+
+- **docs(vectors): the metadata-index and ID key encoding in
+  `docs/vectors/engineering.md` is corrected from raw big-endian bytes to hex.**
+  A raw 8-byte big-endian ID or sequence is NUL for every leading byte below
+  its value -- the common case, since small sequential IDs have the MOST
+  leading zero bytes -- and go-objstore's local provider refuses a key
+  containing a NUL byte. Found by running the new engine-foundation test
+  matrix across every local backend; see the "Deviation from an earlier
+  revision" note in that document's "Keys in the database's store" section.
+  `docs/databases/architecture.md` OD-11 is marked superseded: no operator
+  import command for the node-local vector stores is built; old systems are
+  obsolete and ship no migration code.
+- **Phase-1 review findings (B1-B4, N1-N3, N6-N7, N9).** Non-deterministic
+  stored record bytes from unsorted map iteration (B1); a refused
+  `OpVectorBatchDelete` naming a duplicate ID partially committing on
+  MVCCEngine (B2); an ordinary user KV write able to forge a key under the
+  reserved `__vec:` namespace on both engines, read side included (B3); an
+  empty-string metadata value never indexed or un-indexed (B4); an explicit
+  vector ID of `math.MaxUint64` wrapping the namespace's ID allocator to 0
+  (N1); a namespace-name validator looser than the documented DNS-label rule
+  (N3); one param-block codec shared between `pkg/protocol` and `pkg/vector`
+  instead of two (N6). See
+  [docs/vectors/engineering.md](docs/vectors/engineering.md) for the
+  corrected mutation-log-window (N4) and count/byte-totals-and-quotas (N5)
+  documentation, and the one-store-per-database precondition now stated as
+  an assertion (N9).
+- **Phase-1 re-review findings (B3-residual, namespace-name validation).**
+  Every vector apply handler that names a namespace -- not only create --
+  now validates the name before it reads the namespace record, returning the
+  same typed `*vector.InvalidNamespaceNameError` create already used. A
+  database drop's key reclaim does not yet know about `__vec:` keys; this is
+  recorded as a phase-4 forward hazard and acceptance test in
+  [docs/vectors/engineering.md](docs/vectors/engineering.md), not fixed here
+  (neither phase 1 nor phase 2 wires a real per-database binding for it to
+  matter against).
+
 ## [0.43.0-alpha] - 2026-10-06
 
 Compliance credentials, tenant onboarding, replica forwarding, chunked import, volume pools and backup encryption; main's CI is fully green again. This release contains BREAKING changes; see the entries below. Highlights:

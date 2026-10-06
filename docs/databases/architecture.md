@@ -1008,18 +1008,22 @@ own bindings.
   export with the previous version and import into the new one.
 - **RULED: A — the recommendation, accepted.**
 
-**OD-11 — RULED C — Migrating the node-local vector stores.** In a multi-node cluster
-each node's vector store holds only the writes that node served, so the stores
-disagree.
+**OD-11 — SUPERSEDED 2026-10-02 by the no-backward-compat ruling — Migrating the
+node-local vector stores.** In a multi-node cluster each node's vector store
+holds only the writes that node served, so the stores disagree.
 - A: import every node's store; last writer wins by vector version and update
   time; deletes are not propagated.
 - B: import from one designated node only.
 - C: an operator import command, run per node, with
   `--on-conflict fail | newest | skip` defaulting to `fail`, reporting every
   conflict.
-- **RULED: C — the recommendation, accepted.** A single-node deployment, the common case, has no
+- ~~**RULED: C — the recommendation, accepted.** A single-node deployment, the common case, has no
   conflicts and imports cleanly; a cluster's operator sees every disagreement
-  instead of having one resolved silently.
+  instead of having one resolved silently.~~ **SUPERSEDED:** old systems are
+  obsolete and ship no migration code. The node-local vector stores are
+  deleted outright; an operator who needs the data re-ingests it through the
+  ordinary vector API, same as any other data source. No import command is
+  built.
 
 **OD-12 — RULED B — SQL virtual tables for the engines.** Today only a database created
 with engine `timeseries` or `vector` exposes `datapoints`/`metrics` or

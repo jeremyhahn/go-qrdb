@@ -285,7 +285,11 @@ type TenantServicer interface {
 	// InvalidStrategyError.
 	// passphrase is a borrow the caller may wipe on return; see
 	// TenantBarrierInit.
-	TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, strategyID seal.StrategyID) (*TenantBarrierInitResult, error)
+	// roster, when non-nil and non-empty, names the inline Shamir officer
+	// roster to validate and register atomically with initialization; it
+	// is refused with RosterRequiresShamirError on any strategy but
+	// Shamir, and ignored (nil-equivalent) there.
+	TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, strategyID seal.StrategyID, roster *TenantBarrierShamirRoster) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierUnseal unseals the per-tenant barrier using the
 	// caller-supplied key material. There is no derived credential
@@ -395,6 +399,26 @@ type TenantBarrierInitResult struct {
 	// Equals TotalShares when all officers are enrolled; may be less when
 	// enrollment is still in progress. Zero for non-Shamir strategies.
 	ShareCount int `json:"share_count,omitempty"`
+
+	// Holders carries the certificate issued to each officer in an inline
+	// Shamir roster, in roster order. Empty when no roster was supplied
+	// (the pre-enrolled-holders path).
+	Holders []TenantBarrierHolderCert `json:"holders,omitempty"`
+}
+
+// TenantBarrierHolderCert is the certificate issued to one officer of an
+// inline Shamir roster, registered atomically with the tenant barrier's own
+// initialization.
+type TenantBarrierHolderCert struct {
+	// Username is the holder's enrolled principal name.
+	Username string `json:"username"`
+
+	// Role is the holder's policy role.
+	Role string `json:"role"`
+
+	// CertPEM is the PEM-encoded certificate the CA issued, to be
+	// delivered to the holder out of band.
+	CertPEM string `json:"cert_pem"`
 }
 
 // TenantService manages multi-tenant lifecycle including metadata CRUD
@@ -1718,7 +1742,25 @@ func enforceTenantScope(ctx context.Context, targetTenantID, op string) error {
 // Authorization — who may call this — is enforced at the API/transport
 // layer; tenant-scope containment is enforced here.
 func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*TenantBarrierInitResult, error) {
-	return s.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyPassphrase)
+	return s.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyPassphrase, nil)
+}
+
+// TenantBarrierShamirRoster carries the inline Shamir share-holder roster a
+// tenant barrier initialization registers atomically with itself, through
+// the same holder engine standalone officer registration uses -- mirroring
+// how the system barrier's "qrdb init" takes its officer roster inline,
+// because a dedicated tenant's own IAM is encrypted behind the very barrier
+// its officers exist to help initialize, so no RBAC-backed registration
+// could reach it beforehand. Ignored (nil is equivalent to empty) by every
+// strategy but Shamir.
+type TenantBarrierShamirRoster struct {
+	// Officers is the roster to register, each validated (unique username,
+	// valid role, a CSR that parses and verifies) before any of them is
+	// registered. Its length must equal the requested share total.
+	Officers []ceremony.OfficerConfig
+	// Policy is the factor policy new holders enrol under ("" selects the
+	// holder engine's default, "designated").
+	Policy seal.FactorPolicy
 }
 
 // TenantBarrierInitWithStrategy initializes the per-tenant barrier using the
@@ -1740,6 +1782,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	passphrase []byte,
 	threshold, shares int,
 	strategyID seal.StrategyID,
+	roster *TenantBarrierShamirRoster,
 ) (*TenantBarrierInitResult, error) {
 	if strategyID == "" {
 		strategyID = seal.StrategyPassphrase
@@ -1762,7 +1805,15 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	// zero-arg strategy registry because it must carry the requested
 	// threshold/total, and its initialization RETURNS the generated shares.
 	if strategyID == seal.StrategyShamir {
-		return s.tenantBarrierInitShamir(ctx, tenantID, threshold, shares)
+		return s.tenantBarrierInitShamir(ctx, tenantID, threshold, shares, roster)
+	}
+
+	// A roster makes sense only for Shamir, which splits its unseal key to
+	// the holders it names; refuse it explicitly on any other strategy
+	// rather than silently discarding it (go-qrdb#560-style review finding:
+	// a caller-supplied roster going nowhere must never look like success).
+	if roster != nil && len(roster.Officers) > 0 {
+		return nil, &RosterRequiresShamirError{Strategy: string(strategyID)}
 	}
 
 	// The passphrase strategy requires caller-supplied key material.
@@ -1864,12 +1915,21 @@ func (s *TenantService) tenantBarrierInitShamir(
 	ctx context.Context,
 	tenantID string,
 	threshold, total int,
+	roster *TenantBarrierShamirRoster,
 ) (*TenantBarrierInitResult, error) {
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
 		return nil, err
 	}
 
-	if _, err := s.registry.GetTenant(tenantID); err != nil {
+	// A bad factor policy is a pure, side-effect-free check: refuse it
+	// before touching the registry or any officer, exactly like a bad CSR
+	// or role in the roster itself (validateOfficerCredentials, below).
+	if roster != nil && roster.Policy != "" && !roster.Policy.Valid() {
+		return nil, &InvalidFactorPolicyError{Policy: string(roster.Policy)}
+	}
+
+	tb, lookupErr := s.registry.GetTenant(tenantID)
+	if lookupErr != nil {
 		if _, regErr := s.registry.RegisterTenantPooledShamir(ctx, tenantID, threshold, total, 0); regErr != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "register", Err: regErr}
 		}
@@ -1878,6 +1938,32 @@ func (s *TenantService) tenantBarrierInitShamir(
 			slog.String("strategy", string(seal.StrategyShamir)),
 			slog.Int("threshold", threshold),
 			slog.Int("total", total))
+		tb, lookupErr = s.registry.GetTenant(tenantID)
+		if lookupErr != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: lookupErr}
+		}
+	} else {
+		// The tenant's barrier shell was already registered -- typically by
+		// `tenant create` itself, with the node's default (non-Shamir)
+		// strategy. Refuse BEFORE any reconfiguration or registration when
+		// it is ALREADY initialized: ReconfigureTenantShamir mutates the
+		// barrier's live strategy/config in place, and registering new
+		// officers against an already-keyed barrier would both sign and
+		// persist certificates for holders who were never actually going
+		// to receive a share, since InitializeShamir itself would still
+		// refuse with ErrAlreadyInitialized -- by then too late to undo the
+		// strategy swap or the new registrations. A re-init attempt must
+		// leave the threshold, config and holder set it is re-initializing
+		// AGAINST completely unchanged.
+		if initAt := tb.Barrier().Status().InitializedAt; !initAt.IsZero() {
+			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrAlreadyInitialized}
+		}
+		// Honor this EXPLICIT --strategy shamir choice over whatever the
+		// shell carries, exactly like the passphrase/none path above does
+		// via InitializeTenantWithStrategy.
+		if reconfigErr := s.registry.ReconfigureTenantShamir(tenantID, threshold, total, 0); reconfigErr != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "register", Err: reconfigErr}
+		}
 	}
 
 	// The tenant's holder authority must be installed on the barrier before
@@ -1890,18 +1976,55 @@ func (s *TenantService) tenantBarrierInitShamir(
 	if tcErr != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "ceremony-service", Err: tcErr}
 	}
-	tb, err := s.registry.GetTenant(tenantID)
-	if err != nil {
-		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+
+	// The inline roster (docs/multi-tenancy/cli.md): a dedicated tenant's own
+	// IAM is encrypted behind the very barrier its officers exist to help
+	// initialize, so -- exactly like the system barrier's "qrdb init" --
+	// InitializeShamirWithRoster validates every officer as one pure batch,
+	// registers them atomically with initialization through the SAME holder
+	// engine standalone officer registration (TenantBarrierOfficerRegister)
+	// uses, and rolls every one of them back on any later failure --
+	// registration, signing, or InitializeShamir itself -- leaving nothing
+	// persisted. roster == nil (or empty) is the pre-enrolled-holders path:
+	// every holder was already registered standalone, so there is nothing
+	// to validate or register here, only the initialization that follows.
+	var officers []ceremony.OfficerConfig
+	policy := seal.FactorPolicy("")
+	if roster != nil {
+		officers = roster.Officers
+		policy = roster.Policy
+	}
+	enroller := ""
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		enroller = id.Subject
 	}
 
-	// The holder authority runs the initialization, marked in flight: the
-	// barrier reads the holder set twice, to validate and to split, and a
-	// registration or unenrolment between the two is refused until it has
-	// finished (ceremony.ErrInitializationInProgress).
-	res, err := holders.InitializeShamir(ctx, tb.Barrier(), "")
-	if err != nil {
-		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+	var holderCerts []TenantBarrierHolderCert
+	var res *seal.ShamirInitParams
+	var err error
+	if len(officers) > 0 {
+		var results []*ceremony.RegisterOfficerResult
+		res, results, err = holders.InitializeShamirWithRoster(ctx, tb.Barrier(), officers, enroller, policy)
+		if err != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+		}
+		holderCerts = make([]TenantBarrierHolderCert, len(results))
+		for i, reg := range results {
+			holderCerts[i] = TenantBarrierHolderCert{
+				Username: officers[i].Username,
+				Role:     string(reg.Role),
+				CertPEM:  string(reg.CertPEM),
+			}
+		}
+	} else {
+		// The holder authority runs the initialization, marked in flight:
+		// the barrier reads the holder set twice, to validate and to
+		// split, and a registration or unenrolment between the two is
+		// refused until it has finished (ceremony.ErrInitializationInProgress).
+		res, err = holders.InitializeShamir(ctx, tb.Barrier(), policy)
+		if err != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+		}
 	}
 
 	s.logger.Info("tenant shamir barrier initialized",
@@ -1915,6 +2038,7 @@ func (s *TenantService) tenantBarrierInitShamir(
 		Threshold:   res.Threshold,
 		TotalShares: res.TotalShares,
 		ShareCount:  res.ShareCount,
+		Holders:     holderCerts,
 	}, s.notifyAfter(ctx, tenantID)
 }
 

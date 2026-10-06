@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -29,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // tenantRequestTimeout bounds every tenant endpoint so a stalled Raft
@@ -151,6 +153,15 @@ type tenantBarrierInitRequest struct {
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	Strategy   string `json:"strategy,omitempty"`
+
+	// Officers is the inline Shamir share-holder roster to validate and
+	// register atomically with initialization; see
+	// transport.TenantBarrierInitRequest.Officers. Refused on any strategy
+	// but shamir.
+	Officers []transport.OfficerRegisterRequest `json:"officers,omitempty"`
+	// Policy is the factor policy Officers enrol under ("" selects the
+	// holder engine's default, "designated").
+	Policy string `json:"policy,omitempty"`
 }
 
 // tenantBarrierUnsealRequest is the JSON payload for
@@ -738,7 +749,14 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 		writeAuthzErrorJSON(w, err)
 		return
 	}
-	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
+	var roster *tenant.TenantBarrierShamirRoster
+	if len(req.Officers) > 0 {
+		roster = &tenant.TenantBarrierShamirRoster{
+			Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
+			Policy:   seal.FactorPolicy(req.Policy),
+		}
+	}
+	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -754,6 +772,7 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 			"threshold":    result.Threshold,
 			"total_shares": result.TotalShares,
 			"share_count":  result.ShareCount,
+			"holders":      holderwire.TenantBarrierHoldersTo(result.Holders),
 		})
 		return
 	}

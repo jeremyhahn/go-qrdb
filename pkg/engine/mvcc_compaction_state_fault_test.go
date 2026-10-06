@@ -54,7 +54,7 @@ func TestMVCCEngine_CompactionState_ReturnsARecordWriteFault(t *testing.T) {
 			b := stg.Batch()
 			defer func() { _ = b.Close() }()
 			entry := sm.Entry{Index: 9, Cmd: mustEncode(protocol.EncodeCompactionState(cmd))}
-			_, err := eng.UpdateEntries(recordRefusingBatch{Batch: b}, []sm.Entry{entry}, make([]sm.Result, 1))
+			_, _, err := eng.UpdateEntries(recordRefusingBatch{Batch: b}, []sm.Entry{entry}, make([]sm.Result, 1))
 			if !errors.Is(err, errCompactionRecordWrite) {
 				t.Fatalf("UpdateEntries = %v, want the record write fault", err)
 			}

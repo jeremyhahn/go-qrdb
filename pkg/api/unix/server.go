@@ -39,6 +39,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -71,6 +72,7 @@ type Server struct {
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
+	invitationSvc     service.InvitationServicer
 	onboarding        service.TenantOnboardingServicer
 	barrierSvc        service.BarrierServicer
 	encMigrator       service.EncryptionMigrator
@@ -266,6 +268,12 @@ func WithCertProvider(svc cert.CertProvider) ServerOption {
 // issue/enrol and trust-anchor service.
 func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(s *Server) { s.certEnroll = svc }
+}
+
+// WithInvitations configures the Unix socket server with the invitation
+// self-enrolment service behind InviteUser and the PUBLIC RedeemInvitation.
+func WithInvitations(svc service.InvitationServicer) ServerOption {
+	return func(s *Server) { s.invitationSvc = svc }
 }
 
 // WithTenantOnboarding configures the Unix socket server with the tenant-create
@@ -603,6 +611,15 @@ func (s *Server) Start() error {
 				return err
 			}
 		}
+		// RedeemInvitation is the one PUBLIC built-in RPC (not a module): see
+		// pkg/api/grpc/server.go Start's identical registration. s.authMW may
+		// be the SAME instance the TCP gRPC server registered this on, but
+		// this keeps the Unix transport correct standalone.
+		if s.invitationSvc != nil {
+			if err := s.authMW.RegisterPublicGRPCMethods([]string{pb.QRDBService_RedeemInvitation_FullMethodName}); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Build the interceptor chains with the SAME ordering as the TCP gRPC
@@ -621,12 +638,6 @@ func (s *Server) Start() error {
 		grpcpkg.DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
-		// The same per-method target table TCP gRPC registers: this listener
-		// serves the same services, so a method is authorized against the
-		// same tenant on both.
-		if err := s.authMW.RegisterGRPCTargets(grpcpkg.IdentityTargets()); err != nil {
-			return err
-		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
 	// The SO gate installs whenever there is one, auth middleware or not:
@@ -731,6 +742,9 @@ func (s *Server) Start() error {
 	}
 	if s.certEnroll != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCertEnrollment(s.certEnroll))
+	}
+	if s.invitationSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterInvitationService(s.invitationSvc))
 	}
 	if s.onboarding != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterTenantOnboarding(s.onboarding))

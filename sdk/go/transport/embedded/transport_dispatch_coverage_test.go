@@ -177,6 +177,7 @@ func TestEmbeddedDispatch_HandlersBadRequest(t *testing.T) {
 		"ListVectors", "UpdateMetadata", "SearchSimilar", "SearchByMetadata",
 		"HybridSearch", "SearchByID", "RebuildIndex", "GetRebuildProgress",
 		"GetIndexStats", "CompactNamespace", "GetCompactionProgress",
+		"RetireJoinIdentity",
 	}
 	for _, m := range cases {
 		t.Run(m, func(t *testing.T) {

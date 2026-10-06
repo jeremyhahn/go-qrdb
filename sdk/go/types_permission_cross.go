@@ -265,6 +265,12 @@ const (
 // cluster, not to one tenant, so only Owner holds it by default.
 const PermissionClusterJoinToken = permission.ClusterJoinToken
 
+// PermissionClusterJoinIdentityRetire ("cluster:join_identity_retire")
+// permanently refuses any future admission for a node identity: it is a
+// cluster-wide decision no tenant's role may hold, so only Owner holds it by
+// default, the same precedent PermissionClusterJoinToken set.
+const PermissionClusterJoinIdentityRetire = permission.ClusterJoinIdentityRetire
+
 // The shard backup permissions are cross-scope because a backup is of shards,
 // not of a tenant: it holds every tenant's data on them, and a restore
 // overwrites every tenant's state.

@@ -17,6 +17,8 @@ package service
 import (
 	"slices"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 )
 
 func TestIsInternalKey_MatchesEveryReservedPrefix(t *testing.T) {
@@ -45,6 +47,9 @@ func TestIsInternalKey_MatchesEveryReservedPrefix(t *testing.T) {
 		"idx:tag:host=web1",
 		"retention:",
 		"retention:cpu",
+		vector.KeyPrefix,
+		string(vector.NamespaceKey("docs")),
+		string(vector.VectorKey("docs", 1)),
 	}
 	for _, key := range internal {
 		if !IsInternalKey(key) {
@@ -111,6 +116,7 @@ func TestInternalKeyPrefixes_TracksTheKeyLayout(t *testing.T) {
 		"idx:metric:",
 		"idx:tag:",
 		"retention:",
+		vector.KeyPrefix,
 		// A chunked import session's metadata and staged chunks are
 		// deliberately absent: they no longer live in the MVCC/KV
 		// engine's keyspace at all (pkg/importstage's raw, lease-bound

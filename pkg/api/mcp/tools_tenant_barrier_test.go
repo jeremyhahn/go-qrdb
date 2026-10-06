@@ -524,8 +524,8 @@ func (e *extMockMCPTenantService) UpdateEntitlements(ctx context.Context, id str
 func (e *extMockMCPTenantService) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
-func (e *extMockMCPTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
-	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, id, passphrase, threshold, total, sid)
+func (e *extMockMCPTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID, roster *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
+	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, id, passphrase, threshold, total, sid, roster)
 }
 func (e *extMockMCPTenantService) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
 	return e.mockTenantService.TenantBarrierUnseal(ctx, id, key)

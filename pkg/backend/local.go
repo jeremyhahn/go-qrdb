@@ -123,6 +123,12 @@ func (b *LocalBackend) RequestAddNodeWithIdentity(_ context.Context, _, _ uint64
 	return nil, &ClusterOperationError{Op: "AddNode"}
 }
 
+// RequestAddObserverWithIdentity returns ClusterOperationError since
+// LocalBackend does not support Raft cluster membership changes.
+func (b *LocalBackend) RequestAddObserverWithIdentity(_ context.Context, _, _ uint64, _, _ string, _ uint64) (*quicraft.RequestState, error) {
+	return nil, &ClusterOperationError{Op: "AddObserver"}
+}
+
 // SyncGetShardMembership returns ClusterOperationError since LocalBackend
 // has no Raft membership.
 func (b *LocalBackend) SyncGetShardMembership(_ context.Context, _ uint64) (*quicraft.Membership, error) {

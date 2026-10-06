@@ -17,12 +17,11 @@ package grpc
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/compactionconv"
-
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/compactionconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbconv"
 )
 

@@ -47,6 +47,84 @@ func parseDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
+// DefaultInvitationTTLString is the default auth.invitation_ttl: one day.
+const DefaultInvitationTTLString = "24h"
+
+// MaxInvitationTTL is the longest auth.invitation_ttl accepted. An
+// invitation token is a bearer secret for an account's first credential;
+// one that stays redeemable for longer than a week is a standing
+// credential, not an invitation.
+const MaxInvitationTTL = 7 * 24 * time.Hour
+
+// ParseInvitationTTL parses auth.invitation_ttl, treating empty as
+// DefaultInvitationTTLString. It must be positive and at most
+// MaxInvitationTTL.
+func ParseInvitationTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = DefaultInvitationTTLString
+	}
+	d, err := parseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 || d > MaxInvitationTTL {
+		return 0, &ValidationError{Field: "auth.invitation_ttl", Reason: "must be positive and at most " + MaxInvitationTTL.String()}
+	}
+	return d, nil
+}
+
+// RatePolicyConfig is a token-bucket rate policy: RatePerSecond sustained,
+// Burst at once. Zero fields take the caller's default.
+type RatePolicyConfig struct {
+	RatePerSecond float64 `yaml:"rate_per_second"`
+	Burst         int     `yaml:"burst"`
+}
+
+// InvitationRedeemLimitConfig is auth.invitation_redeem_limit.
+type InvitationRedeemLimitConfig struct {
+	// PerSource bounds redemptions from one source address.
+	PerSource RatePolicyConfig `yaml:"per_source"`
+	// PerTenant bounds redemptions into one tenant, from every source.
+	PerTenant RatePolicyConfig `yaml:"per_tenant"`
+}
+
+// Defaults for auth.invitation_redeem_limit. A person redeems one token
+// once; a few retries per source and a few dozen enrolments in a burst per
+// tenant cover every legitimate use while making a guessing campaign --
+// already hopeless against 256-bit tokens -- also slow and loud.
+var (
+	DefaultRedeemPerSource = RatePolicyConfig{RatePerSecond: 0.1, Burst: 5}
+	DefaultRedeemPerTenant = RatePolicyConfig{RatePerSecond: 1, Burst: 30}
+)
+
+// Resolved resolves the redemption limits, applying the defaults to zero
+// fields. A negative rate or burst is refused.
+func (c InvitationRedeemLimitConfig) Resolved() (perSource, perTenant RatePolicyConfig, err error) {
+	if perSource, err = c.PerSource.resolved("auth.invitation_redeem_limit.per_source", DefaultRedeemPerSource); err != nil {
+		return RatePolicyConfig{}, RatePolicyConfig{}, err
+	}
+	if perTenant, err = c.PerTenant.resolved("auth.invitation_redeem_limit.per_tenant", DefaultRedeemPerTenant); err != nil {
+		return RatePolicyConfig{}, RatePolicyConfig{}, err
+	}
+	return perSource, perTenant, nil
+}
+
+// resolved is p with def's value for each zero field.
+func (p RatePolicyConfig) resolved(field string, def RatePolicyConfig) (RatePolicyConfig, error) {
+	if p.RatePerSecond < 0 || p.Burst < 0 || math.IsNaN(p.RatePerSecond) || math.IsInf(p.RatePerSecond, 0) {
+		return RatePolicyConfig{}, &ValidationError{Field: field, Reason: "rate_per_second and burst must be positive (zero takes the default)"}
+	}
+	out := def
+	if p.RatePerSecond > 0 {
+		out.RatePerSecond = p.RatePerSecond
+	}
+	if p.Burst > 0 {
+		out.Burst = p.Burst
+	}
+	return out, nil
+}
+
 // Config is the top-level QRDB configuration. It is loaded from a YAML
 // file and validated before use.
 type Config struct {
@@ -1012,6 +1090,24 @@ type AuthConfig struct {
 	// Default: "8760h" (1 year).
 	CertTTL string `yaml:"cert_ttl"`
 
+	// InvitationTTL is how long an invitation (users:invite) stays
+	// redeemable. The token is a bearer secret, so it is short-lived: a Go
+	// duration, positive and at most MaxInvitationTTL. Default: "24h".
+	InvitationTTL string `yaml:"invitation_ttl"`
+
+	// InvitationRequireKeyPin refuses any invitation that is not pinned to
+	// the invited user's key (users:invite --pin-key-fingerprint). On, a
+	// stolen token is useless without the user's private key; compliance
+	// profiles turn it on. Default: false.
+	InvitationRequireKeyPin bool `yaml:"invitation_require_key_pin"`
+
+	// InvitationRedeemLimit throttles invitation redemption -- the one verb
+	// any caller may make with no credential -- per source address and per
+	// tenant. A throttled redemption gets the same opaque refusal as a bad
+	// token. Zero fields take the defaults (see DefaultRedeemPerSource and
+	// DefaultRedeemPerTenant).
+	InvitationRedeemLimit InvitationRedeemLimitConfig `yaml:"invitation_redeem_limit"`
+
 	// PermCacheTTL is the permission cache time-to-live in seconds.
 	// Cached permission sets are evicted after this duration.
 	// Default: 30.
@@ -1361,6 +1457,12 @@ type BootstrapConfig struct {
 	// JoinTokenEnv is the name of an environment variable holding the
 	// single-use join token. Mutually exclusive with JoinTokenFile.
 	JoinTokenEnv string `yaml:"join_token_env"`
+
+	// JoinApprovalPollInterval bounds how often a tokenless CSR (neither
+	// JoinTokenFile nor JoinTokenEnv set) is re-presented while it sits in
+	// the signing member's replicated approval queue. Zero uses
+	// clusterenroll.DefaultJoinApprovalPollInterval.
+	JoinApprovalPollInterval time.Duration `yaml:"join_approval_poll_interval"`
 }
 
 // ClusterJoinConfig configures this node's member-side CSR-sign surface:
@@ -2137,6 +2239,12 @@ func (c *Config) Validate() error {
 	if c.Auth.PermCacheTTL < 0 {
 		return &ValidationError{Field: "auth.perm_cache_ttl", Reason: "must not be negative"}
 	}
+	if _, err := ParseInvitationTTL(c.Auth.InvitationTTL); err != nil {
+		return &ValidationError{Field: "auth.invitation_ttl", Reason: "must be a positive Go duration of at most " + MaxInvitationTTL.String() + " (" + err.Error() + ")"}
+	}
+	if _, _, err := c.Auth.InvitationRedeemLimit.Resolved(); err != nil {
+		return err
+	}
 	if c.Auth.RevocationCacheTTL != "" {
 		d, err := parseDuration(c.Auth.RevocationCacheTTL)
 		if err != nil {
@@ -2297,10 +2405,12 @@ func (c *Config) Validate() error {
 	if c.Bootstrap.JoinTokenFile != "" && c.Bootstrap.JoinTokenEnv != "" {
 		return &ValidationError{Field: "bootstrap.join_token_file", Reason: "mutually exclusive with bootstrap.join_token_env; configure exactly one"}
 	}
-	joinClientConfigured := c.Bootstrap.JoinAddr != "" || c.Bootstrap.JoinKey != "" || c.Bootstrap.JoinHTTPURL != ""
-	if joinClientConfigured && c.Bootstrap.JoinTokenFile == "" && c.Bootstrap.JoinTokenEnv == "" {
-		return &ValidationError{Field: "bootstrap.join_token_file", Reason: "member-side join requires bootstrap.join_token_file or bootstrap.join_token_env; the token is never configured inline"}
-	}
+	// bootstrap.join_token_file/-env are deliberately NOT required here: a
+	// join transport configured with neither is a valid configuration,
+	// meaning "submit through the signing member's replicated approval
+	// queue" rather than "present an admission secret" -- see
+	// clusterenroll.BootstrapOptions.JoinToken's own doc comment and
+	// docs/clustering/architecture.md's "Approval queue" section.
 	if c.Bootstrap.JoinAddr != "" && c.Bootstrap.JoinKey == "" {
 		return &ValidationError{Field: "bootstrap.join_key", Reason: "required when bootstrap.join_addr is set"}
 	}

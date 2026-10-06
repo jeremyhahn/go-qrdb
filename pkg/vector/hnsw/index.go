@@ -82,8 +82,25 @@ func (idx *HNSWIndex) GetConfig() *Config {
 	return &configCopy
 }
 
-// Insert adds a new vector to the index.
+// Insert adds a new vector to the index, selecting its layer from the
+// index's internal random source. See InsertAtLayer for a deterministic
+// alternative.
 func (idx *HNSWIndex) Insert(id uint64, vector []float32) error {
+	return idx.insertAtLayer(id, vector, idx.selectLayer())
+}
+
+// InsertAtLayer adds a new vector to the index at a caller-supplied layer,
+// instead of drawing one from the index's internal random source. It exists
+// so a replicated namespace can place a node deterministically -- the same
+// (namespace, id) pair always computes to the same layer on every replica
+// (see vector.DeterministicLayer) -- without disturbing Insert's existing
+// behaviour for every other caller, which still draws from idx.rng.
+func (idx *HNSWIndex) InsertAtLayer(id uint64, vector []float32, layer int) error {
+	return idx.insertAtLayer(id, vector, layer)
+}
+
+// insertAtLayer is Insert and InsertAtLayer's shared body.
+func (idx *HNSWIndex) insertAtLayer(id uint64, vector []float32, layer int) error {
 	if id == 0 {
 		return ErrInvalidID
 	}
@@ -102,9 +119,6 @@ func (idx *HNSWIndex) Insert(id uint64, vector []float32) error {
 	if _, exists := idx.nodes.Load(id); exists {
 		return ErrDuplicateID
 	}
-
-	// Select layer for new node
-	layer := idx.selectLayer()
 
 	// Create new node
 	node := NewNode(id, vector, layer)

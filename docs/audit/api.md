@@ -1,6 +1,6 @@
 # Audit — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
 
 gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
 `QRDBService`. The Unix socket transport serves the same gRPC wire over a UDS.
@@ -15,6 +15,11 @@ gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
 **Two capabilities, on all six transports.** Writing is not a capability:
 entries are emitted by the subsystems that perform the audited operations,
 and there is no endpoint to create, edit or delete one.
+
+Both capabilities answer from the **node-local** trail only. A separate,
+cluster-wide replicated audit chain exists at the storage/Raft layer
+([architecture.md](architecture.md#cluster-wide-replicated-trail)); nothing
+proposes writes to it yet and it has no API surface on any transport.
 
 **Verify chain** walks the active file and every rotation
 archive as one sequence through `pkg/audit.Verify`, and reports the result —

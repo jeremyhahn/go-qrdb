@@ -452,6 +452,47 @@ the ANN index from the stored vectors.
 
 ## Target: the vector engine
 
+### Status (2026-10-05)
+
+This section is the five-phase program's target design, written ahead of the
+code it specifies. Two of the five phases have shipped; the rest of this
+section still describes work not yet wired to anything a caller can reach.
+
+- **Phase 1 — engine foundation: shipped.** Raft opcodes 70-77
+  (`protocol.OpVectorNamespaceCreate` and seven siblings), the `vector-engine`
+  cluster feature gate, and apply handlers on both `MVCCEngine` and `KVEngine`
+  (`pkg/engine/vector_handlers.go`) that read and write vector namespaces,
+  vectors, and their metadata index inside the shared `storage.Batch`, on
+  every local backend (memory, file, pebble, objstore). Includes the B1-B4,
+  N1-N3, N6-N7, N9 review fixes and the B3-residual re-review fix (the
+  reserved `__vec:` namespace is closed against every write verb and every
+  compare, on both engines).
+- **Phase 2 — index, checkpoint, determinism: shipped.** The in-memory ANN
+  index (`pkg/engine.VectorIndexManager`), HNSW/IVF/flat `LiveIndex`
+  adapters, deterministic layer/seed derivation (`pkg/vector.Deterministic*`),
+  checkpoint read/write (`pkg/engine/vector_checkpoint.go`), and `Warm` /
+  `RebuildNamespace` recovery. Wired into `MVCCEngine` and `KVEngine` via
+  `WithMVCCVectorIndex` / `WithKVVectorIndex`, exercised by the acceptance
+  tests in `pkg/engine/vector_acceptance_test.go`.
+- **Phase 3 — Raft snapshot + multi-node parity: not started.** The vector
+  keyspace is ordinary state-machine state and travels in today's snapshot by
+  construction, but multi-node parity (join, catch-up, recovery) for it is
+  unverified — no test in this tree stands up more than one replica.
+- **Phase 4 — service-layer rewrite and transport parity: not started.**
+  `pkg/service/vector.go` still proposes nothing: it is not wired to the
+  opcodes above. The node-local Pebble vector store (`pkg/server/lifecycle`)
+  is untouched and still serves production traffic. This phase also owns: the
+  per-database storage-binding precondition noted under "Keys in the
+  database's store" (N9); count/byte totals and quota enforcement (N5); the
+  database-drop key-reclaim forward hazard (acceptance test 11); and OD-14
+  shard_id removal across transports.
+- **Phase 5 — backup/restore coverage: not started.**
+
+Both shipped phases are additive and dormant: nothing proposes the new
+opcodes yet (phase 4 does that), so main's observable behaviour is unchanged
+except for the B3/B3-residual `__vec:` key-forgery refusal, which affects
+only keys under a prefix no existing caller writes.
+
 ### Commands
 
 Every vector write is a command in the extended protocol, proposed to the
@@ -462,7 +503,7 @@ in the implementing change and are wire format from then on.
 |---|---|
 | `VectorNamespaceCreate` | namespace record with geometry, index parameters, `seq = 0`, `next_id = 1`, training generation 0 |
 | `VectorNamespaceDelete` | deletes the namespace record, every record, metadata index entry and mutation-log entry under it |
-| `VectorUpsert`, `VectorBatchUpsert` | records, metadata index entries, `seq`, `next_id` for omitted IDs, count and byte totals, mutation-log entries |
+| `VectorUpsert`, `VectorBatchUpsert` | records, metadata index entries, `seq`, `next_id` for omitted IDs, mutation-log entries |
 | `VectorDelete`, `VectorBatchDelete` | the same, removing |
 | `VectorUpdateMetadata` | the record's metadata and its index entries; no ANN change |
 | `VectorIndexReconfigure` | new index parameters and training generation; each replica rebuilds its index locally |
@@ -488,20 +529,76 @@ Reserved internal prefixes, covered by the internal-key guard so they never
 appear in KV enumeration:
 
 ```
-__vec:ns/<ns>                                     namespace record
-__vec:v/<ns>/<id: 8 bytes big-endian>             vector record: embedding, metadata, version, timestamps
-__vec:md/<ns>/<field> 0x00 <value> 0x00 <id: 8 bytes>  metadata equality index entry
-__vec:ml/<ns>/<seq: 8 bytes big-endian>           mutation-log entry: operation and ID
+__vec:ns/<ns>                                           namespace record
+__vec:v/<ns>/<id: 16 hex digits, big-endian>            vector record: embedding, metadata, version, timestamps
+__vec:md/<ns>/<field, hex>/<value, hex>/<id: 16 hex digits, big-endian>  metadata equality index entry
+__vec:ml/<ns>/<seq: 16 hex digits, big-endian>          mutation-log entry: operation and ID
 ```
 
+**Deviation from an earlier revision of this document, found by the lane 1B
+engine-foundation implementation (2026-10-02) and corrected here in the same
+change.** This section previously specified the ID, sequence, field, and value
+components as raw bytes -- an 8-byte big-endian integer for IDs and sequences,
+and the field/value strings verbatim either side of a `0x00` separator. Built
+and run against every local backend (`pkg/engine`'s cross-backend test
+matrix), that layout failed on `objstore`: go-objstore's local provider
+refuses any key containing a NUL byte, and a raw big-endian `uint64` is NUL
+for every leading byte up to the value itself -- the common case, since small,
+sequentially-allocated IDs (1, 2, 3, ...) are the ones with the MOST leading
+zero bytes, not an edge case. Every integer component is therefore hex-encoded
+(16 lowercase hex digits for the 8-byte value), which preserves the same
+lexicographic ordering a raw big-endian scan depended on, one hex digit per
+nibble. The metadata field and value -- caller-supplied, unconstrained
+strings, unlike a namespace name -- are hex-encoded too, both to remove any
+NUL byte they might contain and to remove `/` as a possible segment-boundary
+collision; because the metadata index is an EQUALITY index ("Shape chosen" in
+architecture.md), losing the original strings' lexicographic order in their
+encoded form costs nothing a lookup needs, since a lookup hex-encodes the same
+field and value and matches the same segment.
+
 Namespace names follow DNS-label rules, so they contain no `/` and no zero
-byte. No tenant or database prefix is part of any key: the store belongs to one
-database.
+byte, and are stored verbatim (not hex-encoded): unlike metadata, a namespace
+name is validated at every write, so it cannot carry a NUL byte or a `/` for
+the key layout to protect against. No tenant or database prefix is part of
+any key: the store belongs to one database.
+
+**Precondition (not yet enforced in code): the `storage.Batch` an apply
+handler receives is the store of EXACTLY ONE database.** The key layout above
+has no tenant or database prefix because it relies on this; it is an
+assertion about the CALLER (whatever constructs the binding this engine is
+wired into), not something `pkg/engine` can check from inside an apply
+handler, which sees only a `storage.Batch` and has no way to ask "whose is
+this?". Phase 1 (this change) wires nothing to a real binding, so the
+precondition is latent and unenforced. Phase 4 (service-layer rewrite) is
+where `pkg/service/vector.go` is wired to a real per-database storage
+binding, and is where this precondition becomes checkable and must be
+enforced -- e.g. by construction, if the binding type itself cannot be shared
+across two databases -- rather than left as a comment (go-qrdb
+vector-replicated review, N9).
+
+**Forward hazard for phase 4: a database drop's key reclaim does not know
+about `__vec:` keys.** `pkg/service.reclaimKeys` walks a fixed, explicit list
+of key prefixes a database owns; `__vec:` is not on it, and adding it there
+would not be correct anyway -- a raw prefix delete leaves the namespace
+record, the vector records, the metadata index and the mutation log
+consistent with EACH OTHER in the general case (they are deleted together),
+but it is not how every other OpVectorNamespaceDelete removal happens (through
+`deleteKeyRange` inside an apply batch, batched with the namespace record's own
+delete), and a drop that bypasses that handler risks leaving one of those four
+key families behind if the prefix list or the handler's own key set ever
+drift apart. Phase 4, which wires a real per-database binding and therefore a
+real drop path, must have teardown issue one `OpVectorNamespaceDelete` per
+namespace the database holds -- through the same apply handler every other
+vector delete goes through -- rather than teach `reclaimKeys` a fifth raw
+prefix. This is a phase-4 acceptance test (see "Target: acceptance tests",
+below), not phase-1's or phase-2's to fix: neither phase wires a real
+database binding for `reclaimKeys` to run against (go-qrdb vector-replicated
+review, phase-2 forward hazard).
 
 ### Apply and the index
 
 1. The handler validates against the namespace record read through the apply
-   batch (dimension, geometry, quotas), and writes every key it changes into the
+   batch (dimension, geometry), and writes every key it changes into the
    batch. A validation failure is an application-level refusal in the result,
    not an apply fault, so the log keeps advancing.
 2. The batch commits with the entry.
@@ -509,9 +606,30 @@ database.
    to the in-memory index: insert, update or delete by ID. An index error here
    marks the namespace for rebuild; it never fails the committed entry.
 
-The mutation log keeps the last N entries per namespace (N is a node setting
-with a default in the tens of thousands) and is trimmed in apply by sequence,
-so every replica holds the same window.
+**Count and byte totals, and quota enforcement, are deferred, not shipped.**
+Phase 1 (this document's "Target: the vector engine" as implemented) tracks
+only `seq`, `next_id`, and `training_generation` on the namespace record. Per
+namespace vector/byte counts and any quota check against them belong at the
+service layer that proposes these commands -- phase 4 of the vector-replicated
+program ("service-layer rewrite and transport parity", the same phase that
+rewrites `pkg/service/vector.go` to propose through this engine instead of the
+node-local Pebble store) -- and are not implemented in any phase before it. An
+earlier revision of this document listed them as something `VectorUpsert` and
+`VectorBatchUpsert` already apply; they do not (go-qrdb vector-replicated
+review, N5).
+
+The mutation log keeps the last N entries per namespace, where N
+(`defaultMutationLogWindow` in `pkg/engine/vector_handlers.go`, 50,000 as
+shipped in phase 1) is a COMPILE-TIME CONSTANT, not a node setting: every
+replica trims at the identical sequence only because every replica's binary
+carries the identical value. An earlier revision of this document called it
+"a node setting", which would let two nodes running different configuration
+trim at different points from the same log and diverge -- correctable only by
+making it a constant (as shipped) or, if it ever needs to be configurable, a
+REPLICATED value stored in the namespace record itself and changed only
+through a command every replica applies identically (go-qrdb vector-replicated
+review, N4). Trimming itself happens in apply by sequence, so every replica
+holds the same window regardless.
 
 ### Checkpoints
 
@@ -585,6 +703,13 @@ storage schema package is kept only if the engine's record codec reuses it.
    database cannot be read with the node's encryptor; sealing the tenant's
    barrier fails every vector capability closed.
 10. **Deterministic IDs.** Omitted IDs are identical on every replica.
+11. **A database drop reclaims every vector key.** (Phase 4.) After a
+    database with vector namespaces is dropped, the store holds no
+    `__vec:` key for it -- namespace records, vector records, the metadata
+    index and the mutation log alike -- because teardown issued an
+    `OpVectorNamespaceDelete` per namespace rather than a raw prefix delete
+    that `reclaimKeys` does not know to run (see the forward hazard noted
+    beside the N9 precondition, above).
 
 ## Test strategy
 

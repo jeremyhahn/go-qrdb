@@ -20,6 +20,7 @@ package flat
 
 import (
 	"container/heap"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 
@@ -220,6 +221,69 @@ func (idx *Index) Count() int64 {
 // Returns 0 if no vectors have been inserted.
 func (idx *Index) Dimensions() int {
 	return int(idx.dimensions.Load())
+}
+
+// flatPersisted is the serializable form Marshal and Unmarshal share. A flat
+// index is brute-force -- Insert does no training or graph construction, so
+// unlike HNSW or IVF its "rebuild" and "replay a checkpoint" costs are
+// nearly identical; it is included here anyway so docs/vectors/engineering.md
+// "Checkpoints" (format version, parameters, serialized index) treats every
+// index type uniformly rather than special-casing flat as the one kind that
+// never persists.
+type flatPersisted struct {
+	DistMetric hnsw.DistanceMetric
+	Dimensions int32
+	Vectors    map[uint64][]float32
+}
+
+// Marshal serializes the index to bytes.
+func (idx *Index) Marshal() ([]byte, error) {
+	persisted := flatPersisted{
+		DistMetric: idx.distMetric,
+		Dimensions: idx.dimensions.Load(),
+		Vectors:    make(map[uint64][]float32),
+	}
+	idx.vectors.Range(func(key, value any) bool {
+		id, ok := key.(uint64)
+		if !ok {
+			return true
+		}
+		vec, ok := value.([]float32)
+		if !ok {
+			return true
+		}
+		persisted.Vectors[id] = vec
+		return true
+	})
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// Unmarshal restores the index from bytes produced by Marshal. Any vectors
+// already in the index are discarded first.
+func (idx *Index) Unmarshal(data []byte) error {
+	var persisted flatPersisted
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		return err
+	}
+	// Reset in place rather than through Close, which documents itself as
+	// terminal: Unmarshal re-populates the same index immediately after.
+	idx.vectors.Range(func(key, _ any) bool {
+		idx.vectors.Delete(key)
+		return true
+	})
+	idx.count.Store(0)
+	idx.dimensions.Store(0)
+	idx.distMetric = persisted.DistMetric
+	for id, vec := range persisted.Vectors {
+		if err := idx.Insert(id, vec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close releases index resources. After Close, the index should not be used.

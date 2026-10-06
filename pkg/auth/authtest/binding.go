@@ -27,34 +27,42 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
-// The binding fixture: a system-tenant operator whose ONLY grant is a
-// RoleBinding for the built-in Admin role of BindingTenant, a user in that
-// tenant, and a user in OtherTenant the binding does not reach. Every
-// transport's target-tenant test drives its own request shape through its own
-// route-level check against this one fixture, over a role store built by
-// BuiltInRoles(t, tenantid.System, BindingTenant, OtherTenant), so the
-// six transports are held to one answer: updating the BindingTenant user is
-// authorized, updating the OtherTenant user is refused.
+// The binding fixture. A RoleBinding may name only its holder's own tenant,
+// and the fixture is the one every transport's test drives to hold the six
+// transports to one answer:
+//
+//   - an administrator of BindingTenant holding that tenant's Admin role
+//     through its own RoleIDs, the caller that administers BindingTenant's
+//     users and roles;
+//   - a user in BindingTenant, and a user in OtherTenant the administrator may
+//     not reach;
+//   - a system-tenant user holding nothing, so a test can show a binding on a
+//     system-tenant account is held to the same own-tenant rule.
+//
+// The role store is BuiltInRoles(t, tenantid.System, BindingTenant,
+// OtherTenant).
 const (
-	// BindingTenant is the tenant the operator's binding names.
+	// BindingTenant is the administrator's tenant.
 	BindingTenant = "acme"
-	// OtherTenant is a tenant the operator holds nothing in.
+	// OtherTenant is a tenant the administrator holds nothing in.
 	OtherTenant = "globex"
-	// BindingOperatorName is the operator's username and certificate subject.
-	BindingOperatorName = "operator"
+	// BindingTenantAdminName is the BindingTenant administrator's username
+	// and certificate subject.
+	BindingTenantAdminName = "acme-admin"
 
-	// BindingOperatorID, UserInBindingTenant and UserInOtherTenant are the
-	// fixture's user ids.
-	BindingOperatorID   uint64 = 100
-	UserInBindingTenant uint64 = 200
-	UserInOtherTenant   uint64 = 300
+	// SystemUserID, BindingTenantAdminID, UserInBindingTenant and
+	// UserInOtherTenant are the fixture's user ids.
+	SystemUserID         uint64 = 100
+	BindingTenantAdminID uint64 = 400
+	UserInBindingTenant  uint64 = 200
+	UserInOtherTenant    uint64 = 300
 )
 
-// BindingOperator returns the identity the operator authenticates as, before
-// the middleware enriches it from the user store: a system-tenant subject
-// holding no roles of its own.
-func BindingOperator() *auth.Identity {
-	return &auth.Identity{Subject: BindingOperatorName, TenantID: tenantid.System}
+// BindingTenantAdmin returns the identity BindingTenant's administrator
+// authenticates as, before the middleware enriches it with the Admin role its
+// record holds.
+func BindingTenantAdmin() *auth.Identity {
+	return &auth.Identity{Subject: BindingTenantAdminName, TenantID: BindingTenant}
 }
 
 // BindingUsers is the fixture's user store. GetUser answers as the routed
@@ -70,19 +78,19 @@ type BindingUsers struct {
 	nextID  uint64
 }
 
-// NewBindingUsers returns the fixture's user store, the operator's record
-// carrying its one binding.
+// NewBindingUsers returns the fixture's user store.
 func NewBindingUsers() *BindingUsers {
 	now := time.Now().UTC()
 	rec := func(id uint64, name, tenantID string) *user.User {
 		return &user.User{ID: id, Username: name, TenantID: tenantID, Lifecycle: user.LifecycleActive, RoleIDs: []string{}, CreatedAt: now, UpdatedAt: now}
 	}
-	op := rec(BindingOperatorID, BindingOperatorName, tenantid.System)
-	op.RoleBindings = []user.RoleBinding{{RoleID: role.SystemRoleID(BindingTenant, role.RoleNameAdmin), TenantID: BindingTenant}}
+	admin := rec(BindingTenantAdminID, BindingTenantAdminName, BindingTenant)
+	admin.RoleIDs = []string{role.SystemRoleID(BindingTenant, role.RoleNameAdmin)}
 	return &BindingUsers{nextID: 1000, records: map[uint64]*user.User{
-		BindingOperatorID:   op,
-		UserInBindingTenant: rec(UserInBindingTenant, "alice", BindingTenant),
-		UserInOtherTenant:   rec(UserInOtherTenant, "bob", OtherTenant),
+		SystemUserID:         rec(SystemUserID, "operator", tenantid.System),
+		BindingTenantAdminID: admin,
+		UserInBindingTenant:  rec(UserInBindingTenant, "alice", BindingTenant),
+		UserInOtherTenant:    rec(UserInOtherTenant, "bob", OtherTenant),
 	}}
 }
 
@@ -143,12 +151,14 @@ func (u *BindingUsers) UpdateUser(ctx context.Context, req *user.UpdateUserReque
 	return &cp, nil
 }
 
-// CreateUser records a user in the tenant the request names (the caller's
-// own tenant when it names none) and returns it.
+// CreateUser records a user in the tenant the request names and returns it.
+// The tenant is resolved as the routed production service resolves it,
+// tenant.EffectiveTenant: the caller's own when the request names none, and
+// a non-system caller naming another tenant is refused.
 func (u *BindingUsers) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
-	tenantID := req.TenantID
-	if tenantID == "" {
-		tenantID = tenant.FromContext(ctx)
+	tenantID, err := tenant.EffectiveTenant(ctx, req.TenantID, "create user")
+	if err != nil {
+		return nil, err
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -160,11 +170,12 @@ func (u *BindingUsers) CreateUser(ctx context.Context, req *user.CreateUserReque
 	return &cp, nil
 }
 
-// ListUsers lists the users of the tenant the request names.
+// ListUsers lists the users of the tenant the request names, resolved as
+// CreateUser resolves it.
 func (u *BindingUsers) ListUsers(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
-	tenantID := req.TenantID
-	if tenantID == "" {
-		tenantID = tenant.FromContext(ctx)
+	tenantID, err := tenant.EffectiveTenant(ctx, req.TenantID, "list users")
+	if err != nil {
+		return nil, err
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()

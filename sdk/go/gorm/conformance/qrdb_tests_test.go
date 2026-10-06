@@ -47,6 +47,13 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	// Dot-imported for the shared model types (User, Account, Pet, ...)
+	// every upstream test file in this package references, exactly as
+	// upstream's tests_test.go does. These live in gorm.io/gorm's main
+	// module at utils/tests, not in the tests/ submodule this suite is
+	// pulled from, so they are not vendored — see GORM_SUITE.lock.
+	. "gorm.io/gorm/utils/tests"
+
 	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
 	qrdbgorm "github.com/jeremyhahn/go-qrdb/sdk/go/gorm"
 
@@ -55,13 +62,6 @@ import (
 	// in-process node stack (~175 packages more than sdk/go/driver alone)
 	// that embedded:// and rest:// users must not be made to link.
 	_ "github.com/jeremyhahn/go-qrdb/sdk/go/driver/node"
-
-	// Dot-imported for the shared model types (User, Account, Pet, ...)
-	// every upstream test file in this package references, exactly as
-	// upstream's tests_test.go does. These live in gorm.io/gorm's main
-	// module at utils/tests, not in the tests/ submodule this suite is
-	// pulled from, so they are not vendored — see GORM_SUITE.lock.
-	. "gorm.io/gorm/utils/tests"
 )
 
 // targetEnvVar is the environment variable that selects which qrdb surface

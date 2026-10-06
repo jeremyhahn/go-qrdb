@@ -25,6 +25,7 @@
   import PageHeader from "../../components/PageHeader.svelte";
   import UserDetail from "./UserDetail.svelte";
   import TenantSelect from "../../components/admin/TenantSelect.svelte";
+  import InviteUserModal from "../../components/admin/InviteUserModal.svelte";
 
   let { client }: { client: Client } = $props();
 
@@ -39,6 +40,7 @@
   let loading: boolean = $state(true);
   let showDetail: boolean = $state(false);
   let detailUserId: string | null = $state(null);
+  let showInvite: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -130,6 +132,18 @@
     void fetchUsers();
   }
 
+  /** Opens the invite-a-user modal (see InviteUserModal.svelte). */
+  function handleInvite(): void {
+    showInvite = true;
+  }
+
+  /** Closes the invite modal and refreshes the list -- a successful invite
+   * creates a new pending account. */
+  function handleInviteClose(): void {
+    showInvite = false;
+    void fetchUsers();
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -145,7 +159,7 @@
   <PageHeader title="Users" description="Manage user accounts and role assignments" />
   <div class="flex flex-col gap-6">
     <!-- Tenant filter -->
-    <div class="flex items-center gap-3">
+    <div class="flex items-center justify-between gap-3">
       <label class="form-control w-64" for="user-filter-tenant">
         <div class="label"><span class="label-text font-semibold">Tenant</span></div>
         <TenantSelect
@@ -157,6 +171,9 @@
           onchange={handleTenantFilterChange}
         />
       </label>
+      <button type="button" class="btn btn-sm btn-outline" onclick={handleInvite}>
+        Invite User
+      </button>
     </div>
 
     <CrudTable
@@ -173,4 +190,5 @@
       onrowclick={handleSelectRow}
     />
   </div>
+  <InviteUserModal {client} open={showInvite} onClose={handleInviteClose} />
 {/if}

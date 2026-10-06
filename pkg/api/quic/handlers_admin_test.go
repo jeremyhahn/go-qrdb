@@ -399,6 +399,93 @@ func TestHandleRemoveMember_UnmarshalError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// handlePromoteMember
+// ---------------------------------------------------------------------------
+
+func TestHandlePromoteMember_Success(t *testing.T) {
+	var capturedShardID, capturedReplicaID uint64
+
+	adminSvc := &mockAdminService{
+		promoteMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
+			capturedShardID = shardID
+			capturedReplicaID = replicaID
+			return nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, adminSvc)
+	ctx := context.Background()
+
+	payload, err := proto.Marshal(&pb.PromoteMemberRequest{
+		ShardId:   2,
+		ReplicaId: 200,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal PromoteMemberRequest: %v", err)
+	}
+
+	resp, err := srv.handlePromoteMember(ctx, payload)
+	if err != nil {
+		t.Fatalf("handlePromoteMember returned unexpected error: %v", err)
+	}
+
+	if capturedShardID != 2 {
+		t.Errorf("expected shardID 2, got %d", capturedShardID)
+	}
+	if capturedReplicaID != 200 {
+		t.Errorf("expected replicaID 200, got %d", capturedReplicaID)
+	}
+
+	var empty emptypb.Empty
+	if err := proto.Unmarshal(resp, &empty); err != nil {
+		t.Fatalf("failed to unmarshal Empty: %v", err)
+	}
+}
+
+func TestHandlePromoteMember_ServiceError(t *testing.T) {
+	svcErr := &testError{msg: "promote member failed"}
+	adminSvc := &mockAdminService{
+		promoteMemberFn: func(_ context.Context, _, _ uint64) error {
+			return svcErr
+		},
+	}
+	srv := newTestServer(&mockKVService{}, adminSvc)
+	ctx := context.Background()
+
+	payload, err := proto.Marshal(&pb.PromoteMemberRequest{
+		ShardId:   1,
+		ReplicaId: 1,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal PromoteMemberRequest: %v", err)
+	}
+
+	_, err = srv.handlePromoteMember(ctx, payload)
+	if err == nil {
+		t.Fatal("expected error from handlePromoteMember, got nil")
+	}
+
+	var te *testError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *testError, got %T: %v", err, err)
+	}
+}
+
+func TestHandlePromoteMember_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	ctx := context.Background()
+
+	_, err := srv.handlePromoteMember(ctx, []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected error for invalid payload, got nil")
+	}
+
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // handleRequestSnapshot
 // ---------------------------------------------------------------------------
 

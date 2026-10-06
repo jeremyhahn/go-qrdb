@@ -22,15 +22,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"sort"
 	"testing"
 	"time"
 
-	"net/http"
-
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )

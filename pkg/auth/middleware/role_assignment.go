@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -46,16 +47,15 @@ import (
 // tenant checked the wrong tenant's scope rule and could refuse or admit on
 // the wrong basis entirely.
 //
-// Every entry in roleIDs is validated against the resolved target tenant.
-// Every RoleBinding is authorized AND validated against ITS OWN TenantID
-// field, separately from the target-tenant check above: a binding may name
-// a tenant other than the target user's home tenant by design
-// (tenant-scoped grants, go-qrdb#192 item 4), and writing such a binding is
-// itself an act of granting a role WITHIN that other tenant. A caller who
-// holds roles:assign only in the target user's tenant must not be able to
-// mint a grant in some OTHER tenant merely by naming it in a binding, so
-// roles:assign is required in EVERY tenant a binding targets, not only the
-// user's own.
+// Every entry in roleIDs, and every RoleBinding, is validated against the
+// resolved target tenant. A RoleBinding may name only the user's own tenant
+// (owner ruling, superseding the cross-tenant part of go-qrdb#192): nobody
+// administers another tenant's users or roles, even through an explicit
+// binding, so a binding naming any other tenant is refused with
+// *user.RoleBindingTenantError -- after the roles:assign check, so a caller
+// refused that learns nothing about the binding. The store applies the same
+// rule (user.NormalizeRoleBindings); refusing here as well gives every
+// transport the typed refusal before any role is resolved.
 //
 // Authorization and validation are separate steps with separate conditions.
 // Authorization is m's: m == nil means the composition enforces no RBAC (auth
@@ -74,10 +74,10 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 	roleIDs []string,
 	bindings []user.RoleBinding,
 ) error {
-	if m == nil && len(roleIDs) == 0 {
-		// Nothing needs the target tenant: there is no authorization to
-		// run, and a binding is validated against the tenant it names.
-		return validateRoleAssignment(ctx, roleSvc, "", nil, bindings)
+	if m == nil && len(roleIDs) == 0 && len(bindings) == 0 {
+		// An Attributes-only write with no RBAC: nothing to authorize and no
+		// role reference to validate.
+		return nil
 	}
 	existing, err := userSvc.GetUser(ctx, userID)
 	if err != nil {
@@ -91,9 +91,12 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 		// would report for a missing target.
 		return &user.UserNotFoundError{ID: userID}
 	}
-	target := existing.TenantID
+	target := tenantid.Normalize(existing.TenantID)
 
-	if err := m.authorizeRoleAssignment(ctx, target, bindings); err != nil {
+	if err := m.authorizeRoleAssignment(ctx, target); err != nil {
+		return err
+	}
+	if _, err := user.NormalizeRoleBindings(existing.ID, target, bindings); err != nil {
 		return err
 	}
 	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, bindings)
@@ -148,35 +151,25 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 	if err != nil {
 		return err
 	}
-	if err := m.authorizeRoleAssignment(ctx, target, nil); err != nil {
+	if err := m.authorizeRoleAssignment(ctx, target); err != nil {
 		return err
 	}
 	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, nil)
 }
 
-// authorizeRoleAssignment requires roles:assign in target and, separately,
-// in the tenant every binding names: writing a binding grants a role WITHIN
-// that tenant, so holding roles:assign only in the user's own tenant must not
-// be enough to mint a grant in another. A nil m authorizes nothing, as every
+// authorizeRoleAssignment requires roles:assign in target, the tenant the
+// user is in or is being created in. A nil m authorizes nothing, as every
 // AuthMiddleware gate does when no RBAC is configured.
-func (m *AuthMiddleware) authorizeRoleAssignment(ctx context.Context, target string, bindings []user.RoleBinding) error {
+func (m *AuthMiddleware) authorizeRoleAssignment(ctx context.Context, target string) error {
 	if m == nil {
 		return nil
 	}
-	if err := m.AuthorizeTenant(ctx, target, permission.RolesAssign); err != nil {
-		return err
-	}
-	for _, b := range bindings {
-		if err := m.AuthorizeTenant(ctx, b.TenantID, permission.RolesAssign); err != nil {
-			return err
-		}
-	}
-	return nil
+	return m.AuthorizeTenant(ctx, target, permission.RolesAssign)
 }
 
 // validateRoleAssignment confirms every role reference exists and may be
-// granted where it is being granted: each of roleIDs in target, and each
-// binding's role in the tenant the binding names. A reference present with
+// granted in target: each of roleIDs, and each binding's role, which the
+// caller has already confined to target. A reference present with
 // no roleSvc to check it against is refused with *role.ServiceRequiredError.
 func validateRoleAssignment(ctx context.Context, roleSvc role.RoleServicer, target string, roleIDs []string, bindings []user.RoleBinding) error {
 	if len(roleIDs) == 0 && len(bindings) == 0 {
@@ -191,7 +184,7 @@ func validateRoleAssignment(ctx context.Context, roleSvc role.RoleServicer, targ
 		}
 	}
 	for _, b := range bindings {
-		if err := role.ValidateAssignable(ctx, roleSvc, b.RoleID, b.TenantID); err != nil {
+		if err := role.ValidateAssignable(ctx, roleSvc, b.RoleID, target); err != nil {
 			return err
 		}
 	}

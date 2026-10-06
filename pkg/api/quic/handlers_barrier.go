@@ -19,10 +19,9 @@ import (
 	"log/slog"
 	"time"
 
-	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
-
 	"google.golang.org/protobuf/proto"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"

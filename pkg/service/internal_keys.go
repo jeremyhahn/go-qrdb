@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 )
 
 // ---------------------------------------------------------------------------
@@ -173,6 +174,13 @@ var internalKeyPrefixes = []internalKeyPrefix{
 	{prefix: timeseries.KeyPrefixMetricIndex},
 	{prefix: timeseries.KeyPrefixTagIndex},
 	{prefix: timeseries.KeyPrefixRetention},
+
+	// Vector namespaces, vector records, their metadata index, and their
+	// mutation log (docs/vectors/engineering.md "Target: the vector engine").
+	// The vector engine reads them back through pkg/engine's apply batch and
+	// the host's Lookup path, never through KV enumeration, so it is granted
+	// no escape.
+	{prefix: vector.KeyPrefix},
 
 	// A chunked import session's metadata and staged chunks
 	// (batch_import_session.go, pkg/importstage) are deliberately NOT

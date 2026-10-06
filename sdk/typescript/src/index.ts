@@ -44,6 +44,8 @@ export type {
     TimeSeriesClient,
     VectorClient,
     UserClient,
+    InvitationClient,
+    RedeemInvitationOptions,
     RoleClient,
     CertClient,
     DatabaseClient,
@@ -247,6 +249,11 @@ export type {
     AddCertBindingRequest,
     ListUsersRequest,
     ListUsersResponse,
+
+    // Invitation self-enrolment
+    InviteUserRequest,
+    Invitation,
+    RedeemInvitationRequest,
 
     // Role management
     Role,

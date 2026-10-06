@@ -39,6 +39,7 @@ var expectedMethods = []string{
 	"admin.Peers",
 	"admin.AddMember",
 	"admin.RemoveMember",
+	"admin.PromoteMember",
 	"admin.RequestSnapshot",
 	"admin.Drain",
 	"admin.Capabilities",
@@ -49,6 +50,11 @@ var expectedMethods = []string{
 	"admin.GetNodeCompaction",
 	"admin.SetNodeCompaction",
 	"admin.MintJoinToken",
+	"admin.AddObserverMember",
+	"admin.ListPendingJoinRequests",
+	"admin.ApproveJoinRequest",
+	"admin.RejectJoinRequest",
+	"admin.RetireJoinIdentity",
 
 	// MVCC (7)
 	"mvcc.PutWithLease",
@@ -265,6 +271,16 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 192 = 187 + 5 verbs for the member-side CSR approval queue, observer
+	// join mode, and identity retirement (docs/clustering):
+	// admin.AddObserverMember (add a replica as a non-voting observer rather
+	// than a voter, promoted later with admin.PromoteMember),
+	// admin.ListPendingJoinRequests, admin.ApproveJoinRequest and
+	// admin.RejectJoinRequest (reviewing a tokenless CSR queued by
+	// pkg/clusterenroll's approval path), and admin.RetireJoinIdentity
+	// (permanently refusing any future admission for a node identity).
+	// 187 = 186 + admin.PromoteMember, promoting a committed observer of a
+	// shard to a voter in place (docs/clustering).
 	// 186 = 183 + cert.Issue and cert.Enroll replacing the single retired
 	// cert.Generate (net +1), plus tenant.TrustAnchorAdd/List/Remove (+3),
 	// minus cert.Export (-1): the tenant-onboarding verbs.
@@ -314,7 +330,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 186
+	const wantCount = 192
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -405,7 +421,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 
 	expectedCounts := map[string]int{
 		"kv":       8,
-		"admin":    15,
+		"admin":    21,
 		"mvcc":     7,
 		"tx":       1,
 		"batch":    5,

@@ -25,7 +25,6 @@ import (
 	"testing"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"

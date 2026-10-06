@@ -26,17 +26,17 @@ import (
 // whenever a binding is added or removed; the mismatch will be caught here
 // before a blank-screen runtime error reaches users.
 //
-// Current manifest (30 bindings):
+// Current manifest (31 bindings):
 //
 //	ConnectionBinding, ConnectionManagerBinding, EmbeddedServerBinding,
 //	KVBinding, AdminBinding, MVCCBinding, TransactionBinding,
 //	BatchBinding, WatchBinding, LeaseBinding, IndexBinding,
-//	TimeSeriesBinding, VectorBinding, UserBinding, RoleBinding,
-//	CertBinding, DatabaseBinding, CollectionBinding, SQLBinding,
+//	TimeSeriesBinding, VectorBinding, UserBinding, InvitationBinding,
+//	RoleBinding, CertBinding, DatabaseBinding, CollectionBinding, SQLBinding,
 //	SealBinding, ConfigBinding, TenantBinding, BackupBinding,
 //	OfficerBinding, CeremonyBinding, RebalanceBinding, LockBinding,
 //	CredentialBinding, AuditBinding, DaemonBinding
-const expectedBindingCount = 30
+const expectedBindingCount = 31
 
 // TestGUIBindings_AllBindingsPresent verifies that bindList returns the
 // expected number of non-nil binding instances. A nil entry means a binding

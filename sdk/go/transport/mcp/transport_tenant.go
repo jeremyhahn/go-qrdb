@@ -43,11 +43,12 @@ type mcpTenantInfo struct {
 // mcpTenantBarrierInitResponse mirrors the JSON shape returned by the
 // qrdb_tenant_barrier_init tool.
 type mcpTenantBarrierInitResponse struct {
-	TenantID    string `json:"tenant_id"`
-	Strategy    string `json:"strategy"`
-	ShareCount  int    `json:"share_count,omitempty"`
-	Threshold   int    `json:"threshold,omitempty"`
-	TotalShares int    `json:"total_shares,omitempty"`
+	TenantID    string                              `json:"tenant_id"`
+	Strategy    string                              `json:"strategy"`
+	ShareCount  int                                 `json:"share_count,omitempty"`
+	Threshold   int                                 `json:"threshold,omitempty"`
+	TotalShares int                                 `json:"total_shares,omitempty"`
+	Holders     []transport.TenantBarrierHolderCert `json:"holders,omitempty"`
 }
 
 // mcpTenantBarrierStatus mirrors the tenant.TenantBarrierStatus JSON shape
@@ -383,6 +384,16 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if req.Strategy != "" {
 		args["strategy"] = req.Strategy
 	}
+	if len(req.Officers) > 0 {
+		officersJSON, err := json.Marshal(req.Officers)
+		if err != nil {
+			return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonEncodeError{Err: err}}
+		}
+		args["officers"] = string(officersJSON)
+	}
+	if req.Policy != "" {
+		args["policy"] = req.Policy
+	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_barrier_init", args)
 	if err != nil {
@@ -405,6 +416,7 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		ShareCount:  wire.ShareCount,
 		Threshold:   wire.Threshold,
 		TotalShares: wire.TotalShares,
+		Holders:     wire.Holders,
 	}, nil
 }
 

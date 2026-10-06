@@ -231,42 +231,57 @@ func TestFieldTooLongError_Message(t *testing.T) {
 	}
 }
 
-// The vector encoders live in their own file and frame namespaces, ids,
-// metadata and vector payloads exactly as the KV encoders frame keys.
+// The vector encoders live in their own file (vector.go) and frame namespace
+// names, metadata and index-parameter maps, and embeddings exactly as the KV
+// and time-series encoders frame their own fields.
 //
-// They are here because I missed them: the audit that opened #52 grepped
-// protocol.go rather than the package, so the first sweep left twelve
-// unguarded casts in vector.go — the same omission the issue exists to fix,
-// committed while fixing it. The guard is per-file only if the sweep is, so
-// the coverage is per-file too.
+// They are here, rather than in vector.go's own test file, for the reason
+// TestVectorEncoders_RefuseUnencodableFields always has been: the audit that
+// opened #52 grepped protocol.go rather than the package, so the first sweep
+// left twelve unguarded casts in vector.go — the same omission the issue
+// exists to fix, committed while fixing it. The guard is per-file only if the
+// sweep is, so the coverage is per-file too.
 func TestVectorEncoders_RefuseUnencodableFields(t *testing.T) {
 	long := strings.Repeat("n", MaxUint16Field+2)
+	longParams := map[string]string{long: "v"}
 
 	for _, tc := range []struct {
 		name  string
 		field string
 		call  func() ([]byte, error)
 	}{
-		{"EncodeVectorUpsert/namespace", "namespace", func() ([]byte, error) {
-			return EncodeVectorUpsert(long, "id", []float32{1}, nil)
+		{"EncodeVectorNamespaceCreate/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorNamespaceCreate(VectorNamespaceCreateParams{Name: long, Dimension: 1})
 		}},
-		{"EncodeVectorUpsert/id", "vector id", func() ([]byte, error) {
-			return EncodeVectorUpsert("ns", long, []float32{1}, nil)
+		{"EncodeVectorNamespaceCreate/param", "param key", func() ([]byte, error) {
+			return EncodeVectorNamespaceCreate(VectorNamespaceCreateParams{Name: "ns", Dimension: 1, IndexParams: longParams})
 		}},
-		{"EncodeVectorDelete/namespace", "namespace", func() ([]byte, error) {
-			return EncodeVectorDelete(long, "id")
+		{"EncodeVectorNamespaceDelete/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorNamespaceDelete(long)
 		}},
-		{"EncodeVectorDelete/id", "vector id", func() ([]byte, error) {
-			return EncodeVectorDelete("ns", long)
+		{"EncodeVectorUpsert/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorUpsert(long, 0, VectorUpsertParams{Embedding: []float32{1}})
 		}},
-		{"EncodeNamespaceCreate", "namespace", func() ([]byte, error) {
-			return EncodeNamespaceCreate(long, 8, 0, 0)
+		{"EncodeVectorUpsert/param", "param key", func() ([]byte, error) {
+			return EncodeVectorUpsert("ns", 0, VectorUpsertParams{Embedding: []float32{1}, Metadata: longParams})
 		}},
-		{"EncodeNamespaceDelete", "namespace", func() ([]byte, error) {
-			return EncodeNamespaceDelete(long)
+		{"EncodeVectorBatchUpsert/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorBatchUpsert(VectorBatchUpsertParams{Name: long, Vectors: []VectorUpsertParams{{Embedding: []float32{1}}}})
 		}},
-		{"EncodeVectorBatchUpsert", "namespace", func() ([]byte, error) {
-			return EncodeVectorBatchUpsert(long, nil)
+		{"EncodeVectorDelete/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorDelete(long, 0)
+		}},
+		{"EncodeVectorBatchDelete/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorBatchDelete(long, []uint64{0})
+		}},
+		{"EncodeVectorUpdateMetadata/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorUpdateMetadata(VectorUpdateMetadataParams{Name: long, Metadata: map[string]string{"k": "v"}})
+		}},
+		{"EncodeVectorUpdateMetadata/param", "param key", func() ([]byte, error) {
+			return EncodeVectorUpdateMetadata(VectorUpdateMetadataParams{Name: "ns", Metadata: longParams})
+		}},
+		{"EncodeVectorIndexReconfigure/name", "namespace name", func() ([]byte, error) {
+			return EncodeVectorIndexReconfigure(VectorIndexReconfigureParams{Name: long})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,8 +423,11 @@ func TestBatchEncoders_RefuseNestedUnencodableFields(t *testing.T) {
 		{"TSDeleteSeries/tag value", "tag value", func() ([]byte, error) {
 			return EncodeTSDeleteSeries("m", 0, 1, map[string]string{"k": long})
 		}},
-		{"VectorBatchUpsert/vector id", "vector id", func() ([]byte, error) {
-			return EncodeVectorBatchUpsert("ns", []VectorUpsertParams{{ID: long, Vector: []float32{1}}})
+		{"VectorBatchUpsert/param key", "param key", func() ([]byte, error) {
+			return EncodeVectorBatchUpsert(VectorBatchUpsertParams{
+				Name:    "ns",
+				Vectors: []VectorUpsertParams{{Embedding: []float32{1}, Metadata: map[string]string{long: "v"}}},
+			})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

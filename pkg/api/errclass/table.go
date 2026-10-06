@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
@@ -54,10 +55,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
 
 // dominantRules win however deeply their condition is wrapped.
@@ -122,13 +122,9 @@ var dominantRules = []rule{
 	is(seal.ErrSealed, Unavailable),
 
 	// A tenant's location is a volume pool and slot resolved on each node.
-	// Dominant, because the tenant and database services wrap them in their
-	// own barrier errors: a record naming a path is refused until the tenant
-	// is re-created on a named pool; a recorded pool or slot this node does
-	// not configure is the operator's to add; a removal outside this node's
-	// pool is refused as a fault.
-	as(&seal.AbsoluteDataRootRecordError{}, FailedPrecondition),
-	as(&seal.TenantRootUnresolvedError{}, FailedPrecondition),
+	// Dominant, because the tenant and database services wrap it in their
+	// own barrier errors: a removal outside this node's pool is refused as
+	// a fault.
 	as(&seal.DataRootOutsideLocalRootsError{}, Internal),
 	// A dedicated-raft database asked of a node its placement does not name:
 	// retryable against one of the replicas the refusal lists.
@@ -270,6 +266,16 @@ var dataPlaneRules = []rule{
 	// class as HardConfinedKeyError -- a fail-closed refusal, not a
 	// malformed request.
 	as(&service.HardConfinedImportGuardUnavailableError{}, PermissionDenied),
+	// An ordinary key-value write or exact-key read named a key in the
+	// reserved vector namespace (pkg/vector.RefuseForgedKeys /
+	// vector.IsForgedKey, reachable today through Put, Delete, CompareAndSwap,
+	// CompareAndDelete, Batch, Transaction and Guarded on both engines). This
+	// is the caller doing something it was never authorized to do to that
+	// keyspace, not a missing key and not a malformed request, so it is
+	// PermissionDenied rather than the NotFound or InvalidArgument a generic
+	// classifier would have defaulted it to (go-qrdb vector-replicated
+	// review, B3-residual).
+	as(&vector.ForgedKeyError{}, PermissionDenied),
 }
 
 // vectorRules are the vector-service conditions (go-qrdb#331).
@@ -509,6 +515,9 @@ var placementRules = []rule{
 	// uses: the request is well formed and conflicts with the node's release,
 	// which the operator resolves by upgrading it (go-qrdb#482).
 	as(&featuregate.UnsupportedReplicaError{}, FailedPrecondition),
+	// A promote names a replica that is not a committed observer: absent,
+	// already a voter, or a witness.
+	as(&service.MemberNotObserverError{}, FailedPrecondition),
 }
 
 // lockRules are the distributed-lock conditions.
@@ -689,25 +698,37 @@ var clusterJoinTokenRules = []rule{
 	// Not configured for member-side CSR join at all (no store/trust
 	// domain bound): the node was never built or set up for this.
 	as(&service.ClusterJoinTokenNotConfiguredError{}, Unimplemented),
+	as(&service.MemberPromotionUnsupportedError{}, Unimplemented),
 	as(&service.JoinTokenTTLOverflowError{}, InvalidArgument),
 	as(&clusterenroll.InvalidJoinIdentityError{}, InvalidArgument),
 	as(&clusterenroll.JoinTokenTTLError{}, InvalidArgument),
 	// The node identity is already in the cluster's join-identity ledger --
 	// the cluster CA has already issued (or recorded) a certificate for it.
 	as(&clusterenroll.ExistingMemberError{}, AlreadyExists),
+	// The node identity has been explicitly retired (RetireJoinIdentity):
+	// permanently refused, unlike ExistingMemberError's "try again once it
+	// lapses" -- the resource existed and has been permanently retired.
+	as(&clusterenroll.RetiredJoinIdentityError{}, Gone),
 	// A vanishingly unlikely digest collision with an already-minted
 	// token: the caller's request itself was fine, just lost the race.
 	as(&clusterenroll.JoinTokenCollisionError{}, Aborted),
 	as(&clusterenroll.JoinTokenGenerateError{}, Internal),
 	as(&clusterenroll.JoinTokenStoreError{}, Internal),
+
+	// Not configured for member-side CSR join reviewing (no store bound):
+	// same "server-side capability gap" as ClusterJoinTokenNotConfiguredError.
+	as(&service.ClusterJoinRequestReviewUnsupportedError{}, Unimplemented),
+	// A decision (approve/reject) named an id with no live, undecided
+	// queue entry -- absent, expired, or already decided.
+	as(&clusterenroll.PendingJoinRequestNotFoundError{}, NotFound),
+	// The approval queue is at MaxPendingJoinRequests: a caller-visible
+	// capacity limit, not a server fault.
+	as(&clusterenroll.PendingJoinQueueFullError{}, ResourceExhausted),
+	as(&clusterenroll.PendingJoinStoreError{}, Internal),
 }
 
 // identityRules are the user, role and certificate conditions.
 var identityRules = []rule{
-	// A targeted request whose body names the tenant it acts on could not be
-	// read: refused rather than authorized against the caller's own tenant.
-	as(&authmw.TargetBodyInvalidError{}, InvalidArgument),
-	as(&authmw.TargetBodyTooLargeError{}, TooLarge),
 	as(&user.UserNotFoundError{}, NotFound),
 	// A withdrawal naming a binding the account does not hold.
 	as(&user.CertBindingNotFoundError{}, NotFound),
@@ -721,8 +742,8 @@ var identityRules = []rule{
 	as(&user.SystemUserAlreadyExistsError{}, AlreadyExists),
 	// The System flag asked for outside the system tenant: a bad field value.
 	as(&user.SystemTenantRequiredError{}, InvalidArgument),
-	// A RoleBinding naming another tenant on a non-system user, which could
-	// never grant: a bad field value in the write.
+	// A RoleBinding naming a tenant other than its holder's own: a bad field
+	// value in the write.
 	as(&user.RoleBindingTenantError{}, InvalidArgument),
 	// A thumbprint already bound to ANOTHER user: rebinding it silently would
 	// hand the caller that user's mTLS identity (go-qrdb#536).
@@ -851,6 +872,13 @@ var onboardingRules = []rule{
 	as(&bootstrap.ConflictingAdminCredentialError{}, InvalidArgument),
 	as(&bootstrap.InvalidTrustAnchorsError{}, InvalidArgument),
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
+	// Invitation self-enrolment. A token that cannot be redeemed is a bad
+	// credential presented by an unauthenticated caller, whatever the reason.
+	as(&service.InvitationInvalidError{}, Unauthenticated),
+	as(&service.InvitationFieldError{}, InvalidArgument),
+	as(&service.InvitationKeyInUseError{}, AlreadyExists),
+	as(&service.InvitationAccountActiveError{}, FailedPrecondition),
+	as(&user.AccountNotPendingError{}, FailedPrecondition),
 }
 
 // tenantRules are the tenant-lifecycle conditions.

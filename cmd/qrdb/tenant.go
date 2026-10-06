@@ -18,6 +18,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -408,6 +410,9 @@ func newTenantBarrierInitCmd() *cobra.Command {
 		strategy   string
 		threshold  int
 		shares     int
+		officers   []string
+		custodians []string
+		policy     string
 	)
 
 	cmd := &cobra.Command{
@@ -417,15 +422,41 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			"--passphrase is required for the passphrase strategy (the default when --strategy\n" +
 			"is omitted); --threshold/--shares configure a Shamir M-of-N quorum when\n" +
 			"--strategy=shamir. Share material is never returned here -- Security Officers\n" +
-			"retrieve their individual shares via the officer claim flow.",
+			"retrieve their individual shares via the officer claim flow.\n\n" +
+			"A dedicated tenant's own IAM is encrypted behind the very barrier its share\n" +
+			"holders exist to help initialize, so standalone `tenant barrier-officer\n" +
+			"register`/`list` can never reach it beforehand. --officers/--custodians\n" +
+			"(--strategy=shamir only, repeatable, username=path/to/csr.pem) name the\n" +
+			"roster inline: every officer is validated as one batch and registered\n" +
+			"atomically with initialization, rolled back together on any failure. Their\n" +
+			"combined count must equal --shares. Once initialized, later holder changes\n" +
+			"go through ordinary RBAC via `tenant barrier-officer register`/`list`.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			officerRoster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
+			if err != nil {
+				return err
+			}
+			custodianRoster, err := parseTenantOfficerFlags("--custodians", transport.RoleCustodian, custodians)
+			if err != nil {
+				return err
+			}
+			officerRoster = append(officerRoster, custodianRoster...)
+			if len(officerRoster) > 0 && len(officerRoster) != shares {
+				return &InvalidArgError{
+					Arg:    "--shares",
+					Reason: "must equal the number of --officers plus --custodians (" + strconv.Itoa(len(officerRoster)) + ")",
+				}
+			}
+
 			req := &transport.TenantBarrierInitRequest{
 				TenantID:   tenantID,
 				Passphrase: secretBytes(passphrase),
 				Threshold:  threshold,
 				Shares:     shares,
 				Strategy:   strategy,
+				Officers:   officerRoster,
+				Policy:     policy,
 			}
 			defer secure.Wipe(req.Passphrase)
 
@@ -446,8 +477,44 @@ func newTenantBarrierInitCmd() *cobra.Command {
 		"Seal strategy: none | passphrase | shamir | a registered hardware id (empty = passphrase)")
 	cmd.Flags().IntVar(&threshold, "threshold", 0, "Minimum shares required to unseal (shamir strategy only; 0 = default)")
 	cmd.Flags().IntVar(&shares, "shares", 0, "Total number of shares to generate (shamir strategy only; 0 = default)")
+	cmd.Flags().StringArrayVar(&officers, "officers", nil,
+		"Security Officer share holder: username=path/to/csr.pem (repeatable; shamir strategy only). Combined with --custodians, must equal --shares.")
+	cmd.Flags().StringArrayVar(&custodians, "custodians", nil,
+		"Key custodian share holder: username=path/to/csr.pem (repeatable; shamir strategy only). Combined with --officers, must equal --shares.")
+	cmd.Flags().StringVar(&policy, "policy", "",
+		"Factor policy for --officers/--custodians: designated (default) or any-enrolled")
 
 	return cmd
+}
+
+// parseTenantOfficerFlags parses repeatable holder flag values
+// ("username=path/to/csr.pem") of one role into the inline roster's wire
+// shape, reading each named CSR file from disk. flag names the flag for
+// error messages.
+func parseTenantOfficerFlags(flag, role string, raw []string) ([]transport.OfficerRegisterRequest, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	officers := make([]transport.OfficerRegisterRequest, 0, len(raw))
+	for _, entry := range raw {
+		username, csrPath, ok := strings.Cut(entry, "=")
+		if !ok || username == "" || csrPath == "" {
+			return nil, &InvalidArgError{
+				Arg:    flag,
+				Reason: "must be in the form username=path/to/csr.pem, got " + entry,
+			}
+		}
+		csrPEM, err := os.ReadFile(csrPath)
+		if err != nil {
+			return nil, &FileReadError{Path: csrPath, Err: err}
+		}
+		officers = append(officers, transport.OfficerRegisterRequest{
+			Username: username,
+			Role:     role,
+			CSRPEM:   string(csrPEM),
+		})
+	}
+	return officers, nil
 }
 
 // printTenantBarrierInitResponse renders the result of `tenant barrier-init`.
@@ -476,6 +543,9 @@ func printTenantBarrierInitResponse(resp *transport.TenantBarrierInitResponse) e
 		_, _ = fmt.Fprintf(outputWriter, "Threshold:   %d\n", resp.Threshold)
 		_, _ = fmt.Fprintf(outputWriter, "TotalShares: %d\n", resp.TotalShares)
 		_, _ = fmt.Fprintf(outputWriter, "ShareCount:  %d\n", resp.ShareCount)
+		for _, h := range resp.Holders {
+			_, _ = fmt.Fprintf(outputWriter, "Holder:      %s (%s)\n", h.Username, h.Role)
+		}
 		return nil
 	}
 }

@@ -63,11 +63,19 @@ func certEnrollmentEvent(ctx context.Context, tenantID, action string, attrs map
 // record cannot be written; fail-open lets it proceed, counting the gap.
 // Without a configured sink it is a no-op.
 func (s *CertEnrollmentService) gateCertAudit(ctx context.Context, ev audit.AuditEvent) error {
-	if s.audit == nil {
+	return gateCertAuditOn(ctx, s.audit, s.auditPolicy, ev)
+}
+
+// gateCertAuditOn is gateCertAudit's underlying free function, shared with
+// InvitationService.RedeemInvitation: redemption issues or enrolls a
+// certificate exactly as SignCertificate and EnrollCertificate do, and is
+// held to the same gating record before it takes effect.
+func gateCertAuditOn(ctx context.Context, sink audit.AuditLogger, policy audit.FailurePolicy, ev audit.AuditEvent) error {
+	if sink == nil {
 		return nil
 	}
 	ev.Outcome = audit.OutcomePermitted
-	return audit.EmitGated(ctx, s.audit, certAuditComponent, s.auditPolicy, ev)
+	return audit.EmitGated(ctx, sink, certAuditComponent, policy, ev)
 }
 
 // settleCertAudit records ev's final outcome once the operation it gated
@@ -77,11 +85,17 @@ func (s *CertEnrollmentService) gateCertAudit(ctx context.Context, ev audit.Audi
 // intermediate "the certificate was signed"). Best-effort: a sink that
 // refuses it is counted and logged, never returned as the caller's error.
 func (s *CertEnrollmentService) settleCertAudit(ctx context.Context, ev audit.AuditEvent, err error) {
-	if s.audit == nil {
+	settleCertAuditOn(ctx, s.audit, ev, err)
+}
+
+// settleCertAuditOn is settleCertAudit's underlying free function; see
+// gateCertAuditOn.
+func settleCertAuditOn(ctx context.Context, sink audit.AuditLogger, ev audit.AuditEvent, err error) {
+	if sink == nil {
 		return
 	}
 	ev.Outcome = certOutcome(err)
-	audit.EmitBestEffort(ctx, s.audit, certAuditComponent, ev)
+	audit.EmitBestEffort(ctx, sink, certAuditComponent, ev)
 }
 
 // certOutcome renders err as an audit outcome: success, or a fixed failure

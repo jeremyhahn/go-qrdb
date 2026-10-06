@@ -354,6 +354,53 @@ func TestNewLocalEngine_NilHubIsAccepted(t *testing.T) {
 	}
 }
 
+// TestNewLocalEngine_AttachesAuditChainUnconditionally is audit-replicated
+// review finding N4 at the standalone/raft-free composition root: every MVCC
+// engine this seam builds (memory and pebble backends) must carry a non-nil
+// audit.Chain regardless of caller input, because the opcode handler has no
+// notion of "standalone" and would otherwise refuse every
+// protocol.OpAuditAppend this node receives. The file/objstore (KV) engine
+// does not support the chain at all and is asserted nil here on purpose.
+func TestNewLocalEngine_AttachesAuditChainUnconditionally(t *testing.T) {
+	for _, tc := range []struct {
+		backend   database.BackendType
+		wantChain bool
+	}{
+		{database.BackendMemory, true},
+		{database.BackendPebble, true},
+		{database.BackendFile, false},
+		{database.BackendObjstore, false},
+	} {
+		t.Run(string(tc.backend), func(t *testing.T) {
+			stg, pdb, err := lifecycle.NewLocalStorage(
+				tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+			if err != nil {
+				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
+			}
+			t.Cleanup(func() { _ = stg.Close() })
+
+			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, nil, nil)
+			if err != nil {
+				t.Fatalf("NewLocalEngine(%s): %v", tc.backend, err)
+			}
+
+			mvcc, isMVCC := eng.(*engine.MVCCEngine)
+			if !tc.wantChain {
+				if isMVCC {
+					t.Fatalf("%s composed *engine.MVCCEngine, want the KV engine", tc.backend)
+				}
+				return
+			}
+			if !isMVCC {
+				t.Fatalf("%s composed %T, want *engine.MVCCEngine", tc.backend, eng)
+			}
+			if mvcc.AuditChain() == nil {
+				t.Errorf("%s: MVCCEngine built with a nil audit.Chain attached", tc.backend)
+			}
+		})
+	}
+}
+
 // asError is errors.As with the target already typed, kept here so the table
 // cases above read as assertions rather than as plumbing.
 func asError[T error](err error, target *T) bool {

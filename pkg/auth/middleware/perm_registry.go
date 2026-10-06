@@ -71,41 +71,11 @@ func (r *permRegistry) snapshot() map[string]permission.Permission {
 // the dispatch map. AuthorizeQUIC consults it with DEFAULT-DENY semantics —
 // a method with no entry is denied.
 type QUICMethodRegistry struct {
-	reg     permRegistry
-	targets map[string]QUICTargetFunc
-}
-
-// QUICTargetFunc extracts the Target a QUIC frame's payload names. A payload
-// it cannot read is an error (*TargetBodyInvalidError), and AuthorizeQUIC
-// refuses the request rather than authorizing it against the caller's own
-// tenant.
-type QUICTargetFunc func(payload []byte) (Target, error)
-
-// SetTarget declares how method's payload names the tenant it acts on, so
-// AuthorizeQUIC authorizes the method's permission against that tenant (see
-// Target). The method must already be registered: attaching a target to an
-// unregistered method panics, a construction-time bug like a duplicate.
-func (r *QUICMethodRegistry) SetTarget(method string, fn QUICTargetFunc) {
-	if _, ok := r.reg.lookup(method); !ok {
-		panic("quic: SetTarget on unregistered method " + method)
-	}
-	if r.targets == nil {
-		r.targets = make(map[string]QUICTargetFunc)
-	}
-	r.targets[method] = fn
-}
-
-// target returns the Target payload names under method's extractor, or the
-// caller's own tenant when the method declares none.
-func (r *QUICMethodRegistry) target(method string, payload []byte) (Target, error) {
-	if r == nil {
-		return SelfTarget(), nil
-	}
-	fn, ok := r.targets[method]
-	if !ok {
-		return SelfTarget(), nil
-	}
-	return fn(payload)
+	reg permRegistry
+	// public holds the frame methods served WITHOUT authentication
+	// (RegisterPublic). It is a curated, built-in set: the only member is
+	// invitation redemption, whose caller holds no credential yet.
+	public map[string]struct{}
 }
 
 // NewQUICMethodRegistry creates an empty QUIC method registry.
@@ -117,7 +87,38 @@ func NewQUICMethodRegistry() *QUICMethodRegistry {
 // an empty permission or a duplicate method (construction-time bugs; see
 // permRegistry.register).
 func (r *QUICMethodRegistry) Register(method string, perm permission.Permission) {
+	if r.IsPublic(method) {
+		panic("quic: " + method + " is public and cannot also be permission-mapped")
+	}
 	r.reg.register("quic", method, perm)
+}
+
+// RegisterPublic declares a frame method served WITHOUT authentication or
+// authorization: the QUIC server skips both for it, as REST does for a
+// RESTRoutePublic route and gRPC for a RegisterPublicGRPCMethods method. A
+// method may not be both public and permission-mapped, and may not be
+// declared twice; either panics, a construction-time bug like a duplicate.
+func (r *QUICMethodRegistry) RegisterPublic(method string) {
+	if _, mapped := r.reg.lookup(method); mapped {
+		panic("quic: " + method + " is permission-mapped and cannot also be public")
+	}
+	if _, dup := r.public[method]; dup {
+		panic("quic: duplicate public registration for " + method)
+	}
+	if r.public == nil {
+		r.public = make(map[string]struct{})
+	}
+	r.public[method] = struct{}{}
+}
+
+// IsPublic reports whether method was declared with RegisterPublic. A nil
+// registry has no public methods.
+func (r *QUICMethodRegistry) IsPublic(method string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.public[method]
+	return ok
 }
 
 // Lookup resolves the permission required for a frame method. ok is false
@@ -130,12 +131,13 @@ func (r *QUICMethodRegistry) Lookup(method string) (permission.Permission, bool)
 	return r.reg.lookup(method)
 }
 
-// Covered reports whether the method carries a registered permission. The
-// QUIC server's default-deny startup assertion walks the dispatch map and
-// fails construction for any handler this registry does not cover.
+// Covered reports whether the method carries a registered permission or was
+// declared public. The QUIC server's default-deny startup assertion walks the
+// dispatch map and fails construction for any handler this registry does not
+// cover.
 func (r *QUICMethodRegistry) Covered(method string) bool {
 	_, ok := r.Lookup(method)
-	return ok
+	return ok || r.IsPublic(method)
 }
 
 // Entries returns a copy of the method -> permission entries for the
@@ -154,40 +156,7 @@ func (r *QUICMethodRegistry) Entries() map[string]permission.Permission {
 // schema and handler at the registration site. AuthorizeMCP consults it with
 // DEFAULT-DENY semantics — a tool with no entry is denied.
 type MCPToolRegistry struct {
-	reg     permRegistry
-	targets map[string]MCPTargetFunc
-}
-
-// MCPTargetFunc extracts the Target an MCP tool call's arguments name. An
-// argument it cannot read names the caller's own tenant; the tool then
-// rejects the malformed argument itself.
-type MCPTargetFunc func(args map[string]any) Target
-
-// SetTarget declares how toolName's arguments name the tenant it acts on, so
-// AuthorizeMCP authorizes the tool's permission against that tenant (see
-// Target). The tool must already be registered; attaching a target to an
-// unregistered tool panics.
-func (r *MCPToolRegistry) SetTarget(toolName string, fn MCPTargetFunc) {
-	if _, ok := r.reg.lookup(toolName); !ok {
-		panic("mcp: SetTarget on unregistered tool " + toolName)
-	}
-	if r.targets == nil {
-		r.targets = make(map[string]MCPTargetFunc)
-	}
-	r.targets[toolName] = fn
-}
-
-// target returns the Target args name under toolName's extractor, or the
-// caller's own tenant when the tool declares none.
-func (r *MCPToolRegistry) target(toolName string, args map[string]any) Target {
-	if r == nil {
-		return SelfTarget()
-	}
-	fn, ok := r.targets[toolName]
-	if !ok {
-		return SelfTarget()
-	}
-	return fn(args)
+	reg permRegistry
 }
 
 // NewMCPToolRegistry creates an empty MCP tool registry.

@@ -96,7 +96,7 @@ func joinHTTPServer(t *testing.T, provider *cakey.SoftwareProvider, store kvstor
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req)
+		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req, nil)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "marshal failed", http.StatusInternalServerError)
@@ -113,11 +113,16 @@ func joinHTTPServer(t *testing.T, provider *cakey.SoftwareProvider, store kvstor
 	return srv.URL, hex.EncodeToString(sum[:])
 }
 
-func TestJoinCSRHTTP_RequiresToken(t *testing.T) {
-	_, err := JoinCSRHTTP(context.Background(), &JoinHTTPClientOptions{ServerURL: "https://127.0.0.1"}, nil, "")
-	var missing *MissingJoinTokenError
-	if !errors.As(err, &missing) {
-		t.Fatalf("JoinCSRHTTP with no token = %v, want *MissingJoinTokenError", err)
+// TestJoinCSRHTTP_EmptyTokenIsAllowed confirms an empty token is no longer
+// refused before dialing: it means "submit through the approval queue"
+// (see JoinRequest's doc comment), not a missing required value. The
+// connection to an unreachable host still fails, but with *FetchError,
+// never a token-related refusal.
+func TestJoinCSRHTTP_EmptyTokenIsAllowed(t *testing.T) {
+	_, err := JoinCSRHTTP(context.Background(), &JoinHTTPClientOptions{ServerURL: "https://127.0.0.1:1"}, nil, "")
+	var fetchErr *FetchError
+	if !errors.As(err, &fetchErr) {
+		t.Fatalf("JoinCSRHTTP with no token = %v, want *FetchError (dial failure)", err)
 	}
 }
 
@@ -157,12 +162,18 @@ func TestJoinCSRHTTP_SignsAValidCSR(t *testing.T) {
 	serverURL, pin := joinHTTPServer(t, provider, store)
 	token := mintTestJoinToken(t, store, "127.0.0.1:9100")
 
-	nodeKey, csrDER := generateTestCSR(t)
+	// The CSR's own URI is advisory only -- IssueLeafForKey's template
+	// takes nothing from it but the public key; the leaf's actual identity
+	// comes from the token (see TestJoinServer_SignsAValidCSR, its Noise_NK
+	// twin). validateJoinCSRIdentity only requires this CSR's sole URI SAN
+	// to match the request's self-reported NodeURI, not the token.
+	claimedNodeURI := "spiffe://attacker.example/node/anything"
+	nodeKey, csrDER := buildMatchingJoinCSR(t, claimedNodeURI)
 	certPEM, err := JoinCSRHTTP(context.Background(), &JoinHTTPClientOptions{
 		ServerURL: serverURL,
 		SPKIPin:   pin,
 		Token:     token,
-	}, csrDER, "spiffe://attacker.example/node/anything")
+	}, csrDER, claimedNodeURI)
 	if err != nil {
 		t.Fatalf("JoinCSRHTTP: %v", err)
 	}

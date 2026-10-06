@@ -36,6 +36,7 @@ func TestClusterAdminScope(t *testing.T) {
 	ops := []struct{ method, path, body string }{
 		{http.MethodPost, "/membership/add", `{"shard_id":1,"replica_id":9,"address":"127.0.0.1:1"}`},
 		{http.MethodPost, "/membership/remove", `{"shard_id":1,"replica_id":2}`},
+		{http.MethodPost, "/membership/promote", `{"shard_id":1,"replica_id":2}`},
 		{http.MethodPost, "/snapshot", `{"shard_id":1}`},
 		{http.MethodPost, "/drain", ``},
 		// The node keyspace's compaction policy: the platform's, and its

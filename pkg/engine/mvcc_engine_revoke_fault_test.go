@@ -55,7 +55,7 @@ func TestMVCCEngine_LeaseRevokeReturnsADeleteFault(t *testing.T) {
 	b := stg.Batch()
 	defer func() { _ = b.Close() }()
 	revoke := sm.Entry{Index: 3, Cmd: mustEncode(protocol.EncodeLeaseRevoke(id))}
-	_, err = eng.UpdateEntries(setRefusingBatch{Batch: b}, []sm.Entry{revoke}, make([]sm.Result, 1))
+	_, _, err = eng.UpdateEntries(setRefusingBatch{Batch: b}, []sm.Entry{revoke}, make([]sm.Result, 1))
 	if !errors.Is(err, errTombstoneWrite) {
 		t.Fatalf("UpdateEntries = %v, want the tombstone write fault", err)
 	}

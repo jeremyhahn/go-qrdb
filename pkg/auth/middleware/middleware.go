@@ -31,7 +31,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
-	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -52,11 +51,6 @@ type AuthMiddleware struct {
 	users         user.UserServicer
 	usersFallback user.UserServicer
 	audit         audit.Logger
-
-	// roles resolves a RoleTarget to the tenant the role belongs to (see
-	// ResolveTarget). Optional: without it a RoleTarget is the caller's own
-	// tenant.
-	roles role.RoleServicer
 
 	// certTargets is the certificate target guard users:add_cert_binding is
 	// held to (AuthorizeCertBindingTarget). Optional: without it such a write
@@ -123,10 +117,6 @@ type AuthMiddleware struct {
 	// whole set in one atomic store, and the interceptors' per-request lookup
 	// stays lock-free.
 	publicGRPCMethods atomic.Pointer[map[string]struct{}]
-
-	// grpcTargets maps a gRPC full method name to how its request names the
-	// tenant it acts on. See RegisterGRPCTargets.
-	grpcTargets atomic.Pointer[map[string]GRPCTargetFunc]
 }
 
 // authLookupSyncTimeout bounds the per-request linearizable user lookup. A

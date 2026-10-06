@@ -18,12 +18,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
-
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 )
 
 // SealDatabase seals a database's encryption barrier via the QUIC db.Seal handler.

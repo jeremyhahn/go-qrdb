@@ -1,6 +1,6 @@
 # Clustering — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Covers peer discovery, cluster formation, membership, node administration and
 shard rebalancing. **Raft mode only** — see
@@ -325,8 +325,128 @@ serve.
 **Admission is a separate concern from signing.** Reaching an existing
 member and completing the handshake (Noise) or the TLS connection
 (SPKI/Direct) proves nothing about whether this joiner should be issued a
-certificate — that is what the join token (or a
-future approval workflow) decides, before the CSR is signed, not after.
+certificate — that is what the join token (or the approval queue below)
+decides, before the CSR is signed, not after.
+
+## Approval queue (tokenless join)
+
+A joiner with no minted token (`JoinRequest.Token == ""`) is not refused
+outright: its CSR is queued, replicated, in `pkg/clusterenroll`'s own
+namespace (`__sys:cluster_join_pending/`, keyed by the hex SHA-256 digest of
+the CSR itself — a value the joiner's own keypair determines, not an admin
+choice), and `HandleJoinRequest` reports `*JoinResponse.Pending` with a
+`RequestID` rather than an error. `Join`'s own retry loop (`BootstrapOptions.
+JoinApprovalPollInterval`, default 15s) keeps re-presenting the identical
+CSR, indefinitely, until an operator decides — a node configured this way
+blocks at startup exactly as a human-gated system is meant to, rather than
+crash-looping the daemon every few seconds.
+
+1. An operator lists queued requests
+   (`service.JoinRequestReviewer.ListPendingJoinRequests`, `qrdb admin
+   join-request list`) and decides each one:
+   - **Approve** (`ApproveJoinRequest`, `qrdb admin join-request approve
+     <id> --node-id <node-id>`) binds the CSR to
+     `spiffe://<trust domain>/node/<node-id>` — an operator choice, never the
+     joiner's self-reported `NodeURI` in the request, the identical invariant
+     a minted join token's bound identity already carries. Approving does
+     **not** sign anything itself: it only records the decision in the
+     replicated queue. The actual `IssueLeafForKey` call happens the next
+     time the joiner's own poll reaches `HandleJoinRequest`, through the
+     SAME reserve → sign → promote → advertise sequence
+     (`issueAndAdmit`) the token path already uses — admission (store-only)
+     and signing (provider-only) stay as separate as they already are for
+     the token path. `ApproveJoinRequest` refuses with the same
+     `*clusterenroll.ExistingMemberError` MintJoinToken already refuses with
+     when the chosen node-id's identity is already admitted or reserved.
+   - **Reject** (`RejectJoinRequest`, `qrdb admin join-request reject <id>
+     --reason <text>`) records a terminal refusal; the joiner's next poll
+     reports `*clusterenroll.JoinRefusedError` and `Join` stops retrying.
+2. A decided (approved, rejected, or delivered) entry never expires and is
+   never re-decided — `ApproveJoinRequest`/`RejectJoinRequest` refuse with
+   `*PendingJoinRequestNotFoundError` on an id that is anything other than a
+   live, undecided entry. An **undecided** entry past
+   `DefaultPendingJoinRequestTTL` (72h) is treated as absent: a retried
+   submission reclaims the slot with the identical CompareAndSwap-from-the-
+   observed-stale-value pattern `ReserveJoinIdentity` already uses for the
+   token path's own reservation TTL, so a joiner that gave up is never
+   wedged in the queue forever.
+3. The queue itself is capped (`MaxPendingJoinRequests`, 256): unlike a
+   minted token, a tokenless submission proves nothing about its sender at
+   all, so without a cap a credential-less source could grow the replicated
+   store without bound simply by generating a fresh keypair per attempt. A
+   brand-new submission past the cap is refused
+   (`*PendingJoinQueueFullError`); a RETRY of an existing entry is never
+   refused by the cap, since it grows nothing.
+4. `cluster:join_token` (ScopeCross, platform-only — the same permission
+   minting a token already requires) gates `ListPendingJoinRequests`,
+   `ApproveJoinRequest` and `RejectJoinRequest` on every transport that wires
+   `service.JoinRequestReviewer`: reviewing a tokenless CSR is the same
+   whole-cluster admission decision minting a token already is, not a
+   narrower one.
+
+Every decision, and the queue's own submit/expire/deliver events, are
+logged at the `clusterenroll` level (`slog`) the same way every other
+security-relevant event in this package already is (join-attempt lockouts,
+signing failures); this package does not depend on `pkg/audit`, so a
+deployment that wants the compliance trail to carry these events ships its
+own `slog` handler wired to it.
+
+### Admission lifecycle: lapsed renewal, retirement, CSR identity
+
+The join-identity ledger (`__sys:cluster_join_identities/`) that blocks a
+second `MintJoinToken`/`ConsumeJoinToken` for an already-admitted identity
+(above) is not a single bit. Each record classifies into one of five
+states (`clusterenroll.identityState`): **absent**, a live **reservation**
+(in flight, see "The full sequence" above), an **active** admission, a
+**lapsed** one, or **retired**.
+
+- **Active vs. lapsed.** `PromoteJoinIdentityAdmitted` and
+  `MarkJoinIdentityAdmitted` read the issued leaf's own `NotAfter` and
+  serial back off the certificate and store them alongside the admission
+  timestamp. A later admission check compares `NotAfter` against now:
+  still in the future is **active** (blocks a fresh mint or consume,
+  unchanged); already past is **lapsed**. A record written before this
+  field existed (the bare RFC 3339 timestamp earlier releases wrote) has
+  no recorded expiry and is treated as perpetually active — fail closed,
+  never lapsing on its own.
+- **Renewing a lapsed admission is not a distinct verb.** A lapsed
+  identity is simply **not blocking**: `MintJoinToken`, `ConsumeJoinToken`
+  and `ReserveJoinIdentity` all treat it exactly like an absent one, so an
+  admin mints an ordinary token and the joiner runs the ordinary CSR
+  exchange — ordinary rules, no renewal-specific wire shape, no special
+  case for the signing member to get wrong.
+- **Retirement (`clusterenroll.RetireJoinIdentity`) is permanent.** An
+  admin who removes a member from the cluster, or who must treat an
+  issued leaf as revoked, retires its node identity: the ledger record
+  becomes `retired`, which blocks `MintJoinToken` (with the distinct
+  `*RetiredJoinIdentityError`, since this is an authenticated admin
+  action, not the anonymous join wire path) and `ConsumeJoinToken` (with
+  the SAME generic refusal every other cause gets — no oracle) forever.
+  Unlike a lapsed admission, a retired one is **never** reclaimed by
+  `ReserveJoinIdentity`, whether or not its leaf has also expired: "a
+  removed member cannot re-enrol with its old cert or identity" holds
+  regardless of timing. Retiring writes unconditionally (a plain `Put`,
+  not a conditional swap) over whatever state the identity is currently
+  in — absent (pre-emptively banning an identity before it ever attempts
+  to join), reserved, active, lapsed, or already retired (idempotent) —
+  because it is a rare, deliberate admin action that must not be refused
+  by a race it did not expect to find. The one accepted race: a join
+  already past its reservation when the retirement lands can still
+  complete, since the token's single use is already spent by the time
+  `ReserveJoinIdentity` ran; an operator who needs the retirement to win
+  retires the identity again afterward.
+- **CSR identity validation.** Before the token is touched — the same
+  ordering the proof-of-possession and key-strength checks above already
+  use — `HandleJoinRequest` requires the CSR to carry the join request's
+  own claimed identity (`JoinRequest.NodeURI`) as its **sole** subject
+  alternative name: exactly one URI SAN, equal to `NodeURI`, and no DNS,
+  IP or email SANs at all. This is the shape every legitimate joiner's
+  own `buildJoinCSR` already produces. It does **not** make the claimed
+  identity authoritative for signing — `IssueLeafForKey` still signs for
+  the TOKEN's bound identity, resolved by `ConsumeJoinToken`, never for
+  `NodeURI` or anything else the joiner asserts — it only catches a
+  confused or tampered client, or a relay that altered one copy of the
+  claimed identity but not the other, before either reaches the token.
 
 ### Why this does not reopen the shared-CA-key defect
 
@@ -518,6 +638,7 @@ members, _ := cc.Members(ctx, shardID)          // filtered from Peers()
 
 _ = cc.AddReplica(ctx, shardID, id, raftAddr, "") // delegates to AddMember; "" = committed identity
 _ = cc.RemoveReplica(ctx, shardID, id)           // delegates to RemoveMember
+_ = cc.PromoteReplica(ctx, shardID, id)          // delegates to PromoteMember
 ch, _ := cc.WatchMembership(ctx, shardID)        // polls + emits deltas
 for ev := range ch {
     // ev.Members, ev.Added, ev.Removed, ev.LeaderChanged
@@ -599,7 +720,16 @@ cadence is `DefaultMembershipPollInterval`.
   `admin:status`, `admin:peers`, `admin:add_member`, `admin:remove_member`,
   `admin:snapshot`, `admin:drain`, `admin:capabilities`, `admin:start_shard`,
   `admin:shard_state`. Adding and removing replicas are separately gated from
-  reading peers.
+  reading peers. Promoting an observer to a voter (`service.MemberPromoter`,
+  `qrdb admin member promote`) reuses `admin:add_member`: a promotion is a
+  Raft reconfiguration like an add, not a new capability. Adding a replica
+  as a non-voting observer in the first place (`service.ObserverMemberAdder`,
+  `qrdb admin member add-observer`) reuses the identical permission for the
+  identical reason — it is how an operator reaches `member promote`'s
+  success path at all: a plain `member add` always votes, so without
+  `add-observer` there was no way to create the observer `member promote`
+  promotes. Both are served on every transport — see
+  [api.md](api.md#capability-matrix--node-administration).
 - **`GET /health` is a public route** so a load balancer can probe an
   unauthenticated node; nothing else in this feature is.
 - **Rebalance `execute` physically moves shards** and is gated apart from the

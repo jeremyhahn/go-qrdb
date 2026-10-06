@@ -1466,6 +1466,80 @@ export interface ListUsersResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Invitation self-enrolment types
+//
+// Wire field names (roleIDs, keyPinFingerprint, tenantID, csrPEM, certPEM,
+// chainPEM, userID) are literal camelCase with all-caps acronyms, the same
+// convention IssueCertRequest/EnrolledCert use -- send these verbatim
+// (JSON.stringify), never through jsonBody()'s deepCamelToSnake.
+// ---------------------------------------------------------------------------
+
+/**
+ * Parameters to invite a user into the caller's own tenant: the account is
+ * created pending (or, given only `username`, an existing pending account is
+ * re-invited) and a single-use enrolment token is returned once.
+ */
+export interface InviteUserRequest {
+    /** The account to invite. */
+    readonly username: string;
+    /** Canonical login key for a new account. */
+    readonly email?: string;
+    /** Display name for a new account (presentation only). */
+    readonly name?: string;
+    /** Role IDs for a new account. */
+    readonly roleIDs?: readonly string[];
+    /**
+     * Pins the invitation to one key -- the base64url SHA-256 SPKI
+     * thumbprint of a CSR the invited user sends out of band. Only that key
+     * can redeem it.
+     */
+    readonly keyPinFingerprint?: string;
+}
+
+/**
+ * An issued invitation. token is the plaintext bearer secret: it is
+ * returned once, here, and must reach the invited user out of band.
+ */
+export interface Invitation {
+    /** Globally unique invitation identifier. */
+    readonly id: string;
+    /** The one-time bearer token. Returned exactly once. */
+    readonly token: string;
+    /** RFC 3339 expiration timestamp. */
+    readonly expiresAt: string;
+    /** The invited account's ID. */
+    readonly userID: string;
+    /** The invited account's username. */
+    readonly username: string;
+    /** Tenant the invitation was issued in. */
+    readonly tenantID: string;
+    /** True when this call created the account; false when it re-invited an existing pending one. */
+    readonly created: boolean;
+    /** The key this invitation is pinned to; empty for an unpinned invitation. */
+    readonly keyPinFingerprint?: string;
+}
+
+/**
+ * Parameters to redeem a one-time invitation. This is the ONE call made with
+ * NO credential: the token is the authority. csrPEM is always required: it
+ * carries the proof that the redeemer holds the key. certPEM (leaf first)
+ * and chainPEM, when given, are a bring-your-own certificate over that same
+ * key.
+ */
+export interface RedeemInvitationRequest {
+    /** The tenant the invitation was issued in. */
+    readonly tenantID: string;
+    /** The one-time invitation token. */
+    readonly token: string;
+    /** PEM certificate signing request over the redeemer's own key. */
+    readonly csrPEM: string;
+    /** Optional bring-your-own PEM certificate over the CSR's key, leaf first. */
+    readonly certPEM?: string;
+    /** Optional PEM intermediates for certPEM. */
+    readonly chainPEM?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Role management types
 // ---------------------------------------------------------------------------
 

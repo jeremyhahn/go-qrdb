@@ -378,6 +378,20 @@ type MembershipError struct {
 	Err error
 }
 
+// MemberNotObserverError is returned by AdminService.PromoteMember when
+// replicaID is not a committed observer of shardID: it is absent entirely,
+// already a voter, or a witness. Only an observer can be promoted.
+type MemberNotObserverError struct {
+	ShardID   uint64
+	ReplicaID uint64
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *MemberNotObserverError) Error() string {
+	return "service: replica " + strconv.FormatUint(e.ReplicaID, 10) + " of shard " +
+		strconv.FormatUint(e.ShardID, 10) + " is not a committed observer"
+}
+
 // Error returns a human-readable description of the membership failure.
 func (e *MembershipError) Error() string {
 	return "service: membership " + e.Op + " failed: " + e.Err.Error()

@@ -225,6 +225,7 @@ type mockAdminService struct {
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
 	addMemberFn       func(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
 	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
+	promoteMemberFn   func(ctx context.Context, shardID, replicaID uint64) error
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
 	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
@@ -285,6 +286,14 @@ func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uin
 func (m *mockAdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
 	if m.removeMemberFn != nil {
 		return m.removeMemberFn(ctx, shardID, replicaID)
+	}
+	return nil
+}
+
+// PromoteMember implements service.MemberPromoter.
+func (m *mockAdminService) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if m.promoteMemberFn != nil {
+		return m.promoteMemberFn(ctx, shardID, replicaID)
 	}
 	return nil
 }
@@ -662,6 +671,7 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_peers",
 		"qrdb_add_member",
 		"qrdb_remove_member",
+		"qrdb_promote_member",
 		"qrdb_snapshot",
 		"qrdb_drain",
 		"qrdb_capabilities",
@@ -672,6 +682,11 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_node_compaction",
 		"qrdb_update_node_compaction",
 		"qrdb_mint_join_token",
+		"qrdb_add_observer_member",
+		"qrdb_list_pending_join_requests",
+		"qrdb_approve_join_request",
+		"qrdb_reject_join_request",
+		"qrdb_retire_join_identity",
 		// Registered unconditionally, like the kv/admin tools above, not
 		// gated behind a barrier service or migrator (go-qrdb#558): the
 		// handler itself refuses with a typed error when no
@@ -1222,6 +1237,80 @@ func TestHandleAddMember_ServiceError(t *testing.T) {
 	var toolErr *ToolError
 	if !errors.As(err, &toolErr) {
 		t.Errorf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandlePromoteMember_Success(t *testing.T) {
+	adminSvc := newMockAdminService()
+	handler := handlePromoteMember(adminSvc)
+
+	req := buildCallToolRequest(t, "qrdb_promote_member", map[string]any{
+		"shard_id":   float64(1),
+		"replica_id": float64(2),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePromoteMember: %v", err)
+	}
+
+	text := resultText(t, result)
+	if text != "ok" {
+		t.Errorf("expected 'ok', got %q", text)
+	}
+}
+
+func TestHandlePromoteMember_MissingShardID(t *testing.T) {
+	adminSvc := newMockAdminService()
+	handler := handlePromoteMember(adminSvc)
+
+	req := buildCallToolRequest(t, "qrdb_promote_member", map[string]any{
+		"replica_id": float64(2),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error result for missing shard_id")
+	}
+}
+
+func TestHandlePromoteMember_MissingReplicaID(t *testing.T) {
+	adminSvc := newMockAdminService()
+	handler := handlePromoteMember(adminSvc)
+
+	req := buildCallToolRequest(t, "qrdb_promote_member", map[string]any{
+		"shard_id": float64(1),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error result for missing replica_id")
+	}
+}
+
+func TestHandlePromoteMember_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.promoteMemberFn = func(_ context.Context, _, _ uint64) error {
+		return &service.MemberNotObserverError{ShardID: 1, ReplicaID: 2}
+	}
+	handler := handlePromoteMember(adminSvc)
+
+	req := buildCallToolRequest(t, "qrdb_promote_member", map[string]any{
+		"shard_id":   float64(1),
+		"replica_id": float64(2),
+	})
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
 	}
 }
 

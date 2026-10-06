@@ -45,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -269,6 +270,18 @@ type Infra struct {
 	// opening are recorded before they take effect and, under FailClosed --
 	// the zero value -- refused when the trail cannot record them.
 	AuditFailurePolicy audit.FailurePolicy
+
+	// InvitationTTL is auth.invitation_ttl, the raw configured value: how
+	// long an invitation (users:invite) stays redeemable. Empty takes
+	// config.DefaultInvitationTTLString; parsed by buildEnrollmentServices
+	// (config.ParseInvitationTTL), the same validation Config.Validate
+	// already applies.
+	InvitationTTL string
+
+	// InvitationRequireKeyPin is auth.invitation_require_key_pin: when true,
+	// every invitation must be pinned to the invited user's key, for
+	// compliance profiles that must never issue a bearer-only token.
+	InvitationRequireKeyPin bool
 
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
@@ -506,6 +519,12 @@ type Node struct {
 	// Both are nil exactly when CertProv is.
 	CertEnrollment   service.CertEnrollmentServicer
 	TenantOnboarding service.TenantOnboardingServicer
+
+	// Invitations is the invitation self-enrolment service every transport's
+	// users:invite and (unauthenticated) redemption verbs delegate to. Nil
+	// exactly when CertEnrollment is: both require CertProv, and redemption
+	// issues through the same Key B CA SignCertificate does.
+	Invitations service.InvitationServicer
 
 	// StoreResolver maps a tenant ID to the KVStore backing its IAM data.
 	// It is non-nil only when a BarrierRegistry was supplied: barrier-mode
@@ -1468,6 +1487,36 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
 	})
+
+	// Invitation self-enrolment. invitationUsers is n.User (the FINAL,
+	// tenant-routed service this function runs after) asserted to
+	// user.CertActivator too; the routing service implements both, so this
+	// never fails in production -- it guards only a Users seam a future
+	// composer might narrow.
+	if invitationUsers, ok := n.User.(service.InvitationUsers); ok && n.StoreResolver != nil {
+		invites, err := invite.NewTenantStore(n.StoreResolver)
+		// A TTL Config.Validate already rejected is refused here too, rather
+		// than guessed at with a fallback: an invitation's lifetime is a
+		// security-relevant bound, not a value to silently substitute for.
+		ttl, terr := qrdbconfig.ParseInvitationTTL(infra.InvitationTTL)
+		if err != nil || terr != nil {
+			log.Warn("lifecycle: invitation self-enrolment is disabled",
+				"store_error", err, "ttl_error", terr)
+		} else {
+			n.Invitations = service.NewInvitationService(service.InvitationDeps{
+				Invitations:   invites,
+				Users:         invitationUsers,
+				Certs:         n.CertProv,
+				Anchors:       n.TrustAnchors,
+				Tenants:       n.Tenant,
+				TTL:           ttl,
+				TrustDomain:   infra.SPIFFETrustDomain,
+				AuditLogger:   infra.AuditLogger,
+				AuditPolicy:   infra.AuditFailurePolicy,
+				RequireKeyPin: infra.InvitationRequireKeyPin,
+			})
+		}
+	}
 }
 
 // BuildSealServicesOnly constructs the subset of seal-gated services that

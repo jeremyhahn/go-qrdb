@@ -17,9 +17,9 @@ package embedded
 import (
 	"context"
 
-	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // This file is the embedded transport's half of the tenant-administration
@@ -31,9 +31,9 @@ import (
 // Every helper below delegates to the SAME *authmw.AuthMiddleware decision
 // the network transports enforce (pkg/auth/middleware), resolved against the
 // SAME pkg/permission operation table -- there is no second, embedded-only
-// permission table. AuthorizeTarget is the method pkg/auth/middleware/target.go
-// documents as "the embedded transport authorizes its typed calls through
-// this".
+// permission table. AuthorizeTenant is the full-decision check: it charges
+// the rate-limit token and writes the audit record exactly as the network
+// transports' entry check does, against whatever tenant it is given.
 //
 // The embedded transport has no router to run an entry-level check ahead of
 // a handler, so where a network transport's route middleware authorizes the
@@ -44,7 +44,7 @@ import (
 // a grant (AuthorizeTenantTarget), where skipping the entry check would
 // leave a successful call charged and audited nowhere at all. Every other
 // helper below (authorizeTenantTarget alone, authorizeTenantBarrierInit,
-// authorizeTenantBarrierSealedOp) calls AuthorizeTarget/the AuthMiddleware
+// authorizeTenantBarrierSealedOp) calls AuthorizeTenant/the AuthMiddleware
 // method that itself charges the FULL decision, so it needs no separate
 // entry check of its own.
 //
@@ -66,7 +66,7 @@ func (t *Transport) authorizeTenantSelf(ctx context.Context, perm permission.Per
 	if t.authMW == nil {
 		return nil
 	}
-	return t.authMW.AuthorizeTarget(ctx, perm, authmw.SelfTarget())
+	return t.authMW.AuthorizeTenant(ctx, tenant.FromContext(ctx), perm)
 }
 
 // authorizeTenantTarget authorizes perm against the tenant the request
@@ -80,7 +80,7 @@ func (t *Transport) authorizeTenantTarget(ctx context.Context, tenantID string, 
 	if t.authMW == nil {
 		return nil
 	}
-	return t.authMW.AuthorizeTarget(ctx, perm, authmw.TenantTarget(tenantID))
+	return t.authMW.AuthorizeTenant(ctx, tenantid.Normalize(tenantID), perm)
 }
 
 // authorizeTenantUpdate authorizes a tenant PATCH the same way

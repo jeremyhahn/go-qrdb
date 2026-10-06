@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -70,6 +71,20 @@ type MVCCOption func(*MVCCStateMachine)
 func WithLessor(lr *lease.Lessor) MVCCOption {
 	return func(s *MVCCStateMachine) {
 		s.SetLessor(lr)
+	}
+}
+
+// WithAuditChain attaches a replicated audit.Chain to the MVCC state
+// machine. Every state machine the registry builds for a given sm_type MUST
+// receive the same kind of attachment (this option mirrors WithLessor): a
+// chain conditioned on per-node configuration would let one replica apply
+// protocol.OpAuditAppend while a sibling replica of the same Raft group
+// refuses it for want of a Chain, which is state divergence, not a
+// degraded feature. The featuregate.AuditAppend gate -- not this
+// attachment -- is what controls whether the opcode is ever proposed.
+func WithAuditChain(c *audit.Chain) MVCCOption {
+	return func(s *MVCCStateMachine) {
+		s.SetAuditChain(c)
 	}
 }
 

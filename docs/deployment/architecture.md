@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 What a host must grant `qrdbd` to run as configured — locked memory — and
 what `qrdbd` takes away from the host in return: the ability of other
@@ -138,6 +138,41 @@ still read the process — that is the kernel's rule, and a host's Yama
 `ptrace_scope` setting may restrict ptrace further but is the host's to set.
 Monitoring agents that read `/proc/<pid>/` of other processes as a
 non-root user lose access to `qrdbd`'s entries.
+
+## Build and CI dev-cache passthrough (2026-10-06)
+
+`.devcontainer/Dockerfile`, `.devcontainer/docker-compose.yml` and
+`.github/workflows/ci.yml` take the fleet's `DEVCACHE_*` variables
+(`../../handbook/software/conventions/devops.md` §2a) and behave exactly as
+they did before the cache existed when a variable is unset, empty, or its
+cache does not answer:
+
+- The Dockerfile accepts `DEVCACHE_APT_PROXY` and `DEVCACHE_NPM_REGISTRY` as
+  build args. Around each `apt-get` `RUN` it writes
+  `/etc/apt/apt.conf.d/01devcache` only when the arg is set and a 3-second
+  `curl` reaches it, and removes the file at the end of that same `RUN` — the
+  proxy is scoped to the installs inside it, never baked into the image. The
+  Node.js install `RUN` sets npm's registry under the same condition; unlike
+  the apt proxy, that setting is not torn down, because the frontend's own
+  `npm` runs later, at container runtime against the bind-mounted source, not
+  during this image build.
+- `docker-compose.yml` passes `DEVCACHE_APT_PROXY` and `DEVCACHE_NPM_REGISTRY`
+  as build args (so the Dockerfile can use them) and, with the rest of the
+  `DEVCACHE_*` set, as plain `${VAR:-}` environment passthrough. `GOPROXY`
+  follows the devops.md §2a formula
+  (`${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct`) beside the existing
+  `GOPRIVATE` line in `client-build` and `e2e`: `GOPRIVATE` already resolves
+  every `github.com/jeremyhahn/*` module direct, so the cache can only ever
+  accelerate the public modules it was allowed to touch.
+- `ci.yml`'s `test-typescript` and `trivy` jobs — the ones that run `npm`,
+  Playwright or trivy — load the dev-cache client helper from the dev-cache
+  repo's `v0.1.0` tag over `github.server_url`, guarded to the internal Gitea
+  host (the route does not exist on github.com). The step fails OPEN: a
+  failed fetch or an unreachable cache sets nothing, and the job runs
+  uncached, exactly as it did before this change.
+
+`.devcontainer/Dockerfile.gpu` is unchanged; it bakes no frontend and no apt
+proxy of its own.
 
 ## Not in scope
 

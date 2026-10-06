@@ -35,10 +35,10 @@ import (
 // The identity must already have been established (see the MCP server's HTTP
 // context func, which authenticates the mTLS peer and injects the identity).
 //
-// args are the call's arguments; the tool's registered MCPTargetFunc reads
-// the tenant it acts on from them, and the permission is authorized against
-// that tenant (see Target).
-func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, tools *MCPToolRegistry, toolName string, args map[string]any) error {
+// The permission is authorized in the caller's own tenant, the tenant the
+// authenticated context is bound to. A tool that acts on a tenant its
+// arguments name re-checks there itself (AuthorizeTenantTarget).
+func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, tools *MCPToolRegistry, toolName string) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return &auth.AuthError{Code: "unauthenticated", Message: "mcp: no authenticated identity"}
@@ -52,5 +52,5 @@ func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, tools *MCPToolRegistr
 		}
 	}
 
-	return m.authorizeTarget(ctx, identity, perm, tools.target(toolName, args))
+	return m.authorize(ctx, identity, perm)
 }

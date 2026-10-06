@@ -28,12 +28,14 @@ import type {
     DatabaseClient,
     EmbeddedServerClient,
     IndexClient,
+    InvitationClient,
     KVClient,
     LeaseClient,
     LockClient,
     MVCCClient,
     OfficerClient,
     RebalanceClient,
+    RedeemInvitationOptions,
     RoleClient,
     SealClient,
     ServerConfigClient,
@@ -116,6 +118,8 @@ import type {
     IndexQueryResponse,
     IndexScanResponse,
     IndexStats,
+    Invitation,
+    InviteUserRequest,
     LeaseInfo,
     LockInfo,
     LockAcquireRequest,
@@ -142,6 +146,7 @@ import type {
     RebuildIndexRequest,
     RebuildIndexResponse,
     RebuildProgress,
+    RedeemInvitationRequest,
     RestoreRevisionRequest,
     RestoreRevisionResult,
     Role,
@@ -336,6 +341,7 @@ interface WailsBindings {
         TimeSeriesBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         VectorBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         UserBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        InvitationBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         RoleBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CertBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CollectionBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
@@ -1040,6 +1046,43 @@ export class WailsClient implements Client {
                 thumbprint: string,
             ): Promise<User> => {
                 return b.RemoveCertBinding(userId, thumbprint) as Promise<User>;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Invitations
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get invitations(): InvitationClient {
+        const b = wrapBindings(getBindings().main.InvitationBinding);
+        return {
+            invite: async (req: InviteUserRequest): Promise<Invitation> => {
+                // roleIDs/keyPinFingerprint are literal camelCase on the
+                // wire (cmd/qrdb/bindings_invitations.go delegates straight
+                // to transport.InviteUserRequest); see certs.issueCert
+                // above -- toSnake() would mangle them.
+                return b.Invite(req) as Promise<Invitation>;
+            },
+            redeem: async (
+                req: RedeemInvitationRequest,
+                options?: RedeemInvitationOptions,
+            ): Promise<EnrolledCert> => {
+                // UNAUTHENTICATED by design, and with no existing connection
+                // to reuse: options names where to dial, exactly as the
+                // CLI's --server/--transport/--ca-file do (see
+                // cmd/qrdb/bindings_invitations.go's RedeemInput).
+                return b.Redeem({
+                    server: options?.server ?? '',
+                    transport: options?.transport ?? '',
+                    caFile: options?.caFile ?? '',
+                    tenantID: req.tenantID,
+                    token: req.token,
+                    csrPEM: req.csrPEM,
+                    certPEM: req.certPEM,
+                    chainPEM: req.chainPEM,
+                }) as Promise<EnrolledCert>;
             },
         };
     }

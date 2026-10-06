@@ -1,6 +1,6 @@
 # Clustering — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Forming a cluster, watching it, changing its membership, and moving shards
 around when the load goes lopsided.
@@ -76,15 +76,19 @@ joining node:
      HTTPS URL), pinned the same way `--bootstrap-spki-pin` pins the anchor
      fetch.
 
-   Either transport needs a join token: a single-use, identity-bound secret
-   an admin mints for this node's identity ahead of time (`qrdb admin
-   join-token mint`, below) — never inline in YAML or on the command line.
-   Pass it through `--bootstrap-join-token-file` (a file holding it) or
-   `--bootstrap-join-token-env` (an environment variable holding it). The
-   file must be owned by the user running `qrdbd` and unreadable by its
-   group or by anyone else (mode 0600 or tighter); a group- or
-   world-readable file, or a value too short to be a real token, is refused
-   with a typed error rather than silently accepted.
+   Either transport normally needs a join token: a single-use,
+   identity-bound secret an admin mints for this node's identity ahead of
+   time (`qrdb admin join-token mint`, below) — never inline in YAML or on
+   the command line. Pass it through `--bootstrap-join-token-file` (a file
+   holding it) or `--bootstrap-join-token-env` (an environment variable
+   holding it). The file must be owned by the user running `qrdbd` and
+   unreadable by its group or by anyone else (mode 0600 or tighter); a
+   group- or world-readable file, or a value too short to be a real token,
+   is refused with a typed error rather than silently accepted.
+
+   **Omit both flags instead, and the node queues for approval** — see
+   [Approving a join without a token](#approving-a-join-without-a-token)
+   below.
 
 Configuring only the first half (an anchor-fetch method with none of the
 join-transport flags) is refused at startup with `EnrollmentUnavailableError`,
@@ -133,7 +137,80 @@ qrdbd start ... \
 ```
 
 Add the joined node to the Raft group as usual once it starts
-(`qrdb admin member add`, or dynamic membership).
+(`qrdb admin member add`, or dynamic membership) — or
+`qrdb admin member add-observer` to bring it in as a non-voting observer
+first, promoting it to a voter later with `qrdb admin member promote` once
+it has caught up.
+
+### Approving a join without a token
+
+A node started with no `--bootstrap-join-token-file`/`-env` (join
+transport flags still set) submits its CSR into a replicated approval
+queue instead of presenting a token, and then **waits** — logging
+periodically — until an operator decides, rather than crash-looping the
+daemon start every few seconds:
+
+```bash
+# Joining node: no token flags at all
+qrdbd start ... \
+  --bootstrap-spki-pin <hex> --bootstrap-addr member1.db.example.com:8443 \
+  --bootstrap-join-url https://member1.db.example.com:8443
+```
+
+From an admitted member, review and decide:
+
+```bash
+qrdb admin join-request list
+# ID:           3fae8d0b...
+# NodeURI:      spiffe://attacker.example/node/spoofed
+# ReplicaID:    0
+# SubmittedAt:  2026-10-05T12:00:00Z
+# ExpiresAt:    2026-10-08T12:00:00Z
+
+qrdb admin join-request approve 3fae8d0b... --node-id node-9
+# OK
+```
+
+`NodeURI` is the joiner's own claim, shown for information only — `approve`
+chooses the identity the leaf actually carries (`--node-id`, bound under
+the cluster's trust domain), exactly as a minted token's bound identity
+already is never the joiner's to choose. The waiting node picks up the
+decision on its next retry (every `--bootstrap-join-approval-poll-interval`,
+default 15s) and finishes starting with a signed leaf.
+
+To refuse instead:
+
+```bash
+qrdb admin join-request reject 3fae8d0b... --reason "unrecognized source"
+# OK
+```
+
+The joiner's next retry is refused and it stops polling. An entry nobody
+decides on expires after 72 hours and is then treated as absent — a
+joiner still running retries into a fresh queue entry rather than being
+wedged forever.
+
+**If a node's admission lapses** — it was minted a token and never
+completed the join before its issued certificate's validity window
+passed, or it simply needs a new certificate long after its first one
+expired — mint it a fresh token and run the join again exactly as above,
+with the same node id. There is no separate "renew" command: a lapsed
+admission does not block an ordinary mint or join, so the steps are
+identical to a first-time join.
+
+**To permanently retire a node identity** — after removing it from the
+cluster, or when its certificate must be treated as revoked — so it can
+never be (re-)admitted, even once its old certificate's lapse would
+otherwise have let it renew:
+
+```bash
+qrdb admin join-token retire node-7 --reason "decommissioned 2026-10-06"
+# OK
+```
+
+A later `admin join-token mint node-7` is refused permanently. Retiring
+requires permission `cluster:join_identity_retire`, held by `Owner` by
+default, the same precedent `cluster:join_token` sets.
 
 **You can still add a node by issuing its certificate out of band**, without
 either member running a join listener: generate an ECDSA P-256 key and a
@@ -227,6 +304,16 @@ with `raft.join: true` and the existing members in its
 `raft.member_identities`. Once it is a member, its identity is committed, and
 every later add of a replica on that node — rebalancing, dedicated databases,
 re-adding it — looks it up without you.
+
+**`admin member remove` is a Raft reconfiguration only — it does not touch
+the node's member-side CSR join identity.** A node removed this way, that
+joined through a token (not `--tls-ca-file`/`--tls-cert-file`/
+`--tls-key-file`), still holds a certificate the cluster CA will happily
+chain-verify, and nothing stops it reconnecting until its certificate
+expires. If the node is being decommissioned rather than simply moved,
+also retire its join identity (`admin join-token retire`, above) so it
+can never mint a fresh token or renew, with its old certificate or a
+new one.
 
 **Automatically.** The membership manager reconciles the Raft group as nodes
 come and go, using leases and watches: each node holds a lease-backed member
@@ -334,13 +421,16 @@ A new node is added only once it advertises every feature the cluster uses.
 Membership changes, scale-ups and rebalances that would place a replica on a
 node that does not are refused with an error naming the node, the feature, and
 the missing advertisement (`featuregate.UnsupportedReplicaError`; REST 409,
-gRPC and QUIC `FAILED_PRECONDITION`). A joining node's advertisement is
-published by its enrollment; a `qrdbd` node otherwise advertises only once it
-is a member. So after activation, `qrdb admin member add` of a node that has
-not advertised is refused -- until enrollment publishes its advertisement, plan
-capacity additions before the last node of a rolling upgrade. From the Go SDK, a node can instead be registered through
-dynamic membership over a client of the running cluster, with its features in
-the registration.
+gRPC and QUIC `FAILED_PRECONDITION`). A `qrdbd` node advertises only once it is
+running and a member; a node enrolling through `qrdb enroll` / member-side CSR
+join cannot do that before it is added, so the signing member publishes a
+short-lived (15-minute) advertisement on its behalf as part of the join,
+naming the features the joiner's own binary claims. `qrdb admin member add`
+then sees a live advertisement and admits it, the same as any other node. If
+`member add` does not happen within that window the advertisement lapses;
+re-enroll to get a fresh one. From the Go SDK, a node can instead be
+registered through dynamic membership over a client of the running cluster,
+with its features in the registration published before the add.
 
 Before activation, rolling a node back is safe. A node stopped gracefully
 withdraws its advertisement at once. After a crash its advertisement lapses

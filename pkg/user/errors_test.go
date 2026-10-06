@@ -234,6 +234,14 @@ func TestEmailExistsError_Message(t *testing.T) {
 	}
 }
 
+func TestUserIDExistsError_Message(t *testing.T) {
+	err := &UserIDExistsError{ID: 42, TenantID: "acme"}
+	want := "user: id already exists: 42 in tenant acme"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SystemTenantRequiredError
 // ---------------------------------------------------------------------------

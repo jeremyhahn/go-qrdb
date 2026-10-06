@@ -1366,6 +1366,10 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		// auth.invitation_ttl / auth.invitation_require_key_pin for
+		// users:invite and its unauthenticated redemption.
+		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
+		InvitationRequireKeyPin: pending.cfg.Auth.InvitationRequireKeyPin,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Reuse the sealed-window ceremony service: holder registrations made
@@ -1882,6 +1886,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		// auth.invitation_ttl / auth.invitation_require_key_pin for
+		// users:invite and its unauthenticated redemption.
+		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
+		InvitationRequireKeyPin: pending.cfg.Auth.InvitationRequireKeyPin,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Reuse the sealed-window ceremony service: holder registrations made
@@ -2578,6 +2586,10 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		// auth.invitation_ttl / auth.invitation_require_key_pin for
+		// users:invite and its unauthenticated redemption.
+		InvitationTTL:           cfg.Auth.InvitationTTL,
+		InvitationRequireKeyPin: cfg.Auth.InvitationRequireKeyPin,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Forward an injected (xkms) seal StrategyRegistry into the
@@ -2798,6 +2810,10 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		// auth.invitation_ttl / auth.invitation_require_key_pin for
+		// users:invite and its unauthenticated redemption.
+		InvitationTTL:           cfg.Auth.InvitationTTL,
+		InvitationRequireKeyPin: cfg.Auth.InvitationRequireKeyPin,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 	}, cfg, serverOpts)
@@ -3855,6 +3871,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.CertEnrollment != nil {
 		opts = append(opts, embedded.WithCertEnrollment(svcNode.CertEnrollment))
 	}
+	if svcNode.Invitations != nil {
+		opts = append(opts, embedded.WithInvitations(svcNode.Invitations))
+	}
 	if svcNode.TenantOnboarding != nil {
 		opts = append(opts, embedded.WithTenantOnboarding(svcNode.TenantOnboarding))
 	}
@@ -4116,6 +4135,9 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.CertEnrollment != nil {
 		opts = append(opts, server.WithCertEnrollment(svcNode.CertEnrollment))
+	}
+	if svcNode.Invitations != nil {
+		opts = append(opts, server.WithInvitations(svcNode.Invitations))
 	}
 	if svcNode.TenantOnboarding != nil {
 		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))

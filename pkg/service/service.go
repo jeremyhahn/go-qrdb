@@ -373,6 +373,12 @@ type Host interface {
 	// with a transport refuses an empty identity for a new member.
 	RequestAddNodeWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error)
 
+	// RequestAddObserverWithIdentity requests adding a replica to a shard
+	// as a non-voting observer, together with the node identity go-quicraft
+	// commits for it. See AdminService.PromoteMember for turning the
+	// observer into a voter later.
+	RequestAddObserverWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error)
+
 	// SyncGetShardMembership returns a shard's committed membership,
 	// including the member identities go-quicraft committed.
 	SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
@@ -1253,6 +1259,34 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	return nil
 }
 
+// AddObserverMember adds a new replica to the specified shard as a
+// non-voting observer rather than a voter. It is a distinct interface
+// method (ObserverMemberAdder), not an AddMember parameter, for the same
+// reason ClusterJoinTokenMinter and MemberPromoter are distinct interfaces
+// -- see admin_join_token.go. An observer added this way is promoted to a
+// voter later with PromoteMember; it is caught up by replaying the group's
+// log exactly as a voter is, so the same feature-advertisement admission
+// check (admitReplica) applies.
+func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
+		return err
+	}
+	resolved, err := ResolveMemberIdentity(ctx, s.host, shardID, replicaID, raftAddr, identity)
+	if err != nil {
+		return err
+	}
+	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, resolved, 0)
+	if err != nil {
+		return s.translateMembershipError("add-observer", err)
+	}
+
+	if _, err := rs.Result(); err != nil {
+		return s.translateMembershipError("add-observer", err)
+	}
+
+	return nil
+}
+
 // RemoveMember removes a replica from the specified shard. The request is
 // proposed through Raft and completes when the membership change is
 // committed.
@@ -1264,6 +1298,38 @@ func (s *AdminService) RemoveMember(ctx context.Context, shardID, replicaID uint
 
 	if _, err := rs.Result(); err != nil {
 		return s.translateMembershipError("remove", err)
+	}
+
+	return nil
+}
+
+// PromoteMember promotes replicaID from a committed observer of shardID to
+// a voter. It reads the shard's committed membership, refuses with
+// *MemberNotObserverError when replicaID is not an observer there, and
+// proposes an AddNode carrying the observer's own committed address and
+// identity -- go-quicraft applies that as a role change in place, without
+// restarting the replica.
+func (s *AdminService) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	m, err := s.host.SyncGetShardMembership(ctx, shardID)
+	if err != nil {
+		return s.translateMembershipError("promote", err)
+	}
+	if m == nil {
+		return &MemberNotObserverError{ShardID: shardID, ReplicaID: replicaID}
+	}
+	addr, ok := m.Observers[replicaID]
+	if !ok {
+		return &MemberNotObserverError{ShardID: shardID, ReplicaID: replicaID}
+	}
+	identity := m.Identities[replicaID]
+
+	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, addr, identity, 0)
+	if err != nil {
+		return s.translateMembershipError("promote", err)
+	}
+
+	if _, err := rs.Result(); err != nil {
+		return s.translateMembershipError("promote", err)
 	}
 
 	return nil

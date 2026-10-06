@@ -18,9 +18,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 )
 
 // namePattern matches valid database names: alphanumeric characters, hyphens,

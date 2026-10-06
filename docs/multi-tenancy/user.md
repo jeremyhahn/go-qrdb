@@ -1,6 +1,7 @@
 # Multi-Tenancy — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
 
 Running several customers on one deployment, with as much separation as each
 one needs.
@@ -129,14 +130,22 @@ qrdb tenant barrier-unseal --id secure-co --key "$KEY_B64"
 qrdb tenant barrier-seal   --id secure-co
 ```
 
-With M-of-N:
+With M-of-N, name the initial share holders inline (the barrier's own IAM
+isn't readable until it exists, so standalone officer registration can't
+reach it beforehand):
 
 ```bash
-qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 3 --shares 5
+qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 2 --shares 2 \
+     --officers alice=alice.csr --custodians bob=bob.csr
 ```
 
-Officers register and claim through `qrdb tenant barrier-officer ...`, mirroring
-the system barrier's flow with `--tenant-id` added — see
+Both officers are validated together and enrolled atomically with
+initialization — a problem with either one refuses the whole call, and a
+failure partway through rolls back any officer already registered, so a
+corrected retry never collides with a half-finished attempt.
+
+Later officers register and claim through `qrdb tenant barrier-officer ...`,
+mirroring the system barrier's flow with `--tenant-id` added — see
 [../shamir-custody/user.md](../shamir-custody/user.md).
 
 **Self-managed is the default and it is the secure one.** `--barrier-auto-unseal`
@@ -262,3 +271,83 @@ deployment must configure the tenant service.**
 tenants it already is. For `raft` tenants the raft log lives in the shared host
 LogDB under the *system* barrier; a dedicated per-tenant WAL is **designed but
 not implemented**.
+
+## Strict isolation — RULED
+
+> **Status: RULED — not implemented** (owner rulings 2026-10-01). Design:
+> [architecture.md](architecture.md#strict-tenant-isolation--design).
+> Correction (2026-10-05): creating a tenant with its first admin, and
+> restricting barrier init to that admin's certificate, already shipped for
+> every tenant on 2026-10-03 — see [Creating tenants](#creating-tenants). Only
+> the cluster isolation-policy ladder itself, and moving records into a home
+> store, remain unimplemented.
+
+**What a strict tenant gets.** Strict is the cluster default, and any tenant on
+an `operator-access` cluster can opt into it.
+
+- The tenant keeps all of its own records in its own store: users, roles,
+  factors, certificates, its CA, its database catalog, its audit trail and its
+  keys.
+- Those records live only on the nodes that serve the tenant. Each of those
+  nodes encrypts them under a key that exists on that node alone.
+- The platform keeps a short registry entry: the tenant's name, tier, plan,
+  where it runs, and whether it is sealed.
+- The platform operator cannot read or change any of the tenant's records.
+- Nobody outside the tenant can reach its data.
+
+A strict tenant always has storage of its own, so it must be on the `barrier`,
+`volume` or `raft` tier; `prefix` is not available. The server therefore needs
+`storage.volume_pools`.
+
+**What changes on an `operator-access` cluster.** Operators who hold the
+`tenant_identity` permissions can read and administer users, roles and factors
+in any tenant that has not opted into strict. Every such action appears in
+that tenant's own audit trail. Operators still cannot reach any tenant's
+databases.
+
+To see which policy applies:
+- `qrdb cluster isolation-policy` shows the cluster floor;
+- `qrdb tenant get <id>` shows a tenant's effective policy.
+
+A policy only ever tightens.
+
+**Bringing up a new strict tenant.** Creating with a CSR and initializing with
+only the bound certificate already works today, for every tenant — see
+[Creating tenants](#creating-tenants) and
+[The tenant's own barrier](#the-tenants-own-barrier) above. The only new flag
+is `--isolation-policy`:
+
+```bash
+# the tenant's admin, on their own machine — only csr.pem leaves it:
+qrdb ca csr --username alice --out ./alice
+
+# operator (or the self-service flow): create the tenant with that CSR
+qrdb tenant create --id acme --name "Acme" --isolation-type raft \
+     --admin-username alice --admin-csr alice/csr.pem --isolation-policy strict
+
+# tenant: initialize with the certificate tenant create issued, which is the
+# only one the barrier's trust-on-first-init window admits
+qrdb --cert-file alice/admin-cert.pem --key-file alice/key.pem \
+     tenant barrier-init --id acme --strategy passphrase --passphrase "$PP"
+```
+
+`tenant create` and `barrier-status` both report the SPKI thumbprint of the
+admin bound. Compare it with your own key's thumbprint. If init is refused for
+your key, the tenant was created with a different CSR: treat that tenant as
+compromised and ask for a new one.
+
+**After a restart, unseal every serving node.** `qrdb tenant barrier-unseal`
+does that for you. A node that joined since the last unseal stays sealed until
+the next unseal reaches it.
+
+**Connecting through any node.** The CLI and SDK put your tenant in the TLS
+server name (SNI). If you connect to a node that does not serve your tenant,
+that node passes your still-encrypted connection on to one that does. Your
+session is never opened on the node in between.
+
+The Unix socket and the embedded client are the exceptions. With those you
+must be on a serving node; otherwise you get "tenant is not served by this
+node", together with the list of serving nodes.
+
+**Backups.** Back up a strict tenant's databases yourself, with
+`qrdb tenant backup create`. Platform backups do not include them.

@@ -50,6 +50,7 @@ func TestClusterAdminScope(t *testing.T) {
 	}{
 		{"admin.AddMember", marshal(&pb.AddMemberRequest{ShardId: 1, ReplicaId: 9, RaftAddress: "127.0.0.1:1"})},
 		{"admin.RemoveMember", marshal(&pb.RemoveMemberRequest{ShardId: 1, ReplicaId: 2})},
+		{"admin.PromoteMember", marshal(&pb.PromoteMemberRequest{ShardId: 1, ReplicaId: 2})},
 		{"admin.RequestSnapshot", marshal(&pb.RequestSnapshotMessage{ShardId: 1})},
 		{"admin.Drain", nil},
 		// The node keyspace's compaction policy: the platform's, and its

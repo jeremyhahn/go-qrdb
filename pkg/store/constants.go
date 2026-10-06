@@ -15,6 +15,7 @@
 package store
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -29,8 +30,8 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 // must not cover, because every replica holds its own value for it.
 //
 // Both state machines reserve the 0x00 prefix for their own records. All but
-// two of those are node-local. The two replicated tables are written only in
-// the apply batch, so they travel in snapshots (and so in backups) and are
+// three of those are node-local. The three replicated tables are written only
+// in the apply batch, so they travel in snapshots (and so in backups) and are
 // covered by the hash like any other applied record:
 //
 //   - the lease table (lease.TablePrefix): a snapshot that dropped it would
@@ -39,9 +40,14 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 //   - the compaction table (compaction.TablePrefix): a snapshot that dropped
 //     it would leave the recovering replica -- or a restored cluster -- with
 //     no compaction policy, and a new leader with no samples, so its
-//     schedule would silently stop or restart its retention clock.
+//     schedule would silently stop or restart its retention clock;
+//   - the replicated audit table (audit.TablePrefix): a snapshot that dropped
+//     it would hand the recovering replica a chain that resumes from a head
+//     no committed log entry produced, breaking the property
+//     (docs/audit/architecture.md#the-hash-chain-stays-linear-under-raft-because-it-is-assigned-at-apply-time)
+//     this table exists to guarantee.
 func isNodeLocalKey(k []byte) bool {
-	return len(k) > 0 && k[0] == '\x00' && !lease.IsTableKey(k) && !compaction.IsTableKey(k)
+	return len(k) > 0 && k[0] == '\x00' && !lease.IsTableKey(k) && !compaction.IsTableKey(k) && !audit.IsTableKey(k)
 }
 
 // The internal key namespace is declared once, in pkg/service. This package

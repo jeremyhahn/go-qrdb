@@ -22,10 +22,12 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // tenantScopeAuthorizer authorizes a per-tenant barrier tool invocation
@@ -92,6 +94,12 @@ func toolTenantBarrierInit() mcp.Tool {
 		mcp.WithString("strategy",
 			mcp.Description("Seal strategy for the per-tenant barrier. Defaults to 'passphrase' when empty. Valid values include 'passphrase', 'none', 'shamir', 'tpm2', 'pkcs11', 'aws-kms', 'gcp-kms', 'azure-kv', 'vault' (hardware/cloud strategies require go-xkms injection)."),
 		),
+		mcp.WithString("officers",
+			mcp.Description("Inline Shamir share-holder roster, JSON-encoded: an array of {\"username\":..., \"role\":\"so\"|\"custodian\", \"csr_pem\":..., \"encryption_kem\":..., \"encryption_key\":..., \"factors\":[...], \"designated\":...} objects, e.g. '[{\"username\":\"alice\",\"role\":\"so\",\"csr_pem\":\"...\"}]'. Validated and registered atomically with initialization; refused on any strategy but shamir. Its length must equal shares."),
+		),
+		mcp.WithString("policy",
+			mcp.Description("Factor policy the officers roster enrols under: designated (default) or any-enrolled. Ignored when officers is empty."),
+		),
 	)
 }
 
@@ -114,7 +122,19 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 		shares := mcp.ParseInt(req, "shares", 0)
 		strategy := mcp.ParseString(req, "strategy", "")
 
-		result, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy))
+		var roster *tenant.TenantBarrierShamirRoster
+		if officersRaw := mcp.ParseString(req, "officers", ""); officersRaw != "" {
+			var officers []transport.OfficerRegisterRequest
+			if err := json.Unmarshal([]byte(officersRaw), &officers); err != nil {
+				return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: err}
+			}
+			roster = &tenant.TenantBarrierShamirRoster{
+				Officers: holderwire.TenantBarrierRosterFrom(officers),
+				Policy:   seal.FactorPolicy(mcp.ParseString(req, "policy", "")),
+			}
+		}
+
+		result, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy), roster)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: err}
 		}
@@ -127,6 +147,7 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 			"threshold":    result.Threshold,
 			"total_shares": result.TotalShares,
 			"share_count":  result.ShareCount,
+			"holders":      holderwire.TenantBarrierHoldersTo(result.Holders),
 		}
 		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {

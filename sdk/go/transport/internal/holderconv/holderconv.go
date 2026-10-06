@@ -326,3 +326,45 @@ func CeremonyInitFromPB(resp *pb.CeremonyInitializeResponse) *transport.Ceremony
 		AdminCredentialSource: resp.GetAdminCredentialSource(),
 	}
 }
+
+// TenantBarrierRosterToPB encodes the inline Shamir officer roster a
+// `tenant barrier-init` request carries into the []*pb.CeremonyOfficer
+// shape the gRPC/Unix wire uses -- the same conversion CeremonyInitToPB
+// applies for the system barrier's own inline roster, since CeremonyOfficer
+// is the same shape as OfficerRegisterRequest.
+func TenantBarrierRosterToPB(officers []transport.OfficerRegisterRequest) ([]*pb.CeremonyOfficer, error) {
+	if len(officers) == 0 {
+		return nil, nil
+	}
+	out := make([]*pb.CeremonyOfficer, len(officers))
+	for i, o := range officers {
+		factors, err := factorsToPB(o.Factors)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = &pb.CeremonyOfficer{
+			Username:      o.Username,
+			Role:          o.Role,
+			CsrPem:        o.CSRPEM,
+			EncryptionKem: o.EncryptionKEM,
+			EncryptionKey: o.EncryptionKey,
+			Factors:       factors,
+			Designated:    o.Designated,
+		}
+	}
+	return out, nil
+}
+
+// TenantBarrierHoldersFromPB decodes the certificates an inline Shamir
+// roster's initialization issued, in roster order, from the wire shape
+// TenantBarrierInitResponse carries.
+func TenantBarrierHoldersFromPB(holders []*pb.CeremonyHolderCert) []transport.TenantBarrierHolderCert {
+	if len(holders) == 0 {
+		return nil
+	}
+	out := make([]transport.TenantBarrierHolderCert, len(holders))
+	for i, h := range holders {
+		out[i] = transport.TenantBarrierHolderCert{Username: h.GetUsername(), Role: h.GetRole(), CertPEM: string(h.GetCertPem())}
+	}
+	return out
+}

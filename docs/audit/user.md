@@ -1,6 +1,6 @@
 # Audit — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
 
 Who did what, when, and whether it worked. Auditing is on by default.
 
@@ -17,6 +17,12 @@ Who did what, when, and whether it worked. Auditing is on by default.
 - A node with an audit sink wired. The daemon always builds one: a hash-chained
   NDJSON file beside the data directory, an in-memory ring buffer, and a mirror
   to the operational log stream.
+
+Everything in this guide reads the **node-local** trail above. A separate,
+cluster-wide replicated audit chain exists internally
+([architecture.md](architecture.md#cluster-wide-replicated-trail)) but has no
+user-facing surface yet — nothing proposes writes to it, and there is no
+`qrdb audit` command or API that reads it.
 
 The only audit-related setting is the failure posture, and it lives under
 `auth:` because that is where it is enforced:

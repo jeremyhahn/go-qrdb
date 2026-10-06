@@ -542,7 +542,15 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		return nil, err
 	}
 
-	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
+	var roster *tenant.TenantBarrierShamirRoster
+	if len(req.Officers) > 0 {
+		roster = &tenant.TenantBarrierShamirRoster{
+			Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
+			Policy:   seal.FactorPolicy(req.Policy),
+		}
+	}
+
+	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster)
 	if err != nil {
 		return nil, err
 	}
@@ -555,6 +563,7 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		ShareCount:  result.ShareCount,
 		Threshold:   result.Threshold,
 		TotalShares: result.TotalShares,
+		Holders:     holderwire.TenantBarrierHoldersTo(result.Holders),
 	}, nil
 }
 

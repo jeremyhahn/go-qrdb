@@ -48,13 +48,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
-	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -62,6 +58,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
@@ -71,6 +68,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -86,6 +84,7 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -228,6 +227,12 @@ type startFlags struct {
 	bootstrapJoinHTTPURL   string
 	bootstrapJoinTokenFile string
 	bootstrapJoinTokenEnv  string
+
+	// bootstrapJoinApprovalPollInterval bounds how often Join re-presents a
+	// tokenless CSR (no bootstrapJoinTokenFile/-Env configured) while it
+	// sits in the signing member's replicated approval queue. Zero uses
+	// clusterenroll.DefaultJoinApprovalPollInterval.
+	bootstrapJoinApprovalPollInterval time.Duration
 
 	// clusterJoin* configure this node's MEMBER side of member-side CSR
 	// join: whether it signs CSRs for other nodes at all, and if so, the
@@ -612,6 +617,8 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.bootstrapJoinHTTPURL, "bootstrap-join-url", "", "Base admin HTTPS URL of an admitted member, for the SPKI/Direct join transport (e.g. https://10.0.0.2:8443)")
 	cmd.Flags().StringVar(&f.bootstrapJoinTokenFile, "bootstrap-join-token-file", "", "Path to a file holding the member-side join admission secret")
 	cmd.Flags().StringVar(&f.bootstrapJoinTokenEnv, "bootstrap-join-token-env", "", "Name of an environment variable holding the member-side join admission secret")
+	cmd.Flags().DurationVar(&f.bootstrapJoinApprovalPollInterval, "bootstrap-join-approval-poll-interval", 0,
+		"How often to re-present a tokenless CSR while it awaits operator approval (default: clusterenroll.DefaultJoinApprovalPollInterval)")
 	cmd.Flags().BoolVar(&f.clusterJoinEnabled, "cluster-join-enabled", false, "Sign CSRs for joining nodes (Noise_NK listener + SPKI/Direct HTTPS route), as an admitted member")
 	cmd.Flags().StringVar(&f.clusterJoinListenHost, "cluster-join-listen-host", "", "Bind host for the Noise_NK join listener; defaults to --host")
 	cmd.Flags().IntVar(&f.clusterJoinListenPort, "cluster-join-listen-port", clusterenroll.DefaultJoinPort, "TCP port for the Noise_NK join listener")
@@ -879,6 +886,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("bootstrap-join-token-file") && cfg.Bootstrap.JoinTokenFile != "" {
 		f.bootstrapJoinTokenFile = cfg.Bootstrap.JoinTokenFile
+	}
+	if !cmd.Flags().Changed("bootstrap-join-approval-poll-interval") && cfg.Bootstrap.JoinApprovalPollInterval != 0 {
+		f.bootstrapJoinApprovalPollInterval = cfg.Bootstrap.JoinApprovalPollInterval
 	}
 	if !cmd.Flags().Changed("bootstrap-join-token-env") && cfg.Bootstrap.JoinTokenEnv != "" {
 		f.bootstrapJoinTokenEnv = cfg.Bootstrap.JoinTokenEnv
@@ -1355,7 +1365,17 @@ func runStart(f *startFlags) (err error) {
 	// and the service layer. The Lessor handles lease lifecycle inside
 	// the SM, the WatchHub delivers change events to watchers, and
 	// time-series storage is lazily created by the SM when the DB opens.
+	//
+	// auditChain is attached to every mvcc/pebble state machine this node
+	// builds unconditionally, exactly like lr: it must never be
+	// conditioned on per-node configuration, because a replica missing it
+	// answers protocol.OpAuditAppend with a refusal while a sibling
+	// replica that has it applies the write, which is state divergence
+	// within the same Raft group, not a degraded feature. Whether the
+	// opcode is ever proposed is the featuregate.AuditAppend gate's
+	// decision, not this attachment's.
 	lr := lease.NewLessor()
+	auditChain := audit.NewChain()
 	watchHub := watch.NewHub()
 
 	// Run one-time migration from flat layout to per-database structure.
@@ -1550,7 +1570,7 @@ func runStart(f *startFlags) (err error) {
 			// Build the state machine factory with this node's subsystems and
 			// its at-rest encryptor; see buildSMCreateFunc.
 			if f.mode != capabilities.ModeStandalone {
-				createFn, err := buildSMCreateFunc(f, enc, lr, watchHub)
+				createFn, err := buildSMCreateFunc(f, enc, lr, auditChain, watchHub)
 				if err != nil {
 					return err
 				}
@@ -2637,6 +2657,9 @@ func runStart(f *startFlags) (err error) {
 			if svcNode.TenantOnboarding != nil {
 				serverOpts = append(serverOpts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
 			}
+			if svcNode.Invitations != nil {
+				serverOpts = append(serverOpts, server.WithInvitations(svcNode.Invitations))
+			}
 			if svcNode.Credential != nil {
 				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
 			}
@@ -3517,13 +3540,18 @@ func shutdownNode(node io.Closer) error {
 
 // buildSMCreateFunc builds the raft state machine factory for --sm with the
 // node's subsystems and at-rest encryptor. "mvcc" and "pebble" are composed
-// here with the lessor, watch hub and time-series storage, and with
-// store.WithEncryptor, which wraps every Pebble file the state machine creates
-// (sstables, WAL, manifest, snapshots) in the barrier-driven encfs. Every other
-// type resolves from the registry over the data dir and --sm-storage, carrying
-// the same encryptor: pebble storage is opened on that encfs too, and storage
-// that cannot be encrypted (file) is refused here, at start, while the seal
-// barrier is enabled (SealedSMStoragePlaintextError), rather than opened.
+// here with the lessor, the replicated audit chain, watch hub and
+// time-series storage, and with store.WithEncryptor, which wraps every
+// Pebble file the state machine creates (sstables, WAL, manifest, snapshots)
+// in the barrier-driven encfs. Every other type resolves from the registry
+// over the data dir and --sm-storage, carrying the same encryptor: pebble
+// storage is opened on that encfs too, and storage that cannot be encrypted
+// (file) is refused here, at start, while the seal barrier is enabled
+// (SealedSMStoragePlaintextError), rather than opened.
+//
+// chain is attached unconditionally, exactly like lr -- see its construction
+// site's comment for why this attachment must never be conditioned on
+// per-node configuration.
 //
 // Every registry type is built with the node's lessor too
 // (statemachine.WithKVLessor): it keeps its leases durably in its own
@@ -3531,12 +3559,13 @@ func shutdownNode(node io.Closer) error {
 // them. A type that cannot keep leases is refused at start
 // (SMLeasesUnsupportedError) rather than run without them: cluster membership
 // and the feature gate are lease-backed, so it could not form a cluster.
-func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
+func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, chain *audit.Chain, hub *watch.Hub) (sm.CreateFunc, error) {
 	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
 	switch f.smType {
 	case "mvcc":
 		return store.NewMVCCCreateFuncWith(pebbleOpts,
 			store.WithLessor(lr),
+			store.WithAuditChain(chain),
 			store.WithWatchHub(hub),
 			store.WithTimeSeriesEnabled(),
 		), nil
@@ -3544,6 +3573,7 @@ func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, h
 		return store.NewPebbleCreateFuncWith(pebbleOpts,
 			func(s *store.PebbleStateMachine) {
 				s.SetLessor(lr)
+				s.SetAuditChain(chain)
 				s.SetWatchHub(hub)
 				s.SetTimeSeriesEnabled(true)
 			},

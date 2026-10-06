@@ -138,25 +138,27 @@ func flagsToEnrollOptions(f *startFlags) (*clusterenroll.Options, error) {
 	}
 	return &clusterenroll.Options{
 		RaftAddress: f.raftAddress,
+		ReplicaID:   f.replicaID,
 		TrustDomain: f.clusterTrustDomain,
 		DataDir:     f.dataDir,
 		SingleNode:  isSingleNode(f),
 		Bootstrap: clusterenroll.BootstrapOptions{
-			NoiseKey:        f.bootstrapNoiseKey,
-			NoiseAddr:       f.bootstrapNoiseAddr,
-			SPKIPin:         f.bootstrapSPKIPin,
-			ServerAddr:      f.bootstrapAddr,
-			DANEDNS:         f.bootstrapDANEDNS,
-			DANEDoT:         f.bootstrapDANEDoT,
-			DirectURL:       f.bootstrapDirectURL,
-			DiscoveryMethod: f.discoveryMethod,
-			Peers:           f.peers,
-			DNSDomain:       f.dnsDomain,
-			AdminPort:       f.adminPort,
-			JoinAddr:        f.bootstrapJoinAddr,
-			JoinKey:         f.bootstrapJoinKey,
-			JoinHTTPURL:     f.bootstrapJoinHTTPURL,
-			JoinToken:       joinToken,
+			NoiseKey:                 f.bootstrapNoiseKey,
+			NoiseAddr:                f.bootstrapNoiseAddr,
+			SPKIPin:                  f.bootstrapSPKIPin,
+			ServerAddr:               f.bootstrapAddr,
+			DANEDNS:                  f.bootstrapDANEDNS,
+			DANEDoT:                  f.bootstrapDANEDoT,
+			DirectURL:                f.bootstrapDirectURL,
+			DiscoveryMethod:          f.discoveryMethod,
+			Peers:                    f.peers,
+			DNSDomain:                f.dnsDomain,
+			AdminPort:                f.adminPort,
+			JoinAddr:                 f.bootstrapJoinAddr,
+			JoinKey:                  f.bootstrapJoinKey,
+			JoinHTTPURL:              f.bootstrapJoinHTTPURL,
+			JoinToken:                joinToken,
+			JoinApprovalPollInterval: f.bootstrapJoinApprovalPollInterval,
 		},
 		Advertise: clusterenroll.AdvertiseOptions{
 			NoisePort: f.bootstrapNoisePort,
@@ -167,11 +169,14 @@ func flagsToEnrollOptions(f *startFlags) (*clusterenroll.Options, error) {
 }
 
 // joinerToken resolves the member-side join admission secret from the
-// configured file or environment variable. It returns "" without error when
-// no join transport is configured, so a node that never intends to join by
-// CSR never needs a token source at all.
+// configured file or environment variable. It returns "" without error
+// when neither is configured -- whether because no join transport is
+// configured at all, or because the operator deliberately left the token
+// source unset to use the replicated approval queue instead of a token
+// (see clusterenroll.BootstrapOptions.JoinToken) -- so a node joining by
+// CSR never needs a token source unless it is actually using one.
 func joinerToken(f *startFlags) (string, error) {
-	if f.bootstrapJoinAddr == "" && f.bootstrapJoinKey == "" && f.bootstrapJoinHTTPURL == "" {
+	if f.bootstrapJoinTokenFile == "" && f.bootstrapJoinTokenEnv == "" {
 		return "", nil
 	}
 	return config.ResolveJoinToken(f.bootstrapJoinTokenFile, f.bootstrapJoinTokenEnv)

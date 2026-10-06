@@ -188,18 +188,19 @@ func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _
 
 // mockAdminService implements service.AdminServicer for testing.
 type mockAdminService struct {
-	healthResult    *service.HealthStatus
-	statusResult    *service.StatusInfo
-	peersResult     *service.PeersInfo
-	capsResult      *capabilities.Capabilities
-	healthErr       error
-	statusErr       error
-	peersErr        error
-	addMemberErr    error
-	removeMemberErr error
-	snapshotErr     error
-	drainErr        error
-	capsErr         error
+	healthResult     *service.HealthStatus
+	statusResult     *service.StatusInfo
+	peersResult      *service.PeersInfo
+	capsResult       *capabilities.Capabilities
+	healthErr        error
+	statusErr        error
+	peersErr         error
+	addMemberErr     error
+	removeMemberErr  error
+	promoteMemberErr error
+	snapshotErr      error
+	drainErr         error
+	capsErr          error
 }
 
 func newMockAdminService() *mockAdminService {
@@ -266,6 +267,11 @@ func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string
 
 func (m *mockAdminService) RemoveMember(_ context.Context, _, _ uint64) error {
 	return m.removeMemberErr
+}
+
+// PromoteMember implements service.MemberPromoter.
+func (m *mockAdminService) PromoteMember(_ context.Context, _, _ uint64) error {
+	return m.promoteMemberErr
 }
 
 func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
@@ -904,6 +910,42 @@ func TestGRPC_RemoveMember_Error(t *testing.T) {
 	}
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+func TestGRPC_PromoteMember(t *testing.T) {
+	adminSvc := newMockAdminService()
+	client, cleanup := startTestServer(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := client.PromoteMember(context.Background(), &pb.PromoteMemberRequest{
+		ShardId:   1,
+		ReplicaId: 2,
+	})
+	if err != nil {
+		t.Fatalf("PromoteMember failed: %v", err)
+	}
+}
+
+func TestGRPC_PromoteMember_NotObserver(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.promoteMemberErr = &service.MemberNotObserverError{ShardID: 1, ReplicaID: 2}
+	client, cleanup := startTestServer(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := client.PromoteMember(context.Background(), &pb.PromoteMemberRequest{
+		ShardId:   1,
+		ReplicaId: 2,
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got %T", err)
+	}
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
 	}
 }
 

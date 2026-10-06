@@ -1,6 +1,7 @@
 # Storage Engines and Volume Pools — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-05
 
 Storage engines decide where bytes land. Most of the time you choose one once,
 in the server config or when creating a database, and never think about it
@@ -134,3 +135,28 @@ the typed value, which means the same thing: retry, or try another node.
 
 **You want to change a database's backend.** Not possible in place. Create a new
 database and migrate — see [../backup-restore/user.md](../backup-restore/user.md).
+
+## Target design: `objstore` becomes a real backend (not yet shipped)
+
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
+for the full design — **nothing in this section is implemented yet.**
+
+Today, `backend: objstore` is accepted at database creation and then refused
+when the store is actually opened (see
+[../databases/user.md](../databases/user.md)). The owner has ruled that it
+moves instead to the same sorted-segment layout Pebble already uses for the
+`pebble` engine, with the segments themselves living in an object-storage
+bucket rather than on local disk. When this ships:
+
+- `objstore` will pick it when you want a database's durable data in S3, GCS,
+  Azure, MinIO or a local object-store directory, with capacity that is not
+  bounded by the node's attached disk.
+- A small local directory is still required (WAL, manifest, block cache) —
+  object storage replaces the *bulk* of the data, not every byte on the node.
+- `glacier` and `azurearchive` will remain backup/archive-only destinations
+  reached through `qrdb backup create`, never a live `objstore` provider —
+  their retrieval delays are measured in hours, which is incompatible with
+  serving reads.
+- Whether this also becomes available as `raft.sm_storage`/`state_storage` (a
+  hot Raft apply path, not only a standalone database backend) is an open
+  question the design defers to a later, separately gated phase.

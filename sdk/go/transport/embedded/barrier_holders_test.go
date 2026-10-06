@@ -341,7 +341,7 @@ func TestTransport_TenantHolders(t *testing.T) {
 		}
 		h.Enrolled(t, resp.CertPEM)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantHolderTenant, nil, 2, 2, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantHolderTenant, nil, 2, 2, seal.StrategyShamir, nil); err != nil {
 		t.Fatal(err)
 	}
 	officers, err := tr.TenantBarrierOfficerList(ctx, tenantHolderTenant)

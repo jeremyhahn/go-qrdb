@@ -68,3 +68,15 @@ type UserServicer interface {
 	// DisableUser deactivates a user account.
 	DisableUser(ctx context.Context, id uint64) error
 }
+
+// CertActivator gives a pending account its first credential. It is
+// separate from UserServicer because only invitation redemption activates an
+// account this way; qrdb's store and its tenant-routed service implement it.
+type CertActivator interface {
+	// ActivateWithCertBinding binds the certificate's SPKI thumbprint to a
+	// PENDING account holding no binding and moves it to active, in one
+	// conditional commit. Any other account is refused with
+	// *AccountNotPendingError and nothing is written. A notAfterUnix > 0 sets
+	// the binding's expiry.
+	ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
+}

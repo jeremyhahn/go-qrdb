@@ -1,6 +1,6 @@
 # Clustering — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -19,13 +19,46 @@ and refuses in standalone with `requires mode: raft`.
 | Drain | `POST /drain` | `Drain` | `admin.Drain` | `qrdb_drain` | `Drain` | `admin:drain` |
 | Request snapshot | `POST /snapshot` | `RequestSnapshot` | `admin.RequestSnapshot` | `qrdb_snapshot` | `RequestSnapshot` | `admin:snapshot` |
 | Add member | `POST /membership/add` | `AddMember` | `admin.AddMember` | `qrdb_add_member` | `AddMember` | `admin:add_member` |
+| Add member as observer | `POST /membership/add-observer` | `AddObserverMember` | `admin.AddObserverMember` | `qrdb_add_observer_member` | `AddObserverMember` | `admin:add_member` |
 | Remove member | `POST /membership/remove` | `RemoveMember` | `admin.RemoveMember` | `qrdb_remove_member` | `RemoveMember` | `admin:remove_member` |
+| Promote member (observer → voter) | `POST /membership/promote` | `PromoteMember` | `admin.PromoteMember` | `qrdb_promote_member` | `PromoteMember` | `admin:add_member` |
+| List pending join requests | `GET /v1/cluster/join-requests` | `ListPendingJoinRequests` | `admin.ListPendingJoinRequests` | `qrdb_list_pending_join_requests` | `ListPendingJoinRequests` | `cluster:join_token` |
+| Approve join request | `POST /v1/cluster/join-requests/approve` | `ApproveJoinRequest` | `admin.ApproveJoinRequest` | `qrdb_approve_join_request` | `ApproveJoinRequest` | `cluster:join_token` |
+| Reject join request | `POST /v1/cluster/join-requests/reject` | `RejectJoinRequest` | `admin.RejectJoinRequest` | `qrdb_reject_join_request` | `RejectJoinRequest` | `cluster:join_token` |
 | Start shard | `POST /admin/shards` | `StartShard` | `admin.StartShard` | `qrdb_start_shard` | `StartShard` | `admin:start_shard` |
 | Stop shard | `DELETE /admin/shards/{id}` | `StopShard` | `admin.StopShard` | `qrdb_stop_shard` | `StopShard` | `admin:stop_shard` |
 | Shard state | `GET /admin/shards/{id}/state` | `GetShardState` | `admin.GetShardState` | `qrdb_shard_state` | `GetShardState` | `admin:shard_state` |
 | Topology | `GET /admin/topology` | `GetTopology` | `admin.GetTopology` | `qrdb_topology` | `GetTopology` | `admin:topology` |
 | Node-keyspace compaction policy | `GET /admin/node-compaction` | `GetNodeCompaction` | `admin.GetNodeCompaction` | `qrdb_node_compaction` | `NodeCompaction` | `admin:node_compaction` |
 | Set node-keyspace compaction policy | `PUT /admin/node-compaction` | `SetNodeCompaction` | `admin.SetNodeCompaction` | `qrdb_update_node_compaction` | `SetNodeCompaction` | `admin:node_compaction` |
+
+**Promote member is on every transport.** Server-side it is served through
+`service.MemberPromoter`, a capability interface separate from
+`AdminServicer` (mirroring `ClusterJoinTokenMinter`'s own reason: every
+`AdminServicer` test double in this repo keeps compiling without growing a
+method most of them have no `Host` to serve; the five transport bindings and
+the real `AdminService` each type-assert for it). Client-side, because every
+SDK transport now implements it for real, `PromoteMember` is a plain method
+on `transport.AdminClient` (`Client.Admin().PromoteMember(...)`), the same as
+`AddMember`/`RemoveMember` — no type assertion needed from a caller.
+
+**Add member as observer is `service.ObserverMemberAdder`**, a capability
+interface for the identical reason `MemberPromoter` is one, and the SDK
+client side mirrors `ClusterJoinTokenMinter`'s shape: a caller type-asserts
+`client.Admin().(transport.ObserverMemberAdder)` rather than every
+`AdminClient` implementation growing the method. It is the add-side
+counterpart promote's success path depends on — a plain `AddMember` always
+votes, so a cluster running only the original verbs could never produce a
+replica `PromoteMember` succeeds against.
+
+**List/approve/reject pending join requests are `service.
+JoinRequestReviewer`**, likewise a capability interface, implemented by
+`AdminService` once member-side CSR join is configured
+(`SetClusterJoinTokenStore`) — the same bind `MintJoinToken` depends on,
+since the approval queue lives in the identical replicated store. See
+[architecture.md](architecture.md#approval-queue-tokenless-join) for the
+admission-vs-signing split: `ApproveJoinRequest` only records a decision,
+and never itself calls the cluster CA.
 
 **Drain, snapshot, add/remove member, start/stop shard, shard state,
 topology and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
@@ -158,8 +191,8 @@ the cluster CA it signs with is available only once the barrier is unsealed.
 
 | Request / response | Meaning |
 |---|---|
-| `{"token", "csr_der", "node_uri"}` → `{"cert_pem"}` | the single-use token is consumed (CAS-delete) and checked, the CSR's signature verified, and the leaf is issued for the token's BOUND identity -- `node_uri` in the request is never consulted; a joiner does not get to assert an identity of its own choosing |
-| `{"token", "csr_der", "node_uri"}` → `{"error"}`, `403` | an unknown, expired, already-consumed, or wrong-trust-domain token, a malformed/unsigned CSR, or a signing failure -- one cause-independent reason, so the response carries no token-validity oracle |
+| `{"token", "csr_der", "node_uri"}` → `{"cert_pem"}` | the single-use token is consumed (CAS-delete) and checked, the CSR's signature verified, and the leaf is issued for the token's BOUND identity -- `node_uri` in the request is never consulted FOR SIGNING; a joiner does not get to assert an identity of its own choosing |
+| `{"token", "csr_der", "node_uri"}` → `{"error"}`, `403` | an unknown, expired, already-consumed, wrong-trust-domain, or retired-identity token, a malformed/unsigned CSR, a CSR whose subject alternative names do not match `node_uri` exactly (one URI SAN, no DNS/IP/email SANs), or a signing failure -- one cause-independent reason for the token itself, so the response carries no token-validity oracle; the CSR-shape checks (weak key, SAN mismatch) report their own specific message before the token is ever touched, so a corrected resubmission with the SAME token still succeeds |
 | unconfigured (`--cluster-join-enabled` unset) | the path is not registered at all — not a `404`, an absent route |
 | rate-limited or locked out | `429`, shared with the Noise_NK transport by source address — switching transports mid-attack gains nothing |
 
@@ -208,6 +241,90 @@ particular -- must never be returned through a less-trusted local surface
 such as a desktop webview, even though ordinary admin verbs with no
 secret in their response may stay wired through one as the operator's own
 local UI — see [../embedding.md](../embedding.md).
+
+### `GET /v1/cluster/join-requests`, `POST .../approve`, `POST .../reject`
+
+Lists, approves and rejects CSRs a joiner queued through the tokenless
+member-side CSR approval path (`req.Token == ""`; see
+[architecture.md](architecture.md#approval-queue-tokenless-join)). All
+three require permission `cluster:join_token` (`ScopeCross`,
+platform-only) — the identical whole-cluster admission decision minting a
+join token already requires. Available whenever an admin service is
+configured; reports `501` when member-side CSR join itself is not
+configured on this node, exactly as the join-token verb above does.
+
+| Request | Response |
+|---|---|
+| `GET /v1/cluster/join-requests` | `200` → `{"requests": [{"id", "node_uri", "replica_id", "features", "submitted_at", "expires_at"}, ...]}` — only entries still awaiting a decision; a decided (approved, rejected, delivered) entry is never listed |
+| `POST .../approve` `{"id", "node_id"}` | `200` → `{"status":"ok"}` — binds the CSR to `spiffe://<trust domain>/node/<node_id>`, never signs it |
+| `POST .../reject` `{"id", "reason"}` | `200` → `{"status":"ok"}` — a terminal refusal |
+| `node_id` already admitted or reserved | `409` — `*clusterenroll.ExistingMemberError`, the identical refusal `join-token mint` reports for the same condition |
+| `id` absent, expired, or already decided | `404` — `*clusterenroll.PendingJoinRequestNotFoundError` |
+| member-side CSR join not configured on this node | `501` — `*service.ClusterJoinTokenNotConfiguredError` |
+
+Implemented on all six transports (`transport.JoinRequestReviewer`,
+consumed by the `qrdb admin join-request` CLI — see [cli.md](cli.md)):
+
+| Transport | Binding |
+|---|---|
+| REST | the three routes above |
+| gRPC | `QRDBService.{ListPendingJoinRequests,ApproveJoinRequest,RejectJoinRequest}` |
+| QUIC | `admin.{ListPendingJoinRequests,ApproveJoinRequest,RejectJoinRequest}` |
+| Unix | served by the same `qrdbServiceServer` gRPC implementation the TCP gRPC listener uses |
+| MCP | `qrdb_list_pending_join_requests`, `qrdb_approve_join_request`, `qrdb_reject_join_request` |
+| Embedded | direct in-process call, no serialization |
+
+Unlike `MintJoinToken`'s response, nothing these three verbs return is a
+secret, so none of the embedding.md local-surface exposure rules apply to
+them.
+
+### `POST /v1/cluster/join-identities/retire`
+
+Permanently refuses any future admission for a node identity -- a fresh
+join-token mint, or a renewal of one whose admission has lapsed -- after
+it is removed from the cluster or its issued certificate must be treated
+as revoked (see [architecture.md](architecture.md#admission-lifecycle-lapsed-renewal-retirement-csr-identity)).
+Requires permission `cluster:join_identity_retire` (`ScopeCross`,
+platform-only — no built-in role carries it by default). Available
+whenever an admin service is configured; reports `501` when member-side
+CSR join itself is not configured on this node (no join-token store
+bound -- the SAME store `MintJoinToken` uses).
+
+| Request | Response |
+|---|---|
+| `{"node_id", "reason"}` → `200` | `{"status": "ok"}` — `reason` is optional, free-text, carried for audit only |
+| missing or malformed `node_id` | `400` — `*clusterenroll.InvalidJoinIdentityError` |
+| member-side CSR join not configured on this node | `501` — `*service.ClusterJoinTokenNotConfiguredError` |
+
+Retirement is unconditional: it succeeds regardless of the identity's
+current state (absent, reserved, active, lapsed, or already retired) and
+is never reclaimed by a later join attempt, lapsed or not. A subsequent
+`MintJoinToken` for the SAME identity reports `403` with the distinct
+`*clusterenroll.RetiredJoinIdentityError`, never the generic
+`*ExistingMemberError` an active (non-retired) admission reports.
+
+This verb is implemented on all six transports (a method on
+`transport.AdminClient` directly, since — unlike `MintJoinToken` — its
+response carries no secret; consumed by the `qrdb admin join-token retire`
+CLI — see [cli.md](cli.md)):
+
+| Transport | Binding |
+|---|---|
+| REST | `POST /v1/cluster/join-identities/retire`, above |
+| gRPC | `QRDBService.RetireJoinIdentity`, permission carried as a `(qrdb.v1.permission)` method option exactly like every other gRPC verb |
+| QUIC | `admin.RetireJoinIdentity` verb |
+| Unix | served by the same `qrdbServiceServer` gRPC implementation the TCP gRPC listener uses |
+| MCP | the `qrdb_retire_join_identity` tool |
+| Embedded | direct in-process call, no serialization |
+
+The five REMOTE bindings report the identical `ScopeCross` permission
+denial for a tenant-scoped caller, and the identical typed errors above
+for every other failure — there is exactly one implementation
+(`service.AdminService.RetireJoinIdentity`), never one per transport.
+Unlike `MintJoinToken`, this response carries no secret, so — like
+`PromoteMember` — it is wired through the embedded transport the same way
+every other ordinary admin verb is, with no carve-out in
+[../embedding.md](../embedding.md).
 
 The Noise_NK join transport and the trust-anchor fetch have no HTTP surface of
 their own; their Go surface is in `pkg/clusterenroll`, re-exported from

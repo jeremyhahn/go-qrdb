@@ -17,8 +17,8 @@ package embedded
 import (
 	"context"
 
-	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // This file is the embedded transport's single operation->permission table
@@ -291,20 +291,26 @@ var operationPermissions = map[string]permission.Permission{
 	"BarrierOfficerRevoke":        permission.SealOfficerRevoke,
 
 	// Admin / cluster membership.
-	"Status":            permission.AdminStatus,
-	"Peers":             permission.AdminPeers,
-	"AddMember":         permission.AdminAddMember,
-	"RemoveMember":      permission.AdminRemoveMember,
-	"RequestSnapshot":   permission.AdminSnapshot,
-	"Drain":             permission.AdminDrain,
-	"Capabilities":      permission.AdminCapabilities,
-	"StartShard":        permission.AdminStartShard,
-	"StopShard":         permission.AdminStopShard,
-	"GetShardState":     permission.AdminShardState,
-	"GetTopology":       permission.AdminTopology,
-	"NodeCompaction":    permission.AdminNodeCompaction,
-	"SetNodeCompaction": permission.AdminNodeCompaction,
-	"MintJoinToken":     permission.ClusterJoinToken,
+	"Status":                  permission.AdminStatus,
+	"Peers":                   permission.AdminPeers,
+	"AddMember":               permission.AdminAddMember,
+	"RemoveMember":            permission.AdminRemoveMember,
+	"PromoteMember":           permission.AdminAddMember,
+	"RequestSnapshot":         permission.AdminSnapshot,
+	"Drain":                   permission.AdminDrain,
+	"Capabilities":            permission.AdminCapabilities,
+	"StartShard":              permission.AdminStartShard,
+	"StopShard":               permission.AdminStopShard,
+	"GetShardState":           permission.AdminShardState,
+	"GetTopology":             permission.AdminTopology,
+	"NodeCompaction":          permission.AdminNodeCompaction,
+	"SetNodeCompaction":       permission.AdminNodeCompaction,
+	"MintJoinToken":           permission.ClusterJoinToken,
+	"AddObserverMember":       permission.AdminAddMember,
+	"ListPendingJoinRequests": permission.ClusterJoinToken,
+	"ApproveJoinRequest":      permission.ClusterJoinToken,
+	"RejectJoinRequest":       permission.ClusterJoinToken,
+	"RetireJoinIdentity":      permission.ClusterJoinIdentityRetire,
 
 	// Audit (the read-side sub-client; EmitAudit is handled on its own in
 	// audit.go, because its tenant is stamped from the caller, not read
@@ -381,7 +387,7 @@ func (t *Transport) requireIdentity(ctx context.Context) error {
 	if t.authMW == nil {
 		return nil
 	}
-	return t.authMW.AuthorizeTarget(ctx, permission.IdentityGated, authmw.SelfTarget())
+	return t.authMW.AuthorizeTenant(ctx, tenant.FromContext(ctx), permission.IdentityGated)
 }
 
 // authorizeCertTenant gates a certificate operation on the tenant the
@@ -394,6 +400,18 @@ func (t *Transport) authorizeCertTenant(ctx context.Context, tenantID string, pe
 		return nil
 	}
 	return t.authMW.AuthorizeCertTenant(ctx, tenantID, perm)
+}
+
+// authorizeTenant authorizes perm against targetTenantID explicitly -- the
+// shape every ScopeSelfStrict permission whose target is a REQUEST FIELD
+// needs. authorizeCertTenant is this same call, named for the certificate
+// verbs that were its first caller; users:invite shares it under its own
+// name since inviting a user is not a certificate operation.
+func (t *Transport) authorizeTenant(ctx context.Context, targetTenantID string, perm permission.Permission) error {
+	if t.authMW == nil {
+		return nil
+	}
+	return t.authMW.AuthorizeTenant(ctx, targetTenantID, perm)
 }
 
 // authorizeCertRevoke gates a revocation on the tenant that owns the serial,
@@ -430,7 +448,7 @@ func (e *UnregisteredOperationError) Error() string {
 }
 
 // authorize is the generic RBAC check every ambient-self operation above
-// runs: AuthMiddleware.AuthorizeTarget against the caller's own tenant --
+// runs: AuthMiddleware.AuthorizeTenant against the caller's own tenant --
 // the SAME decision, through the SAME pkg/auth/middleware call and the SAME
 // pkg/permission entry, that the network transports make for the SAME
 // operation. method must be a key of operationPermissions.
@@ -448,5 +466,5 @@ func (t *Transport) authorize(ctx context.Context, method string) error {
 	if !ok {
 		return &UnregisteredOperationError{Method: method}
 	}
-	return t.authMW.AuthorizeTarget(ctx, perm, authmw.SelfTarget())
+	return t.authMW.AuthorizeTenant(ctx, tenant.FromContext(ctx), perm)
 }

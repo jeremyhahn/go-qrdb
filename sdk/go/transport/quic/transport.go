@@ -138,6 +138,32 @@ func (t *Transport) Connect(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 
+	cctx, cancel := context.WithTimeout(ctx, quicConnectBudget)
+	defer cancel()
+
+	if err := t.dial(cctx); err != nil {
+		return err
+	}
+
+	// Verify connectivity with a health check.
+	if !t.Healthy(cctx) {
+		_ = t.conn.CloseWithError(0, "health check failed")
+		return &transport.ConnectionError{
+			Address: t.config.Address,
+			Err:     &dialError{Err: errors.New("health check failed")},
+		}
+	}
+
+	return nil
+}
+
+// dial opens the QUIC connection and negotiates ProtocolV3, without the
+// authenticated health probe Connect performs. ensureConn (used by
+// RedeemInvitation) calls it directly: RedeemInvitation is the one call an
+// unconnected, uncredentialed client may make (see
+// transport.InvitationClient), and Connect's health probe fails closed for
+// exactly that caller (see reachableButUnauthorized).
+func (t *Transport) dial(ctx context.Context) error {
 	tlsCfg, err := t.buildTLSConfig()
 	if err != nil {
 		return err
@@ -157,10 +183,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 	// deadline (or indefinitely on a background context), surfacing as an
 	// opaque process kill. Cap it so a stalled connect fails fast and leaves
 	// the rest of the caller's budget for the actual RPC.
-	cctx, cancel := context.WithTimeout(ctx, quicConnectBudget)
-	defer cancel()
-
-	conn, err := quicgo.DialAddr(cctx, addr, tlsCfg, quicCfg)
+	conn, err := quicgo.DialAddr(ctx, addr, tlsCfg, quicCfg)
 	if err != nil {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -181,17 +204,17 @@ func (t *Transport) Connect(ctx context.Context) error {
 	}
 
 	t.conn = conn
-
-	// Verify connectivity with a health check.
-	if !t.Healthy(cctx) {
-		_ = conn.CloseWithError(0, "health check failed")
-		return &transport.ConnectionError{
-			Address: t.config.Address,
-			Err:     &dialError{Err: errors.New("health check failed")},
-		}
-	}
-
 	return nil
+}
+
+// ensureConn dials if no connection (and no frame sender) is already in
+// place. See dial's doc comment for why RedeemInvitation uses this instead
+// of Connect.
+func (t *Transport) ensureConn(ctx context.Context) error {
+	if t.send != nil || t.conn != nil {
+		return nil
+	}
+	return t.dial(ctx)
 }
 
 // Close shuts down the QUIC connection and releases all resources.
@@ -542,6 +565,50 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	return nil
 }
 
+// PromoteMember promotes a committed observer of the specified shard to a
+// voter.
+func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.PromoteMemberRequest{
+		ShardId:   shardID,
+		ReplicaId: replicaID,
+	})
+	if err != nil {
+		return &transport.RequestError{Method: "PromoteMember", Err: err}
+	}
+
+	_, err = t.call(ctx, "admin.PromoteMember", payload)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// RetireJoinIdentity permanently refuses any future admission for a node
+// identity.
+func (t *Transport) RetireJoinIdentity(ctx context.Context, nodeID, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.RetireJoinIdentityRequest{
+		NodeId: nodeID,
+		Reason: reason,
+	})
+	if err != nil {
+		return &transport.RequestError{Method: "RetireJoinIdentity", Err: err}
+	}
+
+	_, err = t.call(ctx, "admin.RetireJoinIdentity", payload)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // RequestSnapshot triggers an asynchronous snapshot for the specified shard.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 	if t.closed.Load() {
@@ -761,6 +828,100 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 }
 
 var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
+
+// AddObserverMember adds a new replica to the specified shard as a
+// non-voting observer rather than a voter. Implements
+// transport.ObserverMemberAdder.
+func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.AddObserverMemberRequest{
+		ShardId:        shardID,
+		ReplicaId:      replicaID,
+		RaftAddress:    raftAddr,
+		MemberIdentity: identity,
+	})
+	if err != nil {
+		return &transport.RequestError{Method: "AddObserverMember", Err: err}
+	}
+
+	_, err = t.call(ctx, "admin.AddObserverMember", payload)
+	return err
+}
+
+var _ transport.ObserverMemberAdder = (*Transport)(nil)
+
+// ListPendingJoinRequests lists tokenless member-side CSR join requests
+// awaiting an operator's decision. Implements transport.JoinRequestReviewer.
+func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	respPayload, err := t.call(ctx, "admin.ListPendingJoinRequests", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.ListPendingJoinRequestsResponse
+	if err := proto.Unmarshal(respPayload, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "ListPendingJoinRequests", Err: err}
+	}
+
+	out := make([]*transport.PendingJoinRequest, 0, len(resp.GetRequests()))
+	for _, r := range resp.GetRequests() {
+		submittedAt, err := time.Parse(time.RFC3339, r.GetSubmittedAt())
+		if err != nil {
+			return nil, &transport.RequestError{Method: "ListPendingJoinRequests", Err: err}
+		}
+		expiresAt, err := time.Parse(time.RFC3339, r.GetExpiresAt())
+		if err != nil {
+			return nil, &transport.RequestError{Method: "ListPendingJoinRequests", Err: err}
+		}
+		out = append(out, &transport.PendingJoinRequest{
+			ID:          r.GetId(),
+			NodeURI:     r.GetNodeUri(),
+			ReplicaID:   r.GetReplicaId(),
+			Features:    r.GetFeatures(),
+			SubmittedAt: submittedAt,
+			ExpiresAt:   expiresAt,
+		})
+	}
+	return out, nil
+}
+
+// ApproveJoinRequest binds id's queued CSR to an operator-chosen node
+// identity. Implements transport.JoinRequestReviewer.
+func (t *Transport) ApproveJoinRequest(ctx context.Context, id, nodeID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.ApproveJoinRequestRequest{Id: id, NodeId: nodeID})
+	if err != nil {
+		return &transport.RequestError{Method: "ApproveJoinRequest", Err: err}
+	}
+	_, err = t.call(ctx, "admin.ApproveJoinRequest", payload)
+	return err
+}
+
+// RejectJoinRequest records a terminal refusal of id's queued CSR.
+// Implements transport.JoinRequestReviewer.
+func (t *Transport) RejectJoinRequest(ctx context.Context, id, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.RejectJoinRequestRequest{Id: id, Reason: reason})
+	if err != nil {
+		return &transport.RequestError{Method: "RejectJoinRequest", Err: err}
+	}
+	_, err = t.call(ctx, "admin.RejectJoinRequest", payload)
+	return err
+}
+
+var _ transport.JoinRequestReviewer = (*Transport)(nil)
 
 // ---------------------------------------------------------------------------
 // Internal helpers

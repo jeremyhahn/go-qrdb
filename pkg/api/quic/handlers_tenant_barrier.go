@@ -18,10 +18,13 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // authorizeTenantBarrierOp authorizes a per-tenant barrier operation against
@@ -90,6 +93,15 @@ type quicTenantBarrierInitRequest struct {
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	Strategy   string `json:"strategy,omitempty"`
+
+	// Officers is the inline Shamir share-holder roster to validate and
+	// register atomically with initialization; see
+	// transport.TenantBarrierInitRequest.Officers. Refused on any strategy
+	// but shamir.
+	Officers []transport.OfficerRegisterRequest `json:"officers,omitempty"`
+	// Policy is the factor policy Officers enrol under ("" selects the
+	// holder engine's default, "designated").
+	Policy string `json:"policy,omitempty"`
 }
 
 // quicTenantBarrierInitResponse is the JSON response for tenant.BarrierInit
@@ -97,11 +109,12 @@ type quicTenantBarrierInitRequest struct {
 // their shares via the per-tenant claim handshake. ShareCount signals how
 // many officer enclaves were provisioned.
 type quicTenantBarrierInitResponse struct {
-	TenantID    string `json:"tenant_id"`
-	Strategy    string `json:"strategy"`
-	Threshold   int    `json:"threshold,omitempty"`
-	TotalShares int    `json:"total_shares,omitempty"`
-	ShareCount  int    `json:"share_count,omitempty"`
+	TenantID    string                              `json:"tenant_id"`
+	Strategy    string                              `json:"strategy"`
+	Threshold   int                                 `json:"threshold,omitempty"`
+	TotalShares int                                 `json:"total_shares,omitempty"`
+	ShareCount  int                                 `json:"share_count,omitempty"`
+	Holders     []transport.TenantBarrierHolderCert `json:"holders,omitempty"`
 }
 
 // quicTenantBarrierUnsealRequest is the JSON payload for tenant.BarrierUnseal
@@ -170,7 +183,14 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 		return nil, err
 	}
 
-	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
+	var roster *tenant.TenantBarrierShamirRoster
+	if len(req.Officers) > 0 {
+		roster = &tenant.TenantBarrierShamirRoster{
+			Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
+			Policy:   seal.FactorPolicy(req.Policy),
+		}
+	}
+	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy), roster)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +203,7 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 			Threshold:   result.Threshold,
 			TotalShares: result.TotalShares,
 			ShareCount:  result.ShareCount,
+			Holders:     holderwire.TenantBarrierHoldersTo(result.Holders),
 		}
 	}
 	out, err := json.Marshal(resp)

@@ -131,6 +131,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"admin.Peers":                        permission.AdminPeers,
 	"admin.AddMember":                    permission.AdminAddMember,
 	"admin.RemoveMember":                 permission.AdminRemoveMember,
+	"admin.PromoteMember":                permission.AdminAddMember,
 	"admin.RequestSnapshot":              permission.AdminSnapshot,
 	"admin.Drain":                        permission.AdminDrain,
 	"admin.Capabilities":                 permission.AdminCapabilities,
@@ -159,6 +160,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"cert.Enroll":                        permission.CertsEnroll,
 	"cert.Revoke":                        permission.CertsRevoke,
 	"cert.List":                          permission.CertsList,
+	"user.Invite":                        permission.UsersInvite,
 	"barrier.Initialize":                 permission.SealBootstrap,
 	"barrier.Unseal":                     permission.SealUnseal,
 	"barrier.Seal":                       permission.SealSeal,
@@ -201,6 +203,11 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"admin.GetNodeCompaction":          permission.AdminNodeCompaction,
 	"admin.SetNodeCompaction":          permission.AdminNodeCompaction,
 	"admin.MintJoinToken":              permission.ClusterJoinToken,
+	"admin.AddObserverMember":          permission.AdminAddMember,
+	"admin.ListPendingJoinRequests":    permission.ClusterJoinToken,
+	"admin.ApproveJoinRequest":         permission.ClusterJoinToken,
+	"admin.RejectJoinRequest":          permission.ClusterJoinToken,
+	"admin.RetireJoinIdentity":         permission.ClusterJoinIdentityRetire,
 	"audit.Query":                      permission.AuditQuery,
 	"audit.VerifyChain":                permission.AuditVerify,
 	"authfactor.Enroll":                permission.AuthFactorEnroll,
@@ -451,10 +458,10 @@ func TestMethodMappingGuard_DefaultDenyRegression(t *testing.T) {
 		Roles:    []string{"admin"},
 	})
 
-	if err := srv.authorize(ctx, "totally.Unknown", nil); err == nil {
+	if err := srv.authorize(ctx, "totally.Unknown"); err == nil {
 		t.Error("unknown method must be denied (default-deny)")
 	}
-	if err := srv.authorize(ctx, "barrier.UnsealShare", nil); err == nil {
+	if err := srv.authorize(ctx, "barrier.UnsealShare"); err == nil {
 		t.Error("dead alias barrier.UnsealShare must be denied (default-deny)")
 	}
 	if authz.calls != 0 {
@@ -463,7 +470,7 @@ func TestMethodMappingGuard_DefaultDenyRegression(t *testing.T) {
 
 	// A few known methods spanning permission families resolve and authorize.
 	for _, method := range []string{"kv.Put", "admin.Health", "tenant.UpdateEntitlements", "audit.Query"} {
-		if err := srv.authorize(ctx, method, nil); err != nil {
+		if err := srv.authorize(ctx, method); err != nil {
 			t.Errorf("registered method %q: unexpected authorize error: %v", method, err)
 		}
 	}

@@ -188,6 +188,17 @@ type mockAdminService struct {
 	getShardStateFn   func(ctx context.Context, shardID uint64) (*service.ShardStateResponse, error)
 	getTopologyFn     func(ctx context.Context) (*service.TopologyResponse, error)
 	mintJoinTokenFn   func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
+	promoteMemberFn   func(ctx context.Context, shardID, replicaID uint64) error
+}
+
+// PromoteMember implements service.MemberPromoter so mockAdminService can
+// exercise the REST promote handler and the cluster-admin scope suite the
+// same way it already does for RemoveMember.
+func (m *mockAdminService) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if m.promoteMemberFn != nil {
+		return m.promoteMemberFn(ctx, shardID, replicaID)
+	}
+	return nil
 }
 
 // MintJoinToken implements service.ClusterJoinTokenMinter. A mockAdminService
@@ -1095,6 +1106,89 @@ func TestHandler_MembershipRemove_ServiceError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /membership/remove (error) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandler_MembershipPromote_OK(t *testing.T) {
+	adminSvc := &mockAdminService{
+		promoteMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
+			if shardID != 1 || replicaID != 2 {
+				t.Fatalf("PromoteMember(%d, %d) unexpected args", shardID, replicaID)
+			}
+			return nil
+		},
+	}
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0")
+
+	body := `{"shard_id":1,"replica_id":2}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/promote", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /membership/promote status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandler_MembershipPromote_BadBody(t *testing.T) {
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
+
+	req := httptest.NewRequest(http.MethodPost, "/membership/promote", strings.NewReader("{bad"))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /membership/promote (bad body) status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandler_MembershipPromote_NotObserver(t *testing.T) {
+	adminSvc := &mockAdminService{
+		promoteMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
+			return &service.MemberNotObserverError{ShardID: shardID, ReplicaID: replicaID}
+		},
+	}
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0")
+
+	body := `{"shard_id":1,"replica_id":2}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/promote", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /membership/promote (not observer) status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+// TestHandler_MembershipPromote_ForwardsOnNotLeader verifies that a
+// membership promote issued to a follower is forwarded to the leader
+// instead of failing with a generic 500, mirroring membership remove.
+func TestHandler_MembershipPromote_ForwardsOnNotLeader(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/membership/promote" {
+			t.Fatalf("leader received path %s, want /membership/promote", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer leaderSrv.Close()
+
+	adminSvc := &mockAdminService{
+		promoteMemberFn: func(_ context.Context, _, _ uint64) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0", WithLeaderForwarding(reg))
+
+	body := `{"shard_id":1,"replica_id":2}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/promote", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /membership/promote (not leader, forwarded) status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

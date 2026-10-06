@@ -78,6 +78,7 @@ type Server struct {
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
+	invitations       service.InvitationServicer
 	onboarding        service.TenantOnboardingServicer
 	collectionSvc     service.CollectionServicer
 	databaseSvc       service.DatabaseServicer
@@ -391,6 +392,12 @@ func WithCertProvider(prov cert.CertProvider) ServerOption {
 // service behind cert.Issue, cert.Enroll and tenant.TrustAnchor*.
 func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(s *Server) { s.certEnroll = svc }
+}
+
+// WithInvitations configures the invitation self-enrolment service behind
+// user.Invite and the PUBLIC invitation.Redeem.
+func WithInvitations(svc service.InvitationServicer) ServerOption {
+	return func(s *Server) { s.invitations = svc }
 }
 
 // WithTenantOnboarding configures the service behind tenant.Create.
@@ -1027,8 +1034,13 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		return
 	}
 	if !awaiting {
-		// Auth: authenticate and authorize if middleware is configured.
-		if s.authMW != nil {
+		// Auth: authenticate and authorize if middleware is configured. A
+		// method declared with RegisterPublic (invitation.Redeem) skips both
+		// -- the redeemer holds no credential yet, and the token itself is
+		// the authority -- exactly as REST's RESTRoutePublic and gRPC's
+		// RegisterPublicGRPCMethods already skip auth for their own public
+		// routes.
+		if s.authMW != nil && !s.methodPerms.IsPublic(method) {
 			if onBehalf != nil {
 				ctx, err = s.authenticateOnBehalf(ctx, conn, method, payload, onBehalf)
 			} else {
@@ -1041,7 +1053,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 				return
 			}
 
-			if authErr := s.authorize(ctx, method, payload); authErr != nil {
+			if authErr := s.authorize(ctx, method); authErr != nil {
 				// The status follows the CLASS of the failure, not the call site.
 				// Hard-coding PermissionDenied told a caller whose request this
 				// node merely could not RECORD that it was not permitted, and

@@ -1,6 +1,6 @@
 # Audit — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
 
 Command group: `qrdb audit` — query and verify the compliance-grade audit
 event log. All verbs accept the root persistent flags documented in
@@ -10,6 +10,12 @@ There are two verbs: querying (`audit:query`) and verifying the tamper-evidence
 hash chain (`audit:verify`). Audit entries are written by the
 subsystems that emit them and there is no CLI path to create, edit or delete
 one — which is the point.
+
+Both verbs read the **node-local** trail only. A separate, cluster-wide
+replicated audit chain exists at the storage/Raft layer
+([architecture.md](architecture.md#cluster-wide-replicated-trail)), but
+nothing proposes writes to it yet and it has no CLI surface — there is no
+`qrdb audit` verb that reads or writes it.
 
 ## `qrdb audit query`
 

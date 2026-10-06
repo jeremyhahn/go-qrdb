@@ -1,6 +1,6 @@
 # Clustering — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Two command groups: `qrdb admin` (node and shard administration) and
 `qrdb rebalance` (shard distribution). Both accept the root persistent flags
@@ -66,6 +66,28 @@ qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4 \
   --identity "$(qrdbd node-identity --cert node4-cert.pem)"
 ```
 
+## `qrdb admin member add-observer <address>`
+
+Add a replica to a shard as a non-voting observer rather than a voter.
+Identical flags and identity rules to `member add`; the only difference is
+the Raft role the new replica comes up in. Promote it to a voter later with
+`member promote`.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--shard-id` | uint | shard ID |
+| `--replica-id` | uint | replica ID |
+| `--identity` | string | the replica's member identity (`spki:<hex>`); required only for a node no committed membership names |
+
+```bash
+qrdb admin member add-observer node5.example.com:63001 --shard-id 1 --replica-id 5 \
+  --identity "$(qrdbd node-identity --cert node5-cert.pem)"
+```
+
+Permission `admin:add_member` — the same reconfiguration grant `member add`
+needs, since adding an observer is a Raft membership change too. Works over
+every transport (see [api.md](api.md#capability-matrix--node-administration)).
+
 ## `qrdb admin member remove <replica-id>`
 
 Remove a replica from a shard.
@@ -80,6 +102,25 @@ qrdb admin member remove 4 --shard-id 1
 
 Adding and removing replicas are separately permissioned
 (`admin:add_member`, `admin:remove_member`) from reading peers.
+
+## `qrdb admin member promote <replica-id>`
+
+Promote a committed observer of a shard to a voter, keeping the address and
+identity the shard already committed for it; nothing restarts. Refused with
+`admin member promote: ... not a committed observer` for a replica that is
+absent, already a voter, or a witness.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--shard-id` | uint | shard ID |
+
+```bash
+qrdb admin member promote 4 --shard-id 1
+```
+
+Permission `admin:add_member` — the same reconfiguration grant `member add`
+needs, since a promotion is a Raft membership change too. Works over every
+transport (see [api.md](api.md#capability-matrix--node-administration)).
 
 ## `qrdb admin snapshot`
 
@@ -308,6 +349,92 @@ built-in role carries it by default, only `Owner`) — see
 [api.md](api.md#post-v1clusterjoin-tokens). The verb is implemented on all
 six transports (REST, gRPC, QUIC, Unix, MCP and embedded); the CLI above
 reaches it through whichever transport `qrdb` is connected with.
+
+### Reviewing tokenless join requests: `qrdb admin join-request`
+
+A joiner configured with no join token at all (no
+`--bootstrap-join-token-file`/`-env`) submits its CSR into a replicated
+approval queue instead of presenting a secret — see
+[architecture.md](architecture.md#approval-queue-tokenless-join). An
+operator reviews the queue with three subcommands, all gated by the
+identical `cluster:join_token` permission (`ScopeCross`, platform-only)
+`join-token mint` already requires:
+
+```bash
+qrdb admin join-request list
+```
+
+```
+ID:           3fae8d0bbc14194cfb2a20eb405f2a1948b2a0b508182ef8d088c30b859391b
+NodeURI:      spiffe://attacker.example/node/spoofed
+ReplicaID:    0
+SubmittedAt:  2026-10-05T12:00:00Z
+ExpiresAt:    2026-10-08T12:00:00Z
+```
+
+`NodeURI` is the joiner's own self-reported identity, shown for the
+operator's information only — it plays no part in the identity the
+eventual leaf carries. `ExpiresAt` is `DefaultPendingJoinRequestTTL` (72h)
+past submission; an entry still undecided at that point is treated as
+absent and a retry starts a fresh one.
+
+```bash
+qrdb admin join-request approve 3fae8d0b... --node-id node-7
+```
+
+Binds the queued CSR to `spiffe://<trust domain>/node/node-7` — an operator
+choice, never the joiner's self-reported `NodeURI` above, the identical
+invariant a minted join token's bound identity already carries. This does
+**not** sign anything itself: the leaf is issued the next time the
+joiner's own retry reaches the join listener. Refused with
+`node identity already admitted to the cluster` (the same
+`*clusterenroll.ExistingMemberError` `join-token mint` refuses with) when
+`--node-id` names an identity already admitted or reserved.
+
+```bash
+qrdb admin join-request reject 3fae8d0b... --reason "unrecognized source"
+```
+
+Records a terminal refusal; the joiner's next poll is refused and its
+retry loop stops. Both `approve` and `reject` are refused with
+`no pending join request <id> awaiting a decision` for an id that is
+absent, expired, or already decided — a decision is made exactly once.
+
+All three subcommands are implemented on all six transports (REST, gRPC,
+QUIC, Unix, MCP and embedded).
+
+An admission that lapses — the identity's issued leaf has expired without
+being explicitly retired — renews itself through this exact same command:
+mint a fresh token for the same node id and run the ordinary join again.
+There is no separate "renew" verb; a lapsed identity simply does not
+block a new mint or CSR exchange.
+
+### Retiring a node identity: `qrdb admin join-token retire`
+
+An admin permanently refuses any future admission for a node identity —
+after removing it from the cluster, or to treat its issued certificate as
+revoked — with:
+
+```bash
+qrdb admin join-token retire node-7 --reason "decommissioned 2026-10-06"
+```
+
+```
+OK
+```
+
+Retirement is permanent and unconditional: it blocks a fresh
+`join-token mint` for that identity (`clusterenroll: node identity has
+been retired and may never be (re-)admitted`) forever, whether or not its
+most recent leaf has also lapsed — a removed member cannot re-enrol with
+its old cert or identity by waiting out its certificate's expiry.
+`--reason` is optional, free-text, and carried for audit only. Retiring
+requires permission `cluster:join_identity_retire` (`ScopeCross`,
+platform-only: no built-in role carries it by default, only `Owner`) —
+see [api.md](api.md#post-v1clusterjoin-identitiesretire). The verb is
+implemented on all six transports (REST, gRPC, QUIC, Unix, MCP and
+embedded); the CLI above reaches it through whichever transport `qrdb` is
+connected with.
 
 ## Startup refusal under an activated feature
 

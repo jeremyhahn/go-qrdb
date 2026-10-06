@@ -95,6 +95,170 @@ const joinIdentityPrefix = "__sys:cluster_join_identities/"
 // two states apart.
 const joinPendingValuePrefix = "pending:"
 
+// admittedValuePrefix marks a joinIdentityPrefix record as an ADMITTED
+// JSON envelope (admittedRecord), written by every admission from this
+// point forward. Earlier releases wrote the bare RFC 3339 timestamp
+// parseAdmitted still accepts as a legacy shape (see its own doc comment);
+// this prefix is how a reader tells the two apart without guessing from
+// content alone.
+const admittedValuePrefix = "admitted:"
+
+// retiredValuePrefix marks a joinIdentityPrefix record as explicitly
+// RETIRED: an admin decided (RetireJoinIdentity) that this node identity
+// may never be (re-)admitted, whether or not its most recent leaf has
+// lapsed. Unlike a PENDING or LAPSED admitted record, a retired one is
+// never reclaimed and never expires.
+const retiredValuePrefix = "retired:"
+
+// admittedRecord is the JSON envelope an ADMITTED joinIdentityPrefix
+// record holds, under admittedValuePrefix. NotAfter is the issued leaf's
+// own expiry: once passed, classifyIdentityValue reports the identity as
+// LAPSED rather than ACTIVE, and MintJoinToken/ConsumeJoinToken allow a
+// fresh token to re-admit the SAME identity under the ordinary join rules
+// -- "renewing" a lapsed admission, never a special-cased renewal path of
+// its own. A zero NotAfter -- every record parseAdmitted decodes from the
+// legacy bare-RFC3339 shape, where no expiry was ever recorded -- means
+// "expiry unknown": fail closed, treated as perpetually active, never
+// lapsing.
+type admittedRecord struct {
+	AdmittedAt time.Time `json:"admitted_at"`
+	NotAfter   time.Time `json:"not_after"`
+
+	// Serial is the issued leaf's certificate serial number (decimal), kept
+	// for audit only -- a retirement can be logged against the exact
+	// certificate it retires. Never used to look anything up.
+	Serial string `json:"serial,omitempty"`
+}
+
+// retiredRecord is the JSON envelope a RETIRED joinIdentityPrefix record
+// holds, under retiredValuePrefix.
+type retiredRecord struct {
+	RetiredAt time.Time `json:"retired_at"`
+	Reason    string    `json:"reason,omitempty"`
+}
+
+// encodeAdmitted builds the value PromoteJoinIdentityAdmitted and
+// MarkJoinIdentityAdmitted write for a newly (re-)admitted identity.
+func encodeAdmitted(notAfter time.Time, serial string) []byte {
+	// admittedRecord's fields are all JSON-safe (time.Time, string); this
+	// cannot fail for any value this package constructs.
+	data, _ := json.Marshal(admittedRecord{
+		AdmittedAt: time.Now().UTC(),
+		NotAfter:   notAfter.UTC(),
+		Serial:     serial,
+	})
+	return append([]byte(admittedValuePrefix), data...)
+}
+
+// parseAdmitted reports the admittedRecord encoded in an ADMITTED-shaped
+// value and whether value is actually admitted-shaped at all: true for the
+// current admittedValuePrefix JSON envelope OR the legacy bare RFC 3339
+// timestamp earlier releases wrote (decoded with a zero NotAfter, which
+// never lapses -- see admittedRecord's own doc comment); false for a
+// PENDING or RETIRED record, or anything this package did not write.
+func parseAdmitted(value []byte) (admittedRecord, bool) {
+	s := string(value)
+	if rest, ok := strings.CutPrefix(s, admittedValuePrefix); ok {
+		var rec admittedRecord
+		if err := json.Unmarshal([]byte(rest), &rec); err != nil {
+			return admittedRecord{}, false
+		}
+		return rec, true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return admittedRecord{AdmittedAt: t}, true
+	}
+	return admittedRecord{}, false
+}
+
+// encodeRetired builds the value RetireJoinIdentity writes.
+func encodeRetired(reason string) []byte {
+	// retiredRecord's fields are all JSON-safe; this cannot fail.
+	data, _ := json.Marshal(retiredRecord{RetiredAt: time.Now().UTC(), Reason: reason})
+	return append([]byte(retiredValuePrefix), data...)
+}
+
+// parseRetired reports whether value is a RETIRED-shaped record.
+func parseRetired(value []byte) (retiredRecord, bool) {
+	rest, ok := strings.CutPrefix(string(value), retiredValuePrefix)
+	if !ok {
+		return retiredRecord{}, false
+	}
+	var rec retiredRecord
+	if err := json.Unmarshal([]byte(rest), &rec); err != nil {
+		return retiredRecord{}, false
+	}
+	return rec, true
+}
+
+// identityState is what a joinIdentityPrefix record's current value means
+// for a new MintJoinToken/ConsumeJoinToken/ReserveJoinIdentity call.
+type identityState int
+
+const (
+	// identityAbsent means no live record blocks this identity: no key at
+	// all, or a PENDING reservation whose TTL has lapsed (reclaimable).
+	identityAbsent identityState = iota
+	// identityPendingLive means an issuance for this identity is already
+	// in flight, within its reservation TTL.
+	identityPendingLive
+	// identityActive means this identity holds a current admission: its
+	// leaf has not lapsed (or its expiry is unknown -- fail closed).
+	identityActive
+	// identityLapsed means this identity was admitted, but its leaf's
+	// NotAfter has passed: eligible to be renewed under the ordinary join
+	// rules, exactly like identityAbsent, EXCEPT that ReserveJoinIdentity
+	// must reclaim it via CompareAndSwap from its exact value rather than
+	// PutIfAbsent (the key is not absent, it holds the lapsed record).
+	identityLapsed
+	// identityRetired means an admin has permanently refused this
+	// identity (RetireJoinIdentity): never reclaimed, never lapses.
+	identityRetired
+)
+
+// classifyIdentityValue classifies a raw joinIdentityPrefix record value.
+// data == nil means the key does not exist (identityAbsent). An
+// unrecognized non-nil shape -- a value from a build this package does not
+// know how to parse -- is classified identityActive: the same fail-closed
+// direction parseAdmitted's own legacy fallback takes, so a record this
+// code cannot explain away never silently becomes available for reuse.
+func classifyIdentityValue(data []byte) identityState {
+	if data == nil {
+		return identityAbsent
+	}
+	if _, ok := parseRetired(data); ok {
+		return identityRetired
+	}
+	if deadline, ok := parsePendingDeadline(data); ok {
+		if time.Now().After(deadline) {
+			return identityAbsent
+		}
+		return identityPendingLive
+	}
+	rec, ok := parseAdmitted(data)
+	if !ok {
+		return identityActive
+	}
+	if rec.NotAfter.IsZero() || time.Now().Before(rec.NotAfter) {
+		return identityActive
+	}
+	return identityLapsed
+}
+
+// identityBlocksAdmission reports whether state must refuse a new mint or
+// consume for the identity it was read from: a live reservation, a current
+// admission, or an explicit retirement. identityAbsent and identityLapsed
+// do not block -- a lapsed admission is renewed under the ordinary join
+// rules, not a special case.
+func identityBlocksAdmission(state identityState) bool {
+	switch state {
+	case identityPendingLive, identityActive, identityRetired:
+		return true
+	default:
+		return false
+	}
+}
+
 // DefaultJoinIdentityReservationTTL is used when ReserveJoinIdentity is
 // called with ttl <= 0. A few minutes is generous for the sign-and-promote
 // sequence it bounds (ordinarily milliseconds) while still reclaiming a
@@ -138,25 +302,16 @@ func parsePendingDeadline(value []byte) (deadline time.Time, ok bool) {
 	return time.Unix(secs, 0).UTC(), true
 }
 
-// identityBlocks reports whether identityKey's current record should
-// block a new mint or consume for it: true for an admitted record or a
-// reservation still within its TTL, false for an absent key or an EXPIRED
-// reservation. An expired reservation is treated exactly like an absent
-// key -- see joinIdentityPrefix's own doc comment on why a PENDING record
-// must not block forever.
-func identityBlocks(ctx context.Context, store kvstore.AtomicKVStore, identityKey string) (bool, error) {
+// classifyIdentity reads identityKey's current record and classifies it
+// (see identityState): a live reservation, a current admission, a lapsed
+// one eligible for renewal, a retirement, or absent. See
+// identityBlocksAdmission for which of these refuse a new mint or consume.
+func classifyIdentity(ctx context.Context, store kvstore.AtomicKVStore, identityKey string) (identityState, error) {
 	data, err := store.Get(ctx, identityKey)
 	if err != nil {
-		return false, &JoinTokenStoreError{Op: "get", Detail: identityKey, Err: err}
+		return identityAbsent, &JoinTokenStoreError{Op: "get", Detail: identityKey, Err: err}
 	}
-	if data == nil {
-		return false, nil
-	}
-	deadline, ok := parsePendingDeadline(data)
-	if !ok {
-		return true, nil
-	}
-	return !time.Now().After(deadline), nil
+	return classifyIdentityValue(data), nil
 }
 
 // Join-token TTL bounds. A token with no expiry would be the static
@@ -211,11 +366,14 @@ func MintJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain
 	}
 
 	identityKey := joinIdentityPrefix + identity.String()
-	blocked, err := identityBlocks(ctx, store, identityKey)
+	state, err := classifyIdentity(ctx, store, identityKey)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	if blocked {
+	if state == identityRetired {
+		return "", time.Time{}, &RetiredJoinIdentityError{NodeURI: identity.String()}
+	}
+	if identityBlocksAdmission(state) {
 		return "", time.Time{}, &ExistingMemberError{NodeURI: identity.String()}
 	}
 
@@ -335,11 +493,11 @@ func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDom
 	}
 
 	identityKey := joinIdentityPrefix + identity.String()
-	blocked, err := identityBlocks(ctx, store, identityKey)
+	state, err := classifyIdentity(ctx, store, identityKey)
 	if err != nil {
 		return "", err
 	}
-	if blocked {
+	if identityBlocksAdmission(state) {
 		return "", errJoinTokenRejected
 	}
 
@@ -347,7 +505,10 @@ func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDom
 }
 
 // MarkJoinIdentityAdmitted records that nodeURI has been admitted WITHOUT
-// going through a reservation first -- the founder/first-boot path
+// going through a reservation first, carrying notAfter and serial (the
+// node's own certificate's expiry and serial, read back by the caller) so
+// a later lapse can be detected the same way PromoteJoinIdentityAdmitted's
+// own record is -- the founder/first-boot path
 // (cmd/qrdbd's recordOwnJoinIdentity), where there is no concurrent-token
 // race to protect against and no signing step that can fail after the
 // write: the certificate this records already exists, generated directly,
@@ -367,9 +528,9 @@ func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDom
 // both believing they are THIS node) would take, which an operator
 // watching logs should be able to notice even though this call does not
 // fail on it.
-func MarkJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) error {
+func MarkJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, notAfter time.Time, serial string) error {
 	identityKey := joinIdentityPrefix + nodeURI
-	stored, err := store.PutIfAbsent(ctx, identityKey, []byte(time.Now().UTC().Format(time.RFC3339)))
+	stored, err := store.PutIfAbsent(ctx, identityKey, encodeAdmitted(notAfter, serial))
 	if err != nil {
 		return &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
 	}
@@ -421,9 +582,25 @@ func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeU
 	if err != nil {
 		return false, nil, &JoinTokenStoreError{Op: "get", Detail: identityKey, Err: err}
 	}
-	deadline, isPending := parsePendingDeadline(existing)
-	if !isPending || !time.Now().After(deadline) {
-		// Admitted, or a still-live reservation: not ours to take.
+	// A nil existing read means the key vanished between the failed
+	// PutIfAbsent above and this Get (an extremely rare race): not ours to
+	// take via CompareAndSwap from a value that is no longer there to
+	// expect -- the caller simply loses this attempt, exactly as before
+	// this function learned about lapsed admissions.
+	if existing == nil {
+		return false, nil, nil
+	}
+	// Reclaimable here: a PENDING reservation past its TTL (classifies
+	// identityAbsent, since classifyIdentityValue cannot tell "no key" from
+	// "an expired reservation" apart by design -- both are safe to take
+	// over), or an ADMITTED record whose leaf has LAPSED. Not reclaimable:
+	// a still-live reservation, an active admission, or a retirement.
+	// Reclaimed via CompareAndSwap from EXACTLY the value just read, never
+	// a blind overwrite, so a concurrent reclaimer (or a Promote/Retire
+	// that lands between the read and the swap) is not clobbered.
+	switch classifyIdentityValue(existing) {
+	case identityAbsent, identityLapsed:
+	default:
 		return false, nil, nil
 	}
 	swapped, err := store.CompareAndSwap(ctx, identityKey, existing, fresh)
@@ -431,8 +608,9 @@ func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeU
 		return false, nil, &JoinTokenStoreError{Op: "compareandswap", Detail: identityKey, Err: err}
 	}
 	if !swapped {
-		// Lost the reclaim race to a concurrent reserver (or a Promote
-		// that landed in between); the identity is spoken for either way.
+		// Lost the reclaim race to a concurrent reserver (or a
+		// Promote/Retire that landed in between); the identity is spoken
+		// for either way.
 		return false, nil, nil
 	}
 	return true, fresh, nil
@@ -440,8 +618,13 @@ func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeU
 
 // PromoteJoinIdentityAdmitted swaps nodeURI's PENDING reservation
 // (ReserveJoinIdentity, which returned pending) for a durable admitted
-// record, called ONLY after IssueLeafForKey has actually signed a leaf for
-// it. The caller MUST refuse the whole issue -- never return the leaf it
+// record carrying notAfter and serial -- the issued leaf's own expiry and
+// certificate serial, read back from the certificate IssueLeafForKey just
+// signed -- so a LATER join attempt for the SAME identity can tell an
+// active admission from a lapsed one (see identityState) without a second
+// signing-time lookup. Called ONLY after IssueLeafForKey has actually
+// signed a leaf for it. The caller MUST refuse the whole issue -- never
+// return the leaf it
 // already signed -- when this returns an error: a non-nil error means the
 // swap's outcome is unknown, and swapped=false means the reservation was
 // not there in the exact PENDING state this call expected (it expired and
@@ -467,11 +650,11 @@ func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeU
 // to report success so the caller returns the leaf. A re-read that fails,
 // or finds anything else, leaves the original error as the honest answer
 // -- the outcome is still genuinely unknown.
-func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, pending []byte) error {
+func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, pending []byte, notAfter time.Time, serial string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), promoteReleaseTimeout)
 	defer cancel()
 	identityKey := joinIdentityPrefix + nodeURI
-	admitted := []byte(time.Now().UTC().Format(time.RFC3339))
+	admitted := encodeAdmitted(notAfter, serial)
 	swapped, err := store.CompareAndSwap(ctx, identityKey, pending, admitted)
 	if err != nil {
 		if current, getErr := store.Get(ctx, identityKey); getErr == nil && bytes.Equal(current, admitted) {
@@ -519,6 +702,42 @@ func ReleaseJoinIdentityReservation(ctx context.Context, store kvstore.AtomicKVS
 			"node_uri", nodeURI)
 	}
 	return released, nil
+}
+
+// RetireJoinIdentity permanently refuses any FUTURE admission for
+// spiffe://trustDomain/node/nodeID -- a fresh MintJoinToken, or a renewal
+// of a LAPSED one (see identityState) -- after an admin has decided this
+// identity must never (re-)join: a member removed from the cluster, or
+// one whose issued leaf must be treated as revoked. Unlike an
+// admitted-but-lapsed record, a RETIRED one is never reclaimed by
+// ReserveJoinIdentity and never expires on its own. reason is an optional,
+// free-text operator note carried for audit only -- never parsed or
+// compared.
+//
+// Retiring is unconditional (store.Put, not a CompareAndSwap from an
+// expected prior value): it must succeed over every prior state --
+// absent (pre-emptively ban an identity that has never attempted to join),
+// a live reservation, an active or lapsed admission, or an already-retired
+// record (idempotent) -- because an admin retiring an identity is a rare,
+// deliberate action that must not be refused just because this package
+// cannot predict what state it finds. This accepts one documented race: a
+// join already past ReserveJoinIdentity when the retirement lands can
+// still complete -- IssueLeafForKey already has the token's single use
+// spent -- and PromoteJoinIdentityAdmitted's own CompareAndSwap then
+// overwrites the retirement with a fresh ADMITTED record. An operator who
+// needs retirement to win a race already in flight retires the identity
+// again afterward; this package does not attempt to serialize against an
+// issuance already in progress.
+func RetireJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, trustDomain, nodeID, reason string) error {
+	identity := spiffe.NodeIdentity{TrustDomain: trustDomain, NodeID: nodeID}
+	if err := identity.Validate(); err != nil {
+		return &InvalidJoinIdentityError{Err: err}
+	}
+	identityKey := joinIdentityPrefix + identity.String()
+	if err := store.Put(ctx, identityKey, encodeRetired(reason)); err != nil {
+		return &JoinTokenStoreError{Op: "put", Detail: identityKey, Err: err}
+	}
+	return nil
 }
 
 // errJoinTokenRejected is the one wire-visible reason every ConsumeJoinToken
@@ -619,4 +838,20 @@ type ExistingMemberError struct {
 // Error returns a human-readable description.
 func (e *ExistingMemberError) Error() string {
 	return "clusterenroll: node identity already admitted to the cluster: " + e.NodeURI
+}
+
+// RetiredJoinIdentityError is returned by MintJoinToken when NodeURI has
+// been explicitly retired (RetireJoinIdentity): an admin decided this
+// identity may never be (re-)admitted, regardless of whether its most
+// recent leaf has since lapsed. Distinct from ExistingMemberError, which
+// names an identity still actively a member or with a reservation in
+// flight -- both eligible to retry once lapsed, which a retired identity
+// never is.
+type RetiredJoinIdentityError struct {
+	NodeURI string
+}
+
+// Error returns a human-readable description.
+func (e *RetiredJoinIdentityError) Error() string {
+	return "clusterenroll: node identity has been retired and may never be (re-)admitted: " + e.NodeURI
 }

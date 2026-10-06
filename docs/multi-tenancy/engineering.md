@@ -1,6 +1,7 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
 
 ## Exported surface
 
@@ -581,8 +582,7 @@ in terms every node resolves against its own disks and never as a path:
 `BarrierRegistry.LocalTenantDataRoot` resolves the slot to **this node's**
 candidate path and joins the tenant id; `TenantService.GetTenant` and
 `ListTenants` fill `DataRoot` from it, and `placementRaftInfoSource` builds a
-shard's directory from it. A record that carries a path -- a tenant-root
-record (`*seal.AbsoluteDataRootRecordError`), a tenant record
+shard's directory from it. A record that carries a path -- a tenant record
 (`*PersistedDataRootError`) or a placement replica (`*placement.ReplicaDataRootError`)
 -- is refused rather than trusted: a path names the disk of the node that wrote
 it, and trusted on another node it opened, and on reclamation deleted, a
@@ -1078,3 +1078,353 @@ did not.
 reconciler corrects `volume` tenants' storage drift on its interval. Tenant
 provisioning, quota and entitlement changes are audited through
 [../audit/](../audit/).
+
+## Strict isolation — engineering contract (RULED)
+
+> **Status: RULED — not implemented.** The owner ruled the design on 2026-10-01,
+> and S4 on 2026-10-02. Design and rulings:
+> [architecture.md](architecture.md#strict-tenant-isolation--design). This
+> section is what an implementation must satisfy, and the
+> [implementation plan](#implementation-plan) it is built in. File and line
+> references are to the tree at v0.26.0-alpha and record where things are
+> **today**. **Correction (2026-10-05):** phase 3's first-admin-by-CSR shape
+> already shipped since, independent of this plan — see that phase's row.
+
+### Inventory — where tenant records live today
+
+Store key:
+- **SYS** is the Raft-replicated system shard.
+- **SEAL** is the node-local seal Pebble at `{dataDir}/seal`, which is not
+  replicated.
+- **TB** is the tenant's node-local barrier store: `{DataRoot}/barrier`, or
+  `{poolBase}/{tenant}` for pooled `barrier` tenants.
+- **NS** is the namespaced data plane.
+
+*Required* means required in the system tenant under the design.
+
+| Record | Key (constant) | Store | Written by | Read by | Required? |
+|---|---|---|---|---|---|
+| Tenant record: isolation, plan, usage, `DataRoot`, auto-unseal | `__sys:tenants/{id}` (`pkg/tenant/service.go:37`; struct `:79-100`) | SYS | `CreateTenant` `service.go:552` (commit `:742`), `UpdateQuotas` `:1261`, `UpdateEntitlements` `:1295`, usage `:1439/:1493/:1542` | `rest_registry.go:617-654` (every request), `store_resolver.go:182-226`, `tenant_infra.go:316,391` (boot), quota reconciler `cmd/qrdbd/start.go:2496` | **Yes**, minus `DataRoot` and the identity-object counters |
+| Tombstone | `__sys:tenants-deleted/{id}` (`pkg/tenant/tombstone.go:60`) | SYS | `fence` `service.go:1178-1190` | create `service.go:573`, `store_resolver.go:233`, `deleted_tenants.go:76,355` | **Yes** |
+| Placement | `__sys:placement/{t}/{db}` (`pkg/placement/store.go:29`) | SYS | `database_service.go:1593,945,969,1032` | `tenant_shard_reconciler.go:238,540-618`, `clusterkeys/receiver.go:238`, `raft_backend_factory.go:304` | **Yes**, with opaque database ids (S5) |
+| Volume-pool slot | `__sys:volumepool/assign/{id}` (`pkg/seal/barrier_registry.go:340`) | SYS | `barrier_registry.go:467` | `:429,:1408` | **Yes** |
+| Tenant root record (`DataRoot`, auto-unseal) | `__registry:tenant_root/{id}` (`barrier_registry.go:705`) | SEAL | `persistTenantRoot` `:720` | `RestoreVolumeTenants` `:768` | Node-level; stays |
+| Sealed tenant root key, `.meta`, `.wrapped`, `.migration`, recovery-meta | `tenant/{id}/root-key*` (`barrier_registry.go:1139-1142`; `pkg/seal/barrier.go:345`, `unsealkey.go:77`, `migrate.go:33`, `recovery.go:21`) | TB | `StorageBarrier` | `StorageBarrier` | Node-level; becomes the per-replica blob |
+| IAM of `barrier`/`volume`/`raft` tenants (users, roles, factors, lookups, invites, perm scopes) | `__tiam:{t}/…` (`pkg/seal/tenant_shared_kvstore.go:30,36`; chosen at `pkg/tenant/store_resolver.go:367-379`) | SYS, values under the shared tenant key, **key names plaintext** | user/role/factor/invite stores via the resolver | the same, plus the auth middleware `pkg/auth/middleware/middleware.go:396` | **No: moves** |
+| User records and indexes | `__sys:users/…`, `__sys:user_idx/{username,email,cert_spki}/{t}/…` (`pkg/user/store.go:40-63`) | inside `__tiam:` or `{t}/` | `pkg/user/store.go` | middleware, routing | **No: moves** |
+| Role records and indexes | `__sys:roles/…`, `__sys:role_idx/name/{t}/…` (`pkg/role/store.go:39-45`) | inside `__tiam:` or `{t}/` | `pkg/role/store.go` | RBAC `pkg/auth/rbac/rbac.go:720-749` | **No: moves** |
+| User auth factors and lookup | `__sys:auth/{factors,users,lookup}/…` (`pkg/service/user_auth_factor_service.go:62-73`) | inside `__tiam:` or `{t}/` | routed factor service | `pkg/auth/login.go:102-150` | **No: moves** |
+| Custodian factors and challenges | `__sys:authfactor/…` (`pkg/service/authfactor_service.go:30,46`) | inside `__tiam:` or `{t}/` | routed | routed | **No: moves** |
+| Permission-scope overrides | `__sys:perm_scope/{perm}` (`pkg/permission/tenant_scope_store.go:31`) | resolver (not wired in `qrdbd`) | — | — | **No: moves** |
+| Invitations | `invites/{id}`, `invite_redemptions/{id}` (`pkg/invite/store.go:24,27`) | resolver (wired by the SDK only, `sdk/go/types_invite.go:61`) | — | — | **No: moves** |
+| DEK keyring | `__sys:dek/keyring` (`pkg/dek/keyring.go:75`) | inside `__tiam:` or `{t}/` | `pkg/dek` | `pkg/dek` | **No: moves** |
+| Identity index | `system/__sys:identity_idx/tenant/{kind}/{id}` (`pkg/tenant/identity_index.go:52-67`) | SYS, plaintext | `identity_index.go:386` | `:500`, `OwningTenant` `:625-650` | **No: removed** |
+| Tenant CA key (wrapped by the **writing node's** key) and CA certificate | `__sys:cert_ca/{t}/{wrapped_key,cert_pem}` (`pkg/cert/default_provider.go:48-54`) | SYS | `DefaultCertProvider.Initialize` | `loadCA` | Key moves; the public certificate stays (published) |
+| Issued certificates | `__sys:certs/{t}/{serial}` (`default_provider.go:57,369`) | SYS | `GenerateClientCert` | `TenantForSerial` `:574-611` | **No: moves** |
+| Revocation markers | `__sys:certs_revoked/{serial}` (`default_provider.go:60`) | SYS | `RevokeCert` | `pkg/auth/mtls.go:210` | Tenant-issued: **moves**. Node and platform certificates: stay. |
+| Custodian records | `__sys:custodian…` (`pkg/custodian/service.go:36-44`) | SYS, **unconfined** root store (`cmd/qrdbd/start.go:3564`) | `custodian.Service` | the same | **No: moves** |
+| SO PIN commitment | `__sys:so-pin-commit/{t}` (`pkg/auth/so_auth.go:41`) | SYS, unconfined (`start.go:3576`) | `SOAuthenticator` | the same | **No: moves** to the bootstrap record |
+| Custodian groups | `custodian-groups/{id}` (`pkg/custodian/custodian_group.go:30`) | SYS, unconfined | custodian | custodian | **No: moves** |
+| Submitted Shamir shares, **including share bytes** | `shares/{group}/{index}` (`pkg/custodian/share_service.go:32,90-130`) | SYS, unconfined | `ShareService` | the same | **No: never persisted** |
+| Tenant officer roster | `ceremony/tenants/{id}/officers/` (`pkg/ceremony/barrier_scope.go:54-61`) | TB; **SYS before init** (`pkg/tenant/service.go:2045-2058`) | tenant ceremony | claim and unseal | **No: moves**, plus the unseal roster in the bootstrap record |
+| Database catalog | `{dataDir}/databases/{name}/meta.json` (`pkg/database/manager.go:34,345`) | node-local, creating node only | `Manager.Create` | `rest_registry.go:274,373` | **No: moves** to the home store, replicated |
+| Collection work journal | `__sys:collection-work/{t}/…` (`pkg/service/collection_types.go:78`) | SYS for prefix/barrier tenants | `collection_work_journal.go:65` | `collection_sweeper.go:358` | **No: moves** |
+| Drop fence | `__sys:dropfence/{t}/{db}/` (`pkg/service/drop_fence.go:70`) | the data's group; SYS for shared tenants | `keyspace_reclaim.go:297` | `DropFenceGuard` | **No: moves** with the database store |
+| Reclaim index | `__reclaim:index/{job}` (`pkg/service/reclaim_job.go:134`) | SYS | `TableService` | `ReclaimSweeper` | **No: moves** |
+| Locks, lease owners, row locks, sequences | `__sys:lock/`, `__sys:lease-owner/{t}/{db}/`, `__sys:rowlock/`, `__seq:`/`__usq:` (`pkg/lock/types.go:23`; `pkg/server/namespaced_lease.go:31`; `pkg/rowlock/record.go:77`; `pkg/service/table_types.go:322`) | NS: SYS for prefix/barrier tenants | data plane | data plane | **No: moves** with the database store |
+| Time series, index catalog | `ts:`, `idx:metric:`, `retention:` + `{t}/{db}/` (`pkg/timeseries/keys.go:40-53`); `idx:{name}` (`pkg/index/pebble_index.go:32`) | SYS for prefix/barrier tenants | data plane | data plane | **No: moves** with the database store |
+| Vector namespaces | `{DataDir}/vector`, names `{t}/{db}/…` (`pkg/server/lifecycle/lifecycle.go:561-582`) | node-local, shared by all tenants | `VectorService` | the same | **No: moves** (databases binding design) |
+| Encryption-migration records | `__sys:encmig/{t}/{db}[/nodes/{n}]` (`pkg/clustermig/store.go:44-52`) | SYS | `clustermig.Store` | the same | Tenant scope: **moves**. System scope: stays. |
+| Audit events | `{dataDir}/audit-events.ndjson` (`cmd/qrdbd/start.go:1628-1637`) | node-local, every tenant in one file | `ChainFileLogger` | `Query` `pkg/audit/chain_file_logger.go:573` | Tenant events: **move** to the tenant's trail. Platform events: stay. |
+| Rate-limit buckets | key `tenant\0subject\0perm` (`pkg/auth/middleware/ratelimit.go:60`) | node memory (not wired in `qrdbd`) | limiter | limiter | Node memory; stays |
+| Metrics | `qrdb_vector_*{tenant,namespace}` (`pkg/service/vector.go:311-323`) | scrape | — | `/metrics` (authentication only, `pkg/api/rest/server.go:1521`) | Namespace label removed |
+| Tenant key delivery | HPKE envelope with root key or sealed blob (`pkg/clusterkeys/sender.go:248-313`; import `pkg/seal/import_key.go:136-305`) | in transit; re-wrapped into TB | `DistributeTenantKey` (`pkg/service/database_service.go:1479`, `:388-405`) | `receiver.go:180-291` | **Removed.** Verifier delivery replaces it. |
+
+### Defects found by the inventory (independent of the policy)
+
+These break rules that are already owner rulings ("no cross-tenant database
+access for anyone"; "role bindings name the holder's own tenant"). They are fixed
+whatever the isolation policy: items 1, 3, 4 and 5 in phase 1 of the
+[implementation plan](#implementation-plan), item 6 in phase 2, and item 2 in
+phase 5, by removing the system lift it rides on.
+
+1. **The etcd listener admits the system tenant into any tenant's
+   database.** `pkg/server/server_etcd.go:193` accepts a caller whose tenant is
+   the owner **or** `system`, then authorizes `kv:*`, which is ScopeSelf and
+   lifted for system identities, against the owner.
+2. **A system-tenant identity can mint a client certificate for another
+   tenant's user.**
+   - `certs:generate` is authorized against the body's tenant
+     (`pkg/auth/middleware/cert_authz.go:62`) under ScopeSelf, which lifts the
+     system tenant.
+   - The minted certificate's OU selects the tenant
+     (`pkg/cert/default_provider.go:322-326`).
+   - An account with no SPKI binding is not bound under the default posture
+     (`pkg/auth/middleware/cert_binding.go:77-88`).
+3. **Audit query is unconfined.**
+   - Every transport takes `tenant_id` from the request: REST
+     `pkg/api/rest/handlers_audit.go:66`, gRPC `audit_server.go:58`, QUIC
+     `audit_frame.go:31`, MCP `audit_tool.go:81`.
+   - Nothing checks it against the caller, so a tenant Admin holding
+     `audit:query` reads every tenant's events on that node.
+4. **Submitted Shamir share bytes are persisted in the replicated store**
+   (`pkg/custodian/share_service.go:90-130`), outside every barrier.
+5. **System-tenant users may hold role bindings in any tenant**
+   (`pkg/user/cert_binding.go:46-61`). This contradicts the ruling that a
+   binding names the holder's own tenant.
+6. **Shard ids are allocated per node** (`pkg/shard/allocator.go:23-52`,
+   `cmd/qrdbd/start.go:1130`). Nothing checks uniqueness across the cluster.
+   A tenant home group per tenant multiplies the groups that need ids, so
+   cluster-wide allocation is a prerequisite.
+
+### Invariants
+
+- **The residue list is closed.** The only keys in the system store that are
+  derived from a strict tenant's id, or carry its records, are the ones listed
+  in [architecture.md](architecture.md#what-stays-in-the-system-tenant-and-why).
+  The residue test below enforces it.
+- **No tenant key crosses a node boundary.**
+  - Nothing exports a tenant root key, a replica key, or a sealed blob meant
+    for import on another node.
+  - `StorageBarrier.ExportRootKeyContext`, `ImportRootKey`,
+    `ImportSealedBlob` and the tenant-key modes of `clusterkeys` are deleted.
+- **A replica key is born on its node, under a credential presented to that
+  node.** A node that has never met a valid credential for the tenant holds no
+  key for it, and it reports `sealed`.
+- **Credentials and shares travel only from the holder's client to the
+  node.**
+  - No node relays a passphrase, share, unseal key or replica key to another
+    node.
+  - The only tenant-seal artefact `clusterkeys` carries is the credential
+    verifier, and only to a node in the tenant's serving set.
+- **The serving set contains every database group of the tenant.**
+  - Placement refuses a database group with a replica outside the set, with
+    `placement.ReplicaOutsideServingSetError`.
+  - Growing the serving set is the tenant-scale verb.
+- **A node outside the serving set never terminates a strict tenant's
+  connection, when it can avoid it.**
+  - A connection whose SNI names a strict tenant this node does not serve is
+    relayed unterminated, inside a node-mTLS tunnel, to a serving node.
+  - A connection it had to terminate (no tenant SNI, or Unix or embedded)
+    and whose certificate names such a tenant is refused with
+    `tenant.TenantNotServedHereError`, before any user lookup.
+  - The relaying node never looks the user up, never forwards an on-behalf
+    assertion, and never logs an authorization decision about a tenant user.
+    It logs only the relay itself to the platform trail: tenant, client
+    address, serving node.
+- **The serving node binds SNI to the certificate.** On a relayed or a direct
+  connection, a certificate that names a tenant other than the SNI tenant is
+  refused with `tenant.TenantSNIMismatchError`.
+- **A strict tenant's users authenticate only with certificates chaining to
+  that tenant's own CA.** A cluster-CA certificate naming the tenant is
+  refused. The SPKI binding policy is `required` for strict tenants, whatever
+  `auth.mtls_binding_policy` says for the rest.
+- **The policies only tighten.**
+  - The cluster floor and the tenant setting are each written with a
+    compare-and-swap.
+  - The floor permits only `unset → strict | operator-access` and
+    `operator-access → strict`.
+  - The tenant setting permits only `inherit → strict`.
+- **Strict tenants have storage of their own.** Creating a `prefix` tenant
+  under a strict floor, or setting `strict` on a `prefix` tenant, is refused
+  with `tenant.StrictRequiresDedicatedStorageError` before any write.
+- **`ScopeSelf` has no system lift.**
+  - The `inSystem ||` arm at `pkg/auth/rbac/rbac.go:804` is deleted under
+    every policy, and so is the system branch of `EffectiveTenant`
+    (`pkg/tenant/context.go:140-147`).
+  - Cross-tenant reach exists only through `ScopeCross` permissions. They act
+    on system records or, for `tenant_identity:*` against a tenant whose
+    effective policy is `operator-access`, on identity records in an
+    explicitly named tenant.
+- **No permission reaches tenant data across tenants.** Every data-plane
+  permission is `ScopeSelf` or `ScopeTenantOnly`, never `ScopeCross`. That
+  covers KV, MVCC, SQL, collections, vectors, time series, locks, leases,
+  watch, etcd, sequences, transactions, indexes and tenant-group backups. A
+  table-driven test over the permission registry asserts it.
+- **Operator access is recorded twice.** A `tenant_identity:*` decision is
+  written to the platform trail and to the tenant's own trail before the
+  operation runs. If either write fails, the decision is refused, whatever the
+  audit failure policy says.
+- **The first admin is bound to the creation CSR's key.**
+  - A self-managed tenant's init is accepted only with a fresh signature,
+    bound to the TLS exporter, by the key whose SPKI the pending first admin
+    records.
+  - No certificate, role or operator permission substitutes for that proof.
+- **The tenant bootstrap record is MAC-bound to the replica key.** It is
+  verified on every unseal against the home store's copy, and a mismatch
+  re-seals the tenant on that node.
+
+### Data model
+
+`TenantInfo`, the tenant's record in the system tenant, after the change:
+
+```go
+type TenantInfo struct {
+	ID, Name        string
+	IsolationType   IsolationType
+	BarrierMode     BarrierMode            // self-managed | system-managed
+	IsolationPolicy TenantIsolationPolicy  // inherit | strict; tighten-only
+	Lifecycle       TenantLifecycle        // provisioning | active | deleting
+	Home            HomeGroup              // ShardID, Replicas []NodeRef; empty for prefix
+	Quotas          quota.PlatformQuotas   // databases, raft groups, replicas, bytes, backups
+	Entitlements    quota.Entitlements
+	PendingAdmin    *PendingFirstAdmin     // {Username, SPKIThumbprint}; self-managed, until init
+	CreatedAt       time.Time
+}
+```
+
+- **Limits and counters are split.** The identity-object limits stay in the
+  plan, because the platform sets them: `MaxUsers`, `MaxRoles`,
+  `MaxCertificates`, `MaxCollections`, `MaxKeys`, `MaxTSMetrics` and
+  `MaxVectorDims`. Their counters live in the home store, and the home group
+  enforces them.
+- **The home store's keyspace** is the identity layout that exists today,
+  minus three tenancy encodings: the `__tiam:` wrapping, the `{tenant}/`
+  wrapping, and the tenant segment embedded in `__sys:users/tenant/{tenant}/…`.
+  The store is now the tenant.
+- **Placement is keyed `__sys:placement/{tenant}/{dbid}`**, where `dbid` is an
+  opaque, never-reused id allocated by the home group. The name ↔ id mapping
+  lives in the tenant's catalog.
+
+### Error semantics
+
+| Condition | Error | REST | gRPC / Unix / QUIC / MCP | Retry? |
+|---|---|---|---|---|
+| A terminated connection names a strict tenant this node does not serve (Unix, embedded, or no tenant SNI) | `*tenant.TenantNotServedHereError{TenantID, ServingNodes}` | 421 Misdirected Request + `X-QRDB-Serving-Nodes` | `UNAVAILABLE`, `ErrorInfo` reason `TENANT_NOT_SERVED_HERE`, with the node list | yes, with tenant SNI or on a serving node |
+| Certificate tenant differs from the SNI tenant | `*tenant.TenantSNIMismatchError` | TLS alert / 421 | `UNAUTHENTICATED` | no |
+| The relay cannot reach any serving node | `*tenant.TenantRelayUnavailableError{TenantID}` | connection closed with a TLS alert; logged on the relay | the same | yes |
+| The home group has no quorum, or the tenant is sealed on a quorum | `*tenant.TenantHomeUnavailableError` (wraps `ErrTenantSealed` when sealed) | 503 | `UNAVAILABLE` | yes |
+| A system identity acts in another tenant on a non-cross permission | `*rbac.PermissionDeniedError` | 403 | `PERMISSION_DENIED` | no |
+| `tenant_identity:*` against a strict tenant | `*tenant.IsolationPolicyError{Policy: strict}` | 403 | `PERMISSION_DENIED` | no |
+| Loosening the floor or a tenant's policy | `*tenant.IsolationPolicyChangeError{From, To}` | 409 | `FAILED_PRECONDITION` | no |
+| A `prefix` tenant under a strict floor, or asking for strict | `*tenant.StrictRequiresDedicatedStorageError` | 409 | `FAILED_PRECONDITION` | no |
+| Create without `first_admin`, or with an unparseable CSR | `*tenant.FirstAdminRequiredError` / `*tenant.InvalidCSRError` | 400 | `INVALID_ARGUMENT` | no |
+| Init proof of possession absent, stale or by the wrong key | `*tenant.FirstAdminProofError` | 401 | `UNAUTHENTICATED` | with a fresh nonce |
+| Credential does not match this node's verifier | `*seal.CredentialVerifierError` | 403 | `PERMISSION_DENIED` | no |
+| Bootstrap record does not match the home store after unseal | `*seal.BootstrapRecordMismatchError`; tenant re-sealed on the node | 503 | `UNAVAILABLE` | after operator action |
+| Database replica outside the serving set | `*placement.ReplicaOutsideServingSetError` | 409 | `FAILED_PRECONDITION` | no |
+| `strict-isolation` not yet activated | `*featuregate.FeatureNotActiveError` | 409 | `FAILED_PRECONDITION` | after rollout |
+| A shard's dedicated WAL cannot be opened (G2) | `*server.TenantWALUnavailableError{TenantID, ShardID}`; the shard does not start | 503 | `UNAVAILABLE` | after operator action |
+| A strict tenant's database requested without a dedicated WAL (G1) | `*database.DedicatedWALRequiredError` | 409 | `FAILED_PRECONDITION` | no |
+
+Every row goes into `pkg/api/errclass` once. No transport maps them itself.
+
+### Implementation plan
+
+**What every phase satisfies:**
+- It merges on its own and leaves `main` green: `make test`, `make vet-tags`,
+  `make check-publication-bound`, and coverage within 1.0pp of baseline.
+- It opens with a **red test**: written first, run against the unfixed tree,
+  and failing for the reason the phase exists. The test goes green in the same
+  phase.
+- It updates this folder, and every other feature folder it touches, in the
+  same commit.
+- Its user-visible change ships on all six transports and the CLI together.
+
+Cluster-wide behaviour changes ride the `strict-isolation` feature gate from
+phase 5 on.
+
+| Phase | Delivers | Red test (fails before, passes after) | Depends on |
+|---|---|---|---|
+| **0. Cluster tenancy suite as a merge gate** | A `make integration-test-cluster-tenancy` target that runs the multi-node tenant suites (`isolation_raft_*`, and every strict suite that follows) as a **per-push** CI job listed in the CI result gate. The suites' CI-load timeouts are fixed, by measurement, before the job turns on. The full cluster stage stays nightly. | `test/buildgates/cluster_tenancy_gate_test.go` parses `ci.yml` and asserts that the job exists, runs that target, and is a `needs:` of the result gate. A discovery floor asserts that the target selects at least N tests. Red today: the cluster stage is nightly only. | — |
+| **1. Standing-rule defects** | (a) The etcd listener admits owner-tenant callers only (`pkg/server/server_etcd.go:193`). (b) Audit query is confined to the caller's tenant on six transports; `audit:read:cross` reads the platform trail. (c) Shamir share bytes are no longer persisted (`pkg/custodian/share_service.go`). (d) Role bindings name the holder's own tenant, for every holder (`pkg/user/cert_binding.go:46-61`). **All four are already being fixed by changes in flight**, as is cross-tenant certificate minting. This phase is complete once those changes merge, and each carries its own red test. | (a) A system identity holding `kv:range` reads a tenant database over etcd; it must get `PERMISSION_DENIED`. (b) A tenant Admin passes `tenant_id=<other>` on each transport; it must get only its own events. (c) After a share submit, a scan of the system store must find no share bytes. (d) A system user's binding in tenant `acme` must fail with `RoleBindingTenantError`. | 0 |
+| **2. Cluster-wide shard ids** | The shard allocator claims ids through a guarded write on a replicated high-water mark in the system shard (`pkg/shard/allocator.go`), replacing the per-node counter. | Two nodes that allocate concurrently today receive the same shard id; they must receive distinct ids. | 0 |
+| **3. First admin by CSR (S7)** | **Already shipped, 2026-10-03, outside this plan** — `admin_username` plus `admin_csr_pem`/`admin_cert_pem` is required at create, on six transports and the CLI (not the `first_admin {username, csr_pem}` shape this row originally proposed). System-managed and `prefix` tenants get their admin user, SPKI binding and certificate at create; self-managed tenants get the pending first admin, consumed at barrier init. Trust-on-first-init by "a certificate naming the tenant" is removed. Records still land in today's stores; phase 8 moves them. What remains for this phase: the `init`/`begin`/`complete` proof-of-possession protocol bound to the TLS exporter, needed once initialization fans out to a serving set with no tenant client certificate yet. | A certificate the system operator mints with OU=`acme` initializes `acme`'s barrier today; it must get `FirstAdminProofError`. The CSR key holder initializes, and its SPKI is reported in `barrier-status`. | 1 |
+| **4. Dedicated tenant WAL, fail-closed (S4: G2, G3, G4, G6)** | The existing dedicated-WAL mechanism (`pkg/database/multiplex_logdb.go`, go-quicraft per-shard barriers) becomes a dependable guarantee. **G2:** a database whose placement or catalog says `DedicatedWAL` refuses to start when its WAL cannot be opened, with `TenantWALUnavailableError`; the silent fall-back to the shared WAL (`pkg/server/raft_backend_factory.go:904`) is deleted. **G3:** the multiplex is wired on single-node hosts and on the SDK node, so the guarantee holds in every run mode. **G4:** sealing a tenant stops and unregisters its shards from the host and the multiplex **before** its barrier seals, so no apply or commit batch meets a sealed WAL. **G6:** a shard that failed is evicted from the host and restarted when the tenant is unsealed. | **G2:** a dedicated WAL whose directory cannot be opened falls back to the shared WAL today and the shard starts; it must refuse. **G4:** sealing a tenant with a running dedicated-WAL shard leaves the shard registered today, and its next proposal meets a sealed barrier; after the change the shard is gone before the barrier seals, and a concurrent proposal on another tenant's shard in the same batch commits. **G6:** a shard failed by a sealed barrier stays latched after unseal today; it must serve again after unseal. **G3:** a single-node host and an SDK node refuse or ignore `DedicatedWAL` today; they must write the shard's log under the tenant key. | 0 |
+| **5. Isolation policy and RBAC (S4: G1 for databases)** | Register the `strict-isolation` feature. Add the floor and the tenant policy (get, set, tighten-only) on six transports and the CLI. Remove the `ScopeSelf` system lift and `EffectiveTenant`'s system branch. Add `tenants:read:cross`, `tenants:delete:cross`, and `tenant_identity:read`/`write` with tenant-qualified operator verbs and double audit. Enforce the S2 refusal. **G1:** every database of a strict tenant is created with a dedicated WAL, and a request to create one without it is refused. A strict tenant never has a log under a node key. Before activation, behaviour is unchanged and the new verbs return `FeatureNotActiveError`. | Table test over every `ScopeSelf` permission: a system identity in tenant `acme` is admitted today and must be refused. That includes `certs:generate` for another tenant's OU, where the in-flight fix has not already removed it, and `users:read` by id. Under `operator-access`, `tenant_identity:read` succeeds and appears in both trails. Loosening the policy returns `IsolationPolicyChangeError`, and a `prefix` create under a strict floor returns `StrictRequiresDedicatedStorageError`. **G1:** a strict tenant's raft database is created today with its log on the shared WAL; it must be created on a dedicated WAL, and the system-shard LogDB must hold no entry of its shard. | 3, 4 |
+| **6. Tenant home group and replicated catalog (S4: G1 for the home group)** | A home group per `raft` and `barrier` tenant, placed by the scheduler, started by the reconciler, and gated on the serving set. **Its log is on a dedicated WAL from its first entry (G1).** The database catalog moves into the home store. Placement is keyed by opaque database id (S5). Database groups are confined to the serving set. | A database created through node A is unknown to node B's catalog today; it must resolve on every serving node. A scan of the system shard finds the database name in placement keys today; it must find only the opaque id. The shared host LogDB must hold no home-group entry. | 2, 5 |
+| **7. Per-replica keys (S4: G10)** | Delete tenant-key transport. Client fan-out for init, unseal and rekey. Verifier delivery through `clusterkeys`. Per-node tenant bootstrap records. Each node's dedicated WALs are keyed by **its own** replica key. Unseal is per node, against the cluster seal record. | Two replicas of one tenant have the same key fingerprint today (the fingerprint is exposed under a test build tag); they must differ. One replica's key must fail to open another replica's store and WAL. A Raft snapshot catch-up across distinct keys must succeed. | 6, cluster-wide sealing record |
+| **8. Move the records; delete the shared store paths** | Identity, factors, invites, permission scopes, the DEK keyring, the tenant CA and issued certificates, custodian records and groups, and the officer roster move into the home store. The SO PIN commitment and the unseal roster go to the bootstrap record. The CA chain is pinned per tenant, and the binding policy is `required` for strict tenants. `__tiam:`, `tenant.IdentityIndex`, `OwningTenant` and the resolver's shared-store branch are deleted. | **The residue test** (below) fails today on usernames, emails and thumbprints in `__tiam:` key names, on `__sys:cert_ca/{t}` and `__sys:custodian…`, and on the identity index; it must pass. A cluster-CA certificate naming a strict tenant authenticates today; it must be refused. | 7 |
+| **9. Layer-4 passthrough (S6)** | SNI routing and the relay tunnel for REST, gRPC, and the etcd and SQL listeners over TCP; QUIC by Initial-packet SNI and connection id. `TenantNotServedHereError` for Unix and embedded. The SDK and CLI set SNI. On-behalf forwarding is refused for strict tenants. **The routing input (SNI) awaits the owner's confirmation.** | A strict tenant's client that connects to a non-serving node is refused as sealed today; it must be served through the relay. On every transport, the serving node must observe the client's own certificate, the relaying node's TLS-termination counter for the connection must be zero, and an SNI/certificate mismatch must be refused. | 8, owner confirmation |
+| **10. Tenant audit trail and metrics (S9)** | A node-local, hash-chained audit trail per tenant, under the tenant barrier, on each serving node. Tenant events go there; platform events go to the platform trail. The `namespace` label is removed from `qrdb_vector_*`. | A tenant event lands in the shared node file today; it must land only in the tenant's trail. The platform trail must hold no tenant username, and a `/metrics` scrape must show no tenant data name. | 8 |
+| **11. Tenant-only backups (S10, fallback A)** | `backup:tenant` (`ScopeTenantOnly`) for a strict tenant's groups. Platform shard backup is limited to the system shard. | A platform `backup:*` of a strict tenant's group succeeds today; it must be refused. The tenant's own backup must succeed and restore. | 6 |
+| **12. Tenant WAL key rotation (S4: G7)** | Rotation of a dedicated WAL's key epochs, with per-barrier purge floors so that rotating or shredding one tenant never affects another. **A later phase**, as ruled. | A rotation on tenant A must leave tenant B's WAL readable, and A's pre-rotation epochs must be purged once no live entry needs them. | 7 |
+
+**External dependency — G5 (go-quicraft).** In go-quicraft, one sealed WAL in a
+commit batch fails the whole batch. The defect is raised with go-quicraft. Until
+the fix is released, the G4 ordering (stop and unregister a tenant's shards
+before its barrier seals) is what keeps a sealed tenant WAL out of any batch.
+Phase 4's G4 red test exercises exactly that interleaving. When the fix
+lands, the dependency bump carries a regression test of the batch behaviour
+itself.
+
+**Order and cut points.**
+- **After phase 1**, the owner's standing rules hold: no cross-tenant
+  database access, and bindings name the holder's own tenant only.
+- **After phase 5**, the platform operator can no longer reach into a tenant
+  through any API, and no strict tenant has a log under a node key.
+- **After phase 8**, a strict tenant's records are out of the system tenant.
+- **After phase 9**, every transport reaches a strict tenant from any node
+  without that node terminating the session.
+
+Each cut point is a usable release.
+
+### The residue test
+
+`test/integration/tenant_residue_test.go` is the gate that makes the residue
+list enforceable rather than descriptive.
+
+1. Boot a three-node cluster under `strict`, and create one tenant of each
+   isolation tier.
+2. Exercise each tenant end to end: users, roles, factors, certificates,
+   invites, databases, collections, locks, sequences, time series, vectors and
+   a seal and unseal.
+3. Scan **every key** in the system shard on every node, and every
+   node-local system store.
+4. Fail on any key that contains a tenant id or a tenant-chosen name (a
+   username, role name or database name the test chose to be unique) unless
+   its prefix is in the residue allowlist.
+5. Fail on any **value** that contains one of those unique strings outside
+   the allowlist.
+
+The allowlist is a Go table beside the test, and each entry carries the reason
+from architecture.md. Discovery floors assert that the scan saw at least N keys
+and at least one key from each allowed prefix, because an empty scan reports
+success.
+
+### Test plan
+
+Each phase's red test is in the plan above. In addition:
+
+**Unit (in memory, non-blocking):**
+- **The scope rule.** A system identity is refused every `ScopeSelf`
+  permission in another tenant, under both policies, and so is
+  `EffectiveTenant`.
+- **The permission registry.** No data-plane permission is `ScopeCross`. This
+  is a table test over `permission.All()`.
+- **Policy transitions.** The full transition tables for the floor and the
+  tenant setting, including compare-and-swap races.
+- **The serving-set gate.** A terminated connection for a strict tenant on a
+  non-member node returns `TenantNotServedHereError` before any user lookup.
+  The user-store double **fails the test if it is called**: a faithful double
+  for "must not be reached".
+- **SNI parsing.** ClientHello and QUIC Initial SNI parsing is tested against
+  recorded handshakes, including malformed, fragmented and absent SNI.
+- **Init proof of possession.** The signature must cover the nonce and the TLS
+  exporter. A replay on another connection fails, and so does a signature by
+  any other key.
+- **The bootstrap record.** The MAC binds the record, and a tampered roster
+  re-seals the tenant.
+- **Credential verifiers.** A wrong passphrase on a first-contact node is
+  refused before any key is sealed.
+
+**Integration (`test/integration/`, cluster stage, per-push from phase 0):**
+- **Distinct replica keys.** Every replica's key is distinct, and one
+  replica's key does not open another's store.
+- **Snapshot catch-up** works across distinct keys.
+- **Restart.** A node restarts sealed. A client fan-out unseal restores the
+  serving set, and a quorum restores service.
+- **Scale-up.** A new serving node starts sealed, receives the verifier, and
+  unseals at the next fan-out.
+- **Passthrough.** For REST, gRPC, QUIC, and the etcd and SQL listeners, a
+  client reaching a non-serving node is served through the relay. Unix and
+  embedded on a non-member node return the typed error.
+- **Operator refused under strict.** On every transport, a system Admin is
+  refused a strict tenant's users, roles, factors, certificate minting, audit
+  and data.
+- **Operator access under `operator-access`.** On every transport, a role
+  carrying `tenant_identity:read` reads a named tenant's users. The access
+  appears in both trails, and the same role is refused every data-plane verb.
+- **Opt-in on an `operator-access` cluster.** A tenant that opts into strict
+  refuses `tenant_identity:read` from then on.
+- **Residue.** The residue test above.

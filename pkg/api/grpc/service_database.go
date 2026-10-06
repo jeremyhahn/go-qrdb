@@ -17,12 +17,11 @@ package grpc
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
-
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"

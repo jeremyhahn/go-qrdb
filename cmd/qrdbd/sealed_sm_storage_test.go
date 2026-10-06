@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -33,6 +34,7 @@ import (
 func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T) {
 	sealed := atrest.New(sealtest.UnsealedBarrier(t))
 	lr, hub := lease.NewLessor(), watch.NewHub()
+	chain := audit.NewChain()
 	t.Cleanup(hub.Close)
 
 	for _, tc := range []struct {
@@ -49,7 +51,7 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 		{"mvcc", "", false},
 	} {
 		f := &startFlags{smType: tc.smType, smStorage: tc.storage, dataDir: t.TempDir()}
-		fn, err := buildSMCreateFunc(f, sealed, lr, hub)
+		fn, err := buildSMCreateFunc(f, sealed, lr, chain, hub)
 		var plaintext *SealedSMStoragePlaintextError
 		if got := errors.As(err, &plaintext); got != tc.refused {
 			t.Fatalf("--sm %s --sm-storage %q under the barrier: err = %v; refused=%v, want %v",
@@ -68,7 +70,46 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 
 	// The barrier off: storage-backed disk builds, as it always has.
 	f := &startFlags{smType: "disk", smStorage: "file", dataDir: t.TempDir()}
-	if _, err := buildSMCreateFunc(f, atrest.New(nil), lr, hub); err != nil {
+	if _, err := buildSMCreateFunc(f, atrest.New(nil), lr, chain, hub); err != nil {
 		t.Fatalf("--sm disk --sm-storage file with the barrier off: %v", err)
+	}
+}
+
+// auditChainHolder is satisfied by both store.MVCCStateMachine and
+// store.PebbleStateMachine.
+type auditChainHolder interface {
+	AuditChain() *audit.Chain
+}
+
+// TestBuildSMCreateFunc_AttachesAuditChainUnconditionally is audit-replicated
+// review finding N4: every mvcc/pebble state machine this factory builds
+// must carry a non-nil audit.Chain regardless of any per-node configuration,
+// because a replica built without one answers protocol.OpAuditAppend with a
+// refusal while a sibling replica of the same Raft group that has one
+// applies the write -- state divergence within a single group, not a
+// degraded feature. There is no flag here to turn this attachment off: that
+// is the fix, so this test only has one shape to assert, not a table of
+// configurations that toggle it.
+func TestBuildSMCreateFunc_AttachesAuditChainUnconditionally(t *testing.T) {
+	enc := atrest.New(nil)
+	lr, hub := lease.NewLessor(), watch.NewHub()
+	t.Cleanup(hub.Close)
+
+	for _, smType := range []string{"mvcc", "pebble"} {
+		t.Run(smType, func(t *testing.T) {
+			f := &startFlags{smType: smType, dataDir: t.TempDir()}
+			fn, err := buildSMCreateFunc(f, enc, lr, audit.NewChain(), hub)
+			if err != nil {
+				t.Fatalf("buildSMCreateFunc(%s): %v", smType, err)
+			}
+			sm := fn(1, 1)
+			holder, ok := sm.(auditChainHolder)
+			if !ok {
+				t.Fatalf("--sm %s state machine %T does not implement auditChainHolder", smType, sm)
+			}
+			if holder.AuditChain() == nil {
+				t.Errorf("--sm %s state machine built with a nil audit.Chain attached", smType)
+			}
+		})
 	}
 }

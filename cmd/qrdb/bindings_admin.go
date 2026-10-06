@@ -117,6 +117,25 @@ func (b *AdminBinding) RemoveMember(shardID, replicaID uint64) error {
 	return nil
 }
 
+// PromoteMember promotes a committed observer of the specified shard to a
+// voter. Unlike MintJoinToken, its response carries no secret, so it stays
+// wired through the embedded transport like every other ordinary admin verb
+// (see docs/embedding.md).
+func (b *AdminBinding) PromoteMember(shardID, replicaID uint64) error {
+	b.logger.Debug("PromoteMember called", "shardID", shardID, "replicaID", replicaID)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("PromoteMember failed", "error", err)
+		return err
+	}
+	if err := cl.Admin().PromoteMember(context.Background(), shardID, replicaID); err != nil {
+		b.logger.Error("PromoteMember failed", "error", err)
+		return err
+	}
+	b.logger.Debug("PromoteMember completed")
+	return nil
+}
+
 // RequestSnapshot triggers an asynchronous snapshot for the specified shard.
 func (b *AdminBinding) RequestSnapshot(shardID uint64) error {
 	b.logger.Debug("RequestSnapshot called", "shardID", shardID)

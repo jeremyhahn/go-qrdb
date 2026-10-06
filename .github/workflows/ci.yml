@@ -658,6 +658,22 @@ jobs:
         with:
           node-version: "22"
 
+      # Fleet dev-cache passthrough (devops.md §2a). The client helper is
+      # fetched from the dev-cache repo's own tag rather than assumed
+      # pre-installed, and this step FAILS OPEN: if the fetch 404s, times
+      # out, or every cache the helper probes is unreachable, nothing is
+      # written to $GITHUB_ENV and the step below runs exactly as it does
+      # without the cache. Gitea-only: the raw-file route it reads does not
+      # exist on github.com, which has no dev-cache to reach anyway.
+      - name: Load dev-cache settings (fail open)
+        if: github.server_url != 'https://github.com'
+        run: |
+          if curl -fsS --max-time 5 -o "$RUNNER_TEMP/devcache-env" \
+              "${{ github.server_url }}/jeremyhahn/dev-cache/raw/tag/v0.1.0/client/devcache-env"; then
+            chmod +x "$RUNNER_TEMP/devcache-env"
+            "$RUNNER_TEMP/devcache-env" env >> "$GITHUB_ENV" || true
+          fi
+
       # `make test-typescript` is the whole job, so a developer runs exactly
       # what CI runs: the SDK's npm ci, tsc, npm test and build, then
       # svelte-check on the frontend against the built SDK, then the mocked
@@ -962,6 +978,18 @@ jobs:
     needs: [lint, build]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # Fleet dev-cache passthrough (devops.md §2a): the ghcr pull-through
+      # mirror also fronts the trivy DB. Same fetch-and-fail-open shape as
+      # the TypeScript job above -- see its comment for the reasoning.
+      - name: Load dev-cache settings (fail open)
+        if: github.server_url != 'https://github.com'
+        run: |
+          if curl -fsS --max-time 5 -o "$RUNNER_TEMP/devcache-env" \
+              "${{ github.server_url }}/jeremyhahn/dev-cache/raw/tag/v0.1.0/client/devcache-env"; then
+            chmod +x "$RUNNER_TEMP/devcache-env"
+            "$RUNNER_TEMP/devcache-env" env >> "$GITHUB_ENV" || true
+          fi
 
       # PINNED, both the install script and the binary, to the Makefile's
       # TRIVY_VERSION. nightly.yml fetches install.sh from trivy's `main`

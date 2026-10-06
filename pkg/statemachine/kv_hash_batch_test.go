@@ -413,6 +413,13 @@ func TestConcurrentStateMachine_GetHashSeesWholeBatches(t *testing.T) {
 	}
 }
 
+// TestConcurrentTiers_ReadAndHashDuringUpdate proves go-quicraft's concurrent
+// tier promise end to end for the sharded state machine: Lookup takes no
+// part in the batch lock and answers immediately from whatever has already
+// landed in the cache, while GetHash -- started the same way, against the
+// same in-flight batch -- waits out the whole batch so replicas never
+// compare a half-applied hash. Run under -race, it also proves neither path
+// races the batch's own cache writes.
 // TestKVStateMachine_LookupDoesNotWaitForABatch: only GetHash waits for a
 // batch; a read still runs while Update applies one, which is what the
 // concurrent tier is for.

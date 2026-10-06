@@ -19,12 +19,36 @@
 # the workspace modules.
 FROM golang:1.27.0-bookworm AS toolchain
 
+# Fleet dev-cache passthrough (handbook software/conventions/devops.md §2a).
+# Unset, empty or unreachable means no proxy -- identical to the behaviour
+# without the cache, which is the only state a build off the LAN (CI on
+# github.com, a laptop away from the office, a cold dev-cache container) can
+# be in. No address lives in a tracked file (make check-public-releasable):
+# these ARGs carry no default, and docker-compose.yml supplies them from the
+# gitignored .devcontainer/.env.
+ARG DEVCACHE_APT_PROXY=""
+ARG DEVCACHE_NPM_REGISTRY=""
+
+# Every reachability probe below is curl, and the base image carries none --
+# installed here, unconditionally and without a proxy, before a proxy
+# decision can be made for anything else.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install build, test, and debugging dependencies.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# The proxy config is written ONLY when DEVCACHE_APT_PROXY is set AND answers
+# a 3-second probe, and removed at the end of THIS SAME RUN: it is scoped to
+# the apt-get calls inside it and never baked into the image, so a container
+# started later from this image never carries a build-time-only address.
+RUN set -eu; \
+    if [ -n "$DEVCACHE_APT_PROXY" ] && curl -fsS --max-time 3 -o /dev/null "$DEVCACHE_APT_PROXY"; then \
+        echo "Acquire::http::Proxy \"$DEVCACHE_APT_PROXY\";" > /etc/apt/apt.conf.d/01devcache; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     make \
     git \
     bc \
-    curl \
     jq \
     xxd \
     openssl \
@@ -36,17 +60,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libgtk-3-dev \
     libwebkit2gtk-4.1-dev \
-    ca-certificates \
     gnupg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*; \
+    rm -f /etc/apt/apt.conf.d/01devcache
 
-# Install Node.js 20 from NodeSource (required for @tailwindcss/oxide).
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# Install Node.js 20 from NodeSource (required for @tailwindcss/oxide), and
+# point npm at the dev-cache's registry mirror under the same
+# arg-set-and-reachable condition. Unlike the apt proxy above, this setting
+# is NOT torn down: the frontend's npm install/build runs later, at
+# container runtime against the bind-mounted source (make _build-client,
+# _test-e2e, _ci), never during this image build, so it has to survive in
+# the image for the one place that uses it.
+RUN set -eu; \
+    if [ -n "$DEVCACHE_APT_PROXY" ] && curl -fsS --max-time 3 -o /dev/null "$DEVCACHE_APT_PROXY"; then \
+        echo "Acquire::http::Proxy \"$DEVCACHE_APT_PROXY\";" > /etc/apt/apt.conf.d/01devcache; \
+    fi; \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*; \
+    rm -f /etc/apt/apt.conf.d/01devcache; \
+    if [ -n "$DEVCACHE_NPM_REGISTRY" ] && curl -fsS --max-time 3 -o /dev/null "$DEVCACHE_NPM_REGISTRY"; then \
+        npm config set registry "$DEVCACHE_NPM_REGISTRY" --global; \
+    fi
 
 # Install Playwright Chromium dependencies for E2E tests.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN set -eu; \
+    if [ -n "$DEVCACHE_APT_PROXY" ] && curl -fsS --max-time 3 -o /dev/null "$DEVCACHE_APT_PROXY"; then \
+        echo "Acquire::http::Proxy \"$DEVCACHE_APT_PROXY\";" > /etc/apt/apt.conf.d/01devcache; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
     libdbus-1-3 \
@@ -64,7 +106,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libatspi2.0-0 \
     libxshmfence1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*; \
+    rm -f /etc/apt/apt.conf.d/01devcache
 
 # Install CI and protobuf tooling.
 #

@@ -136,6 +136,12 @@ type Index interface {
 	// Load loads the index from disk
 	Load(path string) error
 
+	// Marshal serializes the trained index to bytes.
+	Marshal() ([]byte, error)
+
+	// Unmarshal restores the index from bytes produced by Marshal.
+	Unmarshal(data []byte) error
+
 	// Size returns the number of vectors in the index
 	Size() int
 

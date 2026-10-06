@@ -17,10 +17,9 @@ package embedded
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 )
 
 // SealDatabase seals a database's encryption barrier via the injected service.

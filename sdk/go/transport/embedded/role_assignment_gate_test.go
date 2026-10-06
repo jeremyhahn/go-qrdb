@@ -20,11 +20,11 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // TestAssignRole_GoesThroughTheRoleAssignmentGate asserts the embedded
@@ -57,8 +57,8 @@ func TestAssignRole_GoesThroughTheRoleAssignmentGate(t *testing.T) {
 
 // TestRoleMembershipWrites_AuthorizeAgainstTheUsersTenant asserts that with
 // an AuthMiddleware installed, AssignRole and UnassignRole are authorized in
-// the TARGET user's tenant: an operator bound to acme may change an acme
-// user's roles and is refused a globex user's.
+// the TARGET user's tenant: acme's administrator may change an acme user's
+// roles and is refused a globex user's.
 func TestRoleMembershipWrites_AuthorizeAgainstTheUsersTenant(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -72,8 +72,8 @@ func TestRoleMembershipWrites_AuthorizeAgainstTheUsersTenant(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			users := authtest.NewBindingUsers()
 			roles := authtest.BindingRoles(t)
-			mw := authmw.New(rbac.New(roles), authmw.WithUserService(users), authmw.WithRoleService(roles),
-				authmw.WithAuthenticator(authtest.NewFixedAuthenticator(authtest.BindingOperator())))
+			mw := authmw.New(rbac.New(roles), authmw.WithUserService(users),
+				authmw.WithAuthenticator(authtest.NewFixedAuthenticator(authtest.BindingTenantAdmin())))
 			ctx, _, err := mw.Authenticate(context.Background())
 			if err != nil {
 				t.Fatalf("Authenticate: %v", err)
@@ -89,8 +89,14 @@ func TestRoleMembershipWrites_AuthorizeAgainstTheUsersTenant(t *testing.T) {
 				if tt.ok && err != nil {
 					t.Fatalf("%s = %v, want allowed", verb, err)
 				}
-				if !tt.ok && !errors.Is(err, auth.ErrUnauthorized) {
-					t.Fatalf("%s = %v, want an authorization denial", verb, err)
+				// A user in another tenant is not found by the routed user
+				// service (tenant.OwningTenant confines the by-id lookup to
+				// the caller's own tenant), not refused by the entry check:
+				// acme's administrator holds roles:assign in acme, and
+				// nothing is left to deny it against an id the lookup
+				// resolves within the caller's own tenant.
+				if !tt.ok && !errors.As(err, new(*user.UserNotFoundError)) {
+					t.Fatalf("%s = %v, want *user.UserNotFoundError", verb, err)
 				}
 			}
 		})

@@ -43,12 +43,11 @@ type Identity struct {
 	// RoleBindings carries the identity's TENANT-SCOPED role grants —
 	// user.RoleBinding's shape, copied rather than imported: pkg/user
 	// already imports pkg/auth, so pkg/auth cannot import pkg/user without
-	// closing a cycle. Unlike Roles, which the system-tenant rule already
-	// treats as reaching every tenant for a system-tenant identity, a
-	// RoleBinding grants its RoleID ONLY within its own TenantID — the RBAC
-	// authorizer (pkg/auth/rbac) resolves a binding into the effective role
-	// set exactly when the request's target tenant equals the binding's
-	// TenantID, never otherwise (go-qrdb#192 item 4).
+	// closing a cycle. A RoleBinding grants its RoleID ONLY within its own
+	// TenantID — the RBAC authorizer (pkg/auth/rbac) resolves a binding into
+	// the effective role set exactly when the request's target tenant equals
+	// the binding's TenantID, never otherwise. A binding may name only the
+	// identity's own tenant (user.NormalizeRoleBindings refuses any other).
 	RoleBindings []RoleBinding
 
 	// ScopePermissions carries permissions that were pre-resolved by a

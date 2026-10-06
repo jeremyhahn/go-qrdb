@@ -54,6 +54,10 @@ type removeMemberCall struct {
 	shardID, replicaID uint64
 }
 
+type promoteMemberCall struct {
+	shardID, replicaID uint64
+}
+
 type fakeClusterTransport struct {
 	mu sync.Mutex
 
@@ -69,6 +73,9 @@ type fakeClusterTransport struct {
 
 	removeMemberErr   error
 	removeMemberCalls []removeMemberCall
+
+	promoteMemberErr   error
+	promoteMemberCalls []promoteMemberCall
 
 	// scanResult/scanErr back the cluster registry: ClusterClient.Members
 	// enriches Raft peers via the sdkMembershipStore, which reads the
@@ -122,6 +129,15 @@ func (f *fakeClusterTransport) RemoveMember(_ context.Context, shardID, replicaI
 	f.removeMemberCalls = append(f.removeMemberCalls, removeMemberCall{shardID: shardID, replicaID: replicaID})
 	return f.removeMemberErr
 }
+
+func (f *fakeClusterTransport) PromoteMember(_ context.Context, shardID, replicaID uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.promoteMemberCalls = append(f.promoteMemberCalls, promoteMemberCall{shardID: shardID, replicaID: replicaID})
+	return f.promoteMemberErr
+}
+
+func (f *fakeClusterTransport) RetireJoinIdentity(context.Context, string, string) error { return nil }
 
 func (f *fakeClusterTransport) RequestSnapshot(context.Context, uint64) error { return nil }
 
@@ -669,6 +685,33 @@ func TestClusterClient_RemoveReplica_IdempotentRetrySucceeds(t *testing.T) {
 	}
 	if len(ft.removeMemberCalls) != 2 {
 		t.Fatalf("removeMemberCalls = %d, want 2", len(ft.removeMemberCalls))
+	}
+}
+
+func TestClusterClient_PromoteReplica_Success(t *testing.T) {
+	ft := &fakeClusterTransport{}
+	cc := newFakeClusterClient(t, ft)
+
+	if err := cc.PromoteReplica(context.Background(), 3, 7); err != nil {
+		t.Fatalf("PromoteReplica: %v", err)
+	}
+	if len(ft.promoteMemberCalls) != 1 {
+		t.Fatalf("promoteMemberCalls = %d, want 1", len(ft.promoteMemberCalls))
+	}
+	want := promoteMemberCall{shardID: 3, replicaID: 7}
+	if got := ft.promoteMemberCalls[0]; got != want {
+		t.Fatalf("PromoteMember call = %+v, want %+v", got, want)
+	}
+}
+
+func TestClusterClient_PromoteReplica_ErrorPropagates(t *testing.T) {
+	sentinel := errors.New("promote member failed")
+	ft := &fakeClusterTransport{promoteMemberErr: sentinel}
+	cc := newFakeClusterClient(t, ft)
+
+	err := cc.PromoteReplica(context.Background(), 3, 7)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("PromoteReplica error = %v, want sentinel %v", err, sentinel)
 	}
 }
 

@@ -130,7 +130,7 @@ func shamirTenantWithClaimedHolders(t *testing.T, svc *TenantService, ctx contex
 		h.thumb = mtls.Thumbprint(cert.Raw)
 	}
 
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, len(holders), len(holders), seal.StrategyShamir)
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, len(holders), len(holders), seal.StrategyShamir, nil)
 	if err != nil {
 		t.Fatalf("init shamir: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestTenantBarrierHolders_RekeyStartsAreAudited(t *testing.T) {
 			t.Fatalf("register %s: %v", h.name, err)
 		}
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir, nil); err != nil {
 		t.Fatalf("init shamir: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestTenantBarrierHolders_RegisterRefusedWhileInitializing(t *testing.T) {
 		_, registerErr = svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: carol.name, CSRPEM: carol.csr})
 	}
 
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir)
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir, nil)
 	if err != nil {
 		t.Fatalf("init shamir with a registration racing it: %v", err)
 	}

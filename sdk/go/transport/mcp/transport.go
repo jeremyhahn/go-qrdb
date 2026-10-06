@@ -174,6 +174,22 @@ func (t *Transport) Connect(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 
+	client, err := t.dialMCP(ctx, t.config.Address)
+	if err != nil {
+		return err
+	}
+
+	t.client = client
+	return nil
+}
+
+// dialMCP builds and initializes an MCP client against address: an
+// in-process client when this transport wraps an *mcpserver.MCPServer
+// directly, otherwise a Streamable HTTP client. It is Connect's network
+// setup, factored out so RedeemInvitation can dial the separate, public
+// enrolment endpoint (enrollAddress) the same way without disturbing this
+// transport's own t.client.
+func (t *Transport) dialMCP(ctx context.Context, address string) (*mcpclient.Client, error) {
 	var (
 		client *mcpclient.Client
 		err    error
@@ -186,8 +202,8 @@ func (t *Transport) Connect(ctx context.Context) error {
 		// Network connection via Streamable HTTP.
 		tlsCfg, tlsErr := t.buildTLSConfig()
 		if tlsErr != nil {
-			return &transport.ConnectionError{
-				Address: t.config.Address,
+			return nil, &transport.ConnectionError{
+				Address: address,
 				Err:     tlsErr,
 			}
 		}
@@ -199,22 +215,22 @@ func (t *Transport) Connect(ctx context.Context) error {
 		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request -- over
 		// https to the configured host only, on every hop including
 		// redirects.
-		client, err = mcpclient.NewStreamableHttpClient(t.config.Address,
+		client, err = mcpclient.NewStreamableHttpClient(address,
 			mcptransport.WithHTTPBasicClient(&http.Client{
-				Transport: transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(t.config.Address)),
+				Transport: transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(address)),
 			}))
 	}
 	if err != nil {
-		return &transport.ConnectionError{
-			Address: t.config.Address,
+		return nil, &transport.ConnectionError{
+			Address: address,
 			Err:     &initializeError{Err: err},
 		}
 	}
 
 	// Start the transport.
 	if startErr := client.Start(ctx); startErr != nil {
-		return &transport.ConnectionError{
-			Address: t.config.Address,
+		return nil, &transport.ConnectionError{
+			Address: address,
 			Err:     &initializeError{Err: startErr},
 		}
 	}
@@ -227,17 +243,15 @@ func (t *Transport) Connect(ctx context.Context) error {
 		Version: "1.0.0",
 	}
 
-	_, err = client.Initialize(ctx, initReq)
-	if err != nil {
+	if _, err := client.Initialize(ctx, initReq); err != nil {
 		_ = client.Close()
-		return &transport.ConnectionError{
-			Address: t.config.Address,
+		return nil, &transport.ConnectionError{
+			Address: address,
 			Err:     &initializeError{Err: err},
 		}
 	}
 
-	t.client = client
-	return nil
+	return client, nil
 }
 
 // buildTLSConfig constructs the TLS configuration from the transport config.
@@ -563,6 +577,35 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	return err
 }
 
+// PromoteMember promotes a committed observer of the specified shard to a
+// voter. Calls the qrdb_promote_member MCP tool. Implements
+// transport.MemberPromoter.
+func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_promote_member", map[string]any{
+		"shard_id":   shardID,
+		"replica_id": replicaID,
+	})
+	return err
+}
+
+// RetireJoinIdentity permanently refuses any future admission for a node
+// identity. Calls the qrdb_retire_join_identity MCP tool.
+func (t *Transport) RetireJoinIdentity(ctx context.Context, nodeID, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_retire_join_identity", map[string]any{
+		"node_id": nodeID,
+		"reason":  reason,
+	})
+	return err
+}
+
 // RequestSnapshot triggers an asynchronous snapshot for the specified
 // shard. Calls the qrdb_snapshot MCP tool.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
@@ -772,6 +815,86 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 
 var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
 
+// AddObserverMember adds a new replica to the specified shard as a
+// non-voting observer rather than a voter. Calls the
+// qrdb_add_observer_member MCP tool. Implements transport.ObserverMemberAdder.
+func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"shard_id":   shardID,
+		"replica_id": replicaID,
+		"raft_addr":  raftAddr,
+	}
+	if identity != "" {
+		args["identity"] = identity
+	}
+	_, err := t.callTool(ctx, "qrdb_add_observer_member", args)
+	return err
+}
+
+var _ transport.ObserverMemberAdder = (*Transport)(nil)
+
+// ListPendingJoinRequests lists tokenless member-side CSR join requests
+// awaiting an operator's decision. Calls the
+// qrdb_list_pending_join_requests MCP tool. Implements
+// transport.JoinRequestReviewer.
+func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_list_pending_join_requests", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw []transport.PendingJoinRequest
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ListPendingJoinRequests", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	out := make([]*transport.PendingJoinRequest, len(raw))
+	for i := range raw {
+		out[i] = &raw[i]
+	}
+	return out, nil
+}
+
+// ApproveJoinRequest binds id's queued CSR to an operator-chosen node
+// identity. Calls the qrdb_approve_join_request MCP tool. Implements
+// transport.JoinRequestReviewer.
+func (t *Transport) ApproveJoinRequest(ctx context.Context, id, nodeID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_approve_join_request", map[string]any{
+		"id":      id,
+		"node_id": nodeID,
+	})
+	return err
+}
+
+// RejectJoinRequest records a terminal refusal of id's queued CSR. Calls
+// the qrdb_reject_join_request MCP tool. Implements
+// transport.JoinRequestReviewer.
+func (t *Transport) RejectJoinRequest(ctx context.Context, id, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	args := map[string]any{"id": id}
+	if reason != "" {
+		args["reason"] = reason
+	}
+	_, err := t.callTool(ctx, "qrdb_reject_join_request", args)
+	return err
+}
+
+var _ transport.JoinRequestReviewer = (*Transport)(nil)
+
 // ---------------------------------------------------------------------------
 // Server-side JSON decode types
 // ---------------------------------------------------------------------------
@@ -889,13 +1012,21 @@ func (t *Transport) callTool(ctx context.Context, tool string, args map[string]a
 		args["database"] = t.database
 	}
 
+	return callToolOn(ctx, t.client, tool, args)
+}
+
+// callToolOn is callTool's wire logic against an explicit client, so
+// RedeemInvitation can run it against the one-off client it dials for the
+// separate, public enrolment endpoint rather than this transport's own
+// t.client.
+func callToolOn(ctx context.Context, client *mcpclient.Client, tool string, args map[string]any) (string, error) {
 	req := mcp.CallToolRequest{}
 	req.Params.Name = tool
 	if args != nil {
 		req.Params.Arguments = args
 	}
 
-	result, err := t.client.CallTool(ctx, req)
+	result, err := client.CallTool(ctx, req)
 	if err != nil {
 		return "", &transport.RequestError{Method: tool, Err: &toolCallError{Tool: tool, Err: err}}
 	}

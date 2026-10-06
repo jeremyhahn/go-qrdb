@@ -233,6 +233,11 @@ func (m *mockAdminService) RemoveMember(_ context.Context, _, _ uint64) error {
 	return nil
 }
 
+// PromoteMember implements service.MemberPromoter.
+func (m *mockAdminService) PromoteMember(_ context.Context, _, _ uint64) error {
+	return nil
+}
+
 func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
 	return nil
 }

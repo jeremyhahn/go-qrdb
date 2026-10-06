@@ -140,9 +140,12 @@ Supported transports:
   embedded  In-process server (desktop/GUI build only)`,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// Skip client construction for commands that do not need a
-			// server connection: version/help, and cobra's built-in
-			// completion script generator (and its per-shell children).
-			if cmd.Name() == "version" || cmd.Name() == "help" || isCompletionCmd(cmd) {
+			// server connection: version/help, cobra's built-in
+			// completion script generator (and its per-shell children),
+			// and "enroll" -- the redeemer holds no credential yet, so it
+			// builds its own unauthenticated transport (newInvitationClient)
+			// rather than the ordinary connected client.
+			if cmd.Name() == "version" || cmd.Name() == "help" || cmd.Name() == "enroll" || isCompletionCmd(cmd) {
 				return nil
 			}
 
@@ -243,6 +246,7 @@ Supported transports:
 	rootCmd.AddCommand(tenantCmd)
 
 	rootCmd.AddCommand(newInitCmd())
+	rootCmd.AddCommand(newEnrollCmd())
 	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newBootstrapCmd())
 	rootCmd.AddCommand(newCACmd())

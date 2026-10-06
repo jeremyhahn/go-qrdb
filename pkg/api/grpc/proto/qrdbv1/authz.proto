@@ -31,7 +31,12 @@ import "google/protobuf/descriptor.proto";
 // The value is a permission string from pkg/permission (e.g. "kv:put").
 // The sentinel "identity:gated" marks endpoints whose authorization is
 // enforced at the handler layer; the middleware then only requires an
-// authenticated identity (see permission.IdentityGated).
+// authenticated identity (see permission.IdentityGated). The sentinel
+// "identity:public" marks endpoints reachable with NO authentication at
+// all; the middleware bypasses authentication and authorization for them
+// before this option is ever looked up (see permission.Public and
+// AuthMiddleware.RegisterPublicGRPCMethods). Both sentinels are deliberately
+// unregistered in the permission registry.
 extend google.protobuf.MethodOptions {
     string permission = 51000;
 }

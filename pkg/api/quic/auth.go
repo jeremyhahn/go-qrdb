@@ -80,10 +80,11 @@ func (s *Server) authenticateOnBehalf(ctx context.Context, conn *quicgo.Conn, me
 // registration-site methodPerms registry (DEFAULT-DENY for unregistered
 // methods).
 //
-// payload is the frame's request payload: the permission is authorized
-// against the tenant the payload names (see authmw.Target).
-func (s *Server) authorize(ctx context.Context, method string, payload []byte) error {
-	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method, payload); err != nil {
+// The permission is authorized in the caller's own tenant, the tenant the
+// authenticated context is bound to. An operation that acts on a tenant its
+// request names re-checks there itself (authmw.AuthorizeTenantTarget).
+func (s *Server) authorize(ctx context.Context, method string) error {
+	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method); err != nil {
 		// Err carries the middleware's own typed error. Without it the
 		// wrapper ERASED the distinction between "you may not" and "this node
 		// could not answer" -- errors.As could see nothing through it, so the

@@ -114,6 +114,7 @@ func TestAuthorizeRoleAssignmentWrite_NilMiddlewareStillValidates(t *testing.T) 
 		{name: "missing role refused", roleSvc: roleSvc, roleIDs: []string{"missing"}, check: wantErrorAs[*role.RoleNotFoundError]},
 		{name: "foreign role refused", roleSvc: roleSvc, roleIDs: []string{"r-globex"}, check: wantErrorAs[*role.NotAssignableError]},
 		{name: "mismatched binding refused", roleSvc: roleSvc, bindings: []user.RoleBinding{{RoleID: "r-globex", TenantID: "acme"}}, check: wantErrorAs[*role.NotAssignableError]},
+		{name: "foreign-tenant binding refused", roleSvc: roleSvc, bindings: []user.RoleBinding{{RoleID: "r-globex", TenantID: "globex"}}, check: wantErrorAs[*user.RoleBindingTenantError]},
 		{name: "no role service refused", roleIDs: []string{"r-acme"}, check: wantErrorAs[*role.ServiceRequiredError]},
 		{name: "attributes only needs nothing", check: wantNoError},
 	}
@@ -263,34 +264,87 @@ func TestAuthorizeRoleAssignmentWrite_ValidatesRoleIDsPropagatesNotFound(t *test
 // against ITS OWN TenantID, not the target user's home tenant, because a
 // binding may legitimately name a tenant other than it (tenant-scoped
 // grants).
-func TestAuthorizeRoleAssignmentWrite_BindingsValidateAgainstTheirOwnTenant(t *testing.T) {
-	mw := mwWithPerms(permission.RolesAssign)
-	// A system-tenant caller: ScopeSelf lifts roles:assign across every
-	// tenant for it, isolating THIS test to the role-tenant VALIDATION rule
-	// rather than the separate roles:assign-per-binding-tenant rule (see
-	// TestAuthorizeRoleAssignmentWrite_BindingRequiresRolesAssignInItsOwnTenant).
-	ctx := roleAssignmentCtx(tenantid.System)
+// TestAuthorizeRoleAssignmentWrite_ForeignTenantBindingRefused: a RoleBinding
+// may name only the user's own tenant. A binding naming another is refused
+// with *user.RoleBindingTenantError whoever writes it -- a system-tenant
+// caller, whose roles:assign ScopeSelf admits in every tenant, a tenant
+// caller holding roles:assign in the user's tenant, and a composition with
+// no RBAC at all -- and whether or not the role it names belongs to the
+// tenant it names.
+func TestAuthorizeRoleAssignmentWrite_ForeignTenantBindingRefused(t *testing.T) {
 	userSvc := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
 	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
+		"r-acme":   {ID: "r-acme", TenantID: "acme"},
+		"r-globex": {ID: "r-globex", TenantID: "globex"},
+	}}
+	callers := []struct {
+		name string
+		mw   *AuthMiddleware
+		ctx  context.Context
+	}{
+		{"system caller", mwWithPerms(permission.RolesAssign), roleAssignmentCtx(tenantid.System)},
+		{"tenant caller", mwWithPerms(permission.RolesAssign), roleAssignmentCtx("acme")},
+		{"no RBAC", nil, context.Background()},
+	}
+	for _, c := range callers {
+		t.Run(c.name, func(t *testing.T) {
+			for _, b := range []user.RoleBinding{
+				{RoleID: "r-globex", TenantID: "globex"},
+				{RoleID: "r-acme", TenantID: "globex"},
+				{RoleID: "admin", TenantID: tenantid.System},
+				{RoleID: "admin", TenantID: ""},
+			} {
+				err := c.mw.AuthorizeRoleAssignmentWrite(c.ctx, userSvc, roleSvc, 1, nil, []user.RoleBinding{{RoleID: "r-acme", TenantID: "acme"}, b})
+				var be *user.RoleBindingTenantError
+				if !errors.As(err, &be) {
+					t.Fatalf("binding %+v: err = %v, want *user.RoleBindingTenantError", b, err)
+				}
+				if be.UserTenantID != "acme" || be.BindingTenantID != tenantid.Normalize(b.TenantID) {
+					t.Errorf("binding %+v: error names user=%q binding=%q", b, be.UserTenantID, be.BindingTenantID)
+				}
+			}
+		})
+	}
+}
+
+// TestAuthorizeRoleAssignmentWrite_OwnTenantBindingValidated: a binding in
+// the user's own tenant is admitted when its role belongs to that tenant and
+// refused with *role.NotAssignableError when it does not.
+func TestAuthorizeRoleAssignmentWrite_OwnTenantBindingValidated(t *testing.T) {
+	mw := mwWithPerms(permission.RolesAssign)
+	ctx := roleAssignmentCtx("acme")
+	userSvc := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
+	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
+		"r-acme":   {ID: "r-acme", TenantID: "acme"},
 		"r-globex": {ID: "r-globex", TenantID: "globex"},
 	}}
 
-	// The binding names tenant "globex" for a role that DOES belong to
-	// globex, even though the target user's own tenant is "acme" — this
-	// must be admitted, because the binding's own TenantID is what is
-	// validated, not the user's.
-	bindings := []user.RoleBinding{{RoleID: "r-globex", TenantID: "globex"}}
-	if err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 1, nil, bindings); err != nil {
-		t.Fatalf("a binding valid in ITS OWN tenant must be admitted: %v", err)
+	if err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 1, nil, []user.RoleBinding{{RoleID: "r-acme", TenantID: "acme"}}); err != nil {
+		t.Fatalf("own-tenant binding of an own-tenant role: %v", err)
 	}
-
-	// The same role referenced with a MISMATCHED binding tenant must be
-	// refused.
-	mismatched := []user.RoleBinding{{RoleID: "r-globex", TenantID: "acme"}}
-	err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 1, nil, mismatched)
+	err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 1, nil, []user.RoleBinding{{RoleID: "r-globex", TenantID: "acme"}})
 	var na *role.NotAssignableError
 	if !errors.As(err, &na) {
-		t.Fatalf("a binding whose TenantID does not match the role's must be refused, got %v", err)
+		t.Fatalf("own-tenant binding of a foreign role: err = %v, want *role.NotAssignableError", err)
+	}
+}
+
+// TestAuthorizeRoleAssignmentWrite_AuthorizationPrecedesBindingCheck: a
+// caller refused roles:assign in the user's tenant learns that, not whether
+// the binding it named would have been accepted.
+func TestAuthorizeRoleAssignmentWrite_AuthorizationPrecedesBindingCheck(t *testing.T) {
+	mw := mwWithPerms(permission.RolesAssign)
+	ctx := roleAssignmentCtx("globex")
+	userSvc := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
+	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{}}
+
+	err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 1, nil, []user.RoleBinding{{RoleID: "r", TenantID: "globex"}})
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("err = %v, want an authorization denial", err)
+	}
+	var be *user.RoleBindingTenantError
+	if errors.As(err, &be) {
+		t.Fatalf("err = %v: the binding check ran before authorization", err)
 	}
 }
 
@@ -301,30 +355,6 @@ func TestAuthorizeRoleAssignmentWrite_BindingsValidateAgainstTheirOwnTenant(t *t
 // still be refused a binding that names a DIFFERENT tenant ("globex"),
 // because writing that binding is itself an act of granting a role WITHIN
 // globex, not acme.
-func TestAuthorizeRoleAssignmentWrite_BindingRequiresRolesAssignInItsOwnTenant(t *testing.T) {
-	// The caller's identity is scoped to "acme" (non-system), so ScopeSelf
-	// admits roles:assign in acme but NOT in globex, regardless of what
-	// ResolvePermissions answers — ScopeSelf denies a non-system identity
-	// acting outside its own tenant. This is exactly the guarantee under
-	// test: holding the permission is not enough without also being IN
-	// (or system-tenant over) the tenant the binding names.
-	mw := mwWithPerms(permission.RolesAssign)
-	ctx := roleAssignmentCtx("acme")
-	userSvc := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
-	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
-		"r-globex": {ID: "r-globex", TenantID: "globex"},
-	}}
-
-	bindings := []user.RoleBinding{{RoleID: "r-globex", TenantID: "globex"}}
-	err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 1, nil, bindings)
-	if err == nil {
-		t.Fatal("a caller scoped to acme, without roles:assign in globex, must be refused a globex-targeted binding")
-	}
-	if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("err = %v, want an authorization denial", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // AuthorizeRoleAssignmentWriteOnCreate
 // ---------------------------------------------------------------------------

@@ -292,7 +292,7 @@ Every error is typed. Each classification below is the row added to
 | `*volume.MoveInProgressError{TenantID, State}` | a second move, or a delete, during a move | `FailedPrecondition` (409); **Phase 2** |
 | `*volume.MoveError{TenantID, State, NodeID, Err}` | a move step failed; the journal says where | `Internal` (500); **Phase 2** |
 | `*quota.EntitlementError{Feature: "volume_pool:<name>"}` | the tenant is not entitled to the pool | `PermissionDenied` (403), the existing row |
-| `*tenant.PersistedDataRootError`, `*seal.AbsoluteDataRootRecordError` | a record carries a path | the existing `FailedPrecondition` rows |
+| `*tenant.PersistedDataRootError` | a record carries a path | the existing `FailedPrecondition` row |
 | `*seal.VolumeUnlockError{Pool, Err}` | a tracked `Lockable` volume's `Unlock` failed after unseal (decision D6) | not on the wire directly: surfaces as `PoolUnavailableError`/`pool_unavailable` through the pool's resolution |
 | `*seal.VolumeLockError{Pool, Err}` | a tracked `Lockable` volume's `Lock` failed while sealing | not on the wire: `Internal`-class, logged and audited; the barrier still seals |
 
@@ -306,8 +306,8 @@ a `message`. The code is stable and the message is not:
 
 | Code | From |
 |---|---|
-| `persisted_path` | `*tenant.PersistedDataRootError`, `*seal.AbsoluteDataRootRecordError` |
-| `pool_unavailable` | `*volume.PoolUnavailableError`, `*seal.TenantRootUnresolvedError` |
+| `persisted_path` | `*tenant.PersistedDataRootError` |
+| `pool_unavailable` | `*volume.PoolUnavailableError` |
 | `provider_missing` | `*volume.ProviderNotRegisteredError` |
 
 The refusal is the **answering node's** view: another node may serve the same

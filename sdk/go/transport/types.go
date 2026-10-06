@@ -98,6 +98,13 @@ type RemoveMemberRequest struct {
 	ReplicaID uint64 `json:"replica_id"`
 }
 
+// PromoteMemberRequest is the JSON payload for promoting a committed
+// observer to a voter.
+type PromoteMemberRequest struct {
+	ShardID   uint64 `json:"shard_id"`
+	ReplicaID uint64 `json:"replica_id"`
+}
+
 // SnapshotRequest is the JSON payload for requesting a shard snapshot.
 type SnapshotRequest struct {
 	ShardID uint64 `json:"shard_id"`
@@ -116,6 +123,48 @@ type MintJoinTokenRequest struct {
 type MintJoinTokenResponse struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// AddObserverMemberRequest is the JSON payload for adding a shard member as
+// a non-voting observer.
+type AddObserverMemberRequest struct {
+	ShardID   uint64 `json:"shard_id"`
+	ReplicaID uint64 `json:"replica_id"`
+	Address   string `json:"address"`
+	Identity  string `json:"identity,omitempty"`
+}
+
+// PendingJoinRequest is the client-side view of one queued, tokenless
+// member-side CSR join request awaiting a decision -- see
+// pkg/service.PendingJoinRequest.
+type PendingJoinRequest struct {
+	ID          string    `json:"id"`
+	NodeURI     string    `json:"node_uri,omitempty"`
+	ReplicaID   uint64    `json:"replica_id,omitempty"`
+	Features    []string  `json:"features,omitempty"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// ApproveJoinRequestRequest is the JSON payload for approving a queued CSR.
+type ApproveJoinRequestRequest struct {
+	ID     string `json:"id"`
+	NodeID string `json:"node_id"`
+}
+
+// RejectJoinRequestRequest is the JSON payload for rejecting a queued CSR.
+type RejectJoinRequestRequest struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// RetireJoinIdentityRequest is the JSON payload for permanently refusing
+// any future admission for a node identity (see
+// clusterenroll.RetireJoinIdentity). Reason is an optional, free-text
+// operator note carried for audit only.
+type RetireJoinIdentityRequest struct {
+	NodeID string `json:"node_id"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // CapabilitiesResponse describes the compile-time feature set of the QRDB binary.

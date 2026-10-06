@@ -89,7 +89,7 @@ func (c *capturingQUICTenantSvc) TenantBarrierQuorumSubmit(_ context.Context, _ 
 	return nil, errors.New("factor verification failed")
 }
 
-func (c *capturingQUICTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (c *capturingQUICTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
 	c.seen = passphrase
 	return &tenant.TenantBarrierInitResult{
 		TenantID: tenantID, Strategy: "passphrase", Threshold: threshold, TotalShares: shares,

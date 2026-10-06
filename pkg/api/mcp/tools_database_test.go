@@ -22,10 +22,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 

@@ -1,6 +1,6 @@
 # Clustering — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 **Raft mode only.** In standalone every capability here refuses with
 `requires mode: raft`.
@@ -464,15 +464,33 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   logs "activated", the others log "observed" -- and a failed write is retried
   on the next refresh, never assumed.
 - **Joining a new node after activation.** A node is admitted only when it
-  has a live advertisement. A member advertises through its own gate; a joining
-  node's advertisement is published by its enrollment, through the member that
-  signs it -- the same lease-backed record under
-  `featuregate.AdvertisementPrefix`. Until then, after activation, `member add`
-  of a node with no advertisement is refused with
-  `*featuregate.UnsupportedReplicaError`, whose message names the missing
-  advertisement and its source; a node that registers through dynamic
-  membership from a client of the running cluster, with its features in the
-  registration, is admitted.
+  has a live advertisement. A member advertises through its own gate, once it
+  is running; a joining node cannot do that before it is a member, so
+  `pkg/clusterenroll`'s member-side CSR join publishes a pre-membership
+  advertisement on its behalf instead. The joiner sends its own replica ID
+  and claimed features (`featuregate.SupportedNames()`) in the join request;
+  `HandleJoinRequest`, once it has signed and admitted the leaf, calls
+  `clusterenroll.FeatureAdvertiser.AdvertiseJoiner` (implemented by
+  `pkg/joinadvertise.Advertiser`, which `pkg/server/lifecycle`'s Noise_NK
+  listener and `pkg/server`'s REST `/v1/enroll/join` route both wire from the
+  node's own `service.LeaseServicer` and `service.MVCCKVServicer`) to grant a
+  short lease (`joinadvertise.DefaultTTL`, 15 minutes) and write a
+  `cluster.Member` record under `featuregate.AdvertisementPrefix` keyed by
+  the claimed replica ID, with the claimed features filtered to the names
+  this binary's own `featuregate.Supported()` knows. Once that record exists,
+  the operator's `member add` sees a live advertisement and admits the node
+  exactly as it would a long-running one. The record is a stopgap, not a
+  substitute for the node's own advertisement: it lapses with its lease, and
+  once the node is a member and running, its own gate replaces it. A
+  `FeatureAdvertiser` failure is logged, not fatal -- the certificate
+  `HandleJoinRequest` already issued is still returned, and `member add`
+  simply surfaces the same refusal it always would with no advertiser
+  configured at all (a state machine type with no lease support, see
+  `joinadvertise.New`'s own doc comment). A node that registers through
+  **dynamic membership** from a client of the running cluster, with its
+  features in the registration, has never had this gap: its registration
+  record is exactly the live advertisement `Supports` reads, published
+  before the leader ever proposes `AddMember`.
 
 ### Node administration — `sdk/go/transport`
 
@@ -483,6 +501,9 @@ type AdminClient interface {
 	Peers(ctx context.Context) (*PeersResponse, error)
 	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error
+	// PromoteMember promotes a committed observer to a voter, keeping its
+	// committed address and identity; nothing restarts.
+	PromoteMember(ctx context.Context, shardID, replicaID uint64) error
 	RequestSnapshot(ctx context.Context, shardID uint64) error
 	Drain(ctx context.Context) error
 	Capabilities(ctx context.Context) (*CapabilitiesResponse, error)
@@ -490,8 +511,51 @@ type AdminClient interface {
 	StopShard(ctx context.Context, shardID uint64) error
 	GetShardState(ctx context.Context, shardID uint64) (*ShardStateResponse, error)
 	GetTopology(ctx context.Context) (*TopologyResponse, error)
+	// RetireJoinIdentity permanently refuses any future admission for a
+	// node identity -- a fresh join-token mint, or a renewal of one whose
+	// admission has lapsed -- after it is removed from the cluster or its
+	// certificate must be treated as revoked. Unlike MintJoinToken, its
+	// response carries no secret, so it is a method here directly rather
+	// than a distinct capability interface.
+	RetireJoinIdentity(ctx context.Context, nodeID, reason string) error
 }
 ```
+
+Server-side, `PromoteMember` is `service.MemberPromoter`, a distinct
+interface from `AdminServicer` (mirroring `ClusterJoinTokenMinter`'s own
+reason: every `AdminServicer` test double in this repo keeps compiling
+without growing a method most of them have no `Host` to serve). The real
+`AdminService` implements it unconditionally, and every transport binding
+type-asserts for it. `RetireJoinIdentity` is `service.JoinIdentityRetirer`,
+the same distinct-interface pattern, and reads and writes the identical
+join-identity ledger `ClusterJoinTokenMinter`'s `MintJoinToken` does --
+both configured by the same `WithClusterJoinTokenStore` /
+`SetClusterJoinTokenStore` call, so enabling member-side CSR join wires
+both at once. See [architecture.md](architecture.md#admission-lifecycle-lapsed-renewal-retirement-csr-identity).
+
+`AddObserverMember` (`qrdb admin member add-observer`) is `service.
+ObserverMemberAdder`, a sibling capability interface for the identical
+reason: it adds a replica as a non-voting observer through `host.
+RequestAddObserverWithIdentity` (go-quicraft's own observer-add primitive)
+rather than `RequestAddNodeWithIdentity`, with every other check
+(`admitReplica`'s feature-gate admission, `ResolveMemberIdentity`'s
+committed-identity resolution) shared verbatim with `AddMember`. It exists
+because `PromoteMember`'s success path had no way to be exercised before
+it: a plain `AddMember` always produces a voter, so there was never a
+cluster-created observer to promote.
+
+`ListPendingJoinRequests`/`ApproveJoinRequest`/`RejectJoinRequest` are
+`service.JoinRequestReviewer`, a third capability interface over the SAME
+replicated store `ClusterJoinTokenMinter` mints into
+(`AdminService.clusterJoinStoreAndDomain`, the one bind both interfaces
+read) — reviewing a tokenless CSR queued by `pkg/clusterenroll`'s approval
+path (pending_join.go) is an admission decision, not a signing one:
+`ApproveJoinRequest` calls `clusterenroll.ApproveJoinRequest`, which only
+binds the queue entry to an operator-chosen identity and CompareAndSwaps
+the record — it never touches a `cakey.Provider`. The actual
+`IssueLeafForKey` call happens later, inside `HandleJoinRequest`, when the
+joiner's own poll (`Join`'s retry loop, `JoinApprovalPollInterval`) next
+presents the identical CSR and finds it approved.
 
 ### SDK `Cluster()` facade
 
@@ -504,6 +568,7 @@ members, _ := cc.Members(ctx, shardID)        // filtered from Peers()
 leader, ok, _ := cc.Leader(ctx, shardID)      // from GetShardState()
 _ = cc.AddReplica(ctx, shardID, id, raftAddr, identity) // delegates to AddMember
 _ = cc.RemoveReplica(ctx, shardID, id)        // delegates to RemoveMember
+_ = cc.PromoteReplica(ctx, shardID, id)       // delegates to PromoteMember
 ch, _ := cc.WatchMembership(ctx, shardID)     // polls, emits deltas
 // ev.Members, ev.Added, ev.Removed, ev.LeaderChanged
 ```

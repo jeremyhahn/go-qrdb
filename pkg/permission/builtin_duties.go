@@ -131,7 +131,7 @@ func registerGovernanceDuties() {
 		// User administration.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
-		UsersDisable,
+		UsersDisable, UsersInvite,
 		// Tenant administration.
 		TenantsCreate, TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,

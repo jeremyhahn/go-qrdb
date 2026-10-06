@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestRegistration pins the registration conversions and the params check.
@@ -137,6 +138,44 @@ func TestCeremonyInit(t *testing.T) {
 	if resp.GetSpkiPin() != "pin" || resp.GetCaCertPem() != "ca" || resp.GetShareCount() != 1 || len(resp.GetHolders()) != 1 ||
 		resp.GetHolders()[0].GetRole() != "so" || string(resp.GetHolders()[0].GetCertPem()) != "cert" {
 		t.Errorf("CeremonyInitToPB = %+v", resp)
+	}
+}
+
+// TestTenantBarrierRoster pins the inline Shamir officer roster
+// conversions, both directions, including the empty-input nil shortcuts
+// and the malformed-factor-params error path.
+func TestTenantBarrierRoster(t *testing.T) {
+	cfgs, err := TenantBarrierRosterFromPB(nil)
+	if err != nil || cfgs != nil {
+		t.Errorf("TenantBarrierRosterFromPB(nil) = (%+v, %v), want (nil, nil)", cfgs, err)
+	}
+
+	cfgs, err = TenantBarrierRosterFromPB([]*pb.CeremonyOfficer{{
+		Username: "alice", Role: "so", CsrPem: "a",
+		EncryptionKem: "x25519", EncryptionKey: []byte("pub"),
+		Factors:    []*pb.HolderFactorEnrolment{{Name: "fido2"}},
+		Designated: "fido2",
+	}})
+	if err != nil {
+		t.Fatalf("TenantBarrierRosterFromPB: %v", err)
+	}
+	if len(cfgs) != 1 || cfgs[0].Role != seal.RoleSecurityOfficer || string(cfgs[0].CSRPEM) != "a" ||
+		cfgs[0].EncryptionKEM != "x25519" || len(cfgs[0].Factors) != 1 || cfgs[0].Designated != "fido2" {
+		t.Errorf("TenantBarrierRosterFromPB = %+v", cfgs)
+	}
+
+	if _, err := TenantBarrierRosterFromPB([]*pb.CeremonyOfficer{{
+		Username: "bob", Factors: []*pb.HolderFactorEnrolment{{Name: "fido2", ParamsJson: []byte("not-json")}},
+	}}); err == nil {
+		t.Error("malformed factor params_json must be refused, not silently dropped")
+	}
+
+	if got := TenantBarrierHoldersToPB(nil); got != nil {
+		t.Errorf("TenantBarrierHoldersToPB(nil) = %+v, want nil", got)
+	}
+	holders := TenantBarrierHoldersToPB([]tenant.TenantBarrierHolderCert{{Username: "alice", Role: "so", CertPEM: "cert-a"}})
+	if len(holders) != 1 || holders[0].GetUsername() != "alice" || holders[0].GetRole() != "so" || string(holders[0].GetCertPem()) != "cert-a" {
+		t.Errorf("TenantBarrierHoldersToPB = %+v", holders)
 	}
 }
 

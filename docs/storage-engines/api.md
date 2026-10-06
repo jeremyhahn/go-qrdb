@@ -1,6 +1,7 @@
 # Storage Engines and Volume Pools — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-05
 
 ## Storage engines
 
@@ -101,3 +102,22 @@ missing was somewhere on the wire to put the answer.
 ## Versioning
 
 Not applicable — there are no versioned routes in this feature.
+
+## Target design: no caller-visible change
+
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
+for the full design. From every wire transport's point of view, nothing here
+changes:
+
+- The backend enum stays `objstore` — `DatabaseInfo.Backend` does not gain or
+  rename a value. The LSM segment layout is an internal rebuild of what
+  `backend: objstore` means, not a new caller-visible option.
+- There is still no wire API for storage engines (this feature has none
+  today, per "Storage engines" above), and this design does not add one.
+- **One normative statement this design may eventually reverse**: today
+  `raft.sm_storage`/`state_storage: objstore` is refused outright (see
+  [engineering.md](engineering.md)'s error table). Phase 1 of the target
+  design does not touch that refusal — it only unblocks `backend: objstore`
+  as a local, non-replicated binding. Lifting the Raft hot-apply-path refusal
+  is OS-7, deferred to a gated phase 3, and is called out here so a reader of
+  this API doc is not surprised by it later.

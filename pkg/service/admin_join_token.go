@@ -101,6 +101,37 @@ type ClusterJoinTokenMinter interface {
 	MintJoinToken(ctx context.Context, nodeID string, ttl time.Duration) (token string, expiresAt time.Time, err error)
 }
 
+// MemberPromoter promotes a committed observer of a shard to a voter. It is
+// a distinct interface from AdminServicer, not a method added to it, for the
+// identical reason ClusterJoinTokenMinter is: every transport binding that
+// wants to expose it type-asserts for this interface
+// (adminSvc.(MemberPromoter)) rather than every AdminServicer implementation
+// -- including every test double across this repo -- needing to grow a
+// method most of them have no Host to serve. AdminService implements it
+// unconditionally (see AdminService.PromoteMember).
+//
+// admin:add_member (pkg/permission, ScopeCross) gates it on every transport
+// that wires this interface: a promotion is a Raft reconfiguration, the same
+// authorization AddMember and RemoveMember already require.
+// MemberPromotionUnsupportedError is returned by a transport binding when
+// its configured AdminServicer does not implement MemberPromoter. The real
+// AdminService always does; this is reached only by a test double or an
+// alternate AdminServicer implementation that has not grown the method.
+type MemberPromotionUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *MemberPromotionUnsupportedError) Error() string {
+	return "service: this admin service does not support promoting members"
+}
+
+type MemberPromoter interface {
+	// PromoteMember promotes replicaID from a committed observer of shardID
+	// to a voter, keeping the address and identity the shard already
+	// committed for it. Refuses with *MemberNotObserverError when replicaID
+	// is not currently an observer there.
+	PromoteMember(ctx context.Context, shardID, replicaID uint64) error
+}
+
 // ClusterJoinTokenNotConfiguredError is returned by AdminService.
 // MintJoinToken when no join-token store and trust domain have been
 // configured (WithClusterJoinTokenStore / SetClusterJoinTokenStore). A node
@@ -147,13 +178,64 @@ func (s *AdminService) SetClusterJoinTokenStore(store kvstore.AtomicKVStore, tru
 
 // MintJoinToken implements ClusterJoinTokenMinter.
 func (s *AdminService) MintJoinToken(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error) {
-	s.joinToken.mu.RLock()
-	store, trustDomain := s.joinToken.store, s.joinToken.trustDomain
-	s.joinToken.mu.RUnlock()
+	store, trustDomain := s.clusterJoinStoreAndDomain()
 	if store == nil || trustDomain == "" {
 		return "", time.Time{}, &ClusterJoinTokenNotConfiguredError{}
 	}
 	return clusterenroll.MintJoinToken(ctx, store, trustDomain, nodeID, ttl)
 }
 
+// clusterJoinStoreAndDomain reads AdminService's member-side CSR join
+// store and trust domain. It is shared by MintJoinToken (admin_join_token.go)
+// and the approval-queue verbs (admin_join_request.go, JoinRequestReviewer):
+// the queue is the SAME replicated store join tokens live in, so there is
+// only one bind to configure (SetClusterJoinTokenStore), not two.
+func (s *AdminService) clusterJoinStoreAndDomain() (kvstore.AtomicKVStore, string) {
+	s.joinToken.mu.RLock()
+	defer s.joinToken.mu.RUnlock()
+	return s.joinToken.store, s.joinToken.trustDomain
+}
+
 var _ ClusterJoinTokenMinter = (*AdminService)(nil)
+
+// JoinIdentityRetirer permanently refuses any future admission for a node
+// identity -- a fresh MintJoinToken, or a renewal of one whose admission
+// has lapsed (see pkg/clusterenroll.RetireJoinIdentity) -- after an admin
+// decides it must never (re-)join: a member removed from the cluster, or
+// an identity whose issued certificate must be treated as revoked. It is
+// a distinct interface from AdminServicer, not a method added to it, for
+// the identical reason ClusterJoinTokenMinter and MemberPromoter are:
+// every transport binding that wants to expose it type-asserts for this
+// interface (adminSvc.(JoinIdentityRetirer)) rather than every
+// AdminServicer implementation -- including every test double across this
+// repo -- needing to grow a method most of them have no store to serve.
+// AdminService implements it once configured (the same
+// WithClusterJoinTokenStore / SetClusterJoinTokenStore call
+// ClusterJoinTokenMinter uses: both read and write the SAME join-identity
+// ledger).
+//
+// cluster:join_identity_retire (pkg/permission, ScopeCross) gates it on
+// every transport that wires this interface: retiring an identity is a
+// platform decision no tenant's role may hold, the same precedent
+// cluster:join_token already set.
+type JoinIdentityRetirer interface {
+	// RetireJoinIdentity permanently refuses any future admission for
+	// spiffe://<trust domain>/node/<nodeID>. reason is an optional,
+	// free-text operator note carried for audit only. See
+	// clusterenroll.RetireJoinIdentity for the single-use-token-free,
+	// unconditional-write semantics.
+	RetireJoinIdentity(ctx context.Context, nodeID, reason string) error
+}
+
+// RetireJoinIdentity implements JoinIdentityRetirer.
+func (s *AdminService) RetireJoinIdentity(ctx context.Context, nodeID, reason string) error {
+	s.joinToken.mu.RLock()
+	store, trustDomain := s.joinToken.store, s.joinToken.trustDomain
+	s.joinToken.mu.RUnlock()
+	if store == nil || trustDomain == "" {
+		return &ClusterJoinTokenNotConfiguredError{}
+	}
+	return clusterenroll.RetireJoinIdentity(ctx, store, trustDomain, nodeID, reason)
+}
+
+var _ JoinIdentityRetirer = (*AdminService)(nil)

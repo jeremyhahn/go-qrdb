@@ -57,6 +57,11 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Handler: handleRemoveMember(adminSvc),
 		},
 		{
+			Tool:    toolPromoteMember(),
+			Perm:    permission.AdminAddMember,
+			Handler: handlePromoteMember(adminSvc),
+		},
+		{
 			Tool:    toolSnapshot(),
 			Perm:    permission.AdminSnapshot,
 			Handler: handleSnapshot(adminSvc),
@@ -105,6 +110,31 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Tool:    toolMintJoinToken(),
 			Perm:    permission.ClusterJoinToken,
 			Handler: handleMintJoinToken(adminSvc),
+		},
+		{
+			Tool:    toolAddObserverMember(),
+			Perm:    permission.AdminAddMember,
+			Handler: handleAddObserverMember(adminSvc),
+		},
+		{
+			Tool:    toolListPendingJoinRequests(),
+			Perm:    permission.ClusterJoinToken,
+			Handler: handleListPendingJoinRequests(adminSvc),
+		},
+		{
+			Tool:    toolApproveJoinRequest(),
+			Perm:    permission.ClusterJoinToken,
+			Handler: handleApproveJoinRequest(adminSvc),
+		},
+		{
+			Tool:    toolRejectJoinRequest(),
+			Perm:    permission.ClusterJoinToken,
+			Handler: handleRejectJoinRequest(adminSvc),
+		},
+		{
+			Tool:    toolRetireJoinIdentity(),
+			Perm:    permission.ClusterJoinIdentityRetire,
+			Handler: handleRetireJoinIdentity(adminSvc),
 		},
 	}
 }
@@ -278,6 +308,48 @@ func handleRemoveMember(adminSvc service.AdminServicer) mcpserver.ToolHandlerFun
 
 		if err := adminSvc.RemoveMember(ctx, shardID, replicaID); err != nil {
 			return nil, &ToolError{Tool: "qrdb_remove_member", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolPromoteMember defines the qrdb_promote_member tool schema.
+func toolPromoteMember() mcp.Tool {
+	return mcp.NewTool("qrdb_promote_member",
+		mcp.WithDescription("Promote a committed observer of a shard to a voter."),
+		mcp.WithNumber("shard_id",
+			mcp.Required(),
+			mcp.Description("The shard ID the observer belongs to."),
+		),
+		mcp.WithNumber("replica_id",
+			mcp.Required(),
+			mcp.Description("The observer's replica ID to promote."),
+		),
+	)
+}
+
+// handlePromoteMember returns a tool handler that delegates to adminSvc's
+// MemberPromoter capability (see service.MemberPromoter).
+func handlePromoteMember(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		promoter, ok := adminSvc.(service.MemberPromoter)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_promote_member", Err: &service.MemberPromotionUnsupportedError{}}
+		}
+
+		shardID := mcp.ParseUInt64(req, "shard_id", 0)
+		replicaID := mcp.ParseUInt64(req, "replica_id", 0)
+
+		if shardID == 0 {
+			return mcp.NewToolResultError("shard_id is required"), nil
+		}
+		if replicaID == 0 {
+			return mcp.NewToolResultError("replica_id is required"), nil
+		}
+
+		if err := promoter.PromoteMember(ctx, shardID, replicaID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_promote_member", Err: err}
 		}
 
 		return mcp.NewToolResultText("ok"), nil
@@ -613,5 +685,230 @@ func handleMintJoinToken(adminSvc service.AdminServicer) mcpserver.ToolHandlerFu
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolAddObserverMember defines the qrdb_add_observer_member tool schema.
+func toolAddObserverMember() mcp.Tool {
+	return mcp.NewTool("qrdb_add_observer_member",
+		mcp.WithDescription("Add a new replica to the specified shard as a non-voting observer rather than a voter. "+
+			"Promote it to a voter later with qrdb_promote_member."),
+		mcp.WithNumber("shard_id",
+			mcp.Required(),
+			mcp.Description("The shard ID to add the replica to."),
+		),
+		mcp.WithNumber("replica_id",
+			mcp.Required(),
+			mcp.Description("The replica ID of the new observer."),
+		),
+		mcp.WithString("raft_addr",
+			mcp.Required(),
+			mcp.Description("The Raft network address of the new observer."),
+		),
+		mcp.WithString("identity",
+			mcp.Description("The member's Raft identity (spki:<sha256-hex>, from `qrdbd node-identity --cert`). "+
+				"Omit it to use the identity the cluster already committed for the node."),
+		),
+	)
+}
+
+// handleAddObserverMember returns a tool handler that delegates to
+// adminSvc's ObserverMemberAdder capability.
+func handleAddObserverMember(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		adder, ok := adminSvc.(service.ObserverMemberAdder)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_add_observer_member", Err: &service.ClusterJoinRequestReviewUnsupportedError{}}
+		}
+
+		shardID := mcp.ParseUInt64(req, "shard_id", 0)
+		replicaID := mcp.ParseUInt64(req, "replica_id", 0)
+		raftAddr := mcp.ParseString(req, "raft_addr", "")
+		identity := mcp.ParseString(req, "identity", "")
+
+		if shardID == 0 {
+			return mcp.NewToolResultError("shard_id is required"), nil
+		}
+		if replicaID == 0 {
+			return mcp.NewToolResultError("replica_id is required"), nil
+		}
+		if raftAddr == "" {
+			return mcp.NewToolResultError("raft_addr is required"), nil
+		}
+
+		if err := adder.AddObserverMember(ctx, shardID, replicaID, raftAddr, identity); err != nil {
+			return nil, &ToolError{Tool: "qrdb_add_observer_member", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolListPendingJoinRequests defines the qrdb_list_pending_join_requests
+// tool schema.
+func toolListPendingJoinRequests() mcp.Tool {
+	return mcp.NewTool("qrdb_list_pending_join_requests",
+		mcp.WithDescription("List tokenless member-side CSR join requests awaiting an operator's approval or rejection. "+
+			"Requires permission cluster:join_token (ScopeCross, platform-only)."),
+	)
+}
+
+// pendingJoinRequestJSON is the MCP tool result shape for one queued CSR.
+type pendingJoinRequestJSON struct {
+	ID          string    `json:"id"`
+	NodeURI     string    `json:"node_uri,omitempty"`
+	ReplicaID   uint64    `json:"replica_id,omitempty"`
+	Features    []string  `json:"features,omitempty"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// handleListPendingJoinRequests returns a tool handler that delegates to
+// adminSvc's JoinRequestReviewer capability.
+func handleListPendingJoinRequests(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		reviewer, ok := adminSvc.(service.JoinRequestReviewer)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_list_pending_join_requests", Err: &service.ClusterJoinTokenNotConfiguredError{}}
+		}
+
+		pending, err := reviewer.ListPendingJoinRequests(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_list_pending_join_requests", Err: err}
+		}
+
+		out := make([]pendingJoinRequestJSON, 0, len(pending))
+		for _, p := range pending {
+			out = append(out, pendingJoinRequestJSON{
+				ID:          p.ID,
+				NodeURI:     p.NodeURI,
+				ReplicaID:   p.ReplicaID,
+				Features:    p.Features,
+				SubmittedAt: p.SubmittedAt,
+				ExpiresAt:   p.ExpiresAt,
+			})
+		}
+
+		data, jsonErr := json.Marshal(out)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_list_pending_join_requests", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolApproveJoinRequest defines the qrdb_approve_join_request tool schema.
+func toolApproveJoinRequest() mcp.Tool {
+	return mcp.NewTool("qrdb_approve_join_request",
+		mcp.WithDescription("Bind a queued, tokenless CSR join request to an operator-chosen node identity. "+
+			"The leaf is signed the next time the joiner's own retry reaches the join listener, not by this call."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The pending join request ID (see qrdb_list_pending_join_requests)."),
+		),
+		mcp.WithString("node_id",
+			mcp.Required(),
+			mcp.Description("The node identity to bind the eventual leaf to (spiffe://<trust domain>/node/<node_id>)."),
+		),
+	)
+}
+
+// handleApproveJoinRequest returns a tool handler that delegates to
+// adminSvc's JoinRequestReviewer capability.
+func handleApproveJoinRequest(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		reviewer, ok := adminSvc.(service.JoinRequestReviewer)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_approve_join_request", Err: &service.ClusterJoinTokenNotConfiguredError{}}
+		}
+
+		id := mcp.ParseString(req, "id", "")
+		nodeID := mcp.ParseString(req, "node_id", "")
+		if id == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+		if nodeID == "" {
+			return mcp.NewToolResultError("node_id is required"), nil
+		}
+
+		if err := reviewer.ApproveJoinRequest(ctx, id, nodeID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_approve_join_request", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolRejectJoinRequest defines the qrdb_reject_join_request tool schema.
+func toolRejectJoinRequest() mcp.Tool {
+	return mcp.NewTool("qrdb_reject_join_request",
+		mcp.WithDescription("Record a terminal refusal of a queued, tokenless CSR join request."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The pending join request ID (see qrdb_list_pending_join_requests)."),
+		),
+		mcp.WithString("reason",
+			mcp.Description("An operator-supplied reason, recorded for audit."),
+		),
+	)
+}
+
+// toolRetireJoinIdentity defines the qrdb_retire_join_identity tool schema.
+func toolRetireJoinIdentity() mcp.Tool {
+	return mcp.NewTool("qrdb_retire_join_identity",
+		mcp.WithDescription("Permanently refuse any future admission for a node identity -- a fresh "+
+			"mint, or a renewal of one whose admission has lapsed. Requires permission "+
+			"cluster:join_identity_retire (ScopeCross, platform-only)."),
+		mcp.WithString("node_id",
+			mcp.Required(),
+			mcp.Description("The node identity to retire (bound into spiffe://<trust domain>/node/<node_id>)."),
+		),
+		mcp.WithString("reason",
+			mcp.Description("Optional free-text operator note, carried for audit only."),
+		),
+	)
+}
+
+// handleRejectJoinRequest returns a tool handler that delegates to
+// adminSvc's JoinRequestReviewer capability.
+func handleRejectJoinRequest(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		reviewer, ok := adminSvc.(service.JoinRequestReviewer)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_reject_join_request", Err: &service.ClusterJoinTokenNotConfiguredError{}}
+		}
+
+		id := mcp.ParseString(req, "id", "")
+		reason := mcp.ParseString(req, "reason", "")
+		if id == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+
+		if err := reviewer.RejectJoinRequest(ctx, id, reason); err != nil {
+			return nil, &ToolError{Tool: "qrdb_reject_join_request", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// handleRetireJoinIdentity returns a tool handler that delegates to
+// adminSvc's JoinIdentityRetirer capability (see service.
+// JoinIdentityRetirer).
+func handleRetireJoinIdentity(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		retirer, ok := adminSvc.(service.JoinIdentityRetirer)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_retire_join_identity", Err: &service.ClusterJoinTokenNotConfiguredError{}}
+		}
+
+		nodeID := mcp.ParseString(req, "node_id", "")
+		reason := mcp.ParseString(req, "reason", "")
+
+		if err := retirer.RetireJoinIdentity(ctx, nodeID, reason); err != nil {
+			return nil, &ToolError{Tool: "qrdb_retire_join_identity", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
 	}
 }

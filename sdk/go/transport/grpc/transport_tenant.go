@@ -18,14 +18,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
-
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/enrollconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
 
@@ -259,6 +258,10 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &transport.NilRequestError{}}
 	}
+	officers, err := holderconv.TenantBarrierRosterToPB(req.Officers)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
 
 	resp, err := pb.NewTenantBarrierServiceClient(t.conn).Init(ctx, &pb.TenantBarrierInitRequest{
 		TenantId:   req.TenantID,
@@ -266,6 +269,8 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		Threshold:  int32(req.Threshold), //nolint:gosec // share threshold is a small count
 		Shares:     int32(req.Shares),    //nolint:gosec // share count is small
 		Strategy:   req.Strategy,
+		Officers:   officers,
+		Policy:     req.Policy,
 	})
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierInit", err)
@@ -276,6 +281,7 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		Threshold:   int(resp.GetThreshold()),
 		TotalShares: int(resp.GetTotalShares()),
 		ShareCount:  int(resp.GetShareCount()),
+		Holders:     holderconv.TenantBarrierHoldersFromPB(resp.GetHolders()),
 	}, nil
 }
 

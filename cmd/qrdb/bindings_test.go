@@ -1475,6 +1475,55 @@ func TestUserBinding_Disable_NotConnected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// InvitationBinding tests
+// ---------------------------------------------------------------------------
+
+func TestInvitationBinding_Invite_NotConnected(t *testing.T) {
+	b := NewInvitationBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	_, err := b.Invite(nil)
+	assertNotConnected(t, err)
+}
+
+// TestInvitationBinding_Redeem_ConnectionFailure covers Redeem's OWN
+// connection path (unlike every other binding method, it never touches
+// b.conn: the redeemer holds no credential to connect with). gRPC carries
+// invitation redemption on every transport, so dialing a server that
+// refuses the connection surfaces an ordinary request/connection failure,
+// not a capability refusal or a panic.
+func TestInvitationBinding_Redeem_ConnectionFailure(t *testing.T) {
+	b := NewInvitationBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	_, err := b.Redeem(&RedeemInput{
+		Server:    "localhost:1",
+		Transport: transportGRPC,
+		TenantID:  "acme",
+		Token:     "tok",
+		CSRPEM:    "CSR",
+	})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("Redeem(grpc) error = %v (%T), want *transport.RequestError", err, err)
+	}
+}
+
+// TestInvitationBinding_Redeem_EmbeddedTransport covers the other refusal
+// Redeem's connection path must surface: the desktop CLI build does not
+// link the server in-process, so "embedded" is refused the same way
+// buildClient refuses it for every other command.
+func TestInvitationBinding_Redeem_EmbeddedTransport(t *testing.T) {
+	b := NewInvitationBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	_, err := b.Redeem(&RedeemInput{
+		Server:    "",
+		Transport: transportEmbedded,
+		TenantID:  "acme",
+		Token:     "tok",
+		CSRPEM:    "CSR",
+	})
+	if !errors.As(err, new(*EmbeddedTransportUnavailableError)) {
+		t.Fatalf("Redeem(embedded) error = %v (%T), want *EmbeddedTransportUnavailableError", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RoleBinding not-connected tests
 // ---------------------------------------------------------------------------
 

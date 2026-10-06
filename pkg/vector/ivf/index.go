@@ -45,6 +45,16 @@ type Index interface {
 	// Load loads the index from disk
 	Load(path string) error
 
+	// Marshal serializes the trained index to bytes, the same
+	// representation Save writes to disk. It exists so a caller that wants
+	// the bytes themselves -- e.g. to encrypt them before they touch a disk,
+	// as a vector namespace checkpoint does -- does not have to round-trip
+	// through a plaintext file.
+	Marshal() ([]byte, error)
+
+	// Unmarshal restores the index from bytes produced by Marshal.
+	Unmarshal(data []byte) error
+
 	// Size returns the number of vectors in the index
 	Size() int
 
@@ -259,74 +269,77 @@ func (idx *ivfIndex) Remove(id string) error {
 	return nil
 }
 
-// Save saves the index to disk.
-func (idx *ivfIndex) Save(path string) error {
+// ivfPersisted is the serializable form Marshal, Unmarshal, Save and Load all
+// share, so disk format and in-memory wire format can never drift apart.
+type ivfPersisted struct {
+	Config    *Config
+	Centroids [][]float32
+	Lists     [][]Entry
+	Metadata  map[string]*IndexedVector
+}
+
+// Marshal serializes the trained index to bytes.
+func (idx *ivfIndex) Marshal() ([]byte, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	if !idx.trained {
-		return api.NewIVFUntrainedSaveError("ivf.Save")
+		return nil, api.NewIVFUntrainedSaveError("ivf.Marshal")
 	}
 
-	// Create serializable structure
-	data := struct {
-		Config    *Config
-		Centroids [][]float32
-		Lists     [][]Entry
-		Metadata  map[string]*IndexedVector
-	}{
+	data := ivfPersisted{
 		Config:    idx.config,
 		Centroids: idx.centroids,
 		Lists:     idx.lists,
 		Metadata:  idx.metadata,
 	}
-
-	// Marshal to JSON
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return api.NewIVFSaveError("ivf.Save", "marshal index", err)
+		return nil, api.NewIVFSaveError("ivf.Marshal", "marshal index", err)
+	}
+	return jsonData, nil
+}
+
+// Unmarshal restores the index from bytes produced by Marshal.
+func (idx *ivfIndex) Unmarshal(data []byte) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	var persisted ivfPersisted
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		return api.NewIVFSaveError("ivf.Unmarshal", "unmarshal index", err)
 	}
 
-	// Write to file
+	idx.config = persisted.Config
+	idx.centroids = persisted.Centroids
+	idx.lists = persisted.Lists
+	idx.metadata = persisted.Metadata
+	idx.trained = true
+	idx.distanceFunc = GetDistanceFunc(idx.config.DistanceMetric)
+
+	return nil
+}
+
+// Save saves the index to disk.
+
+func (idx *ivfIndex) Save(path string) error {
+	jsonData, err := idx.Marshal()
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, jsonData, 0600); err != nil {
 		return api.NewIVFSaveError("ivf.Save", "write index file", err)
 	}
-
 	return nil
 }
 
 // Load loads the index from disk.
 func (idx *ivfIndex) Load(path string) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	// Read file
 	jsonData, err := os.ReadFile(path)
 	if err != nil {
 		return api.NewIVFSaveError("ivf.Load", "read index file", err)
 	}
-
-	// Unmarshal from JSON
-	var data struct {
-		Config    *Config
-		Centroids [][]float32
-		Lists     [][]Entry
-		Metadata  map[string]*IndexedVector
-	}
-
-	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return api.NewIVFSaveError("ivf.Load", "unmarshal index", err)
-	}
-
-	// Restore index state
-	idx.config = data.Config
-	idx.centroids = data.Centroids
-	idx.lists = data.Lists
-	idx.metadata = data.Metadata
-	idx.trained = true
-	idx.distanceFunc = GetDistanceFunc(idx.config.DistanceMetric)
-
-	return nil
+	return idx.Unmarshal(jsonData)
 }
 
 // Size returns the number of vectors in the index.

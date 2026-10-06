@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -443,6 +443,69 @@ is the fail-closed direction: a permission added to the family and not listed
 as an exception is asserted tenant-only, so getting a new permission's scope
 wrong fails a test rather than passing a typed-in column.
 
+## Invitation self-enrolment
+
+`pkg/service.InvitationServicer` is the one surface every transport's invite
+and redeem verbs delegate to:
+
+```go
+type InvitationServicer interface {
+    InviteUser(ctx context.Context, req *InviteUserRequest) (*Invitation, error)
+    RedeemInvitation(ctx context.Context, req *RedeemInvitationRequest) (*EnrolledCertificate, error)
+}
+```
+
+`InviteUser` depends on `InvitationStore` (`*invite.TenantStore`, over the
+same `tenant.StoreResolver` user/role IAM data already routes through —
+`lifecycle.Node.StoreResolver`) and `InvitationUsers`
+(`user.UserServicer` + `user.CertActivator`); `RedeemInvitation` additionally
+needs `cert.CertProvider` (CSR issuance), `trustanchor.Source`
+(bring-your-own verification) and a `TenantGetter` (an unauthenticated
+caller names the tenant, so its existence is checked before anything else
+touches it). `lifecycle.Node.Invitations` is non-nil exactly when
+`Node.CertEnrollment` is: both require a certificate provider, and
+redemption issues through the same Key B CA `SignCertificate` does.
+
+**No separate target-authorization machinery.** An earlier design for this
+feature built its own permission-subset check for who may be invited by
+whom; that design was an owner-corrected dead end on this codebase (a tenant
+Admin does everything in its own tenant except SO/custodian custody — see
+[../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)), so
+`InviteUser` and the pending-account check in `RedeemInvitation` both call
+the SAME `certTargetGuard` function `certs:issue` already does, unchanged.
+Nothing here re-derives who may hold a certificate; the two callers just
+happen to be an invitation and a direct issuance.
+
+**The invitation-store layer (`pkg/invite`) is a bearer-secret store, not a
+generic KV wrapper.** `Entity.TokenHash` is the only representation of the
+token that ever reaches storage; `Entity.KeyPin`, when set, is NOT a secret
+(it is the public SPKI thumbprint of the key the invitation is pinned to) —
+the redeemer proves possession of the matching private key by signing the
+CSR it presents, not by presenting the pin itself.
+
+**`bootstrap.InvitationIssuer` and a deferred-tenant-admin tie-in were
+deliberately left out of this port.** The upstream design this was ported
+from returned a pending tenant admin's invitation token from
+`TenantProvisionResult`; `service.TenantOnboardingService.OnboardTenant` on
+this codebase does not yet expose a deferred-admin enrolment mode at all
+(it hard-codes `bootstrap.AdminEnrollCert`), so there is no live caller for
+that mechanism today. Add it when `OnboardTenant` grows deferred-admin
+support, not before — see
+[../multi-tenancy/architecture.md](../multi-tenancy/architecture.md).
+
+**gRPC and the Unix socket carry invitations through the shared protobuf
+stubs.** `InviteUser` and `RedeemInvitation` are `qrdb.v1.QRDBService` RPCs
+(`pkg/api/grpc/proto/qrdbv1/qrdb.proto`), generated with `protoc` plus
+`protoc-gen-go`/`protoc-gen-go-grpc` via `make proto`. The Unix socket
+transport shares the TCP gRPC server's `qrdbServiceServer` implementation
+(`RegisterService`/`WithRegisterInvitationService`) and registers
+`RedeemInvitation` as a public method standalone, exactly as the TCP server
+does, so it is correct even when the Unix socket is enabled without TCP
+gRPC. `InviteUser` is authorized like `IssueCert`/`EnrollCert`:
+`authorizeCertTenant` against the caller's own tenant, no `(tenant, id)`
+target-table entry needed. Every transport — REST, native QUIC, gRPC, the
+Unix socket, MCP and the embedded transport — now carries the full surface.
+
 ## Invariants
 
 - **`ReconcileBuiltInRoles` is the ONLY writer to a built-in role's
@@ -742,15 +805,16 @@ when auth is disabled.
 
 Each gate is two steps with different conditions:
 
-1. **Authorization** — `roles:assign` in the target tenant, and again in the
-   `TenantID` of every `RoleBindings` entry. Writing a binding that names
-   tenant `acme` is an act of granting a role WITHIN `acme`, so holding
-   `roles:assign` only in the target user's own tenant must not be enough to
-   mint an `acme` grant. A nil `*AuthMiddleware` (no RBAC configured) skips
-   this step, as every `AuthMiddleware` gate does.
-2. **Validation** — never skipped. `role.ValidateAssignable` confirms every
-   `RoleIDs` entry exists and belongs to the target tenant, and every
-   binding's role to the binding's tenant. There is no exception for
+1. **Authorization** — `roles:assign` in the target tenant. A nil
+   `*AuthMiddleware` (no RBAC configured) skips this step, as every
+   `AuthMiddleware` gate does.
+2. **Validation** — never skipped. A `RoleBindings` entry naming any tenant
+   other than the target user's own is refused with
+   `*user.RoleBindingTenantError` (the store's own rule, below, applied
+   before any role is resolved; it runs after authorization, so a caller
+   refused `roles:assign` learns nothing about the binding). Then
+   `role.ValidateAssignable` confirms every `RoleIDs` entry and every
+   binding's role exists and belongs to the target tenant. There is no exception for
    built-ins: every tenant seeds its own copy, and the role store resolves an
    id only in the tenant that owns it, so a system-tenant built-in written
    onto a tenant-A principal would make every later decision for it fail as
@@ -765,13 +829,15 @@ holds on every path that writes a user and with or without the gate:
   compares it with `tenant.FromContext`, which is always normalized, so a
   binding stored as `""` would never match a request. The request's slice is
   copied, not edited.
-- **A non-system user's binding must name its own tenant.** RBAC's scope rule
-  refuses a non-system identity every request whose target is another tenant
-  before any binding is consulted, so a binding elsewhere is a grant that can
-  never apply. It is refused with `*user.RoleBindingTenantError`
-  (`InvalidArgument`, 400) rather than stored as one that reads as live. A
-  system-tenant user may hold bindings in any tenant: that is the cross-tenant
-  grant bindings exist to express.
+- **Every binding must name its holder's own tenant**, for a system-tenant
+  user exactly as for any other (owner ruling, superseding the cross-tenant
+  part of the original design), so no binding grants anything outside its
+  holder's tenant. Any other is refused with `*user.RoleBindingTenantError`
+  (`InvalidArgument`, 400). This does not by itself confine a system-tenant
+  Admin: `tenant.EffectiveTenant` / `tenant.OwningTenant` route a
+  system-tenant caller into the tenant a request names and the ScopeSelf rule
+  admits it there, so it can still administer a tenant's users and roles.
+  That gap is the strict tenant-isolation design's to close.
 
 `AssignRole` and `UnassignRole` pass the same gate on every transport,
 embedded included: `AssignRole` is `AuthorizeRoleAssignmentWrite` with the
@@ -821,30 +887,36 @@ role is stripped in the tenant that issued it.
 `pkg/auth/rbac/role_binding_test.go` proves it against a tenant-aware role
 double that fails, as production does, on an id from the wrong tenant.
 
-**Route-level checks resolve the target first.** A RoleBinding only counts
-when the check's target tenant is the one it names, so every transport
-resolves the request's target before its route-level permission check and
-authorizes against it (`pkg/auth/middleware/target.go`). The resolution lives
-in one place, `AuthMiddleware.ResolveTarget`, over a `Target` value each
-transport extracts from its own request shape:
-
-| Transport | Where the extractor is declared |
-|---|---|
-| REST | `routeTarget`/`routeIfTarget` beside the route (`RESTPathUser`, `RESTPathRole`, `RESTPathTenant`, `RESTQueryTenant`, and `RESTBody` over the handler's own request type, in `pkg/api/rest/targets.go`) |
-| gRPC and unix | `grpc.IdentityTargets`, registered on the shared middleware with `RegisterGRPCTargets` by both listeners |
-| QUIC | `identityTargets` in `pkg/api/quic/targets.go`, each decoding the handler's own wire request type, attached to the method registry |
-| MCP | `identityTargets` in `pkg/api/mcp/targets.go`, attached to the tool registry |
-| embedded | no route-level check of its own; its role-assignment gate authorizes against the record's tenant, and `AuthMiddleware.AuthorizeTarget` is the entry point for a typed call's target |
+**Entry checks run in the caller's own tenant.** Every transport's entry
+permission check — the REST route middleware, the gRPC and unix interceptor,
+QUIC's `AuthorizeQUIC`, MCP's `AuthorizeMCP`, and the embedded transport's
+per-operation `authorize`/`authorizeTenant`/`authorizeUserTarget`/
+`authorizeRoleTarget`/`authorizeIdentityTenant` helpers — authorizes in the
+tenant the authenticated context is bound to. There is no route-level
+re-targeting to a tenant, user or role the request names: with bindings
+confined to their holder's own tenant there is nothing for one to find. For
+a caller outside the system tenant, a request naming another tenant's user
+or role is answered not-found by the routed services, and one naming another
+tenant outright on a create, list or name lookup is refused by
+`tenant.EffectiveTenant` with `*tenant.CrossTenantDeniedError`
+(`PermissionDenied`). A system-tenant caller is routed into the tenant it
+names (the known gap in [architecture.md](architecture.md)). An operation
+whose handler acts on a tenant the request names re-checks at the handler, in
+that tenant: the per-tenant barrier operations (`AuthorizeTenantTarget`), a
+tenant's own record, quotas and entitlements, certificate issuance and
+revocation (`AuthorizeCertTenant`, `AuthorizeCertRevoke`), audit queries
+(`AuthorizeAuditQuery`), and enabling encryption
+(`AuthorizeBarrierEnableEncryption`).
 
 **The tenant-administration surface is the other place embedded had no
-check of its own, and did not even call `AuthorizeTarget`.** A security probe
+check of its own, and did not even call an ambient check.** A security probe
 found `GetTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`,
 `ReconcileDeletedTenants` and every `TenantBarrier*` operation on the
 embedded transport (`sdk/go/transport/embedded/tenant.go`,
 `tenant_seal.go`) performing no tenancy or permission check at all — a
 caller bound to one tenant could delete another's record, or the system
 tenant's. Each now calls the same helper the network transports resolve to:
-`AuthorizeTarget` with a `TenantTarget` for the record and
+`AuthMiddleware.AuthorizeTenant` for the record and
 `ScopeTenantOnly` barrier operations, `AuthorizeTenantUpdate` for a rename
 that may also change the isolation tier, `AuthorizeTenantBarrierInit` and
 `AuthorizeTenantBarrierSealedOp` for the two bootstrap/sealed-window
@@ -876,12 +948,13 @@ network route does. `sdk/go/transport/embedded/transport_authz_registry.go`
 is a transcription of `pkg/api/quic/dispatch.go`'s method→permission table
 (the one dispatcher that already states every operation's permission in
 one place) onto the embedded method names, checked with
-`AuthMiddleware.AuthorizeTarget(ctx, perm, SelfTarget())` for every
-ambient-self operation — the overwhelming majority, since QUIC's
-`identityTargets` registers a target override only for users, roles, and
-tenant barriers. `transport_identity_authz.go` carries the user/role target
-resolution (`UserTarget`/`RoleTarget`), mirroring `pkg/api/quic/targets.go`
-exactly. `transport_authz_coverage_test.go`'s
+`AuthMiddleware.AuthorizeTenant(ctx, tenant.FromContext(ctx), perm)` for
+every operation — ambient-self throughout, now that a RoleBinding is
+confined to its holder's own tenant and there is no per-request target left
+to resolve. `transport_identity_authz.go` carries the user/role entry
+checks (`authorizeUserTarget`/`authorizeRoleTarget`), which authorize in the
+caller's own tenant and rely on the routed user/role service
+(`tenant.OwningTenant`) to confine a by-id lookup. `transport_authz_coverage_test.go`'s
 `TestTransportClientAuthorizationSurface_CoversEveryMethod` widens the
 tenant-only buildgate above to reflect over every exported method of the
 concrete `*Transport` type (not `transport.Client`, which omits RAG,
@@ -985,35 +1058,19 @@ grant. `sdk/go/node`'s `AuthMiddlewareConfig` wiring of
 `WithRateLimitPolicies`/`WithRateLimiter` options) applies to both
 throttles on every transport of an embedded node, including this one.
 
-**A body is read the way its handler reads it.** A target named in a request
-body is decoded into the handler's OWN request type with the handler's own
-decoder (`encoding/json`), never looked up in a generic map: a struct field
-matches its key case-insensitively and the last occurrence wins, so a body
-carrying both `user_id` and `USER_ID` would otherwise be authorized on one
-value and acted on with the other. MCP reads an argument with the same
-`mcp.ParseString` its tools use, so an id sent as a JSON number and one sent
-as a string name the same user. A targeted REST body that does not decode is
-refused with 400, and one past `RESTTargetBodyLimit` (1 MiB) with 413; an
-undecodable QUIC payload is refused as `InvalidArgument`. Neither is ever
-authorized against the caller's own tenant instead. An empty body names the
-caller's own tenant, as every targeted handler treats it.
+The REST create, lookup and role-assignment routes (`POST /users`,
+`/users/lookup`, `/roles`, `/roles/reconcile`, `/roles/assign`,
+`/roles/unassign`) decode their bodies under `maxIAMRequestBytes` (1 MiB):
+a body past it is 413 (`RequestTooLargeError`) and one that does not decode
+400, before anything is written.
 
-A `UserTarget` or `RoleTarget` is resolved by reading the record through the
-same routed user or role service the handler uses, with the caller's own
-context. A record the caller cannot see — absent, or in a tenant the routed
-service hides from it — resolves to the caller's own tenant, and the handler
-then answers not-found as before; any other lookup failure refuses the
-request as unavailable rather than authorizing against a guess. The target
-is bound into a context used only for the decision: the handler still sees
-the caller's own tenant, so nothing downstream mistakes the target for the
-caller. Requests that name nothing — the data plane — are checked against the
-caller's own tenant, exactly as before, and so is the tenant-administration
-surface (a tenant's record, quotas and entitlements): those are the platform
-operator's, and a binding in a tenant must not reach its own plan. The
-binding fixture in `pkg/auth/authtest` is the one every transport's test
-drives, over the real built-in role store: a system-tenant operator whose
-only grant is a tenant-A binding to that tenant's Admin role is allowed the
-update of a tenant-A user and refused a tenant-B one.
+The binding fixture in `pkg/auth/authtest` is the one every transport's test
+drives, over the real built-in role store. Tenant A's administrator updates
+the tenant-A user and cannot see the tenant-B one
+(`TestTenantAdmin_ActsInOwnTenantOnly`), and writing a binding that names tenant B, or the system tenant, is refused with
+`*user.RoleBindingTenantError` and stored nowhere
+(`TestCrossTenantBinding_WriteRefused`). Both run on REST, gRPC, unix,
+QUIC, MCP and embedded.
 
 `Attributes` reaches `pkg/auth/abac` through `auth.Identity.Attributes`, a
 field kept separate from `Identity.Metadata` and exposed in its own
@@ -1243,6 +1300,16 @@ part of the on-disk contract. Changing it invalidates every existing binding.
 - **Authorization tests are security tests**: every transport must reach the
   same decision for the same identity and permission.
 - **Error tests** per function.
+- **Invitation redemption is tested against REAL tenant-routed user, role
+  and invitation stores** (`pkg/service.newInvitationFixture`), never a
+  double for the store itself: a replay, a cross-tenant redemption, the
+  inviter redeeming with their own key, a pinned invitation presented with
+  the wrong key, and a concurrent-activation race are all asserted through
+  the actual CAS commit path, not a mock that could assert the bug. Each
+  wired transport (REST, native QUIC, embedded, MCP) repeats the
+  unauthenticated-redemption and opaque-refusal assertions at its own
+  handler, so a transport that forgot to skip authentication for this one
+  verb fails there, not only in the shared service test.
 
 ## Observability
 

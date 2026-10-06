@@ -38,6 +38,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -47,6 +48,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
@@ -82,12 +84,15 @@ func newClusterJoinFlagsTestCA(t *testing.T) *cakey.SoftwareProvider {
 // fresh ECDSA P-256 key, mirroring clusterenroll's own unexported
 // buildJoinCSR closely enough to exercise the same signing path from this
 // package, which cannot call it directly.
-func buildClusterJoinFlagsTestCSR(t *testing.T) []byte {
+func buildClusterJoinFlagsTestCSR(t *testing.T, nodeURI string) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
+	u, err := url.Parse(nodeURI)
+	require.NoError(t, err)
 	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
 		Subject: pkix.Name{CommonName: "qrdb-node"},
+		URIs:    []*url.URL{u},
 	}, key)
 	require.NoError(t, err)
 	return der
@@ -135,12 +140,13 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(js.Stop)
 
-	csrDER := buildClusterJoinFlagsTestCSR(t)
+	nodeURI := spiffe.NodeURI(f.clusterTrustDomain, "member-1")
+	csrDER := buildClusterJoinFlagsTestCSR(t, nodeURI)
 	certPEM, err := clusterenroll.JoinCSR(context.Background(), &clusterenroll.JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
 		Token:      token,
-	}, csrDER, "")
+	}, csrDER, nodeURI)
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(certPEM)
@@ -179,7 +185,7 @@ func TestClusterJoinFlags_WrongTokenRefused(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(js.Stop)
 
-	csrDER := buildClusterJoinFlagsTestCSR(t)
+	csrDER := buildClusterJoinFlagsTestCSR(t, "")
 	_, err = clusterenroll.JoinCSR(context.Background(), &clusterenroll.JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
@@ -224,7 +230,7 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, store, clusterJoinFlagsTestTrustDomain, &req)
+		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, store, clusterJoinFlagsTestTrustDomain, &req, nil)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "failed to marshal response", http.StatusInternalServerError)
@@ -300,7 +306,7 @@ func TestBootstrapJoinFlags_WrongTokenFileRefused(t *testing.T) {
 		require.NoError(t, err)
 		var req clusterenroll.JoinRequest
 		require.NoError(t, json.Unmarshal(body, &req))
-		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, store, clusterJoinFlagsTestTrustDomain, &req)
+		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, store, clusterJoinFlagsTestTrustDomain, &req, nil)
 		respBody, err := json.Marshal(resp)
 		require.NoError(t, err)
 		w.Header().Set("Content-Type", "application/json")

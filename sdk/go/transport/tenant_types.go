@@ -343,6 +343,30 @@ type TenantBarrierInitRequest struct {
 	// "passphrase", "none", "shamir", "tpm2", "pkcs11", "aws-kms",
 	// "gcp-kms", "azure-kv", "vault").
 	Strategy string `json:"strategy,omitempty"`
+
+	// Officers is the inline Shamir share-holder roster to validate and
+	// register atomically with initialization, through the same holder
+	// engine standalone officer registration (TenantBarrierOfficerRegister)
+	// uses -- mirroring how `qrdb init` takes the system barrier's own
+	// officer roster inline, because a dedicated tenant's own IAM is
+	// encrypted behind the very barrier its officers exist to help
+	// initialize. Refused with a typed error on any strategy but Shamir;
+	// nil-equivalent there. Its length must equal Shares.
+	Officers []OfficerRegisterRequest `json:"officers,omitempty"`
+
+	// Policy is the factor policy the officers in Officers enrol under
+	// ("" selects the holder engine's default, "designated"). Ignored when
+	// Officers is empty.
+	Policy string `json:"policy,omitempty"`
+}
+
+// TenantBarrierHolderCert is the certificate issued to one officer of an
+// inline Shamir roster, registered atomically with the tenant barrier's own
+// initialization (TenantBarrierInitRequest.Officers).
+type TenantBarrierHolderCert struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	CertPEM  string `json:"cert_pem"`
 }
 
 // TenantBarrierInitResponse contains the outcome of a tenant barrier
@@ -367,6 +391,11 @@ type TenantBarrierInitResponse struct {
 	// ShareCount is the number of shares successfully sealed to officer
 	// enclaves. Zero for non-Shamir strategies.
 	ShareCount int `json:"share_count,omitempty"`
+
+	// Holders carries the certificate issued to each officer in an inline
+	// Shamir roster (TenantBarrierInitRequest.Officers), in roster order.
+	// Empty when no roster was supplied.
+	Holders []TenantBarrierHolderCert `json:"holders,omitempty"`
 }
 
 // UpdateTenantQuotasRequest contains parameters for updating tenant quotas.

@@ -36,6 +36,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -338,6 +339,96 @@ func TestJoin_SurvivesFirstNodeLoss(t *testing.T) {
 	}
 }
 
+// TestJoin_TokenlessApprovalQueue_PollsUntilApproved drives the full
+// client+server loop for a joiner configured with NO join token: Join
+// submits the CSR, gets back *JoinPendingError on the wire (not a failure),
+// and keeps polling at JoinApprovalPollInterval until an operator calls
+// ApproveJoinRequest against the SAME replicated store -- at which point
+// the very next poll comes back with a leaf chained to the cluster CA.
+func TestJoin_TokenlessApprovalQueue_PollsUntilApproved(t *testing.T) {
+	resetJoinAttemptGuardForTest(t)
+
+	store := kvstoretest.NewGuardedMemoryStore()
+	barrier := newMockBarrier()
+	provider := clusterca.NewProvider(store, barrier)
+	if err := provider.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize cluster CA: %v", err)
+	}
+	caCert, err := provider.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	caCertPEM, err := clusterca.CACertPEM(context.Background(), provider)
+	if err != nil {
+		t.Fatalf("CACertPEM: %v", err)
+	}
+
+	member := startClusterMember(t, provider, caCertPEM, store)
+	bootstrap := member.bootstrap("")
+	bootstrap.JoinApprovalPollInterval = 20 * time.Millisecond
+
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63199",
+		TrustDomain: testTrustDomain,
+		DataDir:     t.TempDir(),
+		Bootstrap:   bootstrap,
+	}
+
+	type joinResult struct {
+		mat *clustertls.Material
+		err error
+	}
+	resultCh := make(chan joinResult, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() {
+		mat, err := Join(ctx, opts, discardLogger())
+		resultCh <- joinResult{mat, err}
+	}()
+
+	// Wait for the CSR to actually land in the queue, then approve it --
+	// exactly the operator action an admin CLI would trigger.
+	deadline := time.Now().Add(5 * time.Second)
+	var requestID string
+	for time.Now().Before(deadline) {
+		pending, err := ListPendingJoinRequests(context.Background(), store)
+		if err != nil {
+			t.Fatalf("ListPendingJoinRequests: %v", err)
+		}
+		if len(pending) == 1 {
+			requestID = pending[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if requestID == "" {
+		t.Fatal("the tokenless CSR never appeared in the pending queue")
+	}
+	if _, err := ApproveJoinRequest(context.Background(), store, testTrustDomain, requestID, "63199", "operator-1"); err != nil {
+		t.Fatalf("ApproveJoinRequest: %v", err)
+	}
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			t.Fatalf("Join after approval failed: %v", res.err)
+		}
+		leafBlock, _ := pem.Decode(res.mat.CertPEM)
+		if leafBlock == nil {
+			t.Fatal("joined material has no leaf certificate PEM")
+		}
+		leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+		if err != nil {
+			t.Fatalf("ParseCertificate: %v", err)
+		}
+		if err := leaf.CheckSignatureFrom(caCert); err != nil {
+			t.Fatalf("the approved node's leaf does not chain to the cluster CA: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Join never returned after approval")
+	}
+}
+
 // TestJoin_SPKIDirectEndToEnd drives Join's SPKI/Direct branch end to end:
 // TestJoin_SurvivesFirstNodeLoss above exercises the Noise_NK branch, but
 // Join itself has two independent branches (joinNoiseConfigured selects
@@ -367,7 +458,7 @@ func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req)
+		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req, nil)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "marshal failed", http.StatusInternalServerError)
@@ -454,7 +545,7 @@ func TestJoin_RefusesLeafForWrongAnchor(t *testing.T) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := HandleJoinRequest(r.Context(), wrongProvider, store, testTrustDomain, &req)
+		resp := HandleJoinRequest(r.Context(), wrongProvider, store, testTrustDomain, &req, nil)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "marshal failed", http.StatusInternalServerError)

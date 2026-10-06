@@ -144,6 +144,7 @@ type Server struct {
 	userAuthFactorSvc service.UserAuthFactorServicer
 	certProv          cert.CertProvider
 	certEnrollment    service.CertEnrollmentServicer
+	invitations       service.InvitationServicer
 	tenantOnboarding  service.TenantOnboardingServicer
 	authMW            *authmw.AuthMiddleware
 	corsConfig        *CORSConfig
@@ -239,6 +240,11 @@ type Server struct {
 	clusterJoinProvider    cakey.Provider
 	clusterJoinStore       kvstore.AtomicKVStore
 	clusterJoinTrustDomain string
+
+	// clusterJoinAdvertiser publishes a pre-membership feature advertisement
+	// for a joiner once its leaf is issued (WithClusterJoinAdvertiser). Nil
+	// means this signing member cannot (no lease-capable store).
+	clusterJoinAdvertiser clusterenroll.FeatureAdvertiser
 
 	onEtcdUpdated func(dbName string, cfg *database.EtcdConfig) error
 	webUI         http.Handler      // optional embedded web UI file server
@@ -728,6 +734,12 @@ func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(s *Server) { s.certEnrollment = svc }
 }
 
+// WithInvitations attaches the invitation self-enrolment service behind
+// POST /users/invite and the PUBLIC POST /invitations/redeem.
+func WithInvitations(svc service.InvitationServicer) ServerOption {
+	return func(s *Server) { s.invitations = svc }
+}
+
 // WithTenantOnboarding attaches the service behind POST /v1/tenants: a tenant
 // is created with its first admin's login credential, or not at all.
 func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
@@ -815,6 +827,19 @@ func WithClusterJoin(provider cakey.Provider, store kvstore.AtomicKVStore, trust
 		s.clusterJoinProvider = provider
 		s.clusterJoinStore = store
 		s.clusterJoinTrustDomain = trustDomain
+	}
+}
+
+// WithClusterJoinAdvertiser configures the SPKI/Direct join route to publish
+// a pre-membership feature advertisement for a joiner once its leaf is
+// issued -- the SAME capability clusterenroll.JoinServerOptions.Advertiser
+// gives the Noise_NK route, over this binding instead. Nil (the default) is
+// the prior behavior: the join succeeds, and member add refuses the node
+// once any feature has activated until the node itself starts and
+// advertises.
+func WithClusterJoinAdvertiser(advertiser clusterenroll.FeatureAdvertiser) ServerOption {
+	return func(s *Server) {
+		s.clusterJoinAdvertiser = advertiser
 	}
 }
 
@@ -1518,25 +1543,6 @@ func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.P
 	s.recordStaticRoute(method, pattern, h)
 }
 
-// routeTarget is route for a route whose request names the tenant it acts on:
-// target extracts that tenant, and the middleware authorizes perm against it
-// rather than against the caller's own tenant (see authmw.Target).
-func (s *Server) routeTarget(method, pattern string, perm permission.Permission, target authmw.RESTTargetFunc, h http.HandlerFunc) {
-	s.routeIfTarget(true, method, pattern, perm, target, h)
-}
-
-// routeIfTarget is routeIf plus a target extractor. The extractor is attached
-// only to a route this server registered: a module that already claimed the
-// route keeps its own contract.
-func (s *Server) routeIfTarget(enabled bool, method, pattern string, perm permission.Permission, target authmw.RESTTargetFunc, h http.HandlerFunc) {
-	if s.routePerms.Covered(method, pattern) {
-		s.routeIf(enabled, method, pattern, perm, h)
-		return
-	}
-	s.routeIf(enabled, method, pattern, perm, h)
-	s.routePerms.SetTarget(method, pattern, target)
-}
-
 // public registers a route that is reachable WITHOUT authentication. The
 // route must also be on RESTMiddleware's pre-authentication exact-path
 // allowlist; the registry marker makes the exemption explicit for the
@@ -1773,7 +1779,9 @@ func (s *Server) registerRoutes() {
 	s.routeIf(adminOn, http.MethodPost, "/drain", permission.AdminDrain, s.handleDrain)
 	s.routeIf(adminOn, http.MethodGet, "/capabilities", permission.AdminCapabilities, s.handleCapabilities)
 	s.routeIf(adminOn, http.MethodPost, "/membership/add", permission.AdminAddMember, s.handleMembershipAdd)
+	s.routeIf(adminOn, http.MethodPost, "/membership/add-observer", permission.AdminAddMember, s.handleMembershipAddObserver)
 	s.routeIf(adminOn, http.MethodPost, "/membership/remove", permission.AdminRemoveMember, s.handleMembershipRemove)
+	s.routeIf(adminOn, http.MethodPost, "/membership/promote", permission.AdminAddMember, s.handleMembershipPromote)
 	s.routeIf(adminOn, http.MethodPost, "/snapshot", permission.AdminSnapshot, s.handleSnapshot)
 	s.routeIf(adminOn, http.MethodPost, "/admin/shards", permission.AdminStartShard, s.handleStartShard)
 	s.routeIf(adminOn, http.MethodGet, "/admin/topology", permission.AdminTopology, s.handleGetTopology)
@@ -1793,6 +1801,26 @@ func (s *Server) registerRoutes() {
 	// service.ClusterJoinTokenMinter (not configured for member-side CSR
 	// join), so it is attached whenever an admin service exists at all.
 	s.routeIf(adminOn, http.MethodPost, "/v1/cluster/join-tokens", permission.ClusterJoinToken, s.handleMintJoinToken)
+
+	// Lists, approves and rejects CSRs a joiner queued through the
+	// tokenless member-side CSR approval path (see pkg/clusterenroll's
+	// pending_join.go). Same ScopeCross, platform-only decision
+	// cluster:join_token already gates for minting a token. Each handler
+	// reports 501 when s.adminSvc does not implement
+	// service.JoinRequestReviewer, so these are attached whenever an admin
+	// service exists at all.
+	s.routeIf(adminOn, http.MethodGet, "/v1/cluster/join-requests", permission.ClusterJoinToken, s.handleListPendingJoinRequests)
+	s.routeIf(adminOn, http.MethodPost, "/v1/cluster/join-requests/approve", permission.ClusterJoinToken, s.handleApproveJoinRequest)
+	s.routeIf(adminOn, http.MethodPost, "/v1/cluster/join-requests/reject", permission.ClusterJoinToken, s.handleRejectJoinRequest)
+
+	// Permanently refuses any future admission for a node identity (see
+	// clusterenroll.RetireJoinIdentity): a fresh mint, or a renewal of one
+	// whose admission has lapsed. permission.ClusterJoinIdentityRetire is
+	// ScopeCross and platform-only, the same cluster:join_token precedent.
+	// The handler itself reports 501 when s.adminSvc does not implement
+	// service.JoinIdentityRetirer, so it is attached whenever an admin
+	// service exists at all.
+	s.routeIf(adminOn, http.MethodPost, "/v1/cluster/join-identities/retire", permission.ClusterJoinIdentityRetire, s.handleRetireJoinIdentity)
 
 	// /metrics requires authentication but no specific permission: any
 	// authenticated peer may scrape.
@@ -2012,40 +2040,40 @@ func (s *Server) registerRoutes() {
 
 	// User management routes.
 	userOn := s.userSvc != nil
-	s.routeIfTarget(userOn, http.MethodPost, "/users", permission.UsersCreate, createUserTarget, s.handleCreateUser)
-	s.routeIfTarget(userOn, http.MethodGet, "/users/list", permission.UsersList, authmw.RESTQueryTenant("tenantID"), s.handleListUsers)
+	s.routeIf(userOn, http.MethodPost, "/users", permission.UsersCreate, s.handleCreateUser)
+	s.routeIf(userOn, http.MethodGet, "/users/list", permission.UsersList, s.handleListUsers)
 
 	// User path-param routes (the handler nil-checks the user service).
-	s.routeTarget(http.MethodGet, "/users/{id}", permission.UsersRead, authmw.RESTPathUser("id"), s.handleUser)
-	s.routeTarget(http.MethodPut, "/users/{id}", permission.UsersUpdate, authmw.RESTPathUser("id"), s.handleUser)
-	s.routeTarget(http.MethodDelete, "/users/{id}", permission.UsersDelete, authmw.RESTPathUser("id"), s.handleUser)
-	s.routeTarget(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, authmw.RESTPathUser("id"), s.handleUser)
-	s.routeTarget(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, authmw.RESTPathUser("id"), s.handleUser)
-	s.routeTarget(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, authmw.RESTPathUser("id"), s.handleUser)
-	s.routeTarget(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, authmw.RESTPathUser("id"), s.handleUser)
+	s.route(http.MethodGet, "/users/{id}", permission.UsersRead, s.handleUser)
+	s.route(http.MethodPut, "/users/{id}", permission.UsersUpdate, s.handleUser)
+	s.route(http.MethodDelete, "/users/{id}", permission.UsersDelete, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, s.handleUser)
+	s.route(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, s.handleUser)
 	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)
-	s.routeTarget(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, authmw.RESTQueryTenant("tenantID"), s.handleUser)
-	s.routeTarget(http.MethodPost, "/users/lookup", permission.UsersRead, lookupUserTarget, s.handleUser)
+	s.route(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, s.handleUser)
+	s.route(http.MethodPost, "/users/lookup", permission.UsersRead, s.handleUser)
 
 	// Role management routes.
 	rolesOn := s.roleSvc != nil
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, createRoleTarget, s.handleCreateRole)
-	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, authmw.RESTQueryTenant("tenantID"), s.handleListRoles)
-	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, authmw.RESTQueryTenant("tenant_id"), s.handleGetRoleByName)
+	s.routeIf(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, s.handleCreateRole)
+	s.routeIf(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, s.handleListRoles)
+	s.routeIf(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, s.handleGetRoleByName)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/resolve-permissions", permission.PermissionsResolve, s.handleResolvePermissions)
 	// Reconcile carries roles:create, not a verb of its own. Reconciliation IS
 	// the seeding operation applied to an existing tenant, and a dedicated
 	// permission would be missing from every role seeded before it existed —
 	// so nobody would hold the grant needed to repair that exact absence.
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, reconcileRolesTarget, s.handleReconcileRoles)
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, assignRoleTarget, s.handleAssignRole)
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, assignRoleTarget, s.handleUnassignRole)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, s.handleReconcileRoles)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
 
 	// Role path-param routes (the handler nil-checks the role service).
-	s.routeTarget(http.MethodGet, "/roles/{id}", permission.RolesRead, authmw.RESTPathRole("id"), s.handleRole)
-	s.routeTarget(http.MethodPut, "/roles/{id}", permission.RolesUpdate, authmw.RESTPathRole("id"), s.handleRole)
-	s.routeTarget(http.MethodDelete, "/roles/{id}", permission.RolesDelete, authmw.RESTPathRole("id"), s.handleRole)
+	s.route(http.MethodGet, "/roles/{id}", permission.RolesRead, s.handleRole)
+	s.route(http.MethodPut, "/roles/{id}", permission.RolesUpdate, s.handleRole)
+	s.route(http.MethodDelete, "/roles/{id}", permission.RolesDelete, s.handleRole)
 
 	// Without a role service the legacy dispatcher still routed the /roles/
 	// keyword paths to handleRole, which reports 501. Attach the same
@@ -2097,9 +2125,9 @@ func (s *Server) registerRoutes() {
 	// bring-your-own login certificates. The tenant is the path's, and every
 	// verb is ScopeSelfStrict -- a tenant manages its own anchors only.
 	anchorsOn := s.certEnrollment != nil
-	s.routeIfTarget(anchorsOn, http.MethodGet, "/v1/tenants/{id}/trust-anchors", permission.TrustAnchorsList, authmw.RESTPathTenant("id"), s.handleListTrustAnchors)
-	s.routeIfTarget(anchorsOn, http.MethodPost, "/v1/tenants/{id}/trust-anchors", permission.TrustAnchorsAdd, authmw.RESTPathTenant("id"), s.handleAddTrustAnchors)
-	s.routeIfTarget(anchorsOn, http.MethodDelete, "/v1/tenants/{id}/trust-anchors/{fingerprint}", permission.TrustAnchorsRemove, authmw.RESTPathTenant("id"), s.handleRemoveTrustAnchor)
+	s.routeIf(anchorsOn, http.MethodGet, "/v1/tenants/{id}/trust-anchors", permission.TrustAnchorsList, s.handleListTrustAnchors)
+	s.routeIf(anchorsOn, http.MethodPost, "/v1/tenants/{id}/trust-anchors", permission.TrustAnchorsAdd, s.handleAddTrustAnchors)
+	s.routeIf(anchorsOn, http.MethodDelete, "/v1/tenants/{id}/trust-anchors/{fingerprint}", permission.TrustAnchorsRemove, s.handleRemoveTrustAnchor)
 	s.route(http.MethodGet, "/v1/tenants/{id}", permission.TenantsRead, s.handleTenantByID)
 	s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, s.handleTenantByID)
 	s.route(http.MethodDelete, "/v1/tenants/{id}", permission.TenantsDelete, s.handleTenantByID)
@@ -2117,7 +2145,7 @@ func (s *Server) registerRoutes() {
 	// ONLY while the middleware reports the tenant's IAM as unreachable
 	// (middleware.IdentityIAMSealed); see authorizeTenantBarrierSealedOp.
 	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/status", permission.IdentityGated, s.handleTenantByID)
-	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, s.handleTenantByID)
 	// barrier/init is IdentityGated at the ROUTE level because its real
 	// authorization is conditional and lives in the handler
 	// (authorizeTenantBarrierInit): an initialized barrier demands the full
@@ -2128,14 +2156,14 @@ func (s *Server) registerRoutes() {
 	// role able to satisfy the RBAC check can exist before the call.
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
-	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, authmw.RESTPathTenant("id"), s.handleTenantByID)
-	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/quorum/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/quorum/submit", permission.IdentityGated, s.handleTenantByID)
-	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/rekey/start", permission.TenantBarrierRekey, authmw.RESTPathTenant("id"), s.handleTenantByID)
-	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/officers/revoke", permission.TenantBarrierOfficerRevoke, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/rekey/start", permission.TenantBarrierRekey, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/revoke", permission.TenantBarrierOfficerRevoke, s.handleTenantByID)
 
 	// The legacy dispatcher routed the bare "/v1/tenants/" (trailing slash,
 	// empty id) to handleTenantByID, which reports 400 missing-parameter.
@@ -2186,6 +2214,13 @@ func (s *Server) registerRoutes() {
 	s.routeIf(enrollOn, http.MethodPost, "/certs/enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.routeIf(certsOn, http.MethodPost, "/certs/revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.routeIf(certsOn, http.MethodGet, "/certs/list", permission.CertsList, s.handleListCerts)
+
+	// Invitation self-enrolment: users:invite creates the pending account and
+	// its one-time token; redemption is PUBLIC -- the token is the authority,
+	// and the redeemer holds no credential to authenticate with.
+	invitationsOn := s.invitations != nil
+	s.routeIf(invitationsOn, http.MethodPost, "/users/invite", permission.UsersInvite, s.handleInviteUser)
+	s.publicIf(invitationsOn, http.MethodPost, "/invitations/redeem", s.handleRedeemInvitation)
 
 	// CA bootstrap endpoint (public, no auth required: joining nodes fetch
 	// the trust anchor before they hold credentials).
@@ -2380,7 +2415,7 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := clusterenroll.HandleJoinRequest(r.Context(), s.clusterJoinProvider, s.clusterJoinStore, s.clusterJoinTrustDomain, &req)
+	resp := clusterenroll.HandleJoinRequest(r.Context(), s.clusterJoinProvider, s.clusterJoinStore, s.clusterJoinTrustDomain, &req, s.clusterJoinAdvertiser)
 	if resp.Error != "" {
 		clusterenroll.RecordJoinAttemptFailure(source)
 	} else {

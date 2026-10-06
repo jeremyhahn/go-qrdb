@@ -72,6 +72,22 @@ type Entity struct {
 
 	// CreatedAt is when the invitation was issued.
 	CreatedAt time.Time `json:"created_at"`
+
+	// KeyPin, when set, is the SPKI thumbprint (base64url SHA-256 of the
+	// SubjectPublicKeyInfo) of the ONLY key this invitation may enrol. It is
+	// what makes a stolen token useless: the thief would also need the
+	// invited user's private key. Empty pins nothing.
+	KeyPin string `json:"key_pin,omitempty"`
+}
+
+// CreateOption configures an invitation being created.
+type CreateOption func(*Entity)
+
+// WithKeyPin pins the invitation to the key whose SPKI thumbprint is pin
+// (see Entity.KeyPin). The redeemer -- not this package -- enforces it; an
+// empty pin is ignored.
+func WithKeyPin(pin string) CreateOption {
+	return func(e *Entity) { e.KeyPin = pin }
 }
 
 // EntityID returns the entity's unique identifier.

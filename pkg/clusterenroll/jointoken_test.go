@@ -288,7 +288,7 @@ func TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T) {
 func TestMintJoinToken_ExistingMemberRefused(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	identity := spiffe.NodeIdentity{TrustDomain: "test.cluster", NodeID: "node-1"}
-	if err := MarkJoinIdentityAdmitted(context.Background(), store, identity.String()); err != nil {
+	if err := MarkJoinIdentityAdmitted(context.Background(), store, identity.String(), time.Now().Add(time.Hour), ""); err != nil {
 		t.Fatalf("MarkJoinIdentityAdmitted: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestMintJoinToken_ExistingMemberRefused(t *testing.T) {
 // *JoinTokenStoreError.
 func TestMarkJoinIdentityAdmitted_PutIfAbsentErrorSurfacesTyped(t *testing.T) {
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
-	err := MarkJoinIdentityAdmitted(context.Background(), store, "spiffe://test.cluster/node/node-1")
+	err := MarkJoinIdentityAdmitted(context.Background(), store, "spiffe://test.cluster/node/node-1", time.Now().Add(time.Hour), "")
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("MarkJoinIdentityAdmitted with a failing PutIfAbsent = %v, want *JoinTokenStoreError", err)
@@ -336,7 +336,7 @@ func TestConsumeJoinToken_AlreadyAdmittedIdentityRefused(t *testing.T) {
 	// Mirrors HandleJoinRequest: the identity is marked admitted only
 	// after issuance would have succeeded -- ConsumeJoinToken itself never
 	// does this (see jointoken.go's doc comment).
-	if err := MarkJoinIdentityAdmitted(context.Background(), store, boundNodeURI); err != nil {
+	if err := MarkJoinIdentityAdmitted(context.Background(), store, boundNodeURI, time.Now().Add(time.Hour), ""); err != nil {
 		t.Fatalf("MarkJoinIdentityAdmitted: %v", err)
 	}
 
@@ -473,7 +473,7 @@ func TestPromoteJoinIdentityAdmitted_SwapsAReservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReserveJoinIdentity: %v", err)
 	}
-	if err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pending); err != nil {
+	if err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pending, time.Now().Add(time.Hour), ""); err != nil {
 		t.Fatalf("PromoteJoinIdentityAdmitted: %v", err)
 	}
 	// A second reservation attempt must now be refused: the identity is
@@ -493,7 +493,7 @@ func TestPromoteJoinIdentityAdmitted_LostReservationRefused(t *testing.T) {
 	// expects was never written (or was already released/promoted by
 	// someone else). The exact bytes passed do not matter -- the key
 	// itself is absent, so any CompareAndSwap against it fails.
-	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)))
+	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)), time.Now().Add(time.Hour), "")
 	var lostErr *JoinIdentityReservationLostError
 	if !errors.As(err, &lostErr) {
 		t.Fatalf("PromoteJoinIdentityAdmitted (no reservation) = %v, want *JoinIdentityReservationLostError", err)
@@ -505,7 +505,7 @@ func TestPromoteJoinIdentityAdmitted_LostReservationRefused(t *testing.T) {
 
 func TestPromoteJoinIdentityAdmitted_StoreErrorSurfacesTyped(t *testing.T) {
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndSwapOnPrefix: joinIdentityPrefix}
-	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)))
+	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1", pendingValue(time.Now().Add(time.Minute)), time.Now().Add(time.Hour), "")
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("PromoteJoinIdentityAdmitted (store error) = %v, want *JoinTokenStoreError", err)
@@ -535,7 +535,7 @@ func TestPromoteJoinIdentityAdmitted_RecoversWhenTheSwapCommittedDespiteAnError(
 		t.Fatalf("ReserveJoinIdentity: reserved=%v, err=%v", reserved, err)
 	}
 
-	if err := PromoteJoinIdentityAdmitted(ctx, store, nodeURI, pending); err != nil {
+	if err := PromoteJoinIdentityAdmitted(ctx, store, nodeURI, pending, time.Now().Add(time.Hour), ""); err != nil {
 		t.Fatalf("PromoteJoinIdentityAdmitted = %v, want nil: the swap committed despite the injected error, so this must recover and report success", err)
 	}
 
@@ -570,7 +570,7 @@ func TestPromoteJoinIdentityAdmitted_StillFailsWhenTheSwapNeverCommitted(t *test
 		t.Fatalf("ReserveJoinIdentity: reserved=%v, err=%v", reserved, err)
 	}
 
-	err = PromoteJoinIdentityAdmitted(ctx, store, nodeURI, pending)
+	err = PromoteJoinIdentityAdmitted(ctx, store, nodeURI, pending, time.Now().Add(time.Hour), "")
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("PromoteJoinIdentityAdmitted (swap never committed) = %v, want *JoinTokenStoreError", err)
@@ -592,7 +592,7 @@ func TestPromoteJoinIdentityAdmitted_SurvivesACanceledCallerContext(t *testing.T
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := PromoteJoinIdentityAdmitted(canceled, store, "node-1", pending); err != nil {
+	if err := PromoteJoinIdentityAdmitted(canceled, store, "node-1", pending, time.Now().Add(time.Hour), ""); err != nil {
 		t.Fatalf("PromoteJoinIdentityAdmitted with a canceled caller ctx: %v", err)
 	}
 }
@@ -750,6 +750,18 @@ func TestParsePendingDeadline(t *testing.T) {
 	}
 }
 
+func TestParseAdmitted_MalformedJSONRefused(t *testing.T) {
+	if _, ok := parseAdmitted([]byte(admittedValuePrefix + "not json")); ok {
+		t.Fatal("parseAdmitted treated a malformed admitted-prefixed value as parseable")
+	}
+}
+
+func TestParseRetired_MalformedJSONRefused(t *testing.T) {
+	if _, ok := parseRetired([]byte(retiredValuePrefix + "not json")); ok {
+		t.Fatal("parseRetired treated a malformed retired-prefixed value as parseable")
+	}
+}
+
 // assertJoinRefused fails the test unless err is *JoinRefusedError.
 func assertJoinRefused(t *testing.T, err error) {
 	t.Helper()
@@ -771,9 +783,12 @@ type faultyJoinStore struct {
 
 	failGetOnPrefix              string
 	failExistsOnPrefix           string
+	failPutOnPrefix              string
 	failPutIfAbsentOnPrefix      string
 	failCompareAndDeleteOnPrefix string
 	failCompareAndSwapOnPrefix   string
+	failListOnPrefix             string
+	failScanOnPrefix             string
 
 	forcePutIfAbsentFalseOnPrefix      string
 	forceCompareAndDeleteFalseOnPrefix string
@@ -794,11 +809,32 @@ func (f *faultyJoinStore) Get(ctx context.Context, key string) ([]byte, error) {
 	return f.AtomicKVStore.Get(ctx, key)
 }
 
+func (f *faultyJoinStore) Put(ctx context.Context, key string, value []byte) error {
+	if f.failPutOnPrefix != "" && strings.HasPrefix(key, f.failPutOnPrefix) {
+		return errInjectedFault
+	}
+	return f.AtomicKVStore.Put(ctx, key, value)
+}
+
 func (f *faultyJoinStore) Exists(ctx context.Context, key string) (bool, error) {
 	if f.failExistsOnPrefix != "" && strings.HasPrefix(key, f.failExistsOnPrefix) {
 		return false, errInjectedFault
 	}
 	return f.AtomicKVStore.Exists(ctx, key)
+}
+
+func (f *faultyJoinStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if f.failListOnPrefix != "" && strings.HasPrefix(prefix, f.failListOnPrefix) {
+		return nil, errInjectedFault
+	}
+	return f.AtomicKVStore.List(ctx, prefix)
+}
+
+func (f *faultyJoinStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	if f.failScanOnPrefix != "" && strings.HasPrefix(prefix, f.failScanOnPrefix) {
+		return errInjectedFault
+	}
+	return f.AtomicKVStore.Scan(ctx, prefix, fn)
 }
 
 func (f *faultyJoinStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {

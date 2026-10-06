@@ -98,7 +98,7 @@ func (m *mockTenantSvc) UpdateEntitlements(ctx context.Context, id string, e *qu
 func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id string, _ []byte, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
-func (m *mockTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, id string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, id string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
 func (m *mockTenantSvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {

@@ -109,19 +109,33 @@ func TestUpdateUser_OwnTenantBindingOnTenantUserAccepted(t *testing.T) {
 
 // A system-tenant user may act in any tenant, so a binding naming another
 // tenant is exactly the cross-tenant grant bindings exist to express.
-func TestUpdateUser_CrossTenantBindingOnSystemUserAccepted(t *testing.T) {
+// A RoleBinding names only its holder's own tenant, the system tenant
+// included, so no binding grants anything outside its holder's tenant. A
+// system-tenant user's binding naming a tenant is refused at write exactly
+// as a tenant user's is.
+func TestUpdateUser_CrossTenantBindingOnSystemUserRefused(t *testing.T) {
 	svc := newTestStore(t)
+	ctx := context.Background()
 	u := createInTenant(t, svc, tenantid.System, "ops")
 
-	got, err := svc.UpdateUser(context.Background(), &UpdateUserRequest{
+	_, err := svc.UpdateUser(ctx, &UpdateUserRequest{
 		ID:           u.ID,
-		RoleBindings: []RoleBinding{{RoleID: "admin", TenantID: "acme"}, {RoleID: "admin", TenantID: "globex"}},
+		RoleBindings: []RoleBinding{{RoleID: "admin", TenantID: "acme"}},
 	})
-	if err != nil {
-		t.Fatalf("UpdateUser: %v", err)
+	var be *RoleBindingTenantError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected *RoleBindingTenantError, got %T: %v", err, err)
 	}
-	if len(got.RoleBindings) != 2 {
-		t.Errorf("RoleBindings: got %+v, want both", got.RoleBindings)
+	if be.UserTenantID != tenantid.System || be.BindingTenantID != "acme" {
+		t.Errorf("error fields: got user=%q binding=%q", be.UserTenantID, be.BindingTenantID)
+	}
+
+	got, gerr := svc.GetUser(ctx, u.ID)
+	if gerr != nil {
+		t.Fatalf("GetUser: %v", gerr)
+	}
+	if len(got.RoleBindings) != 0 {
+		t.Errorf("refused write was stored: %+v", got.RoleBindings)
 	}
 }
 
@@ -135,7 +149,7 @@ func TestUpdateUser_BindingTenantNormalizedOnWrite(t *testing.T) {
 
 	req := &UpdateUserRequest{
 		ID:           u.ID,
-		RoleBindings: []RoleBinding{{RoleID: "admin", TenantID: ""}, {RoleID: "admin", TenantID: "acme"}},
+		RoleBindings: []RoleBinding{{RoleID: "admin", TenantID: ""}, {RoleID: "auditor", TenantID: tenantid.System}},
 	}
 	if _, err := svc.UpdateUser(ctx, req); err != nil {
 		t.Fatalf("UpdateUser: %v", err)
@@ -144,7 +158,7 @@ func TestUpdateUser_BindingTenantNormalizedOnWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	want := []RoleBinding{{RoleID: "admin", TenantID: tenantid.System}, {RoleID: "admin", TenantID: "acme"}}
+	want := []RoleBinding{{RoleID: "admin", TenantID: tenantid.System}, {RoleID: "auditor", TenantID: tenantid.System}}
 	if !reflect.DeepEqual(got.RoleBindings, want) {
 		t.Errorf("stored RoleBindings: got %+v, want %+v", got.RoleBindings, want)
 	}
@@ -155,7 +169,7 @@ func TestUpdateUser_BindingTenantNormalizedOnWrite(t *testing.T) {
 
 func TestRoleBindingTenantError_Message(t *testing.T) {
 	e := &RoleBindingTenantError{UserID: 7, UserTenantID: "acme", BindingTenantID: "globex"}
-	want := "user: role binding in tenant globex can never apply to user 7 of tenant acme: only a system-tenant user may hold a binding outside its own tenant"
+	want := "user: role binding in tenant globex refused for user 7 of tenant acme: a role binding may name only its holder's own tenant"
 	if e.Error() != want {
 		t.Errorf("Error():\n got %q\nwant %q", e.Error(), want)
 	}

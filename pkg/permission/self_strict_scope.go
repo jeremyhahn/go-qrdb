@@ -50,6 +50,14 @@ func selfStrictPermissions() []Permission {
 		CertsRevoke,
 		CertsIssue,
 
+		// users:invite
+		//
+		// An invitation is redeemed for a login credential, so inviting
+		// into another tenant would be choosing who may log in there. Like
+		// certs:issue it stays inside the caller's own tenant, the system
+		// tenant included.
+		UsersInvite,
+
 		// trust anchors
 		//
 		// A tenant's trust anchors decide which outside CAs may vouch for its

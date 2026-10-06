@@ -659,7 +659,7 @@ func (s *kvTenantService) TenantBarrierInit(_ context.Context, _ string, _ []byt
 
 // TenantBarrierInitWithStrategy returns ErrBarrierNotEnabled. The seal
 // subsystem is not configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*TenantBarrierInitResult, error) {
+func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *TenantBarrierShamirRoster) (*TenantBarrierInitResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
 

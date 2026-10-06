@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"testing"
@@ -72,6 +73,86 @@ func TestComputeSPKIThumbprint_KeyStability(t *testing.T) {
 	if ComputeSPKIThumbprint(nil) != "" {
 		t.Fatal("nil cert must yield empty thumbprint")
 	}
+}
+
+// TestPublicKeySPKIThumbprint_MatchesCertificate pins the equivalence that
+// makes it safe to pin an invitation to a CSR's key before a certificate for
+// it exists: the thumbprint computed from the bare public key must equal the
+// one computed from a certificate later issued over that same key.
+func TestPublicKeySPKIThumbprint_MatchesCertificate(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	cert := makeCertForKey(t, key, "alice", 1)
+
+	got, err := PublicKeySPKIThumbprint(key.Public())
+	if err != nil {
+		t.Fatalf("PublicKeySPKIThumbprint: %v", err)
+	}
+	if want := ComputeSPKIThumbprint(cert); got != want {
+		t.Fatalf("PublicKeySPKIThumbprint = %q, want %q (ComputeSPKIThumbprint)", got, want)
+	}
+}
+
+// TestPublicKeySPKIThumbprint_RejectsUnencodableKey covers the error path: a
+// public key type x509.MarshalPKIXPublicKey cannot encode as a
+// SubjectPublicKeyInfo must come back as a typed *ValidationError, not a
+// panic or a silent empty thumbprint.
+func TestPublicKeySPKIThumbprint_RejectsUnencodableKey(t *testing.T) {
+	_, err := PublicKeySPKIThumbprint("not-a-public-key")
+	if err == nil {
+		t.Fatal("expected an error for an unencodable public key, got nil")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("error = %v (%T), want *ValidationError", err, err)
+	}
+	if verr.Field != "public_key" {
+		t.Errorf("Field = %q, want %q", verr.Field, "public_key")
+	}
+}
+
+// TestComputeSPKIThumbprintFromCertPEM_MatchesCertificate pins the PEM-input
+// path to the same algorithm ComputeSPKIThumbprint uses directly.
+func TestComputeSPKIThumbprintFromCertPEM_MatchesCertificate(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	cert := makeCertForKey(t, key, "alice", 1)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+
+	got, err := ComputeSPKIThumbprintFromCertPEM(certPEM)
+	if err != nil {
+		t.Fatalf("ComputeSPKIThumbprintFromCertPEM: %v", err)
+	}
+	if want := ComputeSPKIThumbprint(cert); got != want {
+		t.Fatalf("ComputeSPKIThumbprintFromCertPEM = %q, want %q", got, want)
+	}
+}
+
+// TestComputeSPKIThumbprintFromCertPEM_Refusals covers both ways the input
+// can fail to parse: no PEM block at all, and a PEM block that is not a
+// valid DER certificate.
+func TestComputeSPKIThumbprintFromCertPEM_Refusals(t *testing.T) {
+	t.Run("no PEM block", func(t *testing.T) {
+		_, err := ComputeSPKIThumbprintFromCertPEM([]byte("not pem at all"))
+		var nerr *NoCertificateBlockError
+		if !errors.As(err, &nerr) {
+			t.Fatalf("error = %v (%T), want *NoCertificateBlockError", err, err)
+		}
+		if nerr.Error() == "" {
+			t.Error("expected a non-empty error message")
+		}
+	})
+
+	t.Run("malformed DER", func(t *testing.T) {
+		badPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not-a-real-certificate")})
+		if _, err := ComputeSPKIThumbprintFromCertPEM(badPEM); err == nil {
+			t.Fatal("expected an error for malformed certificate DER, got nil")
+		}
+	})
 }
 
 // TestUser_CertBindingHelpers exercises AddCertBinding (dedup), HasCertBinding,

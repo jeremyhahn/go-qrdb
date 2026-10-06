@@ -96,8 +96,11 @@ func TestNode_EnableEncryption_TenantScope_AfterSystemRecycle(t *testing.T) {
 	require.NoError(t, err, "tenant-scope migration after a completed system recycle")
 
 	// And the tenant's data survives under its newly keyed barrier.
+	// The migration reopened the tenant's Host, whose fresh leader refuses a
+	// linearizable read until its first entry of the term commits.
 	svc2, err := n.tenantHosts.Services(ctx, "acme")
 	require.NoError(t, err)
+	awaitReadIndexReady(ctx, t, svc2.KV, "k")
 	got, err := svc2.KV.Get(ctx, "k")
 	require.NoError(t, err)
 	require.Equal(t, "v", string(got))

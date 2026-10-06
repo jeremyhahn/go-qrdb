@@ -315,6 +315,12 @@ func (cc *ClusterClient) RemoveReplica(ctx context.Context, shardID, replicaID u
 	return cc.admin.RemoveMember(ctx, shardID, replicaID)
 }
 
+// PromoteReplica promotes a committed observer of the shard to a voter. It
+// delegates to the already-wired PromoteMember control-plane operation.
+func (cc *ClusterClient) PromoteReplica(ctx context.Context, shardID, replicaID uint64) error {
+	return cc.admin.PromoteMember(ctx, shardID, replicaID)
+}
+
 // WatchMembership returns a channel that emits a MembershipEvent whenever the
 // shard's membership or leadership changes. The first event delivers the
 // initial snapshot. The watcher polls at DefaultMembershipPollInterval and

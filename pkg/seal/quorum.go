@@ -192,8 +192,8 @@ func (b *StorageBarrier) SetHolderVerifier(v HolderVerifier) {
 
 // quorumTTL returns the configured round lifetime.
 func (b *StorageBarrier) quorumTTL() time.Duration {
-	if b.config.Shamir != nil && b.config.Shamir.QuorumTTL > 0 {
-		return b.config.Shamir.QuorumTTL
+	if cfg := b.shamirConfig(); cfg != nil && cfg.QuorumTTL > 0 {
+		return cfg.QuorumTTL
 	}
 	return DefaultShareTTL
 }

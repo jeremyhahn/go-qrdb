@@ -87,7 +87,7 @@ func TestBarrierReadyHook_CalledAfterInit_None(t *testing.T) {
 		t.Fatalf("UnregisterTenant: %v", err)
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(none): %v", err)
 	}
 	if got := hook.count(); got != 1 {
@@ -109,7 +109,7 @@ func TestBarrierReadyHook_CalledAfterInit_Passphrase(t *testing.T) {
 		t.Fatalf("UnregisterTenant: %v", err)
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("correct-horse-battery"), 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("correct-horse-battery"), 0, 0, seal.StrategyPassphrase, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(passphrase): %v", err)
 	}
 	if got := hook.count(); got != 1 {
@@ -136,7 +136,7 @@ func TestBarrierReadyHook_CalledAfterInit_Shamir(t *testing.T) {
 		}
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, len(holders), len(holders), seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, len(holders), len(holders), seal.StrategyShamir, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(shamir): %v", err)
 	}
 	if got := hook.count(); got != 1 {
@@ -159,7 +159,7 @@ func TestBarrierReadyHook_CalledAfterUnseal(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Unseal", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 	if err := reg.SealTenant(tenantID); err != nil {
@@ -187,7 +187,7 @@ func TestBarrierReadyHook_NotCalledWhileSealed(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Sealed Only", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 	hook.reset()
@@ -215,7 +215,7 @@ func TestBarrierReadyHook_Status_CalledWhenInitializedAndUnsealed(t *testing.T) 
 	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Status Ready", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 	hook.reset()
@@ -245,7 +245,7 @@ func TestBarrierReadyHook_Status_NotCalledWhenSealed(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Status Sealed", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 	if err := reg.SealTenant(tenantID); err != nil {
@@ -309,7 +309,7 @@ func TestBarrierReadyHook_NilHookIsNoop(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, tenantID, "Hook Nil Noop", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 	if _, err := svc.TenantBarrierStatus(ctx, tenantID); err != nil {

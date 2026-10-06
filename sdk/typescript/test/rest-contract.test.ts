@@ -1226,6 +1226,88 @@ describe('Certs — issueCert/enrollCert send literal camelCase PEM fields', () 
 });
 
 // ---------------------------------------------------------------------------
+// Invitations: invite/redeem send literal camelCase fields, and redeem works
+// with NO prior connect() call -- it is the one capability reachable with no
+// credential at all.
+// ---------------------------------------------------------------------------
+
+describe('Invitations — invite/redeem send literal camelCase fields', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('invite posts to /users/invite with roleIDs/keyPinFingerprint verbatim', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            id: '3',
+            token: 'a94e3f1b',
+            expiresAt: '2027-01-01T00:00:00Z',
+            userID: '9',
+            username: 'alice',
+            tenantID: 't1',
+            created: true,
+            keyPinFingerprint: 'FP',
+        });
+
+        const result = await client.invitations.invite({
+            username: 'alice',
+            email: 'alice@acme.com',
+            roleIDs: ['op-role'],
+            keyPinFingerprint: 'FP',
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/users/invite');
+        expect(calls[0].method).toBe('POST');
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['roleIDs']).toEqual(['op-role']);
+        expect(body['keyPinFingerprint']).toBe('FP');
+        // The mangled snake form must NOT appear.
+        expect(body['role_i_ds']).toBeUndefined();
+        // userID/id cross the wire as strings (json:"...,string") because
+        // uint64 Snowflakes exceed Number.MAX_SAFE_INTEGER.
+        expect(result.id).toBe('3');
+        expect(result.userID).toBe('9');
+        expect(result.token).toBe('a94e3f1b');
+        expect(result.created).toBe(true);
+    });
+
+    it('redeem posts to /invitations/redeem with csrPEM/certPEM/chainPEM verbatim, with NO prior connect()', async () => {
+        // Deliberately NOT connectedClient(): redeem is the one call an
+        // unconnected client may make.
+        const calls = installMockFetch({
+            userID: '9',
+            username: 'alice',
+            tenantID: 't1',
+            certPEM: 'CERT',
+            thumbprint: 'THUMB',
+            notAfter: '2027-01-01T00:00:00Z',
+        });
+        const client = new RestClient('https://localhost:63002');
+
+        const result = await client.invitations.redeem({
+            tenantID: 't1',
+            token: 'a94e3f1b',
+            csrPEM: 'CSR',
+            certPEM: 'LEAF',
+            chainPEM: 'CHAIN',
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/invitations/redeem');
+        expect(calls[0].method).toBe('POST');
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['csrPEM']).toBe('CSR');
+        expect(body['certPEM']).toBe('LEAF');
+        expect(body['chainPEM']).toBe('CHAIN');
+        expect(body['tenantID']).toBe('t1');
+        expect(body['csr_p_e_m']).toBeUndefined();
+        expect(result.userID).toBe('9');
+        expect(result.certPEM).toBe('CERT');
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Tenants: trust anchors and the admin-onboarding create response.
 // ---------------------------------------------------------------------------
 

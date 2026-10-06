@@ -50,9 +50,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 )
 
-// claimBeginJSON decodes `database barrier-officer claim-begin --output json`.
+// claimBeginJSON decodes `... barrier-officer claim-begin --output json`
+// (shared by database and tenant scopes): the claim nonce, and the exact
+// message (hex) the holder key must sign, for a holder whose key signs
+// outside this CLI.
 type claimBeginJSON struct {
-	NonceHex string `json:"nonce_hex"`
+	NonceHex       string `json:"nonce_hex"`
+	SignMessageHex string `json:"sign_message_hex"`
 }
 
 // claimEnvelopeSplitDatabase claims off's database-scope envelope through

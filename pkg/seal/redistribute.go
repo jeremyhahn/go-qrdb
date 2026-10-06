@@ -197,9 +197,6 @@ func (b *StorageBarrier) recordShamirParams(ctx context.Context, threshold, tota
 		return err
 	}
 	b.setStrategy(StrategyShamir, shamirStrategy)
-	if b.config.Shamir != nil {
-		b.config.Shamir.Threshold = threshold
-		b.config.Shamir.TotalShares = total
-	}
+	b.updateShamirConfig(threshold, total)
 	return nil
 }

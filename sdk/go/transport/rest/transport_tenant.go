@@ -50,10 +50,12 @@ type restTenant struct {
 // It matches the server-side handler payload (omitting the tenant ID, which
 // is carried in the URL path).
 type restTenantBarrierInitRequest struct {
-	Passphrase []byte `json:"passphrase,omitempty"`
-	Threshold  int    `json:"threshold,omitempty"`
-	Shares     int    `json:"shares,omitempty"`
-	Strategy   string `json:"strategy,omitempty"`
+	Passphrase []byte                             `json:"passphrase,omitempty"`
+	Threshold  int                                `json:"threshold,omitempty"`
+	Shares     int                                `json:"shares,omitempty"`
+	Strategy   string                             `json:"strategy,omitempty"`
+	Officers   []transport.OfficerRegisterRequest `json:"officers,omitempty"`
+	Policy     string                             `json:"policy,omitempty"`
 }
 
 // restTenantBarrierUnsealRequest is the on-wire JSON for the unseal endpoint.
@@ -67,11 +69,12 @@ type restTenantBarrierUnsealRequest struct {
 // endpoint for the Shamir strategy. For none/passphrase the server returns
 // 204 No Content and this struct is never decoded.
 type restTenantBarrierInitResponse struct {
-	TenantID    string `json:"tenant_id"`
-	Strategy    string `json:"strategy"`
-	ShareCount  int    `json:"share_count,omitempty"`
-	Threshold   int    `json:"threshold,omitempty"`
-	TotalShares int    `json:"total_shares,omitempty"`
+	TenantID    string                              `json:"tenant_id"`
+	Strategy    string                              `json:"strategy"`
+	ShareCount  int                                 `json:"share_count,omitempty"`
+	Threshold   int                                 `json:"threshold,omitempty"`
+	TotalShares int                                 `json:"total_shares,omitempty"`
+	Holders     []transport.TenantBarrierHolderCert `json:"holders,omitempty"`
 }
 
 // restTenantBarrierStatus is the on-wire JSON returned by the status endpoint.
@@ -401,6 +404,8 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		Threshold:  req.Threshold,
 		Shares:     req.Shares,
 		Strategy:   req.Strategy,
+		Officers:   req.Officers,
+		Policy:     req.Policy,
 	}
 	data, err := json.Marshal(wireReq)
 	if err != nil {
@@ -437,6 +442,7 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		ShareCount:  wire.ShareCount,
 		Threshold:   wire.Threshold,
 		TotalShares: wire.TotalShares,
+		Holders:     wire.Holders,
 	}, nil
 }
 

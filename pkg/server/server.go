@@ -51,6 +51,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -198,6 +199,7 @@ type serverOptions struct {
 	roleSvc            role.RoleServicer
 	certProv           cert.CertProvider
 	certEnroll         service.CertEnrollmentServicer
+	invitations        service.InvitationServicer
 	onboarding         service.TenantOnboardingServicer
 	authMW             *authmw.AuthMiddleware
 	caBootstrapCert    []byte
@@ -534,6 +536,12 @@ func WithCertProvider(svc cert.CertProvider) ServerOption {
 // service for every protocol server (lifecycle.Node.CertEnrollment).
 func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(o *serverOptions) { o.certEnroll = svc }
+}
+
+// WithInvitations configures the invitation self-enrolment service
+// (lifecycle.Node.Invitations) for the protocol servers that support it.
+func WithInvitations(svc service.InvitationServicer) ServerOption {
+	return func(o *serverOptions) { o.invitations = svc }
 }
 
 // WithTenantOnboarding configures the tenant-create service for every
@@ -1761,6 +1769,9 @@ func (s *Server) startREST() error {
 	if s.opts.certEnroll != nil {
 		restOpts = append(restOpts, rest.WithCertEnrollment(s.opts.certEnroll))
 	}
+	if s.opts.invitations != nil {
+		restOpts = append(restOpts, rest.WithInvitations(s.opts.invitations))
+	}
 	if s.opts.onboarding != nil {
 		restOpts = append(restOpts, rest.WithTenantOnboarding(s.opts.onboarding))
 	}
@@ -1881,6 +1892,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.clusterJoinProvider != nil {
 		restOpts = append(restOpts, rest.WithClusterJoin(s.opts.clusterJoinProvider, s.opts.clusterJoinStore, s.opts.clusterJoinTrustDomain))
+		if a := joinadvertise.New(s.opts.leaseSvc, s.opts.mvccSvc); a != nil {
+			restOpts = append(restOpts, rest.WithClusterJoinAdvertiser(a))
+		}
 	}
 	// The SO dual-factor gate reads the operator's audit failure posture from
 	// the SAME key the authorization middleware does (go-qrdb#445). It is
@@ -2036,6 +2050,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.certEnroll != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.invitations != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithInvitations(s.opts.invitations))
 	}
 	if s.opts.onboarding != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithTenantOnboarding(s.opts.onboarding))
@@ -2193,6 +2210,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.certEnroll != nil {
 		quicOpts = append(quicOpts, quicapi.WithCertEnrollment(s.opts.certEnroll))
 	}
+	if s.opts.invitations != nil {
+		quicOpts = append(quicOpts, quicapi.WithInvitations(s.opts.invitations))
+	}
 	if s.opts.onboarding != nil {
 		quicOpts = append(quicOpts, quicapi.WithTenantOnboarding(s.opts.onboarding))
 	}
@@ -2344,6 +2364,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.certEnroll != nil {
 		unixOpts = append(unixOpts, unixapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.invitations != nil {
+		unixOpts = append(unixOpts, unixapi.WithInvitations(s.opts.invitations))
 	}
 	if s.opts.onboarding != nil {
 		unixOpts = append(unixOpts, unixapi.WithTenantOnboarding(s.opts.onboarding))
@@ -2515,6 +2538,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.certEnroll != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertEnrollment(s.opts.certEnroll))
+	}
+	if s.opts.invitations != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithInvitations(s.opts.invitations))
 	}
 	if s.opts.onboarding != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithTenantOnboarding(s.opts.onboarding))

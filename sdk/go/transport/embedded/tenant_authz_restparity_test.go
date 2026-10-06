@@ -149,11 +149,14 @@ func admitted(status int) bool {
 // system Admin acting on globex -- through both transports and asserts they
 // agree on every admission decision. GetTenant/DeleteTenant exercise the
 // "tenant" client group, whose request names the target tenant directly;
-// GetUser extends the matrix to the "Users" group, whose target is instead
-// RESOLVED (authmw.UserTarget / RESTPathUser look up the record's owning
-// tenant), the same shape every userID-addressed route on every client
-// group needing target resolution (roles, factors) ultimately shares --
-// see item 10 of the go-qrdb#585 security review.
+// GetUser extends the matrix to the "Users" group, whose entry check runs
+// against the CALLER'S OWN tenant on both transports (owner ruling: a
+// RoleBinding names only its holder's own tenant, so there is no longer a
+// per-request target to resolve), with the routed user service itself
+// confining a by-id lookup to the record's owning tenant
+// (tenant.OwningTenant) -- the same shape every userID-addressed route on
+// every client group shares -- see item 10 of the go-qrdb#585 security
+// review.
 func TestEmbeddedVsREST_TenantAuthorizationParity(t *testing.T) {
 	type op struct {
 		name       string

@@ -45,6 +45,7 @@ type guiBindings struct {
 	ts          *TimeSeriesBinding
 	vector      *VectorBinding
 	user        *UserBinding
+	invitation  *InvitationBinding
 	role        *RoleBinding
 	cert        *CertBinding
 	db          *DatabaseBinding
@@ -92,6 +93,7 @@ func createGUIBindings(log *logger.Logger, logFile string) *guiBindings {
 		ts:          NewTimeSeriesBinding(log, conn),
 		vector:      NewVectorBinding(log, conn),
 		user:        NewUserBinding(log, conn),
+		invitation:  NewInvitationBinding(log, conn),
 		role:        NewRoleBinding(log, conn),
 		cert:        NewCertBinding(log, conn),
 		db:          NewDatabaseBinding(log, conn),
@@ -130,6 +132,7 @@ func (b *guiBindings) bindList() []interface{} {
 		b.ts,
 		b.vector,
 		b.user,
+		b.invitation,
 		b.role,
 		b.cert,
 		b.db,

@@ -47,12 +47,14 @@ import type {
     DatabaseClient,
     EmbeddedServerClient,
     IndexClient,
+    InvitationClient,
     KVClient,
     LeaseClient,
     LockClient,
     MVCCClient,
     OfficerClient,
     RebalanceClient,
+    RedeemInvitationOptions,
     RoleClient,
     SealClient,
     ServerConfigClient,
@@ -137,6 +139,8 @@ import type {
     IndexQueryResponse,
     IndexScanResponse,
     IndexStats,
+    Invitation,
+    InviteUserRequest,
     KVListResponse,
     KVScanResponse,
     LeaseInfo,
@@ -166,6 +170,7 @@ import type {
     RebuildIndexRequest,
     RebuildIndexResponse,
     RebuildProgress,
+    RedeemInvitationRequest,
     RestoreRevisionRequest,
     RestoreRevisionResult,
     Role,
@@ -1598,6 +1603,43 @@ export class RestClient implements Client {
                     `/users/${encodeURIComponent(userId)}/cert-bindings/${encodeURIComponent(thumbprint)}`,
                     { method: 'DELETE' },
                 );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Invitations
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get invitations(): InvitationClient {
+        return {
+            invite: async (req: InviteUserRequest): Promise<Invitation> => {
+                this.ensureConnected();
+                // roleIDs/keyPinFingerprint are literal camelCase on the wire
+                // (sdk/go/transport.InviteUserRequest); see issueCert's note
+                // under Certs below -- jsonBody()'s deepCamelToSnake would
+                // mangle them.
+                return this.fetchJSON<Invitation>('/users/invite', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
+                });
+            },
+            redeem: async (
+                req: RedeemInvitationRequest,
+                _options?: RedeemInvitationOptions,
+            ): Promise<EnrolledCert> => {
+                // UNAUTHENTICATED by design: no ensureConnected() guard. This
+                // client is already configured with one server (the
+                // constructor's baseUrl), so _options -- which names where to
+                // redeem for a transport with no prior connection -- does not
+                // apply here; see RedeemInvitationOptions.
+                return this.fetchJSON<EnrolledCert>('/invitations/redeem', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
+                });
             },
         };
     }

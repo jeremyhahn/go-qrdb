@@ -1,6 +1,6 @@
 # Identity and RBAC — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -21,6 +21,46 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | List | `GET /users` | `ListUsers` | `user.List` | `qrdb_user_list` | `ListUsers` | `users:list` |
 | Enable | `POST /users/{id}/enable` | `EnableUser` | `user.Enable` | `qrdb_user_enable` | `EnableUser` | `users:enable` |
 | Disable | `POST /users/{id}/disable` | `DisableUser` | `user.Disable` | `qrdb_user_disable` | `DisableUser` | `users:disable` |
+
+## Capability matrix — invitation self-enrolment
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`transport.InvitationClient`) | `scp` permission |
+|---|---|---|---|---|---|---|
+| Invite a user | `POST /users/invite` | `InviteUser` | `user.Invite` | `qrdb_user_invite` | `InviteUser` | `users:invite` |
+| Redeem an invitation | `POST /invitations/redeem` (public) | `RedeemInvitation` (public method) | `invitation.Redeem` (public frame) | `qrdb_invitation_redeem` on the separate, public `/mcp/enroll` server | `RedeemInvitation` | none — unauthenticated |
+
+Invite is `ScopeSelfStrict`: it acts on the caller's own tenant, same as
+every certificate-enrolment verb. Redeem is the one capability in this
+document reachable with no credential at all; see
+[../identity-rbac/architecture.md#invitation-self-enrolment](architecture.md#invitation-self-enrolment)
+for why, and for the per-source/per-tenant throttling and optional key
+pinning that compensate for having no identity to rate-limit by.
+
+Both requests take the same fields regardless of transport: `username`,
+optional `email`, `name`, `roleIDs` (or `role_ids`) and
+`keyPinFingerprint`/`key_pin_fingerprint` for invite; `tenantID`/`tenant_id`,
+`token`, `csrPEM`/`csr_pem` (required — the proof of possession) and
+optional `certPEM`/`cert_pem` plus `chainPEM`/`chain_pem` for a
+bring-your-own certificate, for redeem. A successful invite returns the
+token exactly once:
+
+```json
+{
+  "id": "3",
+  "token": "a94e3f1b...",
+  "expiresAt": "2026-10-07T12:00:00Z",
+  "userID": "9",
+  "username": "bob",
+  "tenantID": "acme",
+  "created": true,
+  "keyPinFingerprint": ""
+}
+```
+
+A successful redemption returns the same `enrolledCertResponse` shape
+`POST /certs/issue` and `POST /certs/enroll` do. Every refusal of a redeem
+request, whatever the cause, is `401 Unauthorized` with the same message:
+see [Status and error mapping](#status-and-error-mapping).
 
 ## Capability matrix — roles and permissions
 
@@ -436,10 +476,12 @@ settable on `CreateUser`, matching the domain request shape:
 | Replace | `[{...}]` / `{"k":"v"}` | flag `true` + entries | `role_bindings`/`attributes: "<json>"` |
 
 `roleBindings` are **additive** to `roleIDs`; effective permissions are the
-union, and a binding naming tenant `acme` grants in checks that target `acme`
-and nowhere else (see
-[architecture.md](architecture.md#three-authorization-inputs-on-one-user) for
-which tenant a check targets). `attributes` are ABAC inputs in their own
+union. A binding's `tenantID` must be the user's own tenant — for a
+system-tenant user too — and a binding naming any other tenant is refused.
+A tenant's own administrators act only in their tenant; a system-tenant
+Admin can still administer a tenant's users and roles until strict tenant
+isolation lands (see
+[architecture.md](architecture.md#three-authorization-inputs-on-one-user)). `attributes` are ABAC inputs in their own
 namespace — `subject.user_attrs.<key>` in a policy condition, `user_attrs.<key>`
 as a match key — so an attribute can never satisfy a policy written against a
 certificate- or token-derived value of the same name (see
@@ -449,13 +491,9 @@ Writing `roleIDs` (on `CreateUser` or `UpdateUser`), or `roleBindings`/
 `attributes` (on `UpdateUser` only — neither is settable at create time)
 requires `roles:assign`, the same permission the RBAC model already defines
 for granting a role directly, IN ADDITION to the route's own
-`users:create`/`users:update` permission. Each `roleBindings` entry
-additionally requires `roles:assign` in ITS OWN target tenant, separately
-from the tenant the check above authorizes: writing a binding that names
-tenant `acme` is itself an act of granting a role within `acme`, and is
-refused for an operator who cannot grant roles there even if they can
-otherwise update the account. Every referenced role — in `roleIDs` or in a
-binding — must exist and belong to the relevant tenant itself. Each tenant
+`users:create`/`users:update` permission, in the tenant the user belongs to.
+Every referenced role — in `roleIDs` or in a binding — must exist and belong
+to that tenant itself. Each tenant
 has its own copy of the built-in roles, so assign that tenant's copy: the
 system tenant's built-ins are not valid in other tenants. A role that does
 not exist, or belongs to another tenant, is refused with a client error before anything
@@ -506,11 +544,16 @@ of its own, and the listing never contains one.
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
-| `roleBindings` entry naming a tenant other than a non-system user's own (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
+| `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |
 | The user's auth factors could not be listed while building the response | 503 | `UNAVAILABLE` |
-| A user/role request whose body (REST) or payload (QUIC) names its tenant does not decode | 400 | `INVALID_ARGUMENT` |
-| That body is larger than 1 MiB (REST) | 413 | — |
+| A user/role request whose body (REST) or payload (QUIC) does not decode | 400 | `INVALID_ARGUMENT` |
+| A REST create, lookup or role-assignment body larger than 1 MiB | 413 | — |
+| A create, list or name lookup by a caller outside the system tenant naming a tenant other than its own (`tenant.CrossTenantDeniedError`) | 403 | `PERMISSION_DENIED` |
+| An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
+| Invite or redeem request missing a required field | 400 | `INVALID_ARGUMENT` |
+| Redeemed key already bound to an account of the tenant | 409 | `ALREADY_EXISTS` |
+| Re-inviting an account that already holds a credential or is not pending | 412 | `FAILED_PRECONDITION` |
 
 ## Pagination
 

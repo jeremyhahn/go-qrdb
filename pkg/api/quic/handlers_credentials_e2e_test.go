@@ -28,13 +28,12 @@ import (
 	"testing"
 	"time"
 
+	quicgo "github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
-
-	quicgo "github.com/quic-go/quic-go"
 )
 
 // generateCredentialE2ETLS builds a self-signed ECDSA P-256 TLS bundle for

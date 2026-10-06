@@ -361,6 +361,27 @@ func TestRouting_AddCertBinding_SealedTenant(t *testing.T) {
 	}
 }
 
+func TestRouting_ActivateWithCertBinding_SealedTenant(t *testing.T) {
+	resolver := &fakeResolver{
+		shared:  newFakeKVStore(),
+		tenants: map[string]kvstore.KVStore{"vault": newFakeKVStore()},
+		sealed:  map[string]bool{"vault": true},
+	}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	activator, ok := svc.(CertActivator)
+	if !ok {
+		t.Fatal("the routing service does not implement CertActivator")
+	}
+	ctx := tenant.WithTenantID(context.Background(), "vault")
+	_, err = activator.ActivateWithCertBinding(ctx, 1, "somethumb", 0)
+	if !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("ActivateWithCertBinding(sealed) = %v, want ErrTenantSealed", err)
+	}
+}
+
 func TestRouting_UpdateUser_SealedTenant(t *testing.T) {
 	resolver := &fakeResolver{
 		shared:  newFakeKVStore(),

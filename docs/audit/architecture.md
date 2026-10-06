@@ -1,6 +1,6 @@
 # Audit — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
 
 Compliance-grade audit logging: who did what, to which resource, with what
 outcome.
@@ -416,14 +416,149 @@ that refuses one is counted on
 
 ### The replicated in-tenant trail
 
-The trail is node-local. A replicated trail held inside each tenant -- records
-appended through the replicated store rather than to one node's file -- is
-planned, and is not part of this feature. When it exists it cannot take the
-sealed window's records directly: the store it appends through is behind the
-barrier that window is opening. Those records go to the node's trail as they
-happen, as they do today; the replicated trail can carry them by buffering
-the window's events in memory and appending them once the barrier is
-unsealed. Nothing here buffers them, and nothing here depends on that.
+The sink described above is node-local: `ChainFileLogger`'s chain lives on one
+node's disk, and the ring buffer is one node's memory. A SECOND, independent
+mechanism -- the cluster-wide replicated trail below -- now also exists,
+apply-time-assigned and Raft-replicated rather than written by one process.
+The two are not alternatives to each other and neither is a phased-out
+version of the other: the node-local sink keeps recording exactly as it does
+today, unconditionally, and the replicated chain is additional, opt-in
+infrastructure that nothing in this binary proposes writes to yet (see
+[Status](#status-of-the-replicated-chain) below). When the sealed window
+needs to carry records into the replicated chain (phase 2), it cannot take
+them directly -- the store the chain appends through is behind the barrier
+that window is opening -- so that remains a buffer-then-append problem for
+the proposing side to solve, not something `Chain.Append` itself does.
+
+## Cluster-wide replicated trail
+
+### Status of the replicated chain
+
+**Phase 1 (this revision): shipped.** The mechanism that lets a Raft group
+agree on one hash-chained audit trail per tenant exists end to end:
+
+- `pkg/audit.Chain` — the deterministic, apply-time authority for every
+  tenant's chain (`Append`, `Prune`, `Query`, `Restore`).
+- `pkg/audit.TablePrefix` (`table.go`) — the reserved raw-keyspace table the
+  chain is durable in, mirroring `pkg/lease`'s table exactly.
+- `protocol.OpAuditAppend` — the single opcode carrying both an append and a
+  retention prune, gated by `featuregate.AuditAppend` so no replica of a
+  group is ever sent an opcode a sibling cannot apply.
+- Both state-machine families (`pkg/store.PebbleStateMachine`,
+  `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
+  and on snapshot recovery, and resync it after a failed apply, exactly as
+  the lease table already does.
+- Every `mvcc`/`pebble` state machine this binary composes — the Raft
+  factory in `cmd/qrdbd/start.go` and the standalone/embedded composition in
+  `pkg/server/lifecycle.NewLocalEngine` — attaches a `Chain` unconditionally.
+  There is no configuration flag that turns this attachment off, because a
+  replica missing it would answer `OpAuditAppend` with a refusal while a
+  sibling that has one applies the write: state divergence within one Raft
+  group, not a degraded feature.
+
+**Phase 2 (not in this revision): parked.** Nothing in this binary ever
+PROPOSES `OpAuditAppend`. The entitlement that would decide which tenants
+opt in, the service-layer logger that would encode and propose the command
+from an ordinary `Emit` call, and the read API/CLI surface over `Chain.Query`
+do not exist yet. Concretely: `qrdb audit query` / `audit:query` read the
+node-local sink only; there is no command or endpoint that reads the
+replicated chain. The mechanism above is real and tested, but until phase 2
+lands, no record is ever written to it in production — the gate exists
+precisely so that when phase 2 does land, every replica of every group can
+already apply the opcode it enables.
+
+### Record layout: a reserved raw-keyspace table, not a `__sys:` key
+
+The table lives under `TablePrefix = "\x00qrdb.audit/"`, in the state
+machine's RAW keyspace — the same `0x00` prefix every state machine already
+reserves for its own bookkeeping (the last-applied index, the lease table).
+This is deliberate, and different from a `__sys:` key: a `__sys:` key is
+still an ordinary MVCC key, merely filtered out of listings by convention; a
+raw-keyspace key is not a key the KV/MVCC engines expose to `Range`, `List`
+or `watch` AT ALL. A tenant enumerating its own keyspace cannot see the
+table even by accident, and `statemachine.IsReservedKey` refuses it on every
+read and compare path a client could reach (`Lookup`, a transaction compare,
+an `OpGuarded` compare) — closing the same class of extraction-oracle defect
+the vector feature's compare review found, before the replicated audit
+table gave it a second raw-keyspace table to be exploited against.
+
+Two record families, one tenant-keyed table, used identically whether the
+apply happens in the shared system shard (many tenants multiplexed by the
+tenant-ID segment) or a tenant's own dedicated shard (the segment always
+names that one tenant):
+
+```
+TablePrefix + "h/" + tenantID                           -> head record (seq, lo, digest)
+TablePrefix + "e/" + tenantID + "/" + seq (8 bytes BE)   -> marshaled AuditEvent
+```
+
+The head record's `lo` field is the lowest surviving sequence number —
+see [Retention and pruning](#retention-and-pruning-replicated-deterministic-and-it-does-not-break-the-chain).
+
+Unlike the last-applied index, which is local to one node, this table is
+replicated state: it travels in every snapshot and is covered by the
+replica hash like any other applied record (`pkg/store`'s
+`isNodeLocalKey`), exactly as the lease table already is.
+
+### The hash chain stays linear under Raft because it is assigned at apply time
+
+A client never supplies a sequence number or a previous-hash value.
+`Chain.Append` reads its OWN current in-memory head, assigns the next
+sequence and folds the new event's marshaled bytes (with `PrevHash` set to
+the prior head's digest) into a running SHA-256. Because every replica of a
+group applies the identical committed log in the identical order, and
+`Append` consults only state every replica already agrees on, every replica
+computes the byte-identical chain — the same guarantee `lease.Lessor`
+depends on for lease IDs.
+
+This is also why `Append` refuses rather than defaults a zero `Timestamp`:
+the node-local sink can default one to `time.Now()` because one process
+writes the line, but `Append` runs on every replica of the group, and
+`time.Now()` is not something two processes ever agree on. A caller that
+built the command some other way than `protocol.EncodeAuditAppend` (which
+already refuses this before the command is proposed) hits `Append`'s own
+backstop and gets `*audit.MissingTimestampError`.
+
+### Retention and pruning: replicated, deterministic, and it does not break the chain
+
+A tenant's chain needs a bound on how much history travels in every
+snapshot forever. `Chain.Prune` deletes a prefix of events — `[lo, upper)`
+for a caller-supplied cutoff — while leaving the head's sequence and digest
+untouched, so the chain keeps extending correctly and a verifier can still
+check the surviving tail against the still-live head.
+
+Determinism here took a review cycle to get right. The first version
+computed `upper` from a storage READ of the committed table, which made the
+result depend on how `go-quicraft` happened to pack a Raft batch:
+`[append, append, append, prune(3)]` applied as one `Update` call answered
+differently than the same four commands applied as four. `Prune` now reads
+NOTHING from storage — both bounds come from the `Chain`'s own in-memory
+head alone, which every `Append` earlier in the SAME `Update` call has
+already advanced — so the result is independent of batch packing. Two
+further bounds, both clamps on `upper`:
+
+- **Never the newest event.** `upper` is clamped to the head's own `seq`, so
+  a chain always keeps at least one live record — an anchor a verifier can
+  check the surviving chain against.
+- **At most `audit.MaxPrunePerCommand` (10,000) events per call.** A cutoff
+  far ahead of the low-watermark deletes at most that many and reports the
+  count; the caller reissues `Prune` with the same cutoff to continue,
+  rather than one command staging an unbounded number of deletes into one
+  apply batch.
+
+### Tenant confinement inside a shared table
+
+`Chain.Query` trusts its `tenantID` argument completely and never reads
+outside that tenant's key range — the range bounds passed to the iterator
+never leave the tenant's own prefix, so there is no filter to forget. The
+existing file-sink `matchesFilter` (the same `TenantID`/`Untenanted`
+semantics `tenant.ConfineAuditFilter` already relies on for the node-local
+trail) is reused rather than re-derived, so a platform event filed under the
+system tenant's segment with no `TenantID` of its own matches only an
+`Untenanted` system-tenant query, never an ordinary one. `Append`, `Prune`
+and `Query` alike refuse a tenant ID containing `/` (`*InvalidTenantIDError`)
+— such an id could otherwise carve a second segment inside another tenant's
+range in the raw table's concatenated keys.
 
 ## Trust boundaries
 

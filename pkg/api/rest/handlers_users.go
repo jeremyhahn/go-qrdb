@@ -136,8 +136,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -438,8 +437,7 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var req lookupUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 	if req.Email == "" {
@@ -486,8 +484,7 @@ func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, us
 	defer cancel()
 
 	var req addCertBindingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -525,8 +522,7 @@ func (s *Server) handleRemoveCertBinding(w http.ResponseWriter, r *http.Request,
 // handleUpdateUser handles PUT /users/{id} -- applies partial updates.
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uint64) {
 	var req updateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 

@@ -104,6 +104,14 @@ barrier-encrypted, tenant-safe storage. The code does this instead:
 
 ## Target design — vectors as an engine of the database binding
 
+**Status (2026-10-05): phases 1-2 of 5 shipped, dormant.** The apply-batch
+engine foundation and the post-commit ANN index/checkpoint layer below both
+exist in `pkg/engine` and `pkg/vector`, but nothing proposes the opcodes yet
+and the node-local store described in "Current state (measured)" above is
+still what production traffic uses. See
+[engineering.md](engineering.md#status-2026-10-05) for the phase-by-phase
+detail.
+
 Vector is an engine of the database, like KV and time series. It has no store,
 no Raft group and no encryptor of its own: it uses the database's
 [storage binding](../databases/architecture.md#the-storage-binding).

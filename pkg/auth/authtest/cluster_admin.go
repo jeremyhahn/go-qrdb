@@ -46,6 +46,14 @@ func (a *Admin) AddMember(context.Context, uint64, uint64, string, string) error
 	return nil
 }
 
+// PromoteMember records the membership change. Implements
+// service.MemberPromoter so Admin stays usable with the REST promote
+// handler's type assertion.
+func (a *Admin) PromoteMember(context.Context, uint64, uint64) error {
+	a.changes.Add(1)
+	return nil
+}
+
 // RemoveMember records the membership change.
 func (a *Admin) RemoveMember(context.Context, uint64, uint64) error {
 	a.changes.Add(1)

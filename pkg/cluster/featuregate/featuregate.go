@@ -79,6 +79,16 @@ type Feature string
 // state machine evaluates at the write's own log position.
 const GuardedWrites Feature = "guarded-writes"
 
+// VectorEngine is the vector command set (protocol.OpVectorNamespaceCreate
+// and its siblings, 70-77): new Raft opcodes an old binary would refuse as
+// unknown while its up-to-date peers applied them, diverging the group
+// exactly as an unguarded OpGuarded would. Unlike GuardedWrites there is no
+// older, ungated command these fall back to proposing -- a database's vector
+// writes are refused with a typed feature-gate error until the feature is
+// enabled for its group, rather than proposed unguarded
+// (docs/vectors/engineering.md "Target: the vector engine", "Commands").
+const VectorEngine Feature = "vector-engine"
+
 // ClusterShardIDs is cluster-wide shard ID allocation: every raft database
 // claims its shard ID from one replicated high-water mark (shard.Claimer)
 // instead of a per-node counter, and no caller may name one. It adds no Raft
@@ -121,9 +131,17 @@ const ClusterSeal Feature = "cluster-seal"
 // the opcode.
 const ImportStaging Feature = "import-staging"
 
+// AuditAppend is protocol.OpAuditAppend: a deterministic, apply-time-assigned
+// append (or retention prune) to a tenant's replicated audit hash chain. A
+// replica that does not implement it would apply nothing for an opcode it
+// cannot decode -- UnknownOpError in both engine families -- while its peers
+// commit the chain, so no replica may be sent it until every replica of the
+// group can apply it. See docs/audit/architecture.md#cluster-wide-replicated-trail.
+const AuditAppend Feature = "audit-append"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

@@ -19,9 +19,11 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -77,6 +80,13 @@ type JoinServerOptions struct {
 	// AdminPort is logged alongside the listener address for operator
 	// convenience. Zero means unconfigured.
 	AdminPort int
+
+	// Advertiser publishes a pre-membership feature advertisement for a
+	// joiner once its leaf is issued, so the operator's member add can admit
+	// it after a cluster feature has activated. Nil means this signing
+	// member cannot (no lease-capable store): the join still succeeds, and
+	// member add refuses until the node itself starts and advertises.
+	Advertiser FeatureAdvertiser
 }
 
 // validate checks the configuration before any I/O or key generation.
@@ -122,17 +132,6 @@ func (o JoinServerOptions) port() int {
 	return o.Port
 }
 
-// MissingJoinTokenError is returned when a member-join operation (server or
-// client) is configured with no join token. There is no default: a shared
-// secret with a shipped default is not an admission control.
-type MissingJoinTokenError struct{}
-
-// Error returns a human-readable description.
-func (e *MissingJoinTokenError) Error() string {
-	return "clusterenroll: no join token configured; member-side CSR join requires an " +
-		"operator-chosen admission secret on both the signing member and the joiner"
-}
-
 // JoinRefusedError is returned when an admitted member refuses a join
 // request: a bad token, a malformed or unsigned CSR, or a signing failure.
 // The Reason is the member's own report and is safe to log; it carries no
@@ -146,6 +145,20 @@ func (e *JoinRefusedError) Error() string {
 	return "clusterenroll: member-side join refused: " + e.Reason
 }
 
+// JoinPendingError is returned by JoinCSR and JoinCSRHTTP when a tokenless
+// CSR was accepted into the signing member's replicated approval queue
+// rather than refused or signed. Join treats it as retryable -- not a
+// failure -- and keeps polling with the identical CSR until an operator
+// decides (see Join's doc comment).
+type JoinPendingError struct {
+	RequestID string
+}
+
+// Error returns a human-readable description.
+func (e *JoinPendingError) Error() string {
+	return "clusterenroll: join request " + e.RequestID + " is awaiting operator approval"
+}
+
 // JoinRequest is the join-admission request payload: the encrypted JSON
 // body a Noise_NK joiner sends after the handshake completes, and the JSON
 // request body the SPKI/Direct HTTPS join route (pkg/api/rest) reads
@@ -155,9 +168,27 @@ func (e *JoinRefusedError) Error() string {
 // ONLY the joiner's own public key -- the joiner's private key, like the
 // cluster CA's, never crosses this wire on any transport.
 type JoinRequest struct {
+	// Token is the join-admission secret. Empty submits the CSR into the
+	// replicated approval queue instead of presenting a token -- see
+	// pending_join.go and docs/clustering/architecture.md's "Approval
+	// queue" section -- rather than being refused outright.
 	Token   string `json:"token"`
 	CSRDER  []byte `json:"csr_der"`
 	NodeURI string `json:"node_uri,omitempty"`
+
+	// ReplicaID is the joiner's own Raft replica ID, self-reported. It plays
+	// no part in authorization or in the identity the leaf is issued for --
+	// that is still the token's bound identity, derived from the address
+	// alone -- it only keys the pre-membership feature advertisement
+	// HandleJoinRequest publishes on a successful join (see FeatureAdvertiser).
+	// Zero skips advertising.
+	ReplicaID uint64 `json:"replica_id,omitempty"`
+
+	// Features names the cluster features the joiner's binary implements
+	// (featuregate.SupportedNames). The signing member filters this to the
+	// names its own binary knows before publishing anything -- an unknown
+	// name is never trusted onto the wire of the advertisement record.
+	Features []string `json:"features,omitempty"`
 }
 
 // JoinResponse is the join-admission response payload, over either
@@ -165,6 +196,36 @@ type JoinRequest struct {
 type JoinResponse struct {
 	CertPEM []byte `json:"cert_pem,omitempty"`
 	Error   string `json:"error,omitempty"`
+
+	// Pending reports that the CSR was accepted into the replicated
+	// approval queue (req.Token == "") rather than refused or signed.
+	// RequestID names its queue entry -- logged for the operator to find
+	// it with ListPendingJoinRequests -- never required of the joiner,
+	// whose own retry re-presents the identical CSR rather than needing to
+	// remember or supply it.
+	Pending   bool   `json:"pending,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// FeatureAdvertiser publishes a lease-backed feature advertisement for a
+// node that is not a cluster member yet, under the SAME record
+// pkg/cluster/featuregate's Gate reads to decide admission
+// (featuregate.AdmitReplica). Without one, a brand-new CSR-joined node has
+// no live advertisement, so once any feature has activated, the operator's
+// member add refuses it with *featuregate.UnsupportedReplicaError until the
+// node itself starts, forms its shard and advertises for itself -- which,
+// not yet being a member, it generally cannot do first.
+//
+// It is a narrow interface, not a dependency on pkg/cluster/featuregate or
+// pkg/service directly, so this package stays free of the lease and MVCC
+// machinery the implementation (pkg/server/lifecycle) needs: HandleJoinRequest
+// only ever calls the one method.
+type FeatureAdvertiser interface {
+	// AdvertiseJoiner publishes replicaID's address and claimed features.
+	// Implementations filter features to names they know before writing
+	// anything -- an unknown name is never trusted onto the wire of the
+	// advertisement record -- and bound how many they accept.
+	AdvertiseJoiner(ctx context.Context, replicaID uint64, raftAddress string, features []string) error
 }
 
 // HandleJoinRequest is the transport-agnostic core of member-side CSR
@@ -216,7 +277,17 @@ type JoinResponse struct {
 // persists Key A through, reached via the same kvstore.AtomicKVStore seam.
 // trustDomain is this member's own pinned cluster trust domain: a token
 // bound to any other trust domain is refused by ConsumeJoinToken.
-func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, trustDomain string, req *JoinRequest) *JoinResponse {
+//
+// advertiser, when non-nil, publishes a pre-membership feature advertisement
+// for the joiner once its leaf is issued (see FeatureAdvertiser): without
+// one, a brand-new node has no live advertisement for featuregate.Gate to
+// find, so member add refuses it with *featuregate.UnsupportedReplicaError
+// the moment any cluster feature has activated -- the node's own binary
+// cannot advertise for itself before it is a member. A failure to advertise
+// is logged, not returned: the certificate this call already signed is
+// still good, and the operator's member add simply surfaces the same
+// refusal it would have without this parameter at all.
+func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, trustDomain string, req *JoinRequest, advertiser FeatureAdvertiser) *JoinResponse {
 	// Checked BEFORE the token is consumed, and on failure reported with
 	// the SAME generic message the infrastructure-failure branch below
 	// uses: a sealed node (or any other reason provider cannot currently
@@ -244,9 +315,23 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 	// single-use token) would cost the joiner its token for a request
 	// that was never going to be signed. IssueLeafForKey runs the
 	// identical check again before it signs, so a caller that reaches it
-	// some other way is still covered.
+	// some other way is still covered. The same check protects the
+	// tokenless (approval-queue) path below, before anything is queued.
 	if err := clusterca.CheckPublicKeyStrength(csr.PublicKey); err != nil {
 		return &JoinResponse{Error: "certificate signing request: key is not strong enough for a cluster-member leaf"}
+	}
+	// Checked here, before the token is touched, for the same reason: the
+	// CSR's own subject alternative names are a property of THIS request,
+	// not of the token. See validateJoinCSRIdentity.
+	if err := validateJoinCSRIdentity(csr, req.NodeURI); err != nil {
+		return &JoinResponse{Error: err.Error()}
+	}
+
+	// No token presented: this is the approval-queue path (see
+	// pending_join.go), not a refusal -- architecture.md's "the join token
+	// (or a future approval workflow)" decides admission here instead.
+	if req.Token == "" {
+		return handleTokenlessJoin(ctx, provider, store, csr, req, advertiser)
 	}
 
 	boundNodeURI, err := ConsumeJoinToken(ctx, store, trustDomain, req.Token)
@@ -262,17 +347,28 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
+	return issueAndAdmit(ctx, provider, store, boundNodeURI, csr, req.ReplicaID, req.Features, advertiser)
+}
+
+// issueAndAdmit runs the reserve -> sign -> promote -> advertise sequence
+// shared by the token path and the approved tokenless path (see
+// handleTokenlessJoin/deliverApprovedJoin in pending_join.go), once each has
+// independently decided which identity (boundNodeURI) the leaf must carry.
+// See ReserveJoinIdentity, PromoteJoinIdentityAdmitted and
+// ReleaseJoinIdentityReservation's own doc comments for why each step runs
+// in this exact order.
+func issueAndAdmit(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, boundNodeURI string, csr *x509.CertificateRequest, replicaID uint64, features []string, advertiser FeatureAdvertiser) *JoinResponse {
 	reserved, pending, err := ReserveJoinIdentity(ctx, store, boundNodeURI, 0)
 	if err != nil {
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 	if !reserved {
 		// Lost the race to a concurrent request for the SAME identity
-		// (a second, independently valid token), or the identity is
-		// already admitted or still within a live reservation. The token
-		// this request presented is already consumed either way -- see
-		// ConsumeJoinToken's own doc comment on why that is the correct
-		// trade, not a bug to fix here.
+		// (a second, independently valid token or approval), or the
+		// identity is already admitted or still within a live
+		// reservation. The token this request presented, if any, is
+		// already consumed either way -- see ConsumeJoinToken's own doc
+		// comment on why that is the correct trade, not a bug to fix here.
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
@@ -285,7 +381,18 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 		return &JoinResponse{Error: "signing failed"}
 	}
 
-	if err := PromoteJoinIdentityAdmitted(ctx, store, boundNodeURI, pending); err != nil {
+	leafNotAfter, leafSerial, err := parseLeafExpiry(certPEM)
+	if err != nil {
+		if _, relErr := ReleaseJoinIdentityReservation(ctx, store, boundNodeURI, pending); relErr != nil {
+			slog.ErrorContext(ctx, "member-side CSR join: could not read back the issued leaf's own expiry, and the reservation could not be released",
+				"node_uri", boundNodeURI, "parse_error", err, "release_error", relErr)
+		}
+		slog.ErrorContext(ctx, "member-side CSR join: signed a leaf but could not parse its own expiry back; refusing the issue",
+			"node_uri", boundNodeURI, "error", err)
+		return &JoinResponse{Error: "join request could not be processed"}
+	}
+
+	if err := PromoteJoinIdentityAdmitted(ctx, store, boundNodeURI, pending, leafNotAfter, leafSerial); err != nil {
 		// The leaf was signed, but this package cannot confirm the ledger
 		// correctly reflects it -- refuse the issue rather than hand out a
 		// certificate MintJoinToken's own already-admitted check might not
@@ -298,8 +405,99 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 			"node_uri", boundNodeURI, "error", err)
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
+
+	if advertiser != nil && replicaID != 0 {
+		raftAddress := boundNodeURI
+		if u, perr := url.Parse(boundNodeURI); perr == nil {
+			if identity, ok, idErr := spiffe.ParseNodeID(u); idErr == nil && ok {
+				raftAddress = identity.NodeID
+			}
+		}
+		if aerr := advertiser.AdvertiseJoiner(ctx, replicaID, raftAddress, features); aerr != nil {
+			slog.ErrorContext(ctx, "member-side CSR join: signed and admitted the leaf, but could not publish its pre-membership feature advertisement; member add will refuse it until it advertises on its own",
+				"node_uri", boundNodeURI, "replica_id", replicaID, "error", aerr)
+		}
+	}
 	return &JoinResponse{CertPEM: certPEM}
 }
+
+// validateJoinCSRIdentity requires csr to carry the claimed node identity
+// as its SOLE subject alternative name: exactly one URI SAN, equal to
+// claimedNodeURI, and no DNS, IP or email SANs at all -- the shape every
+// legitimate joiner's own buildJoinCSR produces (the CSR's URI and
+// JoinRequest.NodeURI are always the SAME value there, both derived from
+// spiffe.NodeURI). This runs BEFORE the token is touched, for the same
+// reason the proof-of-possession and key-strength checks above it do: a
+// CSR/envelope mismatch is a defect in THIS request, not evidence the
+// token is bad, so a corrected resubmission with the SAME token must not
+// be blocked by having burned it here.
+//
+// This does NOT make the bound identity trustworthy by itself --
+// IssueLeafForKey still signs for the TOKEN's bound identity (resolved by
+// ConsumeJoinToken), never for claimedNodeURI. It only catches a confused
+// or tampered client, or a relay that altered one copy of the identity but
+// not the other, before either reaches the token at all.
+func validateJoinCSRIdentity(csr *x509.CertificateRequest, claimedNodeURI string) error {
+	if claimedNodeURI == "" {
+		return &JoinCSRIdentityError{Reason: "join request did not name a claimed node identity"}
+	}
+	if len(csr.DNSNames) > 0 || len(csr.IPAddresses) > 0 || len(csr.EmailAddresses) > 0 {
+		return &JoinCSRIdentityError{Reason: "carries a DNS, IP or email subject alternative name; only a single URI SAN naming the claimed node identity is accepted"}
+	}
+	if len(csr.URIs) != 1 {
+		return &JoinCSRIdentityError{Reason: "must carry exactly one URI subject alternative name"}
+	}
+	if csr.URIs[0].String() != claimedNodeURI {
+		return &JoinCSRIdentityError{Reason: "subject alternative name does not match the join request's claimed node identity"}
+	}
+	return nil
+}
+
+// parseLeafExpiry extracts the serial number and NotAfter of a freshly
+// issued leaf certificate, to record alongside its identity's admission
+// (PromoteJoinIdentityAdmitted) so a LATER join attempt for the SAME
+// identity can tell an active admission from a lapsed one without a
+// second signing-time lookup.
+func parseLeafExpiry(certPEM []byte) (notAfter time.Time, serial string, err error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return time.Time{}, "", &LeafExpiryParseError{Err: errors.New("issued leaf is not valid PEM")}
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return time.Time{}, "", &LeafExpiryParseError{Err: err}
+	}
+	return cert.NotAfter, cert.SerialNumber.String(), nil
+}
+
+// JoinCSRIdentityError reports that a joiner's CSR does not carry the
+// claimed node identity as its sole URI subject alternative name, or
+// carries a SAN of a kind HandleJoinRequest never trusts. See
+// validateJoinCSRIdentity.
+type JoinCSRIdentityError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *JoinCSRIdentityError) Error() string {
+	return "clusterenroll: certificate signing request: " + e.Reason
+}
+
+// LeafExpiryParseError reports that HandleJoinRequest could not parse the
+// NotAfter/serial of the leaf it had just itself issued (IssueLeafForKey)
+// -- an internal invariant violation, never caused by anything the joiner
+// submitted.
+type LeafExpiryParseError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *LeafExpiryParseError) Error() string {
+	return "clusterenroll: could not parse the issued leaf's own expiry: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *LeafExpiryParseError) Unwrap() error { return e.Err }
 
 // joinServerMaxConcurrentConns bounds how many Noise_NK handshakes a
 // JoinServer services at once. An attacker that can open connections
@@ -317,6 +515,7 @@ type JoinServer struct {
 	store       kvstore.AtomicKVStore
 	trustDomain string
 	provider    cakey.Provider
+	advertiser  FeatureAdvertiser
 	logger      *slog.Logger
 	stopOnce    sync.Once
 	wg          sync.WaitGroup
@@ -363,6 +562,7 @@ func StartJoinServer(provider cakey.Provider, opts JoinServerOptions, dataDir st
 		store:       opts.Store,
 		trustDomain: opts.TrustDomain,
 		provider:    provider,
+		advertiser:  opts.Advertiser,
 		logger:      logger,
 		conns:       make(chan struct{}, joinServerMaxConcurrentConns),
 	}
@@ -520,7 +720,7 @@ func (s *JoinServer) handle(conn net.Conn) {
 	if err := json.Unmarshal(plaintext, &req); err != nil {
 		resp.Error = "invalid request"
 	} else {
-		resp = HandleJoinRequest(context.Background(), s.provider, s.store, s.trustDomain, &req)
+		resp = HandleJoinRequest(context.Background(), s.provider, s.store, s.trustDomain, &req, s.advertiser)
 	}
 	if resp.Error != "" {
 		RecordJoinAttemptFailure(source)
@@ -552,8 +752,19 @@ type JoinClientOptions struct {
 	// ServerKey is the join listener's Curve25519 public key (JoinServer.PublicKey).
 	ServerKey []byte
 
-	// Token is the join-admission secret. Required.
+	// Token is the join-admission secret. Empty submits the CSR into the
+	// signing member's replicated approval queue instead (see JoinCSR).
 	Token string
+
+	// ReplicaID is this node's own Raft replica ID, carried so the signing
+	// member can publish a pre-membership feature advertisement for it (see
+	// FeatureAdvertiser). Zero skips advertising.
+	ReplicaID uint64
+
+	// Features names the cluster features this node's binary implements
+	// (featuregate.SupportedNames()). The signing member filters this to
+	// names it knows before advertising anything.
+	Features []string
 
 	// Timeout bounds the dial, handshake and exchange. Zero uses DefaultTimeout.
 	Timeout time.Duration
@@ -576,10 +787,6 @@ func (o *JoinClientOptions) timeout() time.Duration {
 // handshake or framing failure. Neither this node's private key nor the
 // cluster CA's ever appears on the wire in either direction.
 func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeURI string) ([]byte, error) {
-	if opts.Token == "" {
-		return nil, &MissingJoinTokenError{}
-	}
-
 	dialer := net.Dialer{Timeout: opts.timeout()}
 	conn, err := dialer.DialContext(ctx, "tcp", opts.ServerAddr)
 	if err != nil {
@@ -587,7 +794,7 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 	}
 	defer conn.Close()
 
-	return joinClientExchange(conn, opts.ServerKey, opts.timeout(), opts.Token, csrDER, nodeURI)
+	return joinClientExchange(conn, opts.ServerKey, opts.timeout(), opts.Token, csrDER, nodeURI, opts.ReplicaID, opts.Features)
 }
 
 // joinClientExchange drives the initiator side of one join exchange over an
@@ -595,8 +802,10 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 // request/response. Separated from JoinCSR so a test can drive it with an
 // in-memory net.Conn fake that fails a specific Read or Write
 // deterministically, rather than racing real socket timing to reach a
-// frame-failure branch.
-func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, token string, csrDER []byte, nodeURI string) ([]byte, error) {
+// frame-failure branch. replicaID and features are carried to the signing
+// member so it can publish a pre-membership feature advertisement (see
+// FeatureAdvertiser); replicaID zero skips it.
+func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, token string, csrDER []byte, nodeURI string, replicaID uint64, features []string) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
 
 	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
@@ -630,7 +839,7 @@ func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, 
 		return nil, &FetchError{Method: "join", Err: err}
 	}
 
-	req := JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI}
+	req := JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: replicaID, Features: features}
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
@@ -658,6 +867,9 @@ func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, 
 	}
 	if resp.Error != "" {
 		return nil, &JoinRefusedError{Reason: resp.Error}
+	}
+	if resp.Pending {
+		return nil, &JoinPendingError{RequestID: resp.RequestID}
 	}
 	return resp.CertPEM, nil
 }

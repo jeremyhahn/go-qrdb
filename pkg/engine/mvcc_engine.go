@@ -17,6 +17,8 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sort"
@@ -28,6 +30,8 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -38,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -89,10 +94,19 @@ type MVCCEngine struct {
 	// explicit index API. Guarded by indexMu with the maps above.
 	indexOwners map[string]string
 
-	lessor   *lease.Lessor
-	hub      *watch.Hub
-	ts       *timeseries.Storage
-	pebbleDB *pebble.DB
+	lessor     *lease.Lessor
+	auditChain *audit.Chain
+	hub        *watch.Hub
+	ts         *timeseries.Storage
+	pebbleDB   *pebble.DB
+
+	// indexMgr owns every vector namespace's in-memory ANN index. Nil is a
+	// valid, fully no-op configuration (every vector command still applies
+	// to the replicated store exactly as it does with one configured;
+	// WithMVCCVectorIndex is what the binding's owner gives this engine a
+	// checkpoint directory and encryptor to get search answered from memory
+	// instead of scanning the store).
+	indexMgr *VectorIndexManager
 
 	// updateHandlers maps op codes to their update handlers.
 	updateHandlers map[byte]mvccHandler
@@ -105,6 +119,16 @@ type MVCCOption func(*MVCCEngine)
 func WithMVCCLessor(lr *lease.Lessor) MVCCOption {
 	return func(e *MVCCEngine) {
 		e.lessor = lr
+	}
+}
+
+// WithMVCCAuditChain attaches a replicated audit Chain to the engine for
+// protocol.OpAuditAppend. When unset, the opcode is refused with
+// *statemachine.ServiceNotConfiguredError exactly as a nil lessor refuses a
+// lease opcode.
+func WithMVCCAuditChain(c *audit.Chain) MVCCOption {
+	return func(e *MVCCEngine) {
+		e.auditChain = c
 	}
 }
 
@@ -127,6 +151,20 @@ func WithMVCCTimeSeries(ts *timeseries.Storage) MVCCOption {
 func WithMVCCPebbleDB(db *pebble.DB) MVCCOption {
 	return func(e *MVCCEngine) {
 		e.pebbleDB = db
+	}
+}
+
+// WithMVCCVectorIndex attaches a vector index manager configured with dir
+// (the binding's vector-index checkpoint directory; empty disables
+// checkpoint persistence, per docs/vectors/engineering.md "Checkpoints" --
+// "a memory binding writes none") and enc (the binding's at-rest encryptor;
+// nil is a valid, no-op encryptor, not a disabled one -- see
+// atrest.New). Without this option the engine still applies every vector
+// command to the replicated store identically; it simply has no in-memory
+// index to search, keep warm, or checkpoint.
+func WithMVCCVectorIndex(dir string, enc *atrest.Encryptor) MVCCOption {
+	return func(e *MVCCEngine) {
+		e.indexMgr = NewVectorIndexManager(dir, enc)
 	}
 }
 
@@ -159,6 +197,14 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 			return nil, err
 		}
 	}
+	// The replicated audit chain's head is kept in memory exactly like the
+	// lessor's table, and for the same reason: a restart or a snapshot
+	// recovery builds a fresh engine over storage the Chain has not seen.
+	if e.auditChain != nil {
+		if err := e.auditChain.Restore(stg); err != nil {
+			return nil, err
+		}
+	}
 	// Attach the revision-index replayer so watches created with a start
 	// revision replay durable history before switching to live delivery.
 	if e.hub != nil {
@@ -176,6 +222,10 @@ func (e *MVCCEngine) Store() *mvcc.Store { return e.store }
 
 // Lessor returns the attached lessor. Returns nil if no lessor is configured.
 func (e *MVCCEngine) Lessor() *lease.Lessor { return e.lessor }
+
+// AuditChain returns the attached replicated audit Chain. Returns nil if none
+// is configured.
+func (e *MVCCEngine) AuditChain() *audit.Chain { return e.auditChain }
 
 // TimeSeries returns the attached time-series storage. Returns nil if not
 // configured.
@@ -197,7 +247,8 @@ func (e *MVCCEngine) TimeSeries() *timeseries.Storage { return e.ts }
 // never committed must not outlive the failure (resyncLessor).
 func (e *MVCCEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	if err := e.update(entries, results); err != nil {
-		return e.resyncLessor(err)
+		err = e.resyncLessor(err)
+		return e.resyncAuditChain(err)
 	}
 	return nil
 }
@@ -207,7 +258,7 @@ func (e *MVCCEngine) update(entries []sm.Entry, results []sm.Result) error {
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
-	notifications, err := e.UpdateEntries(batch, entries, results)
+	notifications, vectorEffects, err := e.UpdateEntries(batch, entries, results)
 	if err != nil {
 		return err
 	}
@@ -225,6 +276,7 @@ func (e *MVCCEngine) update(entries []sm.Entry, results []sm.Result) error {
 	}
 
 	e.DeliverNotifications(notifications)
+	e.ApplyVectorIndexEffects(vectorEffects)
 	return nil
 }
 
@@ -242,21 +294,43 @@ func (e *MVCCEngine) resyncLessor(applyErr error) error {
 	return applyErr
 }
 
+// resyncAuditChain rebuilds the replicated audit Chain's in-memory head from
+// the committed audit table after the apply that failed with applyErr,
+// mirroring resyncLessor exactly and for the same reason: the Chain's
+// in-memory head for a batch that never committed must not outlive the
+// failure.
+func (e *MVCCEngine) resyncAuditChain(applyErr error) error {
+	if e.auditChain == nil {
+		return applyErr
+	}
+	if err := e.auditChain.Restore(e.stg); err != nil {
+		return &AuditChainResyncError{ApplyErr: applyErr, RestoreErr: err}
+	}
+	return applyErr
+}
+
 // UpdateEntries dispatches entries to their handlers using the provided batch,
 // without committing the batch. Returns the accumulated notifications for
 // delivery after the caller commits the batch. This method is used by
 // MVCCStateMachine which needs to inject Raft metadata (lastApplied) into the
 // same batch before committing.
-func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, results []sm.Result) ([]Notification, error) {
+func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, results []sm.Result) ([]Notification, []vector.IndexEffect, error) {
 	var notifications []Notification
+	var vectorEffects []vector.IndexEffect
 
 	for i, entry := range entries {
 		cmd, err := protocol.DecodeCommand(entry.Cmd)
 		if err != nil {
 			// A committed entry this build cannot decode is divergence, not a
 			// refusal: those bytes are already in the log on every replica.
-			return nil, err
+			return nil, nil, err
 		}
+
+		// Read BEFORE the handler runs: a batch upsert's effect needs the
+		// namespace's NextID as it stood before this command (see
+		// vectorBatchUpsertPreNextID), which the handler's own write is
+		// about to advance in this same batch.
+		preNextID := vectorBatchUpsertPreNextID(batch, cmd)
 
 		var result sm.Result
 		var notifs []Notification
@@ -275,19 +349,50 @@ func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, resu
 		// shard every subsequent linearizable read, on every engine sharing it.
 		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entry.Index, result, err)
 		if stop {
-			return nil, applyErr
+			return nil, nil, applyErr
 		}
 		// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 		results[i] = resolved
 
-		// Notifications from a refused entry are deliberately dropped: it
-		// mutated nothing, so there is nothing for a watcher to observe.
-		if err == nil && len(notifs) > 0 {
-			notifications = append(notifications, notifs...)
+		// Notifications and index effects from a refused entry are
+		// deliberately dropped: it mutated nothing, so there is nothing for a
+		// watcher to observe and nothing for the in-memory index to apply.
+		if err == nil {
+			if len(notifs) > 0 {
+				notifications = append(notifications, notifs...)
+			}
+			effects, eerr := vectorIndexEffects(batch, cmd.Op, cmd.Payload, result, preNextID)
+			if eerr != nil {
+				return nil, nil, eerr
+			}
+			vectorEffects = append(vectorEffects, effects...)
 		}
 	}
 
-	return notifications, nil
+	return notifications, vectorEffects, nil
+}
+
+// ApplyVectorIndexEffects applies effects to the engine's vector index
+// manager, after the batch that produced them has committed. Safe to call
+// with no index manager configured or an empty slice.
+func (e *MVCCEngine) ApplyVectorIndexEffects(effects []vector.IndexEffect) {
+	e.indexMgr.ApplyEffects(effects)
+}
+
+// WarmVectorIndex populates the engine's vector index manager from the
+// records already committed to its storage: for each namespace, a
+// checkpoint if one validates, otherwise a full rebuild
+// (docs/vectors/engineering.md "Open"). Call once, after construction and
+// before serving vector reads. A no-op when no vector index manager is
+// configured (WithMVCCVectorIndex).
+func (e *MVCCEngine) WarmVectorIndex() error {
+	return e.indexMgr.Warm(e.stg)
+}
+
+// VectorIndex returns the engine's vector index manager, or nil when
+// WithMVCCVectorIndex was not given at construction.
+func (e *MVCCEngine) VectorIndex() *VectorIndexManager {
+	return e.indexMgr
 }
 
 // DeliverNotifications sends accumulated notifications to the watch hub.
@@ -334,9 +439,19 @@ func (e *MVCCEngine) DeliverNotifications(notifications []Notification) {
 func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, error) {
 	switch q := query.(type) {
 	case service.MVCCGetQuery:
+		// See KVEngine.lookupKey for why vector keys are refused here rather
+		// than merely left to the internal-key discovery guard, which
+		// documents itself as not covering exact-key Get (go-qrdb
+		// vector-replicated review, B3).
+		if vector.IsForgedKey(q.Key) {
+			return nil, &vector.ForgedKeyError{Key: q.Key}
+		}
 		return e.store.Get(q.Key)
 
 	case service.MVCCGetAtRevisionQuery:
+		if vector.IsForgedKey(q.Key) {
+			return nil, &vector.ForgedKeyError{Key: q.Key}
+		}
 		return e.store.GetAtRevision(q.Key, q.Revision)
 
 	case service.MVCCRangeQuery:
@@ -472,6 +587,12 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		return e.listKeys(q.Prefix)
 
 	case []byte:
+		if statemachine.IsReservedKey(q) {
+			return nil, nil
+		}
+		if vector.IsForgedKey(q) {
+			return nil, &vector.ForgedKeyError{Key: q}
+		}
 		result, err := e.store.Get(q)
 		if err != nil {
 			var knf *mvcc.KeyNotFoundError
@@ -483,6 +604,12 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		return result.Value, nil
 
 	case string:
+		if statemachine.IsReservedKey([]byte(q)) {
+			return nil, nil
+		}
+		if vector.IsForgedKey([]byte(q)) {
+			return nil, &vector.ForgedKeyError{Key: []byte(q)}
+		}
 		result, err := e.store.Get([]byte(q))
 		if err != nil {
 			var knf *mvcc.KeyNotFoundError
@@ -492,6 +619,20 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 			return nil, err
 		}
 		return result.Value, nil
+
+	case service.VectorSearchQuery:
+		if e.indexMgr == nil {
+			return nil, &InvalidQueryError{Reason: "vector index not configured"}
+		}
+		hits, err := e.indexMgr.Search(q.Namespace, q.Query, q.K)
+		if err != nil {
+			return nil, err
+		}
+		results := make([]service.VectorSearchHit, len(hits))
+		for i, h := range hits {
+			results[i] = service.VectorSearchHit{ID: h.ID, Distance: h.Distance}
+		}
+		return results, nil
 
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
@@ -608,6 +749,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpLeaseGrant:        handleLeaseGrant,
 		protocol.OpLeaseRevoke:       e.handleLeaseRevoke,
 		protocol.OpLeaseKeepAlive:    handleLeaseKeepAlive,
+		protocol.OpAuditAppend:       e.handleAuditAppend,
 		protocol.OpIndexCreate:       e.handleIndexCreate,
 		protocol.OpIndexDrop:         e.handleIndexDrop,
 		protocol.OpTSWrite:           e.handleTSWrite,
@@ -615,6 +757,31 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpTSWritePoint:      e.handleTSWritePoint,
 		protocol.OpTSDeleteSeries:    e.handleTSDeleteSeries,
 		protocol.OpTSSetRetention:    e.handleTSSetRetention,
+
+		// Vector engine (docs/vectors/engineering.md "Target: the vector
+		// engine"). Every handler is a plain function over the shared
+		// storage.Batch (vector_handlers.go), not a method, so KVEngine's own
+		// dispatch (buildExtHandlers, kv_engine.go) calls the identical logic.
+		protocol.OpVectorNamespaceCreate:  adaptVectorHandler(applyVectorNamespaceCreate),
+		protocol.OpVectorNamespaceDelete:  adaptVectorHandler(applyVectorNamespaceDelete),
+		protocol.OpVectorUpsert:           adaptVectorHandler(applyVectorUpsert),
+		protocol.OpVectorBatchUpsert:      adaptVectorHandler(applyVectorBatchUpsert),
+		protocol.OpVectorDelete:           adaptVectorHandler(applyVectorDelete),
+		protocol.OpVectorBatchDelete:      adaptVectorHandler(applyVectorBatchDelete),
+		protocol.OpVectorUpdateMetadata:   adaptVectorHandler(applyVectorUpdateMetadata),
+		protocol.OpVectorIndexReconfigure: adaptVectorHandler(applyVectorIndexReconfigure),
+	}
+}
+
+// adaptVectorHandler lifts a vector apply function -- which only needs the
+// batch and the payload -- into the mvccHandler shape MVCCEngine's dispatch
+// table requires. It emits no notifications: the vector engine has no watch
+// surface (docs/vectors/architecture.md "What this feature deliberately does
+// not do").
+func adaptVectorHandler(fn func(storage.Batch, []byte) (sm.Result, error)) mvccHandler {
+	return func(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+		result, err := fn(batch, payload)
+		return result, nil, err
 	}
 }
 
@@ -712,7 +879,11 @@ func decodeBaseKVPut(payload []byte) (key, value []byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return payload[2 : 2+keyLen], payload[2+keyLen:], nil
+	key = payload[2 : 2+keyLen]
+	if verr := vector.RefuseForgedKeys(key); verr != nil {
+		return nil, nil, verr
+	}
+	return key, payload[2+keyLen:], nil
 }
 
 // handleBaseKVPut processes a base KV Put command (kv.OpPut) by decoding the
@@ -815,6 +986,9 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if verr := vector.RefuseForgedKeys(key); verr != nil {
+		return sm.Result{}, nil, verr
+	}
 
 	current, getErr := getInBatchAllowingAbsence(s, batch, key)
 	if getErr != nil {
@@ -873,6 +1047,9 @@ func (e *MVCCEngine) handleCompareAndSwap(s *mvcc.Store, lr *lease.Lessor, batch
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if verr := vector.RefuseForgedKeys(key); verr != nil {
+		return sm.Result{}, nil, verr
+	}
 
 	current, getErr := getInBatchAllowingAbsence(s, batch, key)
 	if getErr != nil {
@@ -916,7 +1093,26 @@ func (e *MVCCEngine) handleCompareAndSwap(s *mvcc.Store, lr *lease.Lessor, batch
 // every compare holds. A refused guard is a successful application that
 // changes nothing (see protocol.OpGuarded).
 func (e *MVCCEngine) handleGuarded(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	inner, refusal, err := protocol.OpenGuarded(payload, func(key []byte) ([]byte, error) {
+	compares, inner, err := protocol.DecodeGuarded(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	// No compare may read the reserved vector namespace, checked BEFORE the
+	// guard is evaluated -- see the matching check and comment in
+	// KVEngine.handleGuarded (go-qrdb vector-replicated review, B3-residual).
+	if verr := vector.RefuseForgedKeys(statemachine.CompareKeys(compares)...); verr != nil {
+		return sm.Result{}, nil, verr
+	}
+	// Checked BEFORE the guard is evaluated, and as a REFUSAL rather than
+	// through the GuardReader below -- see pkg/store/pebble.go's
+	// pebbleHandleGuarded for why: a reserved key reaching the reader
+	// surfaces as *protocol.GuardReadError only on a genuine storage fault,
+	// which halts apply, and a compare's result is observable to the
+	// proposer regardless of outcome.
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(compares)...); refused {
+		return res, nil, nil
+	}
+	refusedKey, ok, err := protocol.EvaluateGuard(compares, func(key []byte) ([]byte, error) {
 		current, gerr := getInBatchAllowingAbsence(s, batch, key)
 		if gerr != nil || current == nil {
 			return nil, gerr
@@ -930,11 +1126,11 @@ func (e *MVCCEngine) handleGuarded(s *mvcc.Store, lr *lease.Lessor, batch storag
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
-	if refusal != nil {
-		return sm.Result{Data: refusal}, nil, nil
-	}
-	handler, ok := e.updateHandlers[inner[0]]
 	if !ok {
+		return sm.Result{Data: protocol.EncodeGuardRefusal(refusedKey)}, nil, nil
+	}
+	handler, hok := e.updateHandlers[inner[0]]
+	if !hok {
 		return sm.Result{}, nil, &protocol.UnknownOpError{Op: inner[0]}
 	}
 	return handler(s, lr, batch, inner[1:])
@@ -1026,6 +1222,9 @@ func (e *MVCCEngine) handleBaseKVDelete(s *mvcc.Store, lr *lease.Lessor, batch s
 		return sm.Result{}, nil, err
 	}
 	key := payload[2 : 2+keyLen]
+	if err := vector.RefuseForgedKeys(key); err != nil {
+		return sm.Result{}, nil, err
+	}
 
 	rev := s.CurrentRevision() + 1
 	prevKv, err := s.DeleteInBatch(batch, key, rev)
@@ -1067,6 +1266,9 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if verr := vector.RefuseForgedKeys(key); verr != nil {
+		return sm.Result{}, nil, verr
 	}
 	if res, refused := statemachine.LeaseRefusal(lr, leaseID); refused {
 		return res, nil, nil
@@ -1122,6 +1324,9 @@ func (e *MVCCEngine) handleMVCCPutIfAbsent(s *mvcc.Store, lr *lease.Lessor, batc
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if verr := vector.RefuseForgedKeys(key); verr != nil {
+		return sm.Result{}, nil, verr
+	}
 	if res, refused := statemachine.LeaseRefusal(lr, leaseID); refused {
 		return res, nil, nil
 	}
@@ -1143,6 +1348,9 @@ func (e *MVCCEngine) handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch sto
 	key, err := protocol.DecodeMVCCDelete(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if verr := vector.RefuseForgedKeys(key); verr != nil {
+		return sm.Result{}, nil, verr
 	}
 
 	rev := s.CurrentRevision() + 1
@@ -1266,6 +1474,27 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	// Both sides: the write ops a branch would stage, AND the compares that
+	// decide which branch runs. pkg/store's PebbleStateMachine already
+	// refused the op side; this engine refused neither until this fix -- a
+	// transaction's compare result is observable to the proposer (which
+	// branch ran) regardless, so a compare against a reserved key is an
+	// extraction oracle over state no caller may read directly, same as a
+	// guarded write's compare.
+	if res, refused := statemachine.ReservedKeyRefusal(append(statemachine.OpKeys(txn.SuccessOps), statemachine.OpKeys(txn.FailureOps)...)...); refused {
+		return res, nil, nil
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(txn.Compares)...); refused {
+		return res, nil, nil
+	}
+
+	// No compare may read the reserved vector namespace, checked before any
+	// compare is evaluated -- see the matching check and comment in
+	// KVEngine.handleTransaction (go-qrdb vector-replicated review,
+	// B3-residual).
+	if verr := vector.RefuseForgedKeys(statemachine.CompareKeys(txn.Compares)...); verr != nil {
+		return sm.Result{}, nil, verr
+	}
 
 	succeeded := true
 	for _, dc := range txn.Compares {
@@ -1290,6 +1519,14 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	// Pre-validate the OPCODES of the selected set first: an operation this
 	// engine cannot execute refuses the whole transaction and stages nothing.
 	if verr := validateDecodedOps(ops); verr != nil {
+		return sm.Result{}, nil, verr
+	}
+	// No operation in the selected branch may touch the reserved vector
+	// namespace, checked before anything in it is staged (go-qrdb
+	// vector-replicated review, B3, extended from KVEngine to MVCCEngine:
+	// the same forgery is reachable through this engine's base-KV and MVCC
+	// transaction path).
+	if verr := vector.RefuseForgedKeys(statemachine.OpKeys(ops)...); verr != nil {
 		return sm.Result{}, nil, verr
 	}
 	if res, refused := statemachine.OpsLeaseRefusal(lr, ops); refused {
@@ -1334,10 +1571,19 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
+		return res, nil, nil
+	}
 
 	// Pre-validate the OPCODES first: an operation this engine cannot execute
 	// refuses the whole batch and stages nothing (validateDecodedOps).
 	if verr := validateDecodedOps(ops); verr != nil {
+		return sm.Result{}, nil, verr
+	}
+	// No operation in the batch may touch the reserved vector namespace,
+	// checked before anything in it is staged (go-qrdb vector-replicated
+	// review, B3).
+	if verr := vector.RefuseForgedKeys(statemachine.OpKeys(ops)...); verr != nil {
 		return sm.Result{}, nil, verr
 	}
 	if res, refused := statemachine.OpsLeaseRefusal(lr, ops); refused {
@@ -1582,6 +1828,84 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 	}
 
 	return sm.Result{Value: uint64(leaseID)}, nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Replicated audit chain handler
+// ---------------------------------------------------------------------------
+
+// handleAuditAppend applies one protocol.OpAuditAppend command: either
+// sub-type, append or prune, against the engine's attached audit.Chain. The
+// sequence number and hash digest for an append are assigned by
+// Chain.Append itself, never read from the payload, which is what makes
+// every replica compute the identical chain from the identical committed
+// entry.
+func (e *MVCCEngine) handleAuditAppend(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	subtype, tenantID, body, err := protocol.DecodeAuditCommand(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if e.auditChain == nil {
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "audit"}), nil, nil
+	}
+
+	switch subtype {
+	case protocol.AuditSubtypeAppend:
+		var ev audit.AuditEvent
+		if unmarshalErr := json.Unmarshal(body, &ev); unmarshalErr != nil {
+			// The outer command (subtype, tenant id, body length) decoded
+			// fine -- this is a well-formed body that merely fails to
+			// unmarshal as an AuditEvent, a deterministic consequence of
+			// the committed entry's own bytes that every replica reaches
+			// identically, so it is a refusal, not a halt. Contrast the
+			// unknown-subtype and truncated-framing cases below and in
+			// DecodeAuditCommand, which stay halts: those name a shape this
+			// binary does not recognize at all, the same class as
+			// protocol.UnknownOpError.
+			return statemachine.RefusalResult(&protocol.InvalidCommandError{Reason: "audit append: malformed event: " + unmarshalErr.Error()}), nil, nil
+		}
+		seq, appendErr := e.auditChain.Append(batch, tenantID, ev)
+		if appendErr != nil {
+			// A table-write fault is local to this replica and must halt
+			// apply, never be answered as a refusal its peers did not make --
+			// exactly the lease-table TableWriteError rule. Everything else
+			// Append can return (a missing Timestamp, an event that will not
+			// re-marshal) is a deterministic consequence of the bytes in the
+			// committed entry: every replica reaches the identical refusal
+			// from the identical input, so it is encoded as an application
+			// result rather than returned as a Go error that would stall
+			// Raft on a command every replica is equally unable to apply.
+			var twe *audit.TableWriteError
+			if errors.As(appendErr, &twe) {
+				return sm.Result{}, nil, appendErr
+			}
+			return statemachine.RefusalResult(appendErr), nil, nil
+		}
+		return sm.Result{Value: seq}, nil, nil
+
+	case protocol.AuditSubtypePrune:
+		if len(body) != 8 {
+			return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "audit prune: cutoff malformed"}
+		}
+		cutoff := binary.BigEndian.Uint64(body)
+		// Prune computes its delete range from the Chain's own in-memory
+		// head alone -- never from a storage read -- which is what makes it
+		// independent of how many committed entries this Update call's
+		// batch happens to pack together; see pkg/audit.Chain.Prune's doc
+		// comment (go-qrdb audit-replicated review, B1). Every error it can
+		// return is a fault in THIS replica's own storage, never a property
+		// of the cutoff value, so there is nothing here that is a
+		// legitimate per-replica refusal: it always halts apply.
+		deleted, pruneErr := e.auditChain.Prune(batch, tenantID, cutoff)
+		if pruneErr != nil {
+			return sm.Result{}, nil, pruneErr
+		}
+		return sm.Result{Value: uint64(deleted)}, nil, nil
+
+	default:
+		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "audit command: unknown sub-type"}
+	}
 }
 
 // ---------------------------------------------------------------------------

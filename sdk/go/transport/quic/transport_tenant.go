@@ -339,11 +339,13 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 // quicTenantBarrierInitRequest mirrors the server-side wire schema for
 // tenant.BarrierInit.
 type quicTenantBarrierInitRequest struct {
-	TenantID   string `json:"tenant_id"`
-	Passphrase []byte `json:"passphrase,omitempty"`
-	Threshold  int    `json:"threshold,omitempty"`
-	Shares     int    `json:"shares,omitempty"`
-	Strategy   string `json:"strategy,omitempty"`
+	TenantID   string                             `json:"tenant_id"`
+	Passphrase []byte                             `json:"passphrase,omitempty"`
+	Threshold  int                                `json:"threshold,omitempty"`
+	Shares     int                                `json:"shares,omitempty"`
+	Strategy   string                             `json:"strategy,omitempty"`
+	Officers   []transport.OfficerRegisterRequest `json:"officers,omitempty"`
+	Policy     string                             `json:"policy,omitempty"`
 }
 
 // quicTenantBarrierUnsealRequest mirrors the server-side wire schema for
@@ -367,12 +369,19 @@ type quicTenantBarrierStatusRequest struct {
 
 // quicTenantBarrierInitResponse mirrors the server-side wire schema for
 // tenant.BarrierInit responses.
+// quicTenantBarrierInitResponse mirrors the server's ACTUAL wire shape
+// (pkg/api/quic/handlers_tenant_barrier.go's quicTenantBarrierInitResponse):
+// the server sends "share_count" as an int, never a "shares" array -- this
+// struct used to decode a "shares"/[]string pair the server never sends, so
+// ShareCount was always silently 0 over QUIC (found testing the Shamir
+// inline-roster path end to end).
 type quicTenantBarrierInitResponse struct {
-	TenantID    string   `json:"tenant_id"`
-	Strategy    string   `json:"strategy"`
-	Shares      []string `json:"shares,omitempty"`
-	Threshold   int      `json:"threshold,omitempty"`
-	TotalShares int      `json:"total_shares,omitempty"`
+	TenantID    string                              `json:"tenant_id"`
+	Strategy    string                              `json:"strategy"`
+	Threshold   int                                 `json:"threshold,omitempty"`
+	TotalShares int                                 `json:"total_shares,omitempty"`
+	ShareCount  int                                 `json:"share_count,omitempty"`
+	Holders     []transport.TenantBarrierHolderCert `json:"holders,omitempty"`
 }
 
 // quicTenantBarrierStatusResponse mirrors the server-side wire schema for
@@ -417,6 +426,8 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		Threshold:  req.Threshold,
 		Shares:     req.Shares,
 		Strategy:   req.Strategy,
+		Officers:   req.Officers,
+		Policy:     req.Policy,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
@@ -440,9 +451,10 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	return &transport.TenantBarrierInitResponse{
 		TenantID:    wire.TenantID,
 		Strategy:    wire.Strategy,
-		ShareCount:  len(wire.Shares),
+		ShareCount:  wire.ShareCount,
 		Threshold:   wire.Threshold,
 		TotalShares: wire.TotalShares,
+		Holders:     wire.Holders,
 	}, nil
 }
 

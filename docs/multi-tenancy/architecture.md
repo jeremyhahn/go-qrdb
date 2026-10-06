@@ -1,6 +1,7 @@
 # Multi-Tenancy — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
 database, plus the three governance planes that decide who may have which.
@@ -26,10 +27,13 @@ and operational cost.
 |------------------------|------|---------|----------------|------------------|
 | **`prefix`** (default) | Shared system shard | Shared Pebble | Shared system barrier | Logical key prefix only |
 | **`barrier`** | Shared system shard | Dedicated Pebble for IAM data, from the volume pool | Per-tenant DEK (IAM data) | Key prefix + a per-tenant cryptographic barrier over the tenant's IAM data |
+| **`volume`** | Per-tenant single-node, transport-less Raft host | Dedicated filesystem `DataRoot` from the pool | Per-tenant DEK over all data, WAL included | Everything the tenant's databases hold |
+| **`raft`** | Dedicated Raft group per database | State-machine data under the tenant's `DataRoot`; raft log in the shared host LogDB | Per-tenant DEK over the SM data | Each database is its own Raft shard |
+
+*(Corrected 2026-10-01: the `volume` row was missing from this table and the
+`raft` row had been split off below it.)*
 
 Each rung in detail:
-
-| **`raft`** | Dedicated Raft group per database | State-machine data under the tenant's `DataRoot`; raft log in the shared host LogDB | Per-tenant DEK over the SM data | Each database is its own Raft shard |
 
 ### `prefix` — shared store, logical key prefix (default)
 
@@ -697,6 +701,9 @@ the intended shape is that an isolated tenant's records, and therefore its
 indexes, live in the tenant's own store rather than the shared one. Converging
 the resolver-served records onto that store, and whether any index is offered
 before it happens, are open design questions for the owner.
+[Strict tenant isolation](#strict-tenant-isolation--design) rules that
+convergence: an isolated tenant's records move into its own home store, where
+an index is an ordinary index over the tenant's own data.
 
 ## Per-node-independent key design
 
@@ -726,6 +733,652 @@ load-aware scheduler. Each node's `TenantShardReconciler` watches the replicated
 placement table and converges its assigned replicas — starting on boot,
 following placement changes, stopping on demotion. Replicas survive node
 restarts through the persistent placement table and per-node replica re-attach.
+
+## Strict tenant isolation — design
+
+> **Status: RULED — not implemented.** The owner ruled the design decisions on
+> 2026-10-01 and S4 on 2026-10-02; they are listed at the end under
+> [Rulings](#rulings). Nothing in this section exists in the code yet. It is
+> the requirements contract for the work that builds it.
+>
+> **Correction (2026-10-05): S7 already shipped, independent of this ruling.**
+> Tenant onboarding landed on 2026-10-03 (see
+> [Creating a tenant: onboarding with its first admin](#creating-a-tenant-onboarding-with-its-first-admin)
+> above) and took the CSR-based first admin, the pending-admin record and the
+> trust-on-first-init restriction described below for every tenant, under the
+> real field names `admin_username` / `admin_csr_pem` / `admin_cert_pem` — not
+> the `first_admin: {username, csr_pem}` shape this section still shows. What
+> remains unshipped is only the rest of this design: the home store, per-node
+> replica keys, the client fan-out to every node in the serving set, and the
+> cluster isolation-policy ladder itself.
+>
+> Engineering detail and the phased plan:
+> [engineering.md](engineering.md#strict-isolation--engineering-contract-ruled).
+> API, CLI and user guide: [api.md](api.md#strict-isolation--ruled),
+> [cli.md](cli.md#strict-isolation--ruled), [user.md](user.md#strict-isolation--ruled).
+
+### Problem
+
+A tenant on a dedicated isolation tier (`barrier`, `volume` or `raft`) is
+promised isolation. Today most of what makes up that tenant lives in the system
+tenant:
+
+- **Identity.** Its users, roles, role bindings, auth factors, credential
+  lookup keys, permission scopes, invitations and DEK keyring are in the
+  shared, Raft-replicated system store under `__tiam:{tenant}/`. The values
+  are encrypted under the tenant key, but the **key names are plaintext**, and
+  they carry usernames, email addresses, certificate thumbprints, role names
+  and credential lookup hashes.
+- **Certificates.** Its CA private key and its issued-certificate records are
+  in the system store.
+- **Seal metadata.** Its custodian records, its SO PIN commitment, its
+  custodian groups and its submitted Shamir shares are in the system store,
+  outside every tenant barrier. So is its officer roster, before
+  initialization.
+- **Routing.** A global identity index in the system tenant maps every user id
+  and role id to its tenant.
+
+Two more facts make it worse:
+
+- **Shared root key.** Every replica of a `raft` tenant holds the same tenant
+  root key, delivered by `pkg/clusterkeys`. A node whose system key and disk
+  are both compromised yields a key that decrypts the tenant's data on every
+  other replica too.
+- **Operator reach.** RBAC's `ScopeSelf` rule admits any system-tenant
+  identity in any tenant. A system-tenant Admin can:
+  - read and rewrite another tenant's users, roles and factors;
+  - mint a CA-signed client certificate for another tenant's user, and log in
+    as that user;
+  - reach another tenant's database through its etcd listener.
+
+The owner's direction is that a tenant must be fully isolated. **Every tenant
+record, and every system record about the tenant, lives in the tenant's own
+isolated store, to the greatest extent possible.** The only things left in the
+system tenant are the ones that are absolutely required and cannot be avoided.
+
+### Shape chosen
+
+```
+                 SYSTEM TENANT (system shard, replicated to every node)
+                 +-----------------------------------------------------+
+                 | tenant registry entry   tombstone   placement       |
+                 | plan + platform usage   pool slots  seal record     |
+                 | isolation policy        tenant CA certs (public)    |
+                 +-----------------------------------------------------+
+                        |  routing only: who, where, how big
+                        v
+   +--------------------------- tenant "acme" serving set ---------------------------+
+   |   node A                     node B                     node C                  |
+   |   acme replica key A         acme replica key B         acme replica key C      |
+   |   (born on A, never leaves)  (born on B, never leaves)  (born on C, never leaves)|
+   |   +---------------------+    +---------------------+    +---------------------+ |
+   |   | acme home group     |<-->| acme home group     |<-->| acme home group     | |
+   |   |  users roles factors|    |  (Raft replica)     |    |  (Raft replica)     | |
+   |   |  certs CA catalog   |    |                     |    |                     | |
+   |   |  DEK keyring        |    |                     |    |                     | |
+   |   +---------------------+    +---------------------+    +---------------------+ |
+   |   | acme db groups ...  |<-->| acme db groups ...  |<-->| acme db groups ...  | |
+   |   +---------------------+    +---------------------+    +---------------------+ |
+   +----------------------------------------------------------------------------------+
+        Raft carries entries between replicas over node mTLS. Each node encrypts
+        what it stores under ITS OWN replica key. No key crosses a node boundary.
+```
+
+1. **Each strict tenant gets a home store.** It holds every record of the
+   tenant that the platform does not need in order to place, route, size or
+   retire the tenant.
+   - For a `raft` or `barrier` tenant, the home store is a **tenant home
+     group**: a Raft group per tenant, replicated across the tenant's serving
+     set.
+   - For a `volume` tenant, it is the tenant's existing single-node host.
+2. **Each node encrypts its copy under its own replica key.** A replica key
+   is born on the node that uses it, under the tenant's credential as
+   presented to that node, and never leaves that node. Raft replicates
+   entries between replicas over the node mTLS channel it already uses, and
+   each replica encrypts at rest locally. No tenant key is ever sent between
+   nodes, whether a root key, a replica key or a derived key.
+   `pkg/clusterkeys` stops carrying tenant keys.
+3. **The system tenant keeps a short, enumerated list of records.** The list
+   is written down below with the reason for each one, and a test enforces it
+   (see [engineering.md](engineering.md#the-residue-test)).
+4. **A node outside a tenant's serving set never terminates that tenant's
+   connections.** It relays the still-encrypted connection, at layer 4, to a
+   node that serves the tenant. The serving node terminates TLS and
+   authenticates the client itself.
+5. **A cluster-wide floor decides the platform operator's reach, and a tenant
+   may raise it for itself.**
+   - Under `strict`, the operator has no access to tenant records.
+   - Under `operator-access`, named, audited, platform-only permissions reach
+     tenant identity records.
+   - **Tenant databases and data are never accessible across tenants, in
+     either mode, by anyone.**
+
+### Vocabulary
+
+| Term | Meaning |
+|---|---|
+| **node barrier** | Each node's own system barrier. It protects that node's system-shard data, its WAL and its node-local records. |
+| **tenant barrier** | The barrier over one tenant's data on one node. It is keyed by that node's **replica key**. |
+| **database barrier** | An optional per-database barrier, layered on the tenant barrier ([../databases/architecture.md](../databases/architecture.md)). |
+| **replica key** | A tenant root key that exists on exactly one node. Every node in a tenant's serving set has its own. |
+| **serving set** | The nodes holding the tenant's home group replicas. Only they hold the tenant's keys, data or identity records. Every database group of the tenant is placed inside it. |
+| **tenant home group / home store** | The per-tenant replicated group (`raft` and `barrier` tenants), or host (`volume` tenants), that holds the tenant's own records. |
+| **tenant registry entry** | The tenant's record in the system tenant: what the platform needs, and nothing more. |
+| **strict tenant** | A tenant whose effective isolation policy is `strict` (see [The isolation policy](#the-isolation-policy)). |
+
+### What moves into the tenant
+
+Every row is a per-tenant record that lives in the system store today, or is
+reachable through it. The full inventory, with code locations, is in
+[engineering.md](engineering.md#inventory--where-tenant-records-live-today).
+
+| Record | Today | For a strict tenant |
+|---|---|---|
+| Users, and the username, email and SPKI indexes | `__tiam:{t}/__sys:users…` and `__sys:user_idx…` in the system shard; plaintext key names | home store |
+| Roles, the role-name index, role bindings | `__tiam:{t}/__sys:roles…` | home store |
+| User auth factors, credential lookup index | `__tiam:{t}/__sys:auth/…` | home store |
+| Custodian (ceremony) auth factors and challenges | `__tiam:{t}/__sys:authfactor…` | home store |
+| Invitations and redemptions | `__tiam:{t}/invites/…` | home store |
+| Permission-scope overrides | `__tiam:{t}/__sys:perm_scope/…` | home store |
+| DEK keyring | `__tiam:{t}/__sys:dek/keyring` | home store |
+| Identity index (user and role id → tenant) | `system/__sys:identity_idx/…` | **removed** — see [Identity routing without a global index](#identity-routing-without-a-global-index) |
+| Tenant CA private key and CA certificate | `__sys:cert_ca/{t}/…`, wrapped by the writing node's key | home store. Only the CA certificate, which is public, is also published to the system tenant. |
+| Issued-certificate records | `__sys:certs/{t}/{serial}` | home store |
+| Revocation of tenant-issued certificates | `__sys:certs_revoked/{serial}` (global) | home store, enforced by the serving replicas when they authenticate the tenant's users |
+| Custodian records and indexes | `__sys:custodian…` (unconfined root store) | home store |
+| SO PIN commitment | `__sys:so-pin-commit/{t}` (unconfined root store) | each node's tenant bootstrap record (below), because it gates operations on a sealed tenant |
+| Custodian groups and submitted Shamir shares | `custodian-groups/{id}` and `shares/{group}/{index}`, unconfined, with **share bytes in the replicated store** | Groups go to the home store. **Share bytes are never persisted anywhere**: they are held in protected memory on the node that receives them, as the share-holder model requires. |
+| Tenant officer roster | tenant barrier store; **falls back to the replicated system store before init** | Home store, plus the unseal roster in each node's tenant bootstrap record. Before init, the roster is held in memory by the init ceremony. |
+| Database catalog | node-local `meta.json` on the creating node only | home store, as one replicated catalog for the tenant |
+| Collection work journal, drop fence, reclaim index, locks, leases, sequences, row locks, index catalog, time series | system shard under `{t}/…` and `__sys:…/{t}/…` | the database's own store, per the databases binding design. Tenant-wide journals go to the home store. |
+| Tenant-scope encryption-migration records | `__sys:encmig/{t}/{db}` | home store |
+| Audit events about the tenant's identities and data | one node-local file shared by every tenant | a per-tenant, hash-chained trail, node-local on each serving node, under that node's tenant barrier (S9). Platform events about the tenant go to the platform trail. |
+| Identity-object usage counters (`CurrentUsers`, `CurrentRoles`, `CurrentCertificates`, `CurrentCollections`, `CurrentKeys`, `CurrentTSMetrics`) | on the tenant registry entry | home store; the home group enforces them against the plan's limits |
+| Vector namespace names in metric labels | `qrdb_vector_*{tenant, namespace}` | the namespace label is removed; a tenant's data names are not metric labels |
+
+### What stays in the system tenant, and why
+
+This list is closed. A new record keyed by a tenant may enter the system tenant
+only by being added here with its reason, and the residue test enforces that.
+
+| Record | Key | Why it cannot move |
+|---|---|---|
+| **Tenant registry entry** | `__sys:tenants/{id}` | Every node must place, route, admit or refuse a tenant before it is unsealed, and on nodes holding none of its keys. Quotas and entitlements are the platform's contract with the tenant, enforced on resources the platform owns. |
+| **Tombstone** | `__sys:tenants-deleted/{id}` | It is the permanent, replicated proof that an id is retired. Every node checks it to refuse re-creation and to reclaim its own disk. A store that dies with the tenant cannot hold it. |
+| **Placement** of the home group and of every database group | `__sys:placement/{tenant}/…` | Every node's reconciler needs it to start, stop and purge shards, including while the tenant is sealed. Databases are named by **opaque id**, never by name (S5). |
+| **Volume-pool slot assignment** | `__sys:volumepool/assign/{id}` | Volume pools are a platform resource. The assignment must be agreed cluster-wide before the tenant has any store to hold it. |
+| **Cluster seal record** for the tenant scope | `__sys:cluster/seal/tenant/{t}` (cluster-wide sealing design) | Every serving node must learn from the replicated system that the tenant is sealed, including a node that cannot reach the tenant's own group. It holds no key material, and names its principal by an opaque reference. |
+| **Tenant CA certificate (public)** | `__sys:cert_ca_pub/{t}` | A serving node verifies a client's chain before it reads anything else about the client. A public certificate discloses nothing the client does not already present. |
+| **Cluster isolation floor** | `__sys:cluster/isolation_policy` | Cluster-wide, and read on every authorization decision. |
+
+What the **tenant registry entry** holds:
+- id, display name, isolation type;
+- barrier mode (self-managed or system-managed);
+- the tenant's own isolation policy;
+- lifecycle state;
+- serving set (home group id and members);
+- plan (quotas and entitlements);
+- platform usage counters (databases, Raft groups, replicas, storage bytes,
+  backups);
+- for a self-managed tenant not yet initialized only, the **pending first
+  admin**: the username and the SPKI thumbprint from the creation CSR. It is
+  deleted by initialization (see
+  [Bootstrapping and unsealing](#bootstrapping-and-unsealing)).
+
+Two fields are dropped from today's record. The replicated `DataRoot` goes,
+because it is one node's path and so is node-local state. The identity-object
+counters go too; they have moved to the home store.
+
+The following records are **node-level**, not system-tenant, and stay where
+they are:
+
+| Record | Where | Why |
+|---|---|---|
+| Tenant root record (`DataRoot`, barrier mode) | `__registry:tenant_root/{id}` in the node-local seal store | A node must find the tenant's sealed store on its own disk before anything is unsealed. |
+| **Tenant bootstrap record** (new): this node's sealed replica-key blob, its credential verifier, the unseal roster (officer usernames and SPKI thumbprints), and the SO PIN commitment | The tenant's node-local barrier store, outside the encrypted region, next to the sealed blob as today | Unsealing needs it while everything else is sealed. Its integrity is bound to the replica key and re-verified after every unseal. |
+| Rate-limit buckets | node memory | Platform self-protection. Never persisted. |
+| Platform audit trail | node-local, hash-chained file | It records platform actions: tenant create and delete, plan changes, seal and unseal requests, policy changes, operator access and passthrough relays. A tenant's own events are in the tenant's trail. |
+
+**No `prefix` tenant is strict (S2).** A `prefix` tenant has no key and no
+store of its own, so it cannot hold its records anywhere but the system shard.
+The consequences:
+
+- Under a `strict` cluster floor, creating a `prefix` tenant is refused with
+  `tenant.StrictRequiresDedicatedStorageError`. The same refusal applies when
+  a `prefix` tenant asks for the strict policy for itself under an
+  `operator-access` floor.
+- A `prefix` tenant becomes strict only by changing its isolation type, which
+  is refused while it holds data.
+- The system tenant is the platform itself. It stays `prefix`, and the floor
+  does not apply to it.
+
+So a `strict` cluster can host tenants only where `storage.volume_pools` is
+configured. Without a pool, tenant creation fails with the existing
+`volume pool not configured` refusal, now raised before any record is written.
+
+### Per-replica tenant keys
+
+**A replica key is created on the node that uses it, the first time that node
+holds a valid credential for the tenant, and it never leaves that node.**
+
+| Barrier mode | How a node's replica key is wrapped | What a node needs to unseal it |
+|---|---|---|
+| **System-managed** | under that node's own node barrier, as today | nothing beyond its own unsealed node barrier; it auto-unseals |
+| **Self-managed, passphrase** | under a KEK from Argon2id over the passphrase and **this node's** salt | the passphrase, presented to this node |
+| **Self-managed, Shamir** | under an **unseal key** reconstructed from M-of-N shares (today's unseal-key indirection). The unseal key is common to the tenant; every replica key under it is independent. | a quorum of shares, presented to this node |
+| **Self-managed, hardware** (injected from go-xkms) | under a key in that node's own hardware | that node's hardware, which by nature binds each node to its own device |
+
+What this buys, measured against today:
+
+- **One node's compromise stays on that node.** Compromising one node's disk
+  and memory yields that node's replica key and nothing else; the other
+  replicas' keys were never on it. Today the same compromise yields the key
+  every replica shares.
+- **The tenant's credential is the only common secret.** It travels from the
+  credential holder's client to each node, and never from node to node.
+- **`pkg/clusterkeys` stops carrying tenant keys.** `ExportRootKeyContext`,
+  `ImportRootKey`, `ImportSealedBlob` and the tenant-key delivery modes are
+  removed, not kept for compatibility. `clusterkeys` keeps its node-identity
+  checks, and delivers a **credential verifier** to a new replica (below),
+  which is not a key.
+- **A system-managed tenant is strictly weaker, as today.** Its replica keys
+  are wrapped under node keys, so whoever controls a node's root controls that
+  node's copy. It is protected from the operator's API reach, not from the
+  node's own root. The `AllowSystemManagedBarrier` entitlement keeps gating it.
+
+**Raft snapshots and data movement.** Raft already moves state between nodes
+whose node barriers have different keys; every system-shard snapshot does it
+today. The sender reads through its own barrier, the bytes cross node mTLS, and
+the receiver writes through its own barrier. The tenant groups use the same
+path, with the tenant barrier in place of the node barrier. No ciphertext
+crosses a node boundary.
+
+**The Raft log of tenant groups — S4, ruled: under the tenant key from day
+one.**
+- **A strict tenant never has a log under a node key.** Every database group
+  of a strict tenant, and its home group, writes its Raft log to a
+  **dedicated WAL** under that node's tenant barrier from the first entry
+  (G1). Volume tenants already do this on their own host. `raft` and
+  `barrier` tenants use the existing dedicated-WAL mechanism: the multiplex
+  LogDB (`pkg/database/multiplex_logdb.go`) over go-quicraft's per-shard
+  barriers.
+- **No fallback (G2).** A shard whose dedicated WAL cannot be opened does not
+  start. Today it falls back silently to the shared WAL; that path is
+  deleted, and the refusal is `TenantWALUnavailableError`.
+- **Every run mode (G3).** The multiplex is wired on single-node hosts and on
+  the SDK node, so the guarantee does not depend on how a node is deployed.
+- **Seal ordering (G4).** Sealing a tenant on a node stops and unregisters
+  the tenant's shards there before its barrier seals. A sealed WAL is
+  therefore never part of a commit.
+- **Recovery (G6).** A shard that failed is evicted from the host, and
+  restarted when the tenant is unsealed.
+- **Per-node keys (G10).** Each node's tenant WALs are keyed by that node's
+  own replica key (see above).
+- **Rotation (G7)** of a tenant WAL's key epochs is a later phase.
+- **G5 is a go-quicraft defect:** one sealed WAL fails a whole commit batch.
+  It is raised with go-quicraft. Until it is fixed, the G4 ordering is what
+  keeps a sealed WAL out of every batch.
+
+### Identity routing without a global index
+
+The global id → tenant index exists so that a by-id operation from a
+system-tenant caller can find the tenant that holds the id. Under this design,
+by-id operations never cross tenants:
+
+- **An id is resolved in the caller's own tenant.** A caller can only act in
+  its own tenant, so the question "which store?" always has one answer.
+- **Role-id capture becomes impossible by construction.** The index's claims
+  exist to stop one tenant redirecting another tenant's by-id routing. With no
+  shared routing table, there is nothing to redirect.
+- **Under `operator-access`, an operator names the tenant explicitly**
+  (`qrdb users get --tenant acme <id>`). The id is resolved in that tenant's
+  store, on that tenant's serving set.
+
+`tenant.IdentityIndex`, `tenant.OwningTenant` and the system-namespace index
+records are removed.
+
+### Connecting through a node outside the serving set — layer-4 passthrough
+
+A node outside a tenant's serving set holds none of the tenant's records and
+none of its keys, by design. It cannot authenticate the tenant's users and must
+not try. The owner ruled (S6) that it relays the client's **still-encrypted**
+connection to a serving node. It never redirects, and it never forwards an
+on-behalf assertion.
+
+```
+client --TLS ClientHello (SNI acme.<tenant-sni-suffix>)--> node X  (not serving acme)
+   X: peeks the ClientHello, does NOT terminate TLS
+   X: reads tenant "acme" from the SNI; reads acme's registry entry: serving {A,B,C}
+   X: opens a node-mTLS relay tunnel to A, sends {tenant, client address},
+      then splices client bytes <-> tunnel bytes unchanged
+   A: accepts the relayed stream only from an authenticated cluster node
+   A: terminates the CLIENT's TLS itself, so proof of possession is observed HERE
+   A: requires: client chain -> acme's own CA; cert tenant == SNI tenant
+   A: looks the user up in acme's home store; checks binding, lifecycle,
+      revocation and auth methods; authorizes; serves
+```
+
+- **The tenant is read from SNI.** That is the only routing input visible
+  before TLS is terminated. Isolated tenants are addressed as
+  `<tenant>.<tenancy.sni_suffix>`, so:
+  - a strict tenant's id must be a valid DNS label;
+  - every node's server certificate carries `*.<tenancy.sni_suffix>`.
+
+  The SDK and CLI set the SNI from the tenant they are configured for.
+- **The serving node binds the SNI to the certificate.** A client whose
+  certificate names a different tenant from its SNI is refused with
+  `tenant.TenantSNIMismatchError`. Otherwise a client could steer a relay to
+  the wrong tenant's serving set.
+- **The relay is a byte pipe inside an authenticated tunnel.** The relaying
+  node never holds the client's TLS keys, and so it cannot read or alter the
+  session. The node-to-node tunnel exists for three reasons:
+  - the serving node accepts relayed streams only from cluster nodes;
+  - the platform trail records the true client address;
+  - a relay cannot be used to reach a serving node's client port from outside
+    the cluster under a forged source.
+- **QUIC** is relayed the same way. The relaying node reads the SNI from the
+  QUIC Initial packet, whose protection keys are derived from public values,
+  and routes the connection's datagrams by connection id for its lifetime.
+- **Unix socket and embedded** are node-local by nature and have nothing to
+  relay. On a node outside the serving set they answer with
+  `tenant.TenantNotServedHereError`, naming the serving set.
+- **A client that sends no tenant SNI** is terminated locally, as the system
+  tenant's own clients are. If its certificate then names a strict tenant
+  this node does not serve, the node refuses it with `TenantNotServedHereError`.
+  It has already terminated the connection, so it cannot relay it, and it does
+  not look the user up.
+- **What the relay discloses.** SNI is plaintext on the wire, so a network
+  observer sees which tenant a connection is for. Encrypted ClientHello would
+  hide it and is a later option; it is not part of this design.
+
+### Bootstrapping and unsealing
+
+A self-managed tenant's identity lives inside the store that is sealed. The
+credential that opens the store therefore cannot be authorized by anything
+inside it. The design breaks the cycle in three places.
+
+**1. Creation: the tenant's first admin is fixed by the requester's own CSR
+(S7). Already shipped** (`admin_username` plus `admin_csr_pem` or
+`admin_cert_pem`, 2026-10-03) **for every tenant, not only a strict one** —
+see [Creating a tenant](#creating-a-tenant-onboarding-with-its-first-admin).
+What this design adds on top:
+
+- The platform writes the registry entry, places the home group, assigns pool
+  slots, and records the pending first admin (username and CSR SPKI
+  thumbprint) — the same record `tenantadmin` already keeps today, moved into
+  the home store once it exists.
+- **System-managed tenant.** The home group initializes at once. In the home
+  store, create:
+  1. creates the tenant's CA;
+  2. creates the first admin user, with its SPKI binding;
+  3. issues the admin certificate from the CSR.
+
+  The certificate is returned in the create response. A certificate is
+  public, and the key never left the requester. Nothing is left pending.
+- **Self-managed tenant.** The home store cannot be written until the
+  tenant's own credential initializes it, so the pending first admin waits in
+  the registry entry until barrier init consumes it.
+- **Substitution is detectable.** Whoever calls create chooses the CSR, and a
+  platform that substituted its own CSR would hold the first admin. But the
+  real requester then cannot complete initialization, because the proof below
+  fails for its key. The init response and `barrier-status` both report the
+  bound admin's SPKI thumbprint, which the requester compares with its own.
+
+**2. Initialization: proven by the CSR key; each replica's key born on that
+replica.**
+
+- **The client proves possession of the pending first admin's key.** It uses
+  the officer-claim pattern: `init/begin` returns a nonce, and `init/complete`
+  carries a signature over that nonce bound to the TLS exporter of the
+  connection. The connection needs no tenant client certificate, because none
+  can exist yet.
+  - This proof replaces trust-on-first-init. A certificate naming the tenant
+    no longer opens the window, so a certificate minted by anyone else is
+    useless.
+- **The client sends init to every node in the serving set.** No node relays
+  it to another; the SDK and CLI do this fan-out.
+  - **Passphrase:** each node generates its own random replica key and seals
+    it under a KEK derived from the passphrase and its own salt.
+  - **Shamir:** the first node generates the unseal key and splits it to the
+    enrolled officers. The response is share-free, as today. That node seals
+    its replica key under the unseal key. Each other node generates its own
+    replica key and holds it **pending** until the first unseal ceremony
+    presents a quorum to it; it then seals the key under the reconstructed
+    unseal key and unseals.
+- **The first node to initialize writes into the home store**: the tenant CA,
+  the first admin user and its SPKI binding, and the admin certificate issued
+  from the CSR. It then deletes the pending first admin from the registry
+  entry. The other nodes receive these records through Raft once they unseal.
+- **Every node records a credential verifier** in its tenant bootstrap record.
+  A node meeting the credential for the first time can then tell a correct one
+  from a wrong one before it seals a new key under it.
+  - For a passphrase, the verifier is an Argon2id tag.
+  - For Shamir, it is a self-authenticating unseal key: the split secret
+    carries its own MAC.
+  - A replica added later gets the verifier through the existing `clusterkeys`
+    HPKE delivery. That delivery is placement-gated, revocation-checked, and
+    addressed to that one node.
+  - A verifier is not a key, but it is an offline-guessing oracle for a
+    passphrase. It therefore goes only to serving replicas, and never into the
+    replicated system store. The sealed blob on every serving node is already
+    the same oracle.
+- System-managed tenants skip all of this. Each node generates its replica
+  key and wraps it under its own node barrier when placement assigns it.
+
+**3. Unseal: authorized by the credential and a tenant-CA certificate, never by
+tenant RBAC.**
+
+- **The sealed window stays, narrowed.** It admits, for status and unseal
+  only, a caller whose certificate **chains to the tenant's own CA**, whose
+  public certificate is in the system tenant. A certificate from the cluster
+  CA naming the tenant is not enough. The credential itself is still the real
+  gate.
+- **The roster and SO PIN commitment come from the node itself.** They are
+  read from the node's own tenant bootstrap record, because the home store is
+  still sealed. After unseal, the node re-verifies both against the home
+  store's copy. The bootstrap record is bound to the replica key by a MAC
+  computed at seal time. A mismatch seals the tenant again on that node and
+  raises `seal.BootstrapRecordMismatchError`.
+- **Credentials travel only from the holder.** Shares and passphrases go from
+  the holder's client to each serving node, and are never relayed node to
+  node. A share is held in protected memory on the node that received it, and
+  counted once per holder, per the unified share-holder model
+  ([../shamir-custody/](../shamir-custody/)).
+
+**The home group starts on a node only when that node's tenant barrier is
+unsealed.** Until a quorum of the serving set is unsealed, the home group has no
+quorum. Every request for the tenant is then refused with
+`TenantHomeUnavailableError` (503, retryable), except the identity-gated
+barrier endpoints.
+
+### The isolation policy
+
+**A cluster floor and a per-tenant setting (S1).**
+
+| Setting | Where | Values | Who sets it |
+|---|---|---|---|
+| Cluster floor `tenancy.isolation_policy` | `__sys:cluster/isolation_policy` | `strict` (default) or `operator-access` | First-boot configuration, recorded once. It can be tightened later (`cluster:set_isolation_policy`, ScopeCross), never loosened. |
+| Tenant policy | the tenant's registry entry | `strict` or `inherit` (default) | The requester at create (`isolation_policy: strict`), or later by the tenant's own Admin (`tenants:set_isolation_policy`, ScopeSelf). Tighten-only; a tenant's `strict` cannot be withdrawn. |
+
+The **effective policy** is `strict` when either setting is `strict`. Every
+authorization decision reads the effective policy of the **target** tenant.
+
+**Why it only tightens.** A tenant that was promised strict isolation must not
+lose it for data it already stores. Loosening is refused with
+`tenant.IsolationPolicyChangeError`.
+
+Every tenant can read the floor and its own effective policy
+(`GET /v1/tenants/{id}` carries both), so it knows which promise it holds.
+
+| | Effective `strict` | Effective `operator-access` |
+|---|---|---|
+| Where tenant records live | in the tenant's home store; the tenant must be `barrier`, `volume` or `raft` (S2) | in the home store for isolated tenants; in the system shard for `prefix` tenants |
+| A system-tenant identity in this tenant | refused for every permission that is not cross-scope | the same, plus the named operator permissions below |
+| `ScopeSelf` system lift | **none** | **none** |
+| Operator permissions over tenant identity (`tenant_identity:read`, `tenant_identity:write`) | refused for everyone, with the policy named in the refusal | Effective only for system-tenant roles that carry them explicitly; no built-in role does. Every use is written to the platform trail **and** the tenant's own trail. |
+| Tenant databases and data (KV, SQL, documents, vectors, time series, etcd, backups of tenant groups) | never, for anyone outside the tenant | **never**, for anyone outside the tenant |
+| Role bindings naming another tenant | refused | refused |
+| Minting a certificate for another tenant | refused. The tenant's CA key is in the tenant's store, and a cluster-CA certificate is not accepted for a strict tenant's users. | refused. `tenant_identity:write` may add, list or withdraw an SPKI binding on a tenant user, but never signs with the tenant's CA. |
+| Deleting the tenant | the platform may, through `tenants:delete:cross`, audited (S8); the tenant's own Admin may, through `tenants:delete` | the same |
+
+**How it maps to RBAC.**
+
+- **`ScopeSelf` loses its system lift in every mode.** The system tenant is
+  confined to its own tenant, like every other tenant. `ScopeSelf` becomes the
+  rule that `ScopeSelfStrict` is today, and `ScopeSelfStrict` is folded into
+  it.
+- **`tenant.EffectiveTenant` stops honouring a requested tenant from a
+  system-tenant caller.** A request naming another tenant is refused with
+  `CrossTenantDeniedError`, unless the operation is one of the cross-scope
+  verbs.
+- **Role bindings name the holder's own tenant only.** The system-tenant
+  exception in `user.NormalizeRoleBindings` is removed.
+- **The platform plane** is the `ScopeCross` permissions, and the policy does
+  not affect it. Those permissions act on system-tenant records only:
+  registry, plan, tombstones, placement, pools, cluster membership, node
+  barriers and the platform audit trail. Two verbs are new:
+  - `tenants:read:cross` reads another tenant's registry entry;
+  - `tenants:delete:cross` deletes another tenant.
+
+  They replace the system lift that `tenants:read` and `tenants:delete` enjoy
+  today.
+- **The operator-identity plane** is `tenant_identity:read` and
+  `tenant_identity:write`. Both are `ScopeCross`, and both are effective only
+  when the target tenant's effective policy is `operator-access`. Each request
+  names its tenant explicitly and is served on that tenant's serving set.
+- **A platform seal of a tenant** (cluster-wide sealing, decision D3 there) is
+  a platform-plane verb under every policy. A seal discloses nothing, and
+  unseal stays with the tenant's own credential holders.
+
+### Backups of a strict tenant (S10)
+
+- **The rule.** The platform takes a tenant's backup only if the archive it
+  produces can be opened by the tenant's credential alone, **and** the
+  platform never reads the tenant's data while making it. Otherwise, backups
+  of a strict tenant's groups are tenant-only (`backup:tenant`,
+  `ScopeTenantOnly`).
+- **What the first build ships.** The platform-made form needs each serving
+  node to encrypt its snapshot stream under a key derived from the tenant's
+  credential, not from its replica key; a replica key never leaves its node,
+  so it cannot open an archive anywhere else. That derivation needs the
+  credential present at backup time. The first build therefore ships
+  **tenant-only** backups.
+- **What would add the platform form.** A design that lets an unattended
+  platform job produce such an archive without the credential and without
+  reading the data. Until then, platform shard backup covers the system shard
+  only.
+
+### Interaction with cluster-wide sealing
+
+The cluster-wide sealing design
+([../barrier-seal/architecture.md](../barrier-seal/architecture.md)) adds a
+replicated, epoch-numbered seal record per scope, enforced on every node. This
+design depends on that record, and constrains it:
+
+- **The tenant scope's serving set is this design's serving set.** It is the
+  set of home group replicas, and every database group of the tenant is placed
+  inside it.
+- **Its unseal model must be per node.**
+  - Option D1-B there (the unsealing node delivers the root-key context to the
+    other replicas) moves a key between nodes. The owner rule forbids that,
+    and under this design there is no common root key to deliver.
+  - "Unseal the cluster" becomes one operator action through **client
+    fan-out** instead: the CLI and SDK present the credential, or each
+    holder's share, to every serving node.
+  - Each node verifies the credential against its own verifier and unseals its
+    own replica key.
+- **Rekey is per node.** There is no shared root key to rotate.
+  - A credential change (a new passphrase or a new share set) re-wraps each
+    node's replica key, by client fan-out.
+  - A replica-key rotation is node-local, and re-encrypts that node's copy
+    only.
+  - Old shares stop working on a node as soon as that node re-wraps. The
+    cluster seal record's epoch is the fence that stops a node still on the
+    old credential from serving.
+- **The seal record names its principal opaquely.** A tenant username is a
+  tenant record and does not go into the system store; the full detail goes
+  to the tenant's own trail.
+- **A joining node comes up sealed.** A node added to a tenant's serving set
+  gets the verifier, not a key, and unseals at the next fan-out. For a
+  system-managed tenant, it generates its key on arrival.
+
+### Feature gate and upgrade
+
+- **The new behaviour ships behind the cluster feature gate**
+  (`pkg/cluster/featuregate`), as feature `strict-isolation`. Until every node
+  advertises the feature, the strict floor and per-tenant strict are not
+  applied. That covers the home groups, the passthrough relay, the removal of
+  the system lift and the removal of key transport.
+- **While the gate is closed, the existing behaviour holds.** A cluster still
+  reaching activation is in a defined state, never half-migrated. Once the
+  feature is activated, a binary without it refuses to start, which is the
+  gate's existing downgrade rule.
+- **No compatibility layer.** Pre-release tenants are re-created, not
+  migrated. `__tiam:`, the identity index, tenant-key delivery and the shared
+  resolver branch are deleted outright.
+
+### Alternatives rejected
+
+- **Keep identity in the shared store, encrypted.** Rejected for three
+  reasons. It needs one key on every node, which is the property being
+  removed. The key names leak usernames, emails and thumbprints whatever the
+  values hold. And "readable on every node" is exactly the reach strict
+  isolation forbids.
+- **Encrypt the key names too, as an opaque keyed hash per key.** Rejected.
+  It still needs a common key, still leaves record counts and churn visible,
+  and gives up every range scan the identity stores rely on.
+- **Derive each node's key from one tenant root with a per-node salt.**
+  Rejected. The salts are not secret, so one compromised root yields every
+  node's key; it is the shared key with an extra step.
+- **Deliver the tenant key at unseal time from the unsealing node.**
+  Rejected: it is key transport, which the owner has ruled out.
+- **Redirect the client to a serving node.** Rejected by the S6 ruling in
+  favour of passthrough. A redirect makes every client implement reconnection
+  and exposes the serving set to any holder of a tenant certificate.
+- **On-behalf forwarding from a non-serving node.** Rejected. The serving node
+  would trust another node's claim of proof of possession, so a compromised
+  non-serving node could act as any user whose public certificate it had
+  seen.
+- **An operator-held one-time bootstrap credential.** Rejected by the S7
+  ruling. The platform would hold, even briefly, a credential that creates the
+  tenant's first admin.
+- **One global "strict" bit per permission.** Rejected: two tenancy mechanisms
+  would drift apart. The policy is one input to the one scope rule.
+- **Per-database groups only, with identity on "the first database".**
+  Rejected. Identity is tenant-wide, and a tenant with no database still has
+  users.
+
+### Rulings
+
+Owner rulings of 2026-10-01 and 2026-10-02. **FINAL.**
+
+| # | Question | Ruling |
+|---|---|---|
+| **S1** | Cluster-wide only, or per tenant? | **B.** The cluster sets a floor. A tenant may opt into `strict` under an `operator-access` floor. |
+| **S2** | May `strict` include `prefix` tenants? | **B.** No. Under strict, every tenant has storage of its own. |
+| **S3** | What becomes of `barrier` mode? | **A.** Barrier tenants get a home group. |
+| **S4** | Must a strict tenant's Raft log be under the tenant's key? | **Yes, from day one** (2026-10-02). A strict tenant never has a node-key log. Use the existing dedicated-WAL mechanism, closing the gaps the go-quicraft analysis found: G1 mandatory, G2 fail-closed, G3 every run mode, G4 seal ordering, G6 evict and restart, G10 per-node keys, and G7 rotation as a later phase. G5 is a go-quicraft defect, raised upstream. |
+| **S5** | May database names appear in system records? | **B.** No. System records use opaque database ids. |
+| **S6** | How does a non-serving node reach the serving set? | **B.** Layer-4 passthrough of the still-encrypted connection. Never a redirect; never an on-behalf forward. |
+| **S7** | Where does a tenant's first admin come from? | **B.** From a CSR supplied at tenant create. No operator-held bootstrap credential. **Already shipped** (2026-10-03, see the correction above) — unconditionally, not gated on this ruling. |
+| **S8** | May the platform delete a strict tenant? | **A.** Yes, audited. |
+| **S9** | Where does the tenant audit trail live? | **B.** Node-local on each serving node, under the tenant's key. |
+| **S10** | Who backs up a tenant's groups? | **B, else A.** A platform-made archive that only the tenant can open, if it can be built without platform read access; otherwise tenant-only backups. |
+
+Standing rules that also apply:
+- **No backward-compatibility code.** Pre-release tenants are re-created, not
+  migrated.
+- **The cluster feature gate stays.**
+
+Plan confirmations (2026-10-02):
+- A strict floor requiring volume pools is accepted; tenant creation without
+  a pool fails cleanly before any write.
+- Phase 0 is accepted: the cluster tenancy suites run on every push once
+  their timeouts are fixed.
+
+Two questions are still with the owner: SNI as the passthrough routing input
+(phase 9), and whether a first admin may present an existing certificate in
+place of a CSR (phase 3).
 
 ## Component boundaries
 
@@ -799,6 +1452,8 @@ restarts through the persistent placement table and per-node replica re-attach.
 - [scoping.md](../scoping.md) — tenant and database scoping in detail.
 - [seal/multi-tenant.md](../seal/multi-tenant.md) — `BarrierRegistry`,
   `TenantBarrier`, per-tenant DEK isolation and key-management modes.
+- [Strict tenant isolation](#strict-tenant-isolation--design) — the ruled
+  design that moves every non-required tenant record out of the system tenant.
 - [deployment-multi-node-raft.md](../deployment-multi-node-raft.md) — deploying
   multi-node IsolationRaft tenant clusters end to end.
 - [design/multi-tenant-isolation-quota.md](../design/multi-tenant-isolation-quota.md)

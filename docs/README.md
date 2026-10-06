@@ -69,7 +69,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | Feature | What it covers |
 |---|---|
 | [databases](databases/) | multi-database lifecycle, per-database protocol, raft and barrier config |
-| [storage-engines](storage-engines/) | the `Engine` interface, file/memory/pebble/namespace, volume pools |
+| [storage-engines](storage-engines/) | the `Engine` interface, file/memory/pebble/namespace, volume pools; object-storage LSM target design *(ruled, not yet implemented)* |
 | [volume-pools](volume-pools/) | *(proposed, awaiting sign-off)* named volume pools: per-node mounts, tenant placement, entitlements and capacity, management, the `VolumeProvider` seam |
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
@@ -99,7 +99,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [audit](audit/) | compliance-grade audit logging and query |
 | [rate-limit](rate-limit/) | per-permission request throttling, enforced identically across every transport |
 | [attested-caller](attested-caller/) | the attested-caller gate: admit a gated operation only from a peer whose measured state is currently acceptable |
-| [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers |
+| [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers; strict tenant isolation *(ruled, not yet implemented)* |
 
 ### Interfaces
 

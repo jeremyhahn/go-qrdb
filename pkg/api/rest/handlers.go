@@ -166,6 +166,12 @@ type membershipRemoveRequest struct {
 	ReplicaID uint64 `json:"replica_id"`
 }
 
+// membershipPromoteRequest is the JSON payload for POST /membership/promote.
+type membershipPromoteRequest struct {
+	ShardID   uint64 `json:"shard_id"`
+	ReplicaID uint64 `json:"replica_id"`
+}
+
 // snapshotRequest is the JSON payload for POST /snapshot.
 type snapshotRequest struct {
 	ShardID uint64 `json:"shard_id"`
@@ -691,6 +697,10 @@ func membershipChangeStatus(err error) int {
 	if errors.As(err, &ure) {
 		return mapHTTPError(err)
 	}
+	var noe *service.MemberNotObserverError
+	if errors.As(err, &noe) {
+		return mapHTTPError(err)
+	}
 	return http.StatusInternalServerError
 }
 
@@ -726,6 +736,42 @@ func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, okResponse{Status: "ok"})
 }
 
+// handleMembershipAddObserver handles POST /membership/add-observer: adds
+// the replica as a non-voting observer rather than a voter (see
+// service.ObserverMemberAdder), promoted later with POST /membership/promote.
+// Leader forwarding follows the same pattern as handleMembershipAdd.
+func (s *Server) handleMembershipAddObserver(w http.ResponseWriter, r *http.Request) {
+	adder, ok := s.adminSvc.(service.ObserverMemberAdder)
+	if !ok {
+		writeErrorJSON(w, http.StatusNotImplemented, &service.ClusterJoinRequestReviewUnsupportedError{})
+		return
+	}
+
+	body, ok := readBoundedBody(w, r, maxControlPlaneRequestBytes)
+	if !ok {
+		return
+	}
+
+	var req membershipAddRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := adder.AddObserverMember(ctx, req.ShardID, req.ReplicaID, req.Address, req.Identity); err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
+		writeErrorJSON(w, membershipChangeStatus(err), &MembershipError{Op: "add-observer", Err: err})
+		return
+	}
+
+	writeJSON(w, okResponse{Status: "ok"})
+}
+
 // handleMembershipRemove handles POST /membership/remove. When the local
 // node is not the shard's Raft leader and leader forwarding is configured,
 // the request is transparently proxied to the leader (see tryForwardWrite),
@@ -752,6 +798,41 @@ func (s *Server) handleMembershipRemove(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "remove", Err: err})
+		return
+	}
+
+	writeJSON(w, okResponse{Status: "ok"})
+}
+
+// handleMembershipPromote handles POST /membership/promote, promoting a
+// committed observer to a voter. Leader forwarding follows the same pattern
+// as handleMembershipAdd and handleMembershipRemove.
+func (s *Server) handleMembershipPromote(w http.ResponseWriter, r *http.Request) {
+	promoter, ok := s.adminSvc.(service.MemberPromoter)
+	if !ok {
+		writeErrorJSON(w, http.StatusNotImplemented, &service.MemberPromotionUnsupportedError{})
+		return
+	}
+
+	body, ok := readBoundedBody(w, r, maxControlPlaneRequestBytes)
+	if !ok {
+		return
+	}
+
+	var req membershipPromoteRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := promoter.PromoteMember(ctx, req.ShardID, req.ReplicaID); err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
+		writeErrorJSON(w, membershipChangeStatus(err), &MembershipError{Op: "promote", Err: err})
 		return
 	}
 

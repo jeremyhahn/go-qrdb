@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -46,6 +47,36 @@ func TestRegistration(t *testing.T) {
 	tresp := TenantRegisterTo(&ceremony.RegisterOfficerResult{CertPEM: []byte("c2"), Role: seal.RoleCustodian})
 	if tresp.CertPEM != "c2" || tresp.Role != "custodian" {
 		t.Errorf("TenantRegisterTo = %+v", tresp)
+	}
+}
+
+// TestTenantBarrierRoster covers the inline Shamir officer roster
+// conversions, both directions, including the empty-input nil shortcuts.
+func TestTenantBarrierRoster(t *testing.T) {
+	if got := TenantBarrierRosterFrom(nil); got != nil {
+		t.Errorf("TenantBarrierRosterFrom(nil) = %+v, want nil", got)
+	}
+	if got := TenantBarrierHoldersTo(nil); got != nil {
+		t.Errorf("TenantBarrierHoldersTo(nil) = %+v, want nil", got)
+	}
+
+	factors := []transport.HolderFactorEnrolment{{Name: "fido2", Params: map[string]any{"k": "v"}}}
+	officers := []transport.OfficerRegisterRequest{{
+		Username: "alice", Role: "so", CSRPEM: "csr-a",
+		EncryptionKEM: "dhkem-p256", EncryptionKey: []byte{1},
+		Factors: factors, Designated: "fido2",
+	}}
+	cfgs := TenantBarrierRosterFrom(officers)
+	if len(cfgs) != 1 || cfgs[0].Username != "alice" || cfgs[0].Role != seal.RoleSecurityOfficer ||
+		string(cfgs[0].CSRPEM) != "csr-a" || cfgs[0].EncryptionKEM != "dhkem-p256" ||
+		len(cfgs[0].Factors) != 1 || cfgs[0].Designated != "fido2" {
+		t.Errorf("TenantBarrierRosterFrom = %+v", cfgs)
+	}
+
+	holders := []tenant.TenantBarrierHolderCert{{Username: "alice", Role: "so", CertPEM: "cert-a"}}
+	wire := TenantBarrierHoldersTo(holders)
+	if len(wire) != 1 || wire[0].Username != "alice" || wire[0].Role != "so" || wire[0].CertPEM != "cert-a" {
+		t.Errorf("TenantBarrierHoldersTo = %+v", wire)
 	}
 }
 

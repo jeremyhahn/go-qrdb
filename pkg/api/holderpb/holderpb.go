@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // FactorParamsError is returned when a factor enrolment's params_json is not
@@ -285,6 +286,51 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) (*service.CeremonyIni
 		AdminGenerate:          req.GetAdminGenerate(),
 		Secret:                 secretBuf,
 	}, nil
+}
+
+// TenantBarrierRosterFromPB converts the inline Shamir officer roster a
+// `tenant barrier-init` gRPC/Unix request carries into the
+// []ceremony.OfficerConfig shape ScopedCeremonyService.InitializeShamirWithRoster
+// validates and registers atomically with initialization -- the protobuf
+// counterpart of holderwire.TenantBarrierRosterFrom, which every other
+// transport (REST, QUIC, MCP, Embedded) uses for the same roster. Returns
+// nil when officers is empty.
+func TenantBarrierRosterFromPB(officers []*pb.CeremonyOfficer) ([]ceremony.OfficerConfig, error) {
+	if len(officers) == 0 {
+		return nil, nil
+	}
+	out := make([]ceremony.OfficerConfig, len(officers))
+	for i, o := range officers {
+		factors, err := FactorsFromPB(o.GetFactors())
+		if err != nil {
+			return nil, err
+		}
+		out[i] = ceremony.OfficerConfig{
+			Username:      o.GetUsername(),
+			Role:          seal.HolderRole(o.GetRole()),
+			CSRPEM:        []byte(o.GetCsrPem()),
+			EncryptionKEM: o.GetEncryptionKem(),
+			EncryptionKey: o.GetEncryptionKey(),
+			Factors:       factors,
+			Designated:    o.GetDesignated(),
+		}
+	}
+	return out, nil
+}
+
+// TenantBarrierHoldersToPB converts the certificates an inline Shamir
+// roster's initialization issued (tenant.TenantBarrierInitResult.Holders)
+// into the wire shape TenantBarrierInitResponse carries -- the protobuf
+// counterpart of holderwire.TenantBarrierHoldersTo.
+func TenantBarrierHoldersToPB(holders []tenant.TenantBarrierHolderCert) []*pb.CeremonyHolderCert {
+	if len(holders) == 0 {
+		return nil
+	}
+	out := make([]*pb.CeremonyHolderCert, len(holders))
+	for i, h := range holders {
+		out[i] = &pb.CeremonyHolderCert{Username: h.Username, Role: h.Role, CertPem: []byte(h.CertPEM)}
+	}
+	return out
 }
 
 // CeremonyInitToPB converts a ceremony initialization result.

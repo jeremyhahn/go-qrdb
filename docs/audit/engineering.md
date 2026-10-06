@@ -1,6 +1,6 @@
 # Audit — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
 
 ## Exported surface
 
@@ -748,12 +748,88 @@ the same gap affects the auth-factor handlers, see
 The durable trail is `audit-events.ndjson` in the data directory: one JSON
 object per line, each carrying the hash of its predecessor. It is **node-local
 and not Raft-replicated** — each node records what it did, so reconstructing a
-cluster-wide trail means collecting from every node.
+cluster-wide trail means collecting from every node. (A second, separate
+mechanism — the replicated audit chain below — IS Raft-replicated; nothing
+in this binary proposes writes to it yet, so in production the statement
+above still holds for every record this feature actually produces today.)
 
 `ChainFileLogger` rotates at its size bound and, when it opens, deletes
 archives older than its retention window (90 days by default). Retention is
 therefore a **deletion deadline, not a backup**: nothing copies an archive
 anywhere before it is removed.
+
+## The replicated chain (cluster-wide, phase 1)
+
+See [architecture.md](architecture.md#cluster-wide-replicated-trail) for the
+design rationale and [Status of the replicated chain](architecture.md#status-of-the-replicated-chain)
+for exactly what has and has not shipped. This section is the implementation
+map.
+
+**Package layout.**
+
+| File | Contents |
+|---|---|
+| `pkg/audit/table.go` | `TablePrefix`, key encoding/decoding, head record codec |
+| `pkg/audit/chain.go` | `Chain` — `Append`, `Prune`, `Query`, `Restore` |
+| `pkg/audit/chain_errors.go` | `TableWriteError`, `TableReadError`, `CorruptTableError`, `EncodeEventError`, `MissingTimestampError`, `InvalidCursorError`, `TenantMismatchError`, `InvalidTenantIDError` |
+| `pkg/protocol/audit.go` | `OpAuditAppend`, `AuditSubtypeAppend`/`AuditSubtypePrune`, `EncodeAuditAppend`, `EncodeAuditPrune`, `DecodeAuditCommand` |
+| `pkg/cluster/featuregate/featuregate.go` | `AuditAppend` feature |
+| `pkg/engine/mvcc_engine.go` | `MVCCEngine.handleAuditAppend`, `WithMVCCAuditChain`, `resyncAuditChain` |
+| `pkg/store/pebble.go` | `PebbleStateMachine.pebbleHandleAuditAppend`, `pebbleAuditWriter`, `SetAuditChain`/`restoreAuditChain` |
+| `pkg/store/factory.go`, `pkg/store/mvcc.go` | `WithAuditChain` / `SetAuditChain` / `AuditChain` accessors mirroring the lessor's |
+
+**Error classification at apply time.** `Chain.Append`/`Chain.Prune` errors
+split into exactly two buckets, and the handler on both engine families
+makes the identical split:
+
+- `*audit.TableWriteError` — a local storage fault staging the write into
+  the apply batch. Returned as a Go `error` from the handler, which HALTS
+  apply: the fault is local to this replica, not a property every replica
+  would reach identically, so answering it as a refusal would let this
+  replica silently diverge from peers whose write succeeded.
+- Everything else `Append` can return (`*audit.MissingTimestampError`,
+  `*audit.EncodeEventError`, `*audit.TenantMismatchError`,
+  `*audit.InvalidTenantIDError`) and everything a malformed or
+  unrecognized command can produce (`*protocol.InvalidCommandError`) is a
+  deterministic consequence of the committed entry's own bytes — every
+  replica reaches it identically — so it is encoded as an application
+  refusal (`statemachine.RefusalResult`) via `pkg/statemachine`'s
+  `refusalRules` table, never returned as a Go error. `Prune` has no
+  equivalent per-replica-refusal case at all: every error it can return is
+  a fault in this replica's own already-committed storage, so it always
+  halts.
+
+Two defects this classification caught during review, now pinned by
+regression tests: both engine families' `Append` error branches were
+dead-code duplicates of each other before the split above existed, and the
+MVCC handler originally returned every `Chain.Append` error as a halt rather
+than isolating `*audit.TableWriteError` as the only halting case.
+
+**The reserved-keyspace read/compare fix.** Adding a second raw-keyspace
+table (the lease table was the first) alongside direct `Lookup`, transaction
+compares and `OpGuarded` compares surfaced a pre-existing gap: a compare's
+result (`CompareResultLess`/`Greater`, or simply whether it held at all) is
+observable to the proposer regardless of outcome, so evaluating one against
+a reserved key made an ordinary transaction or guarded write an extraction
+oracle over state no caller may read directly, and a version compare alone
+leaked whether a reserved key existed. Closed with one shared predicate,
+`statemachine.IsReservedKey`, enforced by `statemachine.ReservedKeyRefusal`
+at every compare key (`statemachine.CompareKeys`, mirroring the existing
+`OpKeys`) on `MVCCEngine`, `KVEngine` and `PebbleStateMachine` alike —
+`KVEngine` had no reserved-key protection anywhere before this (`Put`,
+`PutIfAbsent`, `Delete`, `Batch`, `Transaction`, `Guarded`), and
+`MVCCEngine`'s `Transaction`/`Batch` had none either. Every combination
+(transaction/guard compare × lease/audit/node-local key × engine family) is
+tested in `reserved_key_compare_test.go` in both `pkg/engine` and
+`pkg/store`.
+
+**Unconditional attachment, not an opt-in flag.** `cmd/qrdbd/start.go`'s
+`buildSMCreateFunc` and `pkg/server/lifecycle.NewLocalEngine` attach a
+`*audit.Chain` to every `mvcc`/`pebble` state machine they build, with no
+configuration surface that could ever omit it (review finding N4) — see
+[architecture.md's Status section](architecture.md#status-of-the-replicated-chain)
+for why a conditional attachment would be a cluster-state-divergence bug,
+not a degraded feature.
 
 ## Test strategy
 

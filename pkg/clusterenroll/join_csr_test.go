@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -149,6 +150,174 @@ func mintTestJoinToken(t *testing.T, store kvstore.AtomicKVStore, nodeID string)
 	return token
 }
 
+// buildMatchingJoinCSR generates a fresh ECDSA key and a CSR whose sole URI
+// SAN is nodeURI, for a test's JoinRequest.NodeURI to match -- the pairing
+// validateJoinCSRIdentity now requires of every request before the token is
+// ever touched. It fails the test outright on a build error.
+func buildMatchingJoinCSR(t *testing.T, nodeURI string) (*ecdsa.PrivateKey, []byte) {
+	t.Helper()
+	nodeKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	csrDER, err := buildJoinCSR(nodeKey, nodeURI)
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+	return nodeKey, csrDER
+}
+
+// fakeFeatureAdvertiser records every AdvertiseJoiner call, optionally
+// failing it, for tests to prove HandleJoinRequest calls it (or doesn't)
+// with the expected arguments.
+type fakeFeatureAdvertiser struct {
+	mu        sync.Mutex
+	calls     int
+	replicaID uint64
+	raftAddr  string
+	features  []string
+	err       error
+}
+
+func (f *fakeFeatureAdvertiser) AdvertiseJoiner(_ context.Context, replicaID uint64, raftAddress string, features []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.replicaID = replicaID
+	f.raftAddr = raftAddress
+	f.features = features
+	return f.err
+}
+
+func (f *fakeFeatureAdvertiser) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// TestHandleJoinRequest_AdvertisesTheJoinerOnSuccess proves a successful
+// join calls FeatureAdvertiser.AdvertiseJoiner with the request's replica ID
+// and claimed features, and the raft address recovered from the token's
+// bound identity (not the joiner's self-reported NodeURI) -- this is the fix
+// for the admission bug: once this record exists, featuregate.Gate.Supports
+// finds it and member add is no longer refused.
+func TestHandleJoinRequest_AdvertisesTheJoinerOnSuccess(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "10.0.0.4:63001")
+	token := mintTestJoinToken(t, store, "10.0.0.4:63001")
+
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
+
+	adv := &fakeFeatureAdvertiser{}
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:     token,
+		CSRDER:    csrDER,
+		NodeURI:   nodeURI,
+		ReplicaID: 4,
+		Features:  []string{"guarded-writes"},
+	}, adv)
+	if resp.Error != "" {
+		t.Fatalf("HandleJoinRequest refused: %s", resp.Error)
+	}
+	if adv.callCount() != 1 {
+		t.Fatalf("AdvertiseJoiner calls = %d, want 1", adv.callCount())
+	}
+	if adv.replicaID != 4 {
+		t.Errorf("AdvertiseJoiner replicaID = %d, want 4", adv.replicaID)
+	}
+	if adv.raftAddr != "10.0.0.4:63001" {
+		t.Errorf("AdvertiseJoiner raftAddress = %q, want %q", adv.raftAddr, "10.0.0.4:63001")
+	}
+	if len(adv.features) != 1 || adv.features[0] != "guarded-writes" {
+		t.Errorf("AdvertiseJoiner features = %v, want [guarded-writes]", adv.features)
+	}
+}
+
+// TestHandleJoinRequest_NoAdvertiserConfigured proves a nil FeatureAdvertiser
+// is simply skipped -- the join still succeeds, matching the behavior before
+// this parameter existed.
+func TestHandleJoinRequest_NoAdvertiserConfigured(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "10.0.0.5:63001")
+	token := mintTestJoinToken(t, store, "10.0.0.5:63001")
+
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
+
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:     token,
+		CSRDER:    csrDER,
+		NodeURI:   nodeURI,
+		ReplicaID: 5,
+		Features:  []string{"guarded-writes"},
+	}, nil)
+	if resp.Error != "" {
+		t.Fatalf("HandleJoinRequest refused: %s", resp.Error)
+	}
+	if len(resp.CertPEM) == 0 {
+		t.Fatal("expected a certificate even with no advertiser configured")
+	}
+}
+
+// TestHandleJoinRequest_ZeroReplicaIDSkipsAdvertising proves a join that
+// carries no replica ID (an older joiner binary, or one that genuinely does
+// not know it yet) is not advertised for -- there is no key to write it
+// under -- without refusing the join itself.
+func TestHandleJoinRequest_ZeroReplicaIDSkipsAdvertising(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "10.0.0.6:63001")
+	token := mintTestJoinToken(t, store, "10.0.0.6:63001")
+
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
+
+	adv := &fakeFeatureAdvertiser{}
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:    token,
+		CSRDER:   csrDER,
+		NodeURI:  nodeURI,
+		Features: []string{"guarded-writes"},
+	}, adv)
+	if resp.Error != "" {
+		t.Fatalf("HandleJoinRequest refused: %s", resp.Error)
+	}
+	if adv.callCount() != 0 {
+		t.Fatalf("AdvertiseJoiner calls = %d, want 0 (ReplicaID was zero)", adv.callCount())
+	}
+}
+
+// TestHandleJoinRequest_AdvertiserFailureDoesNotRefuseTheJoin proves a
+// failed advertisement is logged, not fatal: the certificate HandleJoinRequest
+// already signed and admitted is still returned, since the operator's
+// member add simply surfaces the same refusal it always would with no
+// advertiser configured at all.
+func TestHandleJoinRequest_AdvertiserFailureDoesNotRefuseTheJoin(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "10.0.0.7:63001")
+	token := mintTestJoinToken(t, store, "10.0.0.7:63001")
+
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
+
+	adv := &fakeFeatureAdvertiser{err: errors.New("advertisement store unavailable")}
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:     token,
+		CSRDER:    csrDER,
+		NodeURI:   nodeURI,
+		ReplicaID: 7,
+	}, adv)
+	if resp.Error != "" {
+		t.Fatalf("HandleJoinRequest refused: %s", resp.Error)
+	}
+	if len(resp.CertPEM) == 0 {
+		t.Fatal("expected a certificate despite the advertiser failing")
+	}
+	if adv.callCount() != 1 {
+		t.Fatalf("AdvertiseJoiner calls = %d, want 1", adv.callCount())
+	}
+}
+
 func TestJoinServer_SignsAValidCSR(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
@@ -256,28 +425,24 @@ func TestJoinServer_TokenCannotBeReused(t *testing.T) {
 	}
 	t.Cleanup(js.Stop)
 
+	nodeURI := spiffe.NodeURI(testTrustDomain, "127.0.0.1:9102")
 	token := mintTestJoinToken(t, store, "127.0.0.1:9102")
 
-	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	csrDER, err := buildJoinCSR(nodeKey, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR: %v", err)
-	}
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
 
 	if _, err := JoinCSR(context.Background(), &JoinClientOptions{
 		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), Token: token,
-	}, csrDER, ""); err != nil {
+	}, csrDER, nodeURI); err != nil {
 		t.Fatalf("first JoinCSR (token must be accepted once): %v", err)
 	}
 
-	otherKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	otherCSR, err := buildJoinCSR(otherKey, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR: %v", err)
-	}
+	// The SAME claimed identity, re-presented with the (already-consumed)
+	// token: this must still fail at ConsumeJoinToken, not at the
+	// identity check, so the matching URI pairing is kept here too.
+	_, otherCSR := buildMatchingJoinCSR(t, nodeURI)
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
 		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), Token: token,
-	}, otherCSR, "")
+	}, otherCSR, nodeURI)
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
 		t.Fatalf("second JoinCSR with the SAME (already-consumed) token = %v, want *JoinRefusedError", err)
@@ -346,11 +511,16 @@ func TestStartJoinServer_RequiresProvider(t *testing.T) {
 	}
 }
 
-func TestJoinCSR_RequiresToken(t *testing.T) {
+// TestJoinCSR_EmptyTokenIsAllowed confirms an empty token is no longer
+// refused before dialing: it means "submit through the approval queue"
+// (see JoinRequest's doc comment), not a missing required value. The dial
+// to a closed port still fails, but with *FetchError, never a
+// token-related refusal.
+func TestJoinCSR_EmptyTokenIsAllowed(t *testing.T) {
 	_, err := JoinCSR(context.Background(), &JoinClientOptions{ServerAddr: "127.0.0.1:1"}, []byte{}, "")
-	var tokenErr *MissingJoinTokenError
-	if !errors.As(err, &tokenErr) {
-		t.Fatalf("JoinCSR with no token = %v, want *MissingJoinTokenError", err)
+	var fetchErr *FetchError
+	if !errors.As(err, &fetchErr) {
+		t.Fatalf("JoinCSR with no token = %v, want *FetchError (dial failure)", err)
 	}
 }
 
@@ -359,7 +529,6 @@ func TestJoinCSR_ErrorStrings(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"MissingJoinTokenError", &MissingJoinTokenError{}},
 		{"MissingJoinTokenStoreError", &MissingJoinTokenStoreError{}},
 		{"MissingTrustDomainError", &MissingTrustDomainError{Component: "test"}},
 		{"NilProviderError", &NilProviderError{}},
@@ -655,7 +824,7 @@ func TestHandleJoinRequest_SealedRefusesBeforeConsumingToken(t *testing.T) {
 	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
 		Token:  token,
 		CSRDER: csrDER,
-	})
+	}, nil)
 	if resp.Error != "join request could not be processed" {
 		t.Fatalf("sealed node response = %q, want the generic infrastructure-failure message", resp.Error)
 	}
@@ -678,16 +847,14 @@ func TestHandleJoinRequest_InfrastructureFailureRefused(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
 	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failGetOnPrefix: joinTokenPrefix}
 
-	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	csrDER, err := buildJoinCSR(nodeKey, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR: %v", err)
-	}
+	nodeURI := spiffe.NodeURI(testTrustDomain, "infra-failure-node")
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
 
 	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-		Token:  "any-token",
-		CSRDER: csrDER,
-	})
+		Token:   "any-token",
+		CSRDER:  csrDER,
+		NodeURI: nodeURI,
+	}, nil)
 	if resp.Error != "join request could not be processed" {
 		t.Fatalf("response = %q, want the generic infrastructure-failure message", resp.Error)
 	}
@@ -699,25 +866,23 @@ func TestHandleJoinRequest_InfrastructureFailureRefused(t *testing.T) {
 func TestHandleJoinRequest_InvalidCSRDoesNotConsumeToken(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "node-retry-1")
 	token := mintTestJoinToken(t, store, "node-retry-1")
 
 	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
 		Token:  token,
 		CSRDER: []byte("not a csr at all"),
-	})
+	}, nil)
 	if resp.Error != "invalid certificate signing request" {
 		t.Fatalf("response = %q, want the invalid-CSR message", resp.Error)
 	}
 
-	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	csrDER, err := buildJoinCSR(nodeKey, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR: %v", err)
-	}
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
 	resp2 := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-		Token:  token,
-		CSRDER: csrDER,
-	})
+		Token:   token,
+		CSRDER:  csrDER,
+		NodeURI: nodeURI,
+	}, nil)
 	if resp2.Error != "" || len(resp2.CertPEM) == 0 {
 		t.Fatalf("retry with the SAME token after a malformed CSR = %+v, want a successfully issued leaf", resp2)
 	}
@@ -730,13 +895,10 @@ func TestHandleJoinRequest_InvalidCSRDoesNotConsumeToken(t *testing.T) {
 func TestHandleJoinRequest_ProofOfPossessionFailureDoesNotConsumeToken(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "node-retry-2")
 	token := mintTestJoinToken(t, store, "node-retry-2")
 
-	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	csrDER, err := buildJoinCSR(nodeKey, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR: %v", err)
-	}
+	_, csrDER := buildMatchingJoinCSR(t, nodeURI)
 	// Corrupt the trailing signature bytes: the CSR still parses (the
 	// ASN.1 structure and lengths are unchanged), but CheckSignature must
 	// now fail.
@@ -744,17 +906,19 @@ func TestHandleJoinRequest_ProofOfPossessionFailureDoesNotConsumeToken(t *testin
 	corrupted[len(corrupted)-1] ^= 0xFF
 
 	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-		Token:  token,
-		CSRDER: corrupted,
-	})
+		Token:   token,
+		CSRDER:  corrupted,
+		NodeURI: nodeURI,
+	}, nil)
 	if resp.Error != "certificate signing request: proof of possession failed" {
 		t.Fatalf("response = %q, want the proof-of-possession message", resp.Error)
 	}
 
 	resp2 := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-		Token:  token,
-		CSRDER: csrDER,
-	})
+		Token:   token,
+		CSRDER:  csrDER,
+		NodeURI: nodeURI,
+	}, nil)
 	if resp2.Error != "" || len(resp2.CertPEM) == 0 {
 		t.Fatalf("retry with the SAME token after a PoP failure = %+v, want a successfully issued leaf", resp2)
 	}
@@ -805,17 +969,15 @@ func TestHandleJoinRequest_SignFailureAfterConsumeLeavesIdentityRetryable(t *tes
 	failingProvider := &issuanceFailureProvider{cert: caCert}
 
 	store := kvstore.NewMemoryKVStore()
+	nodeURI := spiffe.NodeURI(testTrustDomain, "node-retry-3")
 	token := mintTestJoinToken(t, store, "node-retry-3")
-	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	csrDER, err := buildJoinCSR(nodeKey, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR: %v", err)
-	}
+	nodeKey, csrDER := buildMatchingJoinCSR(t, nodeURI)
 
 	resp := HandleJoinRequest(context.Background(), failingProvider, store, testTrustDomain, &JoinRequest{
-		Token:  token,
-		CSRDER: csrDER,
-	})
+		Token:   token,
+		CSRDER:  csrDER,
+		NodeURI: nodeURI,
+	}, nil)
 	if resp.Error != "signing failed" {
 		t.Fatalf("response = %+v, want the signing-failed message", resp)
 	}
@@ -823,14 +985,15 @@ func TestHandleJoinRequest_SignFailureAfterConsumeLeavesIdentityRetryable(t *tes
 	// The node identity must NOT be retired: a freshly minted token for
 	// the SAME node ID, against a working provider, succeeds.
 	retryToken := mintTestJoinToken(t, store, "node-retry-3")
-	retryCSRDER, err := buildJoinCSR(nodeKey, "")
+	retryCSRDER, err := buildJoinCSR(nodeKey, nodeURI)
 	if err != nil {
 		t.Fatalf("buildJoinCSR (retry): %v", err)
 	}
 	resp2 := HandleJoinRequest(context.Background(), realProvider, store, testTrustDomain, &JoinRequest{
-		Token:  retryToken,
-		CSRDER: retryCSRDER,
-	})
+		Token:   retryToken,
+		CSRDER:  retryCSRDER,
+		NodeURI: nodeURI,
+	}, nil)
 	if resp2.Error != "" || len(resp2.CertPEM) == 0 {
 		t.Fatalf("retry for the same node ID after a sign failure = %+v, want a successfully issued leaf", resp2)
 	}
@@ -848,19 +1011,12 @@ func TestHandleJoinRequest_ConcurrentTokensForOneIdentityYieldExactlyOneLeaf(t *
 	store := kvstore.NewMemoryKVStore()
 
 	const nodeID = "node-race-1"
+	nodeURI := spiffe.NodeURI(testTrustDomain, nodeID)
 	tokenOne := mintTestJoinToken(t, store, nodeID)
 	tokenTwo := mintTestJoinToken(t, store, nodeID)
 
-	keyOne, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	keyTwo, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	csrOne, err := buildJoinCSR(keyOne, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR (one): %v", err)
-	}
-	csrTwo, err := buildJoinCSR(keyTwo, "")
-	if err != nil {
-		t.Fatalf("buildJoinCSR (two): %v", err)
-	}
+	_, csrOne := buildMatchingJoinCSR(t, nodeURI)
+	_, csrTwo := buildMatchingJoinCSR(t, nodeURI)
 
 	var wg sync.WaitGroup
 	responses := make([]*JoinResponse, 2)
@@ -868,16 +1024,18 @@ func TestHandleJoinRequest_ConcurrentTokensForOneIdentityYieldExactlyOneLeaf(t *
 	go func() {
 		defer wg.Done()
 		responses[0] = HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-			Token:  tokenOne,
-			CSRDER: csrOne,
-		})
+			Token:   tokenOne,
+			CSRDER:  csrOne,
+			NodeURI: nodeURI,
+		}, nil)
 	}()
 	go func() {
 		defer wg.Done()
 		responses[1] = HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
-			Token:  tokenTwo,
-			CSRDER: csrTwo,
-		})
+			Token:   tokenTwo,
+			CSRDER:  csrTwo,
+			NodeURI: nodeURI,
+		}, nil)
 	}()
 	wg.Wait()
 

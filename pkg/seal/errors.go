@@ -11,7 +11,6 @@ package seal
 import (
 	"errors"
 	"fmt"
-	"strconv"
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
@@ -547,26 +546,6 @@ func (e *UnprotectedDecryptError) Error() string {
 	return "seal: the AEAD did not decrypt the root key in place into protected memory"
 }
 
-// AbsoluteDataRootRecordError refuses a tenant-root record that carries an
-// absolute filesystem path. A path chosen on one node names that node's disk;
-// trusted on another node it opens, and on reclamation deletes, a directory
-// the other node does not own. A tenant's location is recorded as a volume
-// pool name and slot, and every node resolves it against its own pool, so a
-// record naming a path is refused rather than trusted. The tenant must be
-// re-created on a named volume pool.
-type AbsoluteDataRootRecordError struct {
-	TenantID string
-	DataRoot string
-}
-
-// Error returns a human-readable description naming the fix.
-func (e *AbsoluteDataRootRecordError) Error() string {
-	return "qrdb/seal: tenant " + e.TenantID + "'s record names the absolute data root " + e.DataRoot +
-		"; a tenant's location is a volume pool name and slot resolved on each node, so the record is refused" +
-		" and its data is not opened -- delete the tenant (the delete removes its records and touches no" +
-		" directory) and re-create it on a named volume pool"
-}
-
 // DataRootOutsideLocalRootsError refuses to remove a directory that is not
 // strictly inside one of this node's own volume-pool paths, compared both as
 // given and with every symbolic link resolved. Removal acts only on this
@@ -622,22 +601,3 @@ func (e *TenantPathIsSymlinkError) Error() string {
 
 // Unwrap returns why the path could not be resolved, if that is the reason.
 func (e *TenantPathIsSymlinkError) Unwrap() error { return e.Err }
-
-// TenantRootUnresolvedError is returned when a tenant's recorded volume pool
-// and slot cannot be resolved to a directory on this node: the pool is not
-// configured here, or has fewer paths than the recorded slot.
-type TenantRootUnresolvedError struct {
-	TenantID string
-	Pool     string
-	Slot     int
-	Err      error
-}
-
-// Error returns a human-readable description.
-func (e *TenantRootUnresolvedError) Error() string {
-	return "qrdb/seal: tenant " + e.TenantID + "'s volume pool " + e.Pool + " slot " + strconv.Itoa(e.Slot) +
-		" does not resolve to a path on this node: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *TenantRootUnresolvedError) Unwrap() error { return e.Err }

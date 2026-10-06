@@ -1261,6 +1261,17 @@ func TestPrimaryKey(t *testing.T) {
 	}
 }
 
+// TestPrimaryRecordKey pins the exported wrapper to its unexported
+// implementation: firstboot.WatchForAdminBound calls PrimaryRecordKey from
+// outside this package to watch a specific user's record directly, and that
+// only works if it is byte-for-byte the key primaryKey itself writes under.
+func TestPrimaryRecordKey(t *testing.T) {
+	const id = uint64(0x0102030405060708)
+	if got, want := PrimaryRecordKey(id), primaryKey(id); got != want {
+		t.Errorf("PrimaryRecordKey(%d) = %q, want %q (primaryKey)", id, got, want)
+	}
+}
+
 func TestTenantIndexKey(t *testing.T) {
 	key := tenantIndexKey("acme", 0x0102030405060708)
 	want := keyPrefixTenant + "acme/" + string([]byte{1, 2, 3, 4, 5, 6, 7, 8})

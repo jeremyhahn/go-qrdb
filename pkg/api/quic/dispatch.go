@@ -50,6 +50,18 @@ func (s *Server) handleIf(enabled bool, method string, perm permission.Permissio
 	s.handlers[method] = h
 }
 
+// handlePublicIf registers a method served WITHOUT authentication or
+// authorization (QUICMethodRegistry.RegisterPublic), attaching the handler
+// only when enabled, like handleIf. Public methods are a curated built-in
+// set, never a module declaration.
+func (s *Server) handlePublicIf(enabled bool, method string, h methodHandler) {
+	s.methodPerms.RegisterPublic(method)
+	if !enabled {
+		return
+	}
+	s.handlers[method] = h
+}
+
 // handleStreamOnly declares the permission for a server-streaming method
 // that is dispatched by handleStream's stream path (see isWatchMethod)
 // rather than the unary dispatch map, so it has a registry entry but no
@@ -134,6 +146,7 @@ func (s *Server) buildHandlers() {
 	s.handleIf(adminOn, "admin.Peers", permission.AdminPeers, s.handlePeers)
 	s.handleIf(adminOn, "admin.AddMember", permission.AdminAddMember, s.handleAddMember)
 	s.handleIf(adminOn, "admin.RemoveMember", permission.AdminRemoveMember, s.handleRemoveMember)
+	s.handleIf(adminOn, "admin.PromoteMember", permission.AdminAddMember, s.handlePromoteMember)
 	s.handleIf(adminOn, "admin.RequestSnapshot", permission.AdminSnapshot, s.handleRequestSnapshot)
 	s.handleIf(adminOn, "admin.Drain", permission.AdminDrain, s.handleDrain)
 	s.handleIf(adminOn, "admin.Capabilities", permission.AdminCapabilities, s.handleCapabilities)
@@ -144,6 +157,11 @@ func (s *Server) buildHandlers() {
 	s.handleIf(adminOn, "admin.GetNodeCompaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
 	s.handleIf(adminOn, "admin.SetNodeCompaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
 	s.handleIf(adminOn, "admin.MintJoinToken", permission.ClusterJoinToken, s.handleMintJoinToken)
+	s.handleIf(adminOn, "admin.AddObserverMember", permission.AdminAddMember, s.handleAddObserverMember)
+	s.handleIf(adminOn, "admin.ListPendingJoinRequests", permission.ClusterJoinToken, s.handleListPendingJoinRequests)
+	s.handleIf(adminOn, "admin.ApproveJoinRequest", permission.ClusterJoinToken, s.handleApproveJoinRequest)
+	s.handleIf(adminOn, "admin.RejectJoinRequest", permission.ClusterJoinToken, s.handleRejectJoinRequest)
+	s.handleIf(adminOn, "admin.RetireJoinIdentity", permission.ClusterJoinIdentityRetire, s.handleRetireJoinIdentity)
 
 	// MVCC
 	s.handle("mvcc.PutWithLease", permission.MVCCPutWithLease, s.handlePutWithLease)
@@ -263,6 +281,14 @@ func (s *Server) buildHandlers() {
 	s.handle("cert.Enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.handle("cert.Revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.handle("cert.List", permission.CertsList, s.handleListCerts)
+
+	// Invitation self-enrolment: user.Invite is the caller's own tenant's
+	// (users:invite); invitation.Redeem is PUBLIC -- the redeemer holds no
+	// credential yet, so the token is the authority (see server.go's auth
+	// block, which skips both authentication and authorization for it).
+	invitesOn := s.invitations != nil
+	s.handleIf(invitesOn, methodInviteUser, permission.UsersInvite, s.handleInviteUser)
+	s.handlePublicIf(invitesOn, methodRedeemInvitation, s.handleRedeemInvitation)
 
 	// Collection
 	s.handle("collection.Create", permission.CollectionsCreate, s.handleCollectionCreate)
@@ -467,11 +493,6 @@ func (s *Server) buildHandlers() {
 	// module's full-gRPC-method frame key can never shadow a built-in's
 	// dot-separated key; see registerModules.
 	s.registerModules()
-
-	// Declare, for every method that acts on a named user, role or tenant,
-	// how its payload names it, so the route-level check authorizes against
-	// that tenant (see targets.go).
-	s.registerTargets()
 
 	s.assertMethodsAuthorized()
 }

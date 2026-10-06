@@ -108,6 +108,92 @@ func (t *ScopedCeremonyService) InitializeShamir(ctx context.Context, barrier *s
 	return t.holder.initializeShamir(ctx, &t.mu, barrier, policy)
 }
 
+// InitializeShamirWithRoster validates, registers, and initializes an
+// entire M-of-N officer roster atomically -- the tenant/database-barrier
+// counterpart of CeremonyService.Initialize's own M-of-N path for the
+// system barrier, reusing the SAME pure, side-effect-free batch validator
+// (validateOfficerCredentials) so the two inline-roster paths can never
+// drift apart (go-qrdb#560 review B3's reasoning, applied here for the
+// first time to a tenant or database barrier's own init).
+//
+// Every officer is validated BEFORE any of them is registered: role
+// validity, principal name, self-enrolment, CSR/key/KEM/factors, and a key
+// shared by two officers in the roster. What validation cannot catch --
+// the real side effects that still run after it (the CA signing fault, a
+// persist I/O error, a name or key race against a holder enrolled
+// concurrently) -- is covered by registering in order and rolling back
+// every officer already registered, in reverse order, the moment a LATER
+// one fails; a failure in InitializeShamir itself (the barrier's own split,
+// or persisting its result) rolls back the same way, because by then every
+// officer in the roster is already committed exactly as a mid-loop failure
+// would leave them.
+func (t *ScopedCeremonyService) InitializeShamirWithRoster(
+	ctx context.Context,
+	barrier *seal.StorageBarrier,
+	roster []OfficerConfig,
+	enroller string,
+	policy seal.FactorPolicy,
+) (*seal.ShamirInitParams, []*RegisterOfficerResult, error) {
+	if err := validateOfficerCredentials(&t.deps, roster, enroller); err != nil {
+		return nil, nil, err
+	}
+
+	t.mu.Lock()
+	var registered []string
+	var results []*RegisterOfficerResult
+	for _, o := range roster {
+		req := RegisterOfficerRequest{
+			Username: o.Username, Role: o.Role, CSRPEM: o.CSRPEM,
+			Factors: o.Factors, Designated: o.Designated, Enroller: enroller,
+		}
+		if o.EncryptionKEM != "" || len(o.EncryptionKey) > 0 {
+			req.EncryptionKey = &EncryptionKeyEnrolment{KEM: o.EncryptionKEM, PublicKey: o.EncryptionKey}
+		}
+		reg, err := t.holder.register(ctx, &t.deps, req)
+		if err != nil {
+			t.rollbackRosterInit(ctx, registered)
+			t.mu.Unlock()
+			return nil, nil, err
+		}
+		registered = append(registered, o.Username)
+		results = append(results, reg)
+	}
+	t.mu.Unlock()
+
+	// initializeShamir manages its own locking (whileInitializing, passed
+	// the same t.mu), exactly like the unrostered InitializeShamir above;
+	// the lock is released first because the barrier calls back into this
+	// service as its distributor.
+	params, err := t.holder.initializeShamir(ctx, &t.mu, barrier, policy)
+	if err != nil {
+		t.mu.Lock()
+		t.rollbackRosterInit(ctx, registered)
+		t.mu.Unlock()
+		return nil, nil, err
+	}
+	return params, results, nil
+}
+
+// rollbackRosterInit undoes a partially-committed inline roster
+// (InitializeShamirWithRoster's own counterpart of
+// CeremonyService.rollbackOfficerInit): it removes every officer in
+// registered, in reverse enrollment order. Unlike the system barrier's
+// rollback, there is no SO/User PIN to un-provision here -- a tenant or
+// database barrier is authorized by RBAC alone, never a PIN.
+//
+// It never masks the caller's own failure: every error here is LOGGED, not
+// returned, for the same reason CeremonyService.rollbackOfficerInit's own
+// doc comment gives. Must be called with t.mu held; does not unlock.
+func (t *ScopedCeremonyService) rollbackRosterInit(ctx context.Context, registered []string) {
+	for i := len(registered) - 1; i >= 0; i-- {
+		username := registered[i]
+		if err := t.holder.removeEnrolled(ctx, username, func() error { return nil }); err != nil {
+			t.logger.Error("ceremony: failed to roll back a partially-registered officer after a later officer's enrolment failed",
+				slog.String("username", username), slog.Any("error", err))
+		}
+	}
+}
+
 // UnenrolOfficer removes an enrolled holder before the barrier is
 // initialized. After initialization a holder is removed by revocation.
 func (t *ScopedCeremonyService) UnenrolOfficer(ctx context.Context, username string) error {

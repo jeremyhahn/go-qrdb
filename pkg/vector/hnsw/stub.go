@@ -151,6 +151,11 @@ func (idx *HNSWIndex) Insert(id uint64, vector []float32) error {
 	return ErrNotCompiled
 }
 
+// InsertAtLayer adds a new vector to the index at a caller-supplied layer.
+func (idx *HNSWIndex) InsertAtLayer(id uint64, vector []float32, layer int) error {
+	return ErrNotCompiled
+}
+
 // Search performs k-NN search for the given query vector.
 func (idx *HNSWIndex) Search(query []float32, k int) ([]*SearchResult, error) {
 	return nil, ErrNotCompiled

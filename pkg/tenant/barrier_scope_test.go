@@ -95,11 +95,11 @@ func TestTenantBarrierOps_CrossTenantDenied(t *testing.T) {
 			return err
 		}},
 		{"init-with-strategy", func() error {
-			_, err := svc.TenantBarrierInitWithStrategy(attacker, "victim", []byte(""), 0, 0, seal.StrategyNone)
+			_, err := svc.TenantBarrierInitWithStrategy(attacker, "victim", []byte(""), 0, 0, seal.StrategyNone, nil)
 			return err
 		}},
 		{"init-shamir", func() error {
-			_, err := svc.TenantBarrierInitWithStrategy(attacker, "victim", []byte(""), 2, 3, seal.StrategyShamir)
+			_, err := svc.TenantBarrierInitWithStrategy(attacker, "victim", []byte(""), 2, 3, seal.StrategyShamir, nil)
 			return err
 		}},
 		{"unseal", func() error {
@@ -146,7 +146,7 @@ func TestTenantBarrierOps_OwnTenantPermitted(t *testing.T) {
 	}
 	own := WithTenantID(context.Background(), "acme")
 
-	if _, err := svc.TenantBarrierInitWithStrategy(own, "acme", []byte(""), 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(own, "acme", []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(own tenant): %v", err)
 	}
 	st, err := svc.TenantBarrierStatus(own, "acme")

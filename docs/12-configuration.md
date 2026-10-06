@@ -143,6 +143,24 @@ auth:
   # still boots, but serves ONLY the ceremony status and admin-credential
   # endpoints ("awaiting admin credential") until one binds.
   mtls_binding_policy: "required"
+  # How long an invitation (users:invite) stays redeemable. Positive, at
+  # most 7 days -- a token redeemable longer than that is a standing
+  # credential, not an invitation.
+  invitation_ttl: "24h"
+  # Refuse any invitation not pinned to the invited user's key. Off by
+  # default; compliance profiles that must never issue a bearer-only token
+  # turn it on.
+  invitation_require_key_pin: false
+  # Token-bucket throttles for invitation redemption -- the one verb any
+  # caller may invoke with no credential. Zero fields take the defaults
+  # (0.1/s burst 5 per source, 1/s burst 30 per tenant).
+  invitation_redeem_limit:
+    per_source:
+      rate_per_second: 0.1
+      burst: 5
+    per_tenant:
+      rate_per_second: 1
+      burst: 30
 
 seal:
   # auth.enabled (above) defaults to true and now REQUIRES seal.enabled:
@@ -678,6 +696,9 @@ Configures authentication and role-based access control (RBAC).
 | `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
 | `spiffe_trust_domain` | string | `""`       | no       | N/A                | SPIFFE trust domain the mTLS authenticator **pins**, and the one the built-in CA mints client-certificate tenant SANs under. See the note below |
 | `mtls_binding_policy` | string | `"required"` | no     | N/A                | **Whether every certificate login must present an enrolled key** (`"required"`, the default) or only accounts that enrolled one are held to it (`"enrolled"`). See the note below |
+| `invitation_ttl`   | string | `"24h"`     | no       | N/A                | How long a `users:invite` token stays redeemable. Positive, at most 7 days |
+| `invitation_require_key_pin` | bool | `false` | no   | N/A                | Refuse any invitation not pinned to the invited user's key            |
+| `invitation_redeem_limit` | object | see below | no  | N/A                | `per_source`/`per_tenant` token-bucket throttles for invitation redemption, each `{rate_per_second, burst}` |
 
 **Validation rules:**
 
@@ -708,6 +729,11 @@ Configures authentication and role-based access control (RBAC).
   than resolving to either posture: guessing fail-closed denies a fleet the
   operator meant to keep serving, and guessing fail-open weakens the security
   posture on a typo.
+- `invitation_ttl` must be a positive Go duration string of at most 7 days
+  (168h); empty means `"24h"`.
+- `invitation_redeem_limit.{per_source,per_tenant}.{rate_per_second,burst}`
+  must each be non-negative and finite; a zero field takes its documented
+  default rather than disabling the bucket.
 
 **Notes:**
 

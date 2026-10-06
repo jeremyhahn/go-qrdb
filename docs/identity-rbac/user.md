@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Who someone is, and what they may do. There are no passwords: a certificate is
 the identity, and roles carry the permissions.
@@ -75,6 +75,47 @@ existing account of the issuer's own tenant, which is also why `ca issue` takes
 no tenant. A user whose certificate comes from their organisation's own CA is
 enrolled with `qrdb ca enroll` instead
 ([../trust-anchors/user.md](../trust-anchors/user.md)).
+
+## Inviting somebody instead
+
+The walkthrough above has the Admin sign alice's CSR directly — the Admin's
+own credential touches the act of issuing alice's certificate. An invitation
+avoids that: the Admin creates alice's account `pending` and hands her a
+one-time token out of band (chat, email, however you reach her); alice
+redeems it herself, with a key nobody else — the Admin included — ever
+holds.
+
+```bash
+# 1. Invite alice into your own tenant. --roles is optional; an invitation
+#    may not target the Security Officer role, or the Owner role unless you
+#    hold Owner yourself -- the same rule direct issuance (step 2 above)
+#    follows. The token is returned exactly once: save it now.
+qrdb users invite --username alice --email alice@acme.com --roles "$ROLE"
+# => Token: a94e3f1b...   ExpiresAt: 2026-10-07T12:00:00Z   ...
+
+# 2. Deliver the token to alice out of band. She redeems it herself, from her
+#    own machine, with NO credential of her own yet -- "qrdb enroll" needs no
+#    --cert-file/--key-file at all, and generates her key and CSR for her:
+qrdb enroll --server https://db.example.com --tenant-id acme \
+  --token a94e3f1b... --username alice --out ./alice
+# => writes ./alice/key.pem and ./alice/cert.pem: her certificate, already
+#    bound to her account and active. The key never left her machine.
+```
+
+The same two verbs work on REST, QUIC and MCP (see
+[api.md](api.md#capability-matrix--invitation-self-enrolment) for the raw
+wire shapes, and [cli.md](cli.md) for every flag); gRPC and the Unix socket
+refuse both with a typed error. `qrdb enroll` can also submit a CSR made
+elsewhere (`--csr`) or bring your own certificate over that CSR's key
+(`--cert`, `--chain`) instead of generating a key and letting the tenant's CA
+sign it.
+
+An invitation expires after `auth.invitation_ttl` (24 hours by default) and
+can be redeemed exactly once; re-running step 1 with just `--username` issues
+a fresh token for the same still-pending account. If the operator has set
+`auth.invitation_require_key_pin`, step 1 also needs alice's key fingerprint
+(computed from her CSR — ask her to send it first) as `--key-pin-fingerprint`,
+and only a CSR over that exact key redeems it.
 
 ## Common tasks
 
@@ -168,18 +209,21 @@ everything is already current and changes nothing.
 ## Two ways to hold a role
 
 - **System-scoped** (`roleIDs`) — the role applies everywhere.
-- **Tenant-scoped** (`roleBindings`) — the role applies only inside one tenant.
+- **Tenant-scoped** (`roleBindings`) — the role applies only inside one tenant,
+  and that tenant must be the user's own.
 
-They add up. This is how somebody can be tenant-admin for one customer without
-being an admin of the whole system — a binding counts whenever the request
-acts on the tenant it names, and nowhere else. A request that names a user or
-a role acts on the tenant that user or role belongs to; a per-tenant barrier
-operation acts on the tenant it names; everything else — including managing
-a tenant's own record, quotas and entitlements — acts on your own. This holds
-on REST, gRPC, the unix socket, QUIC and MCP.
+They add up. A binding can name only the tenant the user belongs to, and that
+includes users of the system tenant: no binding grants anything in another
+tenant. To make somebody an administrator of tenant `acme`, create their
+account in `acme` and give it `acme`'s Admin role; an `acme` administrator
+acts only in `acme`. This holds on REST, gRPC, the unix socket, QUIC, MCP and
+the embedded SDK.
+
+One gap remains: an Admin of the system tenant can still manage a tenant's
+users and roles. Closing it is planned work on strict tenant isolation.
 
 ```bash
-qrdb users update "$USER" --role-binding "$ROLE:acme"
+qrdb users update "$ACME_USER" --role-binding "$ACME_ROLE:acme"
 qrdb users update "$USER" --attribute department=eng --attribute region=us-east
 ```
 
@@ -191,21 +235,17 @@ attributes.
 Setting `--role-binding`, `--clear-role-bindings`, `--attribute`, or
 `--clear-attributes` requires the operator's identity to hold `roles:assign`
 — the same permission required to assign a role directly — in addition to
-the `users:update` permission the plain update needs. A `--role-binding`
-naming a tenant requires `roles:assign` in THAT tenant too: granting a role
-in tenant `acme` from an identity that only administers tenant `contoso`
-is refused even if the operator can otherwise update the target account. The
-named role must exist and belong to the binding's tenant: every tenant has
+the `users:update` permission the plain update needs, in the tenant the
+account belongs to. The named role must exist and belong to that tenant: every tenant has
 its own copy of the built-in roles (`admin`, `operator`, `user`, ...), so use that
 tenant's copy. A role that does not exist, or belongs to some other tenant —
 including the system tenant's built-ins — is refused before anything
 is written.
 
-Only a system-tenant user can hold a binding outside its own tenant. A user
-that belongs to tenant `acme` is refused every request on any other tenant
-before a binding is looked at, so a `globex` binding on it could never grant
-anything; it is refused with 400 rather than stored. An empty tenant in a
-binding means the system tenant and is stored as `system`.
+A `--role-binding` naming any tenant other than the account's own is refused
+with 400 and nothing is written — a `globex` binding on an `acme` user, and an
+`acme` binding on a system-tenant user, alike. An empty tenant in a binding
+means the system tenant and is stored as `system`.
 
 An attribute set with `--attribute` is visible to ABAC policies as
 `subject.user_attrs.<name>` (or the match key `user_attrs.<name>`), never as

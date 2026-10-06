@@ -132,6 +132,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_peers":                          permission.AdminPeers,
 	"qrdb_add_member":                     permission.AdminAddMember,
 	"qrdb_remove_member":                  permission.AdminRemoveMember,
+	"qrdb_promote_member":                 permission.AdminAddMember,
 	"qrdb_snapshot":                       permission.AdminSnapshot,
 	"qrdb_drain":                          permission.AdminDrain,
 	"qrdb_capabilities":                   permission.AdminCapabilities,
@@ -142,6 +143,11 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_node_compaction":                permission.AdminNodeCompaction,
 	"qrdb_update_node_compaction":         permission.AdminNodeCompaction,
 	"qrdb_mint_join_token":                permission.ClusterJoinToken,
+	"qrdb_add_observer_member":            permission.AdminAddMember,
+	"qrdb_list_pending_join_requests":     permission.ClusterJoinToken,
+	"qrdb_approve_join_request":           permission.ClusterJoinToken,
+	"qrdb_reject_join_request":            permission.ClusterJoinToken,
+	"qrdb_retire_join_identity":           permission.ClusterJoinIdentityRetire,
 	"qrdb_user_create":                    permission.UsersCreate,
 	"qrdb_user_get":                       permission.UsersRead,
 	"qrdb_user_get_by_username":           permission.UsersRead,
@@ -482,7 +488,7 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 		Roles:    []string{"admin"},
 	})
 
-	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_totally_unknown_tool", nil); err == nil {
+	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_totally_unknown_tool"); err == nil {
 		t.Error("unknown tool must be denied (default-deny)")
 	}
 	for _, dead := range []string{
@@ -491,7 +497,7 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 		"qrdb_barrier_shamir_unseal_share", "qrdb_barrier_root_token", "qrdb_barrier_rekey",
 		"qrdb_ceremony_begin_claim_share", "qrdb_ceremony_submit_unseal_share", "qrdb_tenant_barrier_unseal_share",
 	} {
-		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, dead, nil); err == nil {
+		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, dead); err == nil {
 			t.Errorf("dead tool %s must be denied (it has no tool)", dead)
 		}
 	}
@@ -501,7 +507,7 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 
 	// A few known tools spanning permission families resolve and authorize.
 	for _, tool := range []string{"qrdb_put", "qrdb_status", "qrdb_tenant_update_entitlements", "qrdb_audit_query"} {
-		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, tool, nil); err != nil {
+		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, tool); err != nil {
 			t.Errorf("registered tool %q: unexpected authorize error: %v", tool, err)
 		}
 	}

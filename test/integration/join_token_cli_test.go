@@ -39,6 +39,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -58,21 +59,29 @@ type mintJoinTokenCLIResponse struct {
 }
 
 // generateJoinCSR creates a fresh ECDSA P-256 key and a self-signed PKCS#10
-// certificate signing request for it: proof of possession only. The signed
-// leaf's identity comes entirely from the token's own binding, never from
-// the CSR's Subject or any field a joiner controls -- see
-// pkg/clusterenroll/join_csr.go's HandleJoinRequest doc comment ("req.NodeURI
-// is never consulted"). It returns the CSR's DER encoding, ready for
-// clusterenroll.JoinCSRHTTP.
-func generateJoinCSR(t *testing.T) []byte {
+// certificate signing request for it, carrying nodeURI as its sole URI
+// SAN -- proof of possession, plus the identity-match shape
+// HandleJoinRequest's validateJoinCSRIdentity now requires between the CSR
+// and the JoinRequest envelope's own NodeURI. The signed LEAF's identity
+// still comes entirely from the TOKEN's own binding, never from this CSR's
+// Subject or SAN -- see pkg/clusterenroll/join_csr.go's HandleJoinRequest
+// doc comment ("FOR THE TOKEN'S BOUND IDENTITY -- req.NodeURI is never
+// consulted" for SIGNING purposes). It returns the CSR's DER encoding,
+// ready for clusterenroll.JoinCSRHTTP.
+func generateJoinCSR(t *testing.T, nodeURI string) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generateJoinCSR: generate key: %v", err)
 	}
+	u, err := url.Parse(nodeURI)
+	if err != nil {
+		t.Fatalf("generateJoinCSR: url.Parse(%q): %v", nodeURI, err)
+	}
 	template := &x509.CertificateRequest{
 		Subject:            pkix.Name{CommonName: "joining-node"},
 		SignatureAlgorithm: x509.ECDSAWithSHA256,
+		URIs:               []*url.URL{u},
 	}
 	der, err := x509.CreateCertificateRequest(rand.Reader, template, key)
 	if err != nil {
@@ -81,18 +90,19 @@ func generateJoinCSR(t *testing.T) []byte {
 	return der
 }
 
-// redeemJoinToken submits a fresh CSR to node's SPKI/Direct join route
-// (/v1/enroll/join on its admin HTTPS listener) presenting token, via
-// clusterenroll.JoinCSRHTTP -- the SAME client-side function a real joining
-// node's --bootstrap-join-url + --bootstrap-join-token-file configuration
-// calls into (cmd/qrdbd/bootstrap.go's clusterenroll.Resolve path 4). Trust
-// in node's listener is established by pinning its own leaf certificate's
+// redeemJoinToken submits a fresh CSR -- claiming nodeURI, the token's own
+// bound identity -- to node's SPKI/Direct join route (/v1/enroll/join on
+// its admin HTTPS listener) presenting token, via clusterenroll.JoinCSRHTTP
+// -- the SAME client-side function a real joining node's
+// --bootstrap-join-url + --bootstrap-join-token-file configuration calls
+// into (cmd/qrdbd/bootstrap.go's clusterenroll.Resolve path 4). Trust in
+// node's listener is established by pinning its own leaf certificate's
 // SPKI hash, exactly as --bootstrap-spki-pin would, so this never depends on
 // node's self-issued CA being in any system trust store. It returns the
 // signed leaf PEM on success, or the typed error JoinCSRHTTP reports (in
 // particular *clusterenroll.JoinRefusedError for a bad or already-consumed
-// token).
-func redeemJoinToken(t *testing.T, node *selfIssuedCANode, token string) ([]byte, error) {
+// token, or a CSR/NodeURI mismatch).
+func redeemJoinToken(t *testing.T, node *selfIssuedCANode, token, nodeURI string) ([]byte, error) {
 	t.Helper()
 	leafPEM, err := os.ReadFile(node.leafCertPath)
 	if err != nil {
@@ -114,7 +124,7 @@ func redeemJoinToken(t *testing.T, node *selfIssuedCANode, token string) ([]byte
 		ServerURL: node.adminURL,
 		SPKIPin:   pin,
 		Token:     token,
-	}, generateJoinCSR(t), "")
+	}, generateJoinCSR(t, nodeURI), nodeURI)
 }
 
 // leafURISANs returns the URI SANs of a PEM-encoded certificate.
@@ -213,11 +223,11 @@ func TestAdminJoinTokenMint_CLI_PerProtocol(t *testing.T) {
 	// already proves every transport can mint; this proves a minted token
 	// is genuinely usable and single-use.
 	t.Run("redemption", func(t *testing.T) {
-		certPEM, err := redeemJoinToken(t, node, redeemableToken)
+		wantURI := spiffe.NodeURI(clusterTestTrustDomain, redeemableNodeID)
+		certPEM, err := redeemJoinToken(t, node, redeemableToken, wantURI)
 		if err != nil {
 			t.Fatalf("redeem minted token: %v", err)
 		}
-		wantURI := spiffe.NodeURI(clusterTestTrustDomain, redeemableNodeID)
 		uris := leafURISANs(t, certPEM)
 		if len(uris) != 1 || uris[0] != wantURI {
 			t.Fatalf("signed leaf URI SANs = %v, want exactly [%s] (the token's bound identity, never a joiner-asserted one)",
@@ -226,7 +236,7 @@ func TestAdminJoinTokenMint_CLI_PerProtocol(t *testing.T) {
 
 		// Single-use: the SAME token presented again is refused, not
 		// silently re-honored.
-		if _, err := redeemJoinToken(t, node, redeemableToken); err == nil {
+		if _, err := redeemJoinToken(t, node, redeemableToken, wantURI); err == nil {
 			t.Fatal("second redemption of the same token unexpectedly succeeded")
 		} else {
 			var refused *clusterenroll.JoinRefusedError
@@ -262,6 +272,71 @@ func TestAdminJoinTokenMint_CLI_BYOTLSRefusal(t *testing.T) {
 			}
 			if !strings.Contains(out, "no cluster join-token store configured") {
 				t.Fatalf("[%s] admin join-token mint: expected the typed ClusterJoinTokenNotConfiguredError, got: %s", proto.name, out)
+			}
+		})
+	}
+}
+
+// TestAdminJoinTokenRetire_CLI_PerProtocol drives `qrdb admin join-token
+// retire` against a self-issued-CA node over every transport: each
+// protocol mints a token for its own never-reused node identity, retires
+// that SAME identity, and then proves a FRESH mint for it is permanently
+// refused with the typed *clusterenroll.RetiredJoinIdentityError -- not
+// merely that the retire call itself returned success.
+func TestAdminJoinTokenRetire_CLI_PerProtocol(t *testing.T) {
+	node := startSelfIssuedCAMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			nodeID := fmt.Sprintf("retiree-%s", proto.name)
+
+			mintOut, err := runCLIProto(t, node.multiProtoNode, proto, "admin", "join-token", "mint", nodeID, "--ttl", "1h")
+			if err != nil {
+				t.Fatalf("[%s] admin join-token mint (setup): %v\noutput: %s", proto.name, err, mintOut)
+			}
+
+			out, err := runCLIProto(t, node.multiProtoNode, proto, "admin", "join-token", "retire", nodeID, "--reason", "integration test")
+			if err != nil {
+				t.Fatalf("[%s] admin join-token retire: %v\noutput: %s", proto.name, err, out)
+			}
+			if !strings.Contains(out, "OK") {
+				t.Fatalf("[%s] admin join-token retire: expected OK, got: %s", proto.name, out)
+			}
+
+			// A FRESH mint for the SAME identity is now permanently refused
+			// -- retirement, not merely the active-admission check an
+			// unconsumed token would already trip (retiring writes to the
+			// join-IDENTITY ledger, a different key namespace than the
+			// join-TOKEN the setup mint above left unconsumed).
+			retryOut, err := runCLIProto(t, node.multiProtoNode, proto, "admin", "join-token", "mint", nodeID, "--ttl", "1h")
+			if err == nil {
+				t.Fatalf("[%s] admin join-token mint after retire unexpectedly succeeded, output: %s", proto.name, retryOut)
+			}
+			if !strings.Contains(retryOut, "retired") {
+				t.Fatalf("[%s] admin join-token mint after retire: expected a retirement refusal, got: %s", proto.name, retryOut)
+			}
+		})
+	}
+}
+
+// TestAdminJoinTokenRetire_CLI_BYOTLSRefusal mirrors
+// TestAdminJoinTokenMint_CLI_BYOTLSRefusal: RetireJoinIdentity reads and
+// writes the SAME join-identity ledger MintJoinToken does (see
+// pkg/service.AdminService's shared joinToken state), so a BYO-TLS node --
+// no join-token store configured at all -- refuses it identically.
+func TestAdminJoinTokenRetire_CLI_BYOTLSRefusal(t *testing.T) {
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			out, err := runCLIProto(t, node, proto, "admin", "join-token", "retire", "node-x")
+			if err == nil {
+				t.Fatalf("[%s] admin join-token retire on a BYO-TLS node unexpectedly succeeded, output: %s", proto.name, out)
+			}
+			if !strings.Contains(out, "no cluster join-token store configured") {
+				t.Fatalf("[%s] admin join-token retire: expected the typed ClusterJoinTokenNotConfiguredError, got: %s", proto.name, out)
 			}
 		})
 	}

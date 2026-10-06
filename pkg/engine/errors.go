@@ -118,3 +118,23 @@ func (e *LessorResyncError) Error() string {
 func (e *LessorResyncError) Unwrap() []error {
 	return []error{e.ApplyErr, e.RestoreErr}
 }
+
+// AuditChainResyncError is returned when a failed apply's replicated audit
+// Chain could not be rebuilt from the committed audit table, mirroring
+// LessorResyncError exactly for the same reason: the Chain's in-memory head
+// for a batch that never committed must not outlive the failure, and a
+// failure to resync it means the engine can no longer promise its next
+// Append assigns a sequence no replica's committed log disagrees with.
+type AuditChainResyncError struct {
+	ApplyErr   error
+	RestoreErr error
+}
+
+func (e *AuditChainResyncError) Error() string {
+	return "engine: apply failed (" + e.ApplyErr.Error() + ") and the replicated audit chain could not be rebuilt from storage: " + e.RestoreErr.Error()
+}
+
+// Unwrap returns both causes.
+func (e *AuditChainResyncError) Unwrap() []error {
+	return []error{e.ApplyErr, e.RestoreErr}
+}

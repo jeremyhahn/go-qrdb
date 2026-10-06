@@ -299,7 +299,7 @@ func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 			// done, whether or not the tool was SO-gated.
 			defer authmw.WipeSOFactor(ctx)
 			if s.authMW != nil {
-				if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name, req.GetArguments()); err != nil {
+				if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name); err != nil {
 					slog.Warn("mcp: tool call denied",
 						"tool", req.Params.Name, "error", err)
 					return authzToolError(err), nil

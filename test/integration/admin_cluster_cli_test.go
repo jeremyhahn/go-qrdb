@@ -28,10 +28,11 @@
 // buildBinary/buildCLIBinary's `-tags "... qrdb_ts qrdb_vector ..."`), so it
 // is tested on the single-node startMultiProtocolNode harness.
 //
-// `admin topology`, `admin member add/remove`, and `admin snapshot` are
-// cluster-relevant and are tested on a purpose-built 3-node, all-transport,
-// all-TLS, auth-enabled cluster (start3NodeMultiProtocolCluster below,
-// modeled on startMultiProtocolNode + startThreeNodeClusterSPIFFE).
+// `admin topology`, `admin member add/add-observer/remove/promote`, and
+// `admin snapshot` are cluster-relevant and are tested on a purpose-built
+// 3-node, all-transport, all-TLS, auth-enabled cluster
+// (start3NodeMultiProtocolCluster below, modeled on startMultiProtocolNode +
+// startThreeNodeClusterSPIFFE).
 //
 //   - `admin topology` is a local, read-only view "as seen from this node"
 //     (service.AdminService.GetTopology never touches Raft consensus), so it
@@ -40,18 +41,18 @@
 //     quicraft.Host.RequestSnapshot) triggers a local log-compaction
 //     snapshot and is NOT leader-gated at the quicraft layer, so it too is
 //     exercised against both the leader and a follower.
-//   - `admin member add`/`admin member remove` propose Raft configuration
-//     changes, which only the shard's current LEADER can commit. Every
-//     transport except REST returns service.NotLeaderError verbatim when a
-//     write lands on a follower (pkg/api/grpc/errors.go, pkg/api/quic/
-//     errors.go both map *service.NotLeaderError straight through instead of
-//     forwarding -- only pkg/api/rest/server.go implements
-//     forwardToLeader). Follower-forwarding over REST is already covered by
-//     TestCluster_MembershipAdd/Remove_ForwardsToLeader (cluster_test.go),
-//     so this file targets the LEADER directly on every protocol -- the
-//     realistic, documented way any non-REST client performs a cluster
-//     write -- to prove all 5 transports commit membership changes
-//     end-to-end when routed correctly.
+//   - `admin member add`/`add-observer`/`remove`/`promote` propose Raft
+//     configuration changes, which only the shard's current LEADER can
+//     commit. Every transport except REST returns service.NotLeaderError
+//     verbatim when a write lands on a follower (pkg/api/grpc/errors.go,
+//     pkg/api/quic/errors.go both map *service.NotLeaderError straight
+//     through instead of forwarding -- only pkg/api/rest/server.go
+//     implements forwardToLeader). Follower-forwarding over REST is already
+//     covered by TestCluster_MembershipAdd/Remove_ForwardsToLeader
+//     (cluster_test.go), so this file targets the LEADER directly on every
+//     protocol -- the realistic, documented way any non-REST client
+//     performs a cluster write -- to prove all 5 transports commit
+//     membership changes end-to-end when routed correctly.
 package integration_test
 
 import (
@@ -385,9 +386,12 @@ func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 			testAdminSnapshotOverProtocol(t, nodes[followerIdx], proto, "follower")
 			testAdminSnapshotOverProtocol(t, nodes[leaderIdx], proto, "leader")
 
-			testAdminMemberLifecycleOverProtocol(t, nodes[leaderIdx], proto, nextReplicaID, spare)
+			// Two throwaway replica IDs this protocol's turn needs: one for
+			// the observer-add/promote-success cycle, one for the
+			// voter-add/promote-refusal cycle below.
+			testAdminMemberLifecycleOverProtocol(t, nodes[leaderIdx], proto, nextReplicaID, nextReplicaID+1, spare)
 		})
-		nextReplicaID++
+		nextReplicaID += 2
 	}
 }
 
@@ -479,15 +483,19 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 
 // testAdminMemberLifecycleOverProtocol first removes spare -- a genesis
 // member of shard 1 dedicated to this protocol, still a CURRENT member at
-// this point (see adminClusterSpareReplica's doc comment) -- then adds a
-// brand-new throwaway replica newReplicaID at spare's now-freed real Raft
-// address against the cluster LEADER over proto, confirms it is reflected
-// in `admin peers`, then removes it and confirms it disappears -- the
-// realistic non-REST usage pattern documented in this file's header comment
-// (member writes must be routed to the leader on every transport except
-// REST, which alone auto-forwards).
+// this point (see adminClusterSpareReplica's doc comment) -- then runs TWO
+// add/remove cycles at spare's now-freed real Raft address against the
+// cluster LEADER over proto, each confirmed via `admin peers`: first
+// observerReplicaID, added as an OBSERVER (`admin member add-observer`) and
+// promoted to a voter (`admin member promote`) -- the success path, which
+// had no way to be exercised by CLI before add-observer existed -- then
+// newReplicaID, added as an ordinary voter and confirmed REFUSED promotion
+// ("not a committed observer"). This is the realistic non-REST usage
+// pattern documented in this file's header comment (member writes must be
+// routed to the leader on every transport except REST, which alone
+// auto-forwards).
 //
-// The add happens immediately after spare's removal, with no other Raft
+// Both cycles happen immediately after spare's removal, with no other Raft
 // traffic against shard 1 in between: go-quicraft stops a removed replica
 // participating in its old shard within seconds, including refreshing its
 // own feature-gate advertisement's lease (see adminClusterSpareReplica), so
@@ -496,14 +504,16 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 // never has to stretch across 5 protocols' worth of topology and snapshot
 // calls.
 //
-// newReplicaID must never have been used by an earlier add/remove cycle in
-// this test run -- see TestAdminCluster_CLI_PerProtocol's monotonic counter,
-// which exists because quicraft permanently refuses to re-admit a
-// once-removed replica ID ("raft: node was previously removed") or member
-// identity ("node identity belongs to a replica this shard has removed").
-// Reusing spare's ADDRESS is fine: that restriction is keyed on replica ID
-// and member identity, never on address.
-func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, proto multiProtocol, newReplicaID uint64, spare adminClusterSpareReplica) {
+// Neither observerReplicaID nor newReplicaID may ever have been used by an
+// earlier add/remove cycle in this test run -- see
+// TestAdminCluster_CLI_PerProtocol's monotonic counter, which exists
+// because quicraft permanently refuses to re-admit a once-removed replica
+// ID ("raft: node was previously removed") or member identity ("node
+// identity belongs to a replica this shard has removed"). Reusing spare's
+// ADDRESS (across both cycles, and across protocols) is fine: that
+// restriction is keyed on replica ID and member identity, never on
+// address.
+func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, proto multiProtocol, observerReplicaID, newReplicaID uint64, spare adminClusterSpareReplica) {
 	t.Helper()
 
 	removeSpareOut, err := runCLIProto(t, leader, proto, "admin", "member", "remove",
@@ -513,6 +523,49 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 	}
 	if !strings.Contains(removeSpareOut, "OK") {
 		t.Fatalf("[%s] admin member remove (spare): expected OK, got: %s", proto.name, removeSpareOut)
+	}
+
+	// admin member add-observer + admin member promote, the SUCCESS path:
+	// an observer has no voting member of its own until this cycle exists,
+	// so promote's success path had no way to be exercised by CLI before
+	// it (only the "not a committed observer" refusal below, against a
+	// replica a plain `member add` always votes). Reuses spare's
+	// freshly-freed address, in the same brief post-removal window the
+	// voter cycle below also depends on (see adminClusterSpareReplica).
+	observerSum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-observer-%d", observerReplicaID)))
+	observerIdentity := "spki:" + hex.EncodeToString(observerSum[:])
+
+	addObserverOut, err := runCLIProto(t, leader, proto, "admin", "member", "add-observer", spare.raftAddr,
+		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", observerReplicaID), "--identity", observerIdentity)
+	if err != nil {
+		t.Fatalf("[%s] admin member add-observer (replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, addObserverOut)
+	}
+	if !strings.Contains(addObserverOut, "OK") {
+		t.Fatalf("[%s] admin member add-observer: expected OK, got: %s", proto.name, addObserverOut)
+	}
+
+	promoteObserverOut, err := runCLIProto(t, leader, proto, "admin", "member", "promote",
+		fmt.Sprintf("%d", observerReplicaID), "--shard-id", "1")
+	if err != nil {
+		t.Fatalf("[%s] admin member promote (observer replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, promoteObserverOut)
+	}
+	if !strings.Contains(promoteObserverOut, "OK") {
+		t.Fatalf("[%s] admin member promote (observer): expected OK, got: %s", proto.name, promoteObserverOut)
+	}
+
+	// Promoted in place: now a voter, so it must show up as an ordinary
+	// peer exactly as a plain `member add` replica does.
+	if !adminPeersContainsReplica(t, leader, proto, observerReplicaID) {
+		t.Fatalf("[%s] admin peers: promoted observer replica %d not present after admin member promote", proto.name, observerReplicaID)
+	}
+
+	removeObserverOut, err := runCLIProto(t, leader, proto, "admin", "member", "remove",
+		fmt.Sprintf("%d", observerReplicaID), "--shard-id", "1")
+	if err != nil {
+		t.Fatalf("[%s] admin member remove (promoted observer replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, removeObserverOut)
+	}
+	if !strings.Contains(removeObserverOut, "OK") {
+		t.Fatalf("[%s] admin member remove (promoted observer): expected OK, got: %s", proto.name, removeObserverOut)
 	}
 
 	// The replica being added is on no real node of its own -- it shares
@@ -534,6 +587,20 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 
 	if !adminPeersContainsReplica(t, leader, proto, newReplicaID) {
 		t.Fatalf("[%s] admin peers: replica %d not present after admin member add", proto.name, newReplicaID)
+	}
+
+	// admin member promote refuses a replica that is a committed VOTER, not
+	// an observer: newReplicaID was just added by admin member add, which
+	// always votes (there is no observer-mode add yet). This proves the
+	// verb dispatches end-to-end on every protocol and that the typed
+	// refusal (service.MemberNotObserverError) reaches the CLI.
+	promoteOut, err := runCLIProto(t, leader, proto, "admin", "member", "promote",
+		fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
+	if err == nil {
+		t.Fatalf("[%s] admin member promote (voter replica %d) unexpectedly succeeded, output: %s", proto.name, newReplicaID, promoteOut)
+	}
+	if !strings.Contains(promoteOut, "not a committed observer") {
+		t.Fatalf("[%s] admin member promote (voter replica %d): expected \"not a committed observer\", got: %v\noutput: %s", proto.name, newReplicaID, err, promoteOut)
 	}
 
 	// admin member remove takes the replica ID as a positional argument and

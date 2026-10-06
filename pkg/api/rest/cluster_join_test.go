@@ -26,9 +26,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
@@ -80,13 +82,21 @@ func mintTestJoinToken(t *testing.T, store kvstore.AtomicKVStore, nodeID string)
 
 // newTestJoinCSR builds a self-signed CSR for a fresh ECDSA P-256 key pair,
 // for submitting to /v1/enroll/join.
-func newTestJoinCSR(t *testing.T) []byte {
+func newTestJoinCSR(t *testing.T, nodeURI string) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	template := &x509.CertificateRequest{}
+	if nodeURI != "" {
+		u, err := url.Parse(nodeURI)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", nodeURI, err)
+		}
+		template.URIs = []*url.URL{u}
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, template, key)
 	if err != nil {
 		t.Fatalf("CreateCertificateRequest: %v", err)
 	}
@@ -105,9 +115,10 @@ func TestClusterJoin_SignsAValidCSR(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithClusterJoin(provider, store, clusterJoinTestTrustDomain))
 	token := mintTestJoinToken(t, store, "member-1")
+	nodeURI := spiffe.NodeURI(clusterJoinTestTrustDomain, "member-1")
 
-	csrDER := newTestJoinCSR(t)
-	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: token, CSRDER: csrDER})
+	csrDER := newTestJoinCSR(t, nodeURI)
+	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -142,7 +153,7 @@ func TestClusterJoin_WrongTokenRefused(t *testing.T) {
 		WithClusterJoin(provider, store, clusterJoinTestTrustDomain))
 	mintTestJoinToken(t, store, "member-1")
 
-	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "wrong-token", CSRDER: newTestJoinCSR(t)})
+	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "wrong-token", CSRDER: newTestJoinCSR(t, "")})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
 	}
@@ -183,7 +194,7 @@ func TestClusterJoin_MalformedBody(t *testing.T) {
 // /v1/ca/bootstrap's own "leave the path free" rule.
 func TestClusterJoin_UnconfiguredLeavesThePathFree(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
-	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "tok", CSRDER: newTestJoinCSR(t)})
+	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "tok", CSRDER: newTestJoinCSR(t, "")})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unconfigured: status %d, want 404", rec.Code)
 	}

@@ -52,6 +52,37 @@ x-scanner-pins: &scanner-pins
   <<: *go-scanner-pins
   TRIVY_VERSION:
 
+# Fleet dev-cache passthrough (devops.md §2a). Unset, empty or unreachable
+# means no proxy -- the behaviour without the cache -- so every entry below
+# is the interpolated ${VAR:-} form, never the scanner-pins passthrough
+# form above: an empty dev-cache address is itself meaningful here (skip
+# it), not an error to guard against. No address lives in this tracked
+# file: a machine with no .devcontainer/.env supplies none of these and
+# every build and run behaves exactly as it did before the cache existed.
+# DEVCACHE_APT_PROXY and DEVCACHE_NPM_REGISTRY are ALSO build args, because
+# the Dockerfile needs them at image-build time (apt's Acquire::http::Proxy,
+# npm's registry) -- the other six only ever matter at container run time.
+x-devcache-build-args: &devcache-build-args
+  DEVCACHE_APT_PROXY: ${DEVCACHE_APT_PROXY:-}
+  DEVCACHE_NPM_REGISTRY: ${DEVCACHE_NPM_REGISTRY:-}
+
+# GOPROXY keeps the existing GOPRIVATE semantics below: GOPRIVATE already
+# forces every github.com/jeremyhahn/* module to resolve direct (bypassing
+# any GOPROXY, public or private), so adding the dev-cache's Athens mirror
+# ahead of the public proxy here cannot send a private module anywhere it
+# does not already go -- private modules must never reach a public proxy,
+# and GOPRIVATE is what guarantees that, unchanged.
+x-devcache-env: &devcache-env
+  - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+  - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+  - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+  - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+  - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+  - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+  - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+  - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+  - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct}
+
 # devcontainer, client-build, benchmark and e2e all bind-mount the worktree
 # over /workspace/go-qrdb (below) and run `go build`/`go test` against that
 # mount, never against anything baked into the image. Before this comment none
@@ -89,7 +120,8 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
       target: deps
-      args: *scanner-pins
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -100,6 +132,7 @@ services:
       - ../../go-objstore:/workspace/go-objstore
       - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
+    environment: *devcache-env
     # NO runtime module credentials, and no go-mod-cache volume, because
     # neither is needed: `deps` runs `go mod download` under the BuildKit
     # secret, so /go/pkg/mod is already populated IN THE IMAGE LAYER.
@@ -127,7 +160,8 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
       target: deps
-      args: *scanner-pins
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -160,6 +194,19 @@ services:
       - GIT_CONFIG_COUNT=${GITEA_HOST:+1}
       - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN:-}@${GITEA_HOST:-}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
+      # Dev-cache passthrough (devops.md §2a). GOPROXY sits beside GOPRIVATE
+      # above rather than replacing it: GOPRIVATE already routes every
+      # github.com/jeremyhahn/* module direct, so this cache can accelerate
+      # only the public modules it was ever allowed to touch.
+      - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+      - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+      - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+      - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+      - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+      - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+      - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+      - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct}
     command: ["make", "_build-client"]
 
   e2e:
@@ -167,7 +214,8 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
       target: deps
-      args: *scanner-pins
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
       secrets:
         - gomodauth
     image: go-qrdb-e2e:latest
@@ -187,6 +235,17 @@ services:
       - GIT_CONFIG_COUNT=${GITEA_HOST:+1}
       - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN:-}@${GITEA_HOST:-}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
+      # Dev-cache passthrough (devops.md §2a): see the client-build service
+      # above for why GOPROXY is safe beside the existing GOPRIVATE line.
+      - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+      - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+      - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+      - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+      - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+      - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+      - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+      - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct}
     command: ["make", "_test-e2e"]
     # The e2e suite starts qrdbd; same locked-memory caps as devcontainer.
     cap_add:
@@ -237,7 +296,8 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
       target: deps
-      args: *scanner-pins
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -248,6 +308,7 @@ services:
       - ../../go-objstore:/workspace/go-objstore
       - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
+    environment: *devcache-env
     # Same reason as devcontainer's identical block above: `toolchain` bakes
     # no module cache, so `_bench-qrdb-kv-fair`'s `go test` resolves
     # github.com/jeremyhahn/* at runtime and needs these.

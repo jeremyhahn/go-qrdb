@@ -18,14 +18,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -306,6 +305,7 @@ type qrdbServiceServer struct {
 	roleSvc       role.RoleServicer
 	certProv      cert.CertProvider
 	certEnroll    service.CertEnrollmentServicer
+	invitationSvc service.InvitationServicer
 	onboarding    service.TenantOnboardingServicer
 	collectionSvc service.CollectionServicer
 	backupSvc     service.BackupServicer
@@ -584,6 +584,21 @@ func (s *qrdbServiceServer) RemoveMember(ctx context.Context, req *pb.RemoveMemb
 	return &emptypb.Empty{}, nil
 }
 
+// PromoteMember promotes a committed observer of a shard to a voter.
+func (s *qrdbServiceServer) PromoteMember(ctx context.Context, req *pb.PromoteMemberRequest) (*emptypb.Empty, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	promoter, ok := s.adminSvc.(service.MemberPromoter)
+	if !ok {
+		return nil, mapServiceError(&service.MemberPromotionUnsupportedError{})
+	}
+	if err := promoter.PromoteMember(ctx, req.GetShardId(), req.GetReplicaId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
 // RequestSnapshot triggers a snapshot for the given shard.
 func (s *qrdbServiceServer) RequestSnapshot(ctx context.Context, req *pb.RequestSnapshotMessage) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
@@ -764,6 +779,106 @@ func (s *qrdbServiceServer) MintJoinToken(ctx context.Context, req *pb.MintJoinT
 		Token:     token,
 		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// AddObserverMember adds a new replica to a shard as a non-voting observer
+// rather than a voter.
+func (s *qrdbServiceServer) AddObserverMember(ctx context.Context, req *pb.AddObserverMemberRequest) (*emptypb.Empty, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	adder, ok := s.adminSvc.(service.ObserverMemberAdder)
+	if !ok {
+		return nil, mapServiceError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	if err := adder.AddObserverMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress(), req.GetMemberIdentity()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// RetireJoinIdentity permanently refuses any future admission for a node
+// identity. s.adminSvc not implementing service.JoinIdentityRetirer
+// (member-side CSR join never configured on this node) reports the same
+// typed error MintJoinToken does.
+func (s *qrdbServiceServer) RetireJoinIdentity(ctx context.Context, req *pb.RetireJoinIdentityRequest) (*emptypb.Empty, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	retirer, ok := s.adminSvc.(service.JoinIdentityRetirer)
+	if !ok {
+		return nil, mapServiceError(&service.ClusterJoinTokenNotConfiguredError{})
+	}
+	if err := retirer.RetireJoinIdentity(ctx, req.GetNodeId(), req.GetReason()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// ListPendingJoinRequests lists tokenless member-side CSR join requests
+// awaiting an operator's decision.
+func (s *qrdbServiceServer) ListPendingJoinRequests(ctx context.Context, _ *emptypb.Empty) (*pb.ListPendingJoinRequestsResponse, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	reviewer, ok := s.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, mapServiceError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	pending, err := reviewer.ListPendingJoinRequests(ctx)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.ListPendingJoinRequestsResponse{Requests: pendingJoinRequestsToProto(pending)}, nil
+}
+
+// ApproveJoinRequest binds a queued CSR to an operator-chosen node identity.
+func (s *qrdbServiceServer) ApproveJoinRequest(ctx context.Context, req *pb.ApproveJoinRequestRequest) (*emptypb.Empty, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	reviewer, ok := s.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, mapServiceError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	if err := reviewer.ApproveJoinRequest(ctx, req.GetId(), req.GetNodeId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// RejectJoinRequest records a terminal refusal of a queued CSR.
+func (s *qrdbServiceServer) RejectJoinRequest(ctx context.Context, req *pb.RejectJoinRequestRequest) (*emptypb.Empty, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	reviewer, ok := s.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, mapServiceError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	if err := reviewer.RejectJoinRequest(ctx, req.GetId(), req.GetReason()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// pendingJoinRequestsToProto converts the service-layer pending-request view
+// to its wire message, shared by every transport that marshals through this
+// protobuf shape (gRPC directly; QUIC reuses the same pb type for its own
+// binary framing).
+func pendingJoinRequestsToProto(pending []*service.PendingJoinRequest) []*pb.PendingJoinRequestMessage {
+	out := make([]*pb.PendingJoinRequestMessage, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, &pb.PendingJoinRequestMessage{
+			Id:          p.ID,
+			NodeUri:     p.NodeURI,
+			ReplicaId:   p.ReplicaID,
+			Features:    p.Features,
+			SubmittedAt: p.SubmittedAt.UTC().Format(time.RFC3339),
+			ExpiresAt:   p.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

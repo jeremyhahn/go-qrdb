@@ -17,8 +17,6 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,8 +139,7 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -277,8 +274,7 @@ func (s *Server) handleGetRole(w http.ResponseWriter, r *http.Request, id string
 // handleUpdateRole handles PUT /roles/{id} -- applies partial updates.
 func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request, id string) {
 	var req updateRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -326,8 +322,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req assignRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -382,8 +377,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req assignRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -468,8 +462,7 @@ func (s *Server) handleGetRoleByName(w http.ResponseWriter, r *http.Request) {
 // resolves the union of effective permissions for the given role IDs.
 func (s *Server) handleResolvePermissions(w http.ResponseWriter, r *http.Request) {
 	var req resolvePermissionsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	if !decodeIAMRequest(w, r, &req) {
 		return
 	}
 
@@ -501,11 +494,8 @@ func (s *Server) handleReconcileRoles(w http.ResponseWriter, r *http.Request) {
 	// An empty body means "my own tenant", which is the common case for a
 	// tenant administrator, so it is not a malformed request.
 	var req reconcileRolesRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
-			return
-		}
+	if !decodeOptionalIAMRequest(w, r, &req) {
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)

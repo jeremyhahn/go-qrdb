@@ -570,6 +570,55 @@ func TestBarrierRegistry_InitializeTenantShamir_TenantNotFound(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// barrier_registry.go: ReconfigureTenantShamir
+// --------------------------------------------------------------------------
+
+// TestBarrierRegistry_ReconfigureTenantShamir_Success installs Shamir on a
+// tenant barrier shell that was registered under a different (software)
+// strategy -- the exact shape a dedicated tenant's shell is in after
+// `tenant create` and before an explicit `tenant barrier-init --strategy
+// shamir` chooses Shamir. Both the registered strategy and the threshold/
+// total configuration must take effect.
+func TestBarrierRegistry_ReconfigureTenantShamir_Success(t *testing.T) {
+	ctx := context.Background()
+	reg := newTestRegistry(t)
+	const tenantID = "tenant-reconfigure-shamir"
+	if _, err := reg.RegisterTenant(ctx, tenantID, NewMemoryBackend(), BarrierConfig{
+		RootKeyPath: "t/root-key",
+	}, testSoftwareStrategy(t)); err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	if err := reg.ReconfigureTenantShamir(tenantID, 2, 3, 0); err != nil {
+		t.Fatalf("ReconfigureTenantShamir: %v", err)
+	}
+
+	tb, err := reg.GetTenant(tenantID)
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	strategy := tb.Barrier().ShamirStrategy()
+	if strategy == nil {
+		t.Fatal("ShamirStrategy() = nil after ReconfigureTenantShamir, want the installed strategy")
+	}
+	status := tb.Barrier().Status()
+	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
+		t.Errorf("Status() = %+v, want ShamirThreshold=2 ShamirTotal=3", status)
+	}
+}
+
+// TestBarrierRegistry_ReconfigureTenantShamir_TenantNotFound asserts an
+// unregistered tenant is refused with the same error GetTenant itself
+// returns, before any strategy or config is touched.
+func TestBarrierRegistry_ReconfigureTenantShamir_TenantNotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+	err := reg.ReconfigureTenantShamir("nonexistent", 2, 3, 0)
+	if !errors.Is(err, ErrTenantNotFound) {
+		t.Errorf("ReconfigureTenantShamir(unknown): got %v, want ErrTenantNotFound", err)
+	}
+}
+
+// --------------------------------------------------------------------------
 // barrier_registry.go: SealAll — 75%
 // (exercises the happy-path with registered tenants)
 // --------------------------------------------------------------------------

@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -52,6 +53,52 @@ func RegisterFrom(req *transport.OfficerRegisterRequest) *service.BarrierOfficer
 		Factors:       FactorsFrom(req.Factors),
 		Designated:    req.Designated,
 	}
+}
+
+// TenantBarrierRosterFrom converts the inline Shamir officer roster a
+// `tenant barrier-init` wire request carries into the []ceremony.OfficerConfig
+// shape ScopedCeremonyService.InitializeShamirWithRoster validates and
+// registers atomically with initialization -- the SAME conversion for every
+// transport that accepts this inline roster (REST, QUIC, MCP, Embedded), so
+// there is exactly one place it can ever drift. Returns nil when officers is
+// empty.
+func TenantBarrierRosterFrom(officers []transport.OfficerRegisterRequest) []ceremony.OfficerConfig {
+	if len(officers) == 0 {
+		return nil
+	}
+	out := make([]ceremony.OfficerConfig, len(officers))
+	for i := range officers {
+		out[i] = ceremony.OfficerConfig{
+			Username:      officers[i].Username,
+			Role:          seal.HolderRole(officers[i].Role),
+			CSRPEM:        []byte(officers[i].CSRPEM),
+			EncryptionKEM: officers[i].EncryptionKEM,
+			EncryptionKey: officers[i].EncryptionKey,
+			Factors:       FactorsFrom(officers[i].Factors),
+			Designated:    officers[i].Designated,
+		}
+	}
+	return out
+}
+
+// TenantBarrierHoldersTo converts the per-officer certificates a tenant
+// barrier's inline-roster initialization (tenant.TenantBarrierInitResult.Holders)
+// returns into the wire shape TenantBarrierInitResponse carries -- the SAME
+// conversion for every transport that returns this result (REST, QUIC, MCP,
+// Embedded).
+func TenantBarrierHoldersTo(holders []tenant.TenantBarrierHolderCert) []transport.TenantBarrierHolderCert {
+	if len(holders) == 0 {
+		return nil
+	}
+	out := make([]transport.TenantBarrierHolderCert, len(holders))
+	for i, h := range holders {
+		out[i] = transport.TenantBarrierHolderCert{
+			Username: h.Username,
+			Role:     h.Role,
+			CertPEM:  h.CertPEM,
+		}
+	}
+	return out
 }
 
 // TenantRegisterFrom converts a tenant-barrier holder registration.

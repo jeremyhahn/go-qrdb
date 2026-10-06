@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -41,6 +42,7 @@ func newUsersCmd() *cobra.Command {
 		newUsersDeleteCmd(),
 		newUsersEnableCmd(),
 		newUsersDisableCmd(),
+		newUsersInviteCmd(),
 	)
 
 	return cmd
@@ -146,6 +148,88 @@ func newUsersCreateCmd() *cobra.Command {
 	return cmd
 }
 
+// newUsersInviteCmd creates the "users invite" subcommand.
+func newUsersInviteCmd() *cobra.Command {
+	var (
+		username          string
+		email             string
+		name              string
+		roles             string
+		keyPinFingerprint string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "invite",
+		Short: "Invite a user into your own tenant",
+		Long: `Create a pending account in your own tenant -- or, given only --username,
+re-invite one still pending -- and return a single-use enrolment token.
+
+The token is returned exactly once: save it now and deliver it to the
+invited user out of band (chat, email, however you reach them). They
+redeem it themselves with "qrdb enroll", generating a key of their own;
+you never hold a credential for their account. An invitation expires
+after the server's configured auth.invitation_ttl (24h by default).`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !client.SupportsInvitations() {
+				return &transport.CapabilityUnsupportedError{Message: "invitation self-enrolment is not carried on this transport"}
+			}
+
+			req := &transport.InviteUserRequest{
+				Username:          username,
+				Email:             email,
+				Name:              name,
+				KeyPinFingerprint: keyPinFingerprint,
+			}
+
+			if roles != "" {
+				req.RoleIDs = splitAndTrim(roles)
+			}
+
+			inv, err := client.Invitations().InviteUser(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+
+			return printInvitation(inv)
+		},
+	}
+
+	cmd.Flags().StringVar(&username, "username", "", "The account to invite")
+	_ = cmd.MarkFlagRequired("username")
+	cmd.Flags().StringVar(&email, "email", "", "Canonical login key for a new account")
+	cmd.Flags().StringVar(&name, "name", "", "Display name for a new account (presentation only)")
+	cmd.Flags().StringVar(&roles, "roles", "", "Comma-separated role IDs for a new account")
+	cmd.Flags().StringVar(&keyPinFingerprint, "key-pin-fingerprint", "",
+		"Pin the invitation to one key -- the base64url SHA-256 SPKI thumbprint of a CSR the invited user sends out of band. Only that key can redeem it")
+
+	return cmd
+}
+
+// printInvitation prints a single Invitation in the current output format.
+// The token it carries is returned by the server exactly once; this is that
+// one appearance.
+func printInvitation(inv *transport.Invitation) error {
+	switch outputFormat {
+	case "json":
+		return printJSON(inv)
+	case "yaml":
+		return printYAML(inv)
+	default:
+		_, _ = fmt.Fprintf(outputWriter, "ID:        %d\n", inv.ID)
+		_, _ = fmt.Fprintf(outputWriter, "Token:     %s\n", inv.Token)
+		_, _ = fmt.Fprintf(outputWriter, "ExpiresAt: %s\n", inv.ExpiresAt.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(outputWriter, "UserID:    %d\n", inv.UserID)
+		_, _ = fmt.Fprintf(outputWriter, "Username:  %s\n", inv.Username)
+		_, _ = fmt.Fprintf(outputWriter, "TenantID:  %s\n", inv.TenantID)
+		_, _ = fmt.Fprintf(outputWriter, "Created:   %s\n", strconv.FormatBool(inv.Created))
+		if inv.KeyPinFingerprint != "" {
+			_, _ = fmt.Fprintf(outputWriter, "KeyPinFingerprint: %s\n", inv.KeyPinFingerprint)
+		}
+		return nil
+	}
+}
+
 // newUsersGetCmd creates the "users get" subcommand.
 func newUsersGetCmd() *cobra.Command {
 	return &cobra.Command{
@@ -237,7 +321,7 @@ func newUsersUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "New display name. Left unchanged when empty")
 	cmd.Flags().StringVar(&roles, "roles", "", "Comma-separated role IDs to assign")
 	cmd.Flags().StringArrayVar(&roleBindings, "role-binding", nil,
-		"Tenant-scoped role binding to add, as role_id:tenant_id. Repeatable. Replaces the current set. Left unchanged when absent")
+		"Role binding to set, as role_id:tenant_id; tenant_id must be the user's own tenant. Repeatable. Replaces the current set. Left unchanged when absent")
 	cmd.Flags().BoolVar(&clearRoleBindings, "clear-role-bindings", false, "Remove every tenant-scoped role binding")
 	cmd.Flags().StringArrayVar(&attributes, "attribute", nil,
 		"ABAC attribute to set, as key=value. Repeatable. Replaces the current set. Left unchanged when absent")

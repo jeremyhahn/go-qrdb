@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 

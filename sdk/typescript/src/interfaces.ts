@@ -120,6 +120,11 @@ import type {
     ListUsersRequest,
     ListUsersResponse,
 
+    // Invitation
+    InviteUserRequest,
+    Invitation,
+    RedeemInvitationRequest,
+
     // Role
     Role,
     CreateRoleRequest,
@@ -1135,6 +1140,60 @@ export interface UserClient {
      * @returns The updated user.
      */
     removeCertBinding(userId: string, thumbprint: string): Promise<User>;
+}
+
+// ---------------------------------------------------------------------------
+// Invitation self-enrolment operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Options naming where to redeem an invitation. The REST transport ignores
+ * them -- it is already configured with one server -- but the desktop
+ * (Wails) transport has no prior connection for {@link InvitationClient.redeem}
+ * to reuse: the invited user holds no credential yet, so these describe the
+ * one-off, unauthenticated connection to dial, exactly as the CLI's
+ * `--server`/`--transport`/`--ca-file` do.
+ */
+export interface RedeemInvitationOptions {
+    /** Server address to redeem against (Wails only). */
+    readonly server?: string;
+    /** Transport type: "rest" | "grpc" | "quic" | "mcp" | "unix" (Wails only). */
+    readonly transport?: string;
+    /** Path to a CA certificate file to verify the server with (Wails only). */
+    readonly caFile?: string;
+}
+
+/**
+ * InvitationClient provides invitation-based self-enrolment: the way an
+ * ordinary user gets a first certificate for a key nobody else ever held.
+ *
+ * invite is authenticated, over the caller's own tenant, same as every
+ * certificate-enrolment verb. redeem is the one capability reachable with NO
+ * credential at all -- the token is the authority.
+ */
+export interface InvitationClient {
+    /**
+     * Creates a pending account in the caller's own tenant -- or, given only
+     * `username`, re-invites one still pending -- and returns a single-use
+     * enrolment token, returned exactly once.
+     *
+     * @param req - Invitation parameters.
+     * @returns The issued invitation, including its one-time token.
+     */
+    invite(req: InviteUserRequest): Promise<Invitation>;
+
+    /**
+     * Redeems a one-time invitation token with NO credential: the token is
+     * the authority. The redeemer presents the tenant, the token and a CSR
+     * for their own key (proof of possession) -- or a bring-your-own
+     * certificate over that key -- and gets a certificate for the invited
+     * account, which is activated with the binding in the same operation.
+     *
+     * @param req - Redemption parameters, including the proof-of-possession CSR.
+     * @param options - Where to redeem (required on the desktop transport; ignored over REST).
+     * @returns The enrolled certificate, now bound to the invited account.
+     */
+    redeem(req: RedeemInvitationRequest, options?: RedeemInvitationOptions): Promise<EnrolledCert>;
 }
 
 // ---------------------------------------------------------------------------
@@ -2398,6 +2457,9 @@ export interface Client {
 
     /** User management. */
     readonly users: UserClient;
+
+    /** Invitation self-enrolment. */
+    readonly invitations: InvitationClient;
 
     /** Role management. */
     readonly roles: RoleClient;

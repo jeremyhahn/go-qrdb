@@ -28,6 +28,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -82,10 +84,15 @@ func TestEmbeddedProbe_KVRequiresAPermissionGrant(t *testing.T) {
 }
 
 // probeUserRoleRecords is a mockUserServicer/mockRoleServicer pair seeded
-// with one user and one role in EACH of two tenants, so AuthMiddleware's
-// UserTarget/RoleTarget resolution (reading the record, exactly as the
-// network transports' route-target extractors do) resolves each id to its
-// OWNING tenant rather than the caller's.
+// with one user and one role in EACH of two tenants, confined to the
+// caller's own tenant exactly as the routed production services confine a
+// by-id lookup (pkg/user/pkg/role's tenant.OwningTenant): a record that
+// belongs to another tenant is reported not found rather than reached. The
+// entry-level authorization check (authorizeUserTarget/authorizeRoleTarget)
+// runs in the caller's own tenant only -- a RoleBinding names only its
+// holder's own tenant, so there is no per-request target left for it to
+// resolve -- and this confinement is what the owner ruling moved to the
+// routed service layer.
 func probeUserRoleRecords() (*mockUserServicer, *mockRoleServicer) {
 	users := map[uint64]*user.User{
 		1: {ID: 1, Username: "acme-user", TenantID: "acme"},
@@ -95,35 +102,54 @@ func probeUserRoleRecords() (*mockUserServicer, *mockRoleServicer) {
 		"acme-role":   {ID: "acme-role", TenantID: "acme"},
 		"globex-role": {ID: "globex-role", TenantID: "globex"},
 	}
+	ownedByCaller := func(ctx context.Context, recordTenant string) bool {
+		caller := tenant.FromContext(ctx)
+		return tenantid.IsSystem(caller) || recordTenant == caller
+	}
 	userSvc := &mockUserServicer{
-		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+		getUserFn: func(ctx context.Context, id uint64) (*user.User, error) {
 			u, ok := users[id]
-			if !ok {
+			if !ok || !ownedByCaller(ctx, u.TenantID) {
 				return nil, &user.UserNotFoundError{ID: id}
 			}
 			return u, nil
 		},
-		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+		updateUserFn: func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 			u, ok := users[req.ID]
-			if !ok {
+			if !ok || !ownedByCaller(ctx, u.TenantID) {
 				return nil, &user.UserNotFoundError{ID: req.ID}
 			}
 			return u, nil
 		},
-		deleteUserFn: func(_ context.Context, id uint64) error {
-			if _, ok := users[id]; !ok {
+		deleteUserFn: func(ctx context.Context, id uint64) error {
+			u, ok := users[id]
+			if !ok || !ownedByCaller(ctx, u.TenantID) {
 				return &user.UserNotFoundError{ID: id}
 			}
 			return nil
 		},
 	}
 	roleSvc := &mockRoleServicer{
-		getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+		getRoleFn: func(ctx context.Context, id string) (*role.Role, error) {
 			r, ok := roles[id]
-			if !ok {
+			if !ok || !ownedByCaller(ctx, r.TenantID) {
 				return nil, &role.RoleNotFoundError{ID: id}
 			}
 			return r, nil
+		},
+		updateRoleFn: func(ctx context.Context, req *role.UpdateRoleRequest) (*role.Role, error) {
+			r, ok := roles[req.ID]
+			if !ok || !ownedByCaller(ctx, r.TenantID) {
+				return nil, &role.RoleNotFoundError{ID: req.ID}
+			}
+			return r, nil
+		},
+		deleteRoleFn: func(ctx context.Context, id string) error {
+			r, ok := roles[id]
+			if !ok || !ownedByCaller(ctx, r.TenantID) {
+				return &role.RoleNotFoundError{ID: id}
+			}
+			return nil
 		},
 		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
 			return nil, nil
@@ -139,25 +165,25 @@ func probeUserRoleRecords() (*mockUserServicer, *mockRoleServicer) {
 func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsUser(t *testing.T) {
 	userSvc, roleSvc := probeUserRoleRecords()
 	roles := authtest.BuiltInRoles(t, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), authmw.WithUserService(userSvc), authmw.WithRoleService(roleSvc))
+	mw := authmw.New(rbac.New(roles), authmw.WithUserService(userSvc))
 	tr := newExtTransport(t, WithUserService(userSvc), WithRoleService(roleSvc), WithAuthMiddleware(mw))
 
 	acmeAdmin := ctxFor(authtest.AdminIdentity("acme", "alice"))
 
 	if _, err := tr.GetUser(acmeAdmin, 2); err == nil {
 		t.Error("acme's Admin read globex's user")
-	} else if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("GetUser(globex): err = %v, want an authorization denial", err)
+	} else if !errors.As(err, new(*user.UserNotFoundError)) {
+		t.Errorf("GetUser(globex): err = %v, want *user.UserNotFoundError", err)
 	}
 	if _, err := tr.UpdateUser(acmeAdmin, &transport.UpdateUserRequest{ID: 2, Name: "pwned"}); err == nil {
 		t.Error("acme's Admin updated globex's user")
-	} else if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("UpdateUser(globex): err = %v, want an authorization denial", err)
+	} else if !errors.As(err, new(*user.UserNotFoundError)) {
+		t.Errorf("UpdateUser(globex): err = %v, want *user.UserNotFoundError", err)
 	}
 	if err := tr.DeleteUser(acmeAdmin, 2); err == nil {
 		t.Error("acme's Admin deleted globex's user")
-	} else if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("DeleteUser(globex): err = %v, want an authorization denial", err)
+	} else if !errors.As(err, new(*user.UserNotFoundError)) {
+		t.Errorf("DeleteUser(globex): err = %v, want *user.UserNotFoundError", err)
 	}
 
 	// Acting on its own tenant's user must still work.
@@ -172,16 +198,23 @@ func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsUser(t *testing.T) {
 func TestEmbeddedProbe_CannotReadWriteDeleteAnotherTenantsRole(t *testing.T) {
 	_, roleSvc := probeUserRoleRecords()
 	roles := authtest.BuiltInRoles(t, "acme", "globex")
-	mw := authmw.New(rbac.New(roles), authmw.WithRoleService(roleSvc))
+	mw := authmw.New(rbac.New(roles))
 	tr := newExtTransport(t, WithRoleService(roleSvc), WithAuthMiddleware(mw))
 
 	acmeAdmin := ctxFor(authtest.AdminIdentity("acme", "alice"))
 
+	// roles:read is granted to the built-in Admin; the entry check runs in
+	// acme (the caller's own tenant) and admits it there, so the refusal for
+	// globex-role comes from the routed role service confining the by-id
+	// lookup to the caller's own tenant, not from the entry check.
 	if _, err := tr.GetRole(acmeAdmin, "globex-role"); err == nil {
 		t.Error("acme's Admin read globex's role")
-	} else if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("GetRole(globex): err = %v, want an authorization denial", err)
+	} else if !errors.As(err, new(*role.RoleNotFoundError)) {
+		t.Errorf("GetRole(globex): err = %v, want *role.RoleNotFoundError", err)
 	}
+	// roles:update and roles:delete are SO-exclusive (builtin_role_grants.go):
+	// the built-in Admin holds neither, in any tenant, so these are refused
+	// at the entry check itself regardless of which role is named.
 	if _, err := tr.UpdateRole(acmeAdmin, &transport.UpdateRoleRequest{ID: "globex-role", Name: "pwned"}); err == nil {
 		t.Error("acme's Admin updated globex's role")
 	} else if !errors.Is(err, auth.ErrUnauthorized) {

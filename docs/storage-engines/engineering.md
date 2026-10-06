@@ -1,6 +1,8 @@
 # Storage Engines and Volume Pools — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner ruling —
+> for the object-storage LSM target design (see "Target design" at the end).**
+> · Scope: go-qrdb · Last verified: 2026-10-05
 
 ## Exported surface
 
@@ -273,3 +275,133 @@ win however deeply the condition is wrapped, so the wrapper rows
 `GET` meeting a dying node and a `PUT` meeting one are the same fact and get
 the same status. Volume pool composition is visible through
 `VolumePool.BackendCount` and `LocalPaths`.
+
+## Target design: `objstore` as Pebble remote storage
+
+> See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
+> for the shape, the owner ruling it implements, and the decisions (OS-1..OS-7)
+> this contract assumes. **Nothing below is implemented.**
+
+### Exported surface (target)
+
+`pkg/storage/objstore` stops exporting `Engine`/`Batch`/`Iterator`/`Snapshot`.
+It exports a `remote.Storage` adapter and nothing else that is KV-shaped:
+
+```go
+// NewRemote constructs a Pebble remote.Storage backed by a go-objstore
+// provider. enc is the barrier-driven encrypting wrapper (OS-4); a nil or
+// disabled encryptor is a no-op, matching pkg/atrest.Encryptor's convention.
+func NewRemote(provider string, settings map[string]string, enc *atrest.Encryptor) (remote.Storage, error)
+
+// Locator builds the remote.Locator for a (provider, prefix) pair qrdb
+// controls; it never embeds a qrdb key.
+func Locator(provider, prefix string) remote.Locator
+```
+
+`pkg/storage/pebble` gains one construction option:
+
+```go
+// WithRemote configures the Engine to keep its SSTables on remote storage
+// reached through store, under locator, using strategy to decide which
+// levels are remote (CreateOnSharedAll for a local binding — every level
+// remote; CreateOnSharedLower is available but not used by phase 1).
+// The local dir passed to pebble.New still roots the WAL, MANIFEST and
+// block cache (OS-2) — WithRemote narrows what the local dir holds, it does
+// not replace it.
+func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option
+```
+
+A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`
+(OS-3): one per owning instance, generated once and persisted as a small local
+marker file beside the WAL/MANIFEST directory — never derived from a qrdb
+key, never shared between instances.
+
+### Invariants (target, additive to the ones above)
+
+- **An `objstore`-backed engine is a `pebble.Engine`.** It is not a second KV
+  implementation: `storage.Storage`, `Batch`, `Iterator`, `Snapshot`, the
+  closed-store contract (`ErrStorageClosed`, the PebbleDB reader gate) all
+  apply unchanged. Anything this document says about the `pebble` engine
+  elsewhere in this file is true of `objstore` too, because it is the same
+  code with one `Option` added.
+- **Segment object names never derive from a qrdb key.** They are Pebble's own
+  `<hash>-<creator-id>-<file-num>.sst` / `.blob` naming
+  (`objstorageprovider/remote_obj_name.go`). A review that finds a qrdb key,
+  tenant id, or database name embedded in an object name sent to go-objstore
+  on this path is a defect.
+- **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
+  `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
+  SSTables exactly as today; it does **not** reach objects written through
+  `WithRemote`. The adapter encrypts the whole object payload with the same
+  `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
+  `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
+  working encryptor fails closed at open, matching
+  `statemachine.SMStorageUnencryptedError`'s existing precedent for
+  `file`-backed state machines.
+- **One prefix, one `CreatorID`, one owning instance — never shared.** A
+  replacement instance (replacement Raft replica, or a reassigned local-binding
+  owner) never reopens a previous instance's prefix; it gets a fresh one. This
+  is OS-3's answer and is a correctness invariant, not a cost optimization: two
+  live Pebble instances writing under one `CreatorID`/prefix would corrupt each
+  other's manifest.
+- **`glacier` and `azurearchive` are refused at construction.** `NewRemote`
+  returns a typed error (`ArchiveTierUnsupportedError`, new) for a provider
+  go-objstore registers only as an `Archiver`, before any attempt to open a
+  Pebble store against it. These stay backup/archive destinations only (see
+  [../backup-restore/architecture.md](../backup-restore/architecture.md)).
+- **No ranged read yet (OS-6).** Until go-objstore exposes one, `ReadObject`
+  fetches the whole object once per open and serves `ReadAt` from a local
+  cache keyed by object name. This is a documented performance limitation of
+  phase 1, not a silent one: the adapter's doc comment says so, and a
+  follow-up Gitea issue against go-objstore tracks the real fix.
+
+### Configuration (target)
+
+```yaml
+storage:
+  engine: objstore
+  objstore:
+    provider: s3          # local | memory | s3 | gcs | azure | minio
+    settings:
+      bucket: qrdb-data
+      prefix: "node-a/db-1"   # qrdb-controlled; never a key
+    local_dir: /var/lib/qrdb/objstore   # WAL, MANIFEST, block cache (OS-2)
+    create_on_shared: all    # all | lower | none (default: all for a local binding)
+```
+
+`local_dir` is resolved from the same local-only volume pool
+(`objpool.LocalOnly`) the `pebble` engine already uses — this design adds no
+second local-path mechanism. `provider`/`settings` reuse
+`storage.objstore` provider profiles exactly as the node-level config
+documents them today (see "Configuration" above and
+[../databases/architecture.md](../databases/architecture.md#what-stays-node-level)).
+
+### Error semantics (target, additive)
+
+| Condition | Behavior | Fails closed? |
+|---|---|---|
+| `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
+| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
+| A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
+| go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |
+| `raft.sm_storage`/`state_storage: objstore` before the phase-3 gate accepts it | refused, as today | **yes** |
+
+### Test strategy (target, additive)
+
+- The existing per-engine conformance suite runs over `pebble+remote`
+  (local-provider go-objstore) exactly as it runs over `memory`/`file`/
+  `pebble` today.
+- **Encryption round trip**: barrier on, write, restart, read — object bytes
+  on the local-provider backing directory are not the plaintext; barrier off,
+  same round trip, object bytes equal the plaintext (today's documented
+  behavior for `pebble`'s local files, now asserted for remote objects too).
+- **Provider refusal**: `NewRemote("glacier", ...)` and
+  `NewRemote("azurearchive", ...)` return `ArchiveTierUnsupportedError` before
+  any network call.
+- **Crash safety**: kill `-9` mid-compaction and mid-flush; reopen must
+  succeed with no corruption, matching the existing `pebble` engine's crash
+  test, parametrized onto `pebble+remote`.
+- **Name hygiene (build gate)**: a test asserting no object name
+  `pkg/storage/objstore` sends to go-objstore's `Put`/`CreateObject`
+  round-trips through anything shaped like a qrdb key — a regression guard for
+  the invariant above.

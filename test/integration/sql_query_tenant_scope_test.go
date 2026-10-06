@@ -44,6 +44,7 @@ import (
 	"time"
 
 	gomysql "github.com/go-sql-driver/mysql"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 )
 

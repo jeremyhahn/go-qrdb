@@ -49,10 +49,21 @@ type fnAdminService struct {
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
 	addMemberFn       func(ctx context.Context, shardID, replicaID uint64, addr string) error
 	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
+	promoteMemberFn   func(ctx context.Context, shardID, replicaID uint64) error
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
 	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
 	mintJoinTokenFn   func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
+
+	// addObserverMemberFn, when set, backs AddObserverMember (service.ObserverMemberAdder).
+	addObserverMemberFn func(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
+	// listPendingJoinRequestsFn, approveJoinRequestFn and rejectJoinRequestFn,
+	// when set, back service.JoinRequestReviewer.
+	listPendingJoinRequestsFn func(ctx context.Context) ([]*service.PendingJoinRequest, error)
+	approveJoinRequestFn      func(ctx context.Context, id, nodeID string) error
+	rejectJoinRequestFn       func(ctx context.Context, id, reason string) error
+	// retireJoinIdentityFn, when set, backs RetireJoinIdentity (service.JoinIdentityRetirer).
+	retireJoinIdentityFn func(ctx context.Context, nodeID, reason string) error
 }
 
 // MintJoinToken implements service.ClusterJoinTokenMinter. Absent a
@@ -84,6 +95,11 @@ func (m *fnAdminService) AddMember(ctx context.Context, shardID, replicaID uint6
 
 func (m *fnAdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
 	return m.removeMemberFn(ctx, shardID, replicaID)
+}
+
+// PromoteMember implements service.MemberPromoter.
+func (m *fnAdminService) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	return m.promoteMemberFn(ctx, shardID, replicaID)
 }
 
 func (m *fnAdminService) RequestSnapshot(ctx context.Context, shardID uint64) error {
@@ -619,6 +635,86 @@ func TestAdminMemberRemove_Success(t *testing.T) {
 	}
 	if gotReplicaID != 20 {
 		t.Errorf("replicaID = %d, want 20", gotReplicaID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Member promote tests
+// ---------------------------------------------------------------------------
+
+func TestAdminMemberPromote_Success(t *testing.T) {
+	var gotShardID, gotReplicaID uint64
+
+	adminSvc := &fnAdminService{
+		promoteMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
+			gotShardID = shardID
+			gotReplicaID = replicaID
+			return nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc,
+		"member", "promote", "20",
+		"--shard-id", "1",
+	)
+	if err != nil {
+		t.Fatalf("admin member promote error: %v", err)
+	}
+
+	if !strings.Contains(output, "OK") {
+		t.Errorf("output missing 'OK', got: %q", output)
+	}
+	if gotShardID != 1 {
+		t.Errorf("shardID = %d, want 1", gotShardID)
+	}
+	if gotReplicaID != 20 {
+		t.Errorf("replicaID = %d, want 20", gotReplicaID)
+	}
+}
+
+func TestAdminMemberPromote_NotObserver(t *testing.T) {
+	adminSvc := &fnAdminService{
+		promoteMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
+			return &service.MemberNotObserverError{ShardID: shardID, ReplicaID: replicaID}
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc,
+		"member", "promote", "20",
+		"--shard-id", "1",
+	)
+	if err == nil {
+		t.Fatal("expected error for a replica that is not a committed observer")
+	}
+}
+
+func TestAdminMemberPromote_InvalidReplicaID(t *testing.T) {
+	adminSvc := &fnAdminService{}
+
+	_, err := executeAdminCmd(t, adminSvc,
+		"member", "promote", "not-a-number",
+		"--shard-id", "1",
+	)
+	if err == nil {
+		t.Fatal("expected error for a non-numeric replica id")
+	}
+}
+
+func TestAdminMemberPromote_MissingShardID(t *testing.T) {
+	adminSvc := &fnAdminService{
+		promoteMemberFn: func(_ context.Context, _, _ uint64) error {
+			return nil
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc,
+		"member", "promote", "20",
+	)
+	if err == nil {
+		t.Fatal("expected error for missing --shard-id")
+	}
+	if !strings.Contains(err.Error(), "shard-id") {
+		t.Errorf("error should mention shard-id, got: %v", err)
 	}
 }
 

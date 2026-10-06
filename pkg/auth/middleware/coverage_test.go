@@ -436,7 +436,7 @@ func TestAuthorizeQUIC_NoMapping(t *testing.T) {
 	// allowed through. The authorizer is never consulted for an unregistered
 	// method (the denial is decided before the permission check).
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"})
-	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "unknown.Method", nil)
+	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "unknown.Method")
 	if err == nil {
 		t.Fatal("expected unregistered QUIC method to be denied, got nil")
 	}
@@ -451,7 +451,7 @@ func TestAuthorizeQUIC_NilRegistryDenied(t *testing.T) {
 
 	// A nil registry covers nothing: every method is denied (fail-closed).
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"})
-	err := m.AuthorizeQUIC(ctx, nil, "kv.Put", nil)
+	err := m.AuthorizeQUIC(ctx, nil, "kv.Put")
 	if err == nil {
 		t.Fatal("expected nil registry to deny, got nil")
 	}
@@ -465,7 +465,7 @@ func TestAuthorizeQUIC_NoIdentity(t *testing.T) {
 	m := New(authz)
 
 	// A registered method with no identity in context should return unauthenticated.
-	err := m.AuthorizeQUIC(context.Background(), testQUICMethodRegistry(), "kv.Put", nil)
+	err := m.AuthorizeQUIC(context.Background(), testQUICMethodRegistry(), "kv.Put")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -486,7 +486,7 @@ func TestAuthorizeQUIC_Authorized(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"admin"}}
 	ctx := auth.WithIdentity(context.Background(), id)
 
-	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "kv.Put", nil)
+	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "kv.Put")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestAuthorizeQUIC_Unauthorized(t *testing.T) {
 	id := &auth.Identity{Subject: "bob", TenantID: "t1"}
 	ctx := auth.WithIdentity(context.Background(), id)
 
-	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "kv.Put", nil)
+	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "kv.Put")
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -26,6 +26,87 @@ import (
 )
 
 // TestFlatIndex_InsertAndSearch verifies that inserted vectors are found by search.
+// TestDimensionMismatchError_ErrorAndUnwrap verifies the message format and
+// that it unwraps to the sentinel ErrInvalidVector.
+func TestDimensionMismatchError_ErrorAndUnwrap(t *testing.T) {
+	err := &DimensionMismatchError{Got: 3, Expected: 2}
+	want := "dimension mismatch: got 3, expected 2"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, ErrInvalidVector) {
+		t.Fatal("DimensionMismatchError does not unwrap to ErrInvalidVector")
+	}
+}
+
+// TestFlatIndex_MarshalUnmarshalRoundTrips verifies that Marshal and
+// Unmarshal reproduce an equivalent index: same count, same distance
+// metric, same search results.
+func TestFlatIndex_MarshalUnmarshalRoundTrips(t *testing.T) {
+	idx := NewIndex(hnsw.CosineDistance)
+	if err := idx.Insert(1, []float32{1, 0}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := idx.Insert(2, []float32{0, 1}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	data, err := idx.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	restored := NewIndex(hnsw.L2Distance) // deliberately wrong metric; Unmarshal must overwrite it
+	if err := restored.Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got := restored.Count(); got != 2 {
+		t.Fatalf("Count = %d, want 2", got)
+	}
+	if restored.distMetric != hnsw.CosineDistance {
+		t.Fatalf("distMetric = %v, want CosineDistance (Unmarshal did not restore it)", restored.distMetric)
+	}
+
+	results, err := restored.Search([]float32{1, 0}, 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != 1 {
+		t.Fatalf("Search = %+v, want ID 1 first", results)
+	}
+}
+
+// TestFlatIndex_UnmarshalDiscardsExistingVectors verifies that Unmarshal
+// into a non-empty index replaces its contents rather than merging into
+// them.
+func TestFlatIndex_UnmarshalDiscardsExistingVectors(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	if err := idx.Insert(1, []float32{1, 0}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	empty := NewIndex(hnsw.L2Distance)
+	data, err := empty.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (empty): %v", err)
+	}
+	if err := idx.Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got := idx.Count(); got != 0 {
+		t.Fatalf("Count after Unmarshal(empty) = %d, want 0 -- the old vector was not discarded", got)
+	}
+}
+
+// TestFlatIndex_UnmarshalInvalidDataFails verifies that malformed bytes are
+// refused rather than silently producing a half-restored index.
+func TestFlatIndex_UnmarshalInvalidDataFails(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+	if err := idx.Unmarshal([]byte("not json")); err == nil {
+		t.Fatal("Unmarshal(invalid data) = nil error, want one")
+	}
+}
+
 func TestFlatIndex_InsertAndSearch(t *testing.T) {
 	idx := NewIndex(hnsw.L2Distance)
 

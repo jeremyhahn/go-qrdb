@@ -138,8 +138,20 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 		return nil, authzError(err)
 	}
 
+	var roster *tenantpkg.TenantBarrierShamirRoster
+	if len(req.GetOfficers()) > 0 {
+		officers, err := holderpb.TenantBarrierRosterFromPB(req.GetOfficers())
+		if err != nil {
+			return nil, mapServiceError(err)
+		}
+		roster = &tenantpkg.TenantBarrierShamirRoster{
+			Officers: officers,
+			Policy:   seal.FactorPolicy(req.GetPolicy()),
+		}
+	}
+
 	result, err := s.svc.TenantBarrierInitWithStrategy(ctx, req.GetTenantId(), req.GetPassphrase(),
-		int(req.GetThreshold()), int(req.GetShares()), seal.StrategyID(req.GetStrategy()))
+		int(req.GetThreshold()), int(req.GetShares()), seal.StrategyID(req.GetStrategy()), roster)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -152,6 +164,7 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 			Threshold:   int32(result.Threshold),   //nolint:gosec
 			TotalShares: int32(result.TotalShares), //nolint:gosec
 			ShareCount:  int32(result.ShareCount),  //nolint:gosec
+			Holders:     holderpb.TenantBarrierHoldersToPB(result.Holders),
 		}
 	}
 	return out, nil

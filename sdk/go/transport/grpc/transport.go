@@ -77,12 +77,15 @@ func New(opts ...transport.Option) (*Transport, error) {
 	return &Transport{config: cfg}, nil
 }
 
-// Connect establishes the gRPC connection to the QRDB server. When TLS
-// is configured, the connection uses TLS credentials; otherwise it uses
-// insecure credentials for development.
-func (t *Transport) Connect(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
+// ensureClient lazily dials the gRPC connection when none exists yet,
+// without the health-check Connect performs: RedeemInvitation is the one
+// call this transport serves to an unconnected, uncredentialed caller (see
+// transport.InvitationClient), so it cannot require an ordinary Connect
+// first. An already-connected transport (t.client != nil, whether through
+// Connect or an earlier call here) is a no-op.
+func (t *Transport) ensureClient() error {
+	if t.client != nil {
+		return nil
 	}
 
 	dialOpts, err := t.buildDialOptions()
@@ -90,9 +93,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 		return err
 	}
 
-	addr := t.config.Address
-	// Strip scheme prefix if present (e.g., "https://host:port" -> "host:port").
-	addr = stripScheme(addr)
+	addr := stripScheme(t.config.Address)
 
 	conn, err := grpc.NewClient(addr, dialOpts...)
 	if err != nil {
@@ -104,6 +105,20 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	t.conn = conn
 	t.client = pb.NewQRDBServiceClient(conn)
+	return nil
+}
+
+// Connect establishes the gRPC connection to the QRDB server. When TLS
+// is configured, the connection uses TLS credentials; otherwise it uses
+// insecure credentials for development.
+func (t *Transport) Connect(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	if err := t.ensureClient(); err != nil {
+		return err
+	}
 
 	// Verify connectivity with a health check, retrying with backoff so a
 	// transient connection-establishment stall (TLS/HTTP2 handshake while the
@@ -472,6 +487,40 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	return nil
 }
 
+// PromoteMember promotes a committed observer of the specified shard to a
+// voter.
+func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.PromoteMember(ctx, &pb.PromoteMemberRequest{
+		ShardId:   shardID,
+		ReplicaId: replicaID,
+	})
+	if err != nil {
+		return mapGRPCError("PromoteMember", err)
+	}
+	return nil
+}
+
+// RetireJoinIdentity permanently refuses any future admission for a node
+// identity.
+func (t *Transport) RetireJoinIdentity(ctx context.Context, nodeID, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.RetireJoinIdentity(ctx, &pb.RetireJoinIdentityRequest{
+		NodeId: nodeID,
+		Reason: reason,
+	})
+	if err != nil {
+		return mapGRPCError("RetireJoinIdentity", err)
+	}
+	return nil
+}
+
 // RequestSnapshot triggers an asynchronous snapshot for the specified shard.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 	if t.closed.Load() {
@@ -646,6 +695,98 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 }
 
 var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
+
+// AddObserverMember adds a new replica to the specified shard as a
+// non-voting observer rather than a voter. Implements
+// transport.ObserverMemberAdder.
+func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.AddObserverMember(ctx, &pb.AddObserverMemberRequest{
+		ShardId:        shardID,
+		ReplicaId:      replicaID,
+		RaftAddress:    raftAddr,
+		MemberIdentity: identity,
+	})
+	if err != nil {
+		return mapGRPCError("AddObserverMember", err)
+	}
+	return nil
+}
+
+var _ transport.ObserverMemberAdder = (*Transport)(nil)
+
+// ListPendingJoinRequests lists tokenless member-side CSR join requests
+// awaiting an operator's decision. Implements transport.JoinRequestReviewer.
+func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.ListPendingJoinRequests(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("ListPendingJoinRequests", err)
+	}
+	return pendingJoinRequestsFromProto(resp.GetRequests())
+}
+
+// ApproveJoinRequest binds id's queued CSR to an operator-chosen node
+// identity. Implements transport.JoinRequestReviewer.
+func (t *Transport) ApproveJoinRequest(ctx context.Context, id, nodeID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.ApproveJoinRequest(ctx, &pb.ApproveJoinRequestRequest{Id: id, NodeId: nodeID})
+	if err != nil {
+		return mapGRPCError("ApproveJoinRequest", err)
+	}
+	return nil
+}
+
+// RejectJoinRequest records a terminal refusal of id's queued CSR.
+// Implements transport.JoinRequestReviewer.
+func (t *Transport) RejectJoinRequest(ctx context.Context, id, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.RejectJoinRequest(ctx, &pb.RejectJoinRequestRequest{Id: id, Reason: reason})
+	if err != nil {
+		return mapGRPCError("RejectJoinRequest", err)
+	}
+	return nil
+}
+
+// pendingJoinRequestsFromProto converts the wire shape to the client-side
+// view, parsing the RFC3339 timestamps every transport that marshals
+// through this protobuf message encodes.
+func pendingJoinRequestsFromProto(requests []*pb.PendingJoinRequestMessage) ([]*transport.PendingJoinRequest, error) {
+	out := make([]*transport.PendingJoinRequest, 0, len(requests))
+	for _, r := range requests {
+		submittedAt, err := time.Parse(time.RFC3339, r.GetSubmittedAt())
+		if err != nil {
+			return nil, &transport.RequestError{Method: "ListPendingJoinRequests", Err: err}
+		}
+		expiresAt, err := time.Parse(time.RFC3339, r.GetExpiresAt())
+		if err != nil {
+			return nil, &transport.RequestError{Method: "ListPendingJoinRequests", Err: err}
+		}
+		out = append(out, &transport.PendingJoinRequest{
+			ID:          r.GetId(),
+			NodeURI:     r.GetNodeUri(),
+			ReplicaID:   r.GetReplicaId(),
+			Features:    r.GetFeatures(),
+			SubmittedAt: submittedAt,
+			ExpiresAt:   expiresAt,
+		})
+	}
+	return out, nil
+}
+
+var _ transport.JoinRequestReviewer = (*Transport)(nil)
 
 // ---------------------------------------------------------------------------
 // Internal helpers

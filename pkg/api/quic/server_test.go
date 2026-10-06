@@ -48,7 +48,7 @@ func TestNewServer_DefaultHandlers_CoreMethodsPresent(t *testing.T) {
 		"kv.Put", "kv.Get", "kv.Delete", "kv.List", "kv.Scan",
 		"kv.PutIfAbsent", "kv.CompareAndDelete", "kv.CompareAndSwap",
 		"admin.Health", "admin.Status", "admin.Peers",
-		"admin.AddMember", "admin.RemoveMember",
+		"admin.AddMember", "admin.RemoveMember", "admin.PromoteMember",
 		"admin.RequestSnapshot", "admin.Drain", "admin.Capabilities",
 	}
 	for _, method := range coreMethods {
@@ -191,13 +191,16 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"kv.PutIfAbsent": true, "kv.CompareAndDelete": true, "kv.CompareAndSwap": true,
 		// Admin
 		"admin.Health": true, "admin.Status": true, "admin.Peers": true,
-		"admin.AddMember": true, "admin.RemoveMember": true,
+		"admin.AddMember": true, "admin.RemoveMember": true, "admin.PromoteMember": true,
 		"admin.RequestSnapshot": true, "admin.Drain": true,
 		"admin.Capabilities": true,
 		"admin.StartShard":   true, "admin.StopShard": true,
 		"admin.GetShardState": true, "admin.GetTopology": true,
 		"admin.GetNodeCompaction": true, "admin.SetNodeCompaction": true,
-		"admin.MintJoinToken": true,
+		"admin.MintJoinToken":     true,
+		"admin.AddObserverMember": true, "admin.ListPendingJoinRequests": true,
+		"admin.ApproveJoinRequest": true, "admin.RejectJoinRequest": true,
+		"admin.RetireJoinIdentity": true,
 		// MVCC
 		"mvcc.PutWithLease": true, "mvcc.GetRevision": true,
 		"mvcc.GetAtRevision": true, "mvcc.Range": true,
@@ -454,7 +457,7 @@ func TestBuildHandlers_AdminMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	adminMethods := []string{
 		"admin.Health", "admin.Status", "admin.Peers",
-		"admin.AddMember", "admin.RemoveMember",
+		"admin.AddMember", "admin.RemoveMember", "admin.PromoteMember",
 		"admin.RequestSnapshot", "admin.Drain", "admin.Capabilities",
 	}
 	for _, m := range adminMethods {

@@ -268,6 +268,12 @@ const (
 	// an enrolment service: binding a certificate at invitation redemption is a
 	// routine automated act, withdrawing an operator's binding is not.
 	UsersRemoveCertBinding Permission = "users:remove_cert_binding"
+	// UsersInvite grants inviting a user into the caller's own tenant: the
+	// account is created pending, and a single-use, short-lived enrolment
+	// token is returned once. The invited user redeems it, unauthenticated,
+	// with a key of their own; the caller never holds a credential for the
+	// account.
+	UsersInvite Permission = "users:invite"
 )
 
 // ---------------------------------------------------------------------------
@@ -542,6 +548,25 @@ const (
 // can never be granted to a role, never appears in All(), ByResource, or the
 // UI catalog, and grant-validation paths reject it as unregistered.
 const IdentityGated Permission = "identity:gated"
+
+// Public is a sentinel permission used as a transport permission-map value
+// for endpoints that are reachable with NO authentication at all -- not even
+// an identity, unlike IdentityGated, which still requires one. gRPC's
+// RedeemInvitation is the canonical example: an invited user holds no
+// credential yet, so the server registers the method with
+// AuthMiddleware.RegisterPublicGRPCMethods, which bypasses both
+// authentication and authorization for it before the proto-declared
+// permission is ever looked up. The (qrdb.v1.permission) option still
+// carries this sentinel so the default-deny completeness guard
+// (TestGRPCPermissions_EveryMethodMapped) sees every RPC accounted for
+// instead of silently treating a missing option the same as a reviewed
+// public endpoint.
+//
+// Public is deliberately NOT registered in the permission registry, exactly
+// like IdentityGated: it can never be granted to a role, never appears in
+// All(), ByResource, or the UI catalog, and grant-validation paths reject it
+// as unregistered.
+const Public Permission = "identity:public"
 
 // LoginBeginAttempt is a sentinel permission used ONLY as a ratelimit.Policy
 // dimension key for the tenant-wide BeginLogin challenge-issuance throttle
@@ -849,6 +874,17 @@ const (
 // pkg/permission/cluster_join_token_scope.go.
 const ClusterJoinToken Permission = "cluster:join_token"
 
+// ClusterJoinIdentityRetire permanently refuses any future admission for a
+// node identity -- a fresh MintJoinToken, or a renewal of one whose
+// admission has lapsed (see pkg/clusterenroll.RetireJoinIdentity) -- after
+// an admin decides it must never (re-)join: a member removed from the
+// cluster, or an identity whose issued certificate must be treated as
+// revoked. It is ScopeCross and platform-only, the same precedent
+// ClusterJoinToken set: retiring a node identity is a cluster-wide
+// decision no tenant's role may hold. See
+// pkg/permission/cluster_join_identity_scope.go.
+const ClusterJoinIdentityRetire Permission = "cluster:join_identity_retire"
+
 // Embedding permissions (text→vector embedding service).
 const (
 	EmbeddingEmbed      Permission = "embedding:embed"
@@ -977,7 +1013,7 @@ var categories = []Category{
 			UsersCreate, UsersRead, UsersUpdate, UsersDelete,
 			UsersList, UsersEnable, UsersDisable,
 			UsersGetByCertThumbprint, UsersAddCertBinding,
-			UsersRemoveCertBinding,
+			UsersRemoveCertBinding, UsersInvite,
 		},
 	},
 	{
@@ -1172,7 +1208,7 @@ var categories = []Category{
 		Name:  "Cluster Join Tokens",
 		Group: "Admin Services",
 		Permissions: []Permission{
-			ClusterJoinToken,
+			ClusterJoinToken, ClusterJoinIdentityRetire,
 		},
 	},
 	{

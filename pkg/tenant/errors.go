@@ -346,6 +346,33 @@ func (e *InvalidStrategyError) Error() string {
 	return "tenant: invalid seal strategy: " + e.Strategy + " (available: " + avail + ")"
 }
 
+// RosterRequiresShamirError is returned when TenantBarrierInitWithStrategy
+// is called with a non-empty inline officer roster but a strategy other
+// than Shamir. The roster exists to split the Shamir unseal key to its
+// holders; silently ignoring it on any other strategy would discard a
+// caller-supplied roster without saying so, which could be mistaken for
+// those officers having been enrolled.
+type RosterRequiresShamirError struct {
+	Strategy string
+}
+
+func (e *RosterRequiresShamirError) Error() string {
+	return "tenant: an inline officer roster requires --strategy shamir, got " + e.Strategy
+}
+
+// InvalidFactorPolicyError is returned when an inline Shamir roster names a
+// factor policy seal.FactorPolicy does not recognize. Checked as part of
+// the roster's pure, side-effect-free pre-validation, before any officer in
+// it is registered -- a bad policy must refuse exactly like a bad CSR or
+// role, not surface only after some officers already enrolled.
+type InvalidFactorPolicyError struct {
+	Policy string
+}
+
+func (e *InvalidFactorPolicyError) Error() string {
+	return "tenant: invalid factor policy: " + e.Policy
+}
+
 // TenantDeletedError is returned by CreateTenant when the requested tenant id
 // has already been used and deleted.
 //

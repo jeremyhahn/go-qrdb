@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -33,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -82,6 +84,9 @@ type KVEngine struct {
 	logger              *logger.Logger
 	handlers            map[byte]kvHandler
 	extHandlers         map[byte]extHandler
+	// indexMgr owns every vector namespace's in-memory ANN index. Nil is a
+	// valid, fully no-op configuration; see MVCCEngine's matching field.
+	indexMgr *VectorIndexManager
 	// database is the optional database namespace prefix for index names.
 	// When non-empty, RegisterEntityType prefixes index names as
 	// "{database}.{entityType}.{FieldName}" for per-database isolation.
@@ -126,6 +131,14 @@ func WithKVDatabase(database string) KVOption {
 	}
 }
 
+// WithKVVectorIndex attaches a vector index manager; see
+// WithMVCCVectorIndex, MVCCEngine's matching option, for dir and enc.
+func WithKVVectorIndex(dir string, enc *atrest.Encryptor) KVOption {
+	return func(e *KVEngine) {
+		e.indexMgr = NewVectorIndexManager(dir, enc)
+	}
+}
+
 // NewKVEngine creates a KVEngine backed by the given storage.
 func NewKVEngine(stg storage.Storage, opts ...KVOption) *KVEngine {
 	e := &KVEngine{
@@ -149,6 +162,18 @@ func NewKVEngine(stg storage.Storage, opts ...KVOption) *KVEngine {
 
 // Type returns the engine type identifier.
 func (e *KVEngine) Type() string { return "kv" }
+
+// WarmVectorIndex populates the engine's vector index manager from the
+// records already committed to its storage. See MVCCEngine.WarmVectorIndex.
+func (e *KVEngine) WarmVectorIndex() error {
+	return e.indexMgr.Warm(e.stg)
+}
+
+// VectorIndex returns the engine's vector index manager, or nil when
+// WithKVVectorIndex was not given at construction.
+func (e *KVEngine) VectorIndex() *VectorIndexManager {
+	return e.indexMgr
+}
 
 // Update applies a batch of entries to the underlying storage engine.
 // Each entry is decoded using the base KV wire protocol first. If that
@@ -215,12 +240,32 @@ func (e *KVEngine) apply(data []byte) (sm.Result, error) {
 // applied through apply only when every compare holds. A refused guard is a
 // successful application that changes nothing (see protocol.OpGuarded).
 func (e *KVEngine) handleGuarded(payload []byte) (sm.Result, error) {
-	inner, refusal, err := protocol.OpenGuarded(payload, e.stg.Get)
+	compares, inner, err := protocol.DecodeGuarded(payload)
 	if err != nil {
 		return sm.Result{Value: 1}, err
 	}
-	if refusal != nil {
-		return sm.Result{Data: refusal}, nil
+	// No compare may read the reserved vector namespace, checked BEFORE the
+	// guard is evaluated: whether the guard held is itself the oracle bit
+	// here, so the refusal must come before evaluation, not after (go-qrdb
+	// vector-replicated review, B3-residual).
+	if err := vector.RefuseForgedKeys(statemachine.CompareKeys(compares)...); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	// Checked BEFORE the guard is evaluated, and as a REFUSAL rather than
+	// through e.stg.Get below -- see pkg/store/pebble.go's
+	// pebbleHandleGuarded for why: a reserved key reaching the reader
+	// surfaces as *protocol.GuardReadError only on a genuine storage fault,
+	// which halts apply, and a compare's result is observable to the
+	// proposer regardless of outcome.
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(compares)...); refused {
+		return res, nil
+	}
+	refusedKey, ok, err := protocol.EvaluateGuard(compares, e.stg.Get)
+	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if !ok {
+		return sm.Result{Data: protocol.EncodeGuardRefusal(refusedKey)}, nil
 	}
 	return e.apply(inner)
 }
@@ -268,6 +313,20 @@ func (e *KVEngine) Lookup(_ context.Context, query interface{}) (interface{}, er
 	case index.CompoundIndexScanRequest:
 		return e.lookupCompoundIndexScan(q)
 
+	case service.VectorSearchQuery:
+		if e.indexMgr == nil {
+			return nil, &InvalidQueryError{Reason: "vector index not configured"}
+		}
+		hits, err := e.indexMgr.Search(q.Namespace, q.Query, q.K)
+		if err != nil {
+			return nil, err
+		}
+		results := make([]service.VectorSearchHit, len(hits))
+		for i, h := range hits {
+			results[i] = service.VectorSearchHit{ID: h.ID, Distance: h.Distance}
+		}
+		return results, nil
+
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
 	}
@@ -310,6 +369,60 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 		protocol.OpTransaction:      e.handleTransaction,
 		protocol.OpGuarded:          e.handleGuarded,
 		protocol.OpImportStage:      e.handleImportStage,
+
+		// Vector engine: the file/objstore backends compose KVEngine (no
+		// MVCC), and "every engine on every backend" includes them
+		// (docs/vectors/engineering.md "Target: the vector engine"). Each
+		// call opens its own batch and commits it, exactly as handleBatch
+		// does, because KVEngine -- unlike MVCCEngine -- does not share one
+		// batch across the entries packed into a single Update call.
+		protocol.OpVectorNamespaceCreate:  e.adaptVectorHandler(protocol.OpVectorNamespaceCreate, applyVectorNamespaceCreate),
+		protocol.OpVectorNamespaceDelete:  e.adaptVectorHandler(protocol.OpVectorNamespaceDelete, applyVectorNamespaceDelete),
+		protocol.OpVectorUpsert:           e.adaptVectorHandler(protocol.OpVectorUpsert, applyVectorUpsert),
+		protocol.OpVectorBatchUpsert:      e.adaptVectorHandler(protocol.OpVectorBatchUpsert, applyVectorBatchUpsert),
+		protocol.OpVectorDelete:           e.adaptVectorHandler(protocol.OpVectorDelete, applyVectorDelete),
+		protocol.OpVectorBatchDelete:      e.adaptVectorHandler(protocol.OpVectorBatchDelete, applyVectorBatchDelete),
+		protocol.OpVectorUpdateMetadata:   e.adaptVectorHandler(protocol.OpVectorUpdateMetadata, applyVectorUpdateMetadata),
+		protocol.OpVectorIndexReconfigure: e.adaptVectorHandler(protocol.OpVectorIndexReconfigure, applyVectorIndexReconfigure),
+	}
+}
+
+// adaptVectorHandler lifts a vector apply function into the extHandler shape
+// KVEngine's dispatch table requires: it opens a batch over e.stg, runs fn,
+// and commits only when fn reports no error -- a refusal (one of
+// pkg/vector's typed errors) and a fault both leave the batch uncommitted,
+// which for a refusal is correct because every vector apply function
+// validates before it writes (see vector_handlers.go's package doc comment).
+//
+// op names which of the eight vector opcodes fn applies, so this can compute
+// the command's index effect (vectorIndexEffects) through the SAME batch fn
+// just staged into, before that batch commits -- and apply it to the index
+// manager only AFTER the commit succeeds (docs/vectors/engineering.md "Apply
+// and the index"), exactly as MVCCEngine.UpdateEntries and
+// MVCCEngine.ApplyVectorIndexEffects do for the raft-backed engine.
+func (e *KVEngine) adaptVectorHandler(op byte, fn func(storage.Batch, []byte) (sm.Result, error)) extHandler {
+	return func(payload []byte) (sm.Result, error) {
+		batch := e.stg.Batch()
+		defer func() { _ = batch.Close() }()
+
+		preNextID := vectorBatchUpsertPreNextID(batch, protocol.Command{Op: op, Payload: payload})
+
+		result, err := fn(batch, payload)
+		if err != nil {
+			return result, err
+		}
+
+		effects, eerr := vectorIndexEffects(batch, op, payload, result, preNextID)
+		if eerr != nil {
+			return sm.Result{}, eerr
+		}
+
+		if err := batch.Commit(); err != nil {
+			return sm.Result{}, err
+		}
+
+		e.indexMgr.ApplyEffects(effects)
+		return result, nil
 	}
 }
 
@@ -320,6 +433,12 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 // kvHandlePut stores a key-value pair, updates secondary indexes atomically
 // in the same batch, and emits a watch notification after commit.
 func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
+	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
+		return res, nil
+	}
+	if err := vector.RefuseForgedKeys(cmd.Key); err != nil {
+		return sm.Result{Value: 1}, err
+	}
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
@@ -389,6 +508,12 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 // system-plane index, and silently redirecting every by-id operation an
 // administrator performs on it.
 func kvHandlePutIfAbsent(e *KVEngine, cmd kv.Command) (sm.Result, error) {
+	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
+		return res, nil
+	}
+	if err := vector.RefuseForgedKeys(cmd.Key); err != nil {
+		return sm.Result{Value: 1}, err
+	}
 	// Decline before opening a batch: the losing caller writes nothing at all.
 	//
 	// The read error is PROPAGATED, never folded into "absent". storage.Reader
@@ -467,6 +592,9 @@ func (e *KVEngine) handleCompareAndDelete(payload []byte) (sm.Result, error) {
 	if err != nil {
 		return sm.Result{Value: 1}, err
 	}
+	if err := vector.RefuseForgedKeys(key); err != nil {
+		return sm.Result{Value: 1}, err
+	}
 
 	current, gerr := e.stg.Get(key)
 	if gerr != nil {
@@ -521,6 +649,9 @@ func (e *KVEngine) handleCompareAndDelete(payload []byte) (sm.Result, error) {
 func (e *KVEngine) handleCompareAndSwap(payload []byte) (sm.Result, error) {
 	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
 	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if err := vector.RefuseForgedKeys(key); err != nil {
 		return sm.Result{Value: 1}, err
 	}
 
@@ -582,6 +713,26 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	if err != nil {
 		return sm.Result{}, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(append(statemachine.OpKeys(txn.SuccessOps), statemachine.OpKeys(txn.FailureOps)...)...); refused {
+		return res, nil
+	}
+	// The compare side needs the identical refusal: a compare's result is
+	// observable to the proposer (which branch ran) regardless of outcome,
+	// so evaluating one against a reserved key would make an ordinary
+	// transaction an extraction oracle over state no caller may read
+	// directly (go-qrdb audit-replicated review addendum).
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(txn.Compares)...); refused {
+		return res, nil
+	}
+
+	// No compare may read the reserved vector namespace, checked before any
+	// compare is evaluated: a Less/Greater result or a guard's held/not-held
+	// bit would otherwise answer a binary-search probe against the stored
+	// bytes of a key this transaction never had standing to read (go-qrdb
+	// vector-replicated review, B3-residual).
+	if err := vector.RefuseForgedKeys(statemachine.CompareKeys(txn.Compares)...); err != nil {
+		return sm.Result{}, err
+	}
 
 	for _, dc := range txn.Compares {
 		if service.CompareTarget(dc.Target) == service.CompareCreateRevision ||
@@ -612,6 +763,14 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	ops := txn.SuccessOps
 	if !succeeded {
 		ops = txn.FailureOps
+	}
+
+	// No operation in the selected branch may touch the reserved vector
+	// namespace. Checked before anything in this set is staged, so a
+	// transaction naming a forged key anywhere in it writes nothing at all
+	// (go-qrdb vector-replicated review, B3).
+	if err := vector.RefuseForgedKeys(statemachine.OpKeys(ops)...); err != nil {
+		return sm.Result{}, err
 	}
 
 	// This engine keeps no leases. A put naming one is refused before any of
@@ -767,6 +926,12 @@ func (e *KVEngine) evaluateTxnCompare(dc protocol.DecodedCompare) (bool, error) 
 // kvHandleDelete removes a key, cleans up secondary indexes atomically
 // in the same batch, and emits a watch notification after commit.
 func kvHandleDelete(e *KVEngine, cmd kv.Command) (sm.Result, error) {
+	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
+		return res, nil
+	}
+	if err := vector.RefuseForgedKeys(cmd.Key); err != nil {
+		return sm.Result{Value: 1}, err
+	}
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
@@ -918,6 +1083,15 @@ func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
 func (e *KVEngine) handleBatch(payload []byte) (sm.Result, error) {
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
+		return res, nil
+	}
+	// No operation in the batch may touch the reserved vector namespace,
+	// checked before anything in it is staged (go-qrdb vector-replicated
+	// review, B3).
+	if err := vector.RefuseForgedKeys(statemachine.OpKeys(ops)...); err != nil {
 		return sm.Result{Value: 1}, err
 	}
 
@@ -1235,7 +1409,27 @@ func (e *KVEngine) DeleteWithIndexes(key []byte) error {
 // ---------------------------------------------------------------------------
 
 // lookupKey performs a point lookup by key.
+// lookupKey answers not-found for a key in the reserved 0x00 namespace
+// rather than reading it: this engine's storage is raw, with no key
+// transform of its own (unlike MVCCEngine's metadata-prefixed Get), so a
+// caller naming a reserved key precisely would otherwise read it directly
+// (go-qrdb audit-replicated review, B2/N5).
 func (e *KVEngine) lookupKey(key []byte) (interface{}, error) {
+	if statemachine.IsReservedKey(key) {
+		return nil, nil
+	}
+	// The internal-key discovery guard (pkg/service) keeps a "__vec:" key out
+	// of bulk enumeration, but documents itself as NOT stopping a caller that
+	// already knows the key from reading it with Get. For most reserved
+	// namespaces that is an accepted, measured gap; for vector it is closed
+	// here, because an exact-key Get of a predictable, sequential vector key
+	// (vector.VectorKey(ns, id) for small, guessable id) would otherwise hand
+	// a caller a raw embedding through the ordinary user-facing KV surface
+	// rather than through vector's own permissioned capabilities
+	// (go-qrdb vector-replicated review, B3).
+	if vector.IsForgedKey(key) {
+		return nil, &vector.ForgedKeyError{Key: key}
+	}
 	val, err := e.stg.Get(key)
 	if err != nil {
 		return nil, err
@@ -1246,22 +1440,26 @@ func (e *KVEngine) lookupKey(key []byte) (interface{}, error) {
 	return val, nil
 }
 
-// listKeys returns a sorted slice of key strings matching the prefix.
+// listKeys returns a sorted slice of key strings matching the prefix,
+// excluding the reserved 0x00 namespace.
 func (e *KVEngine) listKeys(prefix string) (interface{}, error) {
 	keys, err := e.stg.List([]byte(prefix))
 	if err != nil {
 		return nil, err
 	}
-	result := make([]string, len(keys))
-	for i, k := range keys {
-		result[i] = string(k)
+	result := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if statemachine.IsReservedKey(k) {
+			continue
+		}
+		result = append(result, string(k))
 	}
 	sort.Strings(result)
 	return result, nil
 }
 
 // scanPrefix scans keys matching a prefix and returns a map of key to
-// value bytes.
+// value bytes, excluding the reserved 0x00 namespace.
 func (e *KVEngine) scanPrefix(pq *statemachine.PrefixQuery) (interface{}, error) {
 	result := make(map[string][]byte)
 	count := 0
@@ -1275,6 +1473,9 @@ func (e *KVEngine) scanPrefix(pq *statemachine.PrefixQuery) (interface{}, error)
 	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
 		if !bytes.HasPrefix(iter.Key(), pq.Prefix) {
 			break
+		}
+		if statemachine.IsReservedKey(iter.Key()) {
+			continue
 		}
 
 		// Copy key and value to avoid iterator invalidation.

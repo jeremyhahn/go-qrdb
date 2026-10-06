@@ -278,6 +278,9 @@ func TestParseAttributesArg_WrongTypeIsError(t *testing.T) {
 func TestUserUpdateTool_RoleBindingsAndAttributesReplace(t *testing.T) {
 	var captured *user.UpdateUserRequest
 	svc := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			return &user.User{ID: id, TenantID: "acme"}, nil
+		},
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 			captured = req
 			return &user.User{ID: req.ID}, nil

@@ -47,6 +47,7 @@ func newAdminCmd() *cobra.Command {
 		newAdminNodeCompactionCmd(),
 		newAdminUpdateNodeCompactionCmd(),
 		newAdminJoinTokenCmd(),
+		newAdminJoinRequestCmd(),
 	)
 
 	return cmd
@@ -154,7 +155,9 @@ func newAdminMemberCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newAdminMemberAddCmd(),
+		newAdminMemberAddObserverCmd(),
 		newAdminMemberRemoveCmd(),
+		newAdminMemberPromoteCmd(),
 	)
 
 	return cmd
@@ -191,6 +194,53 @@ func newAdminMemberAddCmd() *cobra.Command {
 	return cmd
 }
 
+// ObserverMemberAddUnsupportedError is returned when the connected
+// transport does not implement transport.ObserverMemberAdder.
+type ObserverMemberAddUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *ObserverMemberAddUnsupportedError) Error() string {
+	return "admin member add-observer: the connected transport does not support adding observer members"
+}
+
+// newAdminMemberAddObserverCmd returns the admin member add-observer
+// subcommand: adds a replica as a non-voting observer rather than a voter.
+// Promote it to a voter later with `qrdb admin member promote`.
+func newAdminMemberAddObserverCmd() *cobra.Command {
+	var shardID uint64
+	var replicaID uint64
+	var identity string
+
+	cmd := &cobra.Command{
+		Use:   "add-observer <address>",
+		Short: "Add a replica to a shard as a non-voting observer",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			address := args[0]
+
+			adder, ok := client.Admin().(transport.ObserverMemberAdder)
+			if !ok {
+				return &ObserverMemberAddUnsupportedError{}
+			}
+
+			if err := adder.AddObserverMember(cmd.Context(), shardID, replicaID, address, identity); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Shard ID")
+	cmd.Flags().Uint64Var(&replicaID, "replica-id", 0, "Replica ID")
+	cmd.Flags().StringVar(&identity, "identity", "", "Raft member identity (spki:<hex>, from qrdbd node-identity --cert); required for a node no committed membership names")
+	_ = cmd.MarkFlagRequired("shard-id")
+	_ = cmd.MarkFlagRequired("replica-id")
+
+	return cmd
+}
+
 // newAdminMemberRemoveCmd returns the admin member remove subcommand.
 func newAdminMemberRemoveCmd() *cobra.Command {
 	var shardID uint64
@@ -206,6 +256,35 @@ func newAdminMemberRemoveCmd() *cobra.Command {
 			}
 
 			if err := client.Admin().RemoveMember(cmd.Context(), shardID, replicaID); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Shard ID")
+	_ = cmd.MarkFlagRequired("shard-id")
+
+	return cmd
+}
+
+// newAdminMemberPromoteCmd returns the admin member promote subcommand.
+func newAdminMemberPromoteCmd() *cobra.Command {
+	var shardID uint64
+
+	cmd := &cobra.Command{
+		Use:   "promote <replica-id>",
+		Short: "Promote a committed observer to a voter",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			replicaID, err := strconv.ParseUint(args[0], 10, 64)
+			if err != nil {
+				return &InvalidReplicaIDError{Input: args[0]}
+			}
+
+			if err := client.Admin().PromoteMember(cmd.Context(), shardID, replicaID); err != nil {
 				return err
 			}
 
@@ -390,6 +469,7 @@ func newAdminJoinTokenCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newAdminJoinTokenMintCmd())
+	cmd.AddCommand(newAdminJoinTokenRetireCmd())
 
 	return cmd
 }
@@ -442,6 +522,170 @@ func newAdminJoinTokenMintCmd() *cobra.Command {
 	}
 
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Token time-to-live (default: the server's default TTL)")
+
+	return cmd
+}
+
+// JoinRequestReviewUnsupportedError is returned when the connected
+// transport does not implement transport.JoinRequestReviewer.
+type JoinRequestReviewUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *JoinRequestReviewUnsupportedError) Error() string {
+	return "admin join-request: the connected transport does not support reviewing join requests"
+}
+
+// newAdminJoinRequestCmd returns the admin join-request parent command:
+// lists, approves and rejects CSRs a joiner queued through the tokenless
+// member-side CSR approval path (permission cluster:join_token).
+func newAdminJoinRequestCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "join-request",
+		Short: "Review tokenless member-side CSR join requests",
+		Long: "List, approve and reject CSRs a joiner queued by submitting no join token " +
+			"(permission cluster:join_token).",
+	}
+
+	cmd.AddCommand(
+		newAdminJoinRequestListCmd(),
+		newAdminJoinRequestApproveCmd(),
+		newAdminJoinRequestRejectCmd(),
+	)
+
+	return cmd
+}
+
+// newAdminJoinRequestListCmd returns the admin join-request list subcommand.
+func newAdminJoinRequestListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List join requests awaiting a decision",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			reviewer, ok := client.Admin().(transport.JoinRequestReviewer)
+			if !ok {
+				return &JoinRequestReviewUnsupportedError{}
+			}
+
+			pending, err := reviewer.ListPendingJoinRequests(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(pending)
+			case "yaml":
+				return printYAML(pending)
+			default:
+				if len(pending) == 0 {
+					_, _ = fmt.Fprintln(outputWriter, "No join requests awaiting a decision.")
+					return nil
+				}
+				for _, p := range pending {
+					_, _ = fmt.Fprintf(outputWriter, "ID:           %s\n", p.ID)
+					_, _ = fmt.Fprintf(outputWriter, "NodeURI:      %s\n", p.NodeURI)
+					_, _ = fmt.Fprintf(outputWriter, "ReplicaID:    %d\n", p.ReplicaID)
+					_, _ = fmt.Fprintf(outputWriter, "SubmittedAt:  %s\n", p.SubmittedAt.Format(time.RFC3339))
+					_, _ = fmt.Fprintf(outputWriter, "ExpiresAt:    %s\n", p.ExpiresAt.Format(time.RFC3339))
+					_, _ = fmt.Fprintln(outputWriter)
+				}
+				return nil
+			}
+		},
+	}
+}
+
+// newAdminJoinRequestApproveCmd returns the admin join-request approve
+// subcommand: binds a queued CSR to an operator-chosen node identity. The
+// leaf is signed the next time the joiner's own retry reaches the join
+// listener, not by this command.
+func newAdminJoinRequestApproveCmd() *cobra.Command {
+	var nodeID string
+
+	cmd := &cobra.Command{
+		Use:   "approve <id>",
+		Short: "Bind a queued join request to a node identity",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+
+			reviewer, ok := client.Admin().(transport.JoinRequestReviewer)
+			if !ok {
+				return &JoinRequestReviewUnsupportedError{}
+			}
+
+			if err := reviewer.ApproveJoinRequest(cmd.Context(), id, nodeID); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&nodeID, "node-id", "", "The node identity to bind the eventual leaf to")
+	_ = cmd.MarkFlagRequired("node-id")
+
+	return cmd
+}
+
+// newAdminJoinRequestRejectCmd returns the admin join-request reject
+// subcommand: records a terminal refusal of a queued CSR.
+func newAdminJoinRequestRejectCmd() *cobra.Command {
+	var reason string
+
+	cmd := &cobra.Command{
+		Use:   "reject <id>",
+		Short: "Reject a queued join request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+
+			reviewer, ok := client.Admin().(transport.JoinRequestReviewer)
+			if !ok {
+				return &JoinRequestReviewUnsupportedError{}
+			}
+
+			if err := reviewer.RejectJoinRequest(cmd.Context(), id, reason); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&reason, "reason", "", "An operator-supplied reason, recorded for audit")
+
+	return cmd
+}
+
+// newAdminJoinTokenRetireCmd returns the admin join-token retire
+// subcommand.
+func newAdminJoinTokenRetireCmd() *cobra.Command {
+	var reason string
+
+	cmd := &cobra.Command{
+		Use:   "retire <node-id>",
+		Short: "Permanently refuse any future admission for a node identity",
+		Long: "Permanently refuse any future admission for a node identity -- a fresh mint, or a " +
+			"renewal of one whose admission has lapsed -- after a member is removed from the " +
+			"cluster or its certificate must be treated as revoked (permission cluster:join_identity_retire).",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeID := args[0]
+
+			if err := client.Admin().RetireJoinIdentity(cmd.Context(), nodeID, reason); err != nil {
+				return err
+			}
+
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&reason, "reason", "", "Optional free-text operator note, carried for audit only")
 
 	return cmd
 }

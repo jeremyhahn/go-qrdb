@@ -1,6 +1,6 @@
 # Identity and RBAC — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Users, roles, the permission vocabulary, and the single policy decision point
 that authorizes every request on every transport.
@@ -300,8 +300,17 @@ module, not to the subject.
 | Field | Model | Meaning |
 |---|---|---|
 | `RoleIDs` | RBAC, system-scoped | roles held globally |
-| `RoleBindings` | RBAC, tenant-scoped | `{RoleID, TenantID}` — additive to `RoleIDs` |
+| `RoleBindings` | RBAC, own tenant only | `{RoleID, TenantID}` — additive to `RoleIDs`; `TenantID` must be the user's own tenant |
 | `Attributes` | ABAC | key/value pairs evaluated by policy |
+
+**A binding names only its holder's own tenant.** A binding naming any other
+tenant is refused on write on every transport and by the store, for a
+system-tenant user as for any other, so no binding grants anything outside
+its holder's tenant. A tenant's own administrators act only in their tenant.
+**Known gap:** a system-tenant Admin can still administer a tenant's users
+and roles — the routed services resolve a system-tenant caller into the
+tenant it names, and the system-tenant scope rule admits it there. Closing
+that is the strict tenant-isolation design, which has not landed.
 
 Tenant-scoped bindings are the reason a control-plane user can be tenant-admin
 for tenant X without being an admin of the system tenant.
@@ -329,27 +338,27 @@ token claims populate, so an attribute written to a user record can never
 satisfy a policy written against an authentication-derived value of the same
 name. See [../auth/abac.md](../auth/abac.md#tenant-scoping).
 
-**Which tenant a binding is matched against.** A binding counts in an
-authorization check whose target is the tenant it names, and in no other. The
-target is resolved from the request BEFORE the route-level permission check,
-on every network transport: a request that names a user or role is checked
-against the tenant that user or role belongs to, a per-tenant barrier
-operation against the tenant it names, and every other request — the whole
-data plane, and the tenant-administration surface (a tenant's record, its
-quotas and entitlements), which only the platform operator may manage —
-against the caller's own tenant. A system-tenant operator whose only grant
-for tenant A is a binding can therefore update a tenant-A user through any
-transport, and is refused the same update on a tenant-B user. Only the
-decision uses the target; the operation itself still runs as the caller.
+**Which tenant a request is authorized in.** Every transport, the embedded
+one included, makes its entry permission check in the caller's own tenant —
+the tenant the authenticated context is bound to. There is no route-level
+re-targeting to a tenant the request names. For a caller outside the system
+tenant, a request naming another tenant's user or role finds nothing (the
+routed services hide it), and one naming another tenant outright (`tenantID`
+on a create or a list) is refused with `tenant.CrossTenantDeniedError`. A
+system-tenant caller is routed into the tenant it names; that is the known
+gap above. An operation whose handler acts on a tenant
+the request names — a per-tenant barrier operation, a tenant's own record,
+certificate issuance and revocation, an audit query, enabling encryption —
+re-checks its permission in that tenant at the handler.
 
 Writing `RoleIDs`, `RoleBindings`, or `Attributes` — on `CreateUser` for
 `RoleIDs`, on `UpdateUser` for all three — requires `roles:assign` in
 addition to the route's own `users:create`/`users:update` permission, on
 every transport including embedded, which authorizes through the node's own
 `AuthMiddleware`. The check targets the tenant the record lives in (read from
-the record on update, the effective create tenant on create), and each
-`RoleBindings` entry additionally requires `roles:assign` in the tenant it
-names: writing a binding is itself an act of granting a role there. Every
+the record on update, the effective create tenant on create). After it, a
+`RoleBindings` entry naming any tenant other than the user's own is refused
+with `user.RoleBindingTenantError`, with or without RBAC. Every
 referenced role is validated to exist and to belong to that tenant itself
 (each tenant seeds its own built-in roles, and a role from another tenant —
 the system tenant's included — cannot be resolved there) before the write
@@ -360,11 +369,9 @@ its tests.
 The user store owns two invariants on `RoleBindings`, so they hold whatever
 path the write took. Each binding's `TenantID` is stored normalized (an empty
 tenant becomes `system`), because the read side matches it against the
-normalized target tenant. And a non-system user may hold a binding only in its
-own tenant: RBAC refuses such an identity every request outside that tenant
-before any binding is consulted, so a binding elsewhere could never grant, and
-the write is refused with `user.RoleBindingTenantError` instead of storing a
-grant that reads as live and is not.
+normalized target tenant. And every user — the system tenant's included — may
+hold a binding only in its own tenant; any other is refused with
+`user.RoleBindingTenantError`.
 
 ### Alternatives rejected
 
@@ -452,6 +459,78 @@ makes those layers agree by construction rather than by convention.
 The key is tenant-scoped, not global: the same person may legitimately hold an
 account in two tenants, and every login path supplies the tenant alongside the
 handle, so a global index would forbid that while buying nothing.
+
+## Invitation self-enrolment
+
+An invitation is how an ORDINARY account — one certs:issue's strict-subset
+history never let a tenant Admin mint a credential for directly — gets its
+first certificate: the Admin creates the account `pending` and hands the
+user a single-use token out of band, and the user enrols a key of their own
+with it. The inviter never holds a credential for the account, which is the
+property direct issuance cannot offer: whoever signs the CSR holds the
+account.
+
+`users:invite` (`ScopeSelfStrict`, granted to the built-in Admin and SO)
+creates the pending account in the caller's own tenant — or re-invites one
+still pending, taking no other field — and returns the token exactly once
+(`pkg/service.InvitationService.InviteUser`). Only the token's SHA-256
+digest is ever stored, in the tenant's own identity store
+(`pkg/invite.TenantStore`), so a token for one tenant is absent from every
+other's. It expires after `auth.invitation_ttl` (default `24h`, capped at
+seven days — a token redeemable longer than that is a standing credential,
+not an invitation). Requested role IDs go through the same
+`roles:assign` gate `CreateUser` already applies, and the target account is
+judged by the SAME certificate target guard `certs:issue` is
+(`pkg/service.certTargetGuard`, see [Trust boundaries](#trust-boundaries)):
+no Security Officer target, and an Owner target only when the caller itself
+holds Owner.
+
+**Redemption is the one verb a caller may invoke with no credential at
+all.** `InvitationService.RedeemInvitation` takes the tenant, the token, and
+either a CSR for the redeemer's own key (the CSR's self-signature is the
+proof of possession) or a bring-your-own certificate over that key verified
+against the tenant's trust anchors. Everything refusable is judged BEFORE
+the token is spent — including a key already bound in the tenant, which is
+how the inviter's own key is refused without disturbing the invited user's
+ability to redeem — and then the token is consumed and the account is
+activated with the binding in ONE conditional commit that requires it still
+`pending` (`user.CertActivator.ActivateWithCertBinding`); a failure after
+that point revokes the certificate it issued. An unknown, other-tenant,
+expired, already-used, or ceremony-role-held token gets the identical
+opaque refusal: telling an unauthenticated caller that a token exists but is
+spent would confirm a real account was invited, which is exactly the
+enumeration the opaque token exists to prevent.
+
+Because the caller is unauthenticated, two further controls apply only to
+redemption:
+
+- **Optional key pinning.** An invitation may carry the invited user's SPKI
+  thumbprint (`invite.WithKeyPin`), sent to the inviter out of band. A
+  pinned invitation redeems only with a CSR or certificate over exactly that
+  key; any other key gets the same opaque refusal, and the token is NOT
+  spent, so the invited user can still redeem it with the right key.
+  `auth.invitation_require_key_pin` refuses every unpinned invitation at
+  issuance, for a posture that must never hand out a bearer-only token.
+- **Per-source and per-tenant throttling.** Redemption draws on two
+  token-bucket limits (`auth.invitation_redeem_limit.{per_source,per_tenant}`,
+  `pkg/ratelimit`) before anything else runs: one keyed by the caller's
+  network address (an IPv6 caller is bucketed by its `/64`), one by the
+  tenant the request names. A throttled redemption gets the same opaque
+  answer as a bad token.
+
+Redemption is served without authentication on REST
+(`POST /invitations/redeem`, a declared public route), native QUIC
+(`invitation.Redeem`, the one frame method with no registered permission at
+all — `QUICMethodRegistry.RegisterPublic`), gRPC and the Unix socket
+(`RedeemInvitation`, registered with
+`AuthMiddleware.RegisterPublicGRPCMethods` — the gRPC twin of
+`RegisterPublic` — so the unary interceptor skips both authentication and
+authorization for it alone), MCP (a SEPARATE public server on
+`/mcp/enroll` carrying exactly that one tool, since the main `/mcp` endpoint
+answers nothing, not even `tools/list`, to an unauthenticated caller) and
+the embedded transport (still gated on the node's seal/boot-state, since a
+sealed barrier can serve no invitation data, but with no identity or
+permission check beyond that).
 
 ## Component boundaries
 
@@ -541,6 +620,10 @@ handle, so a global index would forbid that while buying nothing.
   user.
 - **Factor data is opaque.** qrdb never parses it, so a factor implementation
   cannot smuggle a decision past the PDP through its blob.
+- **Invitation redemption is the one write any caller may make with no
+  credential at all**, and every refusal before the token is spent is the
+  SAME opaque answer regardless of cause. See
+  [Invitation self-enrolment](#invitation-self-enrolment).
 
 ## What this feature deliberately does not do
 
@@ -556,6 +639,27 @@ handle, so a global index would forbid that while buying nothing.
   PDP evaluates them; a group is an indirection for assigning roles to many
   users, and the layer that owns the mapping stores the membership and resolves
   it.
+
+> **Ruled change — strict tenant isolation.** The multi-tenancy design
+> [Strict tenant isolation](../multi-tenancy/architecture.md#strict-tenant-isolation--design)
+> (RULED 2026-10-01, not implemented) changes this feature in five places:
+>
+> - `ScopeSelf` loses its system-tenant lift. Cross-tenant reach exists only
+>   through `ScopeCross` platform permissions.
+> - The system-tenant exception in `user.NormalizeRoleBindings` is removed:
+>   a role binding names its holder's own tenant, for every holder.
+> - The global identity index (`tenant.IdentityIndex`) is removed. A by-id
+>   operation resolves in the caller's own tenant, and an operator verb names
+>   its tenant explicitly.
+> - A strict tenant's users, roles, factors, bindings, certificates and CA
+>   move out of the system store into the tenant's own home store, and its
+>   users authenticate only with certificates that chain to the tenant's own
+>   CA, with SPKI binding required.
+> - A tenant's first admin comes from a CSR supplied at tenant creation. Barrier
+>   init proves possession of that key, replacing trust-on-first-init by "a
+>   certificate naming the tenant".
+>
+> Until that ships, this document describes the code.
 
 ## Companion documents
 

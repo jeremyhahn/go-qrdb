@@ -32,7 +32,7 @@ type (
 	// There is deliberately no FactorEnrollment re-export: enrolled auth
 	// factors have exactly one source of truth, pkg/auth.AuthFactor via the
 	// AuthFactorService already re-exported below.
-	// RoleBinding grants a role within a tenant scope (tenant-scoped RBAC).
+	// RoleBinding grants a role within its holder's own tenant.
 	RoleBinding = user.RoleBinding
 
 	// Lifecycle is the canonical account state — pending, active, suspended,

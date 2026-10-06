@@ -163,6 +163,7 @@ func (t *Transport) cloneShared() *Transport {
 		roleSvc:                      t.roleSvc,
 		certProv:                     t.certProv,
 		certEnroll:                   t.certEnroll,
+		invitations:                  t.invitations,
 		onboarding:                   t.onboarding,
 		dbSvc:                        t.dbSvc,
 		barrierSvc:                   t.barrierSvc,

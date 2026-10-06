@@ -88,8 +88,9 @@ type User struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
-// RoleBinding grants a role within a tenant scope — the tenant-scoped RBAC
-// wire projection of pkg/user.RoleBinding.
+// RoleBinding grants a role within its holder's own tenant — the wire
+// projection of pkg/user.RoleBinding. A binding naming any other tenant is
+// refused on write.
 type RoleBinding struct {
 	RoleID   string `json:"role_id"`
 	TenantID string `json:"tenant_id"`
@@ -416,6 +417,57 @@ type CertRecord struct {
 // ListCertsResponse holds a list of issued certificate records.
 type ListCertsResponse struct {
 	Certs []*CertRecord `json:"certs"`
+}
+
+// ---------------------------------------------------------------------------
+// Invitation self-enrolment
+// ---------------------------------------------------------------------------
+
+// InviteUserRequest invites Username into the caller's own tenant: the
+// account is created pending (or re-invited if already pending), and a
+// single-use enrolment token is returned once. Email, Name and RoleIDs
+// describe a new account; re-inviting an existing pending account takes
+// none of them.
+type InviteUserRequest struct {
+	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	RoleIDs  []string `json:"roleIDs,omitempty"`
+	// KeyPinFingerprint, when set, pins the invitation to one key: the SPKI
+	// thumbprint (base64url SHA-256 of the SubjectPublicKeyInfo) the invited
+	// user sent out of band. Only a CSR or certificate over exactly that key
+	// can redeem it.
+	KeyPinFingerprint string `json:"keyPinFingerprint,omitempty"`
+}
+
+// Invitation is an issued invitation. Token is the plaintext bearer secret:
+// it is returned once, here, and must reach the invited user out of band.
+type Invitation struct {
+	ID        uint64    `json:"id,string"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	UserID    uint64    `json:"userID,string"`
+	Username  string    `json:"username"`
+	TenantID  string    `json:"tenantID"`
+	// Created reports that the account was created by this invitation
+	// rather than re-invited.
+	Created bool `json:"created"`
+	// KeyPinFingerprint is the key the invitation is pinned to; empty for
+	// an unpinned invitation.
+	KeyPinFingerprint string `json:"keyPinFingerprint,omitempty"`
+}
+
+// RedeemInvitationRequest redeems Token in TenantID. It is the one call made
+// with NO credential: the token is the authority. CSRPEM is always required:
+// it carries the proof that the redeemer holds the key. CertPEM (leaf first)
+// and ChainPEM, when given, are a bring-your-own certificate over that same
+// key.
+type RedeemInvitationRequest struct {
+	TenantID string `json:"tenantID"`
+	Token    string `json:"token"`
+	CSRPEM   string `json:"csrPEM"`
+	CertPEM  string `json:"certPEM,omitempty"`
+	ChainPEM string `json:"chainPEM,omitempty"`
 }
 
 // RevokeResult reports what RevokeCert did, distinguishing a revocation of

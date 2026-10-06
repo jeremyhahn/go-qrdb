@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -51,23 +52,27 @@ import (
 // role, and certificate operations as MCP tools and serves them over
 // HTTP using the Streamable HTTP transport.
 type Server struct {
-	kvSvc             service.KVServicer
-	adminSvc          service.AdminServicer
-	mvccSvc           service.MVCCKVServicer
-	txSvc             service.TransactionServicer
-	batchSvc          service.BatchServicer
-	watchSvc          service.WatchServicer
-	leaseSvc          service.LeaseServicer
-	lockSvc           service.LockServicer
-	indexSvc          service.IndexServicer
-	tsSvc             service.TimeSeriesServicer
-	vectorSvc         service.VectorServicer
-	embeddingSvc      service.EmbeddingServicer
-	ragSvc            service.RAGServicer
-	userSvc           user.UserServicer
-	roleSvc           role.RoleServicer
-	certProv          cert.CertProvider
-	certEnroll        service.CertEnrollmentServicer
+	kvSvc        service.KVServicer
+	adminSvc     service.AdminServicer
+	mvccSvc      service.MVCCKVServicer
+	txSvc        service.TransactionServicer
+	batchSvc     service.BatchServicer
+	watchSvc     service.WatchServicer
+	leaseSvc     service.LeaseServicer
+	lockSvc      service.LockServicer
+	indexSvc     service.IndexServicer
+	tsSvc        service.TimeSeriesServicer
+	vectorSvc    service.VectorServicer
+	embeddingSvc service.EmbeddingServicer
+	ragSvc       service.RAGServicer
+	userSvc      user.UserServicer
+	roleSvc      role.RoleServicer
+	certProv     cert.CertProvider
+	certEnroll   service.CertEnrollmentServicer
+	invitations  service.InvitationServicer
+	// enrollSrv is the PUBLIC enrolment MCP server on EnrollPath; nil when
+	// no invitation service is wired.
+	enrollSrv         *mcpserver.MCPServer
 	onboarding        service.TenantOnboardingServicer
 	collectionSvc     service.CollectionServicer
 	dbSvc             service.DatabaseServicer
@@ -404,6 +409,12 @@ func WithCertEnrollment(svc service.CertEnrollmentServicer) ServerOption {
 	return func(s *Server) { s.certEnroll = svc }
 }
 
+// WithInvitations registers qrdb_user_invite on /mcp and serves the PUBLIC
+// enrolment endpoint (EnrollPath) whose one tool redeems an invitation.
+func WithInvitations(svc service.InvitationServicer) ServerOption {
+	return func(s *Server) { s.invitations = svc }
+}
+
 // WithTenantOnboarding wires the service behind qrdb_tenant_create.
 func WithTenantOnboarding(svc service.TenantOnboardingServicer) ServerOption {
 	return func(s *Server) { s.onboarding = svc }
@@ -738,6 +749,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.certEnroll != nil {
 		s.addTools(enrollmentTools(s.certEnroll, s.authMW)...)
 	}
+	if s.invitations != nil {
+		s.addTools(invitationTools(s.invitations, s.authMW, s.roleSvc)...)
+		s.enrollSrv = s.newEnrollServer()
+	}
 	// Registered when either the singleton is wired or a registry is
 	// configured: the per-(tenant, database) collection servicer resolves at
 	// call time through resolveCollection, so gating on the singleton alone
@@ -811,10 +826,6 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.sqlSvc != nil {
 		s.addTools(sqlTools(s.sqlSvc)...)
 	}
-
-	// Declare, for every built-in tool that acts on a named user, role or
-	// tenant, how its arguments name it (see targets.go).
-	s.registerTargets()
 
 	// Register module tools last so they layer on top of the built-in tool
 	// sets on the same real mcp-go server. A module that implements
@@ -917,6 +928,23 @@ func (s *Server) Start() error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpHandler)
+	if s.enrollSrv != nil {
+		// PUBLIC by design (EnrollPath): an invited user holds no credential
+		// yet. One tool, the anonymous body bound, and the sealed-window gate
+		// when this is a sealed listener.
+		//
+		// Redemption is throttled per source: the connection's own address.
+		// A minimal, dedicated context func -- not s.authHTTPContext -- so
+		// this public path never runs the main server's auth chain.
+		peerAddr := mcpserver.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			return auth.WithRemoteAddr(ctx, r.RemoteAddr)
+		})
+		enrollHandler := boundedBodyHandler(maxAnonymousRequestBodyBytes, mcpserver.NewStreamableHTTPServer(s.enrollSrv, peerAddr))
+		if s.sealedWindowListener != nil {
+			enrollHandler = s.sealedWindowClosedHandler(enrollHandler)
+		}
+		mux.Handle(EnrollPath, enrollHandler)
+	}
 	if len(s.protectedResourceMetadata) > 0 {
 		// RFC 9728 discovery document: public by design (see
 		// WithProtectedResourceMetadata).

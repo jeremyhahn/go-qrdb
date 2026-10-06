@@ -316,15 +316,19 @@ func (a *RBACAuthorizer) roleIDsHoldSystemRole(_ context.Context, roleIDs []stri
 // TenantID equals the request's TARGET tenant — tenant.FromContext(ctx), the
 // same resolution Authorize's scope rule already reads for this call — so a
 // binding grants its role exactly when the request is operating against the
-// tenant the binding names, and contributes nothing otherwise (go-qrdb#192
-// item 4: "a binding in tenant A grants in A and NOT in B").
+// tenant the binding names, and contributes nothing otherwise.
 //
 // It must run against the INCOMING ctx, before any of Authorize's tenant
 // rebinds (the home-tenant resolve, the bound-tenant resolve, the Owner
-// strip): the target tenant of THIS call and the identity's home tenant are
-// frequently different (a system-tenant caller acting on tenant A, or
-// exactly the cross-tenant grant a RoleBinding exists to express), and
-// rebinding first would silently answer with the wrong tenant.
+// strip): the target tenant of THIS call and the identity's home tenant can
+// differ (a system-tenant caller acting on tenant A), and rebinding first
+// would silently answer with the wrong tenant.
+//
+// A binding may name only its holder's own tenant (user.NormalizeRoleBindings
+// refuses any other at write). This enforces the same invariant on the read
+// side, whatever the identity's source -- an embedded composer supplies its
+// identity directly: a binding counts only when the target is the identity's
+// own tenant, so a binding naming any other tenant grants nothing.
 //
 // Every entry this returns shares the SAME tenant (the target), which is
 // what lets callers resolve them together in one tenant context rather than
@@ -334,6 +338,9 @@ func boundRoleIDs(ctx context.Context, identity *auth.Identity) []string {
 		return nil
 	}
 	target := tenant.FromContext(ctx)
+	if target != tenantid.Normalize(identity.TenantID) {
+		return nil
+	}
 	var out []string
 	for _, b := range identity.RoleBindings {
 		if b.TenantID == target {

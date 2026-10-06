@@ -203,6 +203,7 @@ func TestLookupGRPCFromDescriptor_Found(t *testing.T) {
 		{"/qrdb.v1.QRDBService/RequestSnapshot", permission.AdminSnapshot},
 		{"/qrdb.v1.QRDBService/Drain", permission.AdminDrain},
 		{"/qrdb.v1.QRDBService/Capabilities", permission.AdminCapabilities},
+		{"/qrdb.v1.QRDBService/RedeemInvitation", permission.Public},
 	}
 
 	for _, tt := range tests {
@@ -269,10 +270,11 @@ func TestLookupGRPCFromDescriptor_NotFound(t *testing.T) {
 // no longer holds — registration validity is the meaningful check.
 func TestGRPCPermissions_PermissionsAreRegistered(t *testing.T) {
 	for method, perm := range grpcDescriptorMethodPermissions(t) {
-		// permission.IdentityGated is a deliberately unregistered sentinel:
-		// claim routes are authorized at the handler layer, and the sentinel
-		// must never be grantable to a role.
-		if perm == permission.IdentityGated {
+		// permission.IdentityGated and permission.Public are deliberately
+		// unregistered sentinels: claim routes are authorized at the handler
+		// layer, and RedeemInvitation bypasses authorization entirely. Neither
+		// may ever be grantable to a role.
+		if perm == permission.IdentityGated || perm == permission.Public {
 			continue
 		}
 		if !permission.IsRegistered(perm) {

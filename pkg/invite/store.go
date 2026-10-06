@@ -37,7 +37,7 @@ type Store interface {
 	// The token is returned exactly once, here. Only its digest is stored, so
 	// it cannot be recovered afterwards: a caller that loses it must issue a
 	// new invitation.
-	Create(ctx context.Context, userID, tenantID string, ttl time.Duration) (token string, entity *Entity, err error)
+	Create(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...CreateOption) (token string, entity *Entity, err error)
 
 	// Lookup resolves a plaintext token without consuming it, so the invited
 	// user can be shown what they are accepting.
@@ -140,7 +140,7 @@ func NewDAOStore(store kvstore.KVStore) (*DAOStore, error) {
 }
 
 // Create implements Store.
-func (s *DAOStore) Create(ctx context.Context, userID, tenantID string, ttl time.Duration) (string, *Entity, error) {
+func (s *DAOStore) Create(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...CreateOption) (string, *Entity, error) {
 	if userID == "" {
 		return "", nil, ErrMissingUserID
 	}
@@ -160,6 +160,9 @@ func (s *DAOStore) Create(ctx context.Context, userID, tenantID string, ttl time
 		TenantID:  tenantID,
 		ExpiresAt: now.Add(ttl),
 		CreatedAt: now,
+	}
+	for _, opt := range opts {
+		opt(entity)
 	}
 
 	// SaveIfAbsent, not Save: a digest collision would otherwise overwrite a

@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	userpkg "github.com/jeremyhahn/go-qrdb/pkg/user"
 )

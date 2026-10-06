@@ -169,13 +169,14 @@ func TestEmbeddedNode_InjectedClusterCAKeySignsAndMintsJoinTokens(t *testing.T) 
 		t.Fatalf("MintJoinToken = %q, %v; want a token", token, err)
 	}
 
-	csrDER, err := joinerCSR()
+	nodeURI := spiffe.NodeURI(qrdbconfig.DefaultClusterTrustDomain, joiner)
+	csrDER, err := joinerCSR(nodeURI)
 	if err != nil {
 		t.Fatal(err)
 	}
 	signed, err := clusterenroll.JoinCSR(ctx, &clusterenroll.JoinClientOptions{
 		ServerAddr: n.clusterJoin.Addr(), ServerKey: n.clusterJoin.PublicKey(), Token: token,
-	}, csrDER, spiffe.NodeURI(qrdbconfig.DefaultClusterTrustDomain, joiner))
+	}, csrDER, nodeURI)
 	if err != nil {
 		t.Fatalf("JoinCSR: %v", err)
 	}
@@ -193,12 +194,19 @@ func TestEmbeddedNode_InjectedClusterCAKeySignsAndMintsJoinTokens(t *testing.T) 
 }
 
 // joinerCSR is a joining node's certificate request.
-func joinerCSR() ([]byte, error) {
+func joinerCSR(nodeURI string) ([]byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	return x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "joiner"}}, key)
+	u, err := url.Parse(nodeURI)
+	if err != nil {
+		return nil, err
+	}
+	return x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "joiner"},
+		URIs:    []*url.URL{u},
+	}, key)
 }
 
 // retryUntil calls f until it succeeds or ctx ends.

@@ -51,6 +51,20 @@ func EnrolledCert(r *pb.EnrolledCertResponse) *transport.EnrolledCert {
 	}
 }
 
+// Invitation converts an InvitationResponse.
+func Invitation(r *pb.InvitationResponse) *transport.Invitation {
+	return &transport.Invitation{
+		ID:                r.GetId(),
+		Token:             r.GetToken(),
+		ExpiresAt:         parseTime(r.GetExpiresAt()),
+		UserID:            r.GetUserId(),
+		Username:          r.GetUsername(),
+		TenantID:          r.GetTenantId(),
+		Created:           r.GetCreated(),
+		KeyPinFingerprint: r.GetKeyPinFingerprint(),
+	}
+}
+
 // AdminCredential converts a TenantAdminCredential; nil is the zero value.
 func AdminCredential(c *pb.TenantAdminCredential) transport.TenantAdminCredential {
 	return transport.TenantAdminCredential{

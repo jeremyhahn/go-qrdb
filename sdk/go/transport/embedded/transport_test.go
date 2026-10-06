@@ -206,6 +206,7 @@ type mockAdminService struct {
 	snapshotCalled  bool
 	addCalled       bool
 	removeCalled    bool
+	promoteCalled   bool
 	mintJoinTokenFn func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
 }
 
@@ -259,6 +260,12 @@ func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, identity
 
 func (m *mockAdminService) RemoveMember(_ context.Context, _, _ uint64) error {
 	m.removeCalled = true
+	return nil
+}
+
+// PromoteMember implements service.MemberPromoter.
+func (m *mockAdminService) PromoteMember(_ context.Context, _, _ uint64) error {
+	m.promoteCalled = true
 	return nil
 }
 
@@ -720,6 +727,29 @@ func TestRemoveMember_AfterClose(t *testing.T) {
 	}
 }
 
+func TestPromoteMember_Success(t *testing.T) {
+	adminSvc := &mockAdminService{}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	err := tr.PromoteMember(context.Background(), 0, 2)
+	if err != nil {
+		t.Fatalf("PromoteMember failed: %v", err)
+	}
+	if !adminSvc.promoteCalled {
+		t.Error("expected PromoteMember to be called on service")
+	}
+}
+
+func TestPromoteMember_AfterClose(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	_ = tr.Close()
+
+	err := tr.PromoteMember(context.Background(), 0, 2)
+	if err == nil {
+		t.Fatal("expected error after close")
+	}
+}
+
 func TestRequestSnapshot_Success(t *testing.T) {
 	adminSvc := &mockAdminService{}
 	tr, _ := New(newMockKVService(), adminSvc)
@@ -1007,6 +1037,31 @@ func TestRequest_RemoveMember_InvalidRequest(t *testing.T) {
 	tr, _ := New(newMockKVService(), &mockAdminService{})
 
 	err := tr.Request(context.Background(), "RemoveMember", "bad", nil)
+	if err == nil {
+		t.Fatal("expected error for invalid request type")
+	}
+}
+
+func TestRequest_PromoteMember(t *testing.T) {
+	adminSvc := &mockAdminService{}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	err := tr.Request(context.Background(), "PromoteMember", &transport.PromoteMemberRequest{
+		ShardID:   0,
+		ReplicaID: 2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Request PromoteMember failed: %v", err)
+	}
+	if !adminSvc.promoteCalled {
+		t.Error("expected PromoteMember to be called")
+	}
+}
+
+func TestRequest_PromoteMember_InvalidRequest(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+
+	err := tr.Request(context.Background(), "PromoteMember", "bad", nil)
 	if err == nil {
 		t.Fatal("expected error for invalid request type")
 	}

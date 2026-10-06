@@ -15,6 +15,7 @@
 package user
 
 import (
+	"crypto"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -25,9 +26,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// RoleBinding grants a role within a tenant scope. It is the tenant-scoped RBAC
-// primitive: a control-plane user can hold an Admin binding for tenant X without
-// being an admin of the system tenant.
+// RoleBinding grants a role within a tenant scope. Its TenantID must be the
+// holder's own tenant, so no binding grants anything outside it (see
+// NormalizeRoleBindings).
 type RoleBinding struct {
 	RoleID   string `json:"roleID"`
 	TenantID string `json:"tenantID"`
@@ -39,21 +40,20 @@ type RoleBinding struct {
 // The read side compares a binding's TenantID with the normalized target
 // tenant, so a binding stored as "" would never match anything.
 //
-// A non-system user may hold a binding only in its own tenant, and any other
-// is refused with *RoleBindingTenantError: RBAC refuses such a user every
-// request outside its own tenant before a binding is consulted, so the
-// binding could never grant. A nil bindings is returned as nil, keeping the
-// leave-alone meaning UpdateUserRequest gives it.
+// A binding may name only the user's own tenant, for every user, the system
+// tenant's included, so no binding grants anything outside its holder's
+// tenant. Any other is refused with *RoleBindingTenantError. A nil bindings
+// is returned as nil, keeping the leave-alone meaning UpdateUserRequest
+// gives it.
 func NormalizeRoleBindings(userID uint64, userTenant string, bindings []RoleBinding) ([]RoleBinding, error) {
 	if bindings == nil {
 		return nil, nil
 	}
 	userTenant = tenantid.Normalize(userTenant)
-	inSystem := tenantid.IsSystem(userTenant)
 	out := make([]RoleBinding, len(bindings))
 	for i, b := range bindings {
 		b.TenantID = tenantid.Normalize(b.TenantID)
-		if !inSystem && b.TenantID != userTenant {
+		if b.TenantID != userTenant {
 			return nil, &RoleBindingTenantError{UserID: userID, UserTenantID: userTenant, BindingTenantID: b.TenantID}
 		}
 		out[i] = b
@@ -105,7 +105,23 @@ func ComputeSPKIThumbprint(cert *x509.Certificate) string {
 	if cert == nil {
 		return ""
 	}
-	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return spkiThumbprint(cert.RawSubjectPublicKeyInfo)
+}
+
+// PublicKeySPKIThumbprint is ComputeSPKIThumbprint for a bare public key, such
+// as a CSR's: the thumbprint a certificate issued for pub will carry.
+func PublicKeySPKIThumbprint(pub crypto.PublicKey) (string, error) {
+	spki, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", &ValidationError{Field: "public_key", Reason: "cannot be encoded as a SubjectPublicKeyInfo: " + err.Error()}
+	}
+	return spkiThumbprint(spki), nil
+}
+
+// spkiThumbprint is the canonical encoding of a DER SubjectPublicKeyInfo's
+// SHA-256.
+func spkiThumbprint(spki []byte) string {
+	sum := sha256.Sum256(spki)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 

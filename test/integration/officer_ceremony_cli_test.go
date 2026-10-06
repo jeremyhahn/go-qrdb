@@ -392,8 +392,20 @@ type ceremonyStatusJSON struct {
 // the JSON payload in CombinedOutput, not part of the response.
 func decodeJSON(t *testing.T, out string, dest any) {
 	t.Helper()
-	if i := strings.IndexByte(out, '{'); i > 0 {
-		out = out[i:]
+	// The JSON value may be an object or an array (e.g. a `list` command's
+	// response): skip to whichever of '{' or '[' starts it first, past any
+	// leading log/banner text, rather than assuming '{' -- stopping at the
+	// wrong one (an array's '{' is its first ELEMENT, not its start) truncates
+	// the enclosing brackets and leaves a trailing comma json.Unmarshal
+	// refuses.
+	obj := strings.IndexByte(out, '{')
+	arr := strings.IndexByte(out, '[')
+	start := obj
+	if start < 0 || (arr >= 0 && arr < start) {
+		start = arr
+	}
+	if start > 0 {
+		out = out[start:]
 	}
 	if err := json.Unmarshal([]byte(out), dest); err != nil {
 		t.Fatalf("decodeJSON: %v\noutput: %s", err, out)

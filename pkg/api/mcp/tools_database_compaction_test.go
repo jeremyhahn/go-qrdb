@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 

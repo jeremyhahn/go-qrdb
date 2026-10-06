@@ -18,9 +18,8 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
-
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 )
 
 // TenantBarrierSeal seals a per-tenant barrier by delegating to the

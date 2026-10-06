@@ -56,7 +56,7 @@ func TestUpdateUser_RoleBindingsHasFlagCarriesClearVersusLeaveAlone(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := &mockUserService{updateResult: &user.User{ID: 1}}
+			svc := &mockUserService{getResult: &user.User{ID: 1, TenantID: "acme"}, updateResult: &user.User{ID: 1}}
 			s := &qrdbServiceServer{userSvc: svc, roleSvc: &mockRoleService{getResult: &role.Role{ID: "role-a", TenantID: "acme"}}}
 			if _, err := s.UpdateUser(context.Background(), tc.req); err != nil {
 				t.Fatalf("UpdateUser: %v", err)
@@ -103,7 +103,7 @@ func TestUpdateUser_AttributesHasFlagCarriesClearVersusLeaveAlone(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := &mockUserService{updateResult: &user.User{ID: 1}}
+			svc := &mockUserService{getResult: &user.User{ID: 1, TenantID: "acme"}, updateResult: &user.User{ID: 1}}
 			s := &qrdbServiceServer{userSvc: svc}
 			if _, err := s.UpdateUser(context.Background(), tc.req); err != nil {
 				t.Fatalf("UpdateUser: %v", err)

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// go-qrdb#192 item 4: the authorizer consumes auth.Identity.RoleBindings, and
-// a binding scoped to one tenant grants ONLY there.
+// The authorizer consumes auth.Identity.RoleBindings. A binding names only its
+// holder's own tenant and grants only there.
 package rbac
 
 import (
@@ -28,18 +28,37 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
-// bindingIdentity is a system-tenant identity (so the ScopeSelf system-tenant
-// rule always admits, regardless of target) holding NO plain Roles and
-// exactly one RoleBinding scoped to tenant A. Isolating the scope rule this
-// way means a denial in tenant B can only be explained by the binding not
-// resolving there — never by the ordinary ScopeSelf tenant check, which
-// would deny a non-system identity acting outside its own tenant for an
-// unrelated reason.
+// bindingIdentity is an identity of boundTenant holding NO plain Roles and
+// exactly one RoleBinding, in its own tenant.
 func bindingIdentity(roleID, boundTenant string) *auth.Identity {
 	return &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenantid.System,
+		TenantID:     boundTenant,
 		RoleBindings: []auth.RoleBinding{{RoleID: roleID, TenantID: boundTenant}},
+	}
+}
+
+// TestRoleBinding_ForeignTenantBindingGrantsNothing: a binding may name only
+// its holder's own tenant. One naming another tenant -- which the store
+// refuses at write, but an embedded composer can put on the identity it
+// supplies -- grants nothing, even in the tenant it names and even for a
+// system-tenant identity, whose ScopeSelf permissions would otherwise be
+// admitted there.
+func TestRoleBinding_ForeignTenantBindingGrantsNothing(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"role-a": {permission.KVGet},
+	})
+	a := New(svc)
+	id := &auth.Identity{
+		Subject:      "svc-1",
+		TenantID:     tenantid.System,
+		RoleBindings: []auth.RoleBinding{{RoleID: "role-a", TenantID: "tenant-a"}},
+	}
+
+	err := a.Authorize(ctxFor("tenant-a"), id, "kv", "get")
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("a foreign-tenant binding granted kv:get in the tenant it names: err = %v, want *PermissionDeniedError", err)
 	}
 }
 
@@ -112,19 +131,27 @@ func TestBoundRoleIDs_NoBindingsIsNil(t *testing.T) {
 	}
 }
 
-// TestBoundRoleIDs_FiltersByTargetTenant asserts only the matching binding's
-// RoleID is returned when an identity carries bindings for several tenants.
-func TestBoundRoleIDs_FiltersByTargetTenant(t *testing.T) {
+// TestBoundRoleIDs_OnlyTheIdentitysOwnTenant asserts a binding counts only
+// when the target is the identity's own tenant and the binding names it: an
+// identity carrying a binding for another tenant gets nothing from it there.
+func TestBoundRoleIDs_OnlyTheIdentitysOwnTenant(t *testing.T) {
 	id := &auth.Identity{
-		Subject: "s",
+		Subject:  "s",
+		TenantID: "tenant-a",
 		RoleBindings: []auth.RoleBinding{
 			{RoleID: "role-a", TenantID: "tenant-a"},
 			{RoleID: "role-b", TenantID: "tenant-b"},
 		},
 	}
-	got := boundRoleIDs(ctxFor("tenant-a"), id)
-	if len(got) != 1 || got[0] != "role-a" {
+	if got := boundRoleIDs(ctxFor("tenant-a"), id); len(got) != 1 || got[0] != "role-a" {
 		t.Errorf("boundRoleIDs(tenant-a) = %v, want [role-a]", got)
+	}
+	if got := boundRoleIDs(ctxFor("tenant-b"), id); got != nil {
+		t.Errorf("boundRoleIDs(tenant-b) = %v, want nil: a foreign binding grants nothing", got)
+	}
+	system := &auth.Identity{Subject: "s", RoleBindings: []auth.RoleBinding{{RoleID: "role-s", TenantID: tenantid.System}}}
+	if got := boundRoleIDs(ctxFor(tenantid.System), system); len(got) != 1 || got[0] != "role-s" {
+		t.Errorf("boundRoleIDs(system) for an identity with an empty tenant = %v, want [role-s]", got)
 	}
 }
 
@@ -175,40 +202,24 @@ func (m *tenantAwareRoleService) GetRoleByName(_ context.Context, _, name string
 	return nil, &role.RoleNotFoundError{ID: name}
 }
 
-// TestRoleBinding_CrossTenantPermissionsAreUnionedNotCombined is the
-// regression test for the bug effectiveRoles' doc comment describes. Before
-// the fix, an identity's home-tenant Roles and a bound role from a DIFFERENT
-// tenant were combined into ONE role-id list and resolved in ONE tenant
-// context, which failed the ENTIRE call the moment the two tenants
-// disagreed — denying access a valid binding alone would have granted. The
-// fix resolves them as two separate calls, each in the tenant its role ids
-// actually belong to, and unions the resulting permission sets.
-func TestRoleBinding_CrossTenantPermissionsAreUnionedNotCombined(t *testing.T) {
+// TestRoleBinding_PermissionsUnionWithRoles asserts a bound role's permissions
+// are resolved alongside, and unioned with, the identity's own Roles: each
+// grants in the identity's tenant.
+func TestRoleBinding_PermissionsUnionWithRoles(t *testing.T) {
 	svc := &tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{
-		tenantid.System: {"home-role": {permission.KVGet}},
-		"acme":          {"acme-role": {permission.KVPut}},
+		"acme": {"home-role": {permission.KVGet}, "acme-role": {permission.KVPut}},
 	}}
 	authz := New(svc)
 	id := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenantid.System,
+		TenantID:     "acme",
 		Roles:        []string{"home-role"},
 		RoleBindings: []auth.RoleBinding{{RoleID: "acme-role", TenantID: "acme"}},
 	}
-
-	// The bound role's OWN permission (kv:put), resolved in "acme": if this
-	// call combined "home-role" (which exists only in the system tenant)
-	// into the same resolve, kvRoleStore-shaped behavior would fail the
-	// whole lookup and this would be denied even though the binding alone
-	// grants it.
-	if err := authz.Authorize(ctxFor("acme"), id, "kv", "put"); err != nil {
-		t.Fatalf("bound role in acme must grant kv:put there despite an unrelated home-tenant role: %v", err)
-	}
-	// The home role's own permission (kv:get) still resolves normally when
-	// targeting the system tenant, proving the split did not break ordinary
-	// same-tenant resolution.
-	if err := authz.Authorize(ctxFor(tenantid.System), id, "kv", "get"); err != nil {
-		t.Fatalf("home role must still grant kv:get in its own tenant: %v", err)
+	for _, action := range []string{"get", "put"} {
+		if err := authz.Authorize(ctxFor("acme"), id, "kv", action); err != nil {
+			t.Fatalf("Authorize(kv:%s) = %v, want allowed by the union", action, err)
+		}
 	}
 }
 
@@ -225,7 +236,7 @@ func TestAuthorize_SODenyList_AppliesToABoundGrant(t *testing.T) {
 	soRoleID := role.SystemRoleID("acme", role.RoleNameSO)
 	id := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenantid.System,
+		TenantID:     "acme",
 		RoleBindings: []auth.RoleBinding{{RoleID: soRoleID, TenantID: "acme"}},
 	}
 
@@ -238,11 +249,9 @@ func TestAuthorize_SODenyList_AppliesToABoundGrant(t *testing.T) {
 	}
 }
 
-// TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant is the regression test
-// for the strict-SoD finding: the Owner strip resolved ownerIDs only in the
-// identity's HOME tenant, so a bound Owner grant naming a DIFFERENT tenant
-// was never stripped at all under strict separation of duties.
-func TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant(t *testing.T) {
+// TestStripOwnerRole_StripsBoundOwnerGrant asserts a bound Owner grant is
+// stripped under strict separation of duties exactly as a held one is.
+func TestStripOwnerRole_StripsBoundOwnerGrant(t *testing.T) {
 	svc := &tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{
 		"acme": {},
 	}}
@@ -250,7 +259,7 @@ func TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant(t *testing.T) {
 	ownerID := role.SystemRoleID("acme", role.RoleNameOwner)
 	id := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenantid.System,
+		TenantID:     "acme",
 		RoleBindings: []auth.RoleBinding{{RoleID: ownerID, TenantID: "acme"}},
 	}
 
@@ -262,7 +271,7 @@ func TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant(t *testing.T) {
 	// "stripped, so nothing is granted" from "resolution blew up".
 	err := authz.Authorize(ctxFor("acme"), id, "kv", "get")
 	if err == nil {
-		t.Fatal("a bound cross-tenant Owner grant must be stripped under strict SoD, not honored")
+		t.Fatal("a bound Owner grant must be stripped under strict SoD, not honored")
 	}
 	var rnf *role.RoleNotFoundError
 	if errors.As(err, &rnf) {
@@ -282,7 +291,7 @@ func TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant(t *testing.T) {
 func TestAuthorize_BoundGrantFailureDeniesForUnknownRole(t *testing.T) {
 	bound := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenantid.System,
+		TenantID:     "acme",
 		RoleBindings: []auth.RoleBinding{{RoleID: "acme-custom", TenantID: "acme"}},
 	}
 	authz := New(&tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{"acme": {}}})

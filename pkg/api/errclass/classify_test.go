@@ -182,8 +182,6 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		err  error
 		want Class
 	}{
-		{"tenant-root record names a path", &seal.AbsoluteDataRootRecordError{TenantID: "t", DataRoot: "/d"}, FailedPrecondition},
-		{"recorded slot does not resolve here", &seal.TenantRootUnresolvedError{TenantID: "t", Pool: "p", Err: errors.New("x")}, FailedPrecondition},
 		{"removal outside this node's pool", &seal.DataRootOutsideLocalRootsError{DataRoot: "/d"}, Internal},
 		{"node is not a replica of the database", &placement.NotAReplicaError{TenantID: "t", Database: "d", NodeID: "n"}, Unavailable},
 		{"placement replica names a path", &placement.ReplicaDataRootError{TenantID: "t", Database: "d", NodeID: "n", DataRoot: "/d"}, FailedPrecondition},
@@ -303,6 +301,11 @@ func TestClassify_OnboardingRows(t *testing.T) {
 		{"conflicting admin credential", &bootstrap.ConflictingAdminCredentialError{}, InvalidArgument},
 		{"invalid trust anchors at provisioning", &bootstrap.InvalidTrustAnchorsError{Cause: errors.New("bad PEM")}, InvalidArgument},
 		{"missing provisioning seam", &bootstrap.MissingProvisioningSeamError{Seam: "cert signer"}, Unimplemented},
+		{"invitation invalid", &service.InvitationInvalidError{}, Unauthenticated},
+		{"invitation field", &service.InvitationFieldError{Field: "token", Reason: "is required"}, InvalidArgument},
+		{"invitation key in use", &service.InvitationKeyInUseError{}, AlreadyExists},
+		{"invitation account active", &service.InvitationAccountActiveError{Username: "bob"}, FailedPrecondition},
+		{"account not pending", &user.AccountNotPendingError{ID: 1, Lifecycle: user.LifecycleActive}, FailedPrecondition},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Classify(wrapped{tc.err}); got != tc.want {

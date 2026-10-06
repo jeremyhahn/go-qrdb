@@ -120,6 +120,18 @@ type StorageBarrier struct {
 	config    BarrierConfig
 	prefOrder []StrategyID
 
+	// shamirMu guards config.Shamir -- both the pointer itself (SetShamirConfig
+	// reassigns it) and the ShamirConfig it points to (redistribute's rekey
+	// path mutates Threshold/TotalShares on it in place). A tenant barrier
+	// reconfigured to Shamir after `tenant create` (ReconfigureTenantShamir)
+	// calls SetShamirConfig from the tenant service while a concurrent
+	// Status() poll, quorum TTL lookup, or InitializeShamir read config.Shamir
+	// with no lock of its own -- a genuine data race, not just a logical one,
+	// caught by `go test -race`. All access MUST go through
+	// shamirConfig/SetShamirConfig/updateShamirConfig below, never the field
+	// directly, matching the existing strategiesMu convention for strategies.
+	shamirMu sync.RWMutex
+
 	// strategiesMu guards strategies. The map is mutated after construction by
 	// ChangePassword, Rekey, updateSealedShamirParams, and
 	// AdoptMigratedRootKey, while Status/Unseal/bestStrategy/Strategies/
@@ -707,9 +719,9 @@ func (b *StorageBarrier) Status() *BarrierStatus {
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		status.ShamirThreshold = shamirStrategy.Threshold()
 		status.ShamirTotal = shamirStrategy.TotalShares()
-	} else if b.config.Shamir != nil && b.config.Shamir.Threshold >= 2 {
-		status.ShamirThreshold = b.config.Shamir.Threshold
-		status.ShamirTotal = b.config.Shamir.TotalShares
+	} else if cfg := b.shamirConfig(); cfg != nil && cfg.Threshold >= 2 {
+		status.ShamirThreshold = cfg.Threshold
+		status.ShamirTotal = cfg.TotalShares
 	}
 	return status
 }
@@ -768,7 +780,45 @@ func (b *StorageBarrier) strategyOrPersisted() StrategyID {
 // This allows the servicer layer to configure Shamir parameters from
 // transport request DTOs before calling InitializeShamir.
 func (b *StorageBarrier) SetShamirConfig(cfg *ShamirConfig) {
+	b.shamirMu.Lock()
+	defer b.shamirMu.Unlock()
 	b.config.Shamir = cfg
+}
+
+// shamirConfig returns the barrier's current Shamir configuration, or nil
+// if none is set, under shamirMu's read lock. Every reader of
+// config.Shamir -- Status, the quorum TTL lookup, InitializeShamir -- goes
+// through this instead of the field directly.
+func (b *StorageBarrier) shamirConfig() *ShamirConfig {
+	b.shamirMu.RLock()
+	defer b.shamirMu.RUnlock()
+	return b.config.Shamir
+}
+
+// updateShamirConfig replaces the barrier's Shamir configuration with a
+// NEW value carrying threshold/total and the existing QuorumTTL (any other
+// field included), rather than mutating the existing *ShamirConfig's
+// fields in place -- shamirConfig's callers dereference the pointer they
+// are handed AFTER releasing shamirMu's read lock, so a published
+// *ShamirConfig must never change after the fact; only the POINTER may be
+// swapped, under the write lock, for a race-free read of either. A no-op
+// when no Shamir configuration is set yet.
+func (b *StorageBarrier) updateShamirConfig(threshold, total int) {
+	b.shamirMu.Lock()
+	defer b.shamirMu.Unlock()
+	if b.config.Shamir != nil {
+		b.config.Shamir = &ShamirConfig{Threshold: threshold, TotalShares: total, QuorumTTL: b.config.Shamir.QuorumTTL}
+	}
+}
+
+// SetShamirStrategy installs (or replaces) the registered ShamirStrategy on
+// the barrier. Paired with SetShamirConfig, this lets the servicer layer
+// honor an explicit --strategy shamir choice on a barrier shell that was
+// pre-registered with a different strategy (e.g. by tenant create's default
+// self-managed registration), exactly like InitializeWithStrategy already
+// does for passphrase/none -- see BarrierRegistry.ReconfigureTenantShamir.
+func (b *StorageBarrier) SetShamirStrategy(s *ShamirStrategy) {
+	b.setStrategy(StrategyShamir, s)
 }
 
 // ActiveStrategy returns the strategy ID that is currently protecting

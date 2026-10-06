@@ -217,6 +217,7 @@ type mockAdminService struct {
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
 	addMemberFn       func(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
 	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
+	promoteMemberFn   func(ctx context.Context, shardID, replicaID uint64) error
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
 	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
@@ -258,6 +259,14 @@ func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uin
 func (m *mockAdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
 	if m.removeMemberFn != nil {
 		return m.removeMemberFn(ctx, shardID, replicaID)
+	}
+	return nil
+}
+
+// PromoteMember implements service.MemberPromoter.
+func (m *mockAdminService) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if m.promoteMemberFn != nil {
+		return m.promoteMemberFn(ctx, shardID, replicaID)
 	}
 	return nil
 }

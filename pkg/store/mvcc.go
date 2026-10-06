@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
@@ -58,6 +59,7 @@ type MVCCStateMachine struct {
 	// Pre-Open configuration stored until Open() is called.
 	hub              *watch.Hub
 	lessor           *lease.Lessor
+	auditChain       *audit.Chain
 	enableTimeSeries bool
 
 	// noSync disables fsync on PebbleDB writes. When true, batch.Commit()
@@ -118,6 +120,26 @@ func (s *MVCCStateMachine) Lessor() *lease.Lessor {
 	return s.lessor
 }
 
+// SetAuditChain attaches a replicated audit Chain to the state machine. When
+// set, protocol.OpAuditAppend commands are processed. Must be called before
+// the state machine is opened.
+func (s *MVCCStateMachine) SetAuditChain(c *audit.Chain) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditChain = c
+}
+
+// AuditChain returns the attached replicated audit Chain. Returns nil if none
+// is configured.
+func (s *MVCCStateMachine) AuditChain() *audit.Chain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.engine != nil {
+		return s.engine.AuditChain()
+	}
+	return s.auditChain
+}
+
 // SetTimeSeries attaches a time-series storage engine to the state machine.
 // Must be called before the state machine is opened.
 func (s *MVCCStateMachine) SetTimeSeries(ts *timeseries.Storage) {
@@ -167,6 +189,9 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	}
 	if s.lessor != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCLessor(s.lessor))
+	}
+	if s.auditChain != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCAuditChain(s.auditChain))
 	}
 	engineOpts = append(engineOpts, engine.WithMVCCPebbleDB(db))
 
@@ -235,7 +260,7 @@ func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results
 	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
-	notifications, err := s.engine.UpdateEntries(batch, entries, results)
+	notifications, vectorEffects, err := s.engine.UpdateEntries(batch, entries, results)
 	if err != nil {
 		return err
 	}
@@ -267,8 +292,10 @@ func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results
 		return &WriteError{Err: err}
 	}
 
-	// Deliver watch notifications after the batch is committed.
+	// Deliver watch notifications and apply vector index effects after the
+	// batch is committed.
 	s.engine.DeliverNotifications(notifications)
+	s.engine.ApplyVectorIndexEffects(vectorEffects)
 
 	return nil
 }
@@ -452,6 +479,9 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 	}
 	if s.lessor != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCLessor(s.lessor))
+	}
+	if s.auditChain != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCAuditChain(s.auditChain))
 	}
 	engineOpts = append(engineOpts, engine.WithMVCCPebbleDB(s.db))
 	if s.engine != nil && s.engine.TimeSeries() != nil {

@@ -49,7 +49,10 @@ var grpcPermCache sync.Map // string -> grpcPermEntry
 // the method does not exist or carries no permission option; callers treat
 // that as default-deny. The sentinel value "identity:gated" converts to
 // permission.IdentityGated, preserving the handler-layer authorization
-// short-circuit in authorize().
+// short-circuit in authorize(). The sentinel value "identity:public"
+// converts to permission.Public, documenting a method the interceptors
+// already bypass entirely via RegisterPublicGRPCMethods before this lookup
+// ever runs.
 func LookupGRPCFromDescriptor(fullMethod string) (permission.Permission, bool) {
 	if v, ok := grpcPermCache.Load(fullMethod); ok {
 		e := v.(grpcPermEntry) //nolint:errcheck // type assertion on a value this container only ever holds

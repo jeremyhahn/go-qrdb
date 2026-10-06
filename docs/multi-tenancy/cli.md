@@ -1,6 +1,7 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
 quotas and entitlements, and drive their dedicated barriers. All verbs accept
@@ -241,14 +242,32 @@ onboarded admin cannot have its barrier initialized at all.
 | `--passphrase` | string | required for the passphrase strategy; ignored by none/hardware |
 | `--threshold` | int | M, shamir only (`0` = default) |
 | `--shares` | int | N, shamir only (`0` = default) |
+| `--officers` | string, repeatable | Security Officer share holder: `username=path/to/csr.pem` (shamir only) |
+| `--custodians` | string, repeatable | key custodian share holder: `username=path/to/csr.pem` (shamir only) |
+| `--policy` | string | factor policy for `--officers`/`--custodians`: `designated` (default) or `any-enrolled` |
 
 **Share material is never returned here.** A Shamir tenant barrier is split
 to the tenant's enrolled share holders (`--shares` must equal their number),
 and each claims their own envelope.
 
+A dedicated tenant's own IAM is encrypted behind the very barrier its share
+holders exist to help initialize, so standalone `tenant barrier-officer
+register`/`list` (below) cannot reach it beforehand. `--officers`/
+`--custodians` name the initial roster **inline**, mirroring `qrdb init`'s
+own inline roster for the system barrier: every officer is validated as one
+batch, then registered atomically with initialization — a later officer
+failing validation refuses the whole call before any of them is registered,
+and a failure partway through registration (or in the barrier's own key
+split) rolls back every officer already registered. Their combined count
+must equal `--shares`. Once initialized, the tenant's IAM is readable, so
+later holder changes go through ordinary RBAC via `tenant barrier-officer
+register`/`list`, exactly like the system barrier works post-init.
+`--officers`/`--custodians` are refused on any strategy but `shamir`.
+
 ```bash
 qrdb tenant barrier-init --id secure-co --strategy passphrase --passphrase "$PP"
-qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 3 --shares 5
+qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 2 --shares 2 \
+     --officers alice=alice.csr --custodians bob=bob.csr
 ```
 
 ### `qrdb tenant barrier-status` / `barrier-seal`
@@ -299,6 +318,30 @@ one the tenant's Admin issued later with `qrdb ca issue` — which always issues
 into the caller's own tenant. Trust anchors, for a tenant whose users bring
 certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 [../trust-anchors/cli.md](../trust-anchors/cli.md).
+
+## Strict isolation — RULED
+
+> **Status: RULED — not implemented** (owner rulings 2026-10-01 and 2026-10-02).
+> Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
+>
+> **Correction (2026-10-05):** `tenant create --admin-username`/`--admin-csr`
+> and `barrier-init` restricted to the bound admin already shipped — see the
+> architecture correction linked above and the `tenant create` row below.
+
+| Command | What it does |
+|---|---|
+| `qrdb cluster isolation-policy` | Prints the cluster floor (`strict` or `operator-access`). |
+| `qrdb cluster isolation-policy set strict` | Tightens the floor. Loosening is refused. |
+| `qrdb tenant create --id acme ... --admin-username alice --admin-csr ./alice.csr --isolation-policy strict` | `--admin-username`/`--admin-csr` are already required today (see [tenant create](#qrdb-tenant-create) above); `--isolation-policy` is this ruling's only new flag. Once implemented, prints the serving set in addition to today's admin SPKI thumbprint and state. |
+| `qrdb tenant set-isolation-policy acme strict` | The tenant's own Admin opts the tenant into strict. It cannot be undone. |
+| `qrdb tenant barrier-init --id acme --admin-key ./alice.key ...` | Proves possession of the first admin's key, then initializes the barrier on **every** serving node and reports per node. |
+| `qrdb tenant barrier-unseal --id acme ...` / `barrier-unseal-share` | Sends the credential, or this holder's share, to every serving node and reports per node. `--node` limits it to one node, for example one that has just joined. |
+| `qrdb tenant barrier-status --id acme` | One line per serving node: sealed, unsealed or pending. Also shows the bound admin thumbprint, and each shard's WAL, which is always `tenant` for a strict tenant. |
+| `qrdb users get --tenant acme <id>` (and the other identity verbs) | Operator verbs on a named tenant. They work only where that tenant's effective policy is `operator-access`. Without `--tenant`, identity verbs act in the caller's own tenant. |
+| `qrdb tenant backup create --id acme` | A tenant's own backup of its groups. |
+
+The CLI sets the SNI to the tenant it is configured for, so it works through any
+node.
 
 ## Parity
 

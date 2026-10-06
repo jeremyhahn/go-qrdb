@@ -1,6 +1,6 @@
 # Identity and RBAC — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Two command groups: `qrdb users` and `qrdb roles`. Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
@@ -37,6 +37,78 @@ qrdb users create --username svc-backup --without-email-login-key --tenant-id ac
 Creating a user with no email and no `--without-email-login-key` is refused. The
 flag exists so an identity that cannot be resolved by its login key is always
 something somebody asked for.
+
+### `qrdb users invite`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--username` | string | the account to invite |
+| `--email` | string | canonical login key for a new account |
+| `--name` | string | display name for a new account (presentation only) |
+| `--roles` | string | comma-separated role IDs for a new account |
+| `--key-pin-fingerprint` | string | pin the invitation to one key -- the base64url SHA-256 SPKI thumbprint of a CSR the invited user sends out of band. Only that key can redeem it |
+
+Creates a pending account in your own tenant -- or, given only `--username`,
+re-invites one still pending -- and returns a single-use enrolment token
+**exactly once**. Deliver it to the invited user out of band; they redeem it
+themselves with `qrdb enroll`. You never hold a credential for their
+account.
+
+```bash
+qrdb users invite --username alice --email alice@acme.com --roles "$OPERATOR_ROLE_ID"
+# => prints Token: <one-time-token> and the account's ID and TenantID
+
+# Re-invite the same still-pending account with a fresh token:
+qrdb users invite --username alice
+```
+
+An invitation expires after `auth.invitation_ttl` (24 hours by default); there
+is no per-invite TTL override -- it is a server-wide posture, not a per-call
+choice. `--roles` is validated the same `roles:assign` gate `users create`
+applies, and the account is judged by the same target guard `ca issue` is: no
+Security Officer target, and an Owner target only when you hold Owner
+yourself.
+
+Served on `rest`, `quic` and `mcp` today; `grpc` and `unix` refuse it with a
+typed "not carried on this transport" error (see
+[api.md](api.md#capability-matrix--invitation-self-enrolment)).
+
+### `qrdb enroll`
+
+The redeemer's half of `qrdb users invite`. It is a **top-level** command, not
+under `users` or `ca`: unlike every other command, it runs with **no
+credential at all** -- `--cert-file`/`--key-file` are not just optional, they
+are not even read.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--tenant-id` | string | the tenant the invitation was issued in |
+| `--token` | string | the one-time invitation token |
+| `--username` | string | common name for a freshly generated key's CSR (cosmetic only -- your account comes from the invitation, never from the CSR) |
+| `--csr` | string | submit an existing CSR instead of generating a key here |
+| `--cert` | string | bring your own certificate over the CSR's key, leaf first, instead of letting the tenant's CA sign it |
+| `--chain` | string | optional PEM intermediates for `--cert` |
+| `--out` | string | output directory for `cert.pem` (and `key.pem` when the key is generated here) |
+
+```bash
+# Generate a key and CSR here; the server never sees the private key.
+qrdb enroll --server https://db.example.com --tenant-id acme \
+  --token "$TOKEN" --username alice --out ./alice
+
+# Submit a CSR made elsewhere instead:
+qrdb enroll --tenant-id acme --token "$TOKEN" --csr ./alice.csr
+```
+
+`--server`/`--transport` select where to redeem, the same global flags every
+other command uses, but this is the one command that dials without
+connecting first: on `mcp`, redemption is served by a **separate** public
+server (`/mcp/enroll`) because the main endpoint answers nothing -- not even
+`tools/list` -- to an unauthenticated caller. Served on `rest`, `quic` and
+`mcp`; refused with a typed error on `grpc` and `unix`.
+
+A token is single-use: a second `qrdb enroll` with the same token gets the
+same opaque refusal an unknown or expired token gets, by design (see
+[user.md](user.md#inviting-somebody-instead)).
 
 ### `qrdb users get <id>` / `delete <id>` / `enable <id>` / `disable <id>`
 
@@ -100,7 +172,7 @@ qrdb users list --tenant-id acme --page-size 50 --output json
 | `--email` | string | new canonical login key; uniqueness is re-validated within the tenant. Left unchanged when empty |
 | `--name` | string | new display name. Left unchanged when empty |
 | `--roles` | string | comma-separated role IDs to assign |
-| `--role-binding` | string, repeatable | tenant-scoped role binding to set, as `role_id:tenant_id`. Replaces the current set. Left unchanged when absent |
+| `--role-binding` | string, repeatable | role binding to set, as `role_id:tenant_id`; `tenant_id` must be the user's own tenant, any other is refused. Replaces the current set. Left unchanged when absent |
 | `--clear-role-bindings` | bool | remove every tenant-scoped role binding |
 | `--attribute` | string, repeatable | ABAC attribute to set, as `key=value`. Replaces the current set. Left unchanged when absent |
 | `--clear-attributes` | bool | remove every ABAC attribute |

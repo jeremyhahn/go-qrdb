@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,8 +29,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	pkgmetrics "github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // isolatedRegistry installs a fresh Prometheus registry for the duration of

@@ -105,12 +105,15 @@ func New(opts ...transport.Option) (*Transport, error) {
 	return t, nil
 }
 
-// Connect establishes the HTTP client with TLS configuration. For REST
-// transports, this initializes the HTTP client and verifies connectivity
-// with a health check.
-func (t *Transport) Connect(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
+// ensureClient builds the HTTP client and TLS configuration if one is not
+// already in place. Connect calls it before probing reachability;
+// RedeemInvitation calls it directly, with no reachability probe, since it
+// is the one call an unconnected client may make (see
+// transport.InvitationClient) and a sealed or not-yet-reachable server still
+// answers it the same opaque way as a bad token.
+func (t *Transport) ensureClient() error {
+	if t.client != nil {
+		return nil
 	}
 
 	httpTransport := &http.Transport{
@@ -139,6 +142,20 @@ func (t *Transport) Connect(ctx context.Context) error {
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,
+	}
+	return nil
+}
+
+// Connect establishes the HTTP client with TLS configuration. For REST
+// transports, this initializes the HTTP client and verifies connectivity
+// with a health check.
+func (t *Transport) Connect(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	if err := t.ensureClient(); err != nil {
+		return err
 	}
 
 	// Verify connectivity with a reachability probe. We accept the server as
@@ -579,6 +596,37 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	return t.postJSON(ctx, "RemoveMember", "/membership/remove", payload)
 }
 
+// PromoteMember promotes a committed observer of the specified shard to a
+// voter. Maps to POST /membership/promote. Implements
+// transport.MemberPromoter.
+func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.PromoteMemberRequest{
+		ShardID:   shardID,
+		ReplicaID: replicaID,
+	}
+
+	return t.postJSON(ctx, "PromoteMember", "/membership/promote", payload)
+}
+
+// RetireJoinIdentity permanently refuses any future admission for a node
+// identity. Maps to POST /v1/cluster/join-identities/retire.
+func (t *Transport) RetireJoinIdentity(ctx context.Context, nodeID, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.RetireJoinIdentityRequest{
+		NodeID: nodeID,
+		Reason: reason,
+	}
+
+	return t.postJSON(ctx, "RetireJoinIdentity", "/v1/cluster/join-identities/retire", payload)
+}
+
 // RequestSnapshot triggers an asynchronous snapshot for the specified
 // shard. Maps to POST /snapshot.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
@@ -608,6 +656,96 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	}
 	return &resp, nil
 }
+
+// AddObserverMember adds a new replica to the specified shard as a
+// non-voting observer rather than a voter. Maps to
+// POST /membership/add-observer. Implements transport.ObserverMemberAdder.
+func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.AddObserverMemberRequest{
+		ShardID:   shardID,
+		ReplicaID: replicaID,
+		Address:   raftAddr,
+		Identity:  identity,
+	}
+
+	return t.postJSON(ctx, "AddObserverMember", "/membership/add-observer", payload)
+}
+
+var _ transport.ObserverMemberAdder = (*Transport)(nil)
+
+// restPendingJoinRequest is the wire shape GET /v1/cluster/join-requests
+// returns one entry as.
+type restPendingJoinRequest struct {
+	ID          string    `json:"id"`
+	NodeURI     string    `json:"node_uri,omitempty"`
+	ReplicaID   uint64    `json:"replica_id,omitempty"`
+	Features    []string  `json:"features,omitempty"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// restListPendingJoinRequestsResponse is the wire shape of GET
+// /v1/cluster/join-requests.
+type restListPendingJoinRequestsResponse struct {
+	Requests []restPendingJoinRequest `json:"requests"`
+}
+
+// ListPendingJoinRequests lists tokenless member-side CSR join requests
+// awaiting an operator's decision. Maps to GET /v1/cluster/join-requests.
+// Implements transport.JoinRequestReviewer.
+func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp restListPendingJoinRequestsResponse
+	if err := t.getJSONDecode(ctx, "ListPendingJoinRequests", "/v1/cluster/join-requests", &resp); err != nil {
+		return nil, err
+	}
+
+	out := make([]*transport.PendingJoinRequest, 0, len(resp.Requests))
+	for _, r := range resp.Requests {
+		out = append(out, &transport.PendingJoinRequest{
+			ID:          r.ID,
+			NodeURI:     r.NodeURI,
+			ReplicaID:   r.ReplicaID,
+			Features:    r.Features,
+			SubmittedAt: r.SubmittedAt,
+			ExpiresAt:   r.ExpiresAt,
+		})
+	}
+	return out, nil
+}
+
+// ApproveJoinRequest binds id's queued CSR to an operator-chosen node
+// identity. Maps to POST /v1/cluster/join-requests/approve. Implements
+// transport.JoinRequestReviewer.
+func (t *Transport) ApproveJoinRequest(ctx context.Context, id, nodeID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.ApproveJoinRequestRequest{ID: id, NodeID: nodeID}
+	return t.postJSON(ctx, "ApproveJoinRequest", "/v1/cluster/join-requests/approve", payload)
+}
+
+// RejectJoinRequest records a terminal refusal of id's queued CSR. Maps to
+// POST /v1/cluster/join-requests/reject. Implements
+// transport.JoinRequestReviewer.
+func (t *Transport) RejectJoinRequest(ctx context.Context, id, reason string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.RejectJoinRequestRequest{ID: id, Reason: reason}
+	return t.postJSON(ctx, "RejectJoinRequest", "/v1/cluster/join-requests/reject", payload)
+}
+
+var _ transport.JoinRequestReviewer = (*Transport)(nil)
 
 // Capabilities returns the compile-time feature set of the QRDB node.
 // Maps to GET /capabilities.

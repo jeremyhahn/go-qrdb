@@ -180,6 +180,12 @@ func WithRegisterCertEnrollment(svc service.CertEnrollmentServicer) RegisterOpti
 	return func(s *qrdbServiceServer) { s.certEnroll = svc }
 }
 
+// WithRegisterInvitationService attaches the invitation self-enrolment
+// service behind InviteUser and the PUBLIC RedeemInvitation.
+func WithRegisterInvitationService(svc service.InvitationServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.invitationSvc = svc }
+}
+
 // WithRegisterTenantOnboarding attaches the tenant-create service for the
 // registered gRPC service.
 func WithRegisterTenantOnboarding(svc service.TenantOnboardingServicer) RegisterOption {

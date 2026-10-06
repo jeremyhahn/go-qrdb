@@ -104,6 +104,15 @@ func TestClient_Cluster_AddRemoveReplica(t *testing.T) {
 	}
 }
 
+func TestClient_Cluster_PromoteReplica(t *testing.T) {
+	client := newClusterClient(t)
+	defer client.Close()
+
+	if err := client.Cluster().PromoteReplica(context.Background(), 0, 4); err != nil {
+		t.Fatalf("PromoteReplica: %v", err)
+	}
+}
+
 func TestClient_Cluster_WatchMembership_InitialSnapshot(t *testing.T) {
 	client := newClusterClient(t)
 	defer client.Close()

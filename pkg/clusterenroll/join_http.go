@@ -52,8 +52,19 @@ type JoinHTTPClientOptions struct {
 	// anchor fetch.
 	SPKIPin string
 
-	// Token is the join-admission secret. Required.
+	// Token is the join-admission secret. Empty submits the CSR into the
+	// signing member's replicated approval queue instead (see JoinCSRHTTP).
 	Token string
+
+	// ReplicaID is this node's own Raft replica ID, carried so the signing
+	// member can publish a pre-membership feature advertisement for it (see
+	// FeatureAdvertiser). Zero skips advertising.
+	ReplicaID uint64
+
+	// Features names the cluster features this node's binary implements
+	// (featuregate.SupportedNames()). The signing member filters this to
+	// names it knows before advertising anything.
+	Features []string
 
 	// Timeout bounds the request. Zero uses DefaultTimeout.
 	Timeout time.Duration
@@ -74,17 +85,13 @@ func (o *JoinHTTPClientOptions) timeout() time.Duration {
 // the anchor fetch establishes it for this method (SPKI pin, or the system
 // trust store for Direct) -- never skipped.
 func JoinCSRHTTP(ctx context.Context, opts *JoinHTTPClientOptions, csrDER []byte, nodeURI string) ([]byte, error) {
-	if opts.Token == "" {
-		return nil, &MissingJoinTokenError{}
-	}
-
 	client, err := buildJoinHTTPClient(opts)
 	if err != nil {
 		return nil, err
 	}
 	defer client.CloseIdleConnections()
 
-	req := JoinRequest{Token: opts.Token, CSRDER: csrDER, NodeURI: nodeURI}
+	req := JoinRequest{Token: opts.Token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: opts.ReplicaID, Features: opts.Features}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, &FetchError{Method: "join-http", Err: err}
@@ -113,6 +120,9 @@ func JoinCSRHTTP(ctx context.Context, opts *JoinHTTPClientOptions, csrDER []byte
 	}
 	if jr.Error != "" {
 		return nil, &JoinRefusedError{Reason: jr.Error}
+	}
+	if jr.Pending {
+		return nil, &JoinPendingError{RequestID: jr.RequestID}
 	}
 	return jr.CertPEM, nil
 }

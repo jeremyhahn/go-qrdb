@@ -74,6 +74,10 @@ var targetResolvedOperations = map[string]struct{}{
 	"AddTrustAnchors":              {},
 	"ListTrustAnchors":             {},
 	"RemoveTrustAnchor":            {},
+	// InviteUser authorizes users:invite against the request's tenant via
+	// authorizeTenant (AuthMiddleware.AuthorizeTenant), the same generic call
+	// authorizeCertTenant makes for the certificate verbs above.
+	"InviteUser": {},
 }
 
 // identityGatedOperations are the per-tenant, per-database, and node-level
@@ -129,6 +133,14 @@ var identityGatedOperations = map[string]struct{}{
 // gate -- matching pkg/api/sealedwindow's own documented assumption for
 // the embedded transport ("it is always the regular, authenticated side").
 // Only the verbs with no OTHER path to succeed while sealed are public.
+//
+// RedeemInvitation joins this set for a different reason than the rest: it
+// is not a sealed-window bootstrap verb (it still runs t.gate and refuses
+// with *BarrierSealedError while sealed, exactly like every other
+// operation), but it carries NO identity and NO permission check at all --
+// the invitation token is the only authority, matching REST's public
+// POST /invitations/redeem route, gRPC/unix's RegisterPublicGRPCMethods
+// entry, and QUIC's RegisterPublic frame for the same verb.
 var publicOperations = map[string]struct{}{
 	"Health":                  {},
 	"BarrierInitialize":       {},
@@ -138,6 +150,7 @@ var publicOperations = map[string]struct{}{
 	"RecoveryOfficerRegister": {},
 	"CeremonyInitialize":      {},
 	"CeremonySignCSR":         {},
+	"RedeemInvitation":        {},
 }
 
 // lifecycleOperations are request-shaped methods that are not requests:

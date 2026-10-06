@@ -40,6 +40,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"net"
 	"net/url"
@@ -55,6 +56,7 @@ import (
 	"github.com/jeremyhahn/go-truststrap/pkg/truststrap"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
@@ -70,6 +72,14 @@ const (
 	// NoiseKeyFile is the filename used to persist the Noise static key in
 	// the data directory.
 	NoiseKeyFile = "noise-key.hex"
+
+	// DefaultJoinApprovalPollInterval is used when
+	// BootstrapOptions.JoinApprovalPollInterval is zero: how often Join
+	// re-presents a tokenless CSR while it sits in the signing member's
+	// approval queue. Infrequent enough not to look like the brute-force
+	// traffic AllowJoinAttempt rate-limits, frequent enough that an
+	// operator's approval is picked up promptly.
+	DefaultJoinApprovalPollInterval = 15 * time.Second
 )
 
 // readFileFn is os.ReadFile, indirected so a test can inject a read failure
@@ -90,6 +100,13 @@ var newNoiseServer = noiseboot.NewServer
 type Options struct {
 	// RaftAddress is the Raft node address, used as the SPIFFE node identity.
 	RaftAddress string
+
+	// ReplicaID is this node's own Raft replica ID. Join sends it, with this
+	// binary's claimed features (featuregate.SupportedNames), so the signing
+	// member can publish a pre-membership feature advertisement for it --
+	// see JoinRequest.ReplicaID. Zero means "unknown"; the signing member
+	// then skips advertising rather than publish an unkeyed record.
+	ReplicaID uint64
 
 	// TrustDomain is the cluster-wide SPIFFE trust domain
 	// (e.g., "qrdb.cluster"). It is encoded into auto-generated certificates
@@ -181,21 +198,35 @@ type BootstrapOptions struct {
 	JoinHTTPURL string
 
 	// JoinToken is the join-admission secret, shared by every join
-	// transport. Required for member-side join; there is no default.
+	// transport. Empty means this node submits its CSR into the signing
+	// member's replicated approval queue instead of presenting a token --
+	// see JoinConfigured and JoinRequest's own doc comment -- a deliberate
+	// configuration, not a missing one; there is no default secret.
 	JoinToken string
+
+	// JoinApprovalPollInterval bounds how often Join retries a tokenless
+	// CSR submission while it sits in the approval queue (JoinToken == "").
+	// Zero uses DefaultJoinApprovalPollInterval. Ignored when JoinToken is
+	// set, since a token presentation is decided in one round trip.
+	JoinApprovalPollInterval time.Duration
 }
 
 // JoinConfigured reports whether member-side CSR join is configured over
 // EITHER transport: Noise (an admitted member's join listener address and
 // public key) or SPKI/Direct (an admitted member's admin HTTPS URL, trusted
-// the same way the matching anchor-fetch method already is) -- plus the
-// admission token in both cases. Unlike HasFlags (which selects path 4 at
-// all), this is checked INSIDE Join to decide whether the join can proceed
-// with a signed leaf or must refuse -- a node joining via explicit TLS
-// files, or one whose operator has not yet stood up a join route anywhere,
-// takes the same path 4 selection without this being set.
+// the same way the matching anchor-fetch method already is). Unlike
+// HasFlags (which selects path 4 at all), this is checked INSIDE Join to
+// decide whether the join can proceed with a signed leaf or must refuse --
+// a node joining via explicit TLS files, or one whose operator has not yet
+// stood up a join route anywhere, takes the same path 4 selection without
+// this being set.
+//
+// JoinToken is deliberately NOT required here: an empty token is a valid
+// configuration, meaning "submit through the replicated approval queue"
+// rather than "present an admission secret" -- see JoinRequest's own doc
+// comment and docs/clustering/architecture.md's "Approval queue" section.
 func (b BootstrapOptions) JoinConfigured() bool {
-	return b.JoinToken != "" && (b.joinNoiseConfigured() || b.JoinHTTPURL != "")
+	return b.joinNoiseConfigured() || b.JoinHTTPURL != ""
 }
 
 // joinNoiseConfigured reports whether the Noise_NK join transport is
@@ -673,34 +704,9 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 		return nil, err
 	}
 
-	var certPEM []byte
-	if opts.Bootstrap.joinNoiseConfigured() {
-		joinKey, err := hex.DecodeString(opts.Bootstrap.JoinKey)
-		if err != nil {
-			return nil, &JoinKeyDecodeError{Err: err}
-		}
-		logger.Info("joining existing cluster via member-side CSR (Noise_NK)",
-			"join_addr", opts.Bootstrap.JoinAddr)
-		certPEM, err = JoinCSR(ctx, &JoinClientOptions{
-			ServerAddr: opts.Bootstrap.JoinAddr,
-			ServerKey:  joinKey,
-			Token:      opts.Bootstrap.JoinToken,
-		}, csrDER, nodeURI)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		logger.Info("joining existing cluster via member-side CSR (SPKI/Direct)",
-			"join_url", opts.Bootstrap.JoinHTTPURL)
-		var err error
-		certPEM, err = JoinCSRHTTP(ctx, &JoinHTTPClientOptions{
-			ServerURL: opts.Bootstrap.JoinHTTPURL,
-			SPKIPin:   opts.Bootstrap.SPKIPin,
-			Token:     opts.Bootstrap.JoinToken,
-		}, csrDER, nodeURI)
-		if err != nil {
-			return nil, err
-		}
+	certPEM, err := joinCSRWithApprovalRetry(ctx, opts, csrDER, nodeURI, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := verifyJoinedLeaf(anchorPEM, certPEM, &nodeKey.PublicKey); err != nil {
@@ -729,6 +735,73 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 	}
 	logger.Info("joined existing cluster", "dir", opts.DataDir)
 	return mat, nil
+}
+
+// joinApprovalPollInterval returns the configured poll interval or
+// DefaultJoinApprovalPollInterval.
+func (b BootstrapOptions) joinApprovalPollInterval() time.Duration {
+	if b.JoinApprovalPollInterval <= 0 {
+		return DefaultJoinApprovalPollInterval
+	}
+	return b.JoinApprovalPollInterval
+}
+
+// joinCSRWithApprovalRetry submits csrDER to the configured join transport
+// and returns the signed leaf. A token presentation (opts.Bootstrap.
+// JoinToken != "") is decided in one round trip, exactly as before. A
+// tokenless submission (the approval-queue path) may come back as
+// *JoinPendingError instead -- not a failure, the signing member's report
+// that the CSR is queued -- in which case this re-presents the IDENTICAL
+// CSR after joinApprovalPollInterval, indefinitely, until the operator
+// approves it (a signed leaf), rejects it (a terminal *JoinRefusedError),
+// or ctx is done. A node blocked here is doing exactly what an operator
+// configuring a tokenless join chose: wait for a human decision rather than
+// crash-loop the whole daemon start every few seconds.
+func joinCSRWithApprovalRetry(ctx context.Context, opts *Options, csrDER []byte, nodeURI string, logger *slog.Logger) ([]byte, error) {
+	for {
+		var certPEM []byte
+		var err error
+		if opts.Bootstrap.joinNoiseConfigured() {
+			joinKey, kerr := hex.DecodeString(opts.Bootstrap.JoinKey)
+			if kerr != nil {
+				return nil, &JoinKeyDecodeError{Err: kerr}
+			}
+			logger.Info("joining existing cluster via member-side CSR (Noise_NK)",
+				"join_addr", opts.Bootstrap.JoinAddr)
+			certPEM, err = JoinCSR(ctx, &JoinClientOptions{
+				ServerAddr: opts.Bootstrap.JoinAddr,
+				ServerKey:  joinKey,
+				Token:      opts.Bootstrap.JoinToken,
+				ReplicaID:  opts.ReplicaID,
+				Features:   featuregate.SupportedNames(),
+			}, csrDER, nodeURI)
+		} else {
+			logger.Info("joining existing cluster via member-side CSR (SPKI/Direct)",
+				"join_url", opts.Bootstrap.JoinHTTPURL)
+			certPEM, err = JoinCSRHTTP(ctx, &JoinHTTPClientOptions{
+				ServerURL: opts.Bootstrap.JoinHTTPURL,
+				SPKIPin:   opts.Bootstrap.SPKIPin,
+				Token:     opts.Bootstrap.JoinToken,
+				ReplicaID: opts.ReplicaID,
+				Features:  featuregate.SupportedNames(),
+			}, csrDER, nodeURI)
+		}
+		if err == nil {
+			return certPEM, nil
+		}
+
+		var pending *JoinPendingError
+		if !errors.As(err, &pending) {
+			return nil, err
+		}
+		logger.Info("member-side CSR join: awaiting operator approval",
+			"request_id", pending.RequestID, "retry_in", opts.Bootstrap.joinApprovalPollInterval())
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(opts.Bootstrap.joinApprovalPollInterval()):
+		}
+	}
 }
 
 // verifyJoinedLeaf proves the leaf a signing member returned is the one

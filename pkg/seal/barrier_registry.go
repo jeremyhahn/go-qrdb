@@ -1083,6 +1083,36 @@ func (r *BarrierRegistry) InitializeTenantShamir(ctx context.Context, tenantID s
 	return tb.InitializeShamir(ctx, policy)
 }
 
+// ReconfigureTenantShamir installs the Shamir strategy and threshold/total
+// configuration on an ALREADY-REGISTERED tenant barrier shell, honoring an
+// explicit --strategy shamir choice over whatever strategy the shell was
+// pre-registered with (e.g. a dedicated-isolation tenant's self-managed
+// shell, registered with the node's default strategy at `tenant create`
+// time, long before its barrier's own strategy is chosen at `tenant
+// barrier-init`). This mirrors the parity fix InitializeTenantWithStrategy
+// already applies for passphrase/none (bypassing the shell's own
+// preference) -- Shamir needs the same treatment because InitializeShamir
+// reads its threshold/total/strategy from the barrier's OWN configuration
+// rather than taking them as call parameters.
+//
+// The tenant must already be registered (via any Register* constructor) and
+// must not yet be initialized; threshold/total are validated by
+// NewShamirStrategy exactly as RegisterTenantPooledShamir validates them for
+// a fresh registration.
+func (r *BarrierRegistry) ReconfigureTenantShamir(tenantID string, threshold, total int, ttl time.Duration) error {
+	tb, err := r.GetTenant(tenantID)
+	if err != nil {
+		return err
+	}
+	strategy, err := NewShamirStrategy(threshold, total)
+	if err != nil {
+		return err
+	}
+	tb.Barrier().SetShamirStrategy(strategy)
+	tb.Barrier().SetShamirConfig(&ShamirConfig{Threshold: threshold, TotalShares: total, QuorumTTL: ttl})
+	return nil
+}
+
 // tenantBarrierConfig returns the canonical BarrierConfig for a per-tenant
 // barrier. It is the single source of truth for the per-tenant root-key
 // path so every registration variant derives it identically.

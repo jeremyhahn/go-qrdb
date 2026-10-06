@@ -143,6 +143,11 @@ type AdminClient interface {
 	// RemoveMember removes a replica from the specified shard.
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error
 
+	// PromoteMember promotes a committed observer of shardID to a voter,
+	// keeping the address and identity the shard already committed for it;
+	// nothing restarts. See pkg/service.AdminServicer.PromoteMember.
+	PromoteMember(ctx context.Context, shardID, replicaID uint64) error
+
 	// RequestSnapshot triggers an asynchronous snapshot for the
 	// specified shard.
 	RequestSnapshot(ctx context.Context, shardID uint64) error
@@ -180,6 +185,17 @@ type AdminClient interface {
 	// policy; nil turns it off. It returns the policy now in force, nil when
 	// off. It requires admin:node_compaction (system tenant only).
 	SetNodeCompaction(ctx context.Context, policy *DatabaseCompactionConfig) (*DatabaseCompactionConfig, error)
+
+	// RetireJoinIdentity permanently refuses any future admission for a
+	// node identity -- a fresh join-token mint, or a renewal of one whose
+	// admission has lapsed -- after an admin decides it must never
+	// (re-)join: a member removed from the cluster, or an identity whose
+	// issued certificate must be treated as revoked. reason is an
+	// optional, free-text operator note carried for audit only. See
+	// pkg/service.JoinIdentityRetirer. Unlike MintJoinToken, its response
+	// carries no secret, so it is a method on AdminClient directly rather
+	// than a distinct capability interface callers type-assert for.
+	RetireJoinIdentity(ctx context.Context, nodeID, reason string) error
 }
 
 // ClusterJoinTokenMinter mints a single-use, identity-bound member-side CSR
@@ -197,6 +213,47 @@ type AdminClient interface {
 // server-side route on every transport that implements this.
 type ClusterJoinTokenMinter interface {
 	MintJoinToken(ctx context.Context, req *MintJoinTokenRequest) (*MintJoinTokenResponse, error)
+}
+
+// ObserverMemberAdder adds a replica to a shard as a non-voting observer
+// rather than a voter, for an admin to promote to a voter later with
+// AdminClient.PromoteMember. It is a distinct interface from AdminClient,
+// not a method on it, for the identical reason ClusterJoinTokenMinter is: a
+// caller type-asserts for it (client.Admin().(transport.ObserverMemberAdder))
+// rather than every transport needing a method it has no server-side route
+// to call.
+//
+// permission.AdminAddMember (ScopeCross) gates the server-side route on
+// every transport that implements this -- the same reconfiguration
+// permission AddMember, RemoveMember and PromoteMember already require.
+type ObserverMemberAdder interface {
+	// AddObserverMember adds a new replica to the specified shard as an
+	// observer. identity follows AdminClient.AddMember's own rule.
+	AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
+}
+
+// JoinRequestReviewer lists, approves and rejects CSRs a joiner queued
+// through the tokenless member-side CSR approval path (see
+// pkg/clusterenroll's approval queue). It is a distinct interface from
+// AdminClient, not methods on it, for the identical reason
+// ClusterJoinTokenMinter is: a caller type-asserts for it
+// (client.Admin().(transport.JoinRequestReviewer)).
+//
+// permission.ClusterJoinToken (ScopeCross, platform-only) gates every
+// method here on every transport that implements this -- the same
+// whole-cluster admission decision minting a join token already requires.
+type JoinRequestReviewer interface {
+	// ListPendingJoinRequests returns every request awaiting a decision.
+	ListPendingJoinRequests(ctx context.Context) ([]*PendingJoinRequest, error)
+
+	// ApproveJoinRequest binds id's queued CSR to an operator-chosen node
+	// identity (spiffe://<trust domain>/node/<nodeID>). The leaf is signed
+	// the next time the joiner's own retry reaches the join listener, not
+	// by this call.
+	ApproveJoinRequest(ctx context.Context, id, nodeID string) error
+
+	// RejectJoinRequest records a terminal refusal of id's queued CSR.
+	RejectJoinRequest(ctx context.Context, id, reason string) error
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +798,35 @@ type CertClient interface {
 
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(ctx context.Context, tenantID string) (*ListCertsResponse, error)
+}
+
+// ---------------------------------------------------------------------------
+// Invitation self-enrolment
+// ---------------------------------------------------------------------------
+
+// InvitationClient provides invitation-based self-enrolment: the way an
+// ordinary user gets a first certificate for a key nobody else ever held.
+//
+// It is deliberately its own interface, not folded into UserClient or
+// CertClient: RedeemInvitation is the one verb an UNCONNECTED, unauthenticated
+// caller may invoke, and a transport that cannot yet carry it (no wire
+// support implemented) simply does not implement InvitationClient, rather
+// than every UserClient/CertClient implementation being forced to grow a
+// method it cannot serve.
+type InvitationClient interface {
+	// InviteUser creates a pending account in the caller's own tenant -- or
+	// re-invites one that is still pending -- and returns a single-use
+	// enrolment token, returned exactly once. The invited user redeems it,
+	// unauthenticated, with RedeemInvitation.
+	InviteUser(ctx context.Context, req *InviteUserRequest) (*Invitation, error)
+
+	// RedeemInvitation is UNAUTHENTICATED: the token from InviteUser is the
+	// authority. The redeemer presents the tenant, the token and a CSR for
+	// their own key (proof of possession) -- or a bring-your-own certificate
+	// over that key -- and gets a certificate for the invited account, which
+	// is activated with the binding in the same operation. No Connect is
+	// required first: an unconnected client dials for this one call.
+	RedeemInvitation(ctx context.Context, req *RedeemInvitationRequest) (*EnrolledCert, error)
 }
 
 // ---------------------------------------------------------------------------

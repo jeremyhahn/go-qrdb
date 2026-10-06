@@ -265,6 +265,37 @@ func TestIdentityGated_NotInByResource(t *testing.T) {
 	}
 }
 
+// TestPublic_NotRegistered guards the public sentinel's core invariant: it
+// must never be registered, so it can never be granted to a role, validated
+// as a grant, or surfaced in the permission catalog. Routes mapped to Public
+// bypass authentication and authorization entirely at the transport layer,
+// before any permission is evaluated.
+func TestPublic_NotRegistered(t *testing.T) {
+	if IsRegistered(Public) {
+		t.Fatalf("IsRegistered(%q): the public sentinel must never be registered", Public)
+	}
+}
+
+// TestPublic_NotInAll verifies the sentinel never appears in the
+// grantable-permission catalog returned by All().
+func TestPublic_NotInAll(t *testing.T) {
+	for _, p := range All() {
+		if p == Public {
+			t.Fatalf("All() contains the public sentinel %q; it must never be grantable", Public)
+		}
+	}
+}
+
+// TestPublic_NotInByResource verifies the sentinel never appears in the
+// resource-grouped catalog used by the UI.
+func TestPublic_NotInByResource(t *testing.T) {
+	for _, p := range ByResource(Resource(Public)) {
+		if p == Public {
+			t.Fatalf("ByResource(%q) contains the public sentinel %q", Resource(Public), Public)
+		}
+	}
+}
+
 func TestRegister_Custom(t *testing.T) {
 	custom := Permission("test_custom:do_thing")
 
@@ -572,7 +603,12 @@ func TestAll_TotalCount(t *testing.T) {
 	//   archive is now built LOCALLY, by whoever already holds the key
 	//   (pkg/cert.EncodePKCS12), never through any permission-gated verb
 	//   = 381 total.
-	const expectedTotal = 381
+	// + 1 cluster:join_identity_retire, permanently refusing any future
+	// admission for a node identity (pkg/clusterenroll.RetireJoinIdentity)
+	// = 382 total.
+	// + 1 users:invite, pending-account self-enrolment (invitation
+	//   self-enrolment) = 383 total.
+	const expectedTotal = 383
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

@@ -103,6 +103,7 @@ type Transport struct {
 	roleSvc       role.RoleServicer
 	certProv      cert.CertProvider
 	certEnroll    service.CertEnrollmentServicer
+	invitations   service.InvitationServicer
 	onboarding    service.TenantOnboardingServicer
 	dbSvc         service.DatabaseServicer
 	barrierSvc    service.BarrierServicer
@@ -283,6 +284,15 @@ func WithCertEnrollment(svc service.CertEnrollmentServicer) Option {
 	}
 }
 
+// WithInvitations sets the invitation self-enrolment service
+// (lifecycle.Node.Invitations): users:invite and the unauthenticated
+// RedeemInvitation.
+func WithInvitations(svc service.InvitationServicer) Option {
+	return func(t *Transport) {
+		t.invitations = svc
+	}
+}
+
 // WithTenantOnboarding sets the tenant-create service
 // (lifecycle.Node.TenantOnboarding).
 func WithTenantOnboarding(svc service.TenantOnboardingServicer) Option {
@@ -407,6 +417,8 @@ var requestHandlers = map[string]requestHandler{
 	"Peers":                       handlePeers,
 	"AddMember":                   handleAddMember,
 	"RemoveMember":                handleRemoveMember,
+	"PromoteMember":               handlePromoteMember,
+	"RetireJoinIdentity":          handleRetireJoinIdentity,
 	"RequestSnapshot":             handleRequestSnapshot,
 	"Drain":                       handleDrain,
 	"PutWithLease":                handlePutWithLease,
@@ -903,6 +915,25 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	return translateError(t.adminSvc.RemoveMember(ctx, shardID, replicaID))
 }
 
+// PromoteMember promotes a committed observer through the embedded admin
+// service. Implements transport.MemberPromoter.
+func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64) error {
+	if err := t.gate("PromoteMember"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "PromoteMember"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	promoter, ok := t.adminSvc.(service.MemberPromoter)
+	if !ok {
+		return translateError(&service.MemberPromotionUnsupportedError{})
+	}
+	return translateError(promoter.PromoteMember(ctx, shardID, replicaID))
+}
+
 // MintJoinToken mints a single-use, identity-bound member-side CSR join
 // token through the embedded admin service. Implements
 // transport.ClusterJoinTokenMinter. Returns
@@ -933,6 +964,125 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 }
 
 var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
+
+// AddObserverMember adds a new replica through the embedded admin service
+// as a non-voting observer rather than a voter. Implements
+// transport.ObserverMemberAdder.
+func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if err := t.gate("AddObserverMember"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "AddObserverMember"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	adder, ok := t.adminSvc.(service.ObserverMemberAdder)
+	if !ok {
+		return translateError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	return translateError(adder.AddObserverMember(ctx, shardID, replicaID, raftAddr, identity))
+}
+
+var _ transport.ObserverMemberAdder = (*Transport)(nil)
+
+// ListPendingJoinRequests lists tokenless member-side CSR join requests
+// awaiting an operator's decision, through the embedded admin service.
+// Implements transport.JoinRequestReviewer.
+func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.PendingJoinRequest, error) {
+	if err := t.gate("ListPendingJoinRequests"); err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "ListPendingJoinRequests"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	reviewer, ok := t.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return nil, translateError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	pending, err := reviewer.ListPendingJoinRequests(ctx)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	out := make([]*transport.PendingJoinRequest, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, &transport.PendingJoinRequest{
+			ID:          p.ID,
+			NodeURI:     p.NodeURI,
+			ReplicaID:   p.ReplicaID,
+			Features:    p.Features,
+			SubmittedAt: p.SubmittedAt,
+			ExpiresAt:   p.ExpiresAt,
+		})
+	}
+	return out, nil
+}
+
+// ApproveJoinRequest binds id's queued CSR to an operator-chosen node
+// identity, through the embedded admin service. Implements
+// transport.JoinRequestReviewer.
+func (t *Transport) ApproveJoinRequest(ctx context.Context, id, nodeID string) error {
+	if err := t.gate("ApproveJoinRequest"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "ApproveJoinRequest"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	reviewer, ok := t.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return translateError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	return translateError(reviewer.ApproveJoinRequest(ctx, id, nodeID))
+}
+
+// RejectJoinRequest records a terminal refusal of id's queued CSR, through
+// the embedded admin service. Implements transport.JoinRequestReviewer.
+func (t *Transport) RejectJoinRequest(ctx context.Context, id, reason string) error {
+	if err := t.gate("RejectJoinRequest"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "RejectJoinRequest"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	reviewer, ok := t.adminSvc.(service.JoinRequestReviewer)
+	if !ok {
+		return translateError(&service.ClusterJoinRequestReviewUnsupportedError{})
+	}
+	return translateError(reviewer.RejectJoinRequest(ctx, id, reason))
+}
+
+var _ transport.JoinRequestReviewer = (*Transport)(nil)
+
+// RetireJoinIdentity permanently refuses any future admission for a node
+// identity through the embedded admin service. Unlike MintJoinToken, its
+// response carries no secret, so it stays wired through the embedded
+// transport like every other ordinary admin verb (see docs/embedding.md).
+func (t *Transport) RetireJoinIdentity(ctx context.Context, nodeID, reason string) error {
+	if err := t.gate("RetireJoinIdentity"); err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "RetireJoinIdentity"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	retirer, ok := t.adminSvc.(service.JoinIdentityRetirer)
+	if !ok {
+		return translateError(&service.ClusterJoinTokenNotConfiguredError{})
+	}
+	return translateError(retirer.RetireJoinIdentity(ctx, nodeID, reason))
+}
 
 // RequestSnapshot triggers a snapshot through the embedded admin service.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
@@ -3452,6 +3602,22 @@ func handleRemoveMember(ctx context.Context, t *Transport, req, _ any) error {
 		return &InvalidRequestError{Method: "RemoveMember"}
 	}
 	return t.RemoveMember(ctx, r.ShardID, r.ReplicaID)
+}
+
+func handlePromoteMember(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.PromoteMemberRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "PromoteMember"}
+	}
+	return t.PromoteMember(ctx, r.ShardID, r.ReplicaID)
+}
+
+func handleRetireJoinIdentity(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.RetireJoinIdentityRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "RetireJoinIdentity"}
+	}
+	return t.RetireJoinIdentity(ctx, r.NodeID, r.Reason)
 }
 
 func handleRequestSnapshot(ctx context.Context, t *Transport, req, _ any) error {

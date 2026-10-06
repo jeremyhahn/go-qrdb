@@ -726,8 +726,8 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 // new scheme does not silently reset the operator's seal.share_ttl.
 func (b *StorageBarrier) shamirConfigFor(threshold, total int) *ShamirConfig {
 	cfg := &ShamirConfig{Threshold: threshold, TotalShares: total}
-	if b.config.Shamir != nil {
-		cfg.QuorumTTL = b.config.Shamir.QuorumTTL
+	if existing := b.shamirConfig(); existing != nil {
+		cfg.QuorumTTL = existing.QuorumTTL
 	}
 	return cfg
 }

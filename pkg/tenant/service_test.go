@@ -736,7 +736,7 @@ func TestTenantService_BarrierInitWithStrategy_DefaultPassphrase(t *testing.T) {
 	}
 
 	// Empty strategyID should resolve to passphrase.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, ""); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, "", nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(empty): %v", err)
 	}
 
@@ -772,7 +772,7 @@ func TestTenantService_BarrierInitWithStrategy_ExplicitPassphrase(t *testing.T) 
 		t.Fatalf("UnregisterTenant: %v", err)
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(passphrase), 0, 0, seal.StrategyPassphrase, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(passphrase): %v", err)
 	}
 
@@ -805,7 +805,7 @@ func TestTenantService_BarrierInitWithStrategy_NoneStrategy(t *testing.T) {
 	}
 
 	// The "none" strategy requires no passphrase.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(none): %v", err)
 	}
 
@@ -846,7 +846,7 @@ func TestTenantService_BarrierInitWithStrategy_RegistryInjection(t *testing.T) {
 	}
 
 	// "none" is pre-registered in the default registry.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone, nil); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy via registry: %v", err)
 	}
 
@@ -882,7 +882,7 @@ func TestTenantService_BarrierInitWithStrategy_UnknownStrategy(t *testing.T) {
 		t.Fatalf("UpdateEntitlements: %v", err)
 	}
 
-	_, err = svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("irrelevant"), 0, 0, "tpm2")
+	_, err = svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("irrelevant"), 0, 0, "tpm2", nil)
 	var invErr *InvalidStrategyError
 	if !errors.As(err, &invErr) {
 		t.Fatalf("expected InvalidStrategyError, got %v", err)
@@ -908,7 +908,7 @@ func TestTenantService_BarrierInitWithStrategy_NoRegistryUnknown(t *testing.T) {
 		t.Fatalf("UpdateEntitlements: %v", err)
 	}
 
-	_, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, "tpm2")
+	_, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, "tpm2", nil)
 	var invErr *InvalidStrategyError
 	if !errors.As(err, &invErr) {
 		t.Fatalf("expected InvalidStrategyError, got %v", err)
@@ -927,7 +927,7 @@ func TestTenantService_BarrierInitWithStrategy_EmptyPassphraseForPassphrase(t *t
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
-	_, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyPassphrase)
+	_, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyPassphrase, nil)
 	if !errors.Is(err, ErrEmptyPassphrase) {
 		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
 	}

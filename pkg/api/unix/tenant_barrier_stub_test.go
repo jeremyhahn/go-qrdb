@@ -92,7 +92,7 @@ func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID str
 }
 
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit for test simplicity.
-func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster) (*tenant.TenantBarrierInitResult, error) {
 	return s.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 

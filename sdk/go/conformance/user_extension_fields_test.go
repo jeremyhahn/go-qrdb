@@ -16,6 +16,7 @@ package conformance
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,11 +67,9 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 				t.Fatalf("%s: fresh user Factors = %+v, want empty (no wire path ever populates it)", tk, created.Factors)
 			}
 
-			// REPLACE: both RoleBindings and Attributes. The bound role must be
-			// a REAL role in tenant-a: go-qrdb#192 item 3 validates every
-			// RoleBinding's RoleID against its OWN TenantID before the write
-			// commits, so a fabricated identifier here would be refused by the
-			// very check this suite is not testing.
+			// A binding may name only its holder's own tenant, the system
+			// tenant's users included: one naming tenant-a is refused on every
+			// transport and leaves nothing behind.
 			if _, err := c.rawRoles.CreateRole(ctx, &role.CreateRoleRequest{
 				ID:       "role-a",
 				Name:     "role-a",
@@ -78,7 +77,27 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("%s: seed role-a in tenant-a: %v", tk, err)
 			}
-			wantBindings := []transport.RoleBinding{{RoleID: "role-a", TenantID: "tenant-a"}}
+			_, err = c.users.UpdateUser(ctx, &transport.UpdateUserRequest{
+				ID:           created.ID,
+				RoleBindings: []transport.RoleBinding{{RoleID: "role-a", TenantID: "tenant-a"}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "a role binding may name only its holder's own tenant") {
+				t.Fatalf("%s: UpdateUser(foreign-tenant binding) = %v, want the *user.RoleBindingTenantError refusal", tk, err)
+			}
+
+			// REPLACE: both RoleBindings and Attributes. The bound role must be
+			// a REAL role in the user's own tenant: every binding's role is
+			// validated against that tenant before the write commits, so a
+			// fabricated identifier here would be refused by the very check
+			// this suite is not testing.
+			if _, err := c.rawRoles.CreateRole(ctx, &role.CreateRoleRequest{
+				ID:       "role-s",
+				Name:     "role-s",
+				TenantID: tenantid.System,
+			}); err != nil {
+				t.Fatalf("%s: seed role-s in the system tenant: %v", tk, err)
+			}
+			wantBindings := []transport.RoleBinding{{RoleID: "role-s", TenantID: tenantid.System}}
 			wantAttrs := map[string]string{"department": "eng"}
 			updated, err := c.users.UpdateUser(ctx, &transport.UpdateUserRequest{
 				ID:           created.ID,

@@ -1194,7 +1194,7 @@ func (m *mockTenantBarrierOnlySvc) GetQuotaUsage(_ context.Context, _ string, _ 
 func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
 func (m *mockTenantBarrierOnlySvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
