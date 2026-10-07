@@ -389,6 +389,3 @@ func TestFilterSystemKeys_UserPrefix_FiltersSystem(t *testing.T) {
 		t.Fatalf("expected 2 keys, got %d", len(result))
 	}
 }
-
-// Provide import for database in this file.
-var _ = database.EngineKV

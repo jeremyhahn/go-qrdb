@@ -129,7 +129,6 @@ Both in-process schemes share one grammar (`driver.ParseEmbeddedDSN`):
 |---|---|
 | `database` | **Required.** Target database name. |
 | `backend` | `memory`, `file`, `pebble`. Defaults to the host component, then to `memory`. |
-| `engine` | `kv`, `timeseries`, `vector`. Defaults to `kv`. |
 | `tenant` | Scopes every statement on the connection to a tenant namespace. Empty means the system tenant. |
 | `user` | Subject recorded on the session identity (informational for in-process connections, which the driver does not authenticate). |
 | `loc` | IANA time zone (or `Local`) used to render `time.Time` arguments as SQL datetime literals. Empty means UTC. |

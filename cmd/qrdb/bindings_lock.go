@@ -17,19 +17,19 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // LockBinding exposes distributed lock management with fencing tokens to
 // the Wails frontend.
 type LockBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewLockBinding creates a new LockBinding backed by the given connection.
-func NewLockBinding(log *logger.Logger, conn *ConnectionBinding) *LockBinding {
+func NewLockBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *LockBinding {
 	return &LockBinding{logger: log, conn: conn}
 }
 

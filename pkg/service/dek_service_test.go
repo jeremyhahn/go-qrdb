@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -40,7 +41,11 @@ func (p perTenantStores) Resolve(_ context.Context, tenantID string) (kvstore.KV
 
 func newTestDEKService(t *testing.T) *DEKService {
 	t.Helper()
-	k, err := dek.NewKeyring(perTenantStores{})
+	registry := keywrap.NewRegistry()
+	_ = registry.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return &fakeKeyWrapProvider{id: keywrap.SoftwareProviderID}, nil
+	})
+	k, err := dek.NewKeyring(perTenantStores{}, dek.WithKeyWrapRegistry(registry))
 	if err != nil {
 		t.Fatal(err)
 	}

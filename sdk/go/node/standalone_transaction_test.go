@@ -130,20 +130,10 @@ func TestStandaloneNode_CoordinationFamiliesServed(t *testing.T) {
 	require.Equal(t, int64(10), l.GrantedTTL)
 }
 
-// TestStandaloneNode_TransactionsNeedTheMVCCCapableEngine pins the one limit
-// docs/run-modes.md states alongside the #62 amendment, so the document is
-// checked against the code rather than asserting it.
-//
-// Transactions need the MVCC-capable engine, which lifecycle.NewLocalEngine
-// composes for the memory and pebble backends. The FILE and OBJSTORE backends
-// compose the plain KV engine, which carries no transaction opcode. That is
-// the engine boundary already documented for MVCC-shaped features, not a mode
-// gate -- and it must fail LOUDLY, since the whole point of #62 is that a
-// caller needs a trustworthy answer to "did I win the claim?".
-//
-// A refusal is the acceptable outcome here. A transaction that reported
-// Succeeded=false would be indistinguishable from "the key already exists".
-func TestStandaloneNode_TransactionsNeedTheMVCCCapableEngine(t *testing.T) {
+// TestStandaloneNode_FileBackendServesCompareAndSwap: every backend composes
+// the MVCC engine, so the file backend serves the guarded create exactly as
+// memory and pebble do, and the loser of the claim sees a failed compare.
+func TestStandaloneNode_FileBackendServesCompareAndSwap(t *testing.T) {
 	n := newStandaloneNodeOnBackend(t, database.BackendFile)
 	ctx := context.Background()
 
@@ -151,7 +141,14 @@ func TestStandaloneNode_TransactionsNeedTheMVCCCapableEngine(t *testing.T) {
 	require.NotNil(t, tx, "the transaction client is wired on every backend")
 
 	resp, err := putIfAbsent(ctx, tx, "keys/ca.key", "first")
-	require.Error(t, err,
-		"a transaction the engine cannot execute must ERROR, not report a failed compare")
-	require.Nil(t, resp)
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded, "the guarded create of an ABSENT key must succeed")
+
+	resp, err = putIfAbsent(ctx, tx, "keys/ca.key", "second")
+	require.NoError(t, err)
+	require.False(t, resp.Succeeded, "the guarded create of a PRESENT key must fail")
+
+	got, err := n.Client().KV().Get(ctx, "keys/ca.key")
+	require.NoError(t, err)
+	require.Equal(t, "first", string(got))
 }

@@ -749,6 +749,14 @@ func (s *scopedTimeSeries) AggregateWithConsistency(ctx context.Context, a1 stri
 	return svc.AggregateWithConsistency(ctx, a1, a2, a3, a4, a5, a6)
 }
 
+func (s *scopedTimeSeries) ApplyRetention(ctx context.Context, a1 string, a2 time.Time) error {
+	svc, err := s.scope.registry.TimeSeriesService(s.scope.tenant(ctx), s.scope.database)
+	if err != nil {
+		return err
+	}
+	return svc.ApplyRetention(ctx, a1, a2)
+}
+
 func (s *scopedTimeSeries) DeleteSeries(ctx context.Context, a1 *timeseries.DeleteRequest) error {
 	svc, err := s.scope.registry.TimeSeriesService(s.scope.tenant(ctx), s.scope.database)
 	if err != nil {

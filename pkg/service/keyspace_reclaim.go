@@ -633,6 +633,14 @@ func reclaimVectorNamespaces(ctx context.Context, vec ReclaimVector, ns string) 
 	if vec == nil || ns == "" {
 		return nil
 	}
+	// Excludes a write already in flight against ns: see the
+	// VectorNamespaceLocker doc comment on vectorService. A ReclaimVector
+	// that does not implement it (a unit-test double) gets no exclusion,
+	// which is fine -- those doubles never race a concurrent write.
+	if locker, ok := vec.(VectorNamespaceLocker); ok {
+		unlock := locker.LockVectorNamespaceReclaim(ns)
+		defer unlock()
+	}
 	resp, err := vec.ListNamespaces(ctx, &ListNamespacesRequest{})
 	if err != nil {
 		return &ReclaimVectorError{Op: "list", Err: err}

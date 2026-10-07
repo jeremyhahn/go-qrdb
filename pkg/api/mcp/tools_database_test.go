@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -56,7 +57,6 @@ func (m *mockDatabaseService) Create(cfg database.DatabaseConfig) (*database.Dat
 	}
 	return &database.DatabaseInfo{
 		Name:    cfg.Name,
-		Engine:  cfg.Engine,
 		Backend: cfg.Backend,
 		Status:  database.StatusOpen,
 	}, nil
@@ -68,7 +68,6 @@ func (m *mockDatabaseService) Get(name string) (*database.DatabaseInfo, error) {
 	}
 	return &database.DatabaseInfo{
 		Name:    name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 		Status:  database.StatusOpen,
 	}, nil
@@ -81,7 +80,6 @@ func (m *mockDatabaseService) List() ([]database.DatabaseInfo, error) {
 	return []database.DatabaseInfo{
 		{
 			Name:    "testdb",
-			Engine:  database.EngineKV,
 			Backend: database.BackendPebble,
 			Status:  database.StatusOpen,
 		},
@@ -101,7 +99,6 @@ func (m *mockDatabaseService) UpdateProtocol(name string, proto database.Protoco
 	}
 	return &database.DatabaseInfo{
 		Name:     name,
-		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
 		Status:   database.StatusOpen,
 		Protocol: proto,
@@ -299,7 +296,6 @@ func TestHandleDatabaseCreate_Success(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":    "mydb",
-		"engine":  "kv",
 		"backend": "pebble",
 	})
 
@@ -317,9 +313,7 @@ func TestHandleDatabaseCreate_Success(t *testing.T) {
 	if info.Name != "mydb" {
 		t.Errorf("name: got %q, want %q", info.Name, "mydb")
 	}
-	if info.Engine != database.EngineKV {
-		t.Errorf("engine: got %q, want %q", info.Engine, database.EngineKV)
-	}
+
 	if info.Backend != database.BackendPebble {
 		t.Errorf("backend: got %q, want %q", info.Backend, database.BackendPebble)
 	}
@@ -340,7 +334,6 @@ func TestHandleDatabaseCreate_WithEtcd(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:     cfg.Name,
-			Engine:   cfg.Engine,
 			Backend:  cfg.Backend,
 			Status:   database.StatusOpen,
 			Protocol: cfg.Protocol,
@@ -350,7 +343,6 @@ func TestHandleDatabaseCreate_WithEtcd(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":             "etcddb",
-		"engine":           "kv",
 		"backend":          "pebble",
 		"etcd":             true,
 		"etcd_listen_addr": "127.0.0.1:2379",
@@ -389,7 +381,6 @@ func TestHandleDatabaseCreate_MissingName(t *testing.T) {
 	handler := handleDatabaseCreate(dbSvc)
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"engine":  "kv",
 		"backend": "pebble",
 	})
 
@@ -403,32 +394,12 @@ func TestHandleDatabaseCreate_MissingName(t *testing.T) {
 	}
 }
 
-func TestHandleDatabaseCreate_MissingEngine(t *testing.T) {
-	dbSvc := newMockDatabaseService()
-	handler := handleDatabaseCreate(dbSvc)
-
-	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name":    "mydb",
-		"backend": "pebble",
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !result.IsError {
-		t.Error("expected error result for missing engine")
-	}
-}
-
 func TestHandleDatabaseCreate_MissingBackend(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	handler := handleDatabaseCreate(dbSvc)
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name":   "mydb",
-		"engine": "kv",
+		"name": "mydb",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -441,6 +412,37 @@ func TestHandleDatabaseCreate_MissingBackend(t *testing.T) {
 	}
 }
 
+// TestDatabaseRaftTools_UnknownArgRefused pins OD-13's generic rule: an
+// argument the tool does not declare -- a stray "engine" (the removed
+// per-database engine selector) or a caller-chosen "raft_shard_id" (shard IDs
+// are cluster-issued, never caller-supplied) -- is refused outright rather
+// than silently dropped.
+func TestDatabaseRaftTools_UnknownArgRefused(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	handler := handleDatabaseCreate(dbSvc)
+
+	for _, tt := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"stale engine", map[string]any{"name": "mydb", "backend": "pebble", "engine": "kv"}},
+		{"caller-chosen shard id", map[string]any{"name": "mydb", "backend": "raft", "raft_shard_id": float64(1)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := buildCallToolRequest(t, "qrdb_database_create", tt.args)
+			_, err := handler(context.Background(), req)
+			var toolErr *ToolError
+			if !errors.As(err, &toolErr) {
+				t.Fatalf("expected *ToolError, got %T: %v", err, err)
+			}
+			var unknownErr *wire.UnknownArgumentError
+			if !errors.As(err, &unknownErr) {
+				t.Fatalf("expected *wire.UnknownArgumentError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestHandleDatabaseCreate_ServiceError(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	dbSvc.createFn = func(_ database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -450,7 +452,6 @@ func TestHandleDatabaseCreate_ServiceError(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":    "mydb",
-		"engine":  "kv",
 		"backend": "pebble",
 	})
 
@@ -551,9 +552,7 @@ func TestHandleDatabaseGet_Success(t *testing.T) {
 	if info.Name != "testdb" {
 		t.Errorf("name: got %q, want %q", info.Name, "testdb")
 	}
-	if info.Engine != database.EngineKV {
-		t.Errorf("engine: got %q, want %q", info.Engine, database.EngineKV)
-	}
+
 	if info.Status != database.StatusOpen {
 		t.Errorf("status: got %q, want %q", info.Status, database.StatusOpen)
 	}
@@ -683,7 +682,6 @@ func TestHandleDatabaseCreate_WithRaftDistributed(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    cfg.Name,
-			Engine:  cfg.Engine,
 			Backend: cfg.Backend,
 			Status:  database.StatusOpen,
 			Raft:    cfg.Raft,
@@ -693,10 +691,8 @@ func TestHandleDatabaseCreate_WithRaftDistributed(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":                 "raft-db",
-		"engine":               "kv",
 		"backend":              "raft",
 		"raft_cluster_mode":    "distributed",
-		"raft_shard_id":        float64(1),
 		"raft_replica_id":      float64(1),
 		"raft_address":         "localhost:63001",
 		"discovery_method":     "static",
@@ -720,11 +716,9 @@ func TestHandleDatabaseCreate_WithRaftDistributed(t *testing.T) {
 	if info.Raft.ClusterMode != database.RaftDistributed {
 		t.Errorf("cluster mode: got %q, want %q", info.Raft.ClusterMode, database.RaftDistributed)
 	}
-	// raft_shard_id is not a parameter of the tool: a caller cannot name a
-	// shard, and the argument is dropped before it reaches the service.
-	if info.Raft.ShardID != 0 {
-		t.Errorf("shard id: got %d, want 0 (the caller's raft_shard_id must be ignored)", info.Raft.ShardID)
-	}
+	// raft_shard_id is not a parameter of the tool -- a caller cannot name a
+	// shard -- so it is never sent; see TestDatabaseRaftTools_UnknownArgRefused
+	// for what happens if one is.
 	if info.Raft.ReplicaID != 1 {
 		t.Errorf("replica id: got %d, want 1", info.Raft.ReplicaID)
 	}
@@ -747,7 +741,6 @@ func TestHandleDatabaseCreate_WithMulticastDiscovery(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    cfg.Name,
-			Engine:  cfg.Engine,
 			Backend: cfg.Backend,
 			Status:  database.StatusOpen,
 			Raft:    cfg.Raft,
@@ -757,10 +750,8 @@ func TestHandleDatabaseCreate_WithMulticastDiscovery(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":                    "multicast-db",
-		"engine":                  "kv",
 		"backend":                 "raft",
 		"raft_cluster_mode":       "distributed",
-		"raft_shard_id":           float64(2),
 		"raft_replica_id":         float64(1),
 		"raft_address":            "localhost:63002",
 		"discovery_method":        "multicast",
@@ -809,7 +800,6 @@ func TestHandleDatabaseCreate_WithDNSDiscovery(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    cfg.Name,
-			Engine:  cfg.Engine,
 			Backend: cfg.Backend,
 			Status:  database.StatusOpen,
 			Raft:    cfg.Raft,
@@ -819,10 +809,8 @@ func TestHandleDatabaseCreate_WithDNSDiscovery(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":              "dns-db",
-		"engine":            "kv",
 		"backend":           "raft",
 		"raft_cluster_mode": "distributed",
-		"raft_shard_id":     float64(3),
 		"raft_replica_id":   float64(1),
 		"raft_address":      "localhost:63003",
 		"discovery_method":  "dns",
@@ -867,7 +855,6 @@ func TestHandleDatabaseCreate_WithTokenDiscovery(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    cfg.Name,
-			Engine:  cfg.Engine,
 			Backend: cfg.Backend,
 			Status:  database.StatusOpen,
 			Raft:    cfg.Raft,
@@ -877,10 +864,8 @@ func TestHandleDatabaseCreate_WithTokenDiscovery(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":               "token-db",
-		"engine":             "kv",
 		"backend":            "raft",
 		"raft_cluster_mode":  "distributed",
-		"raft_shard_id":      float64(4),
 		"raft_replica_id":    float64(1),
 		"raft_address":       "localhost:63004",
 		"discovery_method":   "token",
@@ -925,7 +910,6 @@ func TestHandleDatabaseCreate_NoRaftConfig(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    cfg.Name,
-			Engine:  cfg.Engine,
 			Backend: cfg.Backend,
 			Status:  database.StatusOpen,
 			Raft:    cfg.Raft,
@@ -935,7 +919,6 @@ func TestHandleDatabaseCreate_NoRaftConfig(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":    "simple-db",
-		"engine":  "kv",
 		"backend": "pebble",
 	})
 
@@ -963,7 +946,6 @@ func TestHandleDatabaseCreate_RaftWithoutDiscovery(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    cfg.Name,
-			Engine:  cfg.Engine,
 			Backend: cfg.Backend,
 			Status:  database.StatusOpen,
 			Raft:    cfg.Raft,
@@ -973,10 +955,8 @@ func TestHandleDatabaseCreate_RaftWithoutDiscovery(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":              "raft-no-discovery",
-		"engine":            "kv",
 		"backend":           "raft",
 		"raft_cluster_mode": "distributed",
-		"raft_shard_id":     float64(1),
 		"raft_replica_id":   float64(1),
 		"raft_address":      "localhost:63001",
 	})

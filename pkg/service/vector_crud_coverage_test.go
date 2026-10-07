@@ -759,6 +759,23 @@ func TestVectorCRUD_LoadNamespaces_MultipleNamespacesSuccess(t *testing.T) {
 			{Name: "ns-2", Dimension: 128, VectorCount: 10},
 		}, nil
 	}
+	// loadNamespaces now builds each namespace's real index through
+	// ensureHNSWIndex -- reading its geometry back and scanning its
+	// vectors -- rather than pre-registering a blank placeholder, so the
+	// mock must answer both calls for the index to be created at all.
+	storage.getNamespaceInfoFn = func(_ context.Context, ns string) (*vector.NamespaceInfo, error) {
+		switch ns {
+		case "ns-1":
+			return &vector.NamespaceInfo{Name: "ns-1", Dimension: 3, VectorCount: 5}, nil
+		case "ns-2":
+			return &vector.NamespaceInfo{Name: "ns-2", Dimension: 128, VectorCount: 10}, nil
+		default:
+			return nil, vector.ErrNamespaceNotFound
+		}
+	}
+	storage.scanNamespaceFn = func(_ context.Context, _ string, _ *vector.ScanOptions) ([]*vector.VectorValue, error) {
+		return nil, nil
+	}
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)

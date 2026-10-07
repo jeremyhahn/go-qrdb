@@ -66,7 +66,7 @@ func TestHandleDatabaseCreate_WithBarrierSecret_RoutesToCredentialedCreate(t *te
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(mock))
 
 	payload, err := json.Marshal(map[string]any{
-		"name": "secured", "engine": "kv", "backend": "memory",
+		"name": "secured", "backend": "memory",
 		"barrier": map[string]any{
 			"enabled":        true,
 			"mode":           "passphrase",
@@ -104,7 +104,7 @@ func TestHandleDatabaseCreate_WithoutBarrier_EmptyCredentials(t *testing.T) {
 	mock := &quicCredentialDatabaseMock{}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(mock))
 
-	payload, _ := json.Marshal(map[string]any{"name": "plain", "engine": "kv", "backend": "memory"})
+	payload, _ := json.Marshal(map[string]any{"name": "plain", "backend": "memory"})
 	if _, err := srv.handleDatabaseCreate(context.Background(), payload); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

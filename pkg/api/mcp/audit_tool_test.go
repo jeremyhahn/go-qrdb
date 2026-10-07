@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -77,7 +78,7 @@ var _ audit.Verifier = (*mockVerifyingAuditLogger)(nil)
 
 func TestHandleAuditQuery_Success(t *testing.T) {
 	logger := newMockAuditLogger()
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{})
 	result, err := handler(context.Background(), req)
@@ -113,7 +114,7 @@ func TestHandleAuditQuery_WithFilterFields(t *testing.T) {
 			return &audit.Page{Events: []audit.AuditEvent{}, Total: 0}, nil
 		},
 	}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
 		"actor":     "bob",
@@ -160,7 +161,7 @@ func TestHandleAuditQuery_ForeignTenantIsRefused(t *testing.T) {
 			return &audit.Page{Events: []audit.AuditEvent{}}, nil
 		},
 	}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
 
 	_, err := handler(ctx, buildCallToolRequest(t, "qrdb_audit_query", map[string]any{"tenant_id": "globex"}))
@@ -186,7 +187,7 @@ func TestHandleAuditQuery_ForeignTenantIsRefused(t *testing.T) {
 
 func TestHandleAuditQuery_WithFromTo(t *testing.T) {
 	logger := newMockAuditLogger()
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	to := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
@@ -210,7 +211,7 @@ func TestHandleAuditQuery_WithFromTo(t *testing.T) {
 
 func TestHandleAuditQuery_InvalidFromTimestamp(t *testing.T) {
 	logger := newMockAuditLogger()
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
 		"from": "not-a-timestamp",
@@ -230,7 +231,7 @@ func TestHandleAuditQuery_InvalidFromTimestamp(t *testing.T) {
 
 func TestHandleAuditQuery_InvalidToTimestamp(t *testing.T) {
 	logger := newMockAuditLogger()
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
 		"to": "bad-time",
@@ -250,7 +251,7 @@ func TestHandleAuditQuery_InvalidToTimestamp(t *testing.T) {
 
 func TestHandleAuditQuery_InvalidLimit(t *testing.T) {
 	logger := newMockAuditLogger()
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
 		"limit": "not-a-number",
@@ -274,7 +275,7 @@ func TestHandleAuditQuery_ServiceError(t *testing.T) {
 			return nil, errors.New("storage failure")
 		},
 	}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{})
 	_, err := handler(context.Background(), req)
@@ -414,5 +415,168 @@ func TestHandleAuditVerify_ConcurrentRotation(t *testing.T) {
 	var crErr *audit.ConcurrentRotationError
 	if !errors.As(err, &crErr) {
 		t.Fatalf("expected wrapped *audit.ConcurrentRotationError, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAuditVerifyReplicated
+// ---------------------------------------------------------------------------
+
+// mockReplicatedChainLogger is an inner audit.AuditLogger that also
+// implements service.TenantChainVerifier, standing in for
+// service.ReplicatedLogger in handleAuditVerifyReplicated tests.
+type mockReplicatedChainLogger struct {
+	mockAuditLogger
+	verifyFn func(ctx context.Context, tenantID string) (*audit.ChainContinuityReport, error)
+}
+
+func (m *mockReplicatedChainLogger) VerifyTenantChain(ctx context.Context, tenantID string) (*audit.ChainContinuityReport, error) {
+	return m.verifyFn(ctx, tenantID)
+}
+
+var _ service.TenantChainVerifier = (*mockReplicatedChainLogger)(nil)
+
+// mockEntitlementLookup answers ReplicatedAuditEnabled with a fixed value.
+type mockEntitlementLookup struct {
+	enabled bool
+	err     error
+}
+
+func (m *mockEntitlementLookup) ReplicatedAuditEnabled(_ context.Context, _ string) (bool, error) {
+	return m.enabled, m.err
+}
+
+var _ service.AuditEntitlementLookup = (*mockEntitlementLookup)(nil)
+
+func TestHandleAuditVerifyReplicated_Verified(t *testing.T) {
+	inner := &mockReplicatedChainLogger{
+		verifyFn: func(_ context.Context, tenantID string) (*audit.ChainContinuityReport, error) {
+			if tenantID != "acme" {
+				t.Errorf("expected tenant 'acme', got %q", tenantID)
+			}
+			return &audit.ChainContinuityReport{Verified: true, Records: 3, Head: 3, Low: 1, Genesis: true}, nil
+		},
+	}
+	replicatedAudit := service.NewOptInAuditLogger(inner, &mockEntitlementLookup{enabled: true}, false)
+	handler := handleAuditVerifyReplicated(replicatedAudit)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
+	req := buildCallToolRequest(t, "qrdb_audit_verify_replicated", map[string]any{})
+	result, err := handler(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError: %v", result.Content)
+	}
+
+	text := resultText(t, result)
+	var report audit.ChainContinuityReport
+	if err := json.Unmarshal([]byte(text), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !report.Verified || report.Records != 3 {
+		t.Errorf("unexpected report: %+v", report)
+	}
+}
+
+// TestHandleAuditVerifyReplicated_ChainBroken asserts a continuity break is
+// reported as a successful tool result with Verified=false, not a tool
+// error -- the same tamper-verdict-vs-failure distinction as
+// handleAuditVerify.
+func TestHandleAuditVerifyReplicated_ChainBroken(t *testing.T) {
+	inner := &mockReplicatedChainLogger{
+		verifyFn: func(_ context.Context, _ string) (*audit.ChainContinuityReport, error) {
+			return &audit.ChainContinuityReport{Verified: false, Reason: "head digest mismatch"}, nil
+		},
+	}
+	replicatedAudit := service.NewOptInAuditLogger(inner, &mockEntitlementLookup{enabled: true}, false)
+	handler := handleAuditVerifyReplicated(replicatedAudit)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
+	req := buildCallToolRequest(t, "qrdb_audit_verify_replicated", map[string]any{})
+	result, err := handler(ctx, req)
+	if err != nil {
+		t.Fatalf("expected a successful result carrying the verdict, got error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError for a continuity-break verdict: %v", result.Content)
+	}
+
+	text := resultText(t, result)
+	var report audit.ChainContinuityReport
+	if err := json.Unmarshal([]byte(text), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if report.Verified {
+		t.Error("expected Verified=false for a broken chain")
+	}
+	if report.Reason == "" {
+		t.Error("expected a non-empty Reason")
+	}
+}
+
+// TestHandleAuditVerifyReplicated_ForeignTenantIsRefused: naming a tenant
+// other than the caller's own is refused before the chain is reached.
+func TestHandleAuditVerifyReplicated_ForeignTenantIsRefused(t *testing.T) {
+	var verified []string
+	inner := &mockReplicatedChainLogger{
+		verifyFn: func(_ context.Context, tenantID string) (*audit.ChainContinuityReport, error) {
+			verified = append(verified, tenantID)
+			return &audit.ChainContinuityReport{Verified: true, Genesis: true}, nil
+		},
+	}
+	replicatedAudit := service.NewOptInAuditLogger(inner, &mockEntitlementLookup{enabled: true}, false)
+	handler := handleAuditVerifyReplicated(replicatedAudit)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
+	_, err := handler(ctx, buildCallToolRequest(t, "qrdb_audit_verify_replicated", map[string]any{"tenant_id": "globex"}))
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("err = %v; want *tenant.CrossTenantDeniedError", err)
+	}
+	if len(verified) != 0 {
+		t.Fatalf("a refused verify reached the chain for %+v", verified)
+	}
+}
+
+// TestHandleAuditVerifyReplicated_NotEntitled asserts a tenant without the
+// AllowReplicatedAudit entitlement is refused rather than answering a
+// trivially-true report.
+func TestHandleAuditVerifyReplicated_NotEntitled(t *testing.T) {
+	inner := &mockReplicatedChainLogger{
+		verifyFn: func(_ context.Context, _ string) (*audit.ChainContinuityReport, error) {
+			t.Fatal("the chain must not be reached for an unentitled tenant")
+			return nil, nil
+		},
+	}
+	replicatedAudit := service.NewOptInAuditLogger(inner, &mockEntitlementLookup{enabled: false}, false)
+	handler := handleAuditVerifyReplicated(replicatedAudit)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
+	req := buildCallToolRequest(t, "qrdb_audit_verify_replicated", map[string]any{})
+	_, err := handler(ctx, req)
+	var notEntitled *service.ReplicatedAuditNotEntitledError
+	if !errors.As(err, &notEntitled) {
+		t.Fatalf("err = %v; want *service.ReplicatedAuditNotEntitledError", err)
+	}
+}
+
+// TestHandleAuditVerifyReplicated_EntitlementLookupError asserts an
+// entitlement-lookup failure surfaces as a ToolError, not a silent refusal.
+func TestHandleAuditVerifyReplicated_EntitlementLookupError(t *testing.T) {
+	inner := &mockReplicatedChainLogger{}
+	replicatedAudit := service.NewOptInAuditLogger(inner, &mockEntitlementLookup{err: errors.New("lookup failure")}, false)
+	handler := handleAuditVerifyReplicated(replicatedAudit)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
+	req := buildCallToolRequest(t, "qrdb_audit_verify_replicated", map[string]any{})
+	_, err := handler(ctx, req)
+	if err == nil {
+		t.Fatal("expected ToolError for an entitlement-lookup failure")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
 	}
 }

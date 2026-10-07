@@ -95,6 +95,22 @@ func NewLocator(members MemberSource, cache *LeaderCache, selfRaftAddr string, l
 // Cache returns the leader cache the Locator reads and updates.
 func (l *Locator) Cache() *LeaderCache { return l.cache }
 
+// MemberByAddress resolves the member registered at raftAddr: a single
+// address lookup, independent of placement and any replica set. The shared
+// system shard has no replica set to resolve through, so a leader-only
+// write's refusal (service.AdminCredentialNotLeaderError and its siblings)
+// names just the leader's Raft address; this is how a caller turns that
+// address into the leader's per-protocol endpoint, reading the SAME member
+// records every per-database forward already reads.
+func (l *Locator) MemberByAddress(ctx context.Context, raftAddr string) (cluster.Member, bool, error) {
+	v, err := l.view(ctx)
+	if err != nil {
+		return cluster.Member{}, false, err
+	}
+	m, ok := v.byAddr[raftAddr]
+	return m, ok, nil
+}
+
 // maxAnswers is how many targets a forward may reach: the first, and the
 // one retry a refusal earns.
 const maxAnswers = 2

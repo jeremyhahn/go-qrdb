@@ -23,7 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -57,7 +56,7 @@ func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 			if req.EncryptionKey, err = os.ReadFile(h.encPubFile); err != nil {
 				t.Fatal(err)
 			}
-			req.EncryptionKEM = keydelivery.KEMX25519
+			req.EncryptionKEM = h.encKEM
 		}
 		resp, err := b.RegisterHolder(HolderScope{}, req)
 		if err != nil {

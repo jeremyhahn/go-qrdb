@@ -128,7 +128,7 @@ func TestManager_Drop_RollbackOutlivesACancelledRequest(t *testing.T) {
 func TestManager_Create_MarksANewIncarnationLive(t *testing.T) {
 	mgr, spy := newReclaimManager(t, "orders")
 
-	db, err := mgr.Create(DatabaseConfig{Name: "billing", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.Create(DatabaseConfig{Name: "billing", Backend: BackendMemory})
 	require.NoError(t, err)
 	require.NotEmpty(t, db.Incarnation())
 	assert.Equal(t, db.Incarnation(), spy.markerOf("/billing"))
@@ -153,7 +153,7 @@ func TestManager_Create_ReCreateIsANewIncarnation(t *testing.T) {
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 	assert.Equal(t, spyTombstone, spy.markerOf("/orders"))
 
-	fresh, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	fresh, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	assert.NotEqual(t, old.Incarnation(), fresh.Incarnation())
 	assert.Equal(t, fresh.Incarnation(), spy.markerOf("/orders"))
@@ -167,12 +167,12 @@ func TestManager_Create_FailureBeforeMarkingLeavesTheFence(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir(), WithBackendFactory(failing))
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
-	_, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 
 	failing.err = errors.New("disk full")
-	_, err = mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err = mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.ErrorIs(t, err, failing.err)
 	assert.Equal(t, spyTombstone, spy.markerOf("/orders"), "a failed create must not unfence the dropped name")
 }
@@ -183,7 +183,7 @@ func TestManager_Create_UnfenceFailureCreatesNothing(t *testing.T) {
 	mgr, spy := newReclaimManager(t, "orders")
 	spy.unfenceErr = errors.New("store unavailable")
 
-	_, err := mgr.Create(DatabaseConfig{Name: "billing", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "billing", Backend: BackendMemory})
 	var fenceErr *KeyspaceFenceError
 	require.ErrorAs(t, err, &fenceErr)
 	_, getErr := mgr.Get("billing")
@@ -197,7 +197,7 @@ func TestManager_Create_UnfenceFailureCreatesNothing(t *testing.T) {
 // incarnation of its own and is live while its marker is absent.
 func TestManager_Create_WithoutAReclaimerHasNoIncarnation(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir())
-	db, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	assert.Empty(t, db.Incarnation())
 }
@@ -212,14 +212,14 @@ func TestManager_Create_ConcurrentCreatesOfOneNameAreSerialized(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := mgr.Create(DatabaseConfig{Name: "billing", Engine: EngineKV, Backend: BackendMemory})
+		_, err := mgr.Create(DatabaseConfig{Name: "billing", Backend: BackendMemory})
 		done <- err
 	}()
 	<-blocking.entered
 
 	second := make(chan error, 1)
 	go func() {
-		_, err := mgr.Create(DatabaseConfig{Name: "billing", Engine: EngineKV, Backend: BackendMemory})
+		_, err := mgr.Create(DatabaseConfig{Name: "billing", Backend: BackendMemory})
 		second <- err
 	}()
 	select {
@@ -270,7 +270,7 @@ func (f *blockingBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Bac
 // The default database cannot be dropped, through any entry point.
 func TestManager_Drop_RefusesTheDefaultDatabase(t *testing.T) {
 	mgr, spy := newReclaimManager(t, "orders")
-	_, err := mgr.Create(DatabaseConfig{Name: tenant.DefaultDatabase, Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: tenant.DefaultDatabase, Backend: BackendMemory})
 	require.NoError(t, err)
 
 	var refused *DefaultDatabaseDropError
@@ -299,7 +299,7 @@ func TestCheckDroppable(t *testing.T) {
 func TestManager_GetForTenantIgnoringFence(t *testing.T) {
 	mgr, _ := newReclaimManager(t, "orders")
 	owner := tenant.WithTenantID(context.Background(), "acme")
-	db, err := mgr.CreateForTenant(owner, DatabaseConfig{Name: "billing", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
 	require.NoError(t, err)
 	db.SetDropping(true)
 

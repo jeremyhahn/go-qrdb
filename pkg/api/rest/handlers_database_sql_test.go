@@ -53,7 +53,7 @@ func TestDatabaseSQL_CreateAndUpdate(t *testing.T) {
 	s := newSQLConfigServer(t)
 
 	create := httptest.NewRequest(http.MethodPost, "/v1/databases",
-		strings.NewReader(`{"name":"shop","engine":"kv","backend":"memory","sql":{"concurrency":"pessimistic"}}`))
+		strings.NewReader(`{"name":"shop","backend":"memory","sql":{"concurrency":"pessimistic"}}`))
 	rec := httptest.NewRecorder()
 	s.dispatch(rec, create)
 	assertStatus(t, rec, http.StatusCreated)
@@ -82,7 +82,7 @@ func TestDatabaseSQL_CreateAndUpdate(t *testing.T) {
 func TestDatabaseSQL_Refusals(t *testing.T) {
 	s := newSQLConfigServer(t)
 	create := httptest.NewRequest(http.MethodPost, "/v1/databases",
-		strings.NewReader(`{"name":"shop","engine":"kv","backend":"memory"}`))
+		strings.NewReader(`{"name":"shop","backend":"memory"}`))
 	rec := httptest.NewRecorder()
 	s.dispatch(rec, create)
 	assertStatus(t, rec, http.StatusCreated)
@@ -103,7 +103,7 @@ func TestDatabaseSQL_Refusals(t *testing.T) {
 	}
 
 	bad := httptest.NewRequest(http.MethodPost, "/v1/databases",
-		strings.NewReader(`{"name":"bad","engine":"kv","backend":"memory","sql":{"concurrency":"eager"}}`))
+		strings.NewReader(`{"name":"bad","backend":"memory","sql":{"concurrency":"eager"}}`))
 	rec = httptest.NewRecorder()
 	s.dispatch(rec, bad)
 	assertStatus(t, rec, http.StatusBadRequest)

@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -578,6 +579,26 @@ func TestWithLessor_AppliesLessor(t *testing.T) {
 	dsm := cf(1, 1)
 	if dsm == nil {
 		t.Fatal("CreateFunc returned nil")
+	}
+}
+
+// TestWithAuditChain_AttachesChain proves the option hands the replicated
+// audit chain to every state machine the create function builds.
+func TestWithAuditChain_AttachesChain(t *testing.T) {
+	chain := audit.NewChain()
+
+	cf := NewMVCCCreateFuncWith(nil, WithAuditChain(chain))
+	if cf == nil {
+		t.Fatal("expected non-nil CreateFunc")
+	}
+	for _, replica := range []uint64{1, 2} {
+		machine, ok := cf(1, replica).(*MVCCStateMachine)
+		if !ok {
+			t.Fatalf("replica %d: CreateFunc did not build an MVCCStateMachine", replica)
+		}
+		if machine.auditChain != chain {
+			t.Fatalf("replica %d: the audit chain was not attached", replica)
+		}
 	}
 }
 

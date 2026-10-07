@@ -32,7 +32,7 @@ import (
 func TestDatabase_KVTable_ResolvedThroughRegistry(t *testing.T) {
 	resolved := &mockKVService{}
 	reg := &fakeRelationalRegistry{kvSvc: resolved}
-	p := NewProviderWithEngine("shop", &mockKVService{}, "", WithRegistry(reg))
+	p := NewProvider("shop", &mockKVService{}, WithRegistry(reg))
 	db, err := p.Database(sessionContext("acme"), "shop")
 	require.NoError(t, err)
 
@@ -58,7 +58,7 @@ func TestDatabase_EntityTable_ResolutionRefused(t *testing.T) {
 	t.Cleanup(func() { entity.Global().Unregister(entityType) })
 
 	reg := &fakeRelationalRegistry{kvErr: &service.BarrierSealedError{Database: "shop"}}
-	p := NewProviderWithEngine("shop", &mockKVService{}, "", WithRegistry(reg))
+	p := NewProvider("shop", &mockKVService{}, WithRegistry(reg))
 	db, err := p.Database(sessionContext("acme"), "shop")
 	require.NoError(t, err)
 	_, _, err = db.(*Database).GetTableInsensitive(sessionContext("acme"), entityType)

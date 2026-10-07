@@ -380,15 +380,15 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 }
 
 // keepsRevisions reports whether the cell's engine keeps MVCC revisions and
-// so answers create_revision / mod_revision compares: the MVCC engine on a
-// standalone memory or pebble backend, and the default raft state machine.
-// The file engine and every other raft sm_type compare on value and version
-// only, and refuse revision compares.
+// so answers create_revision / mod_revision compares: the MVCC engine every
+// standalone backend composes, and the default raft state machine. Every other
+// raft sm_type compares on value and version only, and refuses revision
+// compares.
 func (c cell) keepsRevisions() bool {
 	if c.mode == raft {
 		return c.smType == ""
 	}
-	return c.backend != database.BackendFile
+	return true
 }
 
 // clients is the guarded surface under test, however it was reached.
@@ -752,7 +752,7 @@ func enrollMatrixCert(t *testing.T, n *node.Node, clientTenant string, clientKP 
 		t.Fatalf("parse matrix client cert: %v", err)
 	}
 	svc := n.Services()
-	ctx := boundedCtx(t)
+	ctx := tenant.WithTenantID(boundedCtx(t), clientTenant)
 	u, err := svc.User.GetUserByUsername(ctx, clientTenant, "matrix")
 	if err != nil {
 		t.Fatalf("lookup matrix user in %s: %v", clientTenant, err)

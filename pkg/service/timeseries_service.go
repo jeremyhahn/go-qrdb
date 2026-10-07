@@ -21,6 +21,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -289,6 +290,45 @@ func (s *TimeSeriesService) SetRetentionPolicy(ctx context.Context, metric strin
 	if err != nil {
 		return translateProposeError(err)
 	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
+	}
+	return nil
+}
+
+// checkTimeSeriesRetentionEnabled refuses with *featuregate.NotActiveError
+// until every replica of this shard's group can apply
+// protocol.OpTSApplyRetention: go-quicraft replays a group's committed log
+// to catch up a new member, so an opcode applied under a narrower
+// membership that already used it would be in that log for a replica
+// admitted later that cannot apply it.
+func (s *TimeSeriesService) checkTimeSeriesRetentionEnabled() error {
+	gated, ok := s.host.(FeatureGatedHost)
+	if ok && !gated.FeatureEnabled(s.shardID, featuregate.TimeSeriesRetention) {
+		return &featuregate.NotActiveError{Feature: featuregate.TimeSeriesRetention, ShardID: s.shardID}
+	}
+	return nil
+}
+
+// ApplyRetention deletes points for metric older than cutoff through Raft
+// consensus, so every replica deletes the identical set of points. Refused
+// with *featuregate.NotActiveError until every replica of the group can
+// apply protocol.OpTSApplyRetention (see checkTimeSeriesRetentionEnabled).
+func (s *TimeSeriesService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	if err := s.checkTimeSeriesRetentionEnabled(); err != nil {
+		return err
+	}
+	cmd, encErr := protocol.EncodeTSApplyRetention(metric, cutoff.UnixNano())
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
+	result, err := propose(ctx, s.host, s.shardID, cmd)
+	if err != nil {
+		return translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. time-series
+	// subsystem not configured) that the SM placed in the result payload
+	// instead of stalling consensus.
 	if resultErr := checkResultError(result); resultErr != nil {
 		return resultErr
 	}

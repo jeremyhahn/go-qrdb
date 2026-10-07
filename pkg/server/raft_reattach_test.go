@@ -123,7 +123,6 @@ func TestReattachRaftTenants_AutoStartsShard_SelfStaysSealed(t *testing.T) {
 	autoCtx := tenant.WithTenantID(ctx, "rauto")
 	cfg := database.DatabaseConfig{
 		Name:    "app",
-		Engine:  database.EngineKV,
 		Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal},
 		DataDir: filepath.Join(rautoDataRoot, "databases", "app"),
@@ -197,7 +196,6 @@ func TestReattachRaftTenants_AttachError(t *testing.T) {
 	if _, cerr := mgr.Create(database.DatabaseConfig{
 		Name:     "raft-db",
 		TenantID: info.ID,
-		Engine:   database.EngineKV,
 		Backend:  database.BackendRaft,
 	}); cerr != nil {
 		t.Fatalf("manager.Create(raft-db): %v", cerr)

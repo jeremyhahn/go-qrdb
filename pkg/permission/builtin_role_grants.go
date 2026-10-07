@@ -84,7 +84,7 @@ func registerSOGrants() {
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
 		// Audit (operational oversight)
-		AuditRead, AuditQuery, AuditVerify,
+		AuditRead, AuditQuery, AuditVerify, AuditVerifyReplicated,
 		// Admin
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,
@@ -186,6 +186,17 @@ func registerAdminGrants() {
 		// (cluster_admin_scope.go): only effective for the system tenant's
 		// Admin, so a tenant Admin cannot compact the node keyspace.
 		AdminNodeCompaction,
+		// Minting a member-side CSR join token -- and reviewing the
+		// tokenless approval queue -- admits a new node to the whole
+		// replicated cluster. ClusterJoinToken is ScopeCross
+		// (cluster_join_token_scope.go), so this grant is only ever
+		// effective for the system tenant's Admin; a tenant Admin holds the
+		// permission but can never exercise it. Granted here (owner ruling,
+		// 2026-10-06) because strict separation of duties -- always on in a
+		// FIPS build -- strips the Owner role id outright, and Owner was
+		// previously the only identity that could mint a join token at all;
+		// see docs/seal/fips140-mode.md.
+		ClusterJoinToken,
 		// Selective point-in-time restore. This is the ONE MVCC data-plane
 		// verb the Admin role carries: Admin is otherwise a governance role
 		// and holds no kv:*/mvcc:* data verbs, but recovering a tenant's keys
@@ -198,6 +209,7 @@ func registerAdminGrants() {
 		AuditRead, AuditQuery,
 		// Cross-scope tenant management — only effective for system-tenant Admin.
 		TenantsListCross, TenantsCreateCross, TenantsApprove,
+		TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
 		// Tenant provisioning — creating a tenant and setting its plan (quotas,
 		// entitlements, isolation tier). Platform-operator operations,
 		// ScopeCross (tenant_provisioning_scope.go): only effective for
@@ -487,7 +499,7 @@ func registerUserGrants() {
 func registerAuditorGrants() {
 	RegisterRoleGrant(RoleAuditor,
 		// Audit visibility (the core auditor capability)
-		AuditRead, AuditQuery, AuditStream, AuditVerify,
+		AuditRead, AuditQuery, AuditStream, AuditVerify, AuditVerifyReplicated,
 		// System state (read-only)
 		AdminHealth, AdminStatus, AdminPeers,
 		// User, role, cert, tenant listing (metadata only — no writes)

@@ -1,6 +1,6 @@
 # Run Modes — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01 ·
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06 ·
 > Ratified 2026-08-17
 
 ## Problem

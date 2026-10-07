@@ -35,7 +35,7 @@ const LOAD_TIMEOUT = 10_000;
 const vectorState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "test-vectors", engine: "vector", backend: "pebble", status: "open" },
+    { name: "test-vectors", backend: "pebble", status: "open" },
   ],
 };
 
@@ -295,6 +295,7 @@ async function navigateToVector(
   await expect(
     page.locator(".breadcrumbs").getByText("test-vectors", { exact: false }),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await page.getByRole("tab", { name: "Vectors", exact: true }).click();
 }
 
 /** Navigate and inject stateful binding. */

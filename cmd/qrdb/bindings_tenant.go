@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TenantBinding exposes tenant management operations to the Wails frontend.
 type TenantBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewTenantBinding creates a new TenantBinding backed by the given connection.
-func NewTenantBinding(log *logger.Logger, conn *ConnectionBinding) *TenantBinding {
+func NewTenantBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *TenantBinding {
 	return &TenantBinding{logger: log, conn: conn}
 }
 

@@ -27,8 +27,8 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -739,7 +739,6 @@ func TestStartEmbedded_PebbleMode_DatabaseCreateAndList(t *testing.T) {
 	// Create a database through the SDK.
 	info, err := cl.Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
 		Name:    "test-db",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -748,10 +747,6 @@ func TestStartEmbedded_PebbleMode_DatabaseCreateAndList(t *testing.T) {
 	if info.Name != "test-db" {
 		t.Errorf("Name = %q, want %q", info.Name, "test-db")
 	}
-	if info.Engine != "kv" {
-		t.Errorf("Engine = %q, want %q", info.Engine, "kv")
-	}
-
 	// List should now include the new database.
 	dbs, err := cl.Database().ListDatabases(ctx)
 	if err != nil {
@@ -925,7 +920,7 @@ func TestStartEmbedded_PebbleRestart_NoLockConflict(t *testing.T) {
 // b.logger and lifecycle.BuildServices' Logger: slog.Default() are two
 // independent loggers in production (bindings_server.go does not thread one
 // through the other), so the test points BOTH at the same handler: b.logger
-// via logger.NewWithHandler, and the process-wide slog default via
+// via sdk.NewLoggerWithHandler, and the process-wide slog default via
 // slog.SetDefault (restored on cleanup). Swapping the global default is safe
 // here because this test is not parallel and Go runs every non-parallel
 // top-level test to completion before any parallel batch in the package
@@ -938,9 +933,9 @@ func TestStartEmbedded_FailedBarrierInit_DoesNotLogSealDisabled(t *testing.T) {
 	slog.SetDefault(slog.New(handler))
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 
-	log, err := logger.NewWithHandler(handler, logger.LogConfig{Level: "warn", Component: "test"})
+	log, err := sdk.NewLoggerWithHandler(handler, sdk.LogConfig{Level: "warn", Component: "test"})
 	if err != nil {
-		t.Fatalf("logger.NewWithHandler: %v", err)
+		t.Fatalf("sdk.NewLoggerWithHandler: %v", err)
 	}
 	conn := NewConnectionBinding(log)
 	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))

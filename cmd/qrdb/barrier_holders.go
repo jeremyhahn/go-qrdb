@@ -25,11 +25,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -111,9 +108,9 @@ func (s systemHolders) revoke(ctx context.Context, username string, threshold in
 
 func (s systemHolders) claimLabel() string {
 	if s.domain == transport.DomainRecovery {
-		return ceremony.ScopeRecovery.ClaimLabel()
+		return sdk.RecoveryClaimLabel
 	}
-	return ceremony.ScopeSystem.ClaimLabel()
+	return sdk.SystemClaimLabel
 }
 
 // tenantHolders is a tenant barrier. It has one quorum domain, and its rekey
@@ -171,7 +168,7 @@ func (s tenantHolders) rekey(ctx context.Context, threshold int, policy, _ strin
 	return s.cl.Tenants().TenantBarrierRekeyStart(ctx, &transport.TenantRekeyStartRequest{TenantID: s.tenantID, Threshold: threshold, Policy: policy})
 }
 
-func (s tenantHolders) claimLabel() string { return ceremony.ScopeTenant(s.tenantID).ClaimLabel() }
+func (s tenantHolders) claimLabel() string { return sdk.TenantClaimLabel(s.tenantID) }
 
 func (s tenantHolders) revoke(ctx context.Context, username string, threshold int, _ string) (*transport.QuorumRound, error) {
 	return s.cl.Tenants().TenantBarrierOfficerRevoke(ctx, &transport.TenantOfficerRevokeRequest{TenantID: s.tenantID, Username: username, Threshold: threshold})
@@ -220,7 +217,7 @@ func (s databaseHolders) rekey(ctx context.Context, threshold int, policy, _ str
 	return s.cl.Database().DatabaseBarrierRekeyStart(ctx, &transport.DatabaseRekeyStartRequest{Database: s.database, Threshold: threshold, Policy: policy})
 }
 
-func (s databaseHolders) claimLabel() string { return ceremony.DatabaseClaimLabel(s.database) }
+func (s databaseHolders) claimLabel() string { return sdk.DatabaseClaimLabel(s.database) }
 
 func (s databaseHolders) revoke(ctx context.Context, username string, threshold int, _ string) (*transport.QuorumRound, error) {
 	return s.cl.Database().DatabaseBarrierOfficerRevoke(ctx, &transport.DatabaseOfficerRevokeRequest{Database: s.database, Username: username, Threshold: threshold})
@@ -314,7 +311,7 @@ func readSigner(path string) (crypto.Signer, error) {
 		return nil, &HolderFileError{Path: path, Err: err}
 	}
 	defer secure.Wipe(raw)
-	return mtls.ParseSignerPEM(raw)
+	return sdk.ParseHolderSignerPEM(raw)
 }
 
 // signClaim signs username's claim in target's scope over the hex claim
@@ -324,14 +321,14 @@ func signClaim(signer crypto.Signer, target holderTarget, username, nonceHex str
 	if err != nil {
 		return nil, &InvalidArgError{Arg: "nonce", Reason: "not hex"}
 	}
-	return ceremony.SignShareClaim(signer, target.claimLabel(), username, nonce)
+	return sdk.SignShareClaim(signer, target.claimLabel(), username, nonce)
 }
 
 // openEnvelope opens a claimed envelope: with the separately enrolled HPKE
 // key encKey (raw, in the envelope's suite encoding) when one is given, else
 // with the certificate key.
 func openEnvelope(raw, encKey []byte, certKey crypto.Signer) ([]byte, error) {
-	env, err := ceremony.ParseShareEnvelope(raw)
+	env, err := sdk.ParseShareEnvelope(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +338,7 @@ func openEnvelope(raw, encKey []byte, certKey crypto.Signer) ([]byte, error) {
 		}
 		return env.OpenWithKey(certKey)
 	}
-	suite, err := keydelivery.LookupSuite(env.KEM)
+	suite, err := sdk.LookupKEMSuite(env.KEM)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +384,7 @@ func (f *holderRegisterFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.username, "username", "", "Holder username (becomes the certificate CN)")
 	cmd.Flags().StringVar(&f.role, "role", transport.RoleSecurityOfficer, "Holder role: so or custodian")
 	cmd.Flags().StringVar(&f.csrFile, "csr-file", "", "PEM CSR supplying the holder's public key")
-	cmd.Flags().StringVar(&f.encKEM, "encryption-kem", "", "HPKE suite of a separate envelope key ("+strings.Join(keydelivery.SuiteNames(), ", ")+")")
+	cmd.Flags().StringVar(&f.encKEM, "encryption-kem", "", "HPKE suite of a separate envelope key ("+strings.Join(sdk.KEMSuiteNames(), ", ")+")")
 	cmd.Flags().StringVar(&f.encKeyFile, "encryption-key-file", "", "Raw public key of the separate envelope key, in the suite's encoding")
 	cmd.Flags().StringVar(&f.designated, "designated", "", "Factor fixed at enrolment under the designated policy (default mtls)")
 	cmd.Flags().StringArrayVar(&f.factors, "factor", nil, "Additional factor enrolment: name or name=<json params> (repeatable)")
@@ -629,7 +626,7 @@ func claimMessageHex(target holderTarget, username, nonceHex string) (string, er
 	if err != nil {
 		return "", &InvalidArgError{Arg: "nonce", Reason: "not hex"}
 	}
-	return hex.EncodeToString(ceremony.ShareClaimMessage(target.claimLabel(), username, nonce)), nil
+	return hex.EncodeToString(sdk.ShareClaimMessage(target.claimLabel(), username, nonce)), nil
 }
 
 // newHolderClaimCompleteCmd returns `claim-complete`.
@@ -873,15 +870,15 @@ func submitHolderShare(ctx context.Context, target holderTarget, in *holderSubmi
 		if in.CertKey == nil {
 			return nil, &MissingArgError{Arg: "certificate key (or a challenge id with a factor response)"}
 		}
-		challenge, err := target.quorumBegin(ctx, in.Op, in.Username, mtls.Name)
+		challenge, err := target.quorumBegin(ctx, in.Op, in.Username, sdk.QuorumFactorMTLS)
 		if err != nil {
 			return nil, err
 		}
-		sig, err := mtls.SignChallenge(in.CertKey, challenge.ChallengeID, challenge.MethodData[mtls.MethodDataPurpose], challenge.Nonce)
+		sig, err := sdk.SignQuorumChallenge(in.CertKey, challenge.ChallengeID, challenge.MethodData[sdk.QuorumChallengePurposeKey], challenge.Nonce)
 		if err != nil {
 			return nil, err
 		}
-		req.ChallengeID, req.Factor, req.Response = challenge.ChallengeID, mtls.Name, sig
+		req.ChallengeID, req.Factor, req.Response = challenge.ChallengeID, sdk.QuorumFactorMTLS, sig
 	}
 	share, err := openEnvelope(in.Envelope, in.EncKey, in.CertKey)
 	if err != nil {

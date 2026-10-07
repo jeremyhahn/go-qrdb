@@ -1,7 +1,7 @@
 # Storage Engines and Volume Pools — API
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-05
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Storage engines
 

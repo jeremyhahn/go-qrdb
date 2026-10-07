@@ -124,7 +124,6 @@ export interface ListTenantsResponse {
 
 export interface DatabaseInfo {
   name: string;
-  engine: string;
   backend: string;
   status: string;
   protocol?: { mysql: boolean; postgresql: boolean };

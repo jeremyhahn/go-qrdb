@@ -43,7 +43,7 @@ func TestGRPC_DatabaseSQL_CreateAndUpdate(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{
-		Name: "shop", Engine: "kv", Backend: "memory",
+		Name: "shop", Backend: "memory",
 		Sql: &pb.DatabaseSQLConfig{Concurrency: "pessimistic"},
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestGRPC_DatabaseSQL_Refusals(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	if _, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{Name: "shop", Engine: "kv", Backend: "memory"}); err != nil {
+	if _, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{Name: "shop", Backend: "memory"}); err != nil {
 		t.Fatalf("DatabaseCreate: %v", err)
 	}
 	cases := []struct {

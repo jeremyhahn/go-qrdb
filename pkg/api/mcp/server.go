@@ -91,6 +91,7 @@ type Server struct {
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	auditLogger       audit.AuditLogger
+	replicatedAudit   *service.OptInAuditLogger
 
 	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
 	soGate *authmw.SOGate
@@ -542,6 +543,15 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
 }
 
+// WithReplicatedAuditLogger registers the cluster-wide, per-tenant-opt-in
+// replicated audit tools on the MCP server
+// (docs/audit/architecture.md#cluster-wide-replicated-trail): the
+// qrdb_audit_query tool's "replicated" parameter and the
+// qrdb_audit_verify_replicated tool.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) ServerOption {
+	return func(s *Server) { s.replicatedAudit = l }
+}
+
 // WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every tool
 // whose permission is in authmw.SOPermissions, after authorization: the caller
 // must hold the SO role and present the SO PIN in the X-QRDB-SO-PIN header of
@@ -820,8 +830,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// Audit query tool.
 	// Authorization: requires "audit:query" permission.
 	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
-	if s.auditLogger != nil {
-		s.addTools(auditTools(s.auditLogger)...)
+	if s.auditLogger != nil || s.replicatedAudit != nil {
+		s.addTools(auditTools(s.auditLogger, s.replicatedAudit)...)
 	}
 	if s.sqlSvc != nil {
 		s.addTools(sqlTools(s.sqlSvc)...)

@@ -35,7 +35,7 @@ func TestEmbeddedDatabase_CompactionPolicy_RealService(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	if _, err := mgr.Create(database.DatabaseConfig{Name: "acme-db", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := mgr.Create(database.DatabaseConfig{Name: "acme-db", TenantID: "acme", Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	tr := newExtTransport(t, WithDatabaseService(servicetest.NewDatabaseService(t, mgr)))

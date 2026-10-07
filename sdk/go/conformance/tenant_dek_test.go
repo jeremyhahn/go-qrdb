@@ -16,18 +16,55 @@ package conformance
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// fakeDEKKeyWrapProvider is a same-shaped keywrap.Provider test double --
+// it "wraps" by copying bytes verbatim, the identical shape
+// pkg/keywrap's own fakeHardwareProvider test double uses.
+type fakeDEKKeyWrapProvider struct{}
+
+func (fakeDEKKeyWrapProvider) ProviderID() string { return keywrap.SoftwareProviderID }
+
+func (fakeDEKKeyWrapProvider) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	out := make([]byte, len(dek))
+	copy(out, dek)
+	return out, nil
+}
+
+func (fakeDEKKeyWrapProvider) Unwrap(_ context.Context, _ string, wrapped []byte) ([]byte, error) {
+	out := make([]byte, len(wrapped))
+	copy(out, wrapped)
+	return out, nil
+}
+
+// fakeSoftwareKeyWrapRegistry returns a Registry pre-populated with
+// fakeDEKKeyWrapProvider under the built-in "software" ID. Passed as
+// server.WithKeyWrapRegistry -- never WithKeyWrapProvider, whose own ID
+// would collide with the Backup service's own lazily-registered default
+// "software" factory -- it lets a real node's tenant DEK keyring (and
+// Backup, sharing the same registry) round-trip with no filesystem key
+// directory.
+func fakeSoftwareKeyWrapRegistry() keywrap.Registry {
+	r := keywrap.NewRegistry()
+	_ = r.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return fakeDEKKeyWrapProvider{}, nil
+	})
+	return r
+}
 
 // The tenant DEK keyring conformance matrix.
 //
@@ -73,7 +110,8 @@ func TestTenantDEK_LifecycleOnEveryTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
 			var roleID string
-			c := bootAuthorizedCell(t, tk, func(n *node.Node) { roleID = seedDEKIdentity(t, n) }).DEK()
+			opts := []server.ServerOption{server.WithKeyWrapRegistry(fakeSoftwareKeyWrapRegistry())}
+			c := bootCellAs(t, tk, tenantid.System, opts, func(n *node.Node) { roleID = seedDEKIdentity(t, n) }).DEK()
 			ctx := boundedCtx(t)
 			if tk == embeddedTransport {
 				ctx = tenant.WithTenantID(auth.WithIdentity(ctx, &auth.Identity{

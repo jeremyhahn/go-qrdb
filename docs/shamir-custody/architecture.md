@@ -1,6 +1,6 @@
 # Shamir Custody — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 M-of-N custody of a barrier's key material by named **share holders**: who
 holds a share, how a share reaches them, how they prove who they are when they
@@ -130,6 +130,28 @@ was issued for, so a factor answer can never be replayed as a claim, nor a
 claim as a factor answer, nor one operation's answer as another's. A certificate that is presented is
 still checked. The network transports keep requiring the certificate on the
 connection.
+
+A claim with no identity on its context is admitted to the service with no
+RBAC check — the holder's signed nonce is its own authorization — which on a
+network transport never happens (the TLS connection always authenticates to
+*some* identity, charged by the auth middleware's own rate limit), but on the
+embedded transport, composed with no `AuthMiddleware` installed, is the
+ordinary case. Without a throttle of its own, such a caller could probe
+holder usernames and roster entries in-process as fast as it liked. Every
+anonymous claim begin and complete — system unseal and recovery, tenant and
+database scopes — is charged to its barrier's bucket under
+`embedded.WithHolderActLimiter` before the service sees it, and refused over
+it with `*embedded.HolderActRateLimitedError`. `sdk/go/node` installs
+`lifecycle.QuorumLimit` — the same engine and anonymous policy the ceremony
+already applies to quorum challenges — under a key prefixed with a random
+identifier for the node, so nodes sharing one process never share a bucket.
+The bucket is one per barrier, shared by every anonymous caller of it (so
+anonymous claims made by anyone can delay a genuine holder's anonymous claim
+until the bucket refills), and a tenant barrier's key normalizes the tenant
+id: a claim naming `""` and one naming the system tenant are the same
+barrier and must not be charged to two buckets. A claim carrying an identity
+is rate-limited by the auth middleware instead, exactly like any other
+authenticated request, and is never charged to the anonymous bucket.
 
 ### The one quorum accumulator
 

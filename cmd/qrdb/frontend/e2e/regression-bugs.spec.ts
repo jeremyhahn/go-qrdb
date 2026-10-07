@@ -329,7 +329,6 @@ test.describe("Bug 5 - SQL protocol field persists correctly", () => {
       };
       s.databases.push({
         name: "proto-db",
-        engine: "kv",
         backend: "pebble",
         status: "open",
         protocol: { mysql: true, postgresql: true },
@@ -369,7 +368,6 @@ test.describe("Bug 5 - SQL protocol field persists correctly", () => {
       };
       s.databases.push({
         name: "toggle-db",
-        engine: "kv",
         backend: "pebble",
         status: "open",
         protocol: { mysql: false, postgresql: false },
@@ -415,7 +413,6 @@ test.describe("Bug 5 - SQL protocol field persists correctly", () => {
       };
       s.databases.push({
         name: "wire-db",
-        engine: "kv",
         backend: "pebble",
         status: "open",
         protocol: { mysql: false, postgresql: false },

@@ -23,7 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 

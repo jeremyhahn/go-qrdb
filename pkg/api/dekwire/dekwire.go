@@ -35,9 +35,11 @@ func Status(st *dek.Status) *transport.TenantDEKStatusResponse {
 	}
 	for _, v := range st.Versions {
 		out.Versions = append(out.Versions, transport.TenantDEKVersion{
-			Version:   v.Version,
-			CreatedAt: v.CreatedAt,
-			RetiredAt: v.RetiredAt,
+			Version:    v.Version,
+			CreatedAt:  v.CreatedAt,
+			RetiredAt:  v.RetiredAt,
+			ProviderID: v.ProviderID,
+			KeyRef:     v.KeyRef,
 		})
 	}
 	return out
@@ -53,7 +55,12 @@ func StatusProto(st *dek.Status) *pb.TenantDEKStatusResponse {
 		Versions:       make([]*pb.TenantDEKVersion, 0, len(st.Versions)),
 	}
 	for _, v := range st.Versions {
-		pv := &pb.TenantDEKVersion{Version: v.Version, CreatedAtUnix: v.CreatedAt.Unix()}
+		pv := &pb.TenantDEKVersion{
+			Version:       v.Version,
+			CreatedAtUnix: v.CreatedAt.Unix(),
+			ProviderId:    v.ProviderID,
+			KeyRef:        v.KeyRef,
+		}
 		if v.RetiredAt != nil {
 			pv.RetiredAtUnix = v.RetiredAt.Unix()
 		}

@@ -15,8 +15,17 @@ import (
 
 // AuditEvent represents a structured audit event for barrier operations.
 type AuditEvent struct {
-	Timestamp  time.Time         `json:"timestamp"`
-	Subject    string            `json:"subject"`
+	Timestamp time.Time `json:"timestamp"`
+	Subject   string    `json:"subject"`
+	// TenantID is empty for the system barrier's own operations (every
+	// existing caller in this package: initialize, unseal, seal, rekey,
+	// recovery, the Shamir seal vote, root-key import/change-password),
+	// which are not tenant-scoped. It exists for a per-tenant barrier
+	// operation (TenantBarrier, DatabaseBarrier) to name the tenant it
+	// belongs to, so that once a caller adapts these events onto the
+	// tenant-queryable audit.AuditLogger plane, the right tenant's
+	// auditors -- and no one else's -- can read them.
+	TenantID   string            `json:"tenant_id,omitempty"`
 	Action     string            `json:"action"`
 	Resource   string            `json:"resource"`
 	ResourceID string            `json:"resource_id"`

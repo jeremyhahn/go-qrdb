@@ -501,6 +501,23 @@ opaque refusal: telling an unauthenticated caller that a token exists but is
 spent would confirm a real account was invited, which is exactly the
 enumeration the opaque token exists to prevent.
 
+A genuine storage or transport fault behind the lookup or the consuming
+write is NOT folded into that refusal. It says nothing about any particular
+token or tenant — unlike a sealed or deleted tenant, which the opaque
+refusal above does cover — so reporting it as itself leaks nothing an
+enumerating caller could use, and folding it in anyway would silently read
+an outage as "every token presented right now is forged" for as long as it
+lasts. `pkg/invite.DAOStore` tells the two apart with `dao.IsNotFound` (the
+DAO layer's typed not-found on an empty read, distinct from a storage
+error) and reports the fault as `*invite.StoreError`;
+`InvitationService.RedeemInvitation` propagates that type unchanged instead
+of collapsing it, so it classifies as a server fault
+(`pkg/api/errclass`: Internal) rather than the credential refusal
+(Unauthenticated) a bad token gets. Formerly tracked as the
+"invite-notfound-ambiguity" open question; resolved by giving `pkg/dao` the
+typed not-found every DAO consumer can check for, rather than a one-off fix
+inside `pkg/invite`.
+
 Because the caller is unauthenticated, two further controls apply only to
 redemption:
 

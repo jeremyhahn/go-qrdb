@@ -28,37 +28,6 @@ import (
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // ---------------------------------------------------------------------------
-// Engine types
-// ---------------------------------------------------------------------------
-
-// EngineType identifies the data engine used by a database.
-type EngineType string
-
-const (
-	// EngineKV selects a general-purpose key-value engine.
-	EngineKV EngineType = "kv"
-
-	// EngineTimeSeries selects a time-series optimized engine.
-	EngineTimeSeries EngineType = "timeseries"
-
-	// EngineVector selects a vector-search engine.
-	EngineVector EngineType = "vector"
-)
-
-// validEngines is the set of recognized engine types, used for O(1) lookup.
-var validEngines = map[EngineType]struct{}{
-	EngineKV:         {},
-	EngineTimeSeries: {},
-	EngineVector:     {},
-}
-
-// Valid reports whether the engine type is recognized.
-func (e EngineType) Valid() bool {
-	_, ok := validEngines[e]
-	return ok
-}
-
-// ---------------------------------------------------------------------------
 // Backend types
 // ---------------------------------------------------------------------------
 
@@ -438,15 +407,6 @@ type EtcdConfig struct {
 	AdvertiseClientURLs []string `yaml:"advertise_client_urls" json:"advertise_client_urls,omitempty"`
 }
 
-// etcdEngineError returns the typed refusal for enabling etcd on a database
-// of engine, or nil. Disabling is always allowed.
-func etcdEngineError(name string, engine EngineType, etcd *EtcdConfig) error {
-	if etcd == nil || !etcd.Enabled || engine == EngineKV {
-		return nil
-	}
-	return &EtcdEngineUnsupportedError{Name: name, Engine: engine}
-}
-
 // Validate checks that the etcd config has required fields when enabled.
 func (e *EtcdConfig) Validate() error {
 	if !e.Enabled {
@@ -517,7 +477,6 @@ func (c *SQLConfig) EffectiveConcurrency() Concurrency {
 type DatabaseConfig struct {
 	TenantID     string         `yaml:"tenant_id,omitempty"     json:"tenant_id,omitempty"`
 	Name         string         `yaml:"name"                    json:"name"`
-	Engine       EngineType     `yaml:"engine"                  json:"engine"`
 	Backend      BackendType    `yaml:"backend"                 json:"backend"`
 	Protocol     ProtocolConfig `yaml:"protocol"                json:"protocol"`
 	DataDir      string         `yaml:"data_dir,omitempty"      json:"data_dir,omitempty"`
@@ -583,9 +542,6 @@ func (c *DatabaseConfig) Validate() error {
 	if IsReservedName(c.Name) {
 		return &ReservedNameError{Name: c.Name}
 	}
-	if !c.Engine.Valid() {
-		return &InvalidEngineError{Engine: string(c.Engine)}
-	}
 
 	// Default empty mode to embedded for backward compatibility.
 	if c.Mode == "" {
@@ -615,9 +571,6 @@ func (c *DatabaseConfig) Validate() error {
 
 	if c.Protocol.Etcd != nil {
 		if err := c.Protocol.Etcd.Validate(); err != nil {
-			return err
-		}
-		if err := etcdEngineError(c.Name, c.Engine, c.Protocol.Etcd); err != nil {
 			return err
 		}
 	}
@@ -696,7 +649,6 @@ func (c *DatabaseConfig) BarrierOnDataPath() bool {
 type DatabaseMeta struct {
 	TenantID     string                    `json:"tenant_id,omitempty"`
 	Name         string                    `json:"name"`
-	Engine       EngineType                `json:"engine"`
 	Backend      BackendType               `json:"backend"`
 	Protocol     ProtocolConfig            `json:"protocol,omitempty"`
 	DataDir      string                    `json:"data_dir,omitempty"`
@@ -734,7 +686,6 @@ type DatabaseMeta struct {
 type DatabaseInfo struct {
 	TenantID     string                    `json:"tenant_id,omitempty"`
 	Name         string                    `json:"name"`
-	Engine       EngineType                `json:"engine"`
 	Backend      BackendType               `json:"backend"`
 	Status       StatusType                `json:"status"`
 	Protocol     ProtocolConfig            `json:"protocol,omitempty"`

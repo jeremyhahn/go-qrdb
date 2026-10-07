@@ -1,6 +1,6 @@
 # Trust Bootstrap — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 > **Shape only in this repository.** `qrdb bootstrap` exposes the canonical
 > command surface; **every mode returns `PendingBootstrapBackendError`.** The

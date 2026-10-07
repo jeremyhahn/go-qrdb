@@ -1,7 +1,7 @@
 # Databases — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-01
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the multi-model database program in
 > [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
@@ -84,7 +84,7 @@ Absent, the server's default database (`system`) is used.
 Shipped:
 
 ```json
-{ "name": "billing", "engine": "kv", "backend": "raft",
+{ "name": "billing", "backend": "raft",
   "dataDir": "<install-dir>/data/billing",
   "mode": "distributed", "replicas": 3,
   "protocol": { "mysql": false, "postgresql": true,
@@ -172,17 +172,20 @@ invalid cluster size, mode, storage codec or etcd listen address -- are
 400 / `INVALID_ARGUMENT` on every transport. *(Corrected: they reached REST as
 500.)*
 
-`engine` is accepted as `kv`, `timeseries` or `vector`; `backend` as `memory`,
-`file`, `pebble`, `raft` or `objstore`. Measured: the backend does not decide
-where most databases' data lives, and `objstore` is refused when the store is
-opened — see [architecture.md](architecture.md) "Current state".
+**`engine` is removed (shipped, Lane 1C).** A request carrying it on REST,
+QUIC or MCP is refused as an unknown field, and on gRPC the field numbered 2
+in `DatabaseCreateRequest` and `DatabaseInfoResponse` is
+`reserved 2; reserved "engine";` so there is no field to set (OD-13, ruled
+A). `backend` is `memory`, `file`, `pebble`, `raft` or `objstore`. Measured:
+the backend does not decide where most databases' data lives, and
+`objstore` is refused when the store is opened — see
+[architecture.md](architecture.md) "Current state".
 
-### Target: create and info
+### Target: create and info (remaining, unshipped)
 
-`engine` is removed from the request and the response. `backend` is optional;
-when absent the node's `database_defaults.backend` is written into the record
-(OD-3). `raft.stateStorage` selects a raft database's state-machine store
-(OD-8).
+`backend` becomes optional; when absent the node's `database_defaults.backend`
+is written into the record (OD-3). `raft.stateStorage` selects a raft
+database's state-machine store (OD-8).
 
 ```json
 { "name": "billing", "backend": "raft", "replicas": 3,
@@ -207,12 +210,10 @@ the replica nodes of a raft one; `encryption` is `node`, `tenant` or
 `tenant+database`; `generation` increments each time the name is created, so a
 dropped-and-recreated database is distinguishable from its predecessor.
 
-On gRPC the field numbered 2 in `DatabaseCreateRequest` and
-`DatabaseInfoResponse` becomes `reserved 2; reserved "engine";`, and
-`DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field. A
-request carrying `engine` on REST, QUIC or MCP is refused as an unknown field
-(OD-13, ruled A). The `connection` block and the update-connection capability are
-removed on every transport (OD-9, ruled A).
+`DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field
+(the field-2 reservation itself shipped in Lane 1C, above). The `connection`
+block and the update-connection capability are removed on every transport
+(OD-9, ruled A).
 
 `PATCH /v1/databases/{name}/compaction` — the database's scheduled-compaction
 policy, off unless set:
@@ -389,7 +390,6 @@ with `DatabaseNameRequiredError` before it is sent.
 | Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
-| etcd enabled on a non-`kv` database | 400 | `INVALID_ARGUMENT` — `database.EtcdEngineUnsupportedError` *(corrected: documented as non-`kv` / non-`raft`, `FAILED_PRECONDITION`)* |
 | etcd enabled on a non-`raft` database (target — no check exists today) | 400 | `FAILED_PRECONDITION` — `database.EtcdRequiresRaftBackendError` |
 | Wrong unseal secret | 403 | `PERMISSION_DENIED` — the database stays sealed |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
@@ -403,6 +403,8 @@ with `DatabaseNameRequiredError` before it is sent.
 | Invalid compaction policy (unknown mode, a field of another mode, `retainRevisions < 1`, `retainPeriod` unparseable or under `1s`) | 400 | `INVALID_ARGUMENT` — `compaction.InvalidPolicyError` |
 | Compaction policy on another tenant's database (the system tenant included) | 404 | `NOT_FOUND` — indistinguishable from a missing database |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| A create carrying `engine` on REST, QUIC or MCP; gRPC/Unix have no field to set (shipped, Lane 1C; OD-13, ruled A) | 400 | `INVALID_ARGUMENT` |
+| A pre-v0.45 `meta.json` still carrying `"engine"` (shipped, Lane 1C) | 409 | `FAILED_PRECONDITION` — `database.LegacyMetadataError`; the database must be recreated |
 | Target: `backend: raft` on a standalone node | 400 | `FAILED_PRECONDITION` — `database.RaftBackendUnavailableError` |
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |
 | Target: barrier on `backend: memory` | 400 | `FAILED_PRECONDITION` — `database.BarrierRequiresPersistentBackendError` |
@@ -411,7 +413,6 @@ with `DatabaseNameRequiredError` before it is sent.
 | Target: a database's binding cannot be opened | 503 | `UNAVAILABLE` — `database.BindingUnavailableError` |
 | Target: a local-binding database's owning node is unreachable (OD-2, ruled A) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError` |
 | Target: the cluster feature gate for a command is not yet open on every member | 503 | `UNAVAILABLE` — `featuregate.NotActiveError`, the one feature-gate refusal |
-| Target: create carrying `engine` (OD-13, ruled A) | 400 | `INVALID_ARGUMENT` |
 
 ## Pagination
 

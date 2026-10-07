@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"io"
 	"log/slog"
 	"os"
@@ -44,34 +43,24 @@ const softwareKeyLength = 32
 // right" without ever learning how much too long.
 const softwareKeyReadLimit = softwareKeyLength + 1
 
-// softwareNonceLength is the AES-256-GCM nonce length Wrap/Unwrap use: a
-// fresh 96-bit nonce per Wrap call, prepended to the ciphertext.
-const softwareNonceLength = 12
-
 // wipeFn is secure.Wipe, indirected so a test can observe the one thing
 // this provider must do with its in-memory key copy and cannot otherwise
 // see -- the same device sdk/go/transport/embedded's own wipeFn is, for
 // the same reason. Never swapped outside a test.
 var wipeFn = secure.Wipe
 
-// randReader is crypto/rand's global Reader, indirected so a test can
-// force Wrap's nonce generation to fail -- a branch otherwise unreachable
-// in production (the system entropy source does not fail). Never swapped
-// outside a test.
-var randReader io.Reader = rand.Reader
-
 // newGCM constructs the AES-256-GCM AEAD over a key, indirected so a test
 // can force the construction-failure branch -- otherwise unreachable in
 // production, since readKeyFile only ever hands this a key already
 // confirmed to be exactly 32 bytes, which aes.NewCipher accepts
-// unconditionally, and cipher.NewGCM never fails over a valid
-// cipher.Block. Never swapped outside a test.
+// unconditionally, and cipher.NewGCMWithRandomNonce never fails over a
+// valid *aes.Block. Never swapped outside a test.
 var newGCM = func(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	return cipher.NewGCM(block)
+	return cipher.NewGCMWithRandomNonce(block)
 }
 
 // SoftwareProvider is qrdb's built-in Provider: it wraps and unwraps with
@@ -136,6 +125,12 @@ func (p *SoftwareProvider) Close() error {
 // Wrap encrypts dek with AES-256-GCM under the 32-byte key named by keyRef
 // (a bare file name inside this provider's configured key directory),
 // returning a fresh 12-byte nonce prepended to the ciphertext.
+// Wrap encrypts dek with AES-256-GCM under the 32-byte key named by keyRef
+// (a bare file name inside this provider's configured key directory). The
+// AEAD (cipher.NewGCMWithRandomNonce) samples its own 96-bit nonce and
+// prepends it to the returned ciphertext; SP 800-38D requires the module to
+// own IV generation, and GODEBUG=fips140=only refuses any construction that
+// lets the caller supply one.
 func (p *SoftwareProvider) Wrap(ctx context.Context, keyRef string, dek []byte) ([]byte, error) {
 	gcm, key, err := p.gcm(keyRef)
 	if err != nil {
@@ -143,11 +138,8 @@ func (p *SoftwareProvider) Wrap(ctx context.Context, keyRef string, dek []byte) 
 	}
 	defer wipeFn(key)
 
-	nonce := make([]byte, softwareNonceLength)
-	if _, err := io.ReadFull(randReader, nonce); err != nil {
-		return nil, &WrapFailedError{Err: err}
-	}
-	return gcm.Seal(nonce, nonce, dek, nil), nil
+	// The nonce argument must be empty: the AEAD generates and prepends it.
+	return gcm.Seal(nil, nil, dek, nil), nil // #nosec G407 -- the AEAD is NewGCMWithRandomNonce (newGCM), which draws a fresh random nonce per Seal and prepends it; the nil nonce argument is required, a non-nil one panics
 }
 
 // Unwrap decrypts wrapped (a nonce prepended to AES-256-GCM ciphertext,
@@ -155,6 +147,12 @@ func (p *SoftwareProvider) Wrap(ctx context.Context, keyRef string, dek []byte) 
 // Returns *UnwrapFailedError when authentication fails -- the wrong key,
 // or wrapped was tampered with -- and *KeyAccessError when keyRef itself
 // could not be resolved to a usable key file.
+// Unwrap decrypts wrapped (the nonce-prepended AES-256-GCM ciphertext
+// exactly what Wrap returned) under the 32-byte key named by keyRef.
+// Returns *UnwrapFailedError when authentication fails -- the wrong key,
+// wrapped was tampered with, or wrapped is shorter than the nonce+tag
+// overhead -- and *KeyAccessError when keyRef itself could not be resolved
+// to a usable key file.
 func (p *SoftwareProvider) Unwrap(ctx context.Context, keyRef string, wrapped []byte) ([]byte, error) {
 	gcm, key, err := p.gcm(keyRef)
 	if err != nil {
@@ -162,11 +160,9 @@ func (p *SoftwareProvider) Unwrap(ctx context.Context, keyRef string, wrapped []
 	}
 	defer wipeFn(key)
 
-	if len(wrapped) < softwareNonceLength {
-		return nil, &UnwrapFailedError{}
-	}
-	nonce, ciphertext := wrapped[:softwareNonceLength], wrapped[softwareNonceLength:]
-	dek, err := gcm.Open(nil, nonce, ciphertext, nil)
+	// The nonce argument must be empty: the AEAD reads the nonce back off
+	// the front of wrapped itself, including the short-input check.
+	dek, err := gcm.Open(nil, nil, wrapped, nil)
 	if err != nil {
 		return nil, &UnwrapFailedError{}
 	}

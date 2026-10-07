@@ -1,6 +1,6 @@
-# Desktop GUI and TypeScript SDK — Engineering Contract
+# Desktop GUI — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-04
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Build tags
 
@@ -45,6 +45,15 @@ management, feature errors), watch streaming and npm packaging are documented in
 - **One frontend codebase runs in both environments.** A view that only works on
   one is a defect, not a variant.
 - **`getClient()` auto-detects.** Frontend code does not branch on environment.
+- **The `qrdb` binary imports only `sdk/go/...`.** Neither the CLI nor the Go
+  bindings reach into `pkg/` or an internal package; they use the SDK every
+  public consumer uses, and a missing symbol is added to the SDK, never copied
+  into the CLI. `TestCLI_ImportsOnlyTheSDK` (`test/buildgates`, run by
+  `make test` and `make check-action-pins`) enforces it for non-test code. The
+  one exception is the in-process server the `qrdb_embedded` build composes for
+  the desktop app (`bindings_server.go`, `embedded_barrier.go`,
+  `database_instance_registry.go`, `host_adapter.go`, `kvstore_adapter.go`); the
+  gate lists those five files and fails when one stops needing its place.
 - **There is no login screen and no password path.** Authentication is mTLS at
   the TLS handshake; the header identity is the client certificate's Subject CN.
 - **The browser path uses the ordinary REST API plus CORS.** No GUI-only
@@ -288,3 +297,7 @@ directory on its path, that resolves outside refuses the start
 The GUI's own state machine is the operator-visible signal: `unseal` means the
 server is sealed, and a missing view means the capability is absent. Neither is
 an error state to debug — both are the shell reflecting the server.
+
+## Integration Target
+
+Run `make integration-test-desktop-gui` for this feature. The target intentionally selects zero Go integration tests because desktop coverage is the TypeScript SDK and Playwright suite; the accounting row is `test/integration/COVERAGE.md` under `desktop-gui`.

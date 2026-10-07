@@ -24,7 +24,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 //go:embed all:frontend/dist
@@ -34,7 +34,7 @@ var assets embed.FS
 // application window. It blocks until the user closes the window.
 // The logFile parameter is the path from --log-file (empty when
 // logging to stdout).
-func launchGUI(log *logger.Logger, logFile string) error {
+func launchGUI(log *sdk.ConcreteLogger, logFile string) error {
 	log.Debug("creating Wails bindings")
 
 	b := createGUIBindings(log, logFile)

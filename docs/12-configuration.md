@@ -900,12 +900,14 @@ Configures Cross-Origin Resource Sharing headers for the REST API.
 ### databases
 
 Configures named databases. Each entry defines an isolated data store with
-its own engine, backend, and optional per-database wire protocols.
+its own backend and optional per-database wire protocols. *(Corrected: there
+is no per-database `engine` field. Lane 1C deleted it outright -- every
+database serves every compiled-in engine, OD-12/OD-13 -- and a config file
+still carrying `engine` is refused by the strict decode below, not ignored.)*
 
 | Field        | Type   | Default | Required | Description                                          |
 |--------------|--------|---------|----------|-------------------------------------------------------|
 | `name`       | string | --      | yes      | Unique database name                                  |
-| `engine`     | string | `kv`    | yes      | Store engine: `kv`, `timeseries`, or `vector`          |
 | `backend`    | string | --      | yes      | Storage backend: `memory`, `file`, `pebble`, `raft`, or `objstore` |
 | `mysql`      | bool   | `false` | no       | Enable the MySQL wire protocol for this database       |
 | `postgresql` | bool   | `false` | no       | Enable the PostgreSQL wire protocol for this database  |
@@ -943,12 +945,11 @@ entry, not nested under anything else.
 **Validation rules:**
 
 - `name` must not be empty and must be unique across `databases`.
-- `engine` must be one of: `kv`, `timeseries`, `vector`.
 - `backend` must be one of: `memory`, `file`, `pebble`, `raft`, `objstore`.
 - `mysql` or `postgresql`, when `true` on any database, require TLS and auth
   enabled at the server level (`tls.enabled`, `auth.enabled`).
-- `etcd.enabled`, when `true`, requires the database `engine` to be `kv`,
-  and requires TLS and auth enabled at the server level; a binary without
+- `etcd.enabled`, when `true`, requires TLS and auth enabled at the server
+  level (there is no longer an `engine` constraint to check); a binary without
   the `qrdb_etcd` build tag refuses it at boot (`service.RefuseEtcdNotCompiled`),
   checked over every configured database before any of them provisions.
   See [etcd-compatibility](etcd-compatibility/architecture.md) for the full
@@ -961,13 +962,11 @@ entry, not nested under anything else.
 ```yaml
 databases:
   - name: app
-    engine: kv
     backend: pebble
     mysql: true
     sql:
       concurrency: pessimistic
   - name: k8s-prod
-    engine: kv
     backend: raft
     etcd:
       enabled: true
@@ -975,15 +974,14 @@ databases:
       advertise_client_urls:
         - "https://node1:2379"
   - name: cache
-    engine: kv
     backend: memory
 ```
 
 **Notes:**
 
 - The top-level `sql:` section (below) configures settings shared by every SQL
-  connection (`default_database`, `max_connections`, `query_timeout`); it does
-  not enable a protocol. A database's own `mysql`/`postgresql` fields are what
+  connection (`default_database`, `max_connections`, `query_timeout`,
+  `wait_timeout`, `write_timeout`); it does not enable a protocol. A database's own `mysql`/`postgresql` fields are what
   turn the wire protocols on, and `protocols.mysql`/`protocols.postgresql`
   must also be enabled server-wide (and compiled in — see
   `ValidateCapabilities`).
@@ -1092,61 +1090,28 @@ rag:
 
 ### tenant
 
-Configures multi-tenant isolation behavior, particularly for vector namespaces and
-strict mode enforcement.
+Configures multi-tenant default quotas and entitlements. See
+[docs/multi-tenancy/](multi-tenancy/architecture.md) for the full isolation
+model.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `strict_isolation` | bool | `false` | Reject vector namespace creation when the authenticated identity carries no (non-system) tenant |
+**Vector namespace creation and the cluster isolation-policy floor:**
 
-**Strict Mode Behavior:**
+There is no `tenant.strict_isolation` configuration key — it was removed
+(go-qrdb v0.45) because it governed only vector namespace creation, which made
+it dangerously misleading for a compliance reader looking for the tenant
+isolation posture. Its behavior is folded into the real, cluster-wide
+isolation-policy floor
+([docs/multi-tenancy/architecture.md#the-isolation-policy](multi-tenancy/architecture.md#the-isolation-policy)):
 
-When `strict_isolation: true`:
-
-1. **Vector namespace creation** requires the authenticated identity to carry a
-   non-system tenant. An identity resolving to the `system` tenant is rejected with
-   `403 Forbidden` (`tenant required`).
-2. **System tenant assumption** is disabled — there is no implicit fallback to the `system`
-   tenant. The tenant comes from the authenticated mTLS identity (see [scoping.md](scoping.md)),
-   so creation must be performed by an identity that belongs to a real tenant.
-3. **Use cases**: Multi-tenant SaaS deployments, regulatory environments (HIPAA, PCI-DSS)
-   where implicit data ownership is unacceptable.
-
-**Standard Mode (default, strict_isolation: false):**
-
-When `strict_isolation: false`:
-
-1. **Un-tenanted identities pool into `system`.** An identity with no explicit tenant
-   resolves to the structurally privileged `system` tenant. Vector namespaces created
-   by such identities are owned by `system`.
-2. **This is NOT cross-tenant isolation.** Standard mode is a single-tenant convenience
-   that makes un-owned and system-owned namespaces indistinguishable. It does not
-   prevent an identity from accidentally writing to another tenant's namespace if it
-   somehow resolves to the same tenant; it does not audit or gate implicit system-tenant
-   ownership; and it emits a startup WARN log to make the posture visible.
-3. **Suitable for** single-tenant deployments, development environments, or applications
-   where all callers are trusted and tenant partitioning is not a security boundary.
-4. **Not suitable for** multi-tenant SaaS, HIPAA, PCI-DSS, or any deployment where
-   namespace ownership must be enforced per authenticated identity.
-
-**FIPS 140-3 Enforcement:**
-
-When the binary is compiled in FIPS 140-3 mode (`GOFIPS140=latest` or `GODEBUG=fips140=on`),
-strict isolation is **always** enabled regardless of this configuration flag. A FIPS-compiled
-process cannot be relaxed into standard mode and will always reject un-tenanted namespace
-operations.
-
-**Example configuration:**
-
-```yaml
-tenant:
-  strict_isolation: false  # (default) use system tenant for un-tenanted requests
-
-# OR for strict mode:
-
-tenant:
-  strict_isolation: true   # reject un-tenanted requests
-```
+- **Cluster floor is `strict`** (including a FIPS 140-3 build, which always
+  tightens the floor to `strict`): vector namespace creation requires the
+  authenticated identity to carry a non-system tenant. An identity resolving
+  to the `system` tenant is rejected with `403 Forbidden` (`tenant required`).
+- **Cluster floor is `operator-access`** (today's behavior, and the default
+  for any deployment that has not set the floor): un-tenanted identities pool
+  into `system`. This is a single-tenant convenience, not cross-tenant
+  isolation — it does not prevent an identity from accidentally writing to
+  another tenant's namespace if it somehow resolves to the same tenant.
 
 **Notes:**
 

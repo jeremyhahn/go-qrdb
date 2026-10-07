@@ -225,6 +225,47 @@ type GRPCPublicMethodLister interface {
 // BaseModule provides no-op defaults for every hook except Name, so a module
 // embeds it and overrides only what applies. It does not implement Name, forcing
 // each module to supply its own identity.
+// TenantTargetAuthorizer is the minimal capability a module needs to
+// authorize its OWN handler against a request-supplied target tenant, under
+// the host's RBAC ScopeCross/ScopeSelf rules -- the identical check
+// AuthMiddleware.AuthorizeTenantTarget performs for go-qrdb's own tenant
+// routes (pkg/auth/middleware). It is declared here as a minimal structural
+// interface rather than naming *middleware.AuthMiddleware directly, so this
+// package stays free of that import; *middleware.AuthMiddleware already
+// satisfies it, as-is, with no adapter required.
+type TenantTargetAuthorizer interface {
+	// AuthorizeTenantTarget authorizes ctx's identity for perm against
+	// tenantID -- a tenant the request named, which may differ from the
+	// identity's own tenant. It returns nil when the identity's role
+	// grants perm with a scope (ScopeSelf, ScopeCross) that covers
+	// tenantID, and a denial otherwise.
+	AuthorizeTenantTarget(ctx context.Context, tenantID string, perm permission.Permission) error
+}
+
+// ModuleTenantTargetAware is an optional ServiceModule extension. The
+// unified server calls SetTenantTargetAuthorizer exactly once, before any of
+// the module's Register* hooks run, so a handler the module registers on ANY
+// transport (REST, gRPC, unix, QUIC, MCP) can authorize its own operation
+// against a caller-supplied target tenant -- e.g. a system-scope caller
+// acting on a tenant it named in the request -- under the SAME
+// ScopeCross/ScopeSelf RBAC rules go-qrdb's own tenant routes enforce,
+// instead of being confined to the request's own identity tenant the way
+// the shared per-route permission check alone would leave it (go-qrdb#587).
+//
+// The authorizer handed to SetTenantTargetAuthorizer is nil when the host's
+// auth system is disabled (cfg.Auth.IsEnabled() == false); a module must
+// treat a nil authorizer exactly as every built-in tenant route treats that
+// condition -- admit unconditionally, because no identity exists on the
+// request to confine -- never as a refusal.
+//
+// Embedded hosts that hold the node directly, rather than registering a
+// ServiceModule, reach the same capability through
+// sdk/go/node.Node.AuthMiddleware (whose *middleware.AuthMiddleware also
+// satisfies TenantTargetAuthorizer) or Node.Authorizer.
+type ModuleTenantTargetAware interface {
+	SetTenantTargetAuthorizer(a TenantTargetAuthorizer)
+}
+
 type BaseModule struct{}
 
 // RegisterGRPC is a no-op default.

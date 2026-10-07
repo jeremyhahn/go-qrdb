@@ -23,15 +23,15 @@ import {
 const LOAD_TIMEOUT = 10_000;
 
 // ---------------------------------------------------------------------------
-// Mock state with multiple databases covering different engine types.
+// Mock state with multiple databases on different backends.
 // ---------------------------------------------------------------------------
 
 const multiDbState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "alpha", engine: "kv", backend: "pebble", status: "open" },
-    { name: "beta", engine: "kv", backend: "memory", status: "open" },
-    { name: "gamma", engine: "timeseries", backend: "pebble", status: "open" },
+    { name: "alpha", backend: "pebble", status: "open" },
+    { name: "beta", backend: "memory", status: "open" },
+    { name: "gamma", backend: "pebble", status: "open" },
   ],
 };
 
@@ -83,20 +83,6 @@ test.describe("Database Switching", () => {
     await expect(
       page.locator("main").getByRole("heading", { name: "alpha" }),
     ).not.toBeVisible();
-  });
-
-  test("database engine badges display correctly", async ({ page }) => {
-    await page.goto("/");
-
-    const sidebar = page.locator("aside");
-    await expect(sidebar.getByText("alpha")).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    // alpha and beta are kv engines — both "kv" badges must appear.
-    const kvBadges = sidebar.getByText("kv", { exact: true });
-    await expect(kvBadges).toHaveCount(2);
-
-    // gamma is a timeseries engine — sidebar displays the short label "ts".
-    await expect(sidebar.getByText("ts", { exact: true })).toBeVisible();
   });
 
   test("KV operation on selected database works", async ({ page }) => {

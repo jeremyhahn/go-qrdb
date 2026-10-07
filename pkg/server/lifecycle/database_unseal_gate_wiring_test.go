@@ -55,7 +55,7 @@ func TestBuildServices_WiresTheDatabaseUnsealGate(t *testing.T) {
 
 	for _, name := range []string{"orders", "ledger"} {
 		if _, err := dbs.Create(database.DatabaseConfig{
-			TenantID: "acme", Name: name, Engine: database.EngineKV, Backend: database.BackendMemory,
+			TenantID: "acme", Name: name, Backend: database.BackendMemory,
 		}); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}

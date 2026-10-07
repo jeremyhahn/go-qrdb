@@ -42,6 +42,15 @@ var watchReestablishBackoff = 2 * time.Second
 // exponential backoff may grow.
 var watchReestablishBackoffCap = 1 * time.Minute
 
+// watchReestablishWait fires once the given backoff duration has elapsed,
+// defaulting to the real wall clock via time.After. Tests asserting the
+// shape of the backoff sequence itself (growth, then capping) substitute a
+// recording stub here instead of letting reestablishWatch actually sleep,
+// since waiting on wall-clock gaps under -race/full-suite load is what made
+// go-qrdb#610's backoff test flaky. This is the narrowest seam for that one
+// call site, not the repo-wide clock abstraction tracked by #172.
+var watchReestablishWait = time.After
+
 // WatchPrefixer is the one method WatchForDeletions needs from a watch
 // service: a prefix watcher. Declared locally, narrower than
 // service.WatchServicer, so this package depends only on pkg/watch rather
@@ -158,7 +167,7 @@ func (p *DefaultCertProvider) reestablishWatch(ctx context.Context, label, prefi
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(backoff):
+		case <-watchReestablishWait(backoff):
 		}
 		w, err := p.watchSvc.WatchPrefix(ctx, prefix, opts...)
 		if err == nil {

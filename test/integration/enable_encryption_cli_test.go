@@ -24,6 +24,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -809,8 +810,15 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 
 	// Role + user so the tenant cert can create a database and do KV I/O.
 	// Created AFTER the barrier init so the records land in the tenant's
-	// own encrypted IAM store.
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	// own encrypted IAM store. The system tenant can no longer provision
+	// records inside another tenant's IAM at all (owner ruling,
+	// 2026-10-01), so this authenticates as the tenant's own onboarded
+	// admin; its built-in Admin role cannot create a NEW role
+	// (RolesCreate is SO-exclusive), so it self-assigns its own
+	// pre-seeded SO role first, exactly like
+	// tenant_isolation_cli_test.go's provisionTenantIdentityFor.
+	selfAssignTenantSO(t, adminPort, tenantID, onboardedAdminClient)
+	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 		map[string]interface{}{
 			"name":      "db-admin",
@@ -831,7 +839,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
-	createBoundUser(t, sysClient, adminPort,
+	createBoundUser(t, onboardedAdminClient, adminPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 		tenantCert)
 
@@ -841,7 +849,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 
 	dbBody, dbStatus := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", adminPort),
-		map[string]interface{}{"name": dbName, "engine": "kv", "backend": "pebble", "replicas": 1},
+		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 1},
 	)
 	if dbStatus != http.StatusCreated && dbStatus != http.StatusOK {
 		t.Fatalf("create tenant database: status %d, body: %s", dbStatus, dbBody)
@@ -922,5 +930,164 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 		if st != http.StatusOK || string(data) != v {
 			t.Fatalf("post-migration tenant %q = %q (status %d), want %q (DATA LOSS)", k, string(data), st, v)
 		}
+	}
+}
+
+// startMultiProtocolNoneSealNode boots a fresh single-node daemon with every
+// CLI-selectable transport enabled (REST, gRPC, QUIC, MCP, Unix) and an
+// unencrypted (strategy "none") system barrier, waits for every transport to
+// serve a request, and returns the shared multiProtoNode handle the rest of
+// this package's _CLI_PerProtocol tests already use (multi_protocol_helpers_test.go).
+// Unlike startMultiProtocolNodeWithArgs (which starts already keyed under a
+// passphrase barrier), this node starts unencrypted so a test can drive
+// `barrier enable-encryption` as its own source-state transition.
+func startMultiProtocolNoneSealNode(t *testing.T) *multiProtoNode {
+	t.Helper()
+
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+	ca := generateTestCA(t)
+	dataDir := t.TempDir()
+	cfgPath := writeNoneSealConfig(t)
+
+	sockDir, err := os.MkdirTemp("", "qrdb-mp-enc-")
+	if err != nil {
+		t.Fatalf("startMultiProtocolNoneSealNode: socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	raftPorts := allocatePorts(t, 1)
+	quicPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 3) // admin (REST), grpc, mcp
+
+	restPort := tcpPorts[0]
+	grpcPort := tcpPorts[1]
+	mcpPort := tcpPorts[2]
+	quicPort := quicPorts[0]
+
+	args := []string{
+		"start",
+		"--config", cfgPath,
+		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
+		"--data-dir", dataDir,
+		"--sm", "pebble",
+		"--discovery", "static",
+		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
+		"--shard-id", "1",
+		"--replica-id", "1",
+		"--admin-port", fmt.Sprintf("%d", restPort),
+		"--grpc-port", fmt.Sprintf("%d", grpcPort),
+		"--enable-rest",
+		"--enable-grpc",
+		"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPort),
+		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
+		"--enable-unix", "--unix-socket-path", unixSocket,
+	}
+	args = append(args, ca.tlsFlags(t)...)
+
+	startNode(t, bin, args, "[cli-enc-multi] ")
+
+	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
+	clientCert, clientKey := initAndUnsealBarrier(t, ca, restPort, "")
+
+	waitForHealthy(t, dataDir, 60*time.Second)
+	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, ca, []int{restPort}, 60*time.Second)
+
+	n := &multiProtoNode{
+		cli:        cli,
+		ca:         ca,
+		dataDir:    dataDir,
+		clientCert: clientCert,
+		clientKey:  clientKey,
+		unixSocket: unixSocket,
+		restPort:   restPort,
+		grpcPort:   grpcPort,
+		mcpPort:    mcpPort,
+		quicPort:   quicPort,
+	}
+
+	for _, proto := range multiProtocols {
+		waitForCLIProtoReady(t, n, proto, 60*time.Second)
+	}
+
+	return n
+}
+
+// TestCLI_BarrierEnableEncryption_SystemScope_Lifecycle_CLI_PerProtocol
+// generalizes the `barrier enable-encryption` trigger -- and the CLI
+// round-trip immediately around it (seed data, pre-migration status,
+// post-migration status, data survival) -- to every CLI-selectable
+// transport, each against its own fresh node since enable-encryption is a
+// one-time source-state transition.
+//
+// The post-migration `barrier unseal` step itself stays on REST regardless
+// of which transport triggered the migration. While the recycled daemon is
+// sealed, only the REST client's Transport.Connect tolerates a 503 as
+// reachable (see this file's package comment); TestBarrierClusterUnseal_CLI_PerProtocol
+// (cluster_seal_cli_test.go) keeps the same REST-only unseal step for the
+// identical, already-proven reason, and nothing about enable-encryption's
+// resealed window changes that constraint.
+func TestCLI_BarrierEnableEncryption_SystemScope_Lifecycle_CLI_PerProtocol(t *testing.T) {
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			node := startMultiProtocolNoneSealNode(t)
+			restArgs := node.cliArgsFor(multiProtocols[0]) // rest
+			args := node.cliArgsFor(proto)
+
+			seed := map[string]string{"alpha": "one", "bravo": "two"}
+			for k, v := range seed {
+				if out, err := runQRDB(t, node.cli, args, "kv", "put", k, v); err != nil {
+					t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, k, err, out)
+				}
+			}
+			if status := cliBarrierStatus(t, node.cli, args); status.Strategy != "none" || status.Sealed {
+				t.Fatalf("[%s] pre-migration barrier status = %+v, want strategy=none sealed=false", proto.name, status)
+			}
+
+			passphrase := "cli-enc-" + proto.name + "-pass"
+			out, err := runQRDB(t, node.cli, args,
+				"barrier", "enable-encryption",
+				"--strategy", "passphrase",
+				"--passphrase", passphrase,
+				"-y",
+			)
+			if err != nil {
+				t.Fatalf("[%s] barrier enable-encryption: %v\noutput: %s", proto.name, err, out)
+			}
+			if !strings.Contains(out, "migration_started") {
+				t.Fatalf("[%s] barrier enable-encryption: unexpected output: %s", proto.name, out)
+			}
+
+			waitForBarrierSealedAgain(t, node.ca, node.restPort, 120*time.Second)
+			waitForBarrierStatusReachable(t, node.ca, node.restPort, 90*time.Second)
+
+			if out, err := runQRDB(t, node.cli, restArgs, "barrier", "unseal", "--passphrase", passphrase); err != nil {
+				t.Fatalf("[%s] barrier unseal: %v\noutput: %s", proto.name, err, out)
+			}
+			waitForHealthy(t, node.dataDir, 90*time.Second)
+			waitForAdmin(t, node.ca.Pool, node.restPort, 90*time.Second)
+			waitForCLIProtoReady(t, node, proto, 60*time.Second)
+
+			if status := cliBarrierStatus(t, node.cli, args); status.Strategy != "passphrase" || status.Sealed {
+				t.Fatalf("[%s] post-unseal barrier status = %+v, want strategy=passphrase sealed=false", proto.name, status)
+			}
+			for k, v := range seed {
+				out, err := runQRDB(t, node.cli, args, "kv", "get", k)
+				if err != nil || strings.TrimSpace(out) != v {
+					t.Fatalf("[%s] post-migration kv get %s = %q (err=%v), want %q (DATA LOSS)", proto.name, k, out, err, v)
+				}
+			}
+
+			if out, err := runQRDB(t, node.cli, args, "kv", "put", "echo", "five"); err != nil {
+				t.Fatalf("[%s] post-migration kv put echo: %v\noutput: %s", proto.name, err, out)
+			}
+			if out, err := runQRDB(t, node.cli, args, "kv", "get", "echo"); err != nil || strings.TrimSpace(out) != "five" {
+				t.Fatalf("[%s] post-migration kv get echo = %q (err=%v), want five", proto.name, out, err)
+			}
+		})
 	}
 }

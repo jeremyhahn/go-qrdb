@@ -319,6 +319,7 @@ func TestHandleJoinRequest_AdvertiserFailureDoesNotRefuseTheJoin(t *testing.T) {
 }
 
 func TestJoinServer_SignsAValidCSR(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -381,6 +382,7 @@ func TestJoinServer_SignsAValidCSR(t *testing.T) {
 }
 
 func TestJoinServer_WrongTokenRefused(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -414,6 +416,7 @@ func TestJoinServer_WrongTokenRefused(t *testing.T) {
 }
 
 func TestJoinServer_TokenCannotBeReused(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -450,6 +453,7 @@ func TestJoinServer_TokenCannotBeReused(t *testing.T) {
 }
 
 func TestJoinServer_InvalidCSRRefused(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -545,6 +549,7 @@ func TestJoinCSR_ErrorStrings(t *testing.T) {
 }
 
 func TestJoinServerOptions_PortDefault(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
@@ -569,6 +574,7 @@ func TestJoinServer_NilReceiver(t *testing.T) {
 }
 
 func TestLoadOrGenerateJoinKey_ReusesExistingKey(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	dir := t.TempDir()
@@ -616,6 +622,7 @@ func TestJoin_AnchorFetchFailure(t *testing.T) {
 }
 
 func TestJoin_InvalidJoinKeyHex(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	// A real anchor so the failure under test is the hex decode, not the
 	// anchor fetch: start a first node purely to serve the anchor.
 	_, boot := startFirstNode(t)
@@ -652,6 +659,7 @@ func TestJoinKeyDecodeError_ErrorAndUnwrap(t *testing.T) {
 }
 
 func TestJoinServer_GarbageBeforeHandshakeDoesNotPanic(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -679,6 +687,7 @@ func TestJoinServer_GarbageBeforeHandshakeDoesNotPanic(t *testing.T) {
 }
 
 func TestJoinCSR_WrongServerKeyLength(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -711,6 +720,7 @@ func TestBuildJoinCSR_InvalidNodeURI(t *testing.T) {
 }
 
 func TestStartJoinServer_PortInUse(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
@@ -1060,6 +1070,7 @@ func TestHandleJoinRequest_ConcurrentTokensForOneIdentityYieldExactlyOneLeaf(t *
 }
 
 func TestJoinServer_SigningFailureRefused(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())
 	if err != nil {
@@ -1098,6 +1109,7 @@ func TestJoinServer_SigningFailureRefused(t *testing.T) {
 // Noise_NK handshake as a raw client, then sends an undecryptable
 // ciphertext frame, exercising handle's Decrypt-failure branch.
 func TestJoinServer_GarbageAfterHandshakeDoesNotPanic(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	provider := newTestClusterCAProvider(t)
 	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)

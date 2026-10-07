@@ -17,7 +17,7 @@ package main
 import (
 	"sync/atomic"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // ConfigInitializedResponse contains the server initialization status.
@@ -29,14 +29,14 @@ type ConfigInitializedResponse struct {
 // Wails frontend. It checks whether the server has completed first-run
 // setup by examining saved embedded config and connection state.
 type ConfigBinding struct {
-	logger             *logger.Logger
+	logger             *sdk.ConcreteLogger
 	server             *EmbeddedServerBinding
 	conn               *ConnectionBinding
 	sessionInitialized atomic.Bool
 }
 
 // NewConfigBinding creates a new ConfigBinding.
-func NewConfigBinding(log *logger.Logger, server *EmbeddedServerBinding, conn *ConnectionBinding) *ConfigBinding {
+func NewConfigBinding(log *sdk.ConcreteLogger, server *EmbeddedServerBinding, conn *ConnectionBinding) *ConfigBinding {
 	return &ConfigBinding{
 		logger: log,
 		server: server,

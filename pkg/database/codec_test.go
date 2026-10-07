@@ -27,7 +27,6 @@ import (
 func TestDatabaseConfig_Validate_StorageCodec(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:         "codec-db",
-		Engine:       EngineKV,
 		Backend:      BackendMemory,
 		Mode:         ModeEmbedded,
 		StorageCodec: "json",
@@ -42,7 +41,6 @@ func TestDatabaseConfig_Validate_StorageCodec(t *testing.T) {
 func TestDatabaseConfig_Validate_InvalidStorageCodec(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:         "codec-db",
-		Engine:       EngineKV,
 		Backend:      BackendMemory,
 		Mode:         ModeEmbedded,
 		StorageCodec: "nonexistent_codec",
@@ -62,7 +60,6 @@ func TestDatabaseConfig_Validate_InvalidStorageCodec(t *testing.T) {
 func TestDatabaseConfig_Validate_EmptyStorageCodec(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:         "codec-db",
-		Engine:       EngineKV,
 		Backend:      BackendMemory,
 		Mode:         ModeEmbedded,
 		StorageCodec: "",
@@ -77,7 +74,6 @@ func TestDatabaseConfig_Validate_EmptyStorageCodec(t *testing.T) {
 func TestDatabaseMeta_StorageCodec_RoundTrip(t *testing.T) {
 	meta := DatabaseMeta{
 		Name:         "meta-db",
-		Engine:       EngineKV,
 		Backend:      BackendMemory,
 		StorageCodec: "json",
 	}
@@ -101,7 +97,6 @@ func TestDatabaseMeta_StorageCodec_RoundTrip(t *testing.T) {
 func TestDatabaseMeta_StorageCodec_OmittedWhenEmpty(t *testing.T) {
 	meta := DatabaseMeta{
 		Name:    "compat-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 
@@ -121,7 +116,6 @@ func TestDatabaseMeta_StorageCodec_OmittedWhenEmpty(t *testing.T) {
 func TestDatabaseInfo_StorageCodec_Propagated(t *testing.T) {
 	info := DatabaseInfo{
 		Name:         "info-db",
-		Engine:       EngineKV,
 		Backend:      BackendMemory,
 		Status:       StatusOpen,
 		StorageCodec: "json",

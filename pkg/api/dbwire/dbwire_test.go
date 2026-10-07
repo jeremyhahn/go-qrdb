@@ -30,7 +30,6 @@ func full() *database.DatabaseInfo {
 	return &database.DatabaseInfo{
 		TenantID: "acme",
 		Name:     "orders",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendRaft,
 		Status:   database.StatusOpen,
 		Protocol: database.ProtocolConfig{
@@ -53,7 +52,7 @@ func full() *database.DatabaseInfo {
 func TestInfo_CarriesEveryFieldAndNoSecret(t *testing.T) {
 	in := full()
 	out := dbwire.Info(in)
-	if out.TenantID != "acme" || out.Name != "orders" || out.Engine != "kv" || out.Backend != "raft" || out.Status != "open" {
+	if out.TenantID != "acme" || out.Name != "orders" || out.Backend != "raft" || out.Status != "open" {
 		t.Errorf("identity = %+v", out)
 	}
 	if out.DataDir != in.DataDir || out.ShardID != 1007 || out.Mode != "embedded" || out.Replicas != 3 || !out.DedicatedWAL {
@@ -141,7 +140,7 @@ func TestInfo_UnsetSecretIsNotReportedSet(t *testing.T) {
 }
 
 func TestInfo_OptionalBlocksAbsent(t *testing.T) {
-	in := &database.DatabaseInfo{Name: "plain", Engine: database.EngineKV, Backend: database.BackendMemory}
+	in := &database.DatabaseInfo{Name: "plain", Backend: database.BackendMemory}
 	j := dbwire.Info(in)
 	if j.Raft != nil || j.Barrier != nil || j.Connection != nil || j.SQL != nil || j.Protocol.Etcd != nil {
 		t.Errorf("JSON invented blocks: %+v", j)

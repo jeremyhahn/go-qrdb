@@ -25,8 +25,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
@@ -36,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -98,7 +97,7 @@ type MVCCEngine struct {
 	auditChain *audit.Chain
 	hub        *watch.Hub
 	ts         *timeseries.Storage
-	pebbleDB   *pebble.DB
+	logger     *logger.Logger
 
 	// indexMgr owns every vector namespace's in-memory ANN index. Nil is a
 	// valid, fully no-op configuration (every vector command still applies
@@ -146,11 +145,12 @@ func WithMVCCTimeSeries(ts *timeseries.Storage) MVCCOption {
 	}
 }
 
-// WithMVCCPebbleDB provides a pebble.DB instance for creating PebbleIndex
-// instances. When not provided, index creation falls back to MemoryIndex.
-func WithMVCCPebbleDB(db *pebble.DB) MVCCOption {
+// WithMVCCLogger attaches a logger used when creating storage-backed
+// secondary indexes. When not provided, a default error-level logger is
+// used (see defaultLogger in kv_engine.go).
+func WithMVCCLogger(log *logger.Logger) MVCCOption {
 	return func(e *MVCCEngine) {
-		e.pebbleDB = db
+		e.logger = log
 	}
 }
 
@@ -424,6 +424,8 @@ func (e *MVCCEngine) DeliverNotifications(notifications []Notification) {
 //     the distinct keys mutated in a revision window, including deleted ones
 //   - service.LeaseTimeToLiveQuery: returns *lease.Lease
 //   - service.LeasesQuery: returns []*lease.Lease
+//   - audit.QueryRequest: returns *audit.Page for the confined tenant and filter
+//   - audit.VerifyRequest: returns *audit.ChainContinuityReport for the confined tenant
 //   - service.IndexQueryRequest: returns []uint64 matching entity IDs
 //   - service.IndexScanRequest: returns map[string][]uint64
 //   - service.IndexListRequest: returns []string of index names
@@ -523,6 +525,18 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		}
 		return e.lessor.Leases(), nil
 
+	case audit.QueryRequest:
+		if e.auditChain == nil {
+			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
+		}
+		return e.auditChain.Query(e.stg, q.TenantID, q.Filter)
+
+	case audit.VerifyRequest:
+		if e.auditChain == nil {
+			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
+		}
+		return e.auditChain.Verify(e.stg, q.TenantID)
+
 	case service.IndexQueryRequest:
 		e.indexMu.RLock()
 		idx, ok := e.indexes[q.IndexName]
@@ -566,7 +580,7 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if e.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return e.ts.QueryRich(context.Background(), q.Request)
+		return e.ts.QueryRich(q.Request)
 
 	case service.TSGetRetentionRequest:
 		if e.ts == nil {
@@ -757,6 +771,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpTSWritePoint:      e.handleTSWritePoint,
 		protocol.OpTSDeleteSeries:    e.handleTSDeleteSeries,
 		protocol.OpTSSetRetention:    e.handleTSSetRetention,
+		protocol.OpTSApplyRetention:  e.handleTSApplyRetention,
 
 		// Vector engine (docs/vectors/engineering.md "Target: the vector
 		// engine"). Every handler is a plain function over the shared
@@ -900,7 +915,7 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, lr *lease.Lessor, batch stor
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
 	// fatal error from the apply path, which would stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
+	if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -909,7 +924,7 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, lr *lease.Lessor, batch stor
 
 	// Apply index updates. Uniqueness was pre-validated above, so any error
 	// here is a genuine storage fault and is correctly fatal.
-	if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
+	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1011,7 +1026,7 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 	if err := bindLease(lr, batch, key, lease.NoLease); err != nil {
 		return sm.Result{}, nil, err
 	}
-	if ierr := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); ierr != nil {
+	if ierr := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, prevKv); ierr != nil {
 		return sm.Result{}, nil, ierr
 	}
 
@@ -1061,13 +1076,13 @@ func (e *MVCCEngine) handleCompareAndSwap(s *mvcc.Store, lr *lease.Lessor, batch
 
 	// Read-only pre-check, as in handleMVCCPut: a unique-index violation is a
 	// non-fatal application error, not a reason to stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, next); verr != nil {
+	if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, key, next); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, nil, aerr
 		}
 		return sm.Result{}, nil, verr
 	}
-	if ierr := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, next, current); ierr != nil {
+	if ierr := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, next, current); ierr != nil {
 		return sm.Result{}, nil, ierr
 	}
 
@@ -1183,7 +1198,7 @@ func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch s
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
 	// fatal error from the apply path, which would stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
+	if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1192,7 +1207,7 @@ func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch s
 
 	// The guard established the key is absent, so there is no previous value
 	// for the index update to retire, and none to report on the notification.
-	if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, value, nil); err != nil {
+	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, nil); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1237,7 +1252,7 @@ func (e *MVCCEngine) handleBaseKVDelete(s *mvcc.Store, lr *lease.Lessor, batch s
 		return sm.Result{}, nil, err
 	}
 
-	if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
+	if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1279,7 +1294,7 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
 	// fatal error from the apply path, which would stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
+	if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1288,7 +1303,7 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 
 	// Apply index updates. Uniqueness was pre-validated above, so any error
 	// here is a genuine storage fault and is correctly fatal.
-	if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
+	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1364,7 +1379,7 @@ func (e *MVCCEngine) handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch sto
 		return sm.Result{}, nil, err
 	}
 
-	if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
+	if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1537,7 +1552,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
 	// consensus stall.
-	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1593,7 +1608,7 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	// Pre-validate unique-index constraints for the whole batch (read-only,
 	// delete-aware) so a violation rejects the batch atomically via a non-fatal
 	// application error rather than stalling consensus mid-apply.
-	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1640,7 +1655,7 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		prevKv, _ := s.GetInBatch(batch, op.Key)
 		// Validate index constraints before writing to the batch so that a
 		// unique violation aborts the operation without leaving partial state.
-		if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
+		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
 			return nil, err
 		}
 		kvResult, err := s.PutInBatch(batch, op.Key, op.Value, op.LeaseID, rev)
@@ -1665,7 +1680,7 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		if err := bindLease(lr, batch, op.Key, lease.NoLease); err != nil {
 			return nil, err
 		}
-		if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, op.Key, prevKv); err != nil {
+		if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, prevKv); err != nil {
 			return nil, err
 		}
 		deleteKv := &service.KeyValue{
@@ -1912,9 +1927,10 @@ func (e *MVCCEngine) handleAuditAppend(_ *mvcc.Store, _ *lease.Lessor, batch sto
 // Index handlers
 // ---------------------------------------------------------------------------
 
-// handleIndexCreate creates a new secondary index. When a pebbleDB instance
-// is available, the index is backed by PebbleDB. Otherwise, an in-memory
-// index is used. After creation, existing data is backfilled into the index.
+// handleIndexCreate creates a new secondary index, storage-backed via
+// index.NewStoragePebbleIndex so it works identically over every
+// storage.Storage implementation. After creation, existing data is
+// backfilled into the index.
 func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
@@ -1951,6 +1967,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// backfill/maintenance callers (see indexing.go), not in the index.
 	cfg := index.IndexConfig{
 		Name:      name,
+		Type:      index.IndexTypeNormal,
 		Unique:    opts.Unique,
 		Sparse:    opts.Sparse,
 		ValueType: valueType,
@@ -1966,17 +1983,18 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		// over a stored "alpha" answered empty with a nil error (go-qrdb#34).
 		CaseSensitive: !opts.CaseInsensitive,
 	}
+	if opts.Unique {
+		cfg.Type = index.IndexTypeUnique
+	}
 
-	var idx index.Index
-	if e.pebbleDB != nil {
-		pebbleIdx, pebbleErr := index.NewPebbleIndexWithConfig(e.pebbleDB, name, cfg)
-		if pebbleErr != nil {
-			e.indexMu.Unlock()
-			return sm.Result{}, nil, pebbleErr
-		}
-		idx = pebbleIdx
-	} else {
-		idx = index.NewMemoryIndexWithConfig(name, cfg)
+	log := e.logger
+	if log == nil {
+		log = defaultLogger()
+	}
+	idx, idxErr := index.NewStoragePebbleIndex(e.stg, cfg, log)
+	if idxErr != nil {
+		e.indexMu.Unlock()
+		return sm.Result{}, nil, idxErr
 	}
 
 	e.indexMu.Unlock()
@@ -2061,7 +2079,7 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 // ---------------------------------------------------------------------------
 
 // handleTSWrite stores a single time-series data point.
-func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
@@ -2073,7 +2091,7 @@ func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Bat
 		return sm.Result{}, nil, err
 	}
 
-	if err := e.ts.Write(params.Metric, params.Value, tsTimestampFromNano(params.Timestamp), params.Tags); err != nil {
+	if err := e.ts.Write(batch, params.Metric, params.Value, tsTimestampFromNano(params.Timestamp), params.Tags); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -2081,7 +2099,7 @@ func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Bat
 }
 
 // handleTSWriteBatch stores multiple time-series data points atomically.
-func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
@@ -2103,7 +2121,7 @@ func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storag
 		}
 	}
 
-	if err := e.ts.WriteBatch(points); err != nil {
+	if err := e.ts.WriteBatch(batch, points); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -2111,7 +2129,7 @@ func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storag
 }
 
 // handleTSWritePoint stores a single validated time-series data point.
-func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
@@ -2129,7 +2147,7 @@ func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storag
 		Timestamp: tsTimestampFromNano(params.Timestamp),
 		Tags:      params.Tags,
 	}
-	if err := e.ts.WritePoint(context.Background(), dp); err != nil {
+	if err := e.ts.WritePoint(batch, dp); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -2137,7 +2155,7 @@ func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storag
 }
 
 // handleTSDeleteSeries deletes time-series data matching the request criteria.
-func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
@@ -2160,7 +2178,7 @@ func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ stor
 		req.EndTime = tsTimestampFromNano(params.EndNs)
 	}
 
-	if err := e.ts.DeleteSeries(context.Background(), req); err != nil {
+	if err := e.ts.DeleteSeries(batch, req); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -2168,7 +2186,7 @@ func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ stor
 }
 
 // handleTSSetRetention sets the retention policy for a metric.
-func (e *MVCCEngine) handleTSSetRetention(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleTSSetRetention(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
@@ -2186,7 +2204,31 @@ func (e *MVCCEngine) handleTSSetRetention(_ *mvcc.Store, _ *lease.Lessor, _ stor
 		Aggregation: timeseries.AggFunc(params.Aggregation),
 	}
 
-	if err := e.ts.SetRetentionPolicy(params.Metric, policy); err != nil {
+	if err := e.ts.SetRetentionPolicy(batch, params.Metric, policy); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// handleTSApplyRetention deletes points for a metric older than a cutoff
+// the proposing leader computed from its own clock and carried in the
+// command. Every replica applies it deterministically from cutoffNs and
+// the stored retention policy -- a replica never consults its own clock,
+// so every replica of the group deletes the identical set of points.
+func (e *MVCCEngine) handleTSApplyRetention(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	if e.ts == nil {
+		// Time-series subsystem not configured on this SM: non-fatal
+		// application error so the apply loop keeps advancing.
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
+	}
+
+	params, err := protocol.DecodeTSApplyRetention(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if err := e.ts.ApplyRetention(batch, params.Metric, tsTimestampFromNano(params.CutoffNs)); err != nil {
 		return sm.Result{}, nil, err
 	}
 

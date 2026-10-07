@@ -47,7 +47,6 @@ const fixture: Record<string, unknown> = restDatabaseInfo;
 const databaseInfoKeys = {
     tenantId: true,
     name: true,
-    engine: true,
     backend: true,
     status: true,
     protocol: true,

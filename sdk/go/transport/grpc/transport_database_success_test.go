@@ -38,7 +38,7 @@ import (
 type fakeDatabaseServicer struct{}
 
 func (f *fakeDatabaseServicer) Create(_ database.DatabaseConfig) (*database.DatabaseInfo, error) {
-	return &database.DatabaseInfo{Name: "testdb", Engine: "mvcc", Backend: "pebble"}, nil
+	return &database.DatabaseInfo{Name: "testdb", Backend: "pebble"}, nil
 }
 func (f *fakeDatabaseServicer) Get(_ string) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: "testdb"}, nil

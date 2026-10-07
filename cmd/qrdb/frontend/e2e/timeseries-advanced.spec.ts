@@ -26,7 +26,7 @@ const LOAD_TIMEOUT = 10_000;
 const tsState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "ts-adv", engine: "timeseries", backend: "pebble", status: "open" },
+    { name: "ts-adv", backend: "pebble", status: "open" },
   ],
 };
 
@@ -177,6 +177,7 @@ async function navigateToTimeSeries(page: import("@playwright/test").Page): Prom
   await expect(page.locator(".breadcrumbs").getByText("ts-adv", { exact: false })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
+  await page.getByRole("tab", { name: "Time Series", exact: true }).click();
 }
 
 /** Write a data point through the UI slide panel. */

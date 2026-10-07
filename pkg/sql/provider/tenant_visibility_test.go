@@ -56,7 +56,6 @@ func TestAllDatabasesIsScopedToTheSessionTenant(t *testing.T) {
 		_, err := mgr.Create(database.DatabaseConfig{
 			Name:     c.name,
 			TenantID: c.tenant,
-			Engine:   database.EngineKV,
 			Backend:  database.BackendMemory,
 		})
 		require.NoError(t, err)
@@ -127,7 +126,6 @@ func TestAllDatabasesWithoutASessionIsSystemScoped(t *testing.T) {
 		_, err := mgr.Create(database.DatabaseConfig{
 			Name:     c.name,
 			TenantID: c.tenantID,
-			Engine:   database.EngineKV,
 			Backend:  database.BackendMemory,
 		})
 		require.NoError(t, err)

@@ -39,11 +39,15 @@ func TestErrorsMatchTheirClassAndNameTheirSubject(t *testing.T) {
 		{&CorruptKeyringError{TenantID: "a", Err: cause}, ErrCorruptKeyring, "corrupt", true},
 		{&ConcurrentUpdateError{TenantID: "a", Attempts: 16}, ErrConcurrentUpdate, "16", false},
 		{&CryptoError{Op: "encrypt", Err: cause}, ErrCrypto, "encrypt", true},
+		{&LegacyKeyringFormatError{TenantID: "a", Format: 1}, ErrLegacyKeyringFormat, "format 1", false},
+		{&KeyDirNotConfiguredError{}, ErrKeyDirNotConfigured, "software", false},
+		{&KeyWrapFailedError{TenantID: "a", Version: 2, Err: cause}, ErrKeyWrapFailed, "version 2", true},
 	}
 	all := []error{
 		ErrInvalidInput, ErrCrossTenant, ErrMalformedCiphertext, ErrAuthenticationFailed,
 		ErrUnknownVersion, ErrVersionRetired, ErrRetireCurrentVersion, ErrKeyringUnavailable,
 		ErrCorruptKeyring, ErrConcurrentUpdate, ErrCrypto,
+		ErrLegacyKeyringFormat, ErrKeyDirNotConfigured, ErrKeyWrapFailed,
 	}
 	for _, c := range cases {
 		if !strings.Contains(c.err.Error(), c.contains) {
@@ -67,6 +71,11 @@ func TestErrorsMatchTheirClassAndNameTheirSubject(t *testing.T) {
 	}
 	if (&CorruptKeyringError{TenantID: "a"}).Error() == "" {
 		t.Error("CorruptKeyringError without cause has no message")
+	}
+	// KeyWrapFailedError omits the version segment when it names a NEW
+	// version not yet minted (wrapKey's own failure path uses Version 0).
+	if got := (&KeyWrapFailedError{TenantID: "a", Err: cause}).Error(); strings.Contains(got, "version") {
+		t.Errorf("KeyWrapFailedError with no version = %q, want no \"version\" mention", got)
 	}
 }
 
@@ -120,7 +129,7 @@ func (r fixedResolver) Resolve(context.Context, string) (kvstore.KVStore, error)
 func newFaultKeyring(t *testing.T) (*Keyring, *faultStore) {
 	t.Helper()
 	fs := &faultStore{MemoryKVStore: kvstore.NewMemoryKVStore()}
-	k, err := NewKeyring(fixedResolver{fs})
+	k, err := NewKeyring(fixedResolver{fs}, WithKeyWrapRegistry(testKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,10 +196,12 @@ func TestParseVersionRejectsZero(t *testing.T) {
 // rather than used.
 func TestRecordsViolatingInvariantsAreCorrupt(t *testing.T) {
 	for name, raw := range map[string]string{
-		"format":      `{"format":7,"current":1,"versions":[]}`,
-		"no versions": `{"format":1,"current":1,"versions":[]}`,
-		"no current":  `{"format":1,"current":2,"versions":[{"version":1,"key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}]}`,
-		"short key":   `{"format":1,"current":1,"versions":[{"version":1,"key":"AAAA"}]}`,
+		"format":         `{"format":7,"current":1,"versions":[]}`,
+		"no versions":    `{"format":2,"current":1,"versions":[]}`,
+		"no current":     `{"format":2,"current":2,"versions":[{"version":1,"wrapped_key":"AAAA","provider_id":"software","key_ref":"acme"}]}`,
+		"no provider":    `{"format":2,"current":1,"versions":[{"version":1,"wrapped_key":"AAAA","key_ref":"acme"}]}`,
+		"no key ref":     `{"format":2,"current":1,"versions":[{"version":1,"wrapped_key":"AAAA","provider_id":"software"}]}`,
+		"no wrapped key": `{"format":2,"current":1,"versions":[{"version":1,"provider_id":"software","key_ref":"acme"}]}`,
 	} {
 		k, stores := newTestKeyring(t)
 		ctx := context.Background()

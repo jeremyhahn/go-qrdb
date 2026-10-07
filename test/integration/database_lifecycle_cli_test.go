@@ -83,8 +83,8 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 		_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
 	})
 
-	// --- create (engine kv, backend pebble, shared store) -----------
-	out, err := runCLIProto(t, node, proto, "database", "create", dbName, "--engine", "kv", "--backend", "pebble")
+	// --- create (backend pebble, shared store) -----------
+	out, err := runCLIProto(t, node, proto, "database", "create", dbName, "--backend", "pebble")
 	if err != nil {
 		t.Fatalf("[%s] database create %s: %v\noutput: %s", proto.name, dbName, err, out)
 	}
@@ -112,9 +112,6 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 	info := cliDatabaseInfo(t, node, proto, dbName)
 	if info.Name != dbName {
 		t.Fatalf("[%s] database info %s: Name = %q, want %q", proto.name, dbName, info.Name, dbName)
-	}
-	if info.Engine != "kv" {
-		t.Fatalf("[%s] database info %s: Engine = %q, want %q", proto.name, dbName, info.Engine, "kv")
 	}
 	if info.Backend != "pebble" {
 		t.Fatalf("[%s] database info %s: Backend = %q, want %q", proto.name, dbName, info.Backend, "pebble")
@@ -265,7 +262,7 @@ func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
 		dbName := fmt.Sprintf("dbmem-%d", time.Now().UnixNano())
 		t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", dbName) })
 
-		out, err := runCLIProto(t, node, proto, "database", "create", dbName, "--engine", "kv", "--backend", "memory")
+		out, err := runCLIProto(t, node, proto, "database", "create", dbName, "--backend", "memory")
 		if err != nil {
 			t.Fatalf("database create %s --backend memory: %v\noutput: %s", dbName, err, out)
 		}
@@ -285,7 +282,7 @@ func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
 		t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", dbName) })
 
 		out, err := runCLIProto(t, node, proto, "database", "create", dbName,
-			"--engine", "kv", "--backend", "raft", "--cluster-mode", "local", "--replicas", "1")
+			"--backend", "raft", "--cluster-mode", "local", "--replicas", "1")
 		if err != nil {
 			t.Fatalf("database create %s --backend raft --cluster-mode local --replicas 1: %v\noutput: %s", dbName, err, out)
 		}

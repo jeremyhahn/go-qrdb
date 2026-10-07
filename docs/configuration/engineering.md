@@ -1,6 +1,6 @@
 # Configuration — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -99,7 +99,7 @@ flags alone.
 | `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error — `requires mode: raft` (`mvcc`/`watch`/`lease.enabled` are valid in both modes since 2026-10-01) |
 | A wire protocol enabled without its build tag | boot-time error **naming the tag** (`ValidateCapabilities`) |
 | MySQL or PostgreSQL enabled with TLS or auth disabled | refused |
-| etcd enabled on a database that is not `engine: kv` | refused (`database.EtcdEngineUnsupportedError`); any backend serves etcd |
+| etcd enabled on a database | any backend serves etcd; there is no longer an `engine` constraint (Lane 1C deleted `database.EtcdEngineUnsupportedError` along with the `engine` concept, OD-12/OD-13) |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
 | Seal barrier enabled with `disk`/`fast` over `file` `sm_storage` | refused at start: file storage cannot be encrypted at rest (`pebble` storage is encrypted and allowed) |

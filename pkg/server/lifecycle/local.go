@@ -107,11 +107,13 @@ func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (
 	return provider, settings
 }
 
-// NewLocalEngine creates the store engine for a raft-free composition.
-// Pebble and memory backends compose the MVCC-capable engine — an
-// implementation detail that keeps timeseries/vector/collections and the
-// SQL catalog working — while file and objstore compose the plain KV
-// engine (the documented engine boundary, pkg/engine/kv_engine.go).
+// NewLocalEngine creates the store engine for a raft-free composition. Every
+// backend -- memory, file, pebble and objstore alike -- composes the
+// MVCC-capable engine: secondary indexes and time series are storage-backed
+// (pkg/index.StoragePebbleIndex, pkg/timeseries.Storage), so they work
+// identically over any storage.Storage and their writes land in the same
+// apply batch as the rest of the entry's effect. The plain KV engine
+// (pkg/engine/kv_engine.go) is no longer composed here.
 //
 // hub is the node's watch hub and MUST be the same instance handed to
 // Infra.WatchHub: the engine is the only publisher of change events, so an
@@ -121,15 +123,15 @@ func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (
 // lr is the node's lessor and MUST be the same instance the composer runs the
 // expiry sweeper over (lease.Lessor.RunExpiry, see StartLocalLeaseExpiry):
 // the engine rebuilds the durable leases into it on open, and an engine whose
-// lessor nothing sweeps grants leases whose keys are never deleted. The file
-// and objstore engines keep no leases and ignore it.
+// lessor nothing sweeps grants leases whose keys are never deleted.
+//
 // LocalEngineKeepsLeases reports whether the engine NewLocalEngine composes
-// for backendType keeps leases. File and objstore compose the plain KV
-// engine, which keeps none: a lease grant or a lease-bound write on it is
-// refused. A composer starts nothing lease-backed -- the volume-pool health
-// Reporter among them -- over an engine for which this is false.
-func LocalEngineKeepsLeases(backendType database.BackendType) bool {
-	return backendType != database.BackendFile && backendType != database.BackendObjstore
+// for backendType keeps leases. Every backend now composes the MVCC-capable
+// engine, which always does; the predicate stays so the composers that gate
+// lease-backed features on it -- the volume-pool health Reporter among them --
+// do not need their own copy of this reasoning.
+func LocalEngineKeepsLeases(_ database.BackendType) bool {
+	return true
 }
 
 // The MVCC engine also always gets a fresh replicated audit.Chain
@@ -141,18 +143,12 @@ func LocalEngineKeepsLeases(backendType database.BackendType) bool {
 // single replica, so there is no sibling to diverge from, but the opcode
 // handler itself has no notion of "standalone" and would otherwise refuse
 // every protocol.OpAuditAppend this composition root receives with
-// *statemachine.ServiceNotConfiguredError. The file and objstore (KV) engines
-// do not support the replicated audit chain at all (pkg/engine/kv_engine.go)
-// and are unaffected.
-func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
-	if !LocalEngineKeepsLeases(backendType) {
-		kvOpts := []engine.KVOption{}
-		if hub != nil {
-			kvOpts = append(kvOpts, engine.WithKVWatchHub(hub))
-		}
-		return engine.NewKVEngine(stg, kvOpts...), nil
-	}
-
+// *statemachine.ServiceNotConfiguredError.
+//
+// pdb is accepted for callers that still need the raw pebble handle for
+// backend-specific concerns outside the engine (compaction scheduling,
+// metrics); the engine itself needs only stg, which every backend provides.
+func NewLocalEngine(_ database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
 	mvccOpts := []engine.MVCCOption{engine.WithMVCCAuditChain(audit.NewChain())}
 	if lr != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCLessor(lr))
@@ -160,11 +156,12 @@ func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *
 	if hub != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCWatchHub(hub))
 	}
-	if pdb != nil {
-		mvccOpts = append(mvccOpts, engine.WithMVCCPebbleDB(pdb))
-		if tsStorage, err := timeseries.New(pdb); err == nil {
-			mvccOpts = append(mvccOpts, engine.WithMVCCTimeSeries(tsStorage))
-		}
+
+	// Time series rides the same storage.Storage the engine itself is built
+	// over, on every backend -- not only pebble -- so its writes land in the
+	// same apply batch as everything else the entry does.
+	if tsStorage, err := timeseries.New(stg); err == nil {
+		mvccOpts = append(mvccOpts, engine.WithMVCCTimeSeries(tsStorage))
 	}
 
 	eng, err := engine.NewMVCCEngine(stg, mvccOpts...)

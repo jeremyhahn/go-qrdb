@@ -19,7 +19,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -27,9 +26,9 @@ import (
 )
 
 // testLogger returns a logger configured for test output (debug level, console format).
-func testLogger(t *testing.T) *logger.Logger {
+func testLogger(t *testing.T) *sdk.ConcreteLogger {
 	t.Helper()
-	log, err := logger.New(logger.LogConfig{
+	log, err := sdk.NewLogger(sdk.LogConfig{
 		Level:     "debug",
 		Format:    "console",
 		Output:    "stdout",

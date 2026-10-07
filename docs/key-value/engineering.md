@@ -888,12 +888,19 @@ not by how often leadership moves.
   CI today.
 - **Integration, cluster stage**: `make integration-test-cluster` — the 3-node
   Raft suites (`isolation_raft_cluster_test.go`, `cluster_test.go`,
-  `drain_test.go`, `backup_restore_test.go` and siblings). The harness is wired
-  in the `Makefile`; **the CI job that runs it is not yet wired**, so these
-  suites are dark in CI. Tracked as a known gap.
-- **Transport parity**: each transport's `CommandDefinition` set is exercised
-  against the same expectations, so a `NotImplementedError` on one transport
-  fails parity rather than passing as "partial".
+  `drain_test.go`, `backup_restore_test.go` and siblings). It runs in CI as
+  the `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  `ci-gate`.
+- **Feature integration target**: `make integration-test-key-value` runs only
+  this feature's self-spawned `qrdbd` suites (no Docker) — the `kv_*`,
+  `batch_*` CLI tests plus `kv_test.go`'s cluster-correctness suite, selected
+  by `test/integration/features.mk`. The per-transport accounting, including
+  the REST-only cluster suite, is the `key-value` row of
+  [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).
+- **Transport parity**: the `_PerProtocol` CLI tests run the same table of
+  commands over every network transport and assert the same output, so a
+  `NotImplementedError` on one transport fails parity rather than passing as
+  "partial".
 - **Fault injection seams**: the storage backend and the state machine are both
   interfaces, so a failing backend is injected rather than simulated.
 

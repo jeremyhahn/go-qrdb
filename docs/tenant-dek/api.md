@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column. QUIC frames carry
@@ -66,12 +66,16 @@ the status shape:
 {"tenant_id": "acme", "algorithm": "AES-256-GCM", "current_version": 2,
  "versions": [
    {"version": 1, "created_at": "2026-10-01T12:00:00Z", "retired_at": "2026-10-01T13:00:00Z"},
-   {"version": 2, "created_at": "2026-10-01T12:30:00Z"}]}
+   {"version": 2, "created_at": "2026-10-01T12:30:00Z", "provider_id": "software", "key_ref": "acme"}]}
 ```
 
 `current_version` 0 with an empty `versions` list means the tenant has no
 keyring yet. In protobuf, times are `created_at_unix` / `retired_at_unix`
-seconds; `retired_at_unix` is 0 for a live version.
+seconds; `retired_at_unix` is 0 for a live version. `provider_id` and
+`key_ref` name the key-wrap KEK that wrapped each version's key, for
+audit — never the key itself; both are empty for a retired version (its
+wrapped key, provider ID and key reference are destroyed on retirement).
+See [key-wrapping](../key-wrapping/architecture.md).
 
 ## Errors
 
@@ -87,5 +91,8 @@ seconds; `retired_at_unix` is 0 for a live version.
 | Tenant sealed or keyring store unavailable | 503 | `UNAVAILABLE` |
 | Stored keyring corrupt | 500 | `DATA_LOSS` |
 | Lost to concurrent updates | 409 | `ABORTED` |
+| A legacy-format (pre-key-wrap) record was found | 500 | `DATA_LOSS` |
+| No key directory configured for the built-in "software" key-wrap provider | 404 (route absent) | `UNIMPLEMENTED` |
+| An unregistered key-wrap provider ID, a bad key reference, or a KEK authentication failure | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Service not configured | 404 (route absent) | `UNIMPLEMENTED` |

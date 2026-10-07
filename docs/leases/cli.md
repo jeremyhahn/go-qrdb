@@ -74,4 +74,6 @@ without its lease.
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+Every verb here is driven on every network transport by `lease_cli_test.go`
+(`make integration-test-leases`). Per-transport accounting: the `leases` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

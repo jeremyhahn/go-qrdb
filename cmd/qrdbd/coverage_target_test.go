@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -166,43 +165,6 @@ func TestAwaitUnseal_SuccessPath(t *testing.T) {
 		cancel()
 		t.Fatal("awaitUnseal did not complete within 2s after barrier was unsealed")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// runStart: invalid database engine returns error at line 894
-//
-// When f.databases contains a config whose Engine is not one of the known
-// types (kv, timeseries, vector), dbManager.Create calls Validate() which
-// returns *database.InvalidEngineError. This is not an AlreadyExistsError,
-// so the function returns the error directly at line 894.
-// ---------------------------------------------------------------------------
-
-// TestRunStart_InvalidDatabaseEngine_ReturnsError verifies that runStart
-// returns *database.InvalidEngineError (line 894) when f.databases contains
-// a config with an unrecognized engine type.
-func TestRunStart_InvalidDatabaseEngine_ReturnsError(t *testing.T) {
-	dir := t.TempDir()
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		listen:          "0.0.0.0:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "testdb", Engine: "invalid-engine", Backend: "pebble"},
-		},
-		host: testBindHost,
-	}
-
-	err := runStart(f)
-	require.Error(t, err)
-	var invalidEngineErr *database.InvalidEngineError
-	require.True(t, errors.As(err, &invalidEngineErr),
-		"expected *database.InvalidEngineError at line 894, got %T: %v", err, err)
 }
 
 // ---------------------------------------------------------------------------

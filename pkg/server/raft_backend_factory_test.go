@@ -768,7 +768,6 @@ func TestManagerRaftInfoSource_Ownership(t *testing.T) {
 	ctx := tenant.WithTenantID(context.Background(), "owner")
 	raftCfg := database.DatabaseConfig{
 		Name:    "rdb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal},
 		DataDir: filepath.Join(t.TempDir(), "databases", "rdb"),
@@ -777,7 +776,7 @@ func TestManagerRaftInfoSource_Ownership(t *testing.T) {
 		t.Fatalf("CreateForTenant(raft): %v", err)
 	}
 	// A non-raft database owned by the same tenant must be rejected by the source.
-	memCfg := database.DatabaseConfig{Name: "mdb", Engine: database.EngineKV, Backend: database.BackendMemory}
+	memCfg := database.DatabaseConfig{Name: "mdb", Backend: database.BackendMemory}
 	if _, err := mgr.CreateForTenant(ctx, memCfg); err != nil {
 		t.Fatalf("CreateForTenant(memory): %v", err)
 	}

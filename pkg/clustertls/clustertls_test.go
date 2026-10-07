@@ -575,6 +575,65 @@ func TestIssueLeafForKey_SPIFFESANPresent(t *testing.T) {
 	}
 }
 
+// TestIdentityLeafTemplate_IPAddressSAN verifies that a node SPIFFE URI whose
+// embedded address is an IP produces a leaf template carrying that IP as an
+// IPAddress SAN (and no DNSName SAN) alongside the URI SAN -- the fix that
+// lets go-quicraft's Raft QUIC transport, which dials a peer by this exact
+// address and runs the standard x509 SAN check, actually verify a
+// member-side CSR-join leaf.
+func TestIdentityLeafTemplate_IPAddressSAN(t *testing.T) {
+	t.Parallel()
+
+	const nodeURI = "spiffe://qrdb.cluster/node/10.0.0.2:9000"
+	tmpl, err := clustertls.IdentityLeafTemplate(time.Hour, nodeURI)
+	if err != nil {
+		t.Fatalf("IdentityLeafTemplate: %v", err)
+	}
+	if len(tmpl.DNSNames) != 0 {
+		t.Fatalf("DNSNames = %v, want none for an IP address", tmpl.DNSNames)
+	}
+	if len(tmpl.IPAddresses) != 1 || tmpl.IPAddresses[0].String() != "10.0.0.2" {
+		t.Fatalf("IPAddresses = %v, want exactly [10.0.0.2]", tmpl.IPAddresses)
+	}
+	if len(tmpl.URIs) != 1 || tmpl.URIs[0].String() != nodeURI {
+		t.Fatalf("URIs = %v, want exactly [%s]", tmpl.URIs, nodeURI)
+	}
+}
+
+// TestIdentityLeafTemplate_HostnameSAN verifies that a node SPIFFE URI whose
+// embedded address is a hostname (not an IP) produces a leaf template
+// carrying that hostname as a DNSName SAN, not an IPAddress SAN.
+func TestIdentityLeafTemplate_HostnameSAN(t *testing.T) {
+	t.Parallel()
+
+	const nodeURI = "spiffe://qrdb.cluster/node/node3.internal:9000"
+	tmpl, err := clustertls.IdentityLeafTemplate(time.Hour, nodeURI)
+	if err != nil {
+		t.Fatalf("IdentityLeafTemplate: %v", err)
+	}
+	if len(tmpl.IPAddresses) != 0 {
+		t.Fatalf("IPAddresses = %v, want none for a hostname", tmpl.IPAddresses)
+	}
+	if len(tmpl.DNSNames) != 1 || tmpl.DNSNames[0] != "node3.internal" {
+		t.Fatalf("DNSNames = %v, want exactly [node3.internal]", tmpl.DNSNames)
+	}
+}
+
+// TestIdentityLeafTemplate_NoURI_NoAddressSAN verifies that calling
+// IdentityLeafTemplate with no nodeURI produces a template with no SANs at
+// all, unchanged from before address recovery existed.
+func TestIdentityLeafTemplate_NoURI_NoAddressSAN(t *testing.T) {
+	t.Parallel()
+
+	tmpl, err := clustertls.IdentityLeafTemplate(time.Hour)
+	if err != nil {
+		t.Fatalf("IdentityLeafTemplate: %v", err)
+	}
+	if len(tmpl.DNSNames) != 0 || len(tmpl.IPAddresses) != 0 || len(tmpl.URIs) != 0 {
+		t.Fatalf("template = %+v, want no SANs at all with no nodeURI", tmpl)
+	}
+}
+
 // TestIssueLeafForKey_BadCACert verifies that IssueLeafForKey returns a
 // *KeyError for the CA certificate when the supplied caCertPEM is not valid
 // PEM.

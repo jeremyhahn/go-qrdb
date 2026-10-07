@@ -122,4 +122,7 @@ safe rather than merely conventional.
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+Every verb here is driven on every network transport by `lock_cli_test.go`
+(`make integration-test-distributed-locks`). Per-transport accounting: the
+`distributed-locks` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

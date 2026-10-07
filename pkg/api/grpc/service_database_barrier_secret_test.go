@@ -68,7 +68,6 @@ func TestDatabaseCreate_WithBarrierSecret_RoutesToCredentialedCreate(t *testing.
 
 	_, err := client.DatabaseCreate(context.Background(), &pb.DatabaseCreateRequest{
 		Name:    "secured",
-		Engine:  "kv",
 		Backend: "memory",
 		Barrier: &pb.DatabaseBarrierConfig{
 			Enabled:        true,
@@ -112,7 +111,6 @@ func TestDatabaseCreate_WithoutBarrier_EmptyCredentials(t *testing.T) {
 
 	_, err := client.DatabaseCreate(context.Background(), &pb.DatabaseCreateRequest{
 		Name:    "plain",
-		Engine:  "kv",
 		Backend: "memory",
 	})
 	if err != nil {
@@ -156,7 +154,6 @@ func TestDatabaseCreate_NonCredentialedServicer_FallsBackToPlainCreate(t *testin
 
 	_, err := client.DatabaseCreate(context.Background(), &pb.DatabaseCreateRequest{
 		Name:    "plain2",
-		Engine:  "kv",
 		Backend: "memory",
 	})
 	if err != nil {

@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -101,7 +101,20 @@ the interface.
 - **Rotation takes a grace period.** The previous version stays retrievable for
   that long; `0` wipes it immediately.
 - **`retrieve-version 0` means the current version.**
-- **`delete` removes the credential and its non-current versions.**
+- **`delete` removes the credential and its non-current versions.** Under
+  `barrier` this means the current value, the `#meta` sidecar, and every
+  `#v<N>` history entry regardless of grace status — not just the ones GC
+  would have reaped on its own. `DeleteCredential`'s barrier branch
+  (`deleteBarrierAll`) shares the per-version deletion loop with `gcBarrier`
+  (`deleteBarrierVersionKeys`) rather than duplicating it; `gcBarrier` filters
+  to expired entries first, `deleteBarrierAll` passes the whole history.
+  Versions are deleted before the meta sidecar, which is deleted before the
+  current value, so a failure partway through never leaves a version
+  reachable: a stale meta entry whose version key is already gone reads as
+  expired, and a stale version key with no meta entry reads as not-found.
+  Under `manual` the enclave-backed version map and meta sidecar are dropped
+  under the same lock as the current credential, so this was already true
+  there; the barrier strategy was the gap (go-qrdb creddel blocker).
 - **GC reaps only expired historical versions** — it never touches the current
   one.
 - **Secret references resolve to protected targets, not strings.** A protected
@@ -154,11 +167,19 @@ expiry implied by the rotation's grace period.
 
 ## Test strategy
 
+**Integration target:** `make integration-test-credentials` (no Docker; selection in `test/integration/features.mk`). It runs the credential CLI suite per protocol. Per-transport accounting is the `credentials` row of `test/integration/COVERAGE.md`.
+
 - **Unit**: store/retrieve/submit/delete for both strategies, rotation with and
   without a grace period, versioned retrieval including `0` meaning current, GC
   reaping only expired versions, and `CredentialStrategy()`.
 - **The enclave lifecycle is tested, not assumed**: destroy on delete and on
   rotation, and transient materialization on read.
+- **Delete is tested against the full version history, not just the current
+  value**: rotate with a nonzero grace period, delete, then assert every
+  version — current and in-grace history alike — is unretrievable, on both
+  strategies, across a simulated process restart (a fresh `StorageBarrier`
+  unsealing the same durable backend), through `CredentialServicer`, and
+  through every CLI-exposed transport (REST, gRPC, QUIC, MCP, Unix).
 - **Fail-closed tests** for the protected-config-field rule and for an
   unresolvable reference at boot.
 - **No `time.Sleep`** — grace-period expiry is driven through the clock seam.

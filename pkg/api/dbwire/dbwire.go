@@ -35,7 +35,6 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 	out := &transport.DatabaseInfo{
 		TenantID: info.TenantID,
 		Name:     info.Name,
-		Engine:   string(info.Engine),
 		Backend:  string(info.Backend),
 		Status:   string(info.Status),
 		Protocol: transport.ProtocolConfig{
@@ -155,7 +154,6 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 	out := &pb.DatabaseInfoResponse{
 		TenantId: info.TenantID,
 		Name:     info.Name,
-		Engine:   string(info.Engine),
 		Backend:  string(info.Backend),
 		Status:   string(info.Status),
 		Protocol: &pb.DatabaseProtocolConfig{

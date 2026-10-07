@@ -221,15 +221,6 @@ func (e *SQLExecutionError) Unwrap() error {
 	return e.Err
 }
 
-// SQLNotAvailableError is returned when SQL services have not been
-// initialized (e.g., no embedded server is running).
-type SQLNotAvailableError struct{}
-
-// Error returns a human-readable description.
-func (e *SQLNotAvailableError) Error() string {
-	return "qrdb: SQL not available (embedded server not running)"
-}
-
 // InstanceAlreadyExistsError is returned when a database instance is
 // already registered in the instance registry.
 type InstanceAlreadyExistsError struct {

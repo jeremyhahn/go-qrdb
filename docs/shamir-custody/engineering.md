@@ -1,6 +1,6 @@
 # Shamir Custody — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -361,6 +361,51 @@ hardened against a caller who is not the holder:
   can use: every holder, every operation of the domain, 2 each, and never
   above 256.
 
+### Anonymous claim throttle (embedded transport)
+
+`claim/begin` and `claim/complete` carry no equivalent of `QuorumLimiter`
+inside `pkg/ceremony` itself -- a claim with an identity on its context is
+rate-limited by `pkg/auth/middleware` instead, exactly like any other
+authenticated request. On a network transport that is always true: the TLS
+connection authenticates to some identity before the handler runs. On the
+embedded transport, composed with no `AuthMiddleware`, a claim reaches
+`claimBegin`/`claimComplete` (and the tenant and database equivalents) with
+no identity at all, so without a throttle of its own a caller could probe
+holder usernames and roster entries in-process without limit.
+
+`sdk/go/transport/embedded`:
+
+```go
+type HolderActLimitFunc func(key string, anonymous bool) (allowed bool, retryAfter time.Duration)
+
+func WithHolderActLimiter(fn HolderActLimitFunc) Option
+
+type HolderActRateLimitedError struct {
+	Operation  string
+	RetryAfter time.Duration
+}
+```
+
+`limitHolderAct` is a no-op when no limiter is installed, or when
+`auth.IdentityFromContext` finds an identity on the call's context --  a
+network-transport parity check that never re-charges a call the auth
+middleware already rate-limited. Otherwise it charges
+`"embedded-holder-claim\x00" + <scope key>` and, over the limiter's refusal,
+returns `*HolderActRateLimitedError` before the service is called at all.
+The scope key is `barrierScopeKey` (system unseal/recovery),
+`tenantScopeKey` or `databaseScopeKey` -- one bucket per barrier, shared by
+every anonymous caller of it, with the same tenant-normalization rule as the
+rate-limit package's own key (`tenantid.Normalize`): a claim naming `""` and
+one naming the system tenant are the same barrier and must not be split
+across two buckets.
+
+`sdk/go/node` installs `lifecycle.QuorumLimit` -- the SAME engine and
+anonymous policy (5/s, burst 20) `HolderDeps.QuorumLimiter` applies to quorum
+challenges above -- wrapped in a closure that prefixes every key with a
+16-byte random hex identifier generated once per node (`newHolderActLimit`),
+so two nodes sharing one process, or two ceremonies re-created in tests,
+never share a bucket despite sharing the underlying engine.
+
 ## Rekey and revocation
 
 `StartRekey(domain, RekeyParams{Threshold, Policy, Remove})` validates the
@@ -446,6 +491,8 @@ and policy are per distribution, not configuration.
 - **Shares**: nowhere.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-shamir-custody` (no Docker; selection in `test/integration/features.mk`). It runs the tenant barrier holder CLI suite per protocol; the system barrier's holder flows run under `make integration-test-barrier-seal` and `make integration-test-ceremony`. Per-transport accounting is the `shamir-custody` row of `test/integration/COVERAGE.md`.
 
 - **Unit** (`pkg/seal`, `pkg/ceremony`): roster validation and tamper
   detection, each admission refusal, factor policies, round expiry and

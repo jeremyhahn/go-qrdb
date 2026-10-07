@@ -60,7 +60,6 @@ func TestIsAllowed_MySQL(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "mysqldb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 		Protocol: database.ProtocolConfig{
 			MySQL: true,
@@ -86,7 +85,6 @@ func TestIsAllowed_MySQL_NotAllowed(t *testing.T) {
 	// Create database with MySQL=false (default).
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "nomysql",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -105,7 +103,6 @@ func TestIsAllowed_PostgreSQL(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "pgsqldb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 		Protocol: database.ProtocolConfig{
 			PostgreSQL: true,
@@ -134,7 +131,6 @@ func TestAllDatabases_WithProtocolFilter(t *testing.T) {
 	// Create one MySQL-enabled and one non-MySQL database.
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "mysql1",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 		Protocol: database.ProtocolConfig{
 			MySQL: true,
@@ -144,7 +140,6 @@ func TestAllDatabases_WithProtocolFilter(t *testing.T) {
 
 	_, err = mgr.Create(database.DatabaseConfig{
 		Name:    "nomysql2",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)

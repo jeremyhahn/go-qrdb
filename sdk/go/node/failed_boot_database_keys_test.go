@@ -55,7 +55,7 @@ func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 			return
 		}
 		if _, err := n.dbManager.CreateWithCredentials(ctx, database.DatabaseConfig{
-			TenantID: "acme", Name: "secure", Engine: database.EngineKV, Backend: database.BackendMemory,
+			TenantID: "acme", Name: "secure", Backend: database.BackendMemory,
 			DataDir: t.TempDir(),
 			Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
 		}, seal.MustCredentials(context.Background(), []byte("db-pass-123456"))); err != nil {

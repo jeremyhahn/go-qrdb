@@ -34,7 +34,6 @@ const tsOpsState = {
   databases: [
     {
       name: "ops-ts",
-      engine: "timeseries",
       backend: "pebble",
       status: "open",
     },
@@ -47,9 +46,8 @@ const tsOpsState = {
 
 /**
  * Navigate to the time-series database view.
- * For timeseries engine databases the workspace shows "Data" and "Batch" tabs.
- * The TimeSeriesView is rendered under the default "Data" tab, so no tab
- * click is required — selecting the database is sufficient.
+ * Every database exposes every engine; the TimeSeriesView is rendered under
+ * the "Time Series" tab.
  */
 async function navigateToTimeSeries(page: Page): Promise<void> {
   await page.goto("/");
@@ -57,12 +55,7 @@ async function navigateToTimeSeries(page: Page): Promise<void> {
   await expect(page.locator(".breadcrumbs").getByText("ops-ts", { exact: false })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  // Ensure the Data tab is active (it is the default, but be explicit).
-  const dataTab = page
-    .locator("main nav").getByText("Data", { exact: true });
-  if (await dataTab.isVisible({ timeout: 3_000 })) {
-    await dataTab.click();
-  }
+  await page.getByRole("tab", { name: "Time Series", exact: true }).click();
 }
 
 /**

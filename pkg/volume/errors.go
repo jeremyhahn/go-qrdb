@@ -155,3 +155,43 @@ func (e *VolumeKeyDerivationError) Error() string {
 
 // Unwrap supports errors.Is / errors.As against the wrapped cause.
 func (e *VolumeKeyDerivationError) Unwrap() error { return e.Err }
+
+// OpenFailure names one configured volume pool that failed to open at
+// boot and why. It is the unit OpenAtBootError lists. Unlike a replicated
+// NodeReport's Health.Detail, Err may freely carry this node's own
+// filesystem path: OpenAtBootError's message is local, printed to this
+// node's own console/log at startup, never replicated or sent on the
+// wire.
+type OpenFailure struct {
+	Pool     string
+	Provider string
+	Err      error
+}
+
+// OpenAtBootError is returned when one or more configured volume pools
+// could not be opened at boot and the operator did not opt into a
+// degraded boot. It names every inaccessible volume and the reason the
+// node refuses to start partially rather than serve with some tenants'
+// data unopened and silently unreachable.
+type OpenAtBootError struct {
+	Failures []OpenFailure
+}
+
+// Error implements the error interface.
+func (e *OpenAtBootError) Error() string {
+	msg := "volume: " + strconv.Itoa(len(e.Failures)) + " volume pool(s) failed to open at boot" +
+		" (pass --allow-degraded-volume-boot to start anyway, serving every volume and database this node can):"
+	for _, f := range e.Failures {
+		msg += " " + strconv.Quote(f.Pool) + " (provider " + strconv.Quote(f.Provider) + "): " + f.Err.Error() + ";"
+	}
+	return msg
+}
+
+// Unwrap supports errors.Is / errors.As against every wrapped failure.
+func (e *OpenAtBootError) Unwrap() []error {
+	errs := make([]error, len(e.Failures))
+	for i, f := range e.Failures {
+		errs[i] = f.Err
+	}
+	return errs
+}

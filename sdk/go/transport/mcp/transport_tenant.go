@@ -36,8 +36,12 @@ type mcpTenantInfo struct {
 	VolumePool    string                        `json:"volume_pool,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
-	CreatedAt     string                        `json:"created_at"`
-	UpdatedAt     string                        `json:"updated_at"`
+	// Refusal is set when the answering node will not serve this
+	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
+	// otherwise. Another node may still serve it.
+	Refusal   *transport.TenantRefusal `json:"refusal,omitempty"`
+	CreatedAt string                   `json:"created_at"`
+	UpdatedAt string                   `json:"updated_at"`
 }
 
 // mcpTenantBarrierInitResponse mirrors the JSON shape returned by the
@@ -515,6 +519,7 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		VolumePool:    m.VolumePool,
 		Quotas:        m.Quotas,
 		Entitlements:  m.Entitlements,
+		Refusal:       m.Refusal,
 	}
 	if m.CreatedAt != "" {
 		if parsed, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {

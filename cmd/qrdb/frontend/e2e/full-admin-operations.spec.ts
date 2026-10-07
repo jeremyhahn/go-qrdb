@@ -39,14 +39,13 @@ const LOAD_TIMEOUT = 10_000;
 const adminState: MockState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "admin-kv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "admin-kv", backend: "pebble", status: "open" },
     {
       name: "admin-ts",
-      engine: "timeseries",
       backend: "pebble",
       status: "open",
     },
-    { name: "admin-vec", engine: "vector", backend: "pebble", status: "open" },
+    { name: "admin-vec", backend: "pebble", status: "open" },
   ],
 };
 
@@ -54,14 +53,13 @@ const adminState: MockState = {
 const raftAdminState: MockState = {
   ...raftClusterState,
   databases: [
-    { name: "admin-kv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "admin-kv", backend: "pebble", status: "open" },
     {
       name: "admin-ts",
-      engine: "timeseries",
       backend: "pebble",
       status: "open",
     },
-    { name: "admin-vec", engine: "vector", backend: "pebble", status: "open" },
+    { name: "admin-vec", backend: "pebble", status: "open" },
   ],
 };
 
@@ -454,7 +452,7 @@ test.describe("Full Admin - Databases", () => {
     });
   });
 
-  test("shows table with Name, Engine, and Status columns", async ({
+  test("shows table with Name, Backend, and Status columns", async ({
     page,
   }) => {
     await enterAdminMode(page);
@@ -464,7 +462,7 @@ test.describe("Full Admin - Databases", () => {
     await expect(main.locator("th", { hasText: "Name" })).toBeVisible({
       timeout: LOAD_TIMEOUT,
     });
-    await expect(main.locator("th", { hasText: "Engine" })).toBeVisible();
+    await expect(main.locator("th", { hasText: "Backend" })).toBeVisible();
     await expect(main.locator("th", { hasText: "Status" })).toBeVisible();
   });
 
@@ -478,7 +476,7 @@ test.describe("Full Admin - Databases", () => {
     await main.getByRole("button", { name: "Create Database" }).click();
 
     // The admin view opens DatabaseDetail in create mode with h2 "Create Database"
-    // and section cards "Database Name" and "Engine".
+    // and the "Database Name" section card.
     await expect(
       page.getByRole("heading", { name: "Create Database" }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
@@ -502,9 +500,6 @@ test.describe("Full Admin - Databases", () => {
 
     // Fill in the database name (placeholder "e.g. my-database")
     await page.locator("input[placeholder='e.g. my-database']").fill("new-admin-db");
-
-    // Select the Key-Value engine card
-    await page.locator("button").filter({ hasText: "Key-Value" }).first().click();
 
     // Submit the form
     await page.getByRole("button", { name: "Create Database" }).last().click();

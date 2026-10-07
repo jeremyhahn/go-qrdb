@@ -53,7 +53,6 @@ func TestLoad_UnknownNestedKey_Refused_NamesPath(t *testing.T) {
 	path := writeTemp(t, `
 databases:
   - name: "k8s-prod"
-    engine: "kv"
     backend: "raft"
     protocol:
       etcd:

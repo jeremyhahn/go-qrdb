@@ -285,6 +285,99 @@ func TestValidate_SQL_QueryTimeout_VariousDurations(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SQL wait timeout / write timeout
+// ---------------------------------------------------------------------------
+
+func TestValidate_SQL_InvalidWaitTimeout(t *testing.T) {
+	cfg := validConfig()
+	cfg.SQL.WaitTimeout = "invalid"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid wait_timeout")
+	}
+
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if ve.Field != "sql.wait_timeout" {
+		t.Errorf("Field: got %q, want %q", ve.Field, "sql.wait_timeout")
+	}
+	if !strings.Contains(ve.Reason, "must be a valid Go duration string") {
+		t.Errorf("Reason: got %q, want substring %q", ve.Reason, "must be a valid Go duration string")
+	}
+}
+
+func TestValidate_SQL_InvalidWriteTimeout(t *testing.T) {
+	cfg := validConfig()
+	cfg.SQL.WriteTimeout = "invalid"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid write_timeout")
+	}
+
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if ve.Field != "sql.write_timeout" {
+		t.Errorf("Field: got %q, want %q", ve.Field, "sql.write_timeout")
+	}
+	if !strings.Contains(ve.Reason, "must be a valid Go duration string") {
+		t.Errorf("Reason: got %q, want substring %q", ve.Reason, "must be a valid Go duration string")
+	}
+}
+
+// TestSQLConfig_WaitTimeoutDuration: unset is the default, "0" disables the
+// bound, a duration is itself, and a malformed or negative one is refused --
+// by the accessor the MySQL listener reads and by Validate alike.
+func TestSQLConfig_WaitTimeoutDuration(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": DefaultSQLWaitTimeout, "0": 0, "45s": 45 * time.Second} {
+		got, err := SQLConfig{WaitTimeout: in}.WaitTimeoutDuration()
+		if err != nil || got != want {
+			t.Errorf("WaitTimeoutDuration(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"invalid", "-5s"} {
+		var ve *ValidationError
+		if _, err := (SQLConfig{WaitTimeout: bad}).WaitTimeoutDuration(); !errors.As(err, &ve) || ve.Field != "sql.wait_timeout" {
+			t.Errorf("WaitTimeoutDuration(%q) err = %v, want a sql.wait_timeout ValidationError", bad, err)
+		}
+	}
+	cfg := validSQLConfig()
+	cfg.SQL.WaitTimeout = "-1s"
+	var ve *ValidationError
+	if err := cfg.Validate(); !errors.As(err, &ve) || ve.Field != "sql.wait_timeout" {
+		t.Fatalf("Validate with a negative wait_timeout = %v", err)
+	}
+}
+
+// TestSQLConfig_WriteTimeoutDuration mirrors TestSQLConfig_WaitTimeoutDuration
+// for WriteTimeout.
+func TestSQLConfig_WriteTimeoutDuration(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": DefaultSQLWriteTimeout, "0": 0, "45s": 45 * time.Second} {
+		got, err := SQLConfig{WriteTimeout: in}.WriteTimeoutDuration()
+		if err != nil || got != want {
+			t.Errorf("WriteTimeoutDuration(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"invalid", "-5s"} {
+		var ve *ValidationError
+		if _, err := (SQLConfig{WriteTimeout: bad}).WriteTimeoutDuration(); !errors.As(err, &ve) || ve.Field != "sql.write_timeout" {
+			t.Errorf("WriteTimeoutDuration(%q) err = %v, want a sql.write_timeout ValidationError", bad, err)
+		}
+	}
+	cfg := validSQLConfig()
+	cfg.SQL.WriteTimeout = "-1s"
+	var ve *ValidationError
+	if err := cfg.Validate(); !errors.As(err, &ve) || ve.Field != "sql.write_timeout" {
+		t.Fatalf("Validate with a negative write_timeout = %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MySQL port validation
 // ---------------------------------------------------------------------------
 
@@ -419,6 +512,12 @@ func TestDefaultConfig_SQLDefaults(t *testing.T) {
 	}
 	if cfg.SQL.QueryTimeout != "30s" {
 		t.Errorf("SQL.QueryTimeout: got %q, want %q", cfg.SQL.QueryTimeout, "30s")
+	}
+	if cfg.SQL.WaitTimeout != "8h" {
+		t.Errorf("SQL.WaitTimeout: got %q, want %q", cfg.SQL.WaitTimeout, "8h")
+	}
+	if cfg.SQL.WriteTimeout != "60s" {
+		t.Errorf("SQL.WriteTimeout: got %q, want %q", cfg.SQL.WriteTimeout, "60s")
 	}
 }
 

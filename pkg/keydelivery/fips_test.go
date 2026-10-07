@@ -16,6 +16,7 @@ package keydelivery
 
 import (
 	"crypto/ecdh"
+	"crypto/fips140"
 	"crypto/rand"
 	"errors"
 	"testing"
@@ -64,6 +65,14 @@ func TestLookupSuite_StandardModeAdmitsEverySuite(t *testing.T) {
 // recipient key is refused in FIPS mode rather than mapped onto a suite that
 // would fail at seal time.
 func TestRecipientFromPublicKey_FIPSModeRefusesX25519(t *testing.T) {
+	if fips140.Enforced() {
+		// Under real GODEBUG=fips140=only, crypto/ecdh refuses X25519 at
+		// GenerateKey itself, so there is no X25519 public key this test
+		// could construct to feed RecipientFromPublicKey -- the real
+		// enforcement makes the simulated case below unreachable. See
+		// docs/seal/fips140-mode.md "Skipped tests under fips140=only".
+		t.Skip("X25519 key generation is itself refused under fips140=only; nothing to construct")
+	}
 	withFIPSMode(t, true)
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {

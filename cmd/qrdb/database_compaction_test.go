@@ -71,7 +71,7 @@ func TestDatabaseUpdateCompaction_Command(t *testing.T) {
 func TestDatabaseInfo_CompactionUnavailable(t *testing.T) {
 	dbSvc := &fnDatabaseService{
 		getFn: func(name string) (*database.DatabaseInfo, error) {
-			return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open", CompactionUnavailable: true}, nil
+			return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open", CompactionUnavailable: true}, nil
 		},
 	}
 	output, err := executeDatabaseCmd(t, dbSvc, "info", "events")

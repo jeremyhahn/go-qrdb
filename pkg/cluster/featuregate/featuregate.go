@@ -139,9 +139,17 @@ const ImportStaging Feature = "import-staging"
 // group can apply it. See docs/audit/architecture.md#cluster-wide-replicated-trail.
 const AuditAppend Feature = "audit-append"
 
+// TimeSeriesRetention is protocol.OpTSApplyRetention: a new Raft opcode an
+// old binary would refuse as unknown while its up-to-date peers applied it,
+// diverging the group exactly as an unguarded OpGuarded would. The
+// server's leader-driven retention scheduler (pkg/server's
+// retentionScheduler) proposes it only once every replica of the group can
+// apply it (docs/time-series/engineering.md "Retention enforcement").
+const TimeSeriesRetention Feature = "timeseries-retention"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, AuditAppend, VectorEngine, TimeSeriesRetention}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

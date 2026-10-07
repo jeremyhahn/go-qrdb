@@ -177,7 +177,7 @@ func startServerWithAudit(t *testing.T, logger audit.AuditLogger) (*grpc.ClientC
 	grpcSrv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(recoveryInterceptor, loggingInterceptor),
 	)
-	RegisterAuditService(grpcSrv, logger)
+	RegisterAuditService(grpcSrv, logger, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -833,7 +833,7 @@ func TestRegisterAuditService_NilLogger(t *testing.T) {
 	// Register with nil logger to cover RegisterAuditService; calls to Query
 	// will return Unimplemented.
 	grpcSrv := grpc.NewServer()
-	RegisterAuditService(grpcSrv, nil)
+	RegisterAuditService(grpcSrv, nil, nil)
 	grpcSrv.Stop()
 }
 

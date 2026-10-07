@@ -1,7 +1,7 @@
 # Vector Database — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target design" sections are the vector half of the multi-model database
 > program in [../databases/architecture.md](../databases/architecture.md). They
@@ -93,14 +93,16 @@ barrier-encrypted, tenant-safe storage. The code does this instead:
 - **Absent where tenants have their own store.** The per-tenant volume host, the
   dedicated-raft database bundles and the dedicated-store bundle carry no vector
   service; vector requests for those databases are refused as not implemented.
-- **ANN indexes are empty after a restart.** At startup the service creates an
-  empty HNSW index for every stored namespace, with default parameters, and
-  registers it. The lazy path that rebuilds an index from stored vectors only
-  runs when no index is registered, so it never runs for a namespace that
-  existed at startup: similarity search on it returns nothing until
-  `RebuildIndex` is called. The namespace's own metric is also lost — the
-  startup index is always L2. (Read in `vectorService.loadNamespaces` and
-  `ensureHNSWIndex`; not executed.)
+- **ANN indexes are rebuilt from the store at startup.** `loadNamespaces`
+  builds each stored namespace's index through the same path the lazy
+  rebuild uses (`ensureHNSWIndex`): it reads the namespace's own configured
+  distance metric back from storage and scans every stored vector into the
+  rebuilt index, rather than registering an empty placeholder that would
+  permanently satisfy the lazy path's "already registered" check. Fixed
+  2026-10-06 (go-qrdb lane 1B restart blocker); before the fix, a namespace
+  that existed at process start came up with an empty index hardcoded to L2
+  regardless of its real metric, and `CreateNamespace`'s non-Raft path
+  carried the identical hardcoded-L2 defect independent of restart.
 
 ## Target design — vectors as an engine of the database binding
 

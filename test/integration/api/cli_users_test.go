@@ -203,7 +203,9 @@ func TestCLIMultiProtocolUsersPagination(t *testing.T) {
 }
 
 // TestCLIMultiProtocolUsersCreateFlags tests additional create flags
-// (--tenant-id, --roles) across all protocols.
+// (--tenant-id, --roles) across all protocols. The --tenant-id user is created
+// by the target tenant's own administrator: the system tenant's admin may not
+// write into another tenant.
 func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -216,17 +218,20 @@ func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 
 			ts := testTimestamp()
 
-			// Sub-test 1: Create a user with --tenant-id.
+			// Sub-test 1: Create a user with --tenant-id, as that tenant's own
+			// administrator.
+			tenantID := fmt.Sprintf("user-tenant-%s-%d", proto, ts)
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
 			tenantUsername := fmt.Sprintf("user-tenant-%s-%d", proto, ts)
 			var tenantUserID string
 			t.Cleanup(func() {
 				if tenantUserID != "" {
-					execCLIWithProtocol(t, cfg, proto, "users", "delete", tenantUserID) //nolint:errcheck
+					admin.exec(t, cfg, proto, "users", "delete", tenantUserID) //nolint:errcheck
 				}
 			})
 
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"users", "create", "--without-email-login-key", "--username", tenantUsername, "--tenant-id", "test-tenant")
+			stdout, stderr, err := admin.exec(t, cfg, proto,
+				"users", "create", "--without-email-login-key", "--username", tenantUsername, "--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -234,7 +239,7 @@ func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 			}
 			assertContains(t, stdout, "ID:",
 				fmt.Sprintf("[%s] users create --tenant-id should contain 'ID:'", proto))
-			assertContains(t, stdout, "test-tenant",
+			assertContains(t, stdout, tenantID,
 				fmt.Sprintf("[%s] users create --tenant-id should contain tenant in output", proto))
 
 			for _, line := range strings.Split(stdout, "\n") {
@@ -310,7 +315,7 @@ func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 				fmt.Sprintf("[%s] users get should contain role ID '%s'", proto, roleID))
 
 			// Cleanup: delete users and role.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "users", "delete", tenantUserID)
+			stdout, stderr, err = admin.exec(t, cfg, proto, "users", "delete", tenantUserID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -340,7 +345,7 @@ func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 }
 
 // TestCLIMultiProtocolUsersListTenantFilter tests user listing with
-// --tenant-id filtering across all protocols.
+// --tenant-id filtering across all protocols, as the tenant's own administrator.
 func TestCLIMultiProtocolUsersListTenantFilter(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -353,17 +358,19 @@ func TestCLIMultiProtocolUsersListTenantFilter(t *testing.T) {
 
 			ts := testTimestamp()
 			username := fmt.Sprintf("user-tfilter-%s-%d", proto, ts)
+			tenantID := fmt.Sprintf("user-tfilter-%s-%d", proto, ts)
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
 
-			// Create a user with --tenant-id.
+			// Create a user with --tenant-id, as that tenant's own administrator.
 			var userID string
 			t.Cleanup(func() {
 				if userID != "" {
-					execCLIWithProtocol(t, cfg, proto, "users", "delete", userID) //nolint:errcheck
+					admin.exec(t, cfg, proto, "users", "delete", userID) //nolint:errcheck
 				}
 			})
 
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"users", "create", "--without-email-login-key", "--username", username, "--tenant-id", "test-tenant")
+			stdout, stderr, err := admin.exec(t, cfg, proto,
+				"users", "create", "--without-email-login-key", "--username", username, "--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -381,8 +388,8 @@ func TestCLIMultiProtocolUsersListTenantFilter(t *testing.T) {
 			}
 
 			// List users with --tenant-id filter.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"users", "list", "--tenant-id", "test-tenant")
+			stdout, stderr, err = admin.exec(t, cfg, proto,
+				"users", "list", "--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -392,7 +399,7 @@ func TestCLIMultiProtocolUsersListTenantFilter(t *testing.T) {
 				fmt.Sprintf("[%s] users list --tenant-id should contain '%s'", proto, username))
 
 			// Cleanup: delete the user.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "users", "delete", userID)
+			stdout, stderr, err = admin.exec(t, cfg, proto, "users", "delete", userID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)

@@ -389,6 +389,11 @@ func TestHandleCreateUser_Success(t *testing.T) {
 
 	body := `{"username":"alice","tenant_id":"tenant-1","role_ids":["role-admin"]}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	// Bound to the request's own tenant: the system-tenant lift was removed
+	// (owner ruling, 2026-10-01), so an unbound (system-folding) caller
+	// naming a different tenant would now be refused before reaching the
+	// mock.
+	req = req.WithContext(tenant.WithTenantID(req.Context(), "tenant-1"))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 

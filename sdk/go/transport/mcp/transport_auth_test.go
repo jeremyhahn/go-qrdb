@@ -518,12 +518,14 @@ func connectAuthInProcess(t *testing.T, uSvc user.UserServicer, rSvc role.RoleSe
 
 func TestCreateUser_Success(t *testing.T) {
 	svc := newMockUserSvc()
-	tr, cleanup := connectAuthInProcess(t, svc, newMockRoleSvc(), nil)
+	roles := newMockRoleSvc()
+	roles.getResp.TenantID = "system"
+	tr, cleanup := connectAuthInProcess(t, svc, roles, nil)
 	defer cleanup()
 
 	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
-		TenantID: "t1",
+		TenantID: "system",
 		RoleIDs:  []string{"r1", "r2"},
 	})
 	if err != nil {
@@ -532,8 +534,8 @@ func TestCreateUser_Success(t *testing.T) {
 	if u.Username != "alice" {
 		t.Errorf("username: got %q, want %q", u.Username, "alice")
 	}
-	if u.TenantID != "t1" {
-		t.Errorf("tenantID: got %q, want %q", u.TenantID, "t1")
+	if u.TenantID != "system" {
+		t.Errorf("tenantID: got %q, want %q", u.TenantID, "system")
 	}
 
 	svc.mu.Lock()
@@ -1206,7 +1208,7 @@ func TestListCerts_ServiceError(t *testing.T) {
 func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
 	svc := &mockUserSvc{}
 	roles := newMockRoleSvc()
-	roles.getResp.TenantID = "acme"
+	roles.getResp.TenantID = "system"
 	tr, cleanup := connectAuthInProcess(t, svc, roles, nil)
 	defer cleanup()
 
@@ -1214,7 +1216,7 @@ func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
 	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
 		Username:             "cert-only",
 		WithoutEmailLoginKey: true,
-		TenantID:             "acme",
+		TenantID:             "system",
 		RoleIDs:              []string{"viewer"},
 	}); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -1229,7 +1231,7 @@ func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
 	if !got.WithoutEmailLoginKey {
 		t.Fatal("WithoutEmailLoginKey was dropped — a certificate-only identity cannot be created over MCP")
 	}
-	if got.Username != "cert-only" || got.TenantID != "acme" {
+	if got.Username != "cert-only" || got.TenantID != "system" {
 		t.Fatalf("username/tenant dropped: %q / %q", got.Username, got.TenantID)
 	}
 
@@ -1238,7 +1240,7 @@ func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
 		Username: "alice",
 		Email:    "alice@example.com",
 		Name:     "Alice",
-		TenantID: "acme",
+		TenantID: "system",
 	}); err != nil {
 		t.Fatalf("CreateUser(email): %v", err)
 	}

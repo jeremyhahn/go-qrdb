@@ -158,3 +158,27 @@ type NilProviderError struct{}
 func (e *NilProviderError) Error() string {
 	return "cakey: nil Provider"
 }
+
+// SealError wraps a failure sealing the CA private key into, or opening it
+// out of, go-enclave protected memory (pkg/secure.Secret/Buffer). Op names
+// which operation failed: "seal" (caching material into protected memory,
+// on Initialize/AdoptIfAbsent/load) or "open" (recovering it for a single
+// Sign call).
+type SealError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *SealError) Error() string {
+	msg := "cakey: " + e.Op + " of protected memory failed"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying go-enclave/secure error.
+func (e *SealError) Unwrap() error {
+	return e.Err
+}

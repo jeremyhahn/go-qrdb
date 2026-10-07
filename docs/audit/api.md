@@ -9,17 +9,64 @@ gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
 
 | Capability | REST | gRPC / Unix (`AuditService/`) | QUIC | MCP tool | Embedded (`Client.Audit()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Query events | `GET /v1/audit/events` | `Query` | `audit.Query` | `qrdb_audit_query` | `QueryAudit` | `audit:query` |
-| **Verify chain** | `GET /v1/audit/verify` | `VerifyChain` | `audit.VerifyChain` | `qrdb_audit_verify` | `VerifyChain` | `audit:verify` |
+| Query events (node-local) | `GET /v1/audit/events` | `Query` | `audit.Query` | `qrdb_audit_query` | `QueryAudit` | `audit:query` |
+| **Verify chain** (node-local) | `GET /v1/audit/verify` | `VerifyChain` | `audit.VerifyChain` | `qrdb_audit_verify` | `VerifyChain` | `audit:verify` |
+| Query events (**replicated**) | `GET /v1/audit/events?replicated=true` | `Query{replicated:true}` | `audit.Query{"replicated":true}` | `qrdb_audit_query{replicated:true}` | `QueryAudit{Replicated:true}` | `audit:query` |
+| **Verify chain** (**replicated**) | `GET /v1/audit/replicated/verify` | `VerifyReplicatedChain` | `audit.VerifyReplicatedChain` | `qrdb_audit_verify_replicated` | `VerifyReplicatedChain` | `audit:verify_replicated` |
 
-**Two capabilities, on all six transports.** Writing is not a capability:
-entries are emitted by the subsystems that perform the audited operations,
-and there is no endpoint to create, edit or delete one.
+**Two capabilities, on all six transports, each with a node-local and a
+replicated form.** Writing is not a capability: entries are emitted by the
+subsystems that perform the audited operations, and there is no endpoint to
+create, edit or delete one.
 
-Both capabilities answer from the **node-local** trail only. A separate,
-cluster-wide replicated audit chain exists at the storage/Raft layer
-([architecture.md](architecture.md#cluster-wide-replicated-trail)); nothing
-proposes writes to it yet and it has no API surface on any transport.
+The node-local pair answers from the **node-local** trail only, as always.
+The replicated pair answers from the cluster-wide replicated audit chain
+([architecture.md](architecture.md#cluster-wide-replicated-trail)):
+Raft-replicated rather than written by one process, readable identically
+from every node in the group, and gated by the caller's tenant's
+`AllowReplicatedAudit` entitlement — a tenant that is not entitled sees an
+empty page (`Total: -1`) from the query form and a refusal
+(`*service.ReplicatedAuditNotEntitledError`, mapped to 403 /
+`PERMISSION_DENIED` on every transport) from the verify form, never a
+request failure that looks like a server fault.
+
+## The replicated chain read surface
+
+**Query** (`replicated=true` / `Replicated: true` / `{"replicated":true}`)
+reuses the SAME request and response shape as the node-local query on every
+transport — one additional field, never a second message — and the SAME
+tenant confinement (`tenant.ConfineAuditFilter`): an omitted tenant reads the
+caller's own, another tenant is refused before either backend is reached.
+
+**Verify** is a SEPARATE capability from the node-local `VerifyChain`,
+because the result shape genuinely differs — see
+[architecture.md](architecture.md#chain-hash-continuity-verification). It
+takes one optional parameter, the tenant to verify (empty means the caller's
+own; `tenant.Confine` refuses any other tenant), and answers:
+
+| Field | Meaning |
+|---|---|
+| `verified` | `true` only if every surviving event folds into the chain's own authoritative head digest |
+| `reason` | human-readable description of the break; empty when `verified` |
+| `records` | surviving events folded |
+| `head` / `low` | highest / lowest surviving sequence number |
+| `genesis` | whether `low` is 1 (the chain's true origin) rather than a retention-pruned tail |
+
+A non-2xx / non-OK response (REST 501, gRPC/Unix `Unimplemented`, QUIC
+`StatusUnimplemented`, MCP `UNIMPLEMENTED`) means no replicated audit sink is
+configured on this node at all. A 403 / `PERMISSION_DENIED` /
+`StatusPermissionDenied` means the backend exists but the caller's tenant is
+not entitled. A successful response with `"verified": false` is the TAMPER
+VERDICT itself, exactly as for the node-local verify.
+
+**`audit:verify_replicated` is a SEPARATE permission from `audit:verify`,
+deliberately**, not a reuse: `audit:verify` is cross-scope (system-tenant
+only), because the node-local hash chain it walks covers the whole node's
+trail as one sequence, with no per-tenant slice to confine it to. The
+replicated chain has the opposite shape -- every tenant's chain is its own
+independent Raft-replicated table -- so `audit:verify_replicated` is
+self-scoped: any tenant holding it may verify its OWN chain, and no other
+tenant's.
 
 **Verify chain** walks the active file and every rotation
 archive as one sequence through `pkg/audit.Verify`, and reports the result —
@@ -62,13 +109,6 @@ permission-denied tool code, and on the embedded client
 `*tenant.CrossTenantDeniedError`. Every transport returns each event with its
 `tenant_id`, `client_ip`, `request_id` and `prev_hash`.
 
-> **Known gap.** The audit query handlers on REST, QUIC, MCP, Unix and the SDK
-> transports carry a **hardcoded permission string** pending a
-> `permission.AuditQuery` constant. `audit:query` is the intended permission;
-> the code does not yet reference a constant. Tracked defect — the same gap
-> affects the auth-factor handlers, see
-> [../auth-factors/api.md](../auth-factors/api.md).
-
 ## Query request
 
 | Field | Type | Meaning |
@@ -81,6 +121,7 @@ permission-denied tool code, and on the embedded client
 | `tenant_id` | string | the caller's own tenant, or omitted; any other tenant is refused |
 | `limit` | int | default **100**, **maximum 1000** |
 | `cursor` | string | pagination cursor from a previous response |
+| `replicated` | bool | read the cluster-wide replicated chain instead of the node-local trail; see [The replicated chain read surface](#the-replicated-chain-read-surface) |
 
 Outcomes carry a reason (`denied:missing permission`), so `outcome` matches
 `success` exactly and matches `failure` / `denied` by prefix.
@@ -165,6 +206,11 @@ Cursor-based: pass `limit` (default 100, **hard maximum 1000**) and follow
 | Missing `audit:query` | 403 | `PERMISSION_DENIED` |
 | `tenant_id` names a tenant other than the caller's — for every caller, the system tenant included | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
+| `replicated=true`, no replicated audit sink configured | 501 | `UNIMPLEMENTED` |
+| `replicated=true`, tenant's `AllowReplicatedAudit` entitlement off (query) | 200, `total: -1`, empty events | `OK`, `total: -1`, empty events |
+| `replicated=true`, tenant's `AllowReplicatedAudit` entitlement off (**verify**) | 403 | `PERMISSION_DENIED` |
+| Replicated chain's cluster feature gate not yet active on the tenant's shard | 503 | `UNAVAILABLE` |
+| Tenant names a dedicated-isolation (volume/raft) tenant not yet routable | 501 | `UNIMPLEMENTED` |
 
 ## Versioning
 

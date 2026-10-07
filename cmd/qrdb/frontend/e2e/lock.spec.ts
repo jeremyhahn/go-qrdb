@@ -14,7 +14,7 @@ const LOAD_TIMEOUT = 10_000;
 const lockState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "lock-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "lock-db", backend: "pebble", status: "open" },
   ],
 };
 

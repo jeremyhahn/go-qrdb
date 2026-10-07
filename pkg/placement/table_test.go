@@ -145,3 +145,105 @@ func TestReplica_JSON_RoundTripState(t *testing.T) {
 		t.Fatalf("round-tripped State = %v, want ReplicaStateObserverReady", decoded.State)
 	}
 }
+
+// TestPlacement_IsLocalBinding_ZeroValueIsRaft proves a placement entry
+// persisted before Backend existed -- the zero value, no "backend" key --
+// decodes as a dedicated Raft group, not a local binding.
+func TestPlacement_IsLocalBinding_ZeroValueIsRaft(t *testing.T) {
+	var p Placement
+	if p.IsLocalBinding() {
+		t.Fatalf("zero-value Placement.IsLocalBinding() = true, want false")
+	}
+}
+
+// TestPlacement_IsLocalBinding_ExplicitRaftIsNotLocal proves a placement
+// that names BackendRaft explicitly is treated identically to the zero
+// value.
+func TestPlacement_IsLocalBinding_ExplicitRaftIsNotLocal(t *testing.T) {
+	p := Placement{Backend: BackendRaft}
+	if p.IsLocalBinding() {
+		t.Fatalf("Placement{Backend: BackendRaft}.IsLocalBinding() = true, want false")
+	}
+}
+
+// TestPlacement_IsLocalBinding_NonRaftBackends proves every non-Raft backend
+// is a local binding.
+func TestPlacement_IsLocalBinding_NonRaftBackends(t *testing.T) {
+	for _, backend := range []Backend{BackendMemory, BackendFile, BackendPebble, BackendObjstore} {
+		p := Placement{Backend: backend}
+		if !p.IsLocalBinding() {
+			t.Fatalf("Placement{Backend: %v}.IsLocalBinding() = false, want true", backend)
+		}
+	}
+}
+
+// TestPlacement_IsLocalBinding_JSON_BackwardCompatNoBackendKey proves a
+// legacy placement entry with no "backend" key decodes as non-local, the
+// same guarantee TestReplica_JSON_BackwardCompatNoStateKey gives State.
+func TestPlacement_IsLocalBinding_JSON_BackwardCompatNoBackendKey(t *testing.T) {
+	const legacyJSON = `{"tenant_id":"acme","database":"orders","shard_id":1000,"rf":1,"leader_replica_id":1,"replicas":[]}`
+	var p Placement
+	if err := json.Unmarshal([]byte(legacyJSON), &p); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if p.IsLocalBinding() {
+		t.Fatalf("legacy-JSON decoded IsLocalBinding() = true, want false")
+	}
+}
+
+// TestPlacement_RefusalForNode_AssignedNodeIsNotRefused reports that a node
+// holding a replica gets no refusal.
+func TestPlacement_RefusalForNode_AssignedNodeIsNotRefused(t *testing.T) {
+	p := samplePlacement("acme", "orders", 1000)
+	if refusal, refused := p.RefusalForNode("n2"); refused {
+		t.Fatalf("RefusalForNode(n2) = %+v, want no refusal", refusal)
+	}
+}
+
+// TestPlacement_RefusalForNode_UnassignedNodeNamesTheReplicaSet refuses a
+// node the placement does not list, naming the replicas and leader hint a
+// forward resolves from.
+func TestPlacement_RefusalForNode_UnassignedNodeNamesTheReplicaSet(t *testing.T) {
+	p := samplePlacement("acme", "orders", 1000)
+	refusal, refused := p.RefusalForNode("n3")
+	if !refused {
+		t.Fatalf("RefusalForNode(n3) should refuse")
+	}
+	if refusal.TenantID != "acme" || refusal.Database != "orders" || refusal.ShardID != 1000 {
+		t.Fatalf("RefusalForNode(n3) = %+v, want tenant/database/shard from p", refusal)
+	}
+	if refusal.NodeID != "n3" {
+		t.Fatalf("RefusalForNode(n3).NodeID = %q, want n3", refusal.NodeID)
+	}
+	if len(refusal.Replicas) != len(p.Replicas) || refusal.LeaderReplicaID != p.LeaderReplicaID {
+		t.Fatalf("RefusalForNode(n3) = %+v, want p's replica set and leader hint", refusal)
+	}
+}
+
+// TestPlacement_RefusalForNode_LocalBinding refuses a non-owner node of a
+// local binding (RF 1, a single Replica) exactly as it would a dedicated
+// Raft group's non-replica node: the existing forwarding machinery is keyed
+// only on ShardID and Replicas, not on Backend.
+func TestPlacement_RefusalForNode_LocalBinding(t *testing.T) {
+	p := &Placement{
+		TenantID: "acme", Database: "cache", ShardID: 1000, RF: 1,
+		LeaderReplicaID: 1, Backend: BackendMemory,
+		Replicas: []Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}},
+	}
+	if !p.IsLocalBinding() {
+		t.Fatalf("sample local-binding placement should report IsLocalBinding")
+	}
+	if refusal, refused := p.RefusalForNode("n1"); refused {
+		t.Fatalf("RefusalForNode(n1) = %+v, want the owner served", refusal)
+	}
+	refusal, refused := p.RefusalForNode("n2")
+	if !refused {
+		t.Fatalf("RefusalForNode(n2) should refuse the non-owner node")
+	}
+	if refusal.NodeID != "n2" || len(refusal.Replicas) != 1 || refusal.Replicas[0].NodeID != "n1" {
+		t.Fatalf("RefusalForNode(n2) = %+v, want the owner n1 named as the sole replica", refusal)
+	}
+	if refusal.LeaderReplicaID != 1 {
+		t.Fatalf("RefusalForNode(n2).LeaderReplicaID = %d, want 1", refusal.LeaderReplicaID)
+	}
+}

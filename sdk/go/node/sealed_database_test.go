@@ -30,7 +30,7 @@ import (
 func createDatabase(ctx context.Context, t *testing.T, n *Node, name string) {
 	t.Helper()
 	_, err := n.Client().Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name: name, Engine: string(database.EngineKV), Backend: string(database.BackendMemory),
+		Name: name, Backend: string(database.BackendMemory),
 	})
 	require.NoError(t, err)
 }

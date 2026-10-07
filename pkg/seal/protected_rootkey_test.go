@@ -34,6 +34,14 @@ func protectedBytes(t *testing.T, buf *secure.Buffer) []byte {
 
 func newTestGCM(t *testing.T, randomNonce bool) cipher.AEAD {
 	t.Helper()
+	if !randomNonce {
+		// cipher.NewGCM (the caller-nonce construction) is refused under
+		// GODEBUG=fips140=only, and no approved way exists to build one
+		// here instead -- see skipIfFIPS in unsealkey_test.go, which this
+		// mirrors, and docs/seal/fips140-mode.md "Skipped tests under
+		// fips140=only".
+		skipIfFIPS(t)
+	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)

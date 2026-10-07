@@ -317,6 +317,15 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 		}
 		return err
 	})
+	// Every call below provisions records INSIDE efTenant's own IAM store,
+	// which tenant.EffectiveTenant now refuses for a caller whose tenant
+	// differs from the target, with no system-tenant lift (owner ruling,
+	// 2026-10-01) -- and ctx here carries no caller identity at all (this is
+	// a direct, in-process service call, not a routed authenticated
+	// request), so tenant.FromContext(ctx) defaults to the system tenant
+	// unless bound. Bind it to efTenant once, up front, the same way the
+	// certificate-binding step below already did on its own.
+	tctx := tenant.WithTenantID(ctx, efTenant)
 	grants := map[string][]permission.Permission{
 		efWriter: {"databases:create", "databases:create_raft", "databases:read", "databases:list", "kv:put", "kv:get"},
 		efReader: {"databases:read", "databases:list", "kv:get"},
@@ -324,7 +333,7 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 	for username, perms := range grants {
 		var roleID string
 		c.eventually(t, "create role for "+username, func(n *node.Node) error {
-			r, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{Name: username + "-role", TenantID: efTenant, Permissions: perms})
+			r, err := n.Services().Role.CreateRole(tctx, &role.CreateRoleRequest{Name: username + "-role", TenantID: efTenant, Permissions: perms})
 			if err != nil {
 				return err
 			}
@@ -332,7 +341,7 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 			return nil
 		})
 		c.eventually(t, "create user "+username, func(n *node.Node) error {
-			_, err := n.Services().User.CreateUser(ctx, &user.CreateUserRequest{Username: username, Email: username + "@" + efTenant + ".example.com",
+			_, err := n.Services().User.CreateUser(tctx, &user.CreateUserRequest{Username: username, Email: username + "@" + efTenant + ".example.com",
 				TenantID: efTenant, RoleIDs: []string{roleID}})
 			var exists *user.UsernameExistsError
 			if errors.As(err, &exists) {
@@ -345,7 +354,6 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 		// the certificate is enrolled as the user's binding.
 		leaf := c.callerCerts[username].Leaf
 		c.eventually(t, "bind the certificate of "+username, func(n *node.Node) error {
-			tctx := tenant.WithTenantID(ctx, efTenant)
 			u, err := n.Services().User.GetUserByUsername(tctx, efTenant, username)
 			if err != nil {
 				return err
@@ -355,7 +363,7 @@ func (c *efCluster) setUpTenant(t *testing.T) {
 		})
 	}
 	c.eventually(t, "create the application's role", func(n *node.Node) error {
-		r, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{Name: "ef-app-role", TenantID: efTenant,
+		r, err := n.Services().Role.CreateRole(tctx, &role.CreateRoleRequest{Name: "ef-app-role", TenantID: efTenant,
 			Permissions: []permission.Permission{"kv:put", "kv:get"}})
 		if err != nil {
 			return err
@@ -381,7 +389,7 @@ func (c *efCluster) createDatabase(t *testing.T, name string, replicas int) map[
 	t.Helper()
 	ctx := tenant.WithTenantID(context.Background(), efTenant)
 	c.eventually(t, "create database "+name, func(n *node.Node) error {
-		_, err := n.Services().Database.CreateForTenant(ctx, database.DatabaseConfig{Name: name, Engine: database.EngineKV, Replicas: replicas})
+		_, err := n.Services().Database.CreateForTenant(ctx, database.DatabaseConfig{Name: name, Replicas: replicas})
 		var exists *database.AlreadyExistsError
 		if errors.As(err, &exists) {
 			return nil

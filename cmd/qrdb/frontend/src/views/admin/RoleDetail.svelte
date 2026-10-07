@@ -253,13 +253,10 @@
                 />
                 <span
                   class="badge badge-lg transition-colors"
-                  class:badge-primary={selectedDatabaseScope.includes(db.name) && db.engine === "kv"}
-                  class:badge-secondary={selectedDatabaseScope.includes(db.name) && db.engine === "timeseries"}
-                  class:badge-accent={selectedDatabaseScope.includes(db.name) && db.engine === "vector"}
+                  class:badge-primary={selectedDatabaseScope.includes(db.name)}
                   class:badge-outline={!selectedDatabaseScope.includes(db.name)}
                 >
                   {db.name}
-                  <span class="text-xs opacity-70">({db.engine})</span>
                 </span>
               </label>
             {/each}

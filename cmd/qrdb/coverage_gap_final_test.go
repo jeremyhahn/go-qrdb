@@ -1584,17 +1584,5 @@ func TestNewBarrierRecoveryStatusCmd_IsNotNil(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// bindings_sql.go — SetServices (66%)
-// ===========================================================================
-
-func TestSQLBinding_SetServices_NilServices(t *testing.T) {
-	log := testLogger(t)
-	conn := NewConnectionBinding(log)
-	b := NewSQLBinding(log, conn)
-	// SetServices with nil services; must not panic.
-	b.SetServices(nil, nil)
-}
-
 // ensure unused import doesn't cause a compilation error
 var _ = io.Discard

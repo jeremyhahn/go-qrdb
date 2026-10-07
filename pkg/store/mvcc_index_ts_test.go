@@ -21,13 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -814,12 +813,9 @@ func TestMVCCStateMachine_SetTimeSeries_Overwrite(t *testing.T) {
 	s := NewMVCCStateMachine(nil)
 
 	// Enable via a non-nil argument.
-	tsDB, err := pebble.Open(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("open ts pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = tsDB.Close() })
-	ts, err := timeseries.New(tsDB)
+	tsStg := memory.NewStorage()
+	t.Cleanup(func() { _ = tsStg.Close() })
+	ts, err := timeseries.New(tsStg)
 	if err != nil {
 		t.Fatalf("create ts storage: %v", err)
 	}

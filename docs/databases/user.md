@@ -1,10 +1,12 @@
 # Databases — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-01
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Coming change" sections describe the multi-model database design in
 > [architecture.md](architecture.md). It is approved and not yet implemented.
+
+Test reference: `make integration-test-databases`; coverage row: `test/integration/COVERAGE.md` `[databases](../../docs/databases/)`.
 
 A database is a container inside your tenant with its own storage,
 replication, wire protocols and — if you want one — its own encryption key.
@@ -27,9 +29,14 @@ qrdb --database app kv put hello world
 The root `--database` flag scopes data-plane commands. Without it you are
 talking to the server's default database, `system`.
 
-## Choosing engine and backend
+## Choosing a backend
 
-You pick these at creation and cannot change them afterwards.
+**There is no engine to choose (shipped, Lane 1C).** `--engine` is gone;
+passing it is an unknown-flag error. Every database stores keys, SQL tables,
+collections, secondary indexes, vectors, time series, leases and watches, as
+far as your server build includes them.
+
+You pick the backend at creation and cannot change it afterwards.
 
 | Backend | What you get | Pick it when |
 |---|---|---|
@@ -37,8 +44,6 @@ You pick these at creation and cannot change them afterwards.
 | `memory` | nothing survives a restart | tests, caches |
 | `file` | filesystem-mapped store | small metadata sets |
 | `raft` | its own Raft group, replicated | you need replication, watches, leases, transactions or etcd |
-
-Engines are `kv` (the default) and `timeseries`.
 
 **Know what the backend does today.** For most databases the backend you choose
 is recorded but is not where the data goes: the tenant's isolation mode and the
@@ -48,9 +53,6 @@ database is opened. The design below fixes all three.
 
 ### Coming change: every database is multi-model
 
-- **There is no engine to choose.** Every database stores keys, SQL tables,
-  collections, secondary indexes, vectors, time series, leases and watches,
-  as far as your server build includes them. `--engine` goes away.
 - **The backend you choose is where all of it lives** — vectors and time series
   included, and on every tenant isolation level.
 
@@ -130,10 +132,10 @@ qrdb database unseal secure --secret "$SECRET"
 qrdb database update-protocol --name app --postgresql
 ```
 
-**Make a database look like etcd.** It must be `kv` on `raft`.
+**Make a database look like etcd.** The node must run in mode `raft`.
 
 ```bash
-qrdb database create k8s --engine kv --backend raft --etcd --etcd-listen-addr :2379
+qrdb database create k8s --backend raft --etcd --etcd-listen-addr :2379
 ```
 
 **Inspect what you have.**
@@ -234,10 +236,9 @@ one of them can succeed.
 dedicated-raft databases. A pebble-backed database has no replicas to change.
 
 **Lease or lock operations, or a transaction naming a lease or comparing a
-revision, fail as "unsupported".** The node's storage backend is file or
-objstore, which keeps no leases or revisions. Value and version transactions
-still work there. Watch, lease, lock and every transaction work in both run
-modes on the pebble and memory backends. See [../run-modes/user.md](../run-modes/user.md).
+revision, fail as "unsupported".** Watch, lease, lock and every transaction
+work in both run modes on every backend — memory, file, pebble and objstore
+alike. See [../run-modes/user.md](../run-modes/user.md).
 
 **"database not found" on a data-plane call.** Databases are never created
 implicitly, so a typo in `--database` is an error rather than a new, empty

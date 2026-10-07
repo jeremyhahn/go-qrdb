@@ -229,6 +229,7 @@ func (m *clusterMember) bootstrap(token string) BootstrapOptions {
 // cluster does.
 func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte, store kvstore.AtomicKVStore) *clusterMember {
 	t.Helper()
+	skipIfNoiseUnavailable(t)
 
 	anchorPort := freePort(t)
 	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: anchorPort, NoiseHost: testBindHost}, t.TempDir(), discardLogger())

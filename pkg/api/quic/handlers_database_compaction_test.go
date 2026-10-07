@@ -28,7 +28,7 @@ func TestHandleDatabaseCompaction_UpdateAndClear(t *testing.T) {
 	srv := newSQLConfigQUICServer(t)
 	ctx := context.Background()
 
-	create, _ := json.Marshal(map[string]any{"name": "events", "engine": "kv", "backend": "memory"})
+	create, _ := json.Marshal(map[string]any{"name": "events", "backend": "memory"})
 	if _, err := srv.handleDatabaseCreate(ctx, create); err != nil {
 		t.Fatalf("handleDatabaseCreate: %v", err)
 	}

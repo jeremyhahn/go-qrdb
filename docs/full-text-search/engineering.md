@@ -134,9 +134,27 @@ used.
   suffixes, short words), inverted index (index and search, OR search, no
   results), tokenizer (CJK, emoji, stop words).
 - **Stub tests** verify the non-tagged build compiles and `Available()` reports
-  false.
-- **Lint** runs with the build tags joined, so tagged code is linted rather than
-  skipped.
+  false. These run on every push through `make test` / `make coverage`, under
+  the Makefile's default `BUILD_TAGS` (`WITH_QRDB_FTS=0`).
+- **The real implementation is gated separately**, `make coverage-fts`
+  (`go test -race -tags "$BUILD_TAGS qrdb_fts" ./pkg/fts/...` plus a coverage
+  check), run as its own CI step in the `test` job. `make coverage`'s own
+  profile never compiles this package's real code -- only the stub -- so the
+  stub tests above do not exercise it, and this is the step that does, on
+  every push. Its coverage is ratcheted against
+  `test/coverage-baseline-fts.txt`, a baseline separate from
+  `test/coverage-baseline.txt` because the two are measured under different
+  tag sets and the ratchet refuses to compare across a tag mismatch.
+  `make coverage-fts-baseline` regenerates it, the same way
+  `make coverage-baseline` regenerates the main one.
+- **Lint is a known gap, not yet closed.** `make lint` runs with `LINT_TAGS`,
+  which is `BUILD_TAGS` joined -- true coverage for a tag most features carry
+  by default, but `qrdb_fts` is not one of them (`WITH_QRDB_FTS` defaults to
+  0), so `golangci-lint` never sees `analyzer.go`, `tokenizer.go` or
+  `inverted_index.go`, only `stub.go`. Unlike the test gap above this is not
+  yet closed: `LINT_TAGS` is shared by every `make lint` invocation, so adding
+  `qrdb_fts` to it would lint the whole tree under one more tag rather than
+  add a package-scoped check, which needs its own design.
 - **Not covered by the integration parity suite**, because there is no transport
   surface to exercise.
 
@@ -146,3 +164,7 @@ used.
   obligation defect, not a scope decision.
 - No phrase queries (positions stored, unused), no relevance ranking, no field
   boosting, no fuzzy matching, single-language stop words.
+
+## Integration testing
+
+`make integration-test-full-text-search` runs this feature's self-spawned integration tests: `fts_test.go`, built under the `qrdb_fts` tag, which the target sets. The per-transport accounting, including every gap, is the `full-text-search` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

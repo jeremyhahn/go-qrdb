@@ -24,7 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
 // None of these tests lets the real mechanism run against this test binary: a

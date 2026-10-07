@@ -40,7 +40,7 @@ func TestDatabaseSQLTools_CreateAndUpdate(t *testing.T) {
 	ctx := context.Background()
 
 	result, err := handleDatabaseCreate(svc)(ctx, buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name": "shop", "engine": "kv", "backend": "memory", "sql_concurrency": "pessimistic",
+		"name": "shop", "backend": "memory", "sql_concurrency": "pessimistic",
 	}))
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -75,7 +75,7 @@ func TestDatabaseSQLTools_UpdateWithoutConcurrencyRestoresDefaults(t *testing.T)
 	svc := newRealDatabaseService(t)
 	ctx := context.Background()
 	if _, err := handleDatabaseCreate(svc)(ctx, buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name": "shop", "engine": "kv", "backend": "memory", "sql_concurrency": "pessimistic",
+		"name": "shop", "backend": "memory", "sql_concurrency": "pessimistic",
 	})); err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -178,7 +178,8 @@ func TestStrictTenantIsolation_RejectsEmptyTenant(t *testing.T) {
 	storage := newMockVectorStorage()
 	logger := newMockLogger()
 
-	svc, err := NewVectorService(storage, logger, WithStrictTenantIsolation(true))
+	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
+		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyStrict}))
 	require.NoError(t, err)
 
 	// No tenant in context → FromContext returns SystemTenantID → rejected.
@@ -198,7 +199,8 @@ func TestStrictTenantIsolation_AllowsExplicitTenant(t *testing.T) {
 	storage := newMockVectorStorage()
 	logger := newMockLogger()
 
-	svc, err := NewVectorService(storage, logger, WithStrictTenantIsolation(true))
+	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
+		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyStrict}))
 	require.NoError(t, err)
 
 	ctx := tenant.WithTenantID(context.Background(), "acme-corp")

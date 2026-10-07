@@ -20,32 +20,88 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
+// stubDatabaseService implements service.DatabaseServicer, overriding only
+// Get (the single method the SQL query service calls to resolve engine
+// scoping). Every other method panics via the embedded nil interface if
+// called, which keeps the mock honest about what SQL execution touches.
+type stubDatabaseService struct {
+	service.DatabaseServicer
+	getFn func(name string) (*database.DatabaseInfo, error)
+}
+
+func (m *stubDatabaseService) Get(name string) (*database.DatabaseInfo, error) {
+	return m.getFn(name)
+}
+
+// GetForTenant is the owner-checked read the SQL query service makes, held
+// to the same rule as the real DatabaseService.GetForTenant: a database
+// another tenant owns is answered as missing (database.OwnedBy).
+func (m *stubDatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
+	info, err := m.getFn(name)
+	if err != nil {
+		return nil, err
+	}
+	if !database.OwnedBy(info.TenantID, tenant.FromContext(ctx)) {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return info, nil
+}
+
+// kvEngineDatabase returns a DatabaseInfo describing a plain memory-backed
+// database, matching what the SQL provider needs to scope table exposure.
+func kvEngineDatabase(name string) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{
+		Name:    name,
+		Backend: database.BackendMemory,
+		Status:  database.StatusOpen,
+	}, nil
+}
+
+// connectSQLClient installs an embedded SDK client over kvSvc as conn's
+// active client, replacing any previous one.
+func connectSQLClient(t *testing.T, conn *ConnectionBinding, kvSvc service.KVServicer) {
+	t.Helper()
+	dbSvc := &stubDatabaseService{getFn: kvEngineDatabase}
+	tr, err := embedded.New(kvSvc, newMockAdminService(), embedded.WithDatabaseService(dbSvc))
+	if err != nil {
+		t.Fatalf("embedded.New: %v", err)
+	}
+	cl, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = cl.Close() })
+	conn.client.Store(cl)
+}
+
 // ---------------------------------------------------------------------------
-// Execute: service not available
+// Execute: not connected
 // ---------------------------------------------------------------------------
 
-func TestSQLBinding_Execute_NotAvailable(t *testing.T) {
+func TestSQLBinding_Execute_NotConnected(t *testing.T) {
 	log := testLogger(t)
 	conn := NewConnectionBinding(log)
 	sb := NewSQLBinding(log, conn)
 
-	// No services set -- Execute must return SQLNotAvailableError.
 	result, err := sb.Execute("SELECT 1", "qrdb")
 	if result != nil {
 		t.Fatalf("expected nil result, got: %+v", result)
 	}
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var notAvail *SQLNotAvailableError
-	if !errors.As(err, &notAvail) {
-		t.Fatalf("expected SQLNotAvailableError, got: %T: %v", err, err)
+	var notConn *NotConnectedError
+	if !errors.As(err, &notConn) {
+		t.Fatalf("expected NotConnectedError, got: %T: %v", err, err)
 	}
 }
 
-func TestSQLBinding_Execute_NotAvailableMessage(t *testing.T) {
+func TestSQLBinding_Execute_NotConnectedMessage(t *testing.T) {
 	log := testLogger(t)
 	conn := NewConnectionBinding(log)
 	sb := NewSQLBinding(log, conn)
@@ -54,7 +110,7 @@ func TestSQLBinding_Execute_NotAvailableMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	expected := "qrdb: SQL not available (embedded server not running)"
+	expected := "qrdb: not connected to server"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
 	}
@@ -77,8 +133,7 @@ func TestSQLBinding_Execute_Success(t *testing.T) {
 	kvSvc := newMockKVService()
 	_ = kvSvc.Put(context.Background(), "system/qrdb/hello", []byte("world"))
 
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	result, err := sb.Execute("SELECT * FROM kv", "qrdb")
 	if err != nil {
@@ -109,8 +164,7 @@ func TestSQLBinding_Execute_SuccessEmptyTable(t *testing.T) {
 	sb := NewSQLBinding(log, conn)
 
 	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	result, err := sb.Execute("SELECT * FROM kv", "qrdb")
 	if err != nil {
@@ -141,8 +195,7 @@ func TestSQLBinding_Execute_InvalidQuery(t *testing.T) {
 	sb := NewSQLBinding(log, conn)
 
 	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	result, err := sb.Execute("SELECTX INVALID SYNTAX", "qrdb")
 	if result != nil {
@@ -169,8 +222,7 @@ func TestSQLBinding_Execute_InvalidQueryMessage(t *testing.T) {
 	sb := NewSQLBinding(log, conn)
 
 	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	_, err := sb.Execute("SELECTX BAD", "qrdb")
 	if err == nil {
@@ -184,33 +236,25 @@ func TestSQLBinding_Execute_InvalidQueryMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SetServices / ClearServices lifecycle
+// Disconnect lifecycle
 // ---------------------------------------------------------------------------
 
-func TestSQLBinding_ClearServices(t *testing.T) {
+func TestSQLBinding_Execute_AfterDisconnect(t *testing.T) {
 	log := testLogger(t)
 	conn := NewConnectionBinding(log)
 	sb := NewSQLBinding(log, conn)
 
-	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-
-	// Should succeed while services are set.
-	_, err := sb.Execute("SELECT * FROM kv", "qrdb")
-	if err != nil {
+	connectSQLClient(t, conn, newMockKVService())
+	if _, err := sb.Execute("SELECT * FROM kv", "qrdb"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Clear services -- should fail with not-available.
-	sb.ClearServices()
+	conn.client.Store(nil)
 
-	_, err = sb.Execute("SELECT * FROM kv", "qrdb")
-	if err == nil {
-		t.Fatal("expected error after ClearServices, got nil")
-	}
-	var notAvail *SQLNotAvailableError
-	if !errors.As(err, &notAvail) {
-		t.Fatalf("expected SQLNotAvailableError, got: %T: %v", err, err)
+	_, err := sb.Execute("SELECT * FROM kv", "qrdb")
+	var notConn *NotConnectedError
+	if !errors.As(err, &notConn) {
+		t.Fatalf("expected NotConnectedError, got: %T: %v", err, err)
 	}
 }
 
@@ -235,22 +279,13 @@ func TestSQLExecutionError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestSQLNotAvailableError_Error(t *testing.T) {
-	e := &SQLNotAvailableError{}
-	expected := "qrdb: SQL not available (embedded server not running)"
-	if e.Error() != expected {
-		t.Fatalf("expected %q, got %q", expected, e.Error())
-	}
-}
-
 func TestSQLBinding_Execute_NonExistentTable(t *testing.T) {
 	log := testLogger(t)
 	conn := NewConnectionBinding(log)
 	sb := NewSQLBinding(log, conn)
 
 	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	_, err := sb.Execute("SELECT * FROM nonexistent_table", "qrdb")
 	if err == nil {
@@ -288,8 +323,7 @@ func TestSQLBinding_Execute_RowContent(t *testing.T) {
 
 	kvSvc := newMockKVService()
 	_ = kvSvc.Put(context.Background(), "system/qrdb/testkey", []byte("testvalue"))
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	result, err := sb.Execute("SELECT * FROM kv WHERE `key` = 'testkey'", "qrdb")
 	if err != nil {
@@ -321,7 +355,7 @@ func TestSQLBinding_Execute_RowContent(t *testing.T) {
 // Execute: multiple services set/clear cycles
 // ---------------------------------------------------------------------------
 
-func TestSQLBinding_Execute_SetServicesTwice(t *testing.T) {
+func TestSQLBinding_Execute_ReconnectTwice(t *testing.T) {
 	log := testLogger(t)
 	conn := NewConnectionBinding(log)
 	sb := NewSQLBinding(log, conn)
@@ -333,7 +367,7 @@ func TestSQLBinding_Execute_SetServicesTwice(t *testing.T) {
 	_ = kvSvc2.Put(context.Background(), "system/qrdb/k2", []byte("v2"))
 
 	// Set first service.
-	sb.SetServices(kvSvc1, nil)
+	connectSQLClient(t, conn, kvSvc1)
 
 	result1, err := sb.Execute("SELECT * FROM kv", "qrdb")
 	if err != nil {
@@ -344,8 +378,7 @@ func TestSQLBinding_Execute_SetServicesTwice(t *testing.T) {
 	}
 
 	// Replace with second service.
-	sb.SetServices(kvSvc2, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc2)
 
 	result2, err := sb.Execute("SELECT * FROM kv", "qrdb")
 	if err != nil {
@@ -366,8 +399,7 @@ func TestSQLBinding_Execute_WrongDatabase(t *testing.T) {
 	sb := NewSQLBinding(log, conn)
 
 	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	// Querying a table in a database name that does not match the provider
 	// should fail since the provider only serves the named database.
@@ -394,8 +426,7 @@ func TestSQLBinding_Execute_SelectLiteral(t *testing.T) {
 	sb := NewSQLBinding(log, conn)
 
 	kvSvc := newMockKVService()
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	result, err := sb.Execute("SELECT 1 AS num, 'hello' AS greeting", "qrdb")
 	if err != nil {
@@ -417,10 +448,6 @@ func TestSQLExecutionError_ImplementsError(t *testing.T) {
 	var _ error = (*SQLExecutionError)(nil)
 }
 
-func TestSQLNotAvailableError_ImplementsError(t *testing.T) {
-	var _ error = (*SQLNotAvailableError)(nil)
-}
-
 // ---------------------------------------------------------------------------
 // Execute: KV service with data but filtered by WHERE returning no rows
 // ---------------------------------------------------------------------------
@@ -432,8 +459,7 @@ func TestSQLBinding_Execute_WhereNoMatch(t *testing.T) {
 
 	kvSvc := newMockKVService()
 	_ = kvSvc.Put(context.Background(), "system/qrdb/existing", []byte("data"))
-	sb.SetServices(kvSvc, nil)
-	defer sb.ClearServices()
+	connectSQLClient(t, conn, kvSvc)
 
 	result, err := sb.Execute("SELECT * FROM kv WHERE `key` = 'nonexistent'", "qrdb")
 	if err != nil {

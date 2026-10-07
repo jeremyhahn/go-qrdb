@@ -60,7 +60,7 @@ var _ database.KeyspaceReclaimer = (*provisionReclaimer)(nil)
 
 func provisionFlags(sqlDatabase string) *startFlags {
 	return &startFlags{
-		databases:   []qrdbconfig.DatabaseConfig{{Name: "orders", Engine: "kv", Backend: "memory"}},
+		databases:   []qrdbconfig.DatabaseConfig{{Name: "orders", Backend: "memory"}},
 		sqlDatabase: sqlDatabase,
 		enableMySQL: sqlDatabase != "",
 		smType:      "memory",
@@ -135,7 +135,7 @@ func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &startFlags{
 		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "orders", Engine: "kv", Backend: "memory", MySQL: true, PostgreSQL: true},
+			{Name: "orders", Backend: "memory", MySQL: true, PostgreSQL: true},
 		},
 		smType: "memory",
 	}
@@ -156,8 +156,8 @@ func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
 func TestValidateConfiguredDatabases_RefusesEtcdNotCompiled(t *testing.T) {
 	f := &startFlags{
 		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "orders", Engine: "kv", Backend: "memory"},
-			{Name: "locks", Engine: "kv", Backend: "memory", Etcd: &qrdbconfig.DatabaseEtcdConfig{
+			{Name: "orders", Backend: "memory"},
+			{Name: "locks", Backend: "memory", Etcd: &qrdbconfig.DatabaseEtcdConfig{
 				Enabled: true, ListenAddr: "127.0.0.1:2379",
 			}},
 		},
@@ -181,7 +181,7 @@ func TestProvisionDatabases_ConfiguredEntryCarriesEtcd(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &startFlags{
 		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "locks", Engine: "kv", Backend: "memory", Etcd: &qrdbconfig.DatabaseEtcdConfig{
+			{Name: "locks", Backend: "memory", Etcd: &qrdbconfig.DatabaseEtcdConfig{
 				Enabled: true, ListenAddr: "127.0.0.1:2379",
 			}},
 		},
@@ -337,7 +337,7 @@ func TestProvisionDatabases_NonLeaderErrorsDoNotRetry(t *testing.T) {
 // error its validation reports, and a valid configuration passes.
 func TestValidateConfiguredDatabases(t *testing.T) {
 	require.NoError(t, validateConfiguredDatabases(provisionFlags("")))
-	var invalid *database.InvalidEngineError
-	err := validateConfiguredDatabases(&startFlags{databases: []qrdbconfig.DatabaseConfig{{Name: "x", Engine: "bogus", Backend: "memory"}}})
+	var invalid *database.InvalidBackendError
+	err := validateConfiguredDatabases(&startFlags{databases: []qrdbconfig.DatabaseConfig{{Name: "x", Backend: "bogus"}}})
 	assert.ErrorAs(t, err, &invalid)
 }

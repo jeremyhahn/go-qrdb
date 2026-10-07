@@ -1,7 +1,7 @@
 # Replica Forwarding — Engineering
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-05
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Rulings 6 (member records on every raft node), 7 (the leader cache) and 8
 > (the embedded caller) are in [architecture.md](architecture.md#rulings).
@@ -342,3 +342,7 @@ read.
 |---|---|
 | `qrdb_replica_forward_total{protocol,outcome}` | outcome is `ok`, `retried_ok`, `refused` or `error` |
 | `qrdb_replica_forward_duration_seconds{protocol}` | time per forward |
+
+## Integration Target
+
+Run `make integration-test-replica-forwarding` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `replica-forwarding`.

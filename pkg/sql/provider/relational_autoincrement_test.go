@@ -409,9 +409,10 @@ func TestRelationalTable_Truncate_ResetsAutoIncrement(t *testing.T) {
 }
 
 // TestRelationalTable_Truncate_PostgreSQLDialect_DoesNotResetSequence pins
-// the PostgreSQL side: plain TRUNCATE (RESTART IDENTITY is not parsed as
-// part of TRUNCATE by the shared MySQL-grammar parser) leaves an owned
-// sequence where it was, so a WithPostgreSQLDialect table keeps counting.
+// the PostgreSQL side: plain TRUNCATE -- CONTINUE IDENTITY, PostgreSQL's own
+// default -- leaves an owned sequence where it was, so a WithPostgreSQLDialect
+// table keeps counting. RESTART IDENTITY is handled separately: see
+// TestRelationalTable_Truncate_PostgreSQLDialect_RestartIdentity_ResetsSequence.
 func TestRelationalTable_Truncate_PostgreSQLDialect_DoesNotResetSequence(t *testing.T) {
 	h := newDDLHarness()
 	def, err := h.tableSvc.CreateTable(context.Background(), autoIncCreateRequest())
@@ -436,4 +437,74 @@ func TestRelationalTable_Truncate_PostgreSQLDialect_DoesNotResetSequence(t *test
 	next, err := tbl.GetNextAutoIncrementValue(ctx, nil)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(4), next, "PostgreSQL's plain TRUNCATE must not reset the sequence")
+}
+
+// TestRelationalTable_Truncate_PostgreSQLDialect_RestartIdentity_ResetsSequence
+// pins the RESTART IDENTITY side: the PostgreSQL wire front end strips the
+// clause from the statement text (the embedded grammar does not parse it)
+// and records the choice on the session instead (see
+// QRDBSession.SetStatementRestartIdentity), which Truncate must honor with
+// the same epoch-fenced reset the MySQL wire always applies.
+func TestRelationalTable_Truncate_PostgreSQLDialect_RestartIdentity_ResetsSequence(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), autoIncCreateRequest())
+	require.NoError(t, err)
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc,
+		WithTableService(h.tableSvc),
+		WithTransactionService(h.txnSvc),
+		WithSequenceService(h.seqSvc),
+		WithPostgreSQLDialect(),
+	)
+	require.NoError(t, err)
+
+	sess := NewSession(sqle.NewBaseSession(), nil)
+	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
+	sess.SetStatementRestartIdentity(true)
+
+	for i := 0; i < 3; i++ {
+		_, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, err)
+	}
+
+	_, err = tbl.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), next, "TRUNCATE ... RESTART IDENTITY must reset the sequence, matching real PostgreSQL")
+}
+
+// TestRelationalTable_Truncate_MySQLDialect_IgnoresSessionRestartFlag pins
+// that the MySQL wire is unaffected by this feature: it never sets the
+// session's restart flag itself, but even if a *QRDBSession happens to
+// report one set (e.g. a stale value from an earlier PostgreSQL statement
+// on a session reused in a way that should not occur), a non-PostgreSQL
+// table always resets AUTO_INCREMENT on TRUNCATE regardless -- MySQL's own
+// behavior takes no clause and allows no knob.
+func TestRelationalTable_Truncate_MySQLDialect_IgnoresSessionRestartFlag(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), autoIncCreateRequest())
+	require.NoError(t, err)
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc,
+		WithTableService(h.tableSvc),
+		WithTransactionService(h.txnSvc),
+		WithSequenceService(h.seqSvc),
+	)
+	require.NoError(t, err)
+
+	sess := NewSession(sqle.NewBaseSession(), nil)
+	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
+	sess.SetStatementRestartIdentity(false)
+
+	for i := 0; i < 3; i++ {
+		_, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, err)
+	}
+
+	_, err = tbl.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), next, "the MySQL wire must always reset AUTO_INCREMENT on TRUNCATE")
 }

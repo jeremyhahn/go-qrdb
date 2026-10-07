@@ -95,6 +95,35 @@ func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResu
 	return auditVerifyChainResponseToTransport(resp), nil
 }
 
+// VerifyReplicatedChain verifies the cluster-wide replicated audit chain's
+// hash continuity for tenantID via the
+// qrdb.v1.AuditService.VerifyReplicatedChain RPC. A non-nil error means
+// verification could not be PERFORMED, including a tenant not entitled to
+// the replicated chain (PermissionDenied); a successful response with
+// Verified=false is a TAMPER VERDICT, not an error.
+// Authorization: requires "audit:verify_replicated" permission.
+func (t *Transport) VerifyReplicatedChain(ctx context.Context, tenantID string) (*transport.ChainContinuityResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := pb.NewAuditServiceClient(t.conn).VerifyReplicatedChain(ctx, &pb.AuditVerifyReplicatedChainRequest{TenantId: tenantID})
+	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.Unimplemented {
+			return nil, &transport.NotImplementedError{Method: "VerifyReplicatedChain"}
+		}
+		return nil, mapGRPCError("VerifyReplicatedChain", err)
+	}
+	return &transport.ChainContinuityResult{
+		Verified: resp.GetVerified(),
+		Reason:   resp.GetReason(),
+		Records:  resp.GetRecords(),
+		Head:     resp.GetHeadSeq(),
+		Low:      resp.GetLowSeq(),
+		Genesis:  resp.GetGenesis(),
+	}, nil
+}
+
 // auditVerifyChainResponseToTransport converts a generated
 // AuditVerifyChainResponse to the SDK's *transport.AuditVerifyResult.
 func auditVerifyChainResponseToTransport(resp *pb.AuditVerifyChainResponse) *transport.AuditVerifyResult {
@@ -114,13 +143,14 @@ func auditVerifyChainResponseToTransport(resp *pb.AuditVerifyChainResponse) *tra
 // AuditQueryRequest.
 func auditFilterToPB(f transport.AuditFilter) *pb.AuditQueryRequest {
 	req := &pb.AuditQueryRequest{
-		Actor:    f.Actor,
-		Resource: f.Resource,
-		Action:   f.Action,
-		Outcome:  f.Outcome,
-		TenantId: f.TenantID,
-		Limit:    int32(f.Limit), //nolint:gosec // CLI-supplied page size, bounded server-side
-		Cursor:   f.Cursor,
+		Actor:      f.Actor,
+		Resource:   f.Resource,
+		Action:     f.Action,
+		Outcome:    f.Outcome,
+		TenantId:   f.TenantID,
+		Limit:      int32(f.Limit), //nolint:gosec // CLI-supplied page size, bounded server-side
+		Cursor:     f.Cursor,
+		Replicated: f.Replicated,
 	}
 	if !f.From.IsZero() {
 		req.FromRfc3339 = f.From.UTC().Format(auditTimeLayout)

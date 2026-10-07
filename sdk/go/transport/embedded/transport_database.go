@@ -47,7 +47,6 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	}
 	cfg := database.DatabaseConfig{
 		Name:     req.Name,
-		Engine:   database.EngineType(req.Engine),
 		Backend:  database.BackendType(req.Backend),
 		DataDir:  req.DataDir,
 		Mode:     database.DatabaseMode(req.Mode),

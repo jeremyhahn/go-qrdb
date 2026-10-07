@@ -39,7 +39,7 @@ func leaseRegistry(t *testing.T, lessor *sharedLessor) *restServiceRegistry {
 	mgr := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, owner := range []string{"acme", "globex"} {
-		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: owner + "app", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: owner + "app", Backend: database.BackendMemory}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 	}

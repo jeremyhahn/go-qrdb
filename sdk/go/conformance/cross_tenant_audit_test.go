@@ -172,6 +172,7 @@ func seedConfinementFixtures(t *testing.T, n *node.Node, callerTenant string) st
 			t.Fatalf("CreateTenant(%s): %v", id, err)
 		}
 	}
+	ctx = tenant.WithTenantID(ctx, callerTenant)
 	if _, err := svc.Role.ReconcileBuiltInRoles(ctx, callerTenant); err != nil {
 		t.Fatalf("ReconcileBuiltInRoles(%s): %v", callerTenant, err)
 	}

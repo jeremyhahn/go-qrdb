@@ -35,7 +35,6 @@ import (
 // createDatabaseRequest is the JSON payload for POST /v1/databases.
 type createDatabaseRequest struct {
 	Name         string `json:"name"`
-	Engine       string `json:"engine"`
 	Backend      string `json:"backend"`
 	DataDir      string `json:"dataDir,omitempty"`
 	Replicas     int    `json:"replicas,omitempty"`
@@ -236,15 +235,19 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Strict decoding: an unknown member (a stale "engine" key, OD-13) is
+	// refused rather than silently ignored, the same generic rule
+	// decodeGuardedRequest applies to every state-changing endpoint.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
 	var req createDatabaseRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	cfg := database.DatabaseConfig{
 		Name:         req.Name,
-		Engine:       database.EngineType(req.Engine),
 		Backend:      database.BackendType(req.Backend),
 		DataDir:      req.DataDir,
 		Replicas:     req.Replicas,

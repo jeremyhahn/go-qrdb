@@ -111,6 +111,13 @@ func buildClusterJoinFlagsTestCSR(t *testing.T, nodeURI string) []byte {
 // an admin mints join tokens into the store out of band
 // (clusterenroll.MintJoinToken), which is what this test does directly.
 func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
+	if !clusterenroll.NoiseAvailable() {
+		// The member-side CSR join listener needs a real Noise NK
+		// handshake (an X25519 static key), which GODEBUG=fips140=only
+		// refuses to generate at all; permanently unreachable under
+		// FIPS -- see docs/seal/fips140-mode.md.
+		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
+	}
 	provider := newClusterJoinFlagsTestCA(t)
 	caCert, err := provider.Certificate(context.Background())
 	require.NoError(t, err)
@@ -162,6 +169,10 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 // a mistaken or stale value is silent until the join is attempted -- is
 // refused by the listener rather than silently signing.
 func TestClusterJoinFlags_WrongTokenRefused(t *testing.T) {
+	if !clusterenroll.NoiseAvailable() {
+		// See TestClusterJoinFlags_NoiseListenerSignsAValidCSR.
+		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
+	}
 	provider := newClusterJoinFlagsTestCA(t)
 	store := kvstore.NewMemoryKVStore()
 

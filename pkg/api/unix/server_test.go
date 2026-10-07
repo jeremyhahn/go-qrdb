@@ -1405,6 +1405,9 @@ func (s *stubTimeSeriesSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionP
 func (s *stubTimeSeriesSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return nil
 }
+func (s *stubTimeSeriesSvc) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
 func (s *stubTimeSeriesSvc) ListMetrics(_ string, _ int) ([]string, error) { return nil, nil }
 
 func (s *stubTimeSeriesSvc) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, _ consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {

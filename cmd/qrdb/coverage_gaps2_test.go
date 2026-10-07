@@ -780,7 +780,6 @@ func TestDatabaseUpdateRaft_Success(t *testing.T) {
 		gotCfg = cfg
 		return &database.DatabaseInfo{
 			Name:    name,
-			Engine:  "kv",
 			Backend: "pebble",
 			Status:  "open",
 			Raft:    cfg,
@@ -826,7 +825,7 @@ func TestDatabaseUpdateRaft_JSONFormat(t *testing.T) {
 
 	svc := newFullFnDatabaseService()
 	svc.updateRaftFn = func(name string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open"}, nil
+		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
 	}
 
 	output, err := executeDatabaseCmd(t, svc, "update-raft", "mydb")
@@ -870,7 +869,6 @@ func TestDatabaseUpdateBarrier_EnabledFlag(t *testing.T) {
 		gotCfg = cfg
 		return &database.DatabaseInfo{
 			Name:    name,
-			Engine:  "kv",
 			Backend: "pebble",
 			Status:  "open",
 			Barrier: cfg,
@@ -900,7 +898,6 @@ func TestDatabaseUpdateBarrier_DisabledFlag(t *testing.T) {
 		gotCfg = cfg
 		return &database.DatabaseInfo{
 			Name:    name,
-			Engine:  "kv",
 			Backend: "pebble",
 			Status:  "open",
 			Barrier: cfg,
@@ -926,7 +923,7 @@ func TestDatabaseUpdateBarrier_JSONFormat(t *testing.T) {
 
 	svc := newFullFnDatabaseService()
 	svc.updateBarrierFn = func(name string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open"}, nil
+		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
 	}
 
 	output, err := executeDatabaseCmd(t, svc, "update-barrier", "mydb")
@@ -974,7 +971,6 @@ func TestDatabaseUpdateConnection_Success(t *testing.T) {
 		gotCfg = cfg
 		return &database.DatabaseInfo{
 			Name:       name,
-			Engine:     "kv",
 			Backend:    "pebble",
 			Status:     "open",
 			Connection: cfg,
@@ -1009,7 +1005,7 @@ func TestDatabaseUpdateConnection_JSONFormat(t *testing.T) {
 
 	svc := newFullFnDatabaseService()
 	svc.updateConnectionFn = func(name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open"}, nil
+		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
 	}
 
 	output, err := executeDatabaseCmd(t, svc, "update-connection", "mydb")

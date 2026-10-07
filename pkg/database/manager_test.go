@@ -64,7 +64,6 @@ func newTestManager(t *testing.T) *Manager {
 func validMemoryConfig(name string) DatabaseConfig {
 	return DatabaseConfig{
 		Name:    name,
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 }
@@ -116,19 +115,15 @@ func TestManager_Create_InvalidConfig(t *testing.T) {
 	}{
 		{
 			name: "empty_name",
-			cfg:  DatabaseConfig{Name: "", Engine: EngineKV, Backend: BackendMemory},
+			cfg:  DatabaseConfig{Name: "", Backend: BackendMemory},
 		},
 		{
 			name: "invalid_name_chars",
-			cfg:  DatabaseConfig{Name: "my.db", Engine: EngineKV, Backend: BackendMemory},
-		},
-		{
-			name: "invalid_engine",
-			cfg:  DatabaseConfig{Name: "testdb", Engine: EngineType("bad"), Backend: BackendMemory},
+			cfg:  DatabaseConfig{Name: "my.db", Backend: BackendMemory},
 		},
 		{
 			name: "invalid_backend",
-			cfg:  DatabaseConfig{Name: "testdb", Engine: EngineKV, Backend: BackendType("bad")},
+			cfg:  DatabaseConfig{Name: "testdb", Backend: BackendType("bad")},
 		},
 	}
 	for _, tt := range tests {
@@ -171,7 +166,6 @@ func TestManager_Create_PebbleBackend(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "pebble-db",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 	}
 	db, err := mgr.Create(cfg)
@@ -200,7 +194,6 @@ func TestManager_Create_FileBackend(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "file-db",
-		Engine:  EngineKV,
 		Backend: BackendFile,
 	}
 	db, err := mgr.Create(cfg)
@@ -251,9 +244,6 @@ func TestManager_Open(t *testing.T) {
 	}
 	if db.Status() != StatusOpen {
 		t.Errorf("Status() = %q, want %q", db.Status(), StatusOpen)
-	}
-	if db.Engine() != EngineKV {
-		t.Errorf("Engine() = %q, want %q", db.Engine(), EngineKV)
 	}
 	if db.BackendType() != BackendMemory {
 		t.Errorf("BackendType() = %q, want %q", db.BackendType(), BackendMemory)
@@ -552,7 +542,6 @@ func TestManager_Create_RaftBackend_PlaceholderBackend(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "raft-db",
-		Engine:  EngineKV,
 		Backend: BackendRaft,
 	}
 	// A raft-backed database is created with an in-memory placeholder Backend so
@@ -600,7 +589,6 @@ func TestManager_Drop_VerifiesDirectoryCleanup(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "pebble-drop",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 	}
 	if _, err := mgr.Create(cfg); err != nil {
@@ -677,7 +665,6 @@ func TestManager_Create_VerifiesMetaJSON(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "meta-check",
-		Engine:  EngineTimeSeries,
 		Backend: BackendMemory,
 	}
 	if _, err := mgr.Create(cfg); err != nil {
@@ -698,9 +685,6 @@ func TestManager_Create_VerifiesMetaJSON(t *testing.T) {
 	// Verify basic content without importing encoding/json in assertions.
 	if !containsSubstring(content, `"name": "meta-check"`) {
 		t.Errorf("meta.json missing name field, content: %s", content)
-	}
-	if !containsSubstring(content, `"engine": "timeseries"`) {
-		t.Errorf("meta.json missing engine field, content: %s", content)
 	}
 	if !containsSubstring(content, `"backend": "memory"`) {
 		t.Errorf("meta.json missing backend field, content: %s", content)
@@ -804,7 +788,6 @@ func TestManager_Open_PebbleBackend(t *testing.T) {
 	mgr1 := NewManager(logger, dataDir)
 	cfg := DatabaseConfig{
 		Name:    "pebble-reopen",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 	}
 	if _, err := mgr1.Create(cfg); err != nil {
@@ -836,7 +819,6 @@ func TestManager_Drop_CloseError(t *testing.T) {
 	// Inject a database with a failing backend directly into the sync.Map.
 	cfg := DatabaseConfig{
 		Name:    "fail-drop-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 	db := NewDatabase(cfg, &failingCloseBackend{}, "/tmp/test/fail-drop-db")
@@ -866,7 +848,6 @@ func TestManager_Close_WithFailingBackend(t *testing.T) {
 	// Inject a database with a failing backend directly into the sync.Map.
 	cfg := DatabaseConfig{
 		Name:    "fail-close-mgr-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 	db := NewDatabase(cfg, &failingCloseBackend{}, "/tmp/test/fail-close-mgr-db")
@@ -884,7 +865,6 @@ func TestManager_List_InfoContents(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "info-list-db",
-		Engine:  EngineTimeSeries,
 		Backend: BackendMemory,
 	}
 	if _, err := mgr.Create(cfg); err != nil {
@@ -897,9 +877,6 @@ func TestManager_List_InfoContents(t *testing.T) {
 	}
 
 	info := list[0]
-	if info.Engine != EngineTimeSeries {
-		t.Errorf("Info.Engine = %q, want %q", info.Engine, EngineTimeSeries)
-	}
 	if info.Backend != BackendMemory {
 		t.Errorf("Info.Backend = %q, want %q", info.Backend, BackendMemory)
 	}
@@ -932,7 +909,6 @@ func TestManager_CreateClaimsShardIDs(t *testing.T) {
 	for _, name := range names {
 		cfg := DatabaseConfig{
 			Name:    name,
-			Engine:  EngineKV,
 			Backend: BackendMemory,
 			Raft:    validRaftConfig(0), // ShardID == 0 → auto-allocate
 		}
@@ -1380,7 +1356,6 @@ func TestManager_Create_WithSQL(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:     "sql-create-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Protocol: ProtocolConfig{MySQL: true, PostgreSQL: true},
 	}
@@ -1430,7 +1405,6 @@ func TestManager_Open_ReadsSQL(t *testing.T) {
 	mgr1 := NewManager(logger, dataDir)
 	cfg := DatabaseConfig{
 		Name:     "sql-reopen-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Protocol: ProtocolConfig{MySQL: true, PostgreSQL: false},
 	}
@@ -1515,7 +1489,6 @@ func TestManager_UpdateProtocol_PersistsToMeta(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:     "sql-persist-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Protocol: ProtocolConfig{MySQL: false, PostgreSQL: false},
 	}

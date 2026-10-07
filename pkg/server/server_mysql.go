@@ -51,6 +51,22 @@ func startMySQL(s *Server) error {
 		return err
 	}
 	mysqlOpts = append(mysqlOpts, mysqlapi.WithQueryTimeout(queryTimeout))
+	// sql.wait_timeout/sql.write_timeout bound idle time on the socket
+	// itself: a connection sitting idle, including one holding an open
+	// server-side cursor the client stopped fetching from, is closed and its
+	// statement's resources released once it crosses waitTimeout -- the
+	// upstream-gaps.md item 5 idle-cursor gap QueryTimeout does not reach,
+	// because a cursor fetch is served without ever reaching the query
+	// handler QueryTimeout bounds.
+	waitTimeout, err := s.config.SQL.WaitTimeoutDuration()
+	if err != nil {
+		return err
+	}
+	writeTimeout, err := s.config.SQL.WriteTimeoutDuration()
+	if err != nil {
+		return err
+	}
+	mysqlOpts = append(mysqlOpts, mysqlapi.WithWaitTimeout(waitTimeout), mysqlapi.WithWriteTimeout(writeTimeout))
 	// A cluster seal or cut-off closes every session it reaches: a session
 	// outlives its statements, and some of what it holds is served without
 	// another statement through the gate.

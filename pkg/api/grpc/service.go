@@ -330,6 +330,15 @@ type qrdbServiceServer struct {
 	// with no authentication, where the gates are no-ops exactly as they are
 	// on the REST server.
 	authMW *authmw.AuthMiddleware
+
+	// replicaForwarder is the SAME forwarder the interceptor chain installs
+	// for the generic per-database NotAReplicaError path (see
+	// WithReplicaForwarding/replica_forward.go). A handler refused with a
+	// leader-only error uses it to forward to the system shard's leader
+	// directly, by Raft address, rather than through that path's
+	// placement-based retry. Nil when replica forwarding is off, in which
+	// case such a handler answers with its own refusal, as before.
+	replicaForwarder *ReplicaForwarder
 }
 
 // ---------------------------------------------------------------------------

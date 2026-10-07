@@ -19,18 +19,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // EmbeddedServerBinding is a stub when embedded server support is not
 // compiled in (built without the qrdb_embedded tag).
 type EmbeddedServerBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewEmbeddedServerBinding creates a stub EmbeddedServerBinding.
-func NewEmbeddedServerBinding(log *logger.Logger, conn *ConnectionBinding, _ *SQLBinding) *EmbeddedServerBinding {
+func NewEmbeddedServerBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding, _ *SQLBinding) *EmbeddedServerBinding {
 	return &EmbeddedServerBinding{logger: log, conn: conn}
 }
 
@@ -74,7 +74,7 @@ func (b *EmbeddedServerBinding) Registry() *DatabaseInstanceRegistry { return ni
 type DatabaseInstanceRegistry struct{}
 
 // NewDatabaseInstanceRegistry creates a stub registry.
-func NewDatabaseInstanceRegistry(_ *logger.Logger) *DatabaseInstanceRegistry {
+func NewDatabaseInstanceRegistry(_ *sdk.ConcreteLogger) *DatabaseInstanceRegistry {
 	return &DatabaseInstanceRegistry{}
 }
 

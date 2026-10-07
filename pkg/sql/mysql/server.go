@@ -81,6 +81,17 @@ type Server struct {
 	sessions *sealedSessions
 	// queryTimeout bounds every statement (WithQueryTimeout); zero is none.
 	queryTimeout time.Duration
+	// waitTimeout bounds how long a connection may sit idle with no command
+	// from the client -- including one holding an open server-side cursor
+	// (COM_STMT_FETCH) the client stopped fetching from -- before the
+	// server closes it (WithWaitTimeout). Mapped to vitess's
+	// ConnReadTimeout; zero is none.
+	waitTimeout time.Duration
+	// writeTimeout bounds a single write to a stalled client -- one that
+	// stopped reading a result set -- before the server closes the
+	// connection (WithWriteTimeout). Mapped to vitess's ConnWriteTimeout;
+	// zero is none.
+	writeTimeout time.Duration
 	// registry resolves per-(tenant, database) services -- KV, MVCC,
 	// relational tables, and everything else service.Registry exposes --
 	// the same transport-neutral seam every other protocol (REST, gRPC,
@@ -232,6 +243,23 @@ func WithQueryTimeout(d time.Duration) ServerOption {
 	return func(s *Server) { s.queryTimeout = d }
 }
 
+// WithWaitTimeout bounds how long a connection may sit idle with no command
+// from the client, mapped to vitess's ConnReadTimeout. A connection that
+// opened a server-side cursor and stopped issuing COM_STMT_FETCH is idle by
+// this definition like any other: the listener's read loop is waiting on the
+// client's next command either way, so the same bound closes the connection
+// and releases its statement's resources (see Start). Zero disables it.
+func WithWaitTimeout(d time.Duration) ServerOption {
+	return func(s *Server) { s.waitTimeout = d }
+}
+
+// WithWriteTimeout bounds a single write to a stalled client -- one that
+// stopped reading a result set -- mapped to vitess's ConnWriteTimeout. Zero
+// disables it.
+func WithWriteTimeout(d time.Duration) ServerOption {
+	return func(s *Server) { s.writeTimeout = d }
+}
+
 // NewServer creates a new MySQL wire protocol server that delegates SQL
 // operations to the provided KV and admin services.
 func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr string, opts ...ServerOption) *Server {
@@ -315,6 +343,20 @@ func (s *Server) Start() error {
 		// the query timeout (WithQueryTimeout) bounds every statement
 		// instead, including one whose client has disconnected.
 		DisableConnectionWatcher: true,
+		// ConnReadTimeout/ConnWriteTimeout bound idle time on the socket
+		// itself, independent of DisableConnectionWatcher and of
+		// queryTimeout: vitess re-arms a read (write) deadline before every
+		// Read (Write) on the connection (netutil.ConnWithTimeouts), so a
+		// connection that sends no command for waitTimeout -- including one
+		// holding an open server-side cursor the client stopped fetching
+		// from -- fails its next read and unwinds through the listener's
+		// per-connection defer, which discards the cursor and closes the
+		// socket. This does not reintroduce the StatusFlags race the
+		// connection watcher caused: that was a background goroutine Peeking
+		// the socket concurrently with the command loop's own read; this is
+		// the command loop's own read, just bounded.
+		ConnReadTimeout:  s.waitTimeout,
+		ConnWriteTimeout: s.writeTimeout,
 	}
 	// The sealed-window gate refuses new sessions in the session builder and
 	// every statement of an open one here; the query timeout bounds every
@@ -345,6 +387,26 @@ func (s *Server) Start() error {
 		return &ServerStartError{Err: err}
 	}
 	s.mysqlSrv = mysqlSrv
+
+	// server.NewServer above already pushed ConnReadTimeout/ConnWriteTimeout
+	// into net_read_timeout/net_write_timeout (its own updateSystemVariables),
+	// but it never touches wait_timeout, which would otherwise stay at
+	// go-mysql-server's built-in default (28800) regardless of what this
+	// listener actually enforces. SELECT @@wait_timeout is the standard way a
+	// client discovers its idle budget, so keep it truthful. The system
+	// variable's type rejects anything below one second, same as MySQL's own
+	// floor, so a sub-second waitTimeout (as used by tests) is left at the
+	// default rather than rejected.
+	if s.waitTimeout >= time.Second {
+		if err := sql.SystemVariables.AssignValues(map[string]interface{}{
+			"wait_timeout": int64(s.waitTimeout / time.Second),
+		}); err != nil {
+			if closeErr := ln.Close(); closeErr != nil {
+				s.logger.Error("failed to close listener after sysvar assignment failure", "error", closeErr)
+			}
+			return &ServerStartError{Err: err}
+		}
+	}
 
 	s.logger.Info("MySQL server started",
 		"addr", ln.Addr().String(),

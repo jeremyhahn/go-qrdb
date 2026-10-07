@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -43,9 +44,39 @@ func (d dekTestStores) Resolve(_ context.Context, tenantID string) (kvstore.KVSt
 }
 
 // newTestDEKService is the production DEK service over in-memory stores.
+// fakeDEKKeyWrapProvider is a same-shaped keywrap.Provider test double --
+// it "wraps" by copying bytes verbatim, the identical shape
+// pkg/keywrap's own fakeHardwareProvider test double uses.
+type fakeDEKKeyWrapProvider struct{}
+
+func (fakeDEKKeyWrapProvider) ProviderID() string { return keywrap.SoftwareProviderID }
+
+func (fakeDEKKeyWrapProvider) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	out := make([]byte, len(dek))
+	copy(out, dek)
+	return out, nil
+}
+
+func (fakeDEKKeyWrapProvider) Unwrap(_ context.Context, _ string, wrapped []byte) ([]byte, error) {
+	out := make([]byte, len(wrapped))
+	copy(out, wrapped)
+	return out, nil
+}
+
+// testDEKKeyWrapRegistry returns a Registry whose "software" entry is
+// fakeDEKKeyWrapProvider, so a test gets a fully working DEK keyring with
+// no filesystem key directory.
+func testDEKKeyWrapRegistry() keywrap.Registry {
+	r := keywrap.NewRegistry()
+	_ = r.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return fakeDEKKeyWrapProvider{}, nil
+	})
+	return r
+}
+
 func newTestDEKService(t *testing.T) service.DEKServicer {
 	t.Helper()
-	keyring, err := dek.NewKeyring(dekTestStores{})
+	keyring, err := dek.NewKeyring(dekTestStores{}, dek.WithKeyWrapRegistry(testDEKKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}

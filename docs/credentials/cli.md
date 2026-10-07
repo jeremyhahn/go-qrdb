@@ -1,6 +1,6 @@
 # Credentials — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Command group: `qrdb credential` — named-credential operations. All verbs
 accept the root persistent flags documented in

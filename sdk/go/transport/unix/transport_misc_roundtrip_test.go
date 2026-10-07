@@ -347,6 +347,10 @@ func (m *mockTimeSeriesSvc) SetRetentionPolicy(_ context.Context, metric string,
 	return nil
 }
 
+func (m *mockTimeSeriesSvc) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *mockTimeSeriesSvc) ListMetrics(prefix string, limit int) ([]string, error) {
 	if m.listMetricsFn != nil {
 		return m.listMetricsFn(prefix, limit)

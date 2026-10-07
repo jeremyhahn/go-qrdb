@@ -221,6 +221,48 @@ func toolTenantGet() mcp.Tool {
 }
 
 // handleTenantGet returns a tool handler that retrieves a tenant by ID.
+// tenantRefusalJSON mirrors pkg/api/rest/handlers_tenants.go's tenantRefusal:
+// the wire shape of a tenant.Refusal.
+type tenantRefusalJSON struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// tenantInfoJSON is the wire shape for a tenant returned over MCP.
+// tenant.TenantInfo.Refusal is typed error and tagged json:"-" (an error
+// has no fixed shape to marshal), so json.Marshal(info) alone never
+// carries it -- the same reason pkg/api/rest/handlers_tenants.go builds
+// its own tenantResponse rather than marshaling *tenant.TenantInfo
+// directly. This rebuilds the same "refusal" field from tenant.RefusalOf
+// for MCP's wire, which otherwise silently dropped it.
+type tenantInfoJSON struct {
+	*tenant.TenantInfo
+	Refusal *tenantRefusalJSON `json:"refusal,omitempty"`
+}
+
+// tenantInfoToJSON converts info to its MCP wire shape, carrying its
+// refusal (if any) as "refusal" rather than losing it to TenantInfo's own
+// json:"-" tag.
+func tenantInfoToJSON(info *tenant.TenantInfo) *tenantInfoJSON {
+	if info == nil {
+		return nil
+	}
+	out := &tenantInfoJSON{TenantInfo: info}
+	if r := tenant.RefusalOf(info.Refusal); r != nil {
+		out.Refusal = &tenantRefusalJSON{Code: r.Code, Message: r.Message}
+	}
+	return out
+}
+
+// tenantInfosToJSON converts a slice the same way, for qrdb_tenant_list.
+func tenantInfosToJSON(infos []tenant.TenantInfo) []*tenantInfoJSON {
+	out := make([]*tenantInfoJSON, len(infos))
+	for i := range infos {
+		out[i] = tenantInfoToJSON(&infos[i])
+	}
+	return out
+}
+
 func handleTenantGet(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := mcp.ParseString(req, "id", "")
@@ -236,7 +278,7 @@ func handleTenantGet(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpse
 			return nil, &ToolError{Tool: "qrdb_tenant_get", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(tenantInfoToJSON(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_get", Err: jsonErr}
 		}
@@ -266,7 +308,7 @@ func handleTenantList(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcps
 			}
 		}
 
-		data, jsonErr := json.Marshal(tenants)
+		data, jsonErr := json.Marshal(tenantInfosToJSON(tenants))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_list", Err: jsonErr}
 		}
@@ -314,7 +356,7 @@ func handleTenantUpdate(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mc
 			return nil, &ToolError{Tool: "qrdb_tenant_update", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(tenantInfoToJSON(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_update", Err: jsonErr}
 		}
@@ -447,7 +489,7 @@ func handleTenantUpdateQuotas(svc tenant.TenantServicer, mw *authmw.AuthMiddlewa
 			return nil, &ToolError{Tool: "qrdb_tenant_update_quotas", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(tenantInfoToJSON(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_update_quotas", Err: jsonErr}
 		}
@@ -529,7 +571,7 @@ func handleTenantUpdateEntitlements(svc tenant.TenantServicer, mw *authmw.AuthMi
 			return nil, &ToolError{Tool: "qrdb_tenant_update_entitlements", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(tenantInfoToJSON(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_update_entitlements", Err: jsonErr}
 		}

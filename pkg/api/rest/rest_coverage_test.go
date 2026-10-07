@@ -419,6 +419,50 @@ func TestHandleCeremonyInitialize_SOPINRefusalPropagates(t *testing.T) {
 	assertStatus(t, rec, http.StatusUnauthorized)
 }
 
+// TestHandleCeremonyInitialize_ForwardsOnNotLeader is the node-parity
+// regression guard (node-parity, owner ruling 2026-10-06): a follower refusing
+// *service.AdminCredentialNotLeaderError must forward the identical request
+// to the system shard's leader through the EXISTING
+// tryForwardWrite/forwardToLeader machinery every other system-shard admin
+// write already uses, rather than making the operator re-run `qrdb init`
+// against another node by hand.
+func TestHandleCeremonyInitialize_ForwardsOnNotLeader(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("leader received method %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/ceremony/initialize" {
+			t.Fatalf("leader received path %s, want /v1/ceremony/initialize", r.URL.Path)
+		}
+		if fwd := r.Header.Get(headerForwardedBy); fwd == "" {
+			t.Fatal("leader did not receive X-Quicraft-Forwarded-By header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer leaderSrv.Close()
+
+	svc := newCoverageCeremonyService()
+	svc.initErr = &service.AdminCredentialNotLeaderError{LeaderAddress: "10.0.0.2:63001"}
+
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+
+	host := &mockHost{addr: "10.0.0.1:63001"}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(svc),
+		WithCeremonyCA(&coverageCeremonyCA{}),
+		WithLeaderForwarding(reg),
+		WithHost(host))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", strings.NewReader(`{"so_pin":"pin","user_pin":"upin"}`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyInitialize(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+}
+
 func TestHandleCeremonyStatus_NilService(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
 	req := httptest.NewRequest(http.MethodGet, "/v1/ceremony/status", nil)
@@ -624,7 +668,7 @@ func TestHandleUpdateDatabaseEtcd_WithCallback(t *testing.T) {
 
 	// Provide a dbSvc that returns a non-nil info to avoid nil dereference.
 	dbSvc := &mockDatabaseServiceWithEtcd{
-		updateEtcdResult: &database.DatabaseInfo{Name: "mydb", Engine: database.EngineKV, Backend: database.BackendPebble},
+		updateEtcdResult: &database.DatabaseInfo{Name: "mydb", Backend: database.BackendPebble},
 	}
 	fn := func(_ string, _ *database.EtcdConfig) error {
 		called = true

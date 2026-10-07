@@ -41,44 +41,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
-// stubDatabaseService implements service.DatabaseServicer, overriding only
-// Get (the single method the SQL query service calls to resolve engine
-// scoping). Every other method panics via the embedded nil interface if
-// called, which keeps the mock honest about what SQL execution touches.
-type stubDatabaseService struct {
-	service.DatabaseServicer
-	getFn func(name string) (*database.DatabaseInfo, error)
-}
-
-func (m *stubDatabaseService) Get(name string) (*database.DatabaseInfo, error) {
-	return m.getFn(name)
-}
-
-// GetForTenant is the owner-checked read the SQL query service makes, held
-// to the same rule as the real DatabaseService.GetForTenant: a database
-// another tenant owns is answered as missing (database.OwnedBy).
-func (m *stubDatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
-	info, err := m.getFn(name)
-	if err != nil {
-		return nil, err
-	}
-	if !database.OwnedBy(info.TenantID, tenant.FromContext(ctx)) {
-		return nil, &database.NotFoundError{Name: name}
-	}
-	return info, nil
-}
-
-// kvEngineDatabase returns a DatabaseInfo describing a plain KV-engine
-// database, matching what the SQL provider needs to scope table exposure.
-func kvEngineDatabase(name string) (*database.DatabaseInfo, error) {
-	return &database.DatabaseInfo{
-		Name:    name,
-		Engine:  database.EngineKV,
-		Backend: database.BackendMemory,
-		Status:  database.StatusOpen,
-	}, nil
-}
-
 // seedSQLKV stores a key/value pair under the composite (system tenant,
 // database) namespace the SQL "kv" table scans, matching
 // pkg/sql/query/service_test.go's seed helper.

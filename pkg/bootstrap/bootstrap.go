@@ -528,6 +528,18 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	if cfg.TenantID == "" {
 		return nil, &EmptyTenantIDError{}
 	}
+	// Every write below that goes through a routed IAM service (roles,
+	// users, cert bindings) acts on THIS tenant's own initial records, not
+	// on an existing tenant's data: tenant.EffectiveTenant has no
+	// system-tenant lift (owner ruling, 2026-10-01), so the caller's own
+	// identity tenant no longer carries this call across to a brand-new
+	// tenant on its own. Provisioning is legitimately privileged here --
+	// ProvisionTenant itself is reached only through the ScopeCross
+	// tenants:create gate -- so the context is rebound to the tenant being
+	// created for the rest of this call. This does not touch the
+	// authenticated IDENTITY (a separate context key), so audit trails still
+	// name the real caller as the actor.
+	ctx = tenant.WithTenantID(ctx, cfg.TenantID)
 	mode := cfg.AdminEnrollment
 	if mode == "" {
 		mode = AdminEnrollCert
@@ -614,13 +626,15 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 
 	// Step 1: tenant record. Already-exists is idempotent success, unless
 	// this provisioning is exclusive.
-	if _, err := deps.Tenants.CreateTenant(ctx, cfg.TenantID, displayName, isolation, cfg.CreateOptions...); err != nil {
+	var createdInfo *tenant.TenantInfo
+	if info, err := deps.Tenants.CreateTenant(ctx, cfg.TenantID, displayName, isolation, cfg.CreateOptions...); err != nil {
 		if cfg.Exclusive || !errors.Is(err, tenant.ErrTenantAlreadyExists) {
 			return nil, &TenantRecordCreationError{Cause: err}
 		}
 		deps.Logger.Debug("bootstrap: tenant already exists",
 			slog.String("tenant", cfg.TenantID))
 	} else {
+		createdInfo = info
 		deps.Logger.Info("bootstrap: tenant record created",
 			slog.String("tenant", cfg.TenantID),
 			slog.String("isolation", string(isolation)))
@@ -650,7 +664,37 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	}
 
 	if behindBarrier && mode == AdminEnrollCert {
-		return provisionPendingAdmin(ctx, cfg, deps, plan, adminUsername, &undo, fail)
+		result, err := provisionPendingAdmin(ctx, cfg, deps, plan, adminUsername, &undo, fail)
+		if err != nil {
+			return result, err
+		}
+		// A system-managed (auto-unseal) barrier is already initialized and
+		// serving by the moment Step 1's CreateTenant above returned -- unlike
+		// a self-managed barrier, whose own admin later calls
+		// barrier-init/barrier-unseal to raise tenant.BarrierReadyHook, NOTHING
+		// else will ever fire that hook for an auto-unseal tenant, so the
+		// pending admin recorded above would never complete. Finish it now,
+		// gated on createdInfo so a re-run against an already-existing tenant
+		// (createdInfo nil) and a self-managed barrier (BarrierAutoUnseal
+		// false) are both left exactly as before: deferred to the admin's own
+		// barrier-init/unseal/status call. completeErr ==
+		// tenant.ErrTenantSealed is not expected here (the barrier this
+		// gate admits is never sealed) but is tolerated as the same
+		// non-fatal deferred case the hook itself allows.
+		if createdInfo != nil && createdInfo.BarrierAutoUnseal {
+			switch done, completeErr := CompletePendingTenantAdmin(ctx, cfg.TenantID, deps); {
+			case completeErr == nil && done:
+				result.AdminAwaitsBarrierInit = false
+				deps.Logger.Info("bootstrap: tenant-admin account completed immediately (barrier already ready)",
+					slog.String("tenant", cfg.TenantID), slog.String("admin", adminUsername))
+			case completeErr == nil:
+			case errors.Is(completeErr, tenant.ErrTenantSealed):
+			default:
+				deps.Logger.Error("tenant admin completion failed; retried on the next unseal or status read",
+					slog.String("tenant", cfg.TenantID), slog.Any("error", completeErr))
+			}
+		}
+		return result, nil
 	}
 
 	// Step 2: tenant-scoped built-in roles (tolerates already-exists).

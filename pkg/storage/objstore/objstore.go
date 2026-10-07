@@ -15,9 +15,12 @@
 // Package objstore provides a key-value storage engine backed by go-objstore,
 // so any go-objstore provider (local, memory, s3, gcs, azure, minio, ...) can
 // serve as a flat KV backend. It mirrors the file backend's contract — a simple
-// KV engine with no MVCC — and is intended for blob/backup-oriented workloads
-// rather than hot consensus paths. Keys are used as object keys verbatim, so
-// callers must keep them within the key constraints of the chosen provider.
+// KV engine with no MVCC, and a commit journal giving Batch the same
+// all-or-nothing-after-recovery guarantee (see journal.go) — and is intended
+// for blob/backup-oriented workloads rather than hot consensus paths. Keys
+// are arbitrary bytes: each is stored under an object name derived from it
+// (see objectName), never verbatim, so any key round-trips on every provider
+// whatever that provider's own object name rules.
 package objstore
 
 import (
@@ -26,6 +29,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
@@ -42,6 +46,11 @@ type Engine struct {
 	store    objcommon.Storage
 	provider string
 	closed   atomic.Bool
+
+	// journalMu serializes batch commits: the commit journal is a single
+	// object per engine, so two concurrent commits must not interleave
+	// publish/apply/clear.
+	journalMu sync.Mutex
 }
 
 // New constructs an objstore-backed engine for the given go-objstore provider.
@@ -50,6 +59,13 @@ type Engine struct {
 // "glacier", "azurearchive") link their SDKs and are compiled in only when
 // go-objstore's matching build tag is set (awss3, gcpstorage, azureblob, minio,
 // glacier, azurearchive). Settings are passed verbatim to the provider.
+//
+// The store must be dedicated to this engine. An empty store is marked with
+// this build's object layout; a non-empty one is opened only if it carries
+// that mark, so objects written by any other layout are refused, never
+// silently hidden. An interrupted batch commit from a previous process is
+// completed here (see recoverJournal); a corrupt journal fails the open
+// rather than silently serving a half-applied batch.
 func New(provider string, settings map[string]string) (*Engine, error) {
 	if provider == "" {
 		return nil, storage.ErrInvalidPath
@@ -61,19 +77,17 @@ func New(provider string, settings map[string]string) (*Engine, error) {
 		}
 		return nil, err
 	}
-	return &Engine{store: store, provider: provider}, nil
-}
-
-// UnsupportedProviderError indicates the requested go-objstore provider is not
-// registered in this build. Cloud providers are compiled in only when
-// go-objstore's matching build tag is set (e.g. -tags awss3 for "s3").
-type UnsupportedProviderError struct {
-	Provider string
-}
-
-func (e *UnsupportedProviderError) Error() string {
-	return "objstore: unsupported provider " + e.Provider +
-		` (cloud providers require go-objstore's build tag, e.g. -tags awss3 for s3)`
+	e := &Engine{store: store, provider: provider}
+	if err := e.ensureFormatMarker(); err != nil {
+		return nil, err
+	}
+	// An interrupted batch commit from a previous process is completed here;
+	// a corrupt journal fails the open rather than silently serving a
+	// half-applied batch.
+	if err := e.recoverJournal(); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 // Provider returns the go-objstore provider backing this engine.
@@ -82,6 +96,35 @@ func (e *Engine) Provider() string { return e.provider }
 // notFound reports whether err signals a missing object.
 func notFound(err error) bool {
 	return errors.Is(err, objcommon.ErrKeyNotFound)
+}
+
+// ensureFormatMarker refuses to open a non-empty store that was not written
+// by this exact object layout (see FormatMarkerMissingError and
+// FormatVersionMismatchError), and marks an empty one as this layout.
+func (e *Engine) ensureFormatMarker() error {
+	rc, err := e.store.Get(formatMarkerName)
+	if err == nil {
+		defer func() { _ = rc.Close() }()
+		found, readErr := io.ReadAll(rc)
+		if readErr != nil {
+			return readErr
+		}
+		if string(found) != formatVersion {
+			return &FormatVersionMismatchError{Found: string(found), Want: formatVersion}
+		}
+		return nil
+	}
+	if !notFound(err) {
+		return err
+	}
+	names, err := e.store.List("")
+	if err != nil {
+		return err
+	}
+	if len(names) > 0 {
+		return &FormatMarkerMissingError{Provider: e.provider}
+	}
+	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
 }
 
 // Get retrieves the value for key. Returns nil, nil when the key does not exist,
@@ -93,7 +136,21 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, storage.ErrEmptyKey
 	}
-	rc, err := e.store.Get(string(key))
+	name, hashed := objectName(key)
+	if hashed {
+		stored, value, err := e.readHashed(name, true)
+		if err != nil {
+			if notFound(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if !bytes.Equal(stored, key) {
+			return nil, &KeyMismatchError{Name: name}
+		}
+		return value, nil
+	}
+	rc, err := e.store.Get(name)
 	if err != nil {
 		if notFound(err) {
 			return nil, nil
@@ -101,11 +158,7 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = rc.Close() }()
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
+	return io.ReadAll(rc)
 }
 
 // Set stores a key-value pair as an object.
@@ -116,7 +169,11 @@ func (e *Engine) Set(key, value []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
-	return e.store.Put(string(key), bytes.NewReader(value))
+	name, hashed := objectName(key)
+	if hashed {
+		return e.store.Put(name, hashedRecord(key, value))
+	}
+	return e.store.Put(name, bytes.NewReader(value))
 }
 
 // Delete removes a key. A missing key is not an error (idempotent).
@@ -127,7 +184,8 @@ func (e *Engine) Delete(key []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
-	if err := e.store.Delete(string(key)); err != nil && !notFound(err) {
+	name, _ := objectName(key)
+	if err := e.store.Delete(name); err != nil && !notFound(err) {
 		return err
 	}
 	return nil
@@ -135,35 +193,86 @@ func (e *Engine) Delete(key []byte) error {
 
 // List returns all keys matching prefix. An empty prefix returns all keys.
 //
-// Providers are only asked to narrow by the directory-aligned portion of the
-// prefix (up to the last '/'): object-store providers use path semantics, and
-// e.g. go-objstore's local provider stats the joined path and returns an empty
-// list for a partial key component like "k0". The byte-prefix contract of
-// storage.Storage is enforced by the client-side filter below.
+// The provider is asked to narrow by the encoded prefix, which is a string
+// prefix of every matching key's direct name; the byte-prefix contract of
+// storage.Storage is still enforced on the decoded keys (see scan).
 func (e *Engine) List(prefix []byte) ([][]byte, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
-	providerPrefix := string(prefix)
-	if i := strings.LastIndexByte(providerPrefix, '/'); i >= 0 {
-		providerPrefix = providerPrefix[:i+1]
-	} else {
-		providerPrefix = ""
-	}
-	names, err := e.store.List(providerPrefix)
+	entries, err := e.scan(prefix, false)
 	if err != nil {
 		return nil, err
 	}
-	keys := make([][]byte, 0, len(names))
-	for _, name := range names {
-		k := []byte(name)
-		// Defend against providers that do not filter server-side.
-		if len(prefix) > 0 && !bytes.HasPrefix(k, prefix) {
-			continue
-		}
-		keys = append(keys, k)
+	keys := make([][]byte, len(entries))
+	for i := range entries {
+		keys[i] = entries[i].key
 	}
 	return keys, nil
+}
+
+// scan returns every stored entry whose key begins with prefix, in no
+// particular order, carrying values when withValues is set. Direct names are
+// narrowed on the provider by the prefix's own encoding; hashed names cannot
+// be, so every hashed record is read for the key it carries. An object
+// deleted between the listing and its read is skipped.
+func (e *Engine) scan(prefix []byte, withValues bool) ([]kvEntry, error) {
+	var entries []kvEntry
+	if providerPrefix, ok := directListPrefix(prefix); ok {
+		names, err := e.store.List(providerPrefix)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			key, ok := decodeDirectName(name)
+			// Defend against providers that do not filter server-side.
+			if !ok || !bytes.HasPrefix(key, prefix) {
+				continue
+			}
+			entry := kvEntry{key: key}
+			if withValues {
+				value, err := e.Get(key)
+				if err != nil {
+					return nil, err
+				}
+				if value == nil {
+					continue
+				}
+				entry.value = value
+			}
+			entries = append(entries, entry)
+		}
+	}
+	names, err := e.store.List(hashedPrefix)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		if !isHashedName(name) {
+			continue
+		}
+		key, value, err := e.readHashed(name, withValues)
+		if err != nil {
+			if notFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		if bytes.HasPrefix(key, prefix) {
+			entries = append(entries, kvEntry{key: key, value: value})
+		}
+	}
+	return entries, nil
+}
+
+// readHashed reads the record stored under the hashed name.
+func (e *Engine) readHashed(name string, withValue bool) ([]byte, []byte, error) {
+	rc, err := e.store.Get(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	return readHashedRecord(name, rc, withValue)
 }
 
 // Exists reports whether key exists.
@@ -174,7 +283,8 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
-	ok, err := e.store.Exists(context.Background(), string(key))
+	name, _ := objectName(key)
+	ok, err := e.store.Exists(context.Background(), name)
 	if err != nil {
 		if notFound(err) {
 			return false, nil

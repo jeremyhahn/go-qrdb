@@ -138,7 +138,7 @@ func TestProvider_Lifecycle_SystemSessionUsesManager(t *testing.T) {
 func mustCreateTenantDatabase(t *testing.T, mgr *database.Manager, tenantID, name string) {
 	t.Helper()
 	if _, err := mgr.Create(database.DatabaseConfig{
-		TenantID: tenantID, Name: name, Engine: database.EngineKV, Backend: database.BackendMemory,
+		TenantID: tenantID, Name: name, Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatal(err)
 	}

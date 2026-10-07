@@ -69,9 +69,9 @@ applies, and the account is judged by the same target guard `ca issue` is: no
 Security Officer target, and an Owner target only when you hold Owner
 yourself.
 
-Served on `rest`, `quic` and `mcp` today; `grpc` and `unix` refuse it with a
-typed "not carried on this transport" error (see
-[api.md](api.md#capability-matrix--invitation-self-enrolment)).
+Served on every transport (see
+[api.md](api.md#capability-matrix--invitation-self-enrolment)). *(Corrected
+2026-10-06: this said `grpc` and `unix` refuse it; both carry `InviteUser`.)*
 
 ### `qrdb enroll`
 
@@ -104,7 +104,7 @@ other command uses, but this is the one command that dials without
 connecting first: on `mcp`, redemption is served by a **separate** public
 server (`/mcp/enroll`) because the main endpoint answers nothing -- not even
 `tools/list` -- to an unauthenticated caller. Served on `rest`, `quic` and
-`mcp`; refused with a typed error on `grpc` and `unix`.
+`mcp`, and likewise on `grpc` and `unix`.
 
 A token is single-use: a second `qrdb enroll` with the same token gets the
 same opaque refusal an unknown or expired token gets, by design (see

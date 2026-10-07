@@ -25,15 +25,22 @@ func TestClusterJoinToken_IsCrossScope(t *testing.T) {
 	}
 }
 
-// TestClusterJoinToken_IsPlatformOnly pins that no built-in role (SO, Admin,
-// Operator, User, Auditor) carries cluster:join_token by default: only Owner,
-// which holds every permission through All() rather than a role grant, may
-// mint a token unless an operator hand-authors a custom role for it.
+// TestClusterJoinToken_IsPlatformOnly pins that cluster:join_token is granted
+// to exactly the platform-admin role among the built-ins: the cluster ADMIN
+// role (owner ruling, 2026-10-06) by a registered grant, and Owner through
+// permission.All() rather than a role grant. No other built-in role --
+// Security Officer, Operator, User or Auditor -- carries it by default. The
+// grant is still platform-only in effect: ScopeCross admits only a
+// system-tenant caller, so a tenant's own Admin holds the permission but can
+// never exercise it.
 func TestClusterJoinToken_IsPlatformOnly(t *testing.T) {
-	for _, role := range []string{RoleSO, RoleAdmin, RoleOperator, RoleUser, RoleAuditor} {
+	if !HasRoleGrant(RoleAdmin, ClusterJoinToken) {
+		t.Fatalf("role %q does not carry cluster:join_token by default, want the platform-admin grant", RoleAdmin)
+	}
+	for _, role := range []string{RoleSO, RoleOperator, RoleUser, RoleAuditor} {
 		for _, p := range RolePermissions(role) {
 			if p == ClusterJoinToken {
-				t.Fatalf("role %q carries cluster:join_token by default, want platform-only (Owner only)", role)
+				t.Fatalf("role %q carries cluster:join_token by default, want Admin/Owner only", role)
 			}
 		}
 	}

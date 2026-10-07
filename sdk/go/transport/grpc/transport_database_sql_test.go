@@ -39,7 +39,7 @@ func TestGRPCDatabase_UpdateDatabaseSQL_RoundTrip(t *testing.T) {
 	}
 
 	if _, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
-		Name: "testdb", Engine: "kv", Backend: "memory",
+		Name: "testdb", Backend: "memory",
 		SQL: &transport.DatabaseSQLConfig{Concurrency: "pessimistic"},
 	}); err != nil {
 		t.Fatalf("CreateDatabase: %v", err)

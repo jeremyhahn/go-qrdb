@@ -52,6 +52,34 @@ const (
 	// cannot approve other tenants' registrations.
 	TenantsApprove Permission = "tenants:approve"
 
+	// TenantsReadCross grants the system tenant access to read another
+	// tenant's registry entry. It replaces the ScopeSelf system-tenant lift
+	// TenantsRead (self_scope.go) used to enjoy over every tenant (owner
+	// ruling, 2026-10-01): TenantsRead is now confined to the caller's own
+	// tenant like any other ScopeSelf permission, and a platform caller that
+	// needs to read another tenant's entry needs this instead.
+	// AuthMiddleware.AuthorizeTenantTarget tries TenantsRead first and falls
+	// back to this only when the target differs from the caller's own
+	// tenant, so a tenant's own Admin never needs it.
+	TenantsReadCross Permission = "tenants:read:cross"
+
+	// TenantsDeleteCross is TenantsReadCross's sibling for deletion. It
+	// replaces the ScopeSelf system-tenant lift TenantsDelete used to enjoy;
+	// TenantsDelete itself stays ScopeSelf (a tenant's own Admin may delete
+	// its own tenant — owner ruling 2026-09-29).
+	TenantsDeleteCross Permission = "tenants:delete:cross"
+
+	// TenantsUpdateCross is TenantsReadCross's sibling for update: platform
+	// administration of another tenant's registry entry (rename, change its
+	// isolation policy via TenantsSetIsolation's own gate, etc.), the same
+	// ordinary tenant-administration act TenantsCreateCross/TenantsListCross
+	// already cover — not a tenant-data ScopeSelf operation, so it is
+	// unaffected by the ScopeSelf lift removal in spirit but needed the same
+	// explicit cross permission once the lift itself stopped covering it.
+	// TenantsUpdate itself stays ScopeSelf (a tenant's own Admin may update
+	// its own tenant).
+	TenantsUpdateCross Permission = "tenants:update:cross"
+
 	// CertsRevokeCross grants the CA-operator revocation: writing a
 	// cluster-wide deny marker for a serial this node holds NO issued
 	// record for. Reserved for the system tenant.
@@ -142,6 +170,9 @@ func crossScopePermissions() []Permission {
 		TenantsListDeleted,
 		TenantsReconcileDeleted,
 		TenantsApprove,
+		TenantsReadCross,
+		TenantsDeleteCross,
+		TenantsUpdateCross,
 		// AuditVerify is declared in constants.go (it predates this file and
 		// carries its own audit:verify wire name, unlike the *Cross-suffixed
 		// permissions above), but registered HERE rather than in

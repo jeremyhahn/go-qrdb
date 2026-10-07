@@ -52,14 +52,14 @@ async function navigateToDatabases(page: Page): Promise<void> {
 const raftDbState: MockState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "raftdb", engine: "kv", backend: "pebble", status: "open", replicas: 1 },
+    { name: "raftdb", backend: "pebble", status: "open", replicas: 1 },
   ],
 };
 
 const nonRaftDbState: MockState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "localdb", engine: "kv", backend: "pebble", status: "open" },
+    { name: "localdb", backend: "pebble", status: "open" },
   ],
 };
 

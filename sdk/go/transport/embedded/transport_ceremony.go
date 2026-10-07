@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -81,6 +82,20 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 
 	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, opts)
 	if err != nil {
+		// The admin-credential step must commit on the system shard's
+		// leader (service.CeremonyServiceWithLeaderGate); when this
+		// embedding is configured with a caller and forwarder
+		// (WithReplicaForwarding), forward the identical request to the
+		// leader over QUIC, the same way a database-scoped embedded call
+		// forwards a per-database refusal, rather than returning the
+		// node's own refusal to the embedder (node parity, owner ruling
+		// 2026-10-06).
+		var notLeader *service.AdminCredentialNotLeaderError
+		if errors.As(err, &notLeader) {
+			if remote, ok := t.forwardAdminTo(ctx, notLeader); ok {
+				return remote.CeremonyInitialize(ctx, req)
+			}
+		}
 		return nil, delayed("CeremonyInitialize", err)
 	}
 	// resp carries its own independent copy of result.AdminKeyPEM

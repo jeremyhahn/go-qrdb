@@ -22,8 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -221,7 +220,7 @@ over the wire.
 				}
 			}
 
-			pkcs12Data, err := cert.EncodePKCS12(certPEM, keyPEM, caPEM, passphrase)
+			pkcs12Data, err := sdk.EncodePKCS12(certPEM, keyPEM, caPEM, passphrase)
 			if err != nil {
 				return err
 			}
@@ -323,7 +322,7 @@ func newCertsListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&tenantID, "tenant-id", tenantid.System, "Filter by tenant ID")
+	cmd.Flags().StringVar(&tenantID, "tenant-id", sdk.SystemTenantID, "Filter by tenant ID")
 
 	return cmd
 }

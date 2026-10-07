@@ -48,13 +48,6 @@
       filterType: "text",
     },
     {
-      id: "engine",
-      header: "Engine",
-      accessor: "engine",
-      sortable: true,
-      render: (value: unknown) => String(value),
-    },
-    {
       id: "backend",
       header: "Backend",
       accessor: "backend",

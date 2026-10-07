@@ -1,6 +1,6 @@
 # etcd Compatibility — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 > **Build-tag gated: `qrdb_etcd`** (`WITH_QRDB_ETCD=1`, on by default). Disable
 > with `WITH_QRDB_ETCD=0`.
@@ -20,7 +20,6 @@ what the loader reads).
 ```yaml
 databases:
   - name: k8s-prod
-    engine: kv
     backend: raft
     etcd:
       enabled: true
@@ -29,7 +28,7 @@ databases:
         - "https://node1:2379"
 ```
 
-**Validation:** TLS and auth must be enabled when the etcd protocol is active, the node must run in mode `raft`, and the database `engine` must be `kv` -- any `backend` serves it.
+**Validation:** TLS and auth must be enabled when the etcd protocol is active and the node must run in mode `raft` -- any `backend` serves it; there is no `engine` constraint (Lane 1C deleted the `engine` concept entirely, OD-12/OD-13).
 
 
 **Validation is strict and fails startup, not the first request:**
@@ -37,11 +36,13 @@ databases:
 - TLS and auth must both be enabled when the etcd protocol is active.
 - The node must run in mode `raft`: the etcd listener is a raft-only surface
   (`capabilities.Etcd`), and a standalone node's listener refuses to start.
-- The database `engine` must be `kv`; enabling etcd on any other engine is
-  refused with `database.EtcdEngineUnsupportedError`. Any `backend` serves
-  it -- the listener resolves the database through the service registry
-  regardless of backend. *(Corrected 2026-10-03: `backend: raft` was
-  documented as required here and was neither required nor checked.)*
+- Any `backend` serves it -- the listener resolves the database through the
+  service registry regardless of backend. *(Corrected twice: `backend: raft`
+  was documented as required here and was neither required nor checked; and
+  this section previously also required the database `engine` to be `kv`,
+  refusing any other engine with `database.EtcdEngineUnsupportedError` --
+  Lane 1C deleted the `engine` concept and that error entirely, OD-12/OD-13,
+  so etcd now serves any database regardless of what it stores.)*
 - For Kubernetes, `sm_type` must additionally be `mvcc` — Kubernetes needs
   revisions, watches, leases and transactions.
 
@@ -123,7 +124,6 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Built without `qrdb_etcd` | listener never starts | **yes** |
-| `engine` is not `kv` | create or etcd update refused: `database.EtcdEngineUnsupportedError` (`INVALID_ARGUMENT`) | **yes** |
 | Node in mode `standalone` | listener refused: `service.CapabilityUnsupportedError` ("requires mode: raft") | **yes** |
 | TLS or the node's authentication not configured | listener refused: `etcd.AuthRequiredError` | **yes** |
 | No database catalog or service registry to confine the listener | listener refused: `etcd.ScopeUnavailableError` | **yes** |

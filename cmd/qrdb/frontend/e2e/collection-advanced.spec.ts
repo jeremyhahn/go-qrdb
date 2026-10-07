@@ -26,7 +26,7 @@ const LOAD_TIMEOUT = 10_000;
 const collectionState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "coll-adv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "coll-adv", backend: "pebble", status: "open" },
   ],
 };
 

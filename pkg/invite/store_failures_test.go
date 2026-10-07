@@ -16,12 +16,17 @@
 // to surface as a typed error rather than as a missing or partially written
 // record: reporting "no such invitation" when the store is simply unavailable
 // would let a caller conclude a valid token was forged.
+//
+// find() and checkUsable() tell a genuine miss (dao.IsNotFound) from every
+// other failure and report the latter as *StoreError, so these tests assert
+// the CAUSE is recoverable from the error, not merely that the call failed.
 
 package invite
 
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +40,14 @@ type errKV struct {
 	*memKV
 	failWrites bool
 	failReads  bool
-	err        error
+	// failReadsPrefix, when non-empty, narrows failReads to keys under this
+	// prefix only -- everything else reads through. This lets a test break
+	// JUST the redemption-marker check (keys under "invite_redemptions/")
+	// while the invitation lookup that precedes it still succeeds, which is
+	// the only way to reach checkUsable's own fault branch: find() fails
+	// first on a blanket read failure, before checkUsable ever runs.
+	failReadsPrefix string
+	err             error
 }
 
 func newErrKV() *errKV {
@@ -74,7 +86,7 @@ func (e *errKV) Delete(ctx context.Context, key string) error {
 }
 
 func (e *errKV) Get(ctx context.Context, key string) ([]byte, error) {
-	if e.failReads {
+	if e.failReads && (e.failReadsPrefix == "" || strings.HasPrefix(key, e.failReadsPrefix)) {
 		return nil, e.err
 	}
 	return e.memKV.Get(ctx, key)
@@ -136,12 +148,12 @@ func TestCreateReportsAStorageFailure(t *testing.T) {
 
 // TestLookupFailsWhenStorageIsUnavailable covers the read-failure branch.
 //
-// It asserts only that Lookup fails, NOT that the cause is recoverable from
-// the error: find() collapses every failure to ErrNotFound, because
-// KVStore.Get returns (nil, nil) for a missing key and a miss is therefore
-// indistinguishable from a read fault by the time the DAO reports it. See
-// docs/invite-notfound-ambiguity.md -- tightening this assertion requires a
-// not-found signal in the KVStore contract, not a change here.
+// The cause IS recoverable from the error: find() uses dao.IsNotFound to
+// tell a genuine miss from a storage fault (go-qrdb#58/#65 already made
+// dao.Get report the two differently; find() used to discard that and
+// collapse both to ErrNotFound regardless -- see
+// docs/identity-rbac/engineering.md's invitation section). A VALID token
+// presented during an outage must not be told "forged".
 func TestLookupFailsWhenStorageIsUnavailable(t *testing.T) {
 	kv := newErrKV()
 	store := newErrStore(t, kv)
@@ -152,8 +164,48 @@ func TestLookupFailsWhenStorageIsUnavailable(t *testing.T) {
 	}
 
 	kv.failReads = true
-	if _, err := store.Lookup(context.Background(), token); err == nil {
+	_, err = store.Lookup(context.Background(), token)
+	if err == nil {
 		t.Fatal("Lookup must fail when storage is unavailable")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("Lookup on a VALID token during an outage = %v; must not be ErrNotFound", err)
+	}
+	var storeErr *StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("error = %T (%v), want *StoreError", err, err)
+	}
+	if !errors.Is(storeErr, kv.err) {
+		t.Errorf("StoreError %v does not wrap the storage cause %v", storeErr, kv.err)
+	}
+}
+
+// TestLookupFailsWhenTheRedemptionCheckCannotBeConfirmed covers checkUsable's
+// own fault branch: the invitation itself reads fine, but the redemption
+// marker that decides whether it is already spent cannot be read. Treating
+// that as "no marker, so not yet redeemed" would let an outage make a spent
+// token look usable; this must fail instead of answering either way.
+func TestLookupFailsWhenTheRedemptionCheckCannotBeConfirmed(t *testing.T) {
+	kv := newErrKV()
+	store := newErrStore(t, kv)
+
+	token, _, err := store.Create(context.Background(), "user-1", "tenant-a", time.Hour)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	kv.failReads = true
+	kv.failReadsPrefix = redemptionEntityType + "/"
+	_, err = store.Lookup(context.Background(), token)
+	if err == nil {
+		t.Fatal("Lookup must fail when the redemption marker cannot be read")
+	}
+	if errors.Is(err, ErrAlreadyRedeemed) {
+		t.Fatalf("Lookup = %v; an unconfirmed marker must not answer ErrAlreadyRedeemed", err)
+	}
+	var storeErr *StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("error = %T (%v), want *StoreError", err, err)
 	}
 }
 
@@ -189,6 +241,8 @@ func TestRedeemReportsAStorageFailureOnTheConsumingWrite(t *testing.T) {
 }
 
 // TestRedeemReportsAStorageFailureOnTheLookup covers the read half of Redeem.
+// Same requirement as Lookup's: a storage fault must not be reported as the
+// token being unknown.
 func TestRedeemReportsAStorageFailureOnTheLookup(t *testing.T) {
 	ctx := context.Background()
 	kv := newErrKV()
@@ -200,8 +254,16 @@ func TestRedeemReportsAStorageFailureOnTheLookup(t *testing.T) {
 	}
 
 	kv.failReads = true
-	if _, err := store.Redeem(ctx, token); err == nil {
+	_, err = store.Redeem(ctx, token)
+	if err == nil {
 		t.Fatal("Redeem must fail when the lookup fails")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("Redeem on a VALID token during an outage = %v; must not be ErrNotFound", err)
+	}
+	var storeErr *StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("error = %T (%v), want *StoreError", err, err)
 	}
 }
 

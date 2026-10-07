@@ -98,7 +98,7 @@ func TestDatabaseConfinement(t *testing.T) {
 					t.Errorf("%s on acme's database = status %d (%s), want StatusNotFound, as for a missing database", method, status, body)
 				}
 			}
-			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Backend: database.BackendMemory}); err != nil {
 				t.Fatalf("create the system tenant's own database: %v", err)
 			}
 			// The list names the caller's own databases and only those.
@@ -111,7 +111,7 @@ func TestDatabaseConfinement(t *testing.T) {
 			}
 			// A tenant named in a create request is discarded: the database is
 			// the caller's, never acme's.
-			createReq := mustJSON(t, map[string]any{"name": "smuggled", "tenantId": "acme", "engine": "kv", "backend": "memory"})
+			createReq := mustJSON(t, map[string]any{"name": "smuggled", "tenantId": "acme", "backend": "memory"})
 			if status, body := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, "db.Create", createReq); status == wire.StatusOK {
 				if info, err := fx.Service.Get("smuggled"); err != nil || !database.OwnedBy(info.TenantID, tenantid.System) {
 					t.Errorf("create naming tenant acme made %+v (%v), want a database the system tenant owns", info, err)

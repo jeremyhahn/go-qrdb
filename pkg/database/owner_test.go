@@ -53,8 +53,8 @@ func newOwnedFixture(t *testing.T) *Manager {
 	t.Helper()
 	m := newTestManager(t)
 	for _, cfg := range []DatabaseConfig{
-		{Name: "boot", Engine: EngineKV, Backend: BackendMemory},
-		{Name: "acmedb", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory},
+		{Name: "boot", Backend: BackendMemory},
+		{Name: "acmedb", TenantID: "acme", Backend: BackendMemory},
 	} {
 		if _, err := m.Create(cfg); err != nil {
 			t.Fatalf("create %s: %v", cfg.Name, err)

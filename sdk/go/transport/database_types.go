@@ -43,7 +43,6 @@ type EtcdProtocolConfig struct {
 type DatabaseInfo struct {
 	TenantID     string                    `json:"tenantId,omitempty"`
 	Name         string                    `json:"name"`
-	Engine       string                    `json:"engine"`
 	Backend      string                    `json:"backend"`
 	Status       string                    `json:"status"`
 	Protocol     ProtocolConfig            `json:"protocol,omitempty"`
@@ -245,7 +244,6 @@ type DatabaseConnectionConfig struct {
 type CreateDatabaseRequest struct {
 	TenantID   string                    `json:"tenantId,omitempty"`
 	Name       string                    `json:"name"`
-	Engine     string                    `json:"engine"`
 	Backend    string                    `json:"backend"`
 	Protocol   ProtocolConfig            `json:"protocol,omitempty"`
 	DataDir    string                    `json:"dataDir,omitempty"`

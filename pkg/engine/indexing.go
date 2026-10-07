@@ -80,7 +80,7 @@ type uniqueIndexChecker interface {
 // stall consensus). It returns a *UniqueConstraintError on conflict, a
 // non-typed error if an index read fails (a genuine IO fault the caller may
 // treat as fatal), or nil when the write is admissible.
-func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte) error {
+func CheckUniqueViolation(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte) error {
 	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
@@ -105,7 +105,7 @@ func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string
 			continue
 		}
 		fieldVal := UnquoteJSON(raw)
-		existing, err := idx.Get(fieldVal)
+		existing, err := getIndexValues(batch, idx, fieldVal)
 		if err != nil {
 			return err
 		}
@@ -116,6 +116,17 @@ func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string
 		}
 	}
 	return nil
+}
+
+// getIndexValues reads idx's entries for fieldVal through batch when idx
+// implements index.BatchableIndex -- so an uncommitted write staged by an
+// earlier entry of the same apply batch is seen -- and falls back to idx.Get
+// (committed storage only) for an index that does not.
+func getIndexValues(batch storage.Batch, idx index.Index, fieldVal []byte) ([][]byte, error) {
+	if bidx, ok := idx.(index.BatchableIndex); ok {
+		return bidx.GetInBatch(batch, fieldVal)
+	}
+	return idx.Get(fieldVal)
 }
 
 // indexedPut is a (key, value) write evaluated for unique-constraint
@@ -137,7 +148,7 @@ type indexedPut struct {
 // on the apply path and never stalls consensus. Returns a *UniqueConstraintError
 // on the first conflict, a non-typed error on an index read failure, or nil
 // when every write is admissible.
-func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, puts []indexedPut, deletedKeys [][]byte) error {
+func CheckUniqueViolationsBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, puts []indexedPut, deletedKeys [][]byte) error {
 	if len(indexes) == 0 || len(puts) == 0 {
 		return nil
 	}
@@ -170,7 +181,7 @@ func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[
 				continue
 			}
 			fieldVal := UnquoteJSON(raw)
-			existing, err := idx.Get(fieldVal)
+			existing, err := getIndexValues(batch, idx, fieldVal)
 			if err != nil {
 				return err
 			}

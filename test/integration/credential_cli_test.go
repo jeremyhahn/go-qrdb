@@ -264,6 +264,37 @@ func testCredentialLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pro
 		t.Fatalf("[%s] credential retrieve-version (v1, post-gc) should fail, got: %s", proto.name, out)
 	}
 
+	// --- delete must wipe an in-grace (not yet expired) historical
+	// version too, not just the current value and already-expired
+	// history. Rotate once more so storedName has a fresh v3 current plus
+	// a v2 that is still inside its grace window (long enough that it
+	// cannot expire before this test asserts against it), then confirm
+	// delete removes both. This is the blocker scenario: prior to the fix,
+	// DeleteCredential(barrier) only removed the current value, leaving
+	// the #meta sidecar and #v2 history retrievable via
+	// retrieve-version/versions after "delete" reported success. ---------
+	out, err = runCLIProto(t, node, proto, "--output", "json", "credential", "rotate", storedName,
+		"--value", "stored-value-3",
+		"--grace-period", "120",
+	)
+	if err != nil {
+		t.Fatalf("[%s] credential rotate (pre-delete, in-grace): %v\noutput: %s", proto.name, err, out)
+	}
+	var rotatedAgain credentialRotateCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &rotatedAgain); jerr != nil {
+		t.Fatalf("[%s] decode credential rotate JSON (pre-delete): %v\noutput: %s", proto.name, jerr, out)
+	}
+	if rotatedAgain.PreviousVersion != 2 || rotatedAgain.NewVersion != 3 {
+		t.Fatalf("[%s] credential rotate (pre-delete) result = %+v, want previous_version=2 new_version=3", proto.name, rotatedAgain)
+	}
+	out, err = runCLIProto(t, node, proto, "credential", "retrieve-version", storedName, "--version", "2")
+	if err != nil {
+		t.Fatalf("[%s] credential retrieve-version (v2, within grace, pre-delete): %v\noutput: %s", proto.name, err, out)
+	}
+	if strings.TrimSpace(out) != "stored-value-2" {
+		t.Fatalf("[%s] credential retrieve-version (v2, pre-delete) = %q, want %q", proto.name, strings.TrimSpace(out), "stored-value-2")
+	}
+
 	// --- delete ----------------------------------------------------------
 	out, err = runCLIProto(t, node, proto, "credential", "delete", submittedName)
 	if err != nil {
@@ -278,6 +309,22 @@ func testCredentialLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pro
 	}
 	if !strings.Contains(out, "OK") {
 		t.Fatalf("[%s] credential delete (stored): expected OK, got: %s", proto.name, out)
+	}
+
+	// The blocker assertion: the in-grace v2 history and the deleted
+	// current (v3) value must both be gone immediately, not merely
+	// unreachable once some later GC runs.
+	out, err = runCLIProto(t, node, proto, "credential", "retrieve-version", storedName, "--version", "2")
+	if err == nil {
+		t.Fatalf("[%s] credential retrieve-version (v2, post-delete) should fail, got: %s", proto.name, out)
+	}
+	out, err = runCLIProto(t, node, proto, "credential", "retrieve-version", storedName, "--version", "3")
+	if err == nil {
+		t.Fatalf("[%s] credential retrieve-version (v3/current, post-delete) should fail, got: %s", proto.name, out)
+	}
+	out, err = runCLIProto(t, node, proto, "credential", "versions", storedName)
+	if err == nil {
+		t.Fatalf("[%s] credential versions (post-delete) should fail, got: %s", proto.name, out)
 	}
 
 	out, err = runCLIProto(t, node, proto, "--output", "json", "credential", "list")

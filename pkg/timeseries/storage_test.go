@@ -22,38 +22,90 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-// openPebble creates a PebbleDB in a temporary directory and registers
-// cleanup. It fails the test immediately on error.
-func openPebble(t *testing.T) *pebble.DB {
-	t.Helper()
-	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
-	if err != nil {
-		t.Fatalf("pebble.Open: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("pebble.Close: %v", err)
-		}
-	})
-	return db
-}
-
-// newStorage creates a Storage backed by a temp PebbleDB.
+// newStorage creates a Storage backed by an in-memory storage.Storage.
 func newStorage(t *testing.T) *Storage {
 	t.Helper()
-	db := openPebble(t)
-	s, err := New(db)
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	s, err := New(stg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return s
+}
+
+// write stages and commits a single data point in its own batch -- the
+// granularity a caller outside a Raft apply loop uses.
+func write(t *testing.T, s *Storage, metric string, value float64, timestamp time.Time, tags map[string]string) error {
+	t.Helper()
+	b := s.stg.Batch()
+	defer func() { _ = b.Close() }()
+	if err := s.Write(b, metric, value, timestamp, tags); err != nil {
+		return err
+	}
+	return b.Commit()
+}
+
+// writeBatch stages and commits a slice of data points in one batch.
+func writeBatch(t *testing.T, s *Storage, points []DataPoint) error {
+	t.Helper()
+	b := s.stg.Batch()
+	defer func() { _ = b.Close() }()
+	if err := s.WriteBatch(b, points); err != nil {
+		return err
+	}
+	return b.Commit()
+}
+
+// writePoint stages and commits a single validated DataPoint in its own batch.
+func writePoint(t *testing.T, s *Storage, point *DataPoint) error {
+	t.Helper()
+	b := s.stg.Batch()
+	defer func() { _ = b.Close() }()
+	if err := s.WritePoint(b, point); err != nil {
+		return err
+	}
+	return b.Commit()
+}
+
+// deleteSeries stages and commits a DeleteRequest in its own batch.
+func deleteSeries(t *testing.T, s *Storage, req *DeleteRequest) error {
+	t.Helper()
+	b := s.stg.Batch()
+	defer func() { _ = b.Close() }()
+	if err := s.DeleteSeries(b, req); err != nil {
+		return err
+	}
+	return b.Commit()
+}
+
+// setRetentionPolicy stages and commits a retention policy in its own batch.
+func setRetentionPolicy(t *testing.T, s *Storage, metric string, policy *RetentionPolicy) error {
+	t.Helper()
+	b := s.stg.Batch()
+	defer func() { _ = b.Close() }()
+	if err := s.SetRetentionPolicy(b, metric, policy); err != nil {
+		return err
+	}
+	return b.Commit()
+}
+
+// applyRetention stages and commits a retention sweep in its own batch.
+func applyRetention(t *testing.T, s *Storage, metric string, cutoff time.Time) error {
+	t.Helper()
+	b := s.stg.Batch()
+	defer func() { _ = b.Close() }()
+	if err := s.ApplyRetention(b, metric, cutoff); err != nil {
+		return err
+	}
+	return b.Commit()
 }
 
 // ts creates a UTC time helper for test readability.
@@ -77,8 +129,7 @@ func TestNew_NilDB(t *testing.T) {
 }
 
 func TestNew_ValidDB(t *testing.T) {
-	db := openPebble(t)
-	s, err := New(db)
+	s, err := New(memory.NewStorage())
 	if err != nil {
 		t.Fatalf("New: unexpected error: %v", err)
 	}
@@ -94,7 +145,7 @@ func TestNew_ValidDB(t *testing.T) {
 func TestStorage_Write_SinglePoint(t *testing.T) {
 	s := newStorage(t)
 	timestamp := ts(2026, 2, 24, 10, 0, 0)
-	err := s.Write("cpu.usage", 42.5, timestamp, map[string]string{"host": "srv1"})
+	err := write(t, s, "cpu.usage", 42.5, timestamp, map[string]string{"host": "srv1"})
 	if err != nil {
 		t.Fatalf("Write: unexpected error: %v", err)
 	}
@@ -118,7 +169,7 @@ func TestStorage_Write_SinglePoint(t *testing.T) {
 func TestStorage_Write_WithoutTags(t *testing.T) {
 	s := newStorage(t)
 	timestamp := ts(2026, 2, 24, 10, 0, 0)
-	err := s.Write("mem.free", 1024.0, timestamp, nil)
+	err := write(t, s, "mem.free", 1024.0, timestamp, nil)
 	if err != nil {
 		t.Fatalf("Write: unexpected error: %v", err)
 	}
@@ -130,7 +181,7 @@ func TestStorage_Write_WithoutTags(t *testing.T) {
 
 func TestStorage_Write_InvalidMetric(t *testing.T) {
 	s := newStorage(t)
-	err := s.Write("", 42.5, time.Now(), nil)
+	err := write(t, s, "", 42.5, time.Now(), nil)
 	if err == nil {
 		t.Fatal("Write(empty metric): expected InvalidMetricError, got nil")
 	}
@@ -142,7 +193,7 @@ func TestStorage_Write_InvalidMetric(t *testing.T) {
 
 func TestStorage_Write_ZeroTimestamp(t *testing.T) {
 	s := newStorage(t)
-	err := s.Write("cpu.usage", 42.5, time.Time{}, nil)
+	err := write(t, s, "cpu.usage", 42.5, time.Time{}, nil)
 	if err == nil {
 		t.Fatal("Write(zero timestamp): expected InvalidTimestampError, got nil")
 	}
@@ -155,7 +206,7 @@ func TestStorage_Write_ZeroTimestamp(t *testing.T) {
 func TestStorage_Write_AfterClose(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
-	err := s.Write("cpu.usage", 42.5, time.Now(), nil)
+	err := write(t, s, "cpu.usage", 42.5, time.Now(), nil)
 	if err == nil {
 		t.Fatal("Write(after close): expected ClosedError, got nil")
 	}
@@ -168,7 +219,7 @@ func TestStorage_Write_AfterClose(t *testing.T) {
 func TestStorage_Write_NegativeValue(t *testing.T) {
 	s := newStorage(t)
 	timestamp := ts(2026, 2, 24, 10, 0, 0)
-	err := s.Write("temperature", -15.3, timestamp, nil)
+	err := write(t, s, "temperature", -15.3, timestamp, nil)
 	if err != nil {
 		t.Fatalf("Write(negative value): unexpected error: %v", err)
 	}
@@ -194,7 +245,7 @@ func TestStorage_WriteBatch_MultiplePoints(t *testing.T) {
 		{Metric: "cpu.usage", Value: 30.0, Timestamp: t3, Tags: map[string]string{"host": "srv1"}},
 	}
 
-	if err := s.WriteBatch(points); err != nil {
+	if err := writeBatch(t, s, points); err != nil {
 		t.Fatalf("WriteBatch: unexpected error: %v", err)
 	}
 
@@ -209,7 +260,7 @@ func TestStorage_WriteBatch_MultiplePoints(t *testing.T) {
 
 func TestStorage_WriteBatch_EmptyBatch(t *testing.T) {
 	s := newStorage(t)
-	err := s.WriteBatch([]DataPoint{})
+	err := writeBatch(t, s, []DataPoint{})
 	if err != nil {
 		t.Fatalf("WriteBatch(empty): unexpected error: %v", err)
 	}
@@ -217,7 +268,7 @@ func TestStorage_WriteBatch_EmptyBatch(t *testing.T) {
 
 func TestStorage_WriteBatch_NilBatch(t *testing.T) {
 	s := newStorage(t)
-	err := s.WriteBatch(nil)
+	err := writeBatch(t, s, nil)
 	if err != nil {
 		t.Fatalf("WriteBatch(nil): unexpected error: %v", err)
 	}
@@ -229,7 +280,7 @@ func TestStorage_WriteBatch_InvalidMetricInBatch(t *testing.T) {
 		{Metric: "cpu.usage", Value: 10.0, Timestamp: time.Now()},
 		{Metric: "", Value: 20.0, Timestamp: time.Now()},
 	}
-	err := s.WriteBatch(points)
+	err := writeBatch(t, s, points)
 	if err == nil {
 		t.Fatal("WriteBatch(invalid metric): expected InvalidMetricError, got nil")
 	}
@@ -245,7 +296,7 @@ func TestStorage_WriteBatch_ZeroTimestampInBatch(t *testing.T) {
 		{Metric: "cpu.usage", Value: 10.0, Timestamp: time.Now()},
 		{Metric: "cpu.usage", Value: 20.0, Timestamp: time.Time{}},
 	}
-	err := s.WriteBatch(points)
+	err := writeBatch(t, s, points)
 	if err == nil {
 		t.Fatal("WriteBatch(zero timestamp): expected InvalidTimestampError, got nil")
 	}
@@ -261,7 +312,7 @@ func TestStorage_WriteBatch_AfterClose(t *testing.T) {
 	points := []DataPoint{
 		{Metric: "cpu.usage", Value: 10.0, Timestamp: time.Now()},
 	}
-	err := s.WriteBatch(points)
+	err := writeBatch(t, s, points)
 	if err == nil {
 		t.Fatal("WriteBatch(after close): expected ClosedError, got nil")
 	}
@@ -281,7 +332,7 @@ func TestStorage_Query_TimeRange(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
-		_ = s.Write("cpu.usage", float64(i), ts, nil)
+		_ = write(t, s, "cpu.usage", float64(i), ts, nil)
 	}
 
 	// Query subset.
@@ -300,9 +351,9 @@ func TestStorage_Query_TagFiltering(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
 
 	results, err := s.Query("cpu.usage", base, base.Add(2*time.Minute),
 		WithTags(map[string]string{"host": "srv1"}))
@@ -325,7 +376,7 @@ func TestStorage_Query_Limit(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
-		_ = s.Write("cpu.usage", float64(i), ts, nil)
+		_ = write(t, s, "cpu.usage", float64(i), ts, nil)
 	}
 
 	results, err := s.Query("cpu.usage", base, base.Add(9*time.Minute),
@@ -344,7 +395,7 @@ func TestStorage_Query_Descending(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
-		_ = s.Write("cpu.usage", float64(i), ts, nil)
+		_ = write(t, s, "cpu.usage", float64(i), ts, nil)
 	}
 
 	results, err := s.Query("cpu.usage", base, base.Add(4*time.Minute),
@@ -370,7 +421,7 @@ func TestStorage_Query_DescendingWithLimit(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
-		_ = s.Write("cpu.usage", float64(i), ts, nil)
+		_ = write(t, s, "cpu.usage", float64(i), ts, nil)
 	}
 
 	results, err := s.Query("cpu.usage", base, base.Add(9*time.Minute),
@@ -460,9 +511,9 @@ func TestStorage_Aggregate_Avg(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base.Add(2*time.Minute),
 		AggAvg, time.Hour)
@@ -484,9 +535,9 @@ func TestStorage_Aggregate_Sum(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base.Add(2*time.Minute),
 		AggSum, time.Hour)
@@ -505,9 +556,9 @@ func TestStorage_Aggregate_Min(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 50.0, base, nil)
-	_ = s.Write("cpu.usage", 10.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 50.0, base, nil)
+	_ = write(t, s, "cpu.usage", 10.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base.Add(2*time.Minute),
 		AggMin, time.Hour)
@@ -526,9 +577,9 @@ func TestStorage_Aggregate_Max(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 50.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 50.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base.Add(2*time.Minute),
 		AggMax, time.Hour)
@@ -547,9 +598,9 @@ func TestStorage_Aggregate_Count(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base.Add(2*time.Minute),
 		AggCount, time.Hour)
@@ -570,7 +621,7 @@ func TestStorage_Aggregate_Percentile(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		ts := base.Add(time.Duration(i) * time.Second)
-		_ = s.Write("latency", float64(i+1), ts, nil)
+		_ = write(t, s, "latency", float64(i+1), ts, nil)
 	}
 
 	results, err := s.Aggregate("latency", base, base.Add(99*time.Second),
@@ -592,11 +643,11 @@ func TestStorage_Aggregate_MultipleBuckets(t *testing.T) {
 	base := ts(2026, 2, 24, 10, 0, 0)
 
 	// Bucket 1: 10:00
-	_ = s.Write("cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
 	// Bucket 2: 11:00
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Hour), nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Hour), nil)
 	// Bucket 3: 12:00
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Hour), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Hour), nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base.Add(2*time.Hour),
 		AggAvg, time.Hour)
@@ -685,7 +736,7 @@ func TestStorage_Aggregate_AfterClose(t *testing.T) {
 func TestStorage_Aggregate_UnknownAggFunc(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
-	_ = s.Write("cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
 
 	results, err := s.Aggregate("cpu.usage", base, base,
 		AggFunc(99), time.Hour)
@@ -715,7 +766,7 @@ func TestStorage_Close_ReturnsNil(t *testing.T) {
 func TestStorage_Close_SubsequentWriteFails(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
-	err := s.Write("cpu.usage", 1.0, time.Now(), nil)
+	err := write(t, s, "cpu.usage", 1.0, time.Now(), nil)
 	var ce *ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("Write(after close): expected ClosedError, got %T: %v", err, err)
@@ -746,7 +797,7 @@ func TestStorage_Close_SubsequentAggregateFails(t *testing.T) {
 func TestStorage_Close_SubsequentWriteBatchFails(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
-	err := s.WriteBatch([]DataPoint{
+	err := writeBatch(t, s, []DataPoint{
 		{Metric: "cpu.usage", Value: 1.0, Timestamp: time.Now()},
 	})
 	var ce *ClosedError
@@ -910,9 +961,9 @@ func TestStorage_KeyOrdering_ChronologicalSort(t *testing.T) {
 	t1 := ts(2026, 2, 24, 10, 0, 0)
 	t2 := ts(2026, 2, 24, 10, 1, 0)
 
-	_ = s.Write("metric", 30.0, t3, nil)
-	_ = s.Write("metric", 10.0, t1, nil)
-	_ = s.Write("metric", 20.0, t2, nil)
+	_ = write(t, s, "metric", 30.0, t3, nil)
+	_ = write(t, s, "metric", 10.0, t1, nil)
+	_ = write(t, s, "metric", 20.0, t2, nil)
 
 	results, err := s.Query("metric", t1, t3)
 	if err != nil {
@@ -937,9 +988,9 @@ func TestStorage_KeyOrdering_DifferentMetricsIsolated(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 2, 24, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("mem.free", 1024.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
 
 	cpuResults, err := s.Query("cpu.usage", base, base.Add(time.Minute))
 	if err != nil {

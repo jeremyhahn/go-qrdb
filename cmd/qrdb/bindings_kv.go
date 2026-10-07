@@ -17,17 +17,17 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // KVBinding exposes key-value operations to the Wails frontend.
 type KVBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewKVBinding creates a new KVBinding backed by the given connection.
-func NewKVBinding(log *logger.Logger, conn *ConnectionBinding) *KVBinding {
+func NewKVBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *KVBinding {
 	return &KVBinding{logger: log, conn: conn}
 }
 

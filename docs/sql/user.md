@@ -81,9 +81,10 @@ sessions from reusing ids they reserved before it.
 
 `TRUNCATE TABLE users` resets `AUTO_INCREMENT` back to 1 on the MySQL wire
 protocol, matching MySQL. On the PostgreSQL wire protocol, plain `TRUNCATE`
-leaves the sequence exactly where it was, matching PostgreSQL's own default
-(`RESTART IDENTITY` is not supported). Either way, no session goes on
-inserting ids reserved before the `TRUNCATE`.
+leaves the sequence exactly where it was, matching PostgreSQL's own
+`CONTINUE IDENTITY` default; `TRUNCATE TABLE users RESTART IDENTITY` resets
+it, applying the same counter restart described above. Either way, no
+session goes on inserting ids reserved before the `TRUNCATE`.
 
 **Use transactions.**
 
@@ -183,21 +184,23 @@ moves a document, and is refused with nothing destroyed if `N` is taken.
 
 **MySQL server-side cursors** (only in builds with the `qrdb_mysql` tag,
 `WITH_QRDB_MYSQL`). A cursor -- `COM_STMT_EXECUTE` with a cursor flag, then
-`COM_STMT_FETCH` -- is served by the upstream vitess and go-mysql-server stack,
-and two things follow:
+`COM_STMT_FETCH` -- is served by the upstream vitess and go-mysql-server stack.
 
 - There is a known upstream data race on that path: vitess `Conn.StatusFlags`
   is accessed by go-mysql-server's handler and by the connection without
-  synchronization.
-- An idle open cursor is not bounded by `sql.query_timeout`: one the client
-  stops fetching from stays open until it is fetched to the end or closed, the
-  client disconnects, or a seal closes the session.
+  synchronization. This is not something QRDB can fix without forking vitess
+  or go-mysql-server.
+- An idle open cursor -- one the client stopped fetching from -- is closed,
+  and its statement's resources released, after `sql.wait_timeout` (default
+  `8h`, matching MySQL's `wait_timeout`), the same idle bound that closes any
+  other connection issuing no command. `sql.query_timeout` does not bound this
+  case: it only bounds a cursor while it is producing rows.
 
-If you need bounded resource use, do not request cursors. With MySQL
-Connector/J keep `useCursorFetch=false` (the default); with libmysqlclient do
-not set `STMT_ATTR_CURSOR_TYPE` to `CURSOR_TYPE_READ_ONLY`. go-sql-driver/mysql
-never requests one. Details:
-[upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-and-are-not-bounded).
+If you need bounded resource use well under `sql.wait_timeout`, do not request
+cursors. With MySQL Connector/J keep `useCursorFetch=false` (the default);
+with libmysqlclient do not set `STMT_ATTR_CURSOR_TYPE` to
+`CURSOR_TYPE_READ_ONLY`. go-sql-driver/mysql never requests one. Details:
+[upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-the-idle-bound-half-is-fixed-in-qrdb).
 
 ## Troubleshooting
 

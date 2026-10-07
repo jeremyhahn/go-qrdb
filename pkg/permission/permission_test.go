@@ -608,7 +608,19 @@ func TestAll_TotalCount(t *testing.T) {
 	// = 382 total.
 	// + 1 users:invite, pending-account self-enrolment (invitation
 	//   self-enrolment) = 383 total.
-	const expectedTotal = 383
+	// + 2 tenants:read:cross, tenants:delete:cross: the ScopeCross
+	//   replacements for the ScopeSelf system-tenant lift removed from
+	//   tenants:read / tenants:delete (owner ruling, 2026-10-01) = 385 total.
+	// + 1 tenants:update:cross: the same replacement for tenants:update,
+	//   needed once the lift stopped covering the system tenant's ordinary
+	//   platform administration of another tenant's registry entry = 386
+	//   total.
+	// + 1 audit:verify_replicated, the per-tenant hash-continuity check over
+	//   the cluster-wide REPLICATED audit chain -- self-scoped, unlike
+	//   audit:verify's cross-scope node-local file-chain check, because each
+	//   tenant's replicated chain is its own independent table
+	//   (docs/audit/architecture.md#cluster-wide-replicated-trail) = 387 total.
+	const expectedTotal = 387
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

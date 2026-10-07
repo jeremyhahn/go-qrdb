@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
@@ -118,12 +118,35 @@ Optional extensions:
 | `GRPCPublicMethodLister` | declare gRPC methods reachable without auth, symmetric with `HandlePublic` |
 | `ModuleAuthFallback` | authenticate credentials the host does not understand — a capability's own session-token plane |
 | `ConnObserver` | observe each connection opened and closed on every listener (REST, HTTP/3, gRPC, unix, QUIC, MCP), so a host keeps its own active-connection metrics for connections qrdb accepts on its behalf |
+| `ModuleTenantTargetAware` | receive the host's tenant-target authorizer, once, before any Register* hook runs, so a module's own handler can authorize an operation against a caller-named target tenant under the host's RBAC ScopeCross/ScopeSelf rules, on whichever transport it registered on |
 
 `ConnObserver` is a per-module option on the one listener set, not a second
 listener. The alternative — a host counting connections on a listener of its
 own — is exactly the parallel transport stack the seam exists to remove. It is
 reported per listener (`Transport`), and REST's two sockets are reported apart
 (`rest` for TCP, `http3` for QUIC) because they are different connections.
+
+### `ModuleTenantTargetAware` — authorizing against a named tenant
+
+A module's permission check, by default, is scoped to the REQUEST's own
+identity tenant: the shared per-route permission declaration admits or
+refuses the caller for its own tenant, and nothing more. A module whose
+operation legitimately acts on a tenant the caller NAMES — a system-scope
+caller managing a tenant it does not belong to, the same shape qrdb's own
+tenant routes support via `AuthMiddleware.AuthorizeTenantTarget` — has no way
+to ask that question with the per-route check alone (#587).
+
+A module that needs this implements `SetTenantTargetAuthorizer`
+(`apimodule.TenantTargetAuthorizer`, a minimal interface
+`*middleware.AuthMiddleware` already satisfies). The server calls it exactly
+once, before any of the module's `Register*` hooks run — so the authorizer is
+in place before the module's handlers are reachable on any transport — and
+again with `nil` when the host's auth system is disabled, which a module
+must treat exactly as every built-in tenant route does: admit
+unconditionally, never refuse. An embedded/Unix host that holds the `Node`
+directly, rather than registering a `ServiceModule`, reaches the identical
+capability through `sdk/go/node.Node.AuthMiddleware` / `Node.Authorizer`
+instead.
 
 ### `ModuleAuthFallback` — the important one
 

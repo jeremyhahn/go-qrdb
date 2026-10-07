@@ -1,6 +1,6 @@
 # Shamir Custody — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 M-of-N custody means no one person can open the database alone. This guide is
 for the people who hold the shares — Security Officers and key custodians —

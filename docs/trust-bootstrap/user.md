@@ -1,6 +1,6 @@
 # Trust Bootstrap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 How a client that has never spoken to a server gets a CA bundle it can actually
 trust.

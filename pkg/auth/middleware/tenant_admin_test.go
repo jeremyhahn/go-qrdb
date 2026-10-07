@@ -84,8 +84,20 @@ func TestAuthorizeTenantUpdate_TenantAdminMayOnlyRenameItself(t *testing.T) {
 func TestAuthorizeTenantUpdate_SystemAdminMayChangeIsolation(t *testing.T) {
 	m := builtInMiddleware(t)
 	ctx := as(authtest.AdminIdentity(tenantid.System, "root"))
-	if err := m.AuthorizeTenantUpdate(ctx, "acme", tenant.TenantPatch{Name: "Acme", IsolationType: tenant.IsolationBarrier}); err != nil {
+	// A pure isolation-type change needs only tenants:set_isolation
+	// (ScopeCross, platform-operator), which the system admin holds.
+	if err := m.AuthorizeTenantUpdate(ctx, "acme", tenant.TenantPatch{IsolationType: tenant.IsolationBarrier}); err != nil {
 		t.Fatalf("system admin changing acme's isolation = %v, want nil", err)
+	}
+	// tenants:update itself stays self-scoped (owner ruling, 2026-10-01: the
+	// system-tenant lift it relied on for another tenant's name is gone),
+	// but renaming another tenant is ordinary platform administration, the
+	// same as reading or deleting it, so AuthorizeTenantTarget's cross
+	// fallback (tenants:update:cross) admits it. A patch that renames AND
+	// reisolates "acme" is admitted too: each half is authorized on its own
+	// merits.
+	if err := m.AuthorizeTenantUpdate(ctx, "acme", tenant.TenantPatch{Name: "Acme", IsolationType: tenant.IsolationBarrier}); err != nil {
+		t.Fatalf("system admin renaming+reisolating acme = %v, want nil", err)
 	}
 }
 

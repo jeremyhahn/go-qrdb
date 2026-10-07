@@ -274,16 +274,22 @@ not implemented**.
 
 ## Strict isolation — RULED
 
-> **Status: RULED — not implemented** (owner rulings 2026-10-01). Design:
-> [architecture.md](architecture.md#strict-tenant-isolation--design).
+> **Status: RULED — partially implemented** (owner rulings 2026-10-01).
+> Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 > Correction (2026-10-05): creating a tenant with its first admin, and
 > restricting barrier init to that admin's certificate, already shipped for
-> every tenant on 2026-10-03 — see [Creating tenants](#creating-tenants). Only
-> the cluster isolation-policy ladder itself, and moving records into a home
-> store, remain unimplemented.
-
-**What a strict tenant gets.** Strict is the cluster default, and any tenant on
-an `operator-access` cluster can opt into it.
+> every tenant on 2026-10-03 — see [Creating tenants](#creating-tenants).
+>
+> **Correction (2026-10-06):** the floor and tenant setting described below
+> now exist and tighten-only as described, and nobody — the system tenant
+> included — can reach another tenant's `ScopeSelf` data or IAM records any
+> more, regardless of the setting. What is **not** true yet: no CLI or API
+> surface can read or set either setting (the Go service API is ready for it,
+> nothing is wired above it), a cluster that never touches the floor reads it
+> as `operator-access` rather than the `strict` default described below
+> (nothing performs the "first-boot, recorded once" write that default
+> assumes), and moving a strict tenant's records into a home store of its own
+> — the heart of "what a strict tenant gets" below — has not started.
 
 - The tenant keeps all of its own records in its own store: users, roles,
   factors, certificates, its CA, its database catalog, its audit trail and its

@@ -1,6 +1,6 @@
 # Credentials — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Named secrets the engine itself needs, with version history and a rotation
 grace period.
@@ -69,7 +69,9 @@ one is never touched.
 qrdb credential gc smtp-password
 ```
 
-**Remove it entirely.**
+**Remove it entirely.** This wipes the current value and the *entire* version
+history — including a version still inside its grace period — not just the
+value `retrieve` was showing you.
 
 ```bash
 qrdb credential delete smtp-password

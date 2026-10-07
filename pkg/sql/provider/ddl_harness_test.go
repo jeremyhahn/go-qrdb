@@ -500,7 +500,7 @@ func (h *ddlHarness) newDDLDatabase(dbName string) *Database {
 // wired to h's registry, for running real SQL DDL statements through
 // pkg/sql/engine end to end.
 func (h *ddlHarness) newDDLProvider(dbName string) *Provider {
-	return NewProviderWithEngine(dbName, h.kvSvc, "", WithRegistry(h.registry))
+	return NewProvider(dbName, h.kvSvc, WithRegistry(h.registry))
 }
 
 // ---------------------------------------------------------------------------

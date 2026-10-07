@@ -74,3 +74,7 @@ tests assert the round-trip COUNT, so a stall costs 2 calls rather than 26.
 | remove the progress precondition | `TestGuardedSwap_RefusedWithoutMovementIsAStall` |
 | default a negative `MaxAttempts` | `TestGuardedSwap_RejectsAnUnusableRequest/negative_MaxAttempts` |
 | drop `Revision` in a transport | `TestEmbeddedTx_PropagatesTheRevision` |
+
+## Integration testing
+
+`make integration-test-guarded-swap` runs this feature's self-spawned integration tests: `feature_gate_cluster_test.go`. The per-transport accounting, including every gap, is the `guarded-swap` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

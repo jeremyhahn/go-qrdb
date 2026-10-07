@@ -157,6 +157,18 @@ func New(authorizer auth.Authorizer, opts ...Option) *AuthMiddleware {
 	return m
 }
 
+// Authorizer returns the RBAC[+ABAC] auth.Authorizer this middleware was
+// built with (New's first argument, after any Option that replaces it).
+// A host embedding qrdb (sdk/go/node.Node.Authorizer) uses this to reach
+// the SAME instance every transport authorizes against, rather than
+// building or capturing a second one.
+func (m *AuthMiddleware) Authorizer() auth.Authorizer {
+	if m == nil {
+		return nil
+	}
+	return m.authorizer
+}
+
 // IsAuthMethod reports whether name — canonicalized first — is in this
 // middleware's permitted-method vocabulary: a built-in token, or the Name() of
 // an authenticator in its chain (including those an embedder plugs in through
@@ -418,6 +430,23 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// used. Making an absent tenant fail CLOSED instead is a separate
 	// decision; it is not this one, and it does not belong in a fold.
 	identity.TenantID = tenantid.Normalize(identity.TenantID)
+
+	// Bind the context's tenant to the (already-normalized) identity tenant
+	// BEFORE any lookup below: m.lookupUser calls the ROUTED user service's
+	// GetUserByUsername(ctx, identity.TenantID, subject), whose own
+	// tenant.EffectiveTenant check now refuses a mismatch between ctx's
+	// bound tenant and the tenantID it was explicitly asked to resolve
+	// (the system-tenant lift was removed, owner ruling 2026-10-01) — so an
+	// incoming ctx that is still unbound (folds to the system tenant) must
+	// not be asked to resolve a DIFFERENT tenant's user record. Binding
+	// here, once, up front, is what the un-normalized lookup used to get
+	// away with only because the identity it was resolving was treated as
+	// equally privileged for every tenant; it is not any more, so the
+	// context must already agree with the identity by the time the lookup
+	// runs. The re-bind at the bottom of this function (after enrichment)
+	// is now a no-op for this value, and is kept for the branches that
+	// return earlier without reaching it.
+	ctx = tenant.WithTenantID(ctx, identity.TenantID)
 
 	// RoleBindings and Attributes are user-record state: the user store is
 	// their ONLY source. Clear whatever the authenticator carried in, before
@@ -795,6 +824,15 @@ func (m *AuthMiddleware) decide(ctx context.Context, identity *auth.Identity, pe
 //
 // Returns auth.ErrUnauthenticated when no identity is present in ctx.
 func (m *AuthMiddleware) AuthorizeTenantTarget(ctx context.Context, tenantID string, perm permission.Permission) error {
+	// A nil middleware means auth is disabled: every built-in tenant route
+	// admits unconditionally under that condition (there is no identity on
+	// the request to confine), and a caller reaching this method through
+	// the apimodule.TenantTargetAuthorizer interface -- where a nil
+	// *AuthMiddleware boxed into the interface is still a non-nil call
+	// target -- must see the identical behavior rather than a panic.
+	if m == nil {
+		return nil
+	}
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return auth.ErrUnauthenticated
@@ -804,10 +842,34 @@ func (m *AuthMiddleware) AuthorizeTenantTarget(ctx context.Context, tenantID str
 	if err == nil {
 		return nil
 	}
+	// ScopeSelf has no system-tenant lift (owner ruling, 2026-10-01): a
+	// system-tenant identity reading or deleting ANOTHER tenant's registry
+	// entry through tenants:read / tenants:delete is refused exactly like
+	// any other tenant-local caller now. tenants:read:cross and
+	// tenants:delete:cross are the named, ScopeCross replacements
+	// (pkg/permission/cross_scope.go); they do not look at the target
+	// tenant at all, so probing them against the system tenant is enough.
+	if cross, ok := tenantAdminCrossFallback[perm]; ok && ClassifyAuthError(err) == AuthFailureUnauthorized {
+		if cerr := m.decide(tenant.WithTenantID(ctx, tenantid.System), identity, cross); cerr == nil {
+			return nil
+		}
+	}
 	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
 		return auditErr
 	}
 	return err
+}
+
+// tenantAdminCrossFallback maps a tenant-admin ScopeSelf permission to the
+// ScopeCross permission that lets the system tenant reach another tenant's
+// registry entry through it (AuthorizeTenantTarget). tenants:update has no
+// entry: it covers only a tenant's own display name (owner documentation,
+// docs/multi-tenancy/engineering.md "Tenant-administration authorization"),
+// and the system tenant has no cross replacement for it.
+var tenantAdminCrossFallback = map[permission.Permission]permission.Permission{
+	permission.TenantsRead:   permission.TenantsReadCross,
+	permission.TenantsDelete: permission.TenantsDeleteCross,
+	permission.TenantsUpdate: permission.TenantsUpdateCross,
 }
 
 // auditDecision records an authorization decision in the audit log when a

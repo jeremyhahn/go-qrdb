@@ -70,6 +70,7 @@ test("TS data point round-trips through a wizard-created ts database against the
 
   // --- Open it and write a data point through the real REST path. --------
   await page.locator("aside").getByText("metrics", { exact: true }).click();
+  await page.getByRole("tab", { name: "Time Series", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: /Time.*Series|TimeSeries/i }).first(),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });

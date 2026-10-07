@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
@@ -211,6 +212,96 @@ func putPayload(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// TestQUIC_CeremonyInitialize_ForwardsOnAdminCredentialNotLeaderError is the
+// node-parity regression guard (owner ruling 2026-10-06): the admin-
+// credential step of ceremony.Initialize must run on the system shard's
+// leader (service.CeremonyServiceWithLeaderGate); a follower forwards the
+// identical request to the leader through the SAME FrameForwarder the
+// per-database NotAReplicaError path uses, rather than answering its own
+// refusal.
+// fixedErrCeremonyService is a service.CeremonyServicer double local to this
+// file (unconstrained by build tags, unlike mocks_svc_test.go's
+// mockCeremonyService) that fails every call with a fixed error.
+type fixedErrCeremonyService struct{ err error }
+
+func (f fixedErrCeremonyService) CeremonyInitialize(context.Context, ceremony.CeremonyCA, *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	return nil, f.err
+}
+
+func (f fixedErrCeremonyService) CeremonySignCSR(context.Context, string, string, string, string) (*service.CeremonySignCSRResult, error) {
+	return nil, f.err
+}
+
+func (f fixedErrCeremonyService) CeremonyStatus(context.Context) (*service.CeremonyStatusInfo, error) {
+	return nil, f.err
+}
+
+func TestQUIC_CeremonyInitialize_ForwardsOnAdminCredentialNotLeaderError(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	leader := startQUICTarget(t, ca, "node-1", "raft-leader")
+	leader.answer = func(context.Context) (uint16, []byte, bool) {
+		body, err := proto.Marshal(&pb.CeremonyInitializeResponse{SpkiPin: "leader-answered"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wire.StatusOK, body, false
+	}
+
+	cache := replicaforward.NewLeaderCache()
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolQUIC: leader.addr}},
+	}
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
+	ceremonySvc := fixedErrCeremonyService{err: &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}}
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(mw), WithCeremonyService(ceremonySvc),
+		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: 5 * time.Second}))
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Stop)
+
+	client := ca.TLS(t, "")
+	client.NextProtos = []string{wire.ProtocolV3}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := quicgo.DialAddr(ctx, srv.Addr(), client, &quicgo.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.CloseWithError(0, "") }()
+	stream, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqPayload, err := proto.Marshal(&pb.CeremonyInitializeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wire.WriteRequest(stream, "ceremony.Initialize", "", 7, reqPayload); err != nil {
+		t.Fatal(err)
+	}
+	rid, st, body, err := wire.ReadResponse(stream)
+	_ = stream.Close()
+	if err != nil || rid != 7 {
+		t.Fatalf("response %d, %v; want request 7's", rid, err)
+	}
+	if st != wire.StatusOK {
+		t.Fatalf("status = %d, body %s; want %d (the leader's answer)", st, body, wire.StatusOK)
+	}
+	var resp pb.CeremonyInitializeResponse
+	if err := proto.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.GetSpkiPin() != "leader-answered" {
+		t.Fatalf("SpkiPin = %q; want the leader's answer", resp.GetSpkiPin())
+	}
+	seen := leader.lastSeen(t)
+	if seen.verifyErr != nil || seen.subject != "alice" {
+		t.Fatalf("leader saw %+v; want a verified assertion for alice", seen)
+	}
 }
 
 // refusalOf decodes an answer frame as the NOT_A_REPLICA refusal.
@@ -434,4 +525,62 @@ func TestClassifyQUICAnswer(t *testing.T) {
 func frameOf(err error) []byte {
 	_, body := mapServiceError(err)
 	return body
+}
+
+// TestForwardToLeader_EmptyLeaderAddressDoesNotForward proves ForwardToLeader
+// refuses to forward when the refusal named no leader, rather than treating
+// an empty address as "resolve this node's own address".
+func TestForwardToLeader_EmptyLeaderAddressDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	f := NewFrameForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool}, ca.TLS(t, "node-a"))
+	t.Cleanup(f.Close)
+
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	if _, _, ok := f.ForwardToLeader(context.Background(), caller, "ceremony.Initialize", "", nil, ""); ok {
+		t.Fatal("ForwardToLeader forwarded with no leader address")
+	}
+}
+
+// TestForwardToLeader_UnresolvableLeaderDoesNotForward proves ForwardToLeader
+// falls back when the named leader has no member record, rather than
+// panicking on a nil member.
+func TestForwardToLeader_UnresolvableLeaderDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	f := NewFrameForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool}, ca.TLS(t, "node-a"))
+	t.Cleanup(f.Close)
+
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	if _, _, ok := f.ForwardToLeader(context.Background(), caller, "ceremony.Initialize", "", nil, "raft-leader"); ok {
+		t.Fatal("ForwardToLeader forwarded to an unresolvable leader")
+	}
+}
+
+// TestForwardToLeader_NoQUICEndpointDoesNotForward proves ForwardToLeader
+// falls back when the leader's member record advertises no QUIC endpoint,
+// rather than dialing an empty address.
+func TestForwardToLeader_NoQUICEndpointDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	members := replicaforwardtest.Members{{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{}}}
+	f := NewFrameForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool}, ca.TLS(t, "node-a"))
+	t.Cleanup(f.Close)
+
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	if _, _, ok := f.ForwardToLeader(context.Background(), caller, "ceremony.Initialize", "", nil, "raft-leader"); ok {
+		t.Fatal("ForwardToLeader forwarded to a leader with no QUIC endpoint")
+	}
+}
+
+// TestForwardToLeader_UnreachableLeaderDoesNotForward proves ForwardToLeader
+// falls back (ok=false) when the leader's member record resolves but
+// nothing answers at its endpoint, rather than hanging or panicking.
+func TestForwardToLeader_UnreachableLeaderDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	members := replicaforwardtest.Members{{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolQUIC: replicaforwardtest.ClosedAddr(t)}}}
+	f := NewFrameForwarder(replicaforward.Config{Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil), RootCAs: ca.Pool, Timeout: 200 * time.Millisecond}, ca.TLS(t, "node-a"))
+	t.Cleanup(f.Close)
+
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	if _, _, ok := f.ForwardToLeader(context.Background(), caller, "ceremony.Initialize", "", nil, "raft-leader"); ok {
+		t.Fatal("ForwardToLeader forwarded to an unreachable leader")
+	}
 }

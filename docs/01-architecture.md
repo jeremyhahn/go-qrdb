@@ -640,7 +640,9 @@ and `node.EnableEncryption()`.
   qualified by the request-context tenant, preventing collision between
   tenants with the same namespace name. Vector data is BARRIER-ENCRYPTED
   AT REST via the StorageBarrier (the same seal barrier that encrypts KV
-  data). In STRICT mode (FIPS build or `config.tenant.strict_isolation: true`),
+  data). Under a `strict` cluster isolation-policy floor (FIPS build, or an
+  operator-raised floor — see
+  [multi-tenancy/architecture.md#the-isolation-policy](multi-tenancy/architecture.md#the-isolation-policy)),
   tenant-less namespace creation is rejected. RAG ORCHESTRATION
   (chunking strategies, BM25/hybrid/RRF ranking, query rewriting, context
   assembly, LLM text generation) lives at L4 (go-quicbaas); qrdb provides

@@ -689,3 +689,7 @@ is a separate capability rather than part of closing the isolation hole.
   through [../audit/](../audit/).
 - `CollectionInfo.DocumentCount` is the cheap health signal for "did my import
   land"; it is served from metadata rather than by counting.
+
+## Integration testing
+
+`make integration-test-collections` runs this feature's self-spawned integration tests: `collection_cli_test.go`. The per-transport accounting, including every gap, is the `collections` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

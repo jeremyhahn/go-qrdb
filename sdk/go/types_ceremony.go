@@ -363,6 +363,15 @@ var ShareClaimMessage = ceremony.ShareClaimMessage
 // SignShareClaim signs a share claim with the holder's certificate key.
 var SignShareClaim = ceremony.SignShareClaim
 
+// QuorumFactorMTLS is the name of the mtls authentication factor a holder
+// answers a quorum challenge with.
+const QuorumFactorMTLS = mtls.Name
+
+// ParseHolderSignerPEM parses a holder's PEM private key (EC, PKCS#1 or
+// PKCS#8) into the crypto.Signer that signs share claims and quorum
+// challenges.
+var ParseHolderSignerPEM = mtls.ParseSignerPEM
+
 // QuorumChallengePurposeKey is the method-data key of the purpose a quorum
 // challenge is bound to ("purpose").
 const QuorumChallengePurposeKey = mtls.MethodDataPurpose

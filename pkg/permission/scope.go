@@ -18,11 +18,11 @@ import "sync"
 
 // Scope classifies a permission's tenancy reach.
 //
-// ScopeSelf permissions act on the identity's own tenant. The RBAC
-// authorizer admits a ScopeSelf grant when the target tenant matches the
-// identity's tenant, or when the identity belongs to the structurally
-// privileged system tenant (the system-tenant rule lifts self-scope perms
-// across all tenants for system members).
+// ScopeSelf permissions act ONLY on the identity's own tenant, the system
+// tenant included (owner ruling, 2026-10-01: "ScopeSelf has no system lift").
+// Until that ruling the RBAC authorizer additionally admitted a ScopeSelf
+// grant for any target when the identity belonged to the structurally
+// privileged system tenant; that lift is gone, under every isolation policy.
 //
 // ScopeCross permissions act across tenants and are reserved for the
 // system tenant. The RBAC authorizer rejects a ScopeCross grant when the
@@ -38,9 +38,9 @@ import "sync"
 type Scope int
 
 const (
-	// ScopeSelf — the permission acts on the identity's own tenant unless
-	// the identity belongs to the system tenant, in which case the
-	// system-tenant rule allows the permission to act on any tenant.
+	// ScopeSelf — the permission acts on the identity's own tenant, and only
+	// that tenant, the system tenant included. See the no-system-lift note
+	// above.
 	//
 	// It is the zero value of Scope but NOT a default: LookupScope refuses an
 	// unregistered permission rather than answering this (go-qrdb#504).
@@ -61,16 +61,14 @@ const (
 	ScopeTenantOnly
 
 	// ScopeSelfStrict is a permission confined to the identity's OWN tenant,
-	// for every identity -- the system tenant included. It is ScopeSelf
-	// without the system-tenant lift.
+	// for every identity -- the system tenant included.
 	//
-	// It is distinct from both of its neighbours, and the difference is the
-	// system tenant's treatment. ScopeSelf lifts the system tenant across
-	// ALL tenants; ScopeTenantOnly denies the system tenant outright, which
-	// is right for material a platform operator must never hold. Neither
-	// expresses "every tenant is its own boundary, the system tenant
-	// included" -- a permission the system tenant may exercise on its own
-	// data and on nobody else's.
+	// Since the ScopeSelf system-tenant lift was removed (2026-10-01), this
+	// scope is behaviorally identical to ScopeSelf; it remains a distinct
+	// type pending a follow-on change to fold the two together
+	// (docs/multi-tenancy/architecture.md "Strict tenant isolation"). Prefer
+	// ScopeSelf for anything new; this value is kept for the permissions
+	// already registered under it.
 	//
 	// Key escrow is the case that called for it: the system tenant escrows
 	// and recovers its own keys, but a platform admin reaching another

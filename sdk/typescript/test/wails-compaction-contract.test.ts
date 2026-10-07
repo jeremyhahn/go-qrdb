@@ -42,7 +42,7 @@ describe('WailsClient database.updateCompaction', () => {
     it('passes the Go UpdateDatabaseCompactionRequest shape to the binding', async () => {
         const spy = installDatabaseBinding({
             name: 'shop',
-            engine: 'kv',
+           
             backend: 'pebble',
             status: 'open',
             compaction: { mode: 'revision', retainRevisions: 500 },
@@ -56,7 +56,7 @@ describe('WailsClient database.updateCompaction', () => {
     });
 
     it('omitting the policy sends an empty request, turning it off', async () => {
-        const spy = installDatabaseBinding({ name: 'shop', engine: 'kv', backend: 'pebble', status: 'open' });
+        const spy = installDatabaseBinding({ name: 'shop', backend: 'pebble', status: 'open' });
 
         const info = await new WailsClient().database.updateCompaction('shop');
 

@@ -38,8 +38,10 @@ func Status(resp *pb.TenantDEKStatusResponse) *transport.TenantDEKStatusResponse
 	}
 	for _, v := range resp.GetVersions() {
 		tv := transport.TenantDEKVersion{
-			Version:   v.GetVersion(),
-			CreatedAt: time.Unix(v.GetCreatedAtUnix(), 0).UTC(),
+			Version:    v.GetVersion(),
+			CreatedAt:  time.Unix(v.GetCreatedAtUnix(), 0).UTC(),
+			ProviderID: v.GetProviderId(),
+			KeyRef:     v.GetKeyRef(),
 		}
 		if v.GetRetiredAtUnix() != 0 {
 			at := time.Unix(v.GetRetiredAtUnix(), 0).UTC()

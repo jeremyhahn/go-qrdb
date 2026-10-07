@@ -2715,8 +2715,6 @@ export interface DatabaseInfo {
     readonly tenantId?: string;
     /** Database name. */
     readonly name: string;
-    /** Engine type (kv, timeseries, vector). */
-    readonly engine: string;
     /** Storage backend (memory, file, pebble, raft). */
     readonly backend: string;
     /** Current status (open, closed, error). */
@@ -2760,8 +2758,6 @@ export interface DatabaseInfo {
 export interface CreateDatabaseRequest {
     /** Database name. */
     readonly name: string;
-    /** Engine type (kv, timeseries, vector). */
-    readonly engine: string;
     /** Storage backend (memory, file, pebble, raft). */
     readonly backend: string;
     /** Wire protocol configuration (mysql/postgresql). The wire field name

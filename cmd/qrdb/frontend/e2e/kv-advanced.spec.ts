@@ -24,7 +24,7 @@ const LOAD_TIMEOUT = 10_000;
 const kvState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "kv-adv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "kv-adv", backend: "pebble", status: "open" },
   ],
 };
 

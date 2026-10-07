@@ -132,7 +132,7 @@ func TestDatabaseService_SystemTenantIsConfinedToItsOwnDatabases(t *testing.T) {
 // tenant's own are.
 func TestDatabaseService_SystemTenantReachesItsOwnDatabases(t *testing.T) {
 	svc, mgr := newHolderDatabaseService(t)
-	if _, err := mgr.Create(database.DatabaseConfig{Name: "platform", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := mgr.Create(database.DatabaseConfig{Name: "platform", Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	caller := systemRoleCtx("admin")
@@ -155,7 +155,7 @@ func TestDatabaseService_SystemTenantReachesItsOwnDatabases(t *testing.T) {
 func TestDatabaseService_SystemCreateIsSystemOwned(t *testing.T) {
 	svc, mgr := newHolderDatabaseService(t)
 	if _, err := svc.CreateForTenant(systemRoleCtx("admin"), database.DatabaseConfig{
-		TenantID: "acme", Name: "planted", Engine: database.EngineKV, Backend: database.BackendMemory,
+		TenantID: "acme", Name: "planted", Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatal(err)
 	}

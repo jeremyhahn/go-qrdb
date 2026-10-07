@@ -609,3 +609,7 @@ A consumer that wants to see coordination behaviour specifically should
 instrument its own side: count `LeaseHeldError` (elections lost),
 `LeaseLostError` (late acks — a cadence that is too slow), `Done` closures, and
 non-nil `WatchStream.Err()` by type.
+
+## Integration testing
+
+`make integration-test-coordination` is mapped to no test files, so it runs zero tests and says so. The feature is covered by `TestCoordinator_SameOnEveryTransport` in `sdk/go/conformance`. The per-transport accounting, including every gap, is the `coordination` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

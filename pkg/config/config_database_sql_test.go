@@ -25,14 +25,14 @@ import (
 func TestConfig_Validate_DatabaseSQLConcurrency(t *testing.T) {
 	for _, mode := range []string{"", "optimistic", "pessimistic"} {
 		cfg := validConfig()
-		cfg.Databases = []DatabaseConfig{{Name: "shop", Engine: "kv", Backend: "pebble", SQL: &DatabaseSQLConfig{Concurrency: mode}}}
+		cfg.Databases = []DatabaseConfig{{Name: "shop", Backend: "pebble", SQL: &DatabaseSQLConfig{Concurrency: mode}}}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate(%q) = %v, want nil", mode, err)
 		}
 	}
 
 	cfg := validConfig()
-	cfg.Databases = []DatabaseConfig{{Name: "shop", Engine: "kv", Backend: "pebble", SQL: &DatabaseSQLConfig{Concurrency: "eager"}}}
+	cfg.Databases = []DatabaseConfig{{Name: "shop", Backend: "pebble", SQL: &DatabaseSQLConfig{Concurrency: "eager"}}}
 	err := cfg.Validate()
 	var dce *DatabaseConfigError
 	if !errors.As(err, &dce) || !strings.Contains(dce.Message, "sql.concurrency") {
@@ -42,7 +42,7 @@ func TestConfig_Validate_DatabaseSQLConcurrency(t *testing.T) {
 
 func TestConfig_DatabaseSQL_YAMLShape(t *testing.T) {
 	var db DatabaseConfig
-	doc := "name: shop\nengine: kv\nbackend: pebble\nsql:\n  concurrency: pessimistic\n"
+	doc := "name: shop\nbackend: pebble\nsql:\n  concurrency: pessimistic\n"
 	if err := yaml.Unmarshal([]byte(doc), &db); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

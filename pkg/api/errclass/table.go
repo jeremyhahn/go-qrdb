@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -226,6 +227,18 @@ var dataPlaneRules = []rule{
 	// follower, naming the current leader (go-qrdb#548); the same retry-
 	// elsewhere class as NotLeaderError above.
 	as(&service.AdminCredentialNotLeaderError{}, Unavailable),
+	// The replicated audit chain's cluster feature gate has not activated
+	// audit-append on every replica of the tenant's shard yet: retry once it
+	// has, the same instruction NotLeaderError gives for a different cause.
+	as(&service.AuditFeatureNotActiveError{}, Unavailable),
+	// A dedicated-isolation (volume/raft) tenant's audit trail is not yet
+	// routable: a healthy node declining a capability it does not implement
+	// for this tenant class, the same shape as CapabilityUnsupportedError.
+	as(&service.DedicatedTenantAuditNotSupportedError{}, Unimplemented),
+	// The tenant's replicated-audit entitlement is off, the same class
+	// quota.EntitlementError already uses below for every other entitlement
+	// refusal.
+	as(&service.ReplicatedAuditNotEntitledError{}, PermissionDenied),
 	// The system barrier is brought up by "qrdb init", not "barrier init"
 	// (go-qrdb#548): the request names an operation this node refuses to
 	// perform at all, not a transient or server-side fault.
@@ -396,10 +409,11 @@ var databaseRules = []rule{
 	as(&database.NotFoundError{}, NotFound),
 	as(&database.InvalidNameError{}, InvalidArgument),
 	as(&database.ReservedNameError{}, InvalidArgument),
-	// etcd enabled on a database whose engine is not kv.
-	as(&database.EtcdEngineUnsupportedError{}, InvalidArgument),
-	as(&database.InvalidEngineError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
+	// A database's on-disk meta.json carries a field this version no longer
+	// understands (a pre-v0.45 "engine" key): refused outright, never
+	// migrated (no-backward-compat ruling, 2026-10-02).
+	as(&database.LegacyMetadataError{}, FailedPrecondition),
 	// A per-database barrier requested where it would not wrap the store the
 	// database is served from. The caller cannot change a database's backend
 	// or data_dir, so this is the configuration refusing the feature, as
@@ -953,6 +967,20 @@ var dekRules = []rule{
 	is(dek.ErrCorruptKeyring, DataLoss),
 	is(dek.ErrConcurrentUpdate, Aborted),
 	is(dek.ErrCrypto, Internal),
+	// A record written before key wrapping existed is refused outright,
+	// never migrated -- the same DataLoss class as a genuinely corrupt
+	// record, since either way the stored record is not usable as is.
+	is(dek.ErrLegacyKeyringFormat, DataLoss),
+	// No key directory was ever configured for the built-in "software"
+	// key-wrap provider -- a SERVER-side capability gap, not a
+	// caller-supplied value the request could fix, mirroring
+	// *service.BackupKeyDirNotConfiguredError's identical classification.
+	is(dek.ErrKeyDirNotConfigured, Unimplemented),
+	// An unregistered provider ID, a bad key reference and a KEK
+	// authentication failure are one answer on purpose -- the same
+	// discipline ErrAuthenticationFailed holds one layer up, and
+	// *service.BackupDecryptionFailedError holds for backup.
+	is(dek.ErrKeyWrapFailed, InvalidArgument),
 }
 
 // auditVerifyRules are the conditions that stop an audit chain verification
@@ -1241,6 +1269,12 @@ var genericRules = []rule{
 	as(&cert.CertExportError{}, Internal),
 	as(&tenant.StoreError{}, Internal),
 	as(&tenant.BarrierError{}, Internal),
+	// The invitation store's backing DAO/KV failed a lookup, a redemption
+	// check or the consuming write (go-qrdb invite-notfound-ambiguity):
+	// reported as itself rather than folded into the opaque
+	// *service.InvitationInvalidError, so an outage classifies as a server
+	// fault instead of a forged credential.
+	as(&invite.StoreError{}, Internal),
 	is(seal.ErrWrappedRootKeyCorrupt, Internal),
 	// The credential service validates its strategy at construction; meeting
 	// either at request time is a server fault, not the caller's.

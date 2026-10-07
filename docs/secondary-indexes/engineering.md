@@ -430,8 +430,10 @@ into a silent performance cliff on a production dataset.
 
 Indexes are declared per entity (struct tags) or created through the API. There
 is **no per-index configuration through the config file today** — per-index
-settings are API-only. Storage backend selection follows
-`storage.backend` (`pebble`, `memory`), which determines the index backend too.
+settings are API-only. The index itself is storage-backed
+(`index.StoragePebbleIndex`) over whatever `storage.Storage` the database's
+engine was built on — memory, file, pebble or objstore — so `storage.backend`
+selects the database's store but never a separate index implementation.
 
 ## Persistence
 
@@ -473,9 +475,19 @@ settings are API-only. Storage backend selection follows
   operator, and an attempted injection through a value must each be refused.
 - **Error tests** per function, happy path plus error path.
 - **Integration**: index parity across transports in the standalone stage.
+  `pkg/server/lifecycle` drives `kvStoreAdapter` over a REAL `KVEngine`
+  (`kv_adapter_real_engine_test.go`), not a mock, for case-insensitivity
+  and for a DAO built `WithDatabase`: a mock can
+  only show the adapter's `CreateIndex`/`Query` requests were shaped
+  correctly, not that the engine actually answers a post-registration write
+  with a non-empty result.
 
 ## Observability
 
 - Index create and drop are audited through [../audit/](../audit/).
 - Plan selection is observable at debug log level, which is the way to confirm a
   query used the index you expected rather than a full scan.
+
+## Integration testing
+
+`make integration-test-secondary-indexes` runs this feature's self-spawned integration tests: `index_cli_test.go`. The per-transport accounting, including every gap, is the `secondary-indexes` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

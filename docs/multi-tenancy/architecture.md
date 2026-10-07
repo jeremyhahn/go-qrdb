@@ -707,10 +707,40 @@ an index is an ordinary index over the tenant's own data.
 
 ## Per-node-independent key design
 
-For `raft` tenants replicated across nodes, the tenant root key is transported
-to each replica over the **authenticated mTLS control plane using HPKE
-encryption**, and each node **re-wraps it under its own system barrier**
-(system-managed auto-unseal) or under the tenant's own strategy (self-managed).
+> **Correction (2026-10-06): the prerequisite below is now verified, not just
+> suspected.** An attempt to implement independent per-replica keys for
+> system-managed tenants (`BarrierRegistry.ProvisionSystemManagedReplica`
+> generating a fresh root key locally instead of importing the leader's) was
+> built and run against a real 3-node cluster. A node holding a database
+> replica but running an independently generated tenant key failed every
+> authenticated request with `quicraft/seal: decryption failed` from
+> `pkg/user/store.go`'s `GetUserByUsername`. Cause, with citations:
+> `pkg/tenant/store_resolver.go`'s `resolveBarrier` routes a `raft`/`barrier`/
+> `volume` tenant's IAM (users, roles, auth factors) through the **system
+> shard** — replicated to every node regardless of that tenant's database
+> placement — "because IAM must be resolvable on EVERY replica" (its own
+> comment). `pkg/seal/tenant_shared_kvstore.go`'s `Put`/`PutIfAbsent` encrypt
+> the VALUE under the tenant's root key via `TenantBarrier.Barrier().Encrypt`
+> **before** the ciphertext reaches Raft, so the replicated log entry itself
+> is ciphertext, not plaintext later encrypted at rest. A node whose tenant
+> key differs from whichever node wrote a given identity record cannot open
+> it. This is not specific to a newly added replica or to system-managed
+> mode: it holds for every node of every `raft`/`barrier`/`volume` tenant
+> today, because the system shard has no placement boundary and system-shard
+> leadership (who writes a given entry) is independent of any node's identity.
+> The change was reverted; `ExportRootKeyContext`/`ImportRootKey` are
+> unchanged. **Per-replica tenant keys cannot ship — for any barrier mode —
+> until tenant identity moves out of the system shard**, which is exactly
+> what [Strict tenant isolation](#strict-tenant-isolation--design)'s home
+> store does. That migration is the real prerequisite this section's older
+> "waits on where a dedicated tenant's identity records are stored" language
+> was pointing at.
+
+For a `raft` tenant replicated across nodes, the tenant root key is
+transported to each replica over the **authenticated mTLS control plane
+using HPKE encryption**, and each node **re-wraps it under its own system
+barrier** (system-managed auto-unseal) or under the tenant's own strategy
+(self-managed).
 
 The wrapping key is per node; the tenant root key is not. Every replica of a
 `raft` tenant holds the **same** tenant root key and derives the same keys from
@@ -736,10 +766,10 @@ restarts through the persistent placement table and per-node replica re-attach.
 
 ## Strict tenant isolation — design
 
-> **Status: RULED — not implemented.** The owner ruled the design decisions on
-> 2026-10-01 and S4 on 2026-10-02; they are listed at the end under
-> [Rulings](#rulings). Nothing in this section exists in the code yet. It is
-> the requirements contract for the work that builds it.
+> **Status: RULED — partially implemented.** The owner ruled the design
+> decisions on 2026-10-01 and S4 on 2026-10-02; they are listed at the end
+> under [Rulings](#rulings). It is the requirements contract for the work
+> that builds it.
 >
 > **Correction (2026-10-05): S7 already shipped, independent of this ruling.**
 > Tenant onboarding landed on 2026-10-03 (see
@@ -747,10 +777,59 @@ restarts through the persistent placement table and per-node replica re-attach.
 > above) and took the CSR-based first admin, the pending-admin record and the
 > trust-on-first-init restriction described below for every tenant, under the
 > real field names `admin_username` / `admin_csr_pem` / `admin_cert_pem` — not
-> the `first_admin: {username, csr_pem}` shape this section still shows. What
-> remains unshipped is only the rest of this design: the home store, per-node
-> replica keys, the client fan-out to every node in the serving set, and the
-> cluster isolation-policy ladder itself.
+> the `first_admin: {username, csr_pem}` shape this section still shows.
+>
+> **Correction (2026-10-06): the isolation-policy setting and the `ScopeSelf`
+> system-tenant lift removal shipped.** `pkg/tenant/isolation_policy.go` has
+> the cluster floor (`ClusterIsolationPolicy`: unset/`strict`/`operator-access`,
+> tighten-only CAS) and the per-tenant opt-in (`TenantIsolationPolicy`:
+> inherit/`strict`), wired into `CreateTenant` (S2: `StrictRequiresDedicatedStorageError`
+> for a prefix tenant under an effective-strict policy) and `UpdateTenant`
+> (tighten-only: `IsolationPolicyChangeError`). `tenants:read:cross`,
+> `tenants:delete:cross` and `tenants:update:cross`
+> ([permission.go](../../pkg/permission/cross_scope.go)) are the named
+> replacements `AuthMiddleware.AuthorizeTenantTarget` falls back to — ordinary
+> platform administration of another tenant's registry entry (read, delete,
+> rename), not a `ScopeSelf` data/IAM operation. **Separately, and unconditionally** — this is NOT gated by the
+> isolation-policy setting, it applies "under every policy" per the ruling —
+> the `inSystem ||` arm is deleted from `rbac.Authorize`'s `ScopeSelf` case and
+> from `tenant.EffectiveTenant`: a system-tenant identity no longer reaches any
+> other tenant's `ScopeSelf` data or IAM records, in any deployment, whether or
+> not the isolation-policy setting has ever been touched. The misleading
+> `tenant.strict_isolation` config key (vector-namespace-only) is deleted; its
+> intent is folded into the cluster floor via
+> `tenant.ClusterIsolationPolicyReader`, consulted live by
+> `pkg/service/vector.go`'s `validateTenantCreate`.
+>
+> **Two production regressions surfaced by integration testing, and fixed in
+> the same change.** (1) `pkg/bootstrap.ProvisionTenant`'s own writes
+> (seeding the new tenant's built-in roles, creating its first admin) used
+> the CALLER's ctx, not the new tenant's — the ScopeSelf lift removal made
+> every one of those refuse with a cross-tenant denial, so `tenant create`
+> was broken on every transport until `ProvisionTenant` rebinds ctx to the
+> tenant it is provisioning. (2) `pkg/auth/middleware.finalizeIdentity` bound
+> ctx's tenant to the authenticating identity AFTER looking that identity up
+> by username — the lookup itself needs ctx already bound to the identity's
+> OWN tenant now that the lift is gone, so authentication for every
+> non-system-tenant identity was broken until the bind moved before the
+> lookup. (3) A system-managed (auto-unseal) dedicated-isolation tenant's
+> pending admin was never completed: nothing else ever raises
+> `tenant.BarrierReadyHook` for it (its barrier is never sealed, so its own
+> admin never calls barrier-init/-unseal/-status to trigger the hook the way
+> a self-managed tenant's admin does) — `ProvisionTenant` now completes it
+> inline whenever `CreateTenant` reports `BarrierAutoUnseal: true`.
+>
+> **What this slice does NOT do.** No transport or CLI exposes the
+> isolation-policy get/set verbs yet (the table in
+> [api.md](api.md#strict-isolation--ruled) is still the target shape, not
+> current reality) — only the Go service API is ready for it. The
+> `tenant_identity:read`/`write` operator-access surface, the tenant home
+> group, per-replica keys, layer-4 passthrough, the dedicated-WAL guarantee
+> (S4: G1-G10), the per-tenant audit trail (S9), tenant-only backups (S10), the
+> `strict-isolation` cluster feature gate and the residue test are all still
+> unimplemented. What remains unshipped from the rest of this design: the home
+> store, per-node replica keys, the client fan-out to every node in the
+> serving set, and the rest of the cluster isolation-policy ladder.
 >
 > Engineering detail and the phased plan:
 > [engineering.md](engineering.md#strict-isolation--engineering-contract-ruled).
@@ -957,6 +1036,47 @@ configured. Without a pool, tenant creation fails with the existing
 `volume pool not configured` refusal, now raised before any record is written.
 
 ### Per-replica tenant keys
+
+> **Status (2026-10-06): BLOCKED, verified — not implementable yet, for any
+> barrier mode.** An implementation of the System-managed row below
+> (`BarrierRegistry.ProvisionSystemManagedReplica` calling
+> `StorageBarrier.Initialize` locally, with `ExportRootKeyContext`/
+> `ImportRootKey` deleted) was built and run against a real 3-node cluster.
+> Every authenticated request to a node holding an independently-keyed
+> replica failed: `pkg/user/store.go`'s `GetUserByUsername` returned
+> `quicraft/seal: decryption failed`. See the correction in
+> [Per-node-independent key design](#per-node-independent-key-design) above
+> for the root cause and citations — in short, tenant IAM rides the system
+> shard's cluster-wide Raft replication as pre-encrypted ciphertext
+> (`pkg/seal/tenant_shared_kvstore.go`), so every node needs the SAME tenant
+> key regardless of database placement. The change was reverted; this
+> section's table and the rest of its text remain the target design, not
+> something to attempt again before the home store
+> ([Strict tenant isolation](#strict-tenant-isolation--design)) lands. The
+> Self-managed rows have the identical blocker and were never attempted for
+> that reason.
+>
+> **Re-checked (2026-10-06) after the isolation-policy slice shipped: still
+> blocked, in every mode.** That slice added the isolation-policy setting and
+> removed the system tenant's `ScopeSelf` lift; it moved no record. Tenant
+> identity routing does not consult the isolation policy at all:
+> `defaultStoreResolver.Resolve` (`pkg/tenant/store_resolver.go`) sends every
+> `barrier`/`volume`/`raft` tenant to `resolveBarrier`, which still wraps the
+> **system shard** in `seal.NewTenantSharedKVStore`, so a `strict` tenant's
+> users, roles, factors and DEK keyring are still Raft entries in the system
+> shard, encrypted under its root key before replication. Per mode:
+>
+> | Tenant | Shared tenant key needed? | Why |
+> |---|---|---|
+> | `prefix` (and the system tenant) | not applicable | It has no tenant key: its records are in the system shard under each node's own node barrier, which is already per node. |
+> | dedicated, effective policy `strict` | **yes, until its home store ships** | Its IAM is still pre-encrypted system-shard entries (above). Per-replica keys arrive with the tenant home group, whose Raft log is under each node's tenant barrier (S4); before that, a replica with its own key cannot read a record another node wrote. |
+> | dedicated, effective policy `operator-access` (or unset floor) | **yes, by design** | The home store is defined for strict tenants only ([Shape chosen](#shape-chosen), item 1); a non-strict tenant's identity stays in the system shard, so every node that authenticates it must open the same ciphertext. |
+>
+> So `ExportRootKeyContext`, `ImportRootKey`, `ImportSealedBlob` and the
+> tenant-key delivery in `pkg/clusterkeys` stay, and stay the only key path,
+> until the home store lands; they are then removed for strict tenants. An
+> owner decision is still needed on whether non-strict dedicated tenants keep
+> a shared key permanently (the table's last row) or also get a home store.
 
 **A replica key is created on the node that uses it, the first time that node
 holds a valid credential for the tenant, and it never leaves that node.**
@@ -1231,6 +1351,13 @@ Every tenant can read the floor and its own effective policy
   system-tenant caller.** A request naming another tenant is refused with
   `CrossTenantDeniedError`, unless the operation is one of the cross-scope
   verbs.
+  - **`tenant.OwnTenant`** (`sdk.OwnTenant`) already gives a caller this exact
+    rule today, ahead of this migration: it is `EffectiveTenant` with no
+    system-tenant exception at all, for a caller that must enforce "no
+    caller, system included, ever acts on another tenant" now rather than
+    wait on the floor above (#587). It is a second function, not a
+    flag on `EffectiveTenant` — qrdb's own IAM routing keeps using
+    `EffectiveTenant` until this migration lands.
 - **Role bindings name the holder's own tenant only.** The system-tenant
   exception in `user.NormalizeRoleBindings` is removed.
 - **The platform plane** is the `ScopeCross` permissions, and the policy does
@@ -1427,6 +1554,14 @@ place of a CSR (phase 3).
   and narrows a list to the caller's own tenant unless it holds
   `tenants:list:cross` (`AuthMiddleware.FilterTenantList`). The re-check charges
   no second rate-limit token and records only a refusal.
+- **A module host reaches the SAME re-check qrdb's own handlers use.**
+  `sdk/go/node.Node.AuthMiddleware` / `Node.Authorizer` expose the node's live
+  `*middleware.AuthMiddleware`, and a `pkg/apimodule.ServiceModule`
+  implementing `ModuleTenantTargetAware` receives it (as the minimal
+  `TenantTargetAuthorizer` interface) before any of its `Register*` hooks
+  run — see [../api-server/architecture.md](../api-server/architecture.md)
+  — so `AuthorizeTenantTarget` is reachable from a module's own handler on
+  any transport, not only from qrdb's built-in tenant routes (#587).
 - **`AllowedBarrierModes` restricts which seal strategies a tenant may pick**,
   with the built-in default being software strategies plus fail-close on
   hardware.

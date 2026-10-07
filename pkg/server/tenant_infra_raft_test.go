@@ -50,7 +50,6 @@ func raftTenantBootConfig(t *testing.T) TenantInfraConfig {
 	t.Cleanup(func() { _ = mgr.Close() })
 	if _, err := mgr.CreateForTenant(tenant.WithTenantID(ctx, "rauto"), database.DatabaseConfig{
 		Name:    "app",
-		Engine:  database.EngineKV,
 		Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal},
 		DataDir: filepath.Join(dataRoot, "databases", "app"),

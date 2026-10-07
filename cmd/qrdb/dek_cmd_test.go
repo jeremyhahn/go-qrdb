@@ -29,12 +29,43 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
+
+// fakeDEKKeyWrapProvider is a same-shaped keywrap.Provider test double --
+// it "wraps" by copying bytes verbatim, the identical shape
+// pkg/keywrap's own fakeHardwareProvider test double uses.
+type fakeDEKKeyWrapProvider struct{}
+
+func (fakeDEKKeyWrapProvider) ProviderID() string { return keywrap.SoftwareProviderID }
+
+func (fakeDEKKeyWrapProvider) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	out := make([]byte, len(dek))
+	copy(out, dek)
+	return out, nil
+}
+
+func (fakeDEKKeyWrapProvider) Unwrap(_ context.Context, _ string, wrapped []byte) ([]byte, error) {
+	out := make([]byte, len(wrapped))
+	copy(out, wrapped)
+	return out, nil
+}
+
+// testDEKKeyWrapRegistry returns a Registry whose "software" entry is
+// fakeDEKKeyWrapProvider, so a test gets a fully working DEK keyring with
+// no filesystem key directory.
+func testDEKKeyWrapRegistry() keywrap.Registry {
+	r := keywrap.NewRegistry()
+	_ = r.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return fakeDEKKeyWrapProvider{}, nil
+	})
+	return r
+}
 
 // dekCLIStores resolves one in-memory store per tenant.
 type dekCLIStores map[string]*kvstore.MemoryKVStore
@@ -52,7 +83,7 @@ func (d dekCLIStores) Resolve(_ context.Context, tenantID string) (kvstore.KVSto
 // shared by every command a test runs, as one server would be.
 func newDEKCLIService(t *testing.T) service.DEKServicer {
 	t.Helper()
-	keyring, err := dek.NewKeyring(dekCLIStores{})
+	keyring, err := dek.NewKeyring(dekCLIStores{}, dek.WithKeyWrapRegistry(testDEKKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +159,19 @@ func TestDEKCmd_EncryptRotateRewrapRetireDecrypt(t *testing.T) {
 	}
 	if out, err = executeDEKCmd(t, svc, "dek", "decrypt", rewrapped, "--aad", aad); err != nil || strings.TrimSpace(out) != "s3cret" {
 		t.Fatalf("decrypt: %q, %v", out, err)
+	}
+
+	// Status shows which KEK provider and key reference wrapped the
+	// current version, for audit -- never key material.
+	out, err = executeDEKCmd(t, svc, "dek", "status")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out, "PROVIDER") || !strings.Contains(out, "KEY REF") {
+		t.Fatalf("status table is missing the provider/key-ref columns: %q", out)
+	}
+	if !strings.Contains(out, "software") {
+		t.Fatalf("status table does not name the software provider: %q", out)
 	}
 }
 

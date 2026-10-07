@@ -1,6 +1,6 @@
 # RAG — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Put documents in, get the most relevant passages back. What you do with those
 passages — build a prompt, call a model, rerank — is up to you; this feature
@@ -123,3 +123,5 @@ to the layer above; this API hands you ranked passages to build with.
 **Queries are slow or expensive.** The query itself is one embedding call plus a
 vector search. Turn on the embedding cache (`cache_capacity`) — repeated queries
 then skip the provider entirely.
+
+Test reference: `make integration-test-rag`; coverage row: `test/integration/COVERAGE.md` `[rag](../../docs/rag/)`.

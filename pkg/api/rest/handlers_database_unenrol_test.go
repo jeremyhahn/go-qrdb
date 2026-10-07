@@ -71,7 +71,7 @@ func TestCreateDatabase_RefusesAnUnsplittableShamirScheme_REST(t *testing.T) {
 	srv := newDBHolderServer(t)
 	for _, scheme := range [][2]int{{2, 256}, {1, 3}, {4, 3}} {
 		rec := postJSON(t, srv, "/v1/databases", map[string]any{
-			"name": "split", "engine": "kv", "backend": "memory", "dataDir": t.TempDir(),
+			"name": "split", "backend": "memory", "dataDir": t.TempDir(),
 			"barrier": map[string]any{"enabled": true, "mode": "shamir", "sharesRequired": scheme[0], "sharesTotal": scheme[1]},
 		}, nil)
 		if rec.Code != http.StatusBadRequest {

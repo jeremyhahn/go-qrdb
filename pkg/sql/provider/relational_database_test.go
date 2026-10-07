@@ -669,7 +669,7 @@ func TestWithRegistry_PropagatesToDatabase(t *testing.T) {
 		},
 		kvSvc: &mockKVService{},
 	}
-	p := NewProviderWithEngine("shop", &mockKVService{}, "", WithRegistry(reg))
+	p := NewProvider("shop", &mockKVService{}, WithRegistry(reg))
 
 	sqlDB, err := p.Database(newTestContext(), "shop")
 	require.NoError(t, err)
@@ -682,6 +682,6 @@ func TestWithRegistry_PropagatesToDatabase(t *testing.T) {
 }
 
 func TestWithRegistry_NilByDefault(t *testing.T) {
-	p := NewProviderWithEngine("shop", &mockKVService{}, "")
+	p := NewProvider("shop", &mockKVService{})
 	assert.Nil(t, p.registry)
 }

@@ -32,6 +32,10 @@ func TestErrors_MessagesNameTheSubject(t *testing.T) {
 		{"InvalidVolumeIdentityError", &InvalidVolumeIdentityError{NodeID: "node-1", Pool: "fast"}, []string{"node-1", "fast"}},
 		{"VolumeKeyDerivationError", &VolumeKeyDerivationError{NodeID: "node-1", Pool: "fast", Err: cause}, []string{"node-1", "fast", "boom"}},
 		{"notADirectoryError", &notADirectoryError{}, []string{"directory"}},
+		{"OpenAtBootError", &OpenAtBootError{Failures: []OpenFailure{
+			{Pool: "fast", Provider: "dir", Err: cause},
+			{Pool: "vault", Provider: "luks2", Err: errors.New("device not present")},
+		}}, []string{"fast", "dir", "boom", "vault", "luks2", "device not present", "allow-degraded-volume-boot"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -58,6 +62,7 @@ func TestErrors_UnwrapReachesCause(t *testing.T) {
 		{"OpenError", &OpenError{Provider: "dir", Pool: "fast", Err: cause}},
 		{"UsageError", &UsageError{Pool: "fast", Err: cause}},
 		{"VolumeKeyDerivationError", &VolumeKeyDerivationError{NodeID: "node-1", Pool: "fast", Err: cause}},
+		{"OpenAtBootError", &OpenAtBootError{Failures: []OpenFailure{{Pool: "fast", Provider: "dir", Err: cause}}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -65,5 +70,23 @@ func TestErrors_UnwrapReachesCause(t *testing.T) {
 				t.Fatalf("errors.Is(%v, cause) = false, want true", c.err)
 			}
 		})
+	}
+}
+
+// TestOpenAtBootError_UnwrapListsEveryFailure proves Unwrap() []error
+// carries every failure's cause, not just the first -- errors.Is must
+// find a cause buried anywhere in Failures.
+func TestOpenAtBootError_UnwrapListsEveryFailure(t *testing.T) {
+	first := errors.New("first boom")
+	second := errors.New("second boom")
+	err := &OpenAtBootError{Failures: []OpenFailure{
+		{Pool: "fast", Provider: "dir", Err: first},
+		{Pool: "vault", Provider: "luks2", Err: second},
+	}}
+	if !errors.Is(err, first) {
+		t.Error("errors.Is did not find the first failure's cause")
+	}
+	if !errors.Is(err, second) {
+		t.Error("errors.Is did not find the second failure's cause")
 	}
 }

@@ -59,7 +59,7 @@ func TestAddCertBinding_KeyCustodyStaysWithTheCeremony(t *testing.T) {
 					}
 					roleIDs = []string{r.ID}
 				}
-				u, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+				u, err := svc.User.CreateUser(tenant.WithTenantID(ctx, "acme"), &user.CreateUserRequest{
 					WithoutEmailLoginKey: true, Username: username, TenantID: "acme", RoleIDs: roleIDs,
 				})
 				if err != nil {

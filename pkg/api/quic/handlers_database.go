@@ -15,6 +15,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -36,15 +37,19 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		return nil, &ServiceNotConfiguredError{Service: "database"}
 	}
 
+	// Strict decoding: an unknown member (a stale "engine" key, OD-13) is
+	// refused rather than silently ignored, the generic rule REST's
+	// decodeGuardedRequest applies to every state-changing endpoint.
 	var req databaseCreateRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
 
 	cfg := database.DatabaseConfig{
 		TenantID: req.TenantID,
 		Name:     req.Name,
-		Engine:   database.EngineType(req.Engine),
 		Backend:  database.BackendType(req.Backend),
 		DataDir:  req.DataDir,
 		Mode:     database.DatabaseMode(req.Mode),
@@ -397,7 +402,6 @@ func (s *Server) handleDatabaseUpdateCompaction(ctx context.Context, payload []b
 type databaseCreateRequest struct {
 	TenantID   string                             `json:"tenantId,omitempty"`
 	Name       string                             `json:"name"`
-	Engine     string                             `json:"engine"`
 	Backend    string                             `json:"backend"`
 	DataDir    string                             `json:"dataDir,omitempty"`
 	Mode       string                             `json:"mode,omitempty"`

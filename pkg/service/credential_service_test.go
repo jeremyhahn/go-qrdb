@@ -17,11 +17,13 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // newTestCredentialService creates a CredentialServicer backed by the
@@ -32,6 +34,62 @@ func newTestCredentialServiceSvc(t *testing.T) CredentialServicer {
 	inner, err := credentials.NewCredentialService(cfg, nil, testLogger())
 	require.NoError(t, err)
 	return NewCredentialService(inner)
+}
+
+// newTestBarrierCredentialServiceSvc creates a CredentialServicer backed by
+// the barrier strategy, over an initialized and unsealed in-memory
+// StorageBarrier, for unit testing.
+func newTestBarrierCredentialServiceSvc(t *testing.T) CredentialServicer {
+	t.Helper()
+	barrier, _ := newTestSoftwareBarrier(t)
+	ctx := context.Background()
+	require.NoError(t, barrier.Initialize(ctx, seal.MustCredentials(ctx, []byte("my-secret"))))
+	cfg := &credentials.Config{Strategy: credentials.StrategyBarrier}
+	inner, err := credentials.NewCredentialService(cfg, barrier, testLogger())
+	require.NoError(t, err)
+	return NewCredentialService(inner)
+}
+
+// TestCredentialService_CredentialDelete_RemovesAllVersions_Barrier verifies
+// the service-layer pass-through for the blocker fix: after a rotation with
+// a nonzero grace period, deleting a credential through the
+// CredentialServicer interface must make every historical version
+// unretrievable, not just the current value. The underlying fix lives in
+// pkg/credentials; this test confirms it is visible through the one
+// chokepoint every transport (REST, gRPC, QUIC, MCP, embedded, unix) routes
+// through.
+func TestCredentialService_CredentialDelete_RemovesAllVersions_Barrier(t *testing.T) {
+	svc := newTestBarrierCredentialServiceSvc(t)
+	ctx := context.Background()
+
+	require.NoError(t, svc.CredentialStore(ctx, "k", []byte("v1")))
+	_, err := svc.CredentialRotate(ctx, "k", credentials.RotateOptions{
+		NewValue:    []byte("v2"),
+		GracePeriod: time.Hour,
+	})
+	require.NoError(t, err)
+	_, err = svc.CredentialRotate(ctx, "k", credentials.RotateOptions{
+		NewValue:    []byte("v3"),
+		GracePeriod: time.Hour,
+	})
+	require.NoError(t, err)
+
+	versions, err := svc.CredentialListVersions(ctx, "k")
+	require.NoError(t, err)
+	require.Len(t, versions, 3, "current v3 plus grace-period v1 and v2")
+
+	require.NoError(t, svc.CredentialDelete(ctx, "k"))
+
+	_, err = svc.CredentialRetrieve(ctx, "k")
+	assert.ErrorIs(t, err, credentials.ErrCredentialNotFound)
+
+	for _, v := range []uint64{1, 2, 3} {
+		_, err := svc.CredentialRetrieveVersion(ctx, "k", v)
+		assert.Error(t, err, "version %d must not be retrievable after delete", v)
+	}
+
+	_, err = svc.CredentialListVersions(ctx, "k")
+	assert.ErrorIs(t, err, credentials.ErrCredentialNotFound)
 }
 
 func TestNewCredentialService(t *testing.T) {

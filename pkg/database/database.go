@@ -113,11 +113,6 @@ func (d *Database) TenantID() string {
 	return d.config.Load().TenantID
 }
 
-// Engine returns the engine type.
-func (d *Database) Engine() EngineType {
-	return d.config.Load().Engine
-}
-
 // ShardID returns the Raft shard ID assigned to this database, or 0 if
 // no Raft configuration has been set.
 func (d *Database) ShardID() uint64 {
@@ -397,7 +392,6 @@ func (d *Database) Info() DatabaseInfo {
 	info := DatabaseInfo{
 		TenantID:     cfg.TenantID,
 		Name:         cfg.Name,
-		Engine:       cfg.Engine,
 		Backend:      cfg.Backend,
 		Status:       d.reportedStatus(),
 		Protocol:     cfg.Protocol,

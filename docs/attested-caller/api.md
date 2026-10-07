@@ -1,6 +1,6 @@
 # Attested Caller — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 The gate has **no wire capability of its own** — no endpoint, RPC or tool to
 configure or query it. It is an enforcement layer that changes the answer every

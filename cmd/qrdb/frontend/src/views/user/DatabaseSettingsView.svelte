@@ -61,16 +61,6 @@
   // Helpers
   // ---------------------------------------------------------------------------
 
-  /** Returns a DaisyUI badge class for the given engine string. */
-  function engineBadgeClass(engine: string): string {
-    const map: Record<string, string> = {
-      kv: 'badge-secondary',
-      timeseries: 'badge-warning',
-      vector: 'badge-accent',
-    };
-    return map[engine] ?? 'badge-ghost';
-  }
-
   /** Maps a database status string to a StatusBadge variant. */
   function statusVariant(status: string): 'success' | 'warning' | 'error' | 'info' {
     const map: Record<string, 'success' | 'warning' | 'error' | 'info'> = {
@@ -124,14 +114,6 @@
         <div>
           <span class="text-xs font-semibold text-base-content/60">Name</span>
           <p class="font-mono">{database.name}</p>
-        </div>
-        <div>
-          <span class="text-xs font-semibold text-base-content/60">Engine</span>
-          <p>
-            <span class="badge badge-sm {engineBadgeClass(database.engine)}">
-              {database.engine}
-            </span>
-          </p>
         </div>
         <div>
           <span class="text-xs font-semibold text-base-content/60">Backend</span>

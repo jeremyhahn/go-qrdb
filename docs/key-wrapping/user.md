@@ -1,6 +1,6 @@
 # Key Wrapping — User Guide
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
 
 This is what actually protects an encrypted backup's contents: a
 fresh, random key generated per backup (the DEK), itself locked ("wrapped")
@@ -171,6 +171,25 @@ selects it the same way `--encryption-key-file` selects the built-in
 software provider. If you are running plain go-qrdb with no such product
 layered on top, the software key-file setup described above is what you
 have, and it is fully supported — not a fallback.
+
+## The same KEK also protects the tenant DEK keyring
+
+Everything above is written in terms of backup, the first consumer of this
+key-wrap seam, but the tenant DEK keyring
+([tenant-dek/user.md](../tenant-dek/user.md)) uses the identical
+mechanism for its own per-tenant keys: the same `"software"` provider (a
+SEPARATE directory, `--dek-key-dir`, since the keyring's key reference
+defaults to the tenant ID rather than an operator-chosen backup name), and
+the same `--key-provider`-equivalent composition seam for hardware/cloud
+KMS. Register a hardware provider once and both Backup and the DEK
+keyring resolve it — there is no second registration step.
+
+```bash
+mkdir -p /etc/qrdb/dek-keys && chmod 700 /etc/qrdb/dek-keys
+# One 32-byte key file per tenant, named after that tenant's ID.
+openssl rand -out /etc/qrdb/dek-keys/acme 32 && chmod 600 /etc/qrdb/dek-keys/acme
+qrdbd start --dek-key-dir /etc/qrdb/dek-keys ...
+```
 
 ## Troubleshooting
 

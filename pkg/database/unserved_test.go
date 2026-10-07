@@ -34,7 +34,7 @@ func closed(ch <-chan struct{}) bool {
 func TestDatabase_UnservedFollowsSealAndUnseal(t *testing.T) {
 	m := NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
-	db, err := m.Create(DatabaseConfig{Name: "app", Engine: EngineKV, Backend: BackendMemory})
+	db, err := m.Create(DatabaseConfig{Name: "app", Backend: BackendMemory})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestDatabase_UnservedFollowsSealAndUnseal(t *testing.T) {
 func TestDatabase_UnservedClosesOnDrop(t *testing.T) {
 	m := NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
-	db, err := m.Create(DatabaseConfig{Name: "app", Engine: EngineKV, Backend: BackendMemory})
+	db, err := m.Create(DatabaseConfig{Name: "app", Backend: BackendMemory})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

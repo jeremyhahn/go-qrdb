@@ -635,6 +635,44 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 	ctx, cancel := d.ensureTimeout(ctx)
 	defer cancel()
 
+	offset := (query.Page - 1) * query.PageSize
+
+	// A SortField request orders the WHOLE entity set before paging. Paging
+	// first and sorting only the page that landed from storage-key order
+	// would answer with the right-looking shape (a sorted slice of the
+	// requested size) over the wrong candidates, silently skipping and
+	// repeating entities across the page boundary.
+	if query.SortField != "" {
+		all := make([]E, 0)
+		err := d.store.Scan(ctx, d.prefixKey(), func(_ string, value []byte) error {
+			entity := d.newEntity()
+			if err := d.codec.Unmarshal(value, &entity); err != nil {
+				// Log and skip malformed entities
+				return nil
+			}
+			all = append(all, entity)
+			return nil
+		})
+		if err != nil {
+			return result, err
+		}
+
+		sortEntitiesByField(all, query.SortField, query.SortOrder)
+
+		result.Total = len(all)
+		if offset >= len(all) {
+			return result, nil
+		}
+
+		end := offset + query.PageSize
+		if end > len(all) {
+			end = len(all)
+		}
+		result.Entities = append(result.Entities, all[offset:end]...)
+		result.HasMore = end < len(all)
+		return result, nil
+	}
+
 	// First, count total entities for pagination metadata
 	total, err := d.Count(ctx)
 	if err != nil {
@@ -642,7 +680,6 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 	}
 	result.Total = total
 
-	offset := (query.Page - 1) * query.PageSize
 	current := 0
 	collected := 0
 
@@ -674,11 +711,6 @@ func (d *genericDAO[E]) Page(ctx context.Context, query PageQuery) (PageResult[E
 
 	if err != nil && !errors.Is(err, ErrStopIteration) {
 		return result, err
-	}
-
-	// Apply SortField if specified.
-	if query.SortField != "" && len(result.Entities) > 1 {
-		sortEntitiesByField(result.Entities, query.SortField, query.SortOrder)
 	}
 
 	return result, nil

@@ -162,7 +162,7 @@ func newSharedStoreFixture(t *testing.T) *sharedStoreFixture {
 
 	mgr := database.NewManager(nil, t.TempDir())
 	mgr.SetKeyspaceReclaimer(service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: raw.KV, Index: raw.Index}))
-	if _, err := mgr.Create(database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := mgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestDropFence_HandlesAreIncarnationScoped(t *testing.T) {
 	}
 	assertDroppingError(t, stale.Put(ctx, "k", []byte("v")), "orders")
 
-	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("re-Create: %v", err)
 	}
 	assertDroppingError(t, stale.Put(ctx, "k", []byte("into the new database")), "orders")
@@ -378,7 +378,7 @@ func TestDropFence_DedicatedRaftWriteResolvedBeforeDropIsRejectedAtApply(t *test
 	mgr := database.NewManager(nil, t.TempDir())
 	mgr.SetKeyspaceReclaimer(reclaim)
 	tctx := tenant.WithTenantID(ctx, "rt")
-	if _, err := mgr.CreateForTenant(tctx, database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := mgr.CreateForTenant(tctx, database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 
@@ -572,6 +572,9 @@ func TestDropFence_EveryWriteVerbCarriesTheGuard(t *testing.T) {
 			},
 			"SetRetentionPolicy": func() error {
 				return views.TimeSeries.SetRetentionPolicy(ctx, "cpu", &timeseries.RetentionPolicy{Duration: time.Hour})
+			},
+			"ApplyRetention": func() error {
+				return views.TimeSeries.ApplyRetention(ctx, "cpu", now)
 			},
 		}},
 		{"Index", reflect.TypeOf((*service.IndexServicer)(nil)).Elem(), map[string]func() error{

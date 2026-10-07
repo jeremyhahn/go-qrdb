@@ -417,7 +417,12 @@ func TestUserCreateTool_WithTenantID(t *testing.T) {
 		return &role.Role{ID: id, TenantID: "tenant-42"}, nil
 	}})
 
-	result, err := handler(context.Background(), makeReq(map[string]any{
+	// Bound to the request's own tenant: the system-tenant lift was removed
+	// (owner ruling, 2026-10-01), so an unbound (system-folding) caller
+	// naming a different tenant would now be refused before reaching the
+	// mock.
+	ctx := tenant.WithTenantID(context.Background(), "tenant-42")
+	result, err := handler(ctx, makeReq(map[string]any{
 		"username":  "bob",
 		"tenant_id": "tenant-42",
 		"role_ids":  "r-001",

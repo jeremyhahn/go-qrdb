@@ -1349,7 +1349,7 @@ export interface CertClient {
  */
 export interface DatabaseClient {
     /**
-     * Creates a new database with the specified engine and backend.
+     * Creates a new database with the specified backend.
      *
      * @param req - Database creation parameters.
      * @returns The created database information.

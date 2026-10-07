@@ -96,7 +96,6 @@ func TestDatabaseCreate_WithEtcd_EveryTransport(t *testing.T) {
 
 			info, err := client.Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
 				Name:    "etcd-" + string(tk),
-				Engine:  "kv",
 				Backend: "memory",
 				Protocol: transport.ProtocolConfig{
 					Etcd: &transport.EtcdProtocolConfig{

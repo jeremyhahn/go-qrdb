@@ -74,7 +74,6 @@ func Seed(t testing.TB, svc service.DatabaseServicer) {
 	t.Helper()
 	if _, err := svc.Create(database.DatabaseConfig{
 		Name:    Name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatalf("create %s: %v", Name, err)

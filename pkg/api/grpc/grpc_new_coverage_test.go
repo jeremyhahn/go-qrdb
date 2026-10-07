@@ -717,7 +717,7 @@ func TestGRPC_DatabaseCreate_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.DatabaseCreate(context.Background(), &pb.DatabaseCreateRequest{
-		Name: "mydb", Engine: "kv", Backend: "pebble",
+		Name: "mydb", Backend: "pebble",
 	})
 	if err == nil {
 		t.Fatal("expected error from DatabaseCreate")

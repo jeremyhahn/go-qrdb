@@ -488,6 +488,86 @@ func TestRedeemInvitation_RefusesAnUnknownToken(t *testing.T) {
 	assertInvalidInvitation(t, err, "unknown token")
 }
 
+// failingLookupInvitations fails Lookup, delegating everything else.
+type failingLookupInvitations struct {
+	InvitationStore
+	err error
+}
+
+func (f *failingLookupInvitations) Lookup(context.Context, string, string) (*invite.Entity, error) {
+	return nil, f.err
+}
+
+// failingRedeemInvitations fails Redeem, delegating everything else.
+type failingRedeemInvitations struct {
+	InvitationStore
+	err error
+}
+
+func (f *failingRedeemInvitations) Redeem(context.Context, string, string) (*invite.Entity, error) {
+	return nil, f.err
+}
+
+// withInvitations builds an InvitationService identical to f.service() except
+// for the InvitationStore, so a test can swap in one that fails exactly the
+// call under test while everything else (users, certs, anchors, audit,
+// tenants) stays real.
+func (f *invitationFixture) withInvitations(invites InvitationStore) *InvitationService {
+	return NewInvitationService(InvitationDeps{
+		Invitations: invites,
+		Users:       f.users,
+		Certs:       f.certs,
+		Anchors:     f.anchors,
+		TTL:         time.Hour,
+		MaxCertTTL:  24 * time.Hour,
+		AuditLogger: f.audit,
+		Tenants:     fixtureTenants,
+	})
+}
+
+// TestRedeemInvitation_AStorageFaultOnLookupIsNotReportedAsInvalid asserts the
+// Option-2 ruling (docs/identity-rbac/engineering.md's invitation section,
+// formerly docs/invite-notfound-ambiguity.md): a genuine storage or transport
+// fault behind Lookup must reach the caller as itself, not folded into the
+// opaque *InvitationInvalidError a bad, expired or used token gets. Collapsing
+// it would silently read a real outage as "every presented token today is
+// forged" for as long as the outage lasts.
+func TestRedeemInvitation_AStorageFaultOnLookupIsNotReportedAsInvalid(t *testing.T) {
+	f := newInvitationFixture(t)
+	inv := f.invite(t, "alice")
+
+	boom := &invite.StoreError{Op: "lookup invite", Cause: errors.New("storage unavailable")}
+	svc := f.withInvitations(&failingLookupInvitations{InvitationStore: f.invites, err: boom})
+
+	_, err := svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)})
+	var invalid *InvitationInvalidError
+	if errors.As(err, &invalid) {
+		t.Fatalf("a storage fault must not be reported as *InvitationInvalidError: %v", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the storage fault itself", err)
+	}
+}
+
+// TestRedeemInvitation_AStorageFaultOnRedeemIsNotReportedAsInvalid covers the
+// consuming write's half of the same ruling.
+func TestRedeemInvitation_AStorageFaultOnRedeemIsNotReportedAsInvalid(t *testing.T) {
+	f := newInvitationFixture(t)
+	inv := f.invite(t, "alice")
+
+	boom := &invite.StoreError{Op: "claim invite", Cause: errors.New("storage unavailable")}
+	svc := f.withInvitations(&failingRedeemInvitations{InvitationStore: f.invites, err: boom})
+
+	_, err := svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)})
+	var invalid *InvitationInvalidError
+	if errors.As(err, &invalid) {
+		t.Fatalf("a storage fault must not be reported as *InvitationInvalidError: %v", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the storage fault itself", err)
+	}
+}
+
 // The inviter holds the token. Redeeming it with the inviter's OWN key -- the
 // one their certificate is bound to -- is refused before the token is spent,
 // so the inviter cannot make their credential the invited user's and the

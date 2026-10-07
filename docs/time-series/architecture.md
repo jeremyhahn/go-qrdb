@@ -1,7 +1,7 @@
 # Time Series — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
@@ -85,27 +85,37 @@ Retention is **per metric**, not global, and carries three fields:
 That triple is what makes retention a downsampling policy rather than a delete
 policy: a metric can keep a year at hourly resolution instead of keeping nothing.
 
-**Measured: retention is stored, not enforced.** `TSSetRetention` persists the
-policy and `TSGetRetention` returns it; no code expires or downsamples a point.
-Enforcing it is part of this program (OD-16, ruled A); see "Retention
-enforcement" below.
+**Measured: the `duration_ns` half is enforced; `resolution_ns` downsampling
+is not.** `TSSetRetention` persists the policy and `TSGetRetention` returns
+it. A leader-driven scheduler in `pkg/server` (`retention_scheduler.go`)
+sweeps each store once a minute and proposes one `TSApplyRetention`
+command per metric with a policy, deleting points older than
+`duration_ns` deterministically on every replica
+(`timeseries.Storage.ApplyRetention`). No code downsamples an expired
+point into one `resolution_ns` bucket yet — that half, and the full
+engine-over-storage-interface migration below, remain this program
+(OD-16, ruled A); see "Retention enforcement" below.
 
 ## Current state (measured)
 
-- **Pebble only.** `timeseries.Storage` is built over a raw `*pebble.DB`. It
-  exists on the Pebble-native state machines and on a pebble standalone node.
-  The other state-machine families have a time-series store hook that no
-  production path wires, and a standalone node on another backend has none, so
-  there every call answers as not configured.
-- **Outside the apply batch.** The engine's time-series handlers ignore the
-  apply batch they are given and write points, the metric index and the tag
-  index straight to Pebble with synchronous writes. A time-series write is
-  therefore not atomic with the rest of its Raft entry: if the entry's batch
-  fails after the points were written, the points stay.
+- **Storage-generic (Lane 1A, shipped 2026-10-06).** `timeseries.Storage`
+  wraps `storage.Storage`, not a raw `*pebble.DB`, and is available on every
+  backend MVCCEngine composes over — memory, file, pebble and objstore —
+  not only on a pebble-native state machine or a pebble standalone node.
+  `pkg/timeseries` imports no storage engine, enforced by `test/buildgates`.
+- **Inside the apply batch (Lane 1A, shipped).** The engine's time-series
+  handlers stage points, the metric index and the tag index into the
+  caller's apply `storage.Batch` instead of writing straight to Pebble with
+  their own synchronous writes. A time-series write is therefore atomic
+  with the rest of its Raft entry: if the entry's batch fails, neither
+  survives (`pkg/engine.TestMVCCEngine_TSAndKVWriteInOneApplyBatch_CommitFailureLeavesNeither`).
 - **Per database by metric prefix.** In a shared store a database's series are
   distinguished by a `<tenant>/<db>/` prefix on the metric name. The tag index
   (`idx:tag:`) carries no metric, so no database owns it and a database drop
   cannot reclaim it.
+- **Retention deletion is enforced; downsampling is not.** A leader-driven
+  scheduler in `pkg/server` proposes a bounded `TSApplyRetention` command per
+  metric per tick; see "Retention enforcement" below.
 
 ## Target design — time series as an engine of the database binding
 
@@ -113,13 +123,17 @@ Time series is an engine of the database, stored in the database's
 [storage binding](../databases/architecture.md#the-storage-binding) like every
 other engine.
 
-- **Over the storage interface.** `pkg/timeseries` reads through
-  `storage.Reader` and writes into the apply `storage.Batch`. It imports no
-  storage engine. Points, the metric index, the tag index and retention records
-  commit with the entry that wrote them, or not at all.
-- **Every backend.** memory, file, pebble, objstore and raft. On objstore a range
-  query is an ordered object listing, so it is correct and slower; that is the
-  cost of the backend the database chose.
+- **Over the storage interface — shipped (Lane 1A).** `pkg/timeseries` reads
+  through `storage.Reader` and writes into the apply `storage.Batch`. It
+  imports no storage engine. Points, the metric index and the tag index
+  commit with the entry that wrote them, or not at all. Retention records
+  (`SetRetentionPolicy`) are likewise batch-staged; only the per-database
+  *binding* below — a store of the database's own rather than the shared
+  store — remains target work.
+- **Every backend — shipped for memory, file, pebble and objstore (Lane
+  1A); raft remains target**, pending the per-database binding below. On
+  objstore a range query is an ordered object listing, so it is correct and
+  slower; that is the cost of the backend the database chose.
 - **Replicated with the database.** On a raft binding every write is proposed to
   the database's Raft group and carries the database's drop fence, like every
   other write.
@@ -134,22 +148,41 @@ other engine.
 
 ### Retention enforcement (OD-16 A)
 
+> **Status: the deletion half is implemented against the storage-generic,
+> in-apply-batch architecture shipped by Lane 1A** (`ApplyRetention` takes
+> the caller's `storage.Batch` and works identically on every backend).
+> Downsampling, and a universal per-database drop fence on the command
+> itself — which depends on the per-database binding, not yet shipped —
+> remain target work.
+
 A retention sweep changes stored data, so it must be the same on every replica.
 It is therefore a command, not a background delete:
 
-- The binding's leader (for a local binding, the owning node) runs a periodic
-  driver. For each metric with a policy it proposes one
-  `TSApplyRetention{metric, cutoff_ns}` command, where `cutoff_ns` is computed
-  by the driver from its clock and carried in the command.
-- The engine applies it in the batch, deterministically from `cutoff_ns` and the
-  stored policy: points older than `cutoff_ns - duration_ns` are deleted, and
-  when the policy has a resolution, points older than the cutoff are replaced by
-  one downsampled point per `resolution_ns` bucket computed with the policy's
-  aggregation. Replicas never consult their own clocks.
-- The command is behind the cluster feature gate: the driver proposes it only
-  once every member of the group supports it.
-- The command is guarded by the drop fence and bounded per entry; a metric with
-  more expired points than one entry's bound is swept over several commands.
+- A leader-driven scheduler (`pkg/server`'s `retentionScheduler`, the same
+  per-tick, leader-gated pattern as the lease-expiry sweeper and the
+  compaction scheduler) runs on every node and acts on the stores it leads
+  or holds alone. Each tick it lists a store's written metrics and, for each
+  with a policy, computes `cutoff_ns` from its own clock
+  (`now - duration_ns`) and proposes one `TSApplyRetention{metric,
+  cutoff_ns}` command through the store's `TimeSeriesServicer`.
+- The engine applies it deterministically from `cutoff_ns` alone: points
+  older than `cutoff_ns` are deleted (`timeseries.Storage.ApplyRetention`).
+  Replicas never consult their own clocks. **Measured: downsampling is not
+  implemented** — a policy with a `resolution_ns` still has its expired
+  points deleted outright, not replaced by one bucketed point; the policy's
+  `aggregation` is read back by `TSGetRetention` but nothing computes it yet.
+- The command is behind the cluster feature gate
+  (`featuregate.TimeSeriesRetention`): the scheduler's `ApplyRetention` call
+  is refused with `*featuregate.NotActiveError` until every member of the
+  group supports the opcode.
+- The command is bounded per entry (`timeseries.MaxRetentionDeletesPerApply`);
+  a metric with more expired points than one command's bound is swept over
+  several ticks. On a shared store a command is guarded by the owning
+  database's drop fence, because it is proposed through that database's
+  namespaced `TimeSeriesServicer` view like every other write of that
+  database's; a dedicated per-database raft shard or a per-tenant volume
+  host needs no such guard; the target's own per-command, engine-level
+  fence remains unimplemented.
 
 ### Alternatives rejected
 

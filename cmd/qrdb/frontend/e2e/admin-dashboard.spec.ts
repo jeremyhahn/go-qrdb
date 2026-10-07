@@ -239,10 +239,9 @@ test.describe("Admin - Dashboard", () => {
     const stateWithDbs: MockState = {
       ...secondLaunchEmbeddedState,
       databases: [
-        { name: "mydb", engine: "kv", backend: "pebble", status: "open" },
+        { name: "mydb", backend: "pebble", status: "open" },
         {
           name: "tsdb",
-          engine: "timeseries",
           backend: "pebble",
           status: "open",
         },

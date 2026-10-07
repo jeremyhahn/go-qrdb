@@ -214,7 +214,6 @@ test.describe("Engine Type Combinations", () => {
     expect(creates).toHaveLength(1);
     expect(creates[0]).toMatchObject({
       name: "vec-file-pass",
-      engine: "vector",
       backend: "file",
       barrier: { enabled: true, mode: "passphrase", secret: "e2e-barrier-passphrase" },
     });

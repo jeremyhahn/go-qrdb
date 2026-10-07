@@ -553,7 +553,7 @@ func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
 		authEnabled: false,
 		enableREST:  true,
 		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "default", Engine: "kv", Backend: "memory"},
+			{Name: "default", Backend: "memory"},
 		},
 		host: testBindHost,
 	}

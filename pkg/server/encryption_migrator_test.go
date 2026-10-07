@@ -20,6 +20,8 @@ import (
 	"errors"
 	"testing"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -34,6 +36,37 @@ type fakeIsolationResolver struct {
 
 func (f fakeIsolationResolver) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
 	return f.info, f.err
+}
+
+// flakyIsolationResolver returns quicraft.ErrReadIndexNotReady for the first
+// failures calls (simulating a freshly elected leader's ReadIndex warm-up
+// window right after a system-scope recycle), then info/nil.
+type flakyIsolationResolver struct {
+	info     *tenant.TenantInfo
+	failures int
+	calls    int
+}
+
+func (f *flakyIsolationResolver) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
+	f.calls++
+	if f.calls <= f.failures {
+		return nil, quicraft.ErrReadIndexNotReady
+	}
+	return f.info, nil
+}
+
+// flakyBarrierModeChecker mirrors flakyIsolationResolver for CheckBarrierMode.
+type flakyBarrierModeChecker struct {
+	failures int
+	calls    int
+}
+
+func (f *flakyBarrierModeChecker) CheckBarrierMode(context.Context, string, seal.StrategyID) error {
+	f.calls++
+	if f.calls <= f.failures {
+		return quicraft.ErrReadIndexNotReady
+	}
+	return nil
 }
 
 // TestEffectiveEncryptionMigrator_ClusterBypass proves a wired cluster migrator
@@ -160,4 +193,48 @@ func TestScopedEncryptionMigrator_TenantAdmission(t *testing.T) {
 			t.Fatal("the system migrator was not called")
 		}
 	})
+}
+
+// TestIsRaftTenant_RetriesReadIndexNotReady proves isRaftTenant retries the
+// isolation lookup through the transient quicraft.ErrReadIndexNotReady
+// window (go-qrdb#584) instead of failing closed to the volume path on the
+// first hit, which would misroute a tenant-scope migration landing right
+// after a system-scope recycle.
+func TestIsRaftTenant_RetriesReadIndexNotReady(t *testing.T) {
+	r := &flakyIsolationResolver{info: &tenant.TenantInfo{IsolationType: tenant.IsolationRaft}, failures: 2}
+	m := &scopedEncryptionMigrator{isolation: r}
+	if got := m.isRaftTenant(context.Background(), "t1"); !got {
+		t.Fatalf("isRaftTenant = %v, want true after retrying past the transient read-index error", got)
+	}
+	if r.calls != 3 {
+		t.Fatalf("GetTenant called %d times, want 3 (2 transient failures + 1 success)", r.calls)
+	}
+}
+
+// TestScopedEncryptionMigrator_EnableEncryption_RetriesEntitlementCheck proves
+// EnableEncryption's tenant-scope entitlement gate (CheckBarrierMode) retries
+// through the same transient read-index window rather than refusing a
+// migration that lands right after a system-scope recycle (go-qrdb#584).
+func TestScopedEncryptionMigrator_EnableEncryption_RetriesEntitlementCheck(t *testing.T) {
+	checker := &flakyBarrierModeChecker{failures: 2}
+	m := &scopedEncryptionMigrator{
+		tenants:   &TenantHostRegistry{},
+		tenantSvc: checker,
+	}
+	err := m.EnableEncryption(context.Background(),
+		service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"},
+		seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase})
+
+	if checker.calls != 3 {
+		t.Fatalf("CheckBarrierMode called %d times, want 3 (2 transient failures + 1 success)", checker.calls)
+	}
+	if errors.Is(err, quicraft.ErrReadIndexNotReady) {
+		t.Fatalf("EnableEncryption surfaced the transient read-index error instead of retrying: %v", err)
+	}
+	// The zero-value TenantHostRegistry refuses with ErrTenantHostUnavailable
+	// once CheckBarrierMode clears -- proving the retry let the migration past
+	// the entitlement gate rather than stopping there.
+	if !errors.Is(err, ErrTenantHostUnavailable) {
+		t.Fatalf("EnableEncryption = %v, want ErrTenantHostUnavailable (past the entitlement gate)", err)
+	}
 }

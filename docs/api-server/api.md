@@ -1,6 +1,6 @@
 # Unified API Server — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 This feature *is* the API surface — it hosts every other feature's capabilities.
 What follows is the shape common to all of them; the capability tables live in
@@ -64,6 +64,18 @@ serving unauthenticated.
 **The registry is populated unconditionally**, even for routes a given server
 does not enable, so SO dual-factor gating recognizes SO-permissioned paths on
 servers that do not serve them.
+
+**A module authorizing against a tenant the caller named, not its own.** The
+per-route declaration above confines a module's handler to the REQUEST's own
+identity tenant. A module whose operation legitimately acts on a
+caller-named tenant implements `ModuleTenantTargetAware`
+(`sdk.ModuleTenantTargetAware`) to receive a `TenantTargetAuthorizer`
+(`sdk.TenantTargetAuthorizer`) and calls its `AuthorizeTenantTarget(ctx,
+tenantID, perm)` from the handler, admitted or refused under the SAME RBAC
+ScopeCross/ScopeSelf rules qrdb's own tenant routes enforce — see
+[../multi-tenancy/api.md](../multi-tenancy/api.md). An embedded/Unix host
+holding the `Node` directly reaches the identical capability through
+`sdk/go/node.Node.AuthMiddleware` / `Node.Authorizer`.
 
 ## Unauthenticated routes — the complete list
 

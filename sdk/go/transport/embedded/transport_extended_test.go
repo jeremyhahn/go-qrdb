@@ -1396,7 +1396,7 @@ func (m *mockDatabaseService) Create(cfg database.DatabaseConfig) (*database.Dat
 	if m.createFn != nil {
 		return m.createFn(cfg)
 	}
-	return &database.DatabaseInfo{Name: cfg.Name, Engine: cfg.Engine, Backend: cfg.Backend}, nil
+	return &database.DatabaseInfo{Name: cfg.Name, Backend: cfg.Backend}, nil
 }
 
 func (m *mockDatabaseService) Get(name string) (*database.DatabaseInfo, error) {
@@ -1525,7 +1525,6 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 			capturedCfg = cfg
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				ShardID: 9,
 				Mode:    cfg.Mode,
@@ -1560,7 +1559,6 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 	tr := newExtTransport(t, WithDatabaseService(svc))
 	resp, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "db1",
-		Engine:  "kv",
 		Backend: "pebble",
 		Mode:    "raft",
 		Protocol: transport.ProtocolConfig{
@@ -1590,7 +1588,7 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDatabase: %v", err)
 	}
-	if capturedCfg.Name != "db1" || string(capturedCfg.Engine) != "kv" {
+	if capturedCfg.Name != "db1" {
 		t.Errorf("captured = %+v", capturedCfg)
 	}
 	if resp.Name != "db1" || resp.ShardID != 9 {

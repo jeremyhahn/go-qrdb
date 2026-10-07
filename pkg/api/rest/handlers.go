@@ -701,6 +701,16 @@ func membershipChangeStatus(err error) int {
 	if errors.As(err, &noe) {
 		return mapHTTPError(err)
 	}
+	// A NotLeaderError reaches here only when tryForwardWrite declined to
+	// forward it (no resolver, no known leader address, the leader is this
+	// node itself, or no admin URL for it) -- every one of those is the
+	// same "leadership is still settling" condition every other transport
+	// in this codebase answers with 503 (pkg/api/errclass's
+	// NotLeaderError->Unavailable rule), not a permanent failure.
+	var nle *service.NotLeaderError
+	if errors.As(err, &nle) {
+		return mapHTTPError(err)
+	}
 	return http.StatusInternalServerError
 }
 
@@ -862,41 +872,94 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 // Leader forwarding
 // ---------------------------------------------------------------------------
 
-// tryForwardWrite checks whether err is a NotLeaderError with a known
-// leader address and forwards the write request to the leader's REST
-// server. Returns true if forwarding was attempted (regardless of whether
-// it succeeded), meaning the caller should not write any further response.
-// Returns false if forwarding is not applicable. body is the original
-// request body (already drained from r.Body by the caller); it is
-// forwarded as-is since it cannot be re-read from r.
+// tryForwardWrite checks whether err names a known leader address --
+// *service.NotLeaderError, or ceremony-initialize's own
+// *service.AdminCredentialNotLeaderError (see asNotLeaderTarget) --
+// and forwards the write request to the leader's REST server. Returns true
+// if forwarding was attempted (regardless of whether it succeeded), meaning
+// the caller should not write any further response. Returns false if
+// forwarding is not applicable. body is the original request body (already
+// drained from r.Body by the caller); it is forwarded as-is since it cannot
+// be re-read from r.
 func (s *Server) tryForwardWrite(w http.ResponseWriter, r *http.Request, body []byte, err error) bool {
 	if s.resolver == nil {
 		return false
 	}
 
-	var nle *service.NotLeaderError
-	if !errors.As(err, &nle) {
+	target, ok := asNotLeaderTarget(err)
+	if !ok {
 		return false
 	}
 
-	if nle.LeaderAddress == "" {
+	if target.leaderAddress == "" {
 		slog.Warn("leader forwarding: leader address unknown",
-			"shard_id", nle.ShardID,
+			"shard_id", target.shardID,
 		)
 		return false
 	}
 
-	adminURL := s.resolver.ResolveAdminURL(nle.LeaderAddress)
+	// go-quicraft can report this node itself as the leader in the same
+	// breath it refuses the proposal as not-leader -- a readiness lag
+	// between winning an election and being able to serve a membership
+	// change, observed right after a group's first leader election.
+	// Forwarding in that case would dial this node's own admin listener,
+	// re-enter this exact handler, and hit the identical condition again:
+	// a self-loop that the hop-count guard in forwardToLeader can only
+	// detect after the fact (3 wasted hops), never resolve, since nothing
+	// about taking the hop changes the condition that caused it. Refusing
+	// to forward here instead falls through to membershipChangeStatus's
+	// ordinary NotLeaderError classification (503), the same transient
+	// retry signal every other "leadership is still settling" case in
+	// this codebase already produces.
+	if s.host != nil && target.leaderAddress == s.host.RaftAddress() {
+		slog.Warn("leader forwarding: refusing to forward to self",
+			"shard_id", target.shardID,
+			"leader_address", target.leaderAddress,
+		)
+		return false
+	}
+
+	adminURL := s.resolver.ResolveAdminURL(target.leaderAddress)
 	if adminURL == "" {
 		slog.Warn("leader forwarding: no admin URL for leader",
-			"leader_raft_addr", nle.LeaderAddress,
-			"leader_id", nle.LeaderID,
+			"leader_raft_addr", target.leaderAddress,
+			"leader_id", target.leaderID,
 		)
 		return false
 	}
 
 	s.forwardToLeader(w, r, adminURL, body)
 	return true
+}
+
+// notLeaderTarget is the leader-retry information tryForwardWrite needs to
+// resolve and forward a write, common to every service-layer error that
+// means "this node cannot serve this write because it is not the leader,
+// retry at LeaderAddress": the propose-level *service.NotLeaderError every
+// Raft-backed write can return, and the ceremony-initialize admin-credential
+// step's own *service.AdminCredentialNotLeaderError (go-qrdb#548) -- a
+// distinct type because that gate runs before anything is proposed, so it
+// carries no shard or leader ID, only the address.
+type notLeaderTarget struct {
+	leaderAddress string
+	leaderID      uint64
+	shardID       uint64
+}
+
+// asNotLeaderTarget extracts a notLeaderTarget from err, trying every
+// service-layer error type a leader-only write can fail with. Adding a new
+// one here is how its handler gains leader forwarding through the EXISTING
+// tryForwardWrite/forwardToLeader machinery, rather than writing another.
+func asNotLeaderTarget(err error) (notLeaderTarget, bool) {
+	var nle *service.NotLeaderError
+	if errors.As(err, &nle) {
+		return notLeaderTarget{leaderAddress: nle.LeaderAddress, leaderID: nle.LeaderID, shardID: nle.ShardID}, true
+	}
+	var acnle *service.AdminCredentialNotLeaderError
+	if errors.As(err, &acnle) {
+		return notLeaderTarget{leaderAddress: acnle.LeaderAddress}, true
+	}
+	return notLeaderTarget{}, false
 }
 
 // forwardToLeader proxies the original HTTP request to the leader's REST

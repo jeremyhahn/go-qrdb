@@ -41,7 +41,7 @@ func newNodeWithPassphraseDatabase(t *testing.T) *Node {
 	}
 	t.Cleanup(func() { _ = n.Close() })
 	if _, err := n.Client().Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name: "secure", Engine: string(database.EngineKV), Backend: string(database.BackendPebble), DataDir: t.TempDir(),
+		Name: "secure", Backend: string(database.BackendPebble), DataDir: t.TempDir(),
 		Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "passphrase", Secret: dbSealPass},
 	}); err != nil {
 		t.Fatal(err)

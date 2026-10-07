@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
@@ -184,6 +186,146 @@ func mcpRefusal(t *testing.T, res *mcpgo.CallToolResult) *placement.NotAReplicaE
 		t.Fatal(err)
 	}
 	return refusal
+}
+
+// fixedCeremonyService is a service.CeremonyServicer double that answers
+// every call with a fixed result or error.
+type fixedCeremonyService struct {
+	result *service.CeremonyInitResult
+	err    error
+}
+
+func (f fixedCeremonyService) CeremonyInitialize(context.Context, ceremony.CeremonyCA, *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	return f.result, f.err
+}
+
+func (f fixedCeremonyService) CeremonySignCSR(context.Context, string, string, string, string) (*service.CeremonySignCSRResult, error) {
+	return nil, f.err
+}
+
+func (f fixedCeremonyService) CeremonyStatus(context.Context) (*service.CeremonyStatusInfo, error) {
+	return nil, f.err
+}
+
+// TestReplicaForwardMCP_CeremonyInitializeForwardsOnAdminCredentialNotLeaderError
+// is the node-parity regression guard (owner ruling 2026-10-06): the admin-
+// credential step of qrdb_ceremony_initialize must run on the system shard's
+// leader (service.CeremonyServiceWithLeaderGate); a follower forwards the
+// identical call to the leader through the SAME session machinery the
+// per-database NotAReplicaError path uses, rather than answering its own
+// refusal.
+func TestReplicaForwardMCP_CeremonyInitializeForwardsOnAdminCredentialNotLeaderError(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+
+	leaderMW := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithUserService(authtest.NewBindingUsers()))
+	leader := NewServer(newMockKVService(), nil, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-1")), WithAuthMiddleware(leaderMW),
+		WithCeremonyService(fixedCeremonyService{result: &service.CeremonyInitResult{SPKIPin: "leader-answered"}}))
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(leader.Stop)
+
+	cache := replicaforward.NewLeaderCache()
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolMCP: leader.Addr()}},
+	}
+	caller := authtest.NewFixedAuthenticator(&auth.Identity{Subject: "alice", TenantID: authtest.BindingTenant})
+	ingressMW := authmw.New(&guardMCPAllowAuthorizer{}, authmw.WithAuthenticator(caller), authmw.WithUserService(authtest.NewBindingUsers()))
+	ingress := NewServer(newMockKVService(), nil, "127.0.0.1:0", WithTLS(ca.TLS(t, "node-a")), WithAuthMiddleware(ingressMW),
+		WithCeremonyService(fixedCeremonyService{err: &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}}),
+		WithReplicaForwarding(replicaforward.Config{Locator: replicaforward.NewLocator(members, cache, "raft-a", nil), RootCAs: ca.Pool, Timeout: 5 * time.Second}))
+	if err := ingress.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ingress.Stop)
+
+	client := dialMCP(t, ingress.Addr(), &http.Client{Transport: &http.Transport{TLSClientConfig: ca.TLS(t, "")}})
+	req := mcpgo.CallToolRequest{}
+	req.Params.Name = "qrdb_ceremony_initialize"
+	req.Params.Arguments = map[string]any{"admin_generate": true}
+	res, err := client.CallTool(callCtx(t), req)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("result = %+v; want the leader's success", res)
+	}
+	if text := resultText(t, res); !strings.Contains(text, "leader-answered") {
+		t.Fatalf("result text = %q; want the leader's spki_pin", text)
+	}
+}
+
+// TestForwardToLeader_EmptyLeaderAddressDoesNotForward proves forwardToLeader
+// refuses to forward when the refusal names no leader at all.
+func TestForwardToLeader_EmptyLeaderAddressDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	f := newReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: time.Second,
+	}, ca.TLS(t, "node-a"))
+	defer f.close()
+
+	if _, _, ok := f.forwardToLeader(context.Background(), mcpgo.CallToolRequest{}, ""); ok {
+		t.Fatal("forwardToLeader forwarded with an empty leader address")
+	}
+}
+
+// TestForwardToLeader_UnresolvableLeaderDoesNotForward proves forwardToLeader
+// falls back when the named leader has no member record.
+func TestForwardToLeader_UnresolvableLeaderDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	f := newReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: time.Second,
+	}, ca.TLS(t, "node-a"))
+	defer f.close()
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	if _, _, ok := f.forwardToLeader(ctx, mcpgo.CallToolRequest{}, "raft-unknown"); ok {
+		t.Fatal("forwardToLeader forwarded to a leader with no member record")
+	}
+}
+
+// TestForwardToLeader_NoMCPEndpointDoesNotForward proves forwardToLeader
+// falls back when the leader's member record advertises no MCP endpoint.
+func TestForwardToLeader_NoMCPEndpointDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: "127.0.0.1:1"}},
+	}
+	f := newReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: time.Second,
+	}, ca.TLS(t, "node-a"))
+	defer f.close()
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	if _, _, ok := f.forwardToLeader(ctx, mcpgo.CallToolRequest{}, "raft-leader"); ok {
+		t.Fatal("forwardToLeader forwarded to a leader with no MCP endpoint")
+	}
+}
+
+// TestForwardToLeader_UnreachableLeaderDoesNotForward proves forwardToLeader
+// falls back when the leader's member record resolves but nothing answers.
+func TestForwardToLeader_UnreachableLeaderDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolMCP: replicaforwardtest.ClosedAddr(t)}},
+	}
+	f := newReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: 200 * time.Millisecond,
+	}, ca.TLS(t, "node-a"))
+	defer f.close()
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	if _, _, ok := f.forwardToLeader(ctx, mcpgo.CallToolRequest{}, "raft-leader"); ok {
+		t.Fatal("forwardToLeader forwarded to an unreachable leader")
+	}
 }
 
 func TestReplicaForwardMCP_ForwardsAsTheCallerAndRelaysTheAnswer(t *testing.T) {

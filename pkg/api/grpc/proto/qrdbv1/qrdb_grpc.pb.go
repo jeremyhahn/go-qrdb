@@ -10096,8 +10096,9 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	AuditService_Query_FullMethodName       = "/qrdb.v1.AuditService/Query"
-	AuditService_VerifyChain_FullMethodName = "/qrdb.v1.AuditService/VerifyChain"
+	AuditService_Query_FullMethodName                 = "/qrdb.v1.AuditService/Query"
+	AuditService_VerifyChain_FullMethodName           = "/qrdb.v1.AuditService/VerifyChain"
+	AuditService_VerifyReplicatedChain_FullMethodName = "/qrdb.v1.AuditService/VerifyReplicatedChain"
 )
 
 // AuditServiceClient is the client API for AuditService service.
@@ -10120,6 +10121,16 @@ type AuditServiceClient interface {
 	// performed at all (unsupported backend, unreadable file, or a rotation
 	// race -- see pkg/audit.Verify).
 	VerifyChain(ctx context.Context, in *AuditVerifyChainRequest, opts ...grpc.CallOption) (*AuditVerifyChainResponse, error)
+	// VerifyReplicatedChain verifies the hash-chain continuity of the
+	// cluster-wide REPLICATED audit chain (docs/audit/architecture.md
+	// #cluster-wide-replicated-trail) for one tenant -- a different trail
+	// from the node-local one VerifyChain above checks, with no files or
+	// rotation concepts: it has one authority per tenant, replicated by
+	// Raft rather than written by one process. Verified=false with a
+	// Reason is a TAMPER VERDICT; a non-nil error means verification could
+	// not be performed (no replicated audit configured) or the tenant is
+	// not entitled to the replicated chain at all.
+	VerifyReplicatedChain(ctx context.Context, in *AuditVerifyReplicatedChainRequest, opts ...grpc.CallOption) (*AuditVerifyReplicatedChainResponse, error)
 }
 
 type auditServiceClient struct {
@@ -10150,6 +10161,16 @@ func (c *auditServiceClient) VerifyChain(ctx context.Context, in *AuditVerifyCha
 	return out, nil
 }
 
+func (c *auditServiceClient) VerifyReplicatedChain(ctx context.Context, in *AuditVerifyReplicatedChainRequest, opts ...grpc.CallOption) (*AuditVerifyReplicatedChainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuditVerifyReplicatedChainResponse)
+	err := c.cc.Invoke(ctx, AuditService_VerifyReplicatedChain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuditServiceServer is the server API for AuditService service.
 // All implementations must embed UnimplementedAuditServiceServer
 // for forward compatibility.
@@ -10170,6 +10191,16 @@ type AuditServiceServer interface {
 	// performed at all (unsupported backend, unreadable file, or a rotation
 	// race -- see pkg/audit.Verify).
 	VerifyChain(context.Context, *AuditVerifyChainRequest) (*AuditVerifyChainResponse, error)
+	// VerifyReplicatedChain verifies the hash-chain continuity of the
+	// cluster-wide REPLICATED audit chain (docs/audit/architecture.md
+	// #cluster-wide-replicated-trail) for one tenant -- a different trail
+	// from the node-local one VerifyChain above checks, with no files or
+	// rotation concepts: it has one authority per tenant, replicated by
+	// Raft rather than written by one process. Verified=false with a
+	// Reason is a TAMPER VERDICT; a non-nil error means verification could
+	// not be performed (no replicated audit configured) or the tenant is
+	// not entitled to the replicated chain at all.
+	VerifyReplicatedChain(context.Context, *AuditVerifyReplicatedChainRequest) (*AuditVerifyReplicatedChainResponse, error)
 	mustEmbedUnimplementedAuditServiceServer()
 }
 
@@ -10185,6 +10216,9 @@ func (UnimplementedAuditServiceServer) Query(context.Context, *AuditQueryRequest
 }
 func (UnimplementedAuditServiceServer) VerifyChain(context.Context, *AuditVerifyChainRequest) (*AuditVerifyChainResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VerifyChain not implemented")
+}
+func (UnimplementedAuditServiceServer) VerifyReplicatedChain(context.Context, *AuditVerifyReplicatedChainRequest) (*AuditVerifyReplicatedChainResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyReplicatedChain not implemented")
 }
 func (UnimplementedAuditServiceServer) mustEmbedUnimplementedAuditServiceServer() {}
 func (UnimplementedAuditServiceServer) testEmbeddedByValue()                      {}
@@ -10243,6 +10277,24 @@ func _AuditService_VerifyChain_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuditService_VerifyReplicatedChain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AuditVerifyReplicatedChainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuditServiceServer).VerifyReplicatedChain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuditService_VerifyReplicatedChain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuditServiceServer).VerifyReplicatedChain(ctx, req.(*AuditVerifyReplicatedChainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuditService_ServiceDesc is the grpc.ServiceDesc for AuditService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -10257,6 +10309,10 @@ var AuditService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VerifyChain",
 			Handler:    _AuditService_VerifyChain_Handler,
+		},
+		{
+			MethodName: "VerifyReplicatedChain",
+			Handler:    _AuditService_VerifyReplicatedChain_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

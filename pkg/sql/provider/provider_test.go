@@ -317,7 +317,7 @@ func TestProvider_Database_WithSession_TenantScoping(t *testing.T) {
 // implements.
 func TestProvider_WithReadOnly_StripsWriteCapability(t *testing.T) {
 	svc := &mockKVService{}
-	p := NewProviderWithEngine("qrdb", svc, "", WithReadOnly())
+	p := NewProvider("qrdb", svc, WithReadOnly())
 	ctx := newTestContext()
 
 	db, err := p.Database(ctx, "qrdb")
@@ -338,7 +338,7 @@ func TestProvider_WithReadOnly_StripsWriteCapability(t *testing.T) {
 // their write-capability interfaces.
 func TestProvider_WithoutReadOnly_PreservesWriteCapability(t *testing.T) {
 	svc := &mockKVService{}
-	p := NewProviderWithEngine("qrdb", svc, "")
+	p := NewProvider("qrdb", svc)
 	ctx := newTestContext()
 
 	db, err := p.Database(ctx, "qrdb")
@@ -360,7 +360,7 @@ func TestProvider_WithoutReadOnly_PreservesWriteCapability(t *testing.T) {
 // kvSvc to the correct (tenant, database) namespace.
 func TestProvider_WithPrescopedKV_UsesBareKeys(t *testing.T) {
 	svc := &mockKVService{}
-	p := NewProviderWithEngine("qrdb", svc, "", WithPrescopedKV())
+	p := NewProvider("qrdb", svc, WithPrescopedKV())
 
 	base := sqle.NewBaseSession()
 	sess := NewSession(base, &auth.Identity{Subject: "bob", TenantID: "corp"})
@@ -417,7 +417,6 @@ func TestManagerProvider_Database_Found(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "testdb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -441,79 +440,12 @@ func TestManagerProvider_Database_NotFound(t *testing.T) {
 	assert.IsType(t, &DatabaseNotFoundError{}, err)
 }
 
-func TestManagerProvider_Database_EngineKV(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "kvdb",
-		Engine:  database.EngineKV,
-		Backend: database.BackendMemory,
-	})
-	require.NoError(t, err)
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	sqlDB, err := p.Database(ctx, "kvdb")
-	require.NoError(t, err)
-
-	provDB, ok := sqlDB.(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineKV, provDB.Engine())
-}
-
-func TestManagerProvider_Database_EngineTimeSeries(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "tsdb",
-		Engine:  database.EngineTimeSeries,
-		Backend: database.BackendMemory,
-	})
-	require.NoError(t, err)
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	sqlDB, err := p.Database(ctx, "tsdb")
-	require.NoError(t, err)
-
-	provDB, ok := sqlDB.(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineTimeSeries, provDB.Engine())
-}
-
-func TestManagerProvider_Database_EngineVector(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "vecdb",
-		Engine:  database.EngineVector,
-		Backend: database.BackendMemory,
-	})
-	require.NoError(t, err)
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	sqlDB, err := p.Database(ctx, "vecdb")
-	require.NoError(t, err)
-
-	provDB, ok := sqlDB.(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineVector, provDB.Engine())
-}
-
 func TestManagerProvider_Database_KVTableAccess(t *testing.T) {
 	mgr := newTestManager(t)
 	svc := &mockKVService{}
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "mydb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -540,7 +472,6 @@ func TestManagerProvider_HasDatabase_True(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "exists",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -581,7 +512,6 @@ func TestManagerProvider_AllDatabases_Multiple(t *testing.T) {
 	for _, name := range []string{"alpha", "beta", "gamma"} {
 		_, err := mgr.Create(database.DatabaseConfig{
 			Name:    name,
-			Engine:  database.EngineKV,
 			Backend: database.BackendMemory,
 		})
 		require.NoError(t, err)
@@ -597,40 +527,6 @@ func TestManagerProvider_AllDatabases_Multiple(t *testing.T) {
 	assert.Equal(t, "alpha", dbs[0].Name())
 	assert.Equal(t, "beta", dbs[1].Name())
 	assert.Equal(t, "gamma", dbs[2].Name())
-}
-
-func TestManagerProvider_AllDatabases_EngineTypes(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	configs := []database.DatabaseConfig{
-		{Name: "kvdb", Engine: database.EngineKV, Backend: database.BackendMemory},
-		{Name: "tsdb", Engine: database.EngineTimeSeries, Backend: database.BackendMemory},
-		{Name: "vecdb", Engine: database.EngineVector, Backend: database.BackendMemory},
-	}
-	for _, cfg := range configs {
-		_, err := mgr.Create(cfg)
-		require.NoError(t, err)
-	}
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	dbs := p.AllDatabases(ctx)
-	require.Len(t, dbs, 3)
-
-	// Sorted by name: kvdb, tsdb, vecdb.
-	provDB0, ok := dbs[0].(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineKV, provDB0.Engine())
-
-	provDB1, ok := dbs[1].(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineTimeSeries, provDB1.Engine())
-
-	provDB2, ok := dbs[2].(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineVector, provDB2.Engine())
 }
 
 // ---------------------------------------------------------------------------
@@ -653,9 +549,8 @@ func TestManagerProvider_CreateDatabase(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "newdb", db.Name())
 
-	provDB, ok := db.(*Database)
+	_, ok := db.(*Database)
 	require.True(t, ok)
-	assert.Equal(t, database.EngineKV, provDB.Engine())
 }
 
 func TestManagerProvider_CreateDatabase_Duplicate(t *testing.T) {
@@ -732,26 +627,6 @@ func TestLegacyProvider_DropDatabase_NotSupported(t *testing.T) {
 // Database.Engine() tests
 // ---------------------------------------------------------------------------
 
-func TestDatabase_Engine_Default(t *testing.T) {
-	db := &Database{name: "legacy", kvSvc: &mockKVService{}}
-	assert.Equal(t, database.EngineType(""), db.Engine())
-}
-
-func TestDatabase_Engine_KV(t *testing.T) {
-	db := &Database{name: "kvdb", kvSvc: &mockKVService{}, engine: database.EngineKV}
-	assert.Equal(t, database.EngineKV, db.Engine())
-}
-
-func TestDatabase_Engine_TimeSeries(t *testing.T) {
-	db := &Database{name: "tsdb", kvSvc: &mockKVService{}, engine: database.EngineTimeSeries}
-	assert.Equal(t, database.EngineTimeSeries, db.Engine())
-}
-
-func TestDatabase_Engine_Vector(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	assert.Equal(t, database.EngineVector, db.Engine())
-}
-
 // ---------------------------------------------------------------------------
 // Interface compliance tests (manager-backed)
 // ---------------------------------------------------------------------------
@@ -814,7 +689,6 @@ func TestManagerProvider_Database_WithSession_TenantScoping(t *testing.T) {
 	_, err := mgr.Create(database.DatabaseConfig{
 		TenantID: "acme",
 		Name:     "tenantdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -885,29 +759,6 @@ func TestProtocolType_Constants(t *testing.T) {
 // Engine-to-tables map tests
 // ---------------------------------------------------------------------------
 
-func TestEngineTablesMap_KV(t *testing.T) {
-	tables, ok := engineTables[database.EngineKV]
-	require.True(t, ok)
-	assert.Equal(t, []string{"kv"}, tables)
-}
-
-func TestEngineTablesMap_TimeSeries(t *testing.T) {
-	tables, ok := engineTables[database.EngineTimeSeries]
-	require.True(t, ok)
-	assert.Equal(t, []string{"datapoints", "metrics"}, tables)
-}
-
-func TestEngineTablesMap_Vector(t *testing.T) {
-	tables, ok := engineTables[database.EngineVector]
-	require.True(t, ok)
-	assert.Equal(t, []string{"namespaces", "vectors"}, tables)
-}
-
-func TestEngineTablesMap_UnknownEngine(t *testing.T) {
-	_, ok := engineTables[database.EngineType("unknown")]
-	assert.False(t, ok)
-}
-
 // ---------------------------------------------------------------------------
 // WithProtocol option tests
 // ---------------------------------------------------------------------------
@@ -948,81 +799,9 @@ func TestNewManagerProvider_NoOptions(t *testing.T) {
 // NewProviderWithEngine tests
 // ---------------------------------------------------------------------------
 
-func TestNewProviderWithEngine(t *testing.T) {
-	svc := &mockKVService{}
-	p := NewProviderWithEngine("mydb", svc, database.EngineKV)
-
-	require.NotNil(t, p)
-	assert.Equal(t, "mydb", p.dbName)
-	assert.Equal(t, database.EngineKV, p.engine)
-	assert.Nil(t, p.manager)
-}
-
-func TestNewProviderWithEngine_DatabaseLookup(t *testing.T) {
-	svc := &mockKVService{}
-	p := NewProviderWithEngine("mydb", svc, database.EngineTimeSeries)
-	ctx := newTestContext()
-
-	db, err := p.Database(ctx, "mydb")
-	require.NoError(t, err)
-
-	provDB, ok := db.(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineTimeSeries, provDB.Engine())
-}
-
-func TestNewProviderWithEngine_NotFound(t *testing.T) {
-	svc := &mockKVService{}
-	p := NewProviderWithEngine("mydb", svc, database.EngineKV)
-	ctx := newTestContext()
-
-	_, err := p.Database(ctx, "other")
-	assert.IsType(t, &DatabaseNotFoundError{}, err)
-}
-
-func TestNewProviderWithEngine_AllDatabases(t *testing.T) {
-	svc := &mockKVService{}
-	p := NewProviderWithEngine("mydb", svc, database.EngineVector)
-	ctx := newTestContext()
-
-	dbs := p.AllDatabases(ctx)
-	require.Len(t, dbs, 1)
-
-	provDB, ok := dbs[0].(*Database)
-	require.True(t, ok)
-	assert.Equal(t, database.EngineVector, provDB.Engine())
-}
-
 // ---------------------------------------------------------------------------
 // Engine-scoped GetTableNames tests
 // ---------------------------------------------------------------------------
-
-func TestDatabase_GetTableNames_EngineKV(t *testing.T) {
-	db := &Database{name: "kvdb", kvSvc: &mockKVService{}, engine: database.EngineKV}
-	ctx := newTestContext()
-
-	names, err := db.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"kv"}, names)
-}
-
-func TestDatabase_GetTableNames_EngineTimeSeries(t *testing.T) {
-	db := &Database{name: "tsdb", kvSvc: &mockKVService{}, engine: database.EngineTimeSeries}
-	ctx := newTestContext()
-
-	names, err := db.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"datapoints", "metrics"}, names)
-}
-
-func TestDatabase_GetTableNames_EngineVector(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	ctx := newTestContext()
-
-	names, err := db.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"namespaces", "vectors"}, names)
-}
 
 func TestDatabase_GetTableNames_LegacyAllTables(t *testing.T) {
 	db := &Database{name: "legacy", kvSvc: &mockKVService{}}
@@ -1032,131 +811,6 @@ func TestDatabase_GetTableNames_LegacyAllTables(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, allTableNames, names)
 	assert.Len(t, names, 5)
-}
-
-func TestDatabase_GetTableNames_UnknownEngine(t *testing.T) {
-	db := &Database{name: "unknowndb", kvSvc: &mockKVService{}, engine: database.EngineType("custom")}
-	ctx := newTestContext()
-
-	names, err := db.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Nil(t, names)
-}
-
-// ---------------------------------------------------------------------------
-// Engine-scoped GetTableInsensitive tests
-// ---------------------------------------------------------------------------
-
-func TestDatabase_GetTableInsensitive_KV_EngineKV(t *testing.T) {
-	db := &Database{name: "kvdb", kvSvc: &mockKVService{}, engine: database.EngineKV}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "kv")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "kv", tbl.Name())
-}
-
-func TestDatabase_GetTableInsensitive_KV_EngineKV_RejectsTimeSeries(t *testing.T) {
-	db := &Database{name: "kvdb", kvSvc: &mockKVService{}, engine: database.EngineKV}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "datapoints")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-}
-
-func TestDatabase_GetTableInsensitive_KV_EngineKV_RejectsVector(t *testing.T) {
-	db := &Database{name: "kvdb", kvSvc: &mockKVService{}, engine: database.EngineKV}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "vectors")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-}
-
-func TestDatabase_GetTableInsensitive_EngineTimeSeries_Datapoints(t *testing.T) {
-	db := &Database{name: "tsdb", kvSvc: &mockKVService{}, engine: database.EngineTimeSeries}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "datapoints")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "datapoints", tbl.Name())
-}
-
-func TestDatabase_GetTableInsensitive_EngineTimeSeries_Metrics(t *testing.T) {
-	db := &Database{name: "tsdb", kvSvc: &mockKVService{}, engine: database.EngineTimeSeries}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "metrics")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "metrics", tbl.Name())
-}
-
-func TestDatabase_GetTableInsensitive_EngineTimeSeries_RejectsKV(t *testing.T) {
-	db := &Database{name: "tsdb", kvSvc: &mockKVService{}, engine: database.EngineTimeSeries}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "kv")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-}
-
-func TestDatabase_GetTableInsensitive_EngineVector_Namespaces(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "namespaces")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "namespaces", tbl.Name())
-}
-
-func TestDatabase_GetTableInsensitive_EngineVector_Vectors(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "vectors")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "vectors", tbl.Name())
-}
-
-func TestDatabase_GetTableInsensitive_EngineVector_RejectsKV(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "kv")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-}
-
-func TestDatabase_GetTableInsensitive_EngineVector_RejectsMetrics(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "metrics")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-}
-
-func TestDatabase_GetTableInsensitive_UnknownEngine_RejectsAll(t *testing.T) {
-	db := &Database{name: "custom", kvSvc: &mockKVService{}, engine: database.EngineType("custom")}
-	ctx := newTestContext()
-
-	for _, name := range []string{"kv", "datapoints", "metrics", "namespaces", "vectors"} {
-		tbl, found, err := db.GetTableInsensitive(ctx, name)
-		require.NoError(t, err, "table: %s", name)
-		assert.False(t, found, "table: %s", name)
-		assert.Nil(t, tbl, "table: %s", name)
-	}
 }
 
 func TestDatabase_GetTableInsensitive_Legacy_AllTablesAccessible(t *testing.T) {
@@ -1181,7 +835,6 @@ func TestManagerProvider_ProtocolMySQL_AllowsMySQLDatabase(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "mysqldb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: false},
 	})
@@ -1201,7 +854,6 @@ func TestManagerProvider_ProtocolMySQL_RejectsPostgreSQLOnly(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "pgdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: false, PostgreSQL: true},
 	})
@@ -1220,7 +872,6 @@ func TestManagerProvider_ProtocolPostgreSQL_AllowsPostgreSQLDatabase(t *testing.
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "pgdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: false, PostgreSQL: true},
 	})
@@ -1240,7 +891,6 @@ func TestManagerProvider_ProtocolPostgreSQL_RejectsMySQLOnly(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "mysqldb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: false},
 	})
@@ -1259,7 +909,6 @@ func TestManagerProvider_ProtocolAny_AllowsAllDatabases(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "nodb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: false, PostgreSQL: false},
 	})
@@ -1279,7 +928,6 @@ func TestManagerProvider_ProtocolMySQL_RejectsNoProtocolConfig(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "nodb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -1301,7 +949,6 @@ func TestManagerProvider_AllDatabases_ProtocolMySQL_FiltersCorrectly(t *testing.
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "mysqldb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: false},
 	})
@@ -1309,7 +956,6 @@ func TestManagerProvider_AllDatabases_ProtocolMySQL_FiltersCorrectly(t *testing.
 
 	_, err = mgr.Create(database.DatabaseConfig{
 		Name:     "pgdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: false, PostgreSQL: true},
 	})
@@ -1317,7 +963,6 @@ func TestManagerProvider_AllDatabases_ProtocolMySQL_FiltersCorrectly(t *testing.
 
 	_, err = mgr.Create(database.DatabaseConfig{
 		Name:     "bothdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: true},
 	})
@@ -1344,7 +989,6 @@ func TestManagerProvider_AllDatabases_ProtocolPostgreSQL_FiltersCorrectly(t *tes
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "mysqldb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: false},
 	})
@@ -1352,7 +996,6 @@ func TestManagerProvider_AllDatabases_ProtocolPostgreSQL_FiltersCorrectly(t *tes
 
 	_, err = mgr.Create(database.DatabaseConfig{
 		Name:     "pgdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: false, PostgreSQL: true},
 	})
@@ -1372,7 +1015,6 @@ func TestManagerProvider_AllDatabases_ProtocolAny_ReturnsAll(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "db1",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true},
 	})
@@ -1380,7 +1022,6 @@ func TestManagerProvider_AllDatabases_ProtocolAny_ReturnsAll(t *testing.T) {
 
 	_, err = mgr.Create(database.DatabaseConfig{
 		Name:    "db2",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
@@ -1398,7 +1039,6 @@ func TestManagerProvider_AllDatabases_ProtocolMySQL_EmptyWhenNoneMatch(t *testin
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "pgonly",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{PostgreSQL: true},
 	})
@@ -1422,40 +1062,6 @@ func TestDatabase_hasTable_Legacy_AllAllowed(t *testing.T) {
 	}
 }
 
-func TestDatabase_hasTable_KV_OnlyKV(t *testing.T) {
-	db := &Database{name: "kvdb", kvSvc: &mockKVService{}, engine: database.EngineKV}
-	assert.True(t, db.hasTable("kv"))
-	assert.False(t, db.hasTable("datapoints"))
-	assert.False(t, db.hasTable("metrics"))
-	assert.False(t, db.hasTable("namespaces"))
-	assert.False(t, db.hasTable("vectors"))
-}
-
-func TestDatabase_hasTable_TimeSeries(t *testing.T) {
-	db := &Database{name: "tsdb", kvSvc: &mockKVService{}, engine: database.EngineTimeSeries}
-	assert.True(t, db.hasTable("datapoints"))
-	assert.True(t, db.hasTable("metrics"))
-	assert.False(t, db.hasTable("kv"))
-	assert.False(t, db.hasTable("namespaces"))
-	assert.False(t, db.hasTable("vectors"))
-}
-
-func TestDatabase_hasTable_Vector(t *testing.T) {
-	db := &Database{name: "vecdb", kvSvc: &mockKVService{}, engine: database.EngineVector}
-	assert.True(t, db.hasTable("namespaces"))
-	assert.True(t, db.hasTable("vectors"))
-	assert.False(t, db.hasTable("kv"))
-	assert.False(t, db.hasTable("datapoints"))
-	assert.False(t, db.hasTable("metrics"))
-}
-
-func TestDatabase_hasTable_UnknownEngine(t *testing.T) {
-	db := &Database{name: "custom", kvSvc: &mockKVService{}, engine: database.EngineType("custom")}
-	for _, name := range allTableNames {
-		assert.False(t, db.hasTable(name), "table: %s", name)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Protocol filtering with both enabled
 // ---------------------------------------------------------------------------
@@ -1466,7 +1072,6 @@ func TestManagerProvider_ProtocolMySQL_BothEnabled_Allowed(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "bothdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: true},
 	})
@@ -1486,7 +1091,6 @@ func TestManagerProvider_ProtocolPostgreSQL_BothEnabled_Allowed(t *testing.T) {
 
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:     "bothdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 		Protocol: database.ProtocolConfig{MySQL: true, PostgreSQL: true},
 	})
@@ -1498,121 +1102,4 @@ func TestManagerProvider_ProtocolPostgreSQL_BothEnabled_Allowed(t *testing.T) {
 	db, err := p.Database(ctx, "bothdb")
 	require.NoError(t, err)
 	assert.Equal(t, "bothdb", db.Name())
-}
-
-// ---------------------------------------------------------------------------
-// Engine-scoped table access via manager provider
-// ---------------------------------------------------------------------------
-
-func TestManagerProvider_KV_Database_EngineScoped_Tables(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "kvdb",
-		Engine:  database.EngineKV,
-		Backend: database.BackendMemory,
-	})
-	require.NoError(t, err)
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	sqlDB, err := p.Database(ctx, "kvdb")
-	require.NoError(t, err)
-
-	// KV table should be accessible.
-	tbl, found, err := sqlDB.GetTableInsensitive(ctx, "kv")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "kv", tbl.Name())
-
-	// TimeSeries tables should not be accessible.
-	tbl, found, err = sqlDB.GetTableInsensitive(ctx, "datapoints")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-
-	// GetTableNames should only return kv.
-	names, err := sqlDB.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"kv"}, names)
-}
-
-func TestManagerProvider_TimeSeries_Database_EngineScoped_Tables(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "tsdb",
-		Engine:  database.EngineTimeSeries,
-		Backend: database.BackendMemory,
-	})
-	require.NoError(t, err)
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	sqlDB, err := p.Database(ctx, "tsdb")
-	require.NoError(t, err)
-
-	// Datapoints and metrics should be accessible.
-	tbl, found, err := sqlDB.GetTableInsensitive(ctx, "datapoints")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "datapoints", tbl.Name())
-
-	tbl, found, err = sqlDB.GetTableInsensitive(ctx, "metrics")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "metrics", tbl.Name())
-
-	// KV should not be accessible.
-	tbl, found, err = sqlDB.GetTableInsensitive(ctx, "kv")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-
-	names, err := sqlDB.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"datapoints", "metrics"}, names)
-}
-
-func TestManagerProvider_Vector_Database_EngineScoped_Tables(t *testing.T) {
-	mgr := newTestManager(t)
-	svc := &mockKVService{}
-
-	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "vecdb",
-		Engine:  database.EngineVector,
-		Backend: database.BackendMemory,
-	})
-	require.NoError(t, err)
-
-	p := NewManagerProvider(mgr, svc)
-	ctx := newTestContext()
-
-	sqlDB, err := p.Database(ctx, "vecdb")
-	require.NoError(t, err)
-
-	// Namespaces and vectors should be accessible.
-	tbl, found, err := sqlDB.GetTableInsensitive(ctx, "namespaces")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "namespaces", tbl.Name())
-
-	tbl, found, err = sqlDB.GetTableInsensitive(ctx, "vectors")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "vectors", tbl.Name())
-
-	// KV should not be accessible.
-	tbl, found, err = sqlDB.GetTableInsensitive(ctx, "kv")
-	require.NoError(t, err)
-	assert.False(t, found)
-	assert.Nil(t, tbl)
-
-	names, err := sqlDB.GetTableNames(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"namespaces", "vectors"}, names)
 }

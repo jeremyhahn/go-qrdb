@@ -1,6 +1,6 @@
-# Desktop GUI and TypeScript SDK — API
+# Desktop GUI — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 **The GUI adds no server API.** That is the design: both of its transports reach
 the same surfaces every other client uses.

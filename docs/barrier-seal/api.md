@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.

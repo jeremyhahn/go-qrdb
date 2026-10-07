@@ -1,6 +1,6 @@
 # Trust Bootstrap — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Implementation status
 
@@ -101,3 +101,7 @@ are binding, what flag set each mode takes once implemented, and whether
 `auto`'s ladder order is a qrdb-side or an xkms-side decision. Until that is
 settled, this document describes a stub honestly rather than a protocol
 aspirationally.
+
+## Integration Target
+
+Run `make integration-test-trust-bootstrap` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `trust-bootstrap`.

@@ -34,7 +34,6 @@ const batchOpsState = {
   databases: [
     {
       name: "batch-ops-db",
-      engine: "kv",
       backend: "pebble",
       status: "open",
     },

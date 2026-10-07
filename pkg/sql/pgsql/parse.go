@@ -81,6 +81,27 @@ func rewriteEndAsCommit(trimmed string) string {
 	return trimmed
 }
 
+// truncateIdentityRe matches a trailing RESTART IDENTITY or CONTINUE
+// IDENTITY clause on a TRUNCATE statement -- real PostgreSQL syntax the
+// embedded grammar does not parse. stripTruncateIdentityClause removes it
+// from the statement text; HandleParse records which one it was on the
+// session (see QRDBSession.SetStatementRestartIdentity) so
+// RelationalTable.Truncate (pkg/sql/provider) can decide whether this
+// TRUNCATE resets the sequences the table owns.
+var truncateIdentityRe = regexp.MustCompile(`(?is)^(\s*TRUNCATE\b.*?)\s+(RESTART|CONTINUE)\s+IDENTITY\b\s*(;?\s*)$`)
+
+// stripTruncateIdentityClause removes a trailing RESTART IDENTITY / CONTINUE
+// IDENTITY clause from a TRUNCATE statement, reporting whether one was
+// present and, if so, whether it was RESTART (true) or CONTINUE (false,
+// PostgreSQL's own default).
+func stripTruncateIdentityClause(query string) (stripped string, restart bool, matched bool) {
+	m := truncateIdentityRe.FindStringSubmatch(query)
+	if m == nil {
+		return query, false, false
+	}
+	return m[1] + m[3], strings.EqualFold(m[2], "RESTART"), true
+}
+
 // noopPrefixes are SQL statement prefixes that are handled as no-ops because
 // they are PG session configuration commands.
 var noopPrefixes = []string{
@@ -262,6 +283,21 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	head, returningList, isDMLReturning := engine.SplitUpdateDeleteReturning(trimmed)
 	if isDMLReturning {
 		toTranslate = head
+	}
+
+	// PostgreSQL's TRUNCATE accepts a RESTART IDENTITY / CONTINUE IDENTITY
+	// clause the embedded grammar does not parse; strip it here and record
+	// which one the client asked for on the session so
+	// RelationalTable.Truncate can apply the same epoch-fenced sequence
+	// reset the MySQL wire always applies. The flag is cleared again once
+	// the statement finishes so a later plain TRUNCATE on the same
+	// connection does not inherit it.
+	if stripped, restart, ok := stripTruncateIdentityClause(toTranslate); ok {
+		toTranslate = stripped
+		if session := connectionSessionFromContext(ctx); session != nil {
+			session.SetStatementRestartIdentity(restart)
+			defer session.SetStatementRestartIdentity(false)
+		}
 	}
 
 	// A few PostgreSQL-only DDL forms must be rewritten BEFORE the

@@ -17,7 +17,7 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -25,12 +25,12 @@ import (
 // frontend, mirroring the SDK AuditClient. Requires the "audit:query"
 // permission on the active connection.
 type AuditBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewAuditBinding creates a new AuditBinding backed by the given connection.
-func NewAuditBinding(log *logger.Logger, conn *ConnectionBinding) *AuditBinding {
+func NewAuditBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *AuditBinding {
 	return &AuditBinding{logger: log, conn: conn}
 }
 

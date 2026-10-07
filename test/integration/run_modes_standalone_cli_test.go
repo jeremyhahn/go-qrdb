@@ -40,7 +40,7 @@ import (
 // standalone composition branch selects its engine from.
 func writeStandaloneModeConfig(t *testing.T, backend string) string {
 	t.Helper()
-	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\ndatabases:\n  - name: \"default\"\n    engine: \"kv\"\n    backend: %q\n", backend)
+	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\ndatabases:\n  - name: \"default\"\n    backend: %q\n", backend)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {

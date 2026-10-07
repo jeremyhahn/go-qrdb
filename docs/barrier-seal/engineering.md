@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -64,7 +64,7 @@ Strategy IDs: `seal.StrategyPassphrase`, `seal.StrategyShamir`,
 
 `StorageBarrier` (`pkg/seal/barrier.go`) key fields:
 
-For field documentation and the complete struct definition, see `pkg/seal/barrier.go:113-160`. The key fields are:
+For field documentation and the complete struct definition, see the `StorageBarrier` struct in `pkg/seal/barrier.go`. The key fields are:
 - `state` (atomic): 0 = sealed, 1 = unsealed
 - `activeStrategy` (atomic.Value): StrategyID that sealed the root key
 - `persistedStrategyCache` (atomic.Value): cached strategy ID from sealed root key blob
@@ -528,6 +528,28 @@ that sentinel through `errors.Is`. A failure after the node has accepted the
 migration is a different error, `MigrationReopenError`, and is not reported as
 "not available".
 
+### A tenant-scope migration right after a system-scope recycle
+
+`server.scopedEncryptionMigrator` routes a `ScopeTenant` request through two
+reads against the live tenant service before it picks a mechanism: the
+entitlement gate (`CheckBarrierMode`, governing which strategies the tenant
+may migrate to) and the isolation lookup (`isRaftTenant`'s `GetTenant`,
+routing `IsolationRaft` tenants to the per-shard mechanism instead of the
+per-tenant volume Host). Both are linearizable reads against the tenant
+service's backing raft host.
+
+A system-scope migration's recycle (`nodeMigrationProvider.Reopen` →
+`completeStandaloneBoot`) closes and reopens that host, so its first leader
+election afterward has a brief `quicraft.ErrReadIndexNotReady` warm-up window
+before its first entry of the term commits. A tenant-scope migration that
+lands in that window — immediately after a system-scope one, as a client
+polling `barrier status` to completion and then issuing the tenant request
+would — must not be refused or misrouted because of it. Both reads retry
+through `whenReadIndexReady` (`pkg/server/tenant_residue.go`), the same
+helper the tenant-reconcile and list-tenants paths use and `ImportCommit`'s
+`syncReadRetrying` mirrors: only `quicraft.ErrReadIndexNotReady` is retried,
+up to a 15-second deadline, every other error returns immediately.
+
 ### In a cluster, every node supplies its own credential
 
 The replicated `__sys:encmig/` intent record carries the target strategy, the
@@ -952,6 +974,10 @@ distinguishes them.
   [../multi-tenancy/engineering.md](../multi-tenancy/engineering.md#test-strategy)).
   *(Corrected 2026-10-02: this said the stage was not wired into CI.
   Corrected 2026-10-05: the stage moved from the nightly to every push.)*
+- **Feature target**: `make integration-test-barrier-seal` runs this feature's
+  self-spawned suites (`test/integration/features.mk`, no Docker). The
+  per-transport accounting, including the embedded-transport gap, is the
+  `barrier-seal` row of `test/integration/COVERAGE.md`.
 
 ## Observability
 

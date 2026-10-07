@@ -20,6 +20,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -64,21 +65,25 @@ func TestParseCSR_RefusesWhatItCannotIssueFor(t *testing.T) {
 	tampered := append([]byte(nil), block.Bytes...)
 	tampered[len(tampered)-5] ^= 0xFF
 	weakEC, _ := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
-	// #nosec G403 -- deliberately weak: the test proves issuance refuses a key below the 2048-bit floor.
-	weakRSA, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cases := map[string][]byte{
 		"not PEM":        []byte("no"),
 		"wrong PEM type": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes}),
 		"does not parse": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte{1, 2, 3}}),
 		"bad signature":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: tampered}),
 		"P-224 curve":    csrFor(t, weakEC, "alice"),
-		"1024-bit RSA":   csrFor(t, weakRSA, "alice"),
 		"empty":          nil,
 		"trailing junk":  append([]byte("junk\n"), []byte("junk")...),
 	}
+	// #nosec G403 -- deliberately weak: the test proves issuance refuses a key below the 2048-bit floor.
+	if weakRSA, err := rsa.GenerateKey(rand.Reader, 1024); err == nil {
+		cases["1024-bit RSA"] = csrFor(t, weakRSA, "alice")
+	} else if !fips140.Enforced() {
+		t.Fatal(err)
+	}
+	// else: crypto/rsa itself refuses to generate a sub-2048-bit key under
+	// GODEBUG=fips140=only, which makes this refusal case unreachable
+	// there -- see docs/seal/fips140-mode.md "Skipped tests under
+	// fips140=only".
 	for name, csr := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseCSR(csr)

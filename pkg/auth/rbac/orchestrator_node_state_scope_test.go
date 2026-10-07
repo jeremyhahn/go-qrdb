@@ -89,9 +89,17 @@ func TestAuthorize_NodeState_SystemAdmin_LiftsAcrossTenants(t *testing.T) {
 				Roles:    []string{"admin-role"},
 			}
 
+			// Superseded (owner ruling, 2026-10-01): "the inSystem || arm ...
+			// is deleted under every policy" leaves no exception for
+			// orchestrator:health. #183's fix survives unaffected — it reads
+			// through on the operator's OWN tenant context
+			// (TestAuthorize_NodeState_SystemAdmin_CanReadOrchestratorState),
+			// which is the call pattern #183 actually measured. A request
+			// whose ambient context names a DIFFERENT tenant than the
+			// caller's own is refused like any other ScopeSelf permission.
 			for _, target := range []string{"acme", "bob-corp"} {
-				if err := authz.Authorize(ctxFor(target), identity, v.resource, v.action); err != nil {
-					t.Errorf("target %q: Admin@system denied: %v", target, err)
+				if err := authz.Authorize(ctxFor(target), identity, v.resource, v.action); err == nil {
+					t.Errorf("target %q: Admin@system should NOT be admitted on a different tenant's context (no system lift)", target)
 				}
 			}
 		})

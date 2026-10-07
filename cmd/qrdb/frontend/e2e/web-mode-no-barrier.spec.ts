@@ -58,7 +58,6 @@ test.describe("Web mode - server without barrier route", () => {
           databases: [
             {
               name: "default",
-              engine: "kv",
               backend: "pebble",
               status: "open",
             },

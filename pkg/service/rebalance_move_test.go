@@ -243,6 +243,40 @@ func TestFindReplicaByAddr_NotFound(t *testing.T) {
 	}
 }
 
+func TestIsPlacementMember_FindsByNodeID(t *testing.T) {
+	p := newTestPlacement("t", "db", 1)
+	if !isPlacementMember(p, "node-a:9100") {
+		t.Fatal("expected node-a:9100 to be recognized as a member")
+	}
+}
+
+func TestIsPlacementMember_UnknownNodeIsNotAMember(t *testing.T) {
+	p := newTestPlacement("t", "db", 1)
+	if isPlacementMember(p, "node-z:9100") {
+		t.Fatal("expected node-z:9100 to NOT be recognized as a member")
+	}
+}
+
+func TestAnyMemberAddrExcept_SkipsExcluded(t *testing.T) {
+	p := newTestPlacement("t", "db", 1)
+	addr, ok := anyMemberAddrExcept(p, "node-a:9100")
+	if !ok {
+		t.Fatal("expected an alternative member")
+	}
+	if addr != "node-b:9100" {
+		t.Errorf("addr = %q, want node-b:9100", addr)
+	}
+}
+
+func TestAnyMemberAddrExcept_NoAlternativeWhenSoleReplicaIsExcluded(t *testing.T) {
+	p := &placement.Placement{
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "node-a:9100", RaftAddr: "node-a:9100"}},
+	}
+	if _, ok := anyMemberAddrExcept(p, "node-a:9100"); ok {
+		t.Fatal("expected no alternative when the sole replica is excluded")
+	}
+}
+
 func TestPlacementMaxReplicaID_ReturnsMax(t *testing.T) {
 	p := newTestPlacement("t", "db", 1)
 	if max := placementMaxReplicaID(p); max != 2 {
@@ -430,7 +464,11 @@ func TestMoveTenantGroupShard_LeaderRouting_ForwardsWhenNotLeader(t *testing.T) 
 // when it is confirmed to be the dedicated group's current Raft leader AND
 // the source of the MOVE is some OTHER replica (the ordinary case). See
 // TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource for
-// the case where the leader is ALSO the MOVE's source.
+// the case where the leader is ALSO the MOVE's source. node-b here is also
+// exactly the node TestMoveTenantGroupShard_LeaderRouting_NonMemberAvoidsGuessingTheSource
+// guesses from a non-member; together the two tests cover both hops of a
+// MOVE submitted from outside the dedicated group: hop 1 never guesses the
+// source, and hop 2 (this test) executes directly with no further hop.
 // TestMoveTenantGroupShard_RejectsDroppingPlacement proves finding 5's fix
 // for the rebalance path: a MOVE plan computed against a placement snapshot
 // that already shows Dropping=true must be refused before leader routing,
@@ -591,6 +629,99 @@ func TestMoveTenantGroupShard_LeaderRouting_SelfIsSourceTransferTimeout(t *testi
 	}
 	if len(host.transferCalls) != 1 {
 		t.Fatalf("expected exactly 1 RequestLeaderTransfer attempt, got %d", len(host.transferCalls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// moveTenantGroupShard: leader routing from a node outside the group
+// ---------------------------------------------------------------------------
+
+// TestMoveTenantGroupShard_LeaderRouting_NonMemberAvoidsGuessingTheSource is
+// the direct regression test for the false "forwarding loop" bug: a MOVE
+// submitted to (or forwarded to) a node that holds no replica of the
+// dedicated group at all must never be routed to the MOVE's own source
+// replica. Guessing the source is the one guess certain to risk a SECOND
+// forwarding hop: if that guessed source also happens to be the group's
+// current leader, resolveMoveLeader's own self-source transfer (see
+// TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource)
+// fires on the very next hop and needs a hop of its own to reach the new
+// leader -- two hops where forwardToLeader's old single-hop guard rejected
+// the second as a false loop. This was observed directly in practice. See
+// resolveMoveLeader's doc comment, case 2.
+func TestMoveTenantGroupShard_LeaderRouting_NonMemberAvoidsGuessingTheSource(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+
+	// node-z hosts no replica of this group at all.
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-z:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	// node-a (replica 1) is the MOVE's source; host.leaderID: 1 means node-a
+	// would ALSO be reported as the current leader if anyone asked it --
+	// precisely the worst case the comment describes. The guess must still
+	// land on node-b, never node-a.
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	if err == nil {
+		t.Fatal("expected NotLeaderError")
+	}
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected wrapped *NotLeaderError, got %T", errors.Unwrap(err))
+	}
+	if nle.LeaderAddress != "node-b:9100" {
+		t.Errorf("LeaderAddress = %q, want node-b:9100 (never the MOVE's source)", nle.LeaderAddress)
+	}
+
+	// A non-member host has no local Raft state to consult, and none of
+	// this must have been attempted while merely picking a forwarding
+	// target.
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 || len(host.transferCalls) != 0 {
+		t.Error("no Raft calls expected when guessing a forwarding target")
+	}
+}
+
+// TestMoveTenantGroupShard_LeaderRouting_NonMemberFallsBackWhenSourceIsOnlyReplica
+// verifies the one case where there is no alternative to guess: an RF=1
+// dedicated group, where the sole replica IS the MOVE's source by
+// definition. resolveMoveLeader falls back to resolveGroupLeader's ordinary
+// guess (that replica itself), unchanged from before this fix -- see
+// resolveMoveLeader's doc comment, case 2's final paragraph.
+func TestMoveTenantGroupShard_LeaderRouting_NonMemberFallsBackWhenSourceIsOnlyReplica(t *testing.T) {
+	p := &placement.Placement{
+		TenantID: "acme", Database: "db1", ShardID: 10, RF: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "node-a:9100", RaftAddr: "node-a:9100", DataRoot: "/data"},
+		},
+	}
+	store := newTestPlacementStore(t, p)
+
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-z:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	if err == nil {
+		t.Fatal("expected NotLeaderError")
+	}
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected wrapped *NotLeaderError, got %T", errors.Unwrap(err))
+	}
+	if nle.LeaderAddress != "node-a:9100" {
+		t.Errorf("LeaderAddress = %q, want node-a:9100 (no alternative replica exists)", nle.LeaderAddress)
 	}
 }
 

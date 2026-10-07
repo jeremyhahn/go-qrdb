@@ -26,6 +26,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"net"
 	"sync"
 	"testing"
 
@@ -175,17 +176,22 @@ func TestIssueLeafForKey(t *testing.T) {
 		t.Fatal("issued leaf does not carry the caller-supplied public key")
 	}
 
-	// B6: the leaf must carry ONLY the bound identity's URI SAN, never the
-	// SIGNING member's own hostnames/interface IPs (clustertls.LocalSANs).
-	// A join leaf with the signer's addresses on it would let a peer that
-	// trusts "any SAN this CA ever signed" treat the joiner as reachable at
-	// addresses that are actually the admitted member that happened to
-	// process its join request.
+	// B6: the leaf must carry the BOUND IDENTITY's own address as an IP/DNS
+	// SAN -- recovered from the URI itself, never the SIGNING member's own
+	// hostnames/interface IPs (clustertls.LocalSANs). A join leaf with the
+	// signer's addresses on it would let a peer that trusts "any SAN this CA
+	// ever signed" treat the joiner as reachable at addresses that are
+	// actually the admitted member that happened to process its join
+	// request. Carrying no address SAN at all was tried first and reverted:
+	// go-quicraft's Raft QUIC transport dials a peer by its raft address and
+	// runs the standard x509 SAN check against it, with no SPIFFE-aware
+	// substitute, so a leaf with no matching SAN could never be dialed as a
+	// raft peer.
 	if len(cert.DNSNames) != 0 {
-		t.Fatalf("join leaf carries DNS SANs %v, want none (identity-only)", cert.DNSNames)
+		t.Fatalf("join leaf carries DNS SANs %v, want none (10.0.0.2 is an IP)", cert.DNSNames)
 	}
-	if len(cert.IPAddresses) != 0 {
-		t.Fatalf("join leaf carries IP SANs %v, want none (identity-only)", cert.IPAddresses)
+	if len(cert.IPAddresses) != 1 || !cert.IPAddresses[0].Equal(net.ParseIP("10.0.0.2")) {
+		t.Fatalf("join leaf IP SANs = %v, want exactly the bound identity's own address 10.0.0.2", cert.IPAddresses)
 	}
 	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://qrdb.cluster/node/10.0.0.2:9000" {
 		t.Fatalf("join leaf URIs = %v, want exactly the bound SPIFFE identity", cert.URIs)

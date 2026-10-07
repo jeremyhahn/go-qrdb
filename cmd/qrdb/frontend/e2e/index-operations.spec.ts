@@ -32,7 +32,7 @@ const LOAD_TIMEOUT = 10_000;
 const indexOpsState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "index-ops-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "index-ops-db", backend: "pebble", status: "open" },
   ],
 };
 

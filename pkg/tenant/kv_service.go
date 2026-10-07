@@ -118,6 +118,16 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 		// honor either, so fail closed rather than persist an unusable tenant.
 		return nil, ErrBarrierIsolationUnavailable
 	}
+	// S2 (owner ruling): a prefix tenant has no store and no key of its own,
+	// so it cannot be strict. This service only ever creates prefix tenants,
+	// so the cluster floor alone decides.
+	floor, err := s.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateIsolationModeAgainstPolicy(isolationType, floor); err != nil {
+		return nil, err
+	}
 
 	key := metadataPrefix + id
 	existing, err := s.store.Get(ctx, key)
@@ -177,9 +187,15 @@ func (s *kvTenantService) UpdateTenant(ctx context.Context, tenantID string, pat
 	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
 	}
+	if err := checkIsolationPolicyChangeFor(ctx, s, info, patch); err != nil {
+		return nil, err
+	}
 
 	if patch.IsolationType != "" {
 		info.IsolationType = patch.IsolationType
+	}
+	if patch.IsolationPolicy != "" {
+		info.IsolationPolicy = patch.IsolationPolicy
 	}
 	if patch.Name != "" {
 		info.Name = patch.Name

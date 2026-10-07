@@ -223,3 +223,47 @@ func resolveNoiseHost(f *startFlags) string {
 	}
 	return f.host
 }
+
+// servesAnchor reports whether this node is a legitimate holder of qrdb's
+// self-managed cluster CA (Key A) that should serve it as a trust anchor to
+// joining nodes: not an explicit BYO-TLS node (whose CA is the operator's
+// own, never qrdb's; see TLSBundle.ExplicitTLS) and actually holding a
+// certificate. Both the per-member Noise anchor listener
+// (startMemberAnchorAdvertiser) and the /v1/ca/bootstrap route are gated on
+// exactly this -- replacing the old test "is this the node that generated
+// the cluster CA", which left every other member unable to serve the anchor
+// once that one node was gone for good.
+//
+// Deliberately NOT gated on single-node-ness. A self-issued-CA cluster can
+// only ever FOUND with one real member -- every founder's Raft member
+// identity must be known to every other founder up front, which is only
+// possible for the identity a node derives from its own already-generated
+// keypair, never one clusterenroll.Join would still have to generate for a
+// peer that has not started yet -- so the node that generates Key A is, at
+// that moment, indistinguishable from a node that intends to stay
+// single-node forever. Excluding it here would make a cluster meant to grow
+// by member-side CSR join (see docs/clustering/architecture.md, "Adding a
+// brand-new node to a running cluster is two steps") permanently unable to
+// ever serve the first of those two steps.
+func servesAnchor(bundle *TLSBundle) bool {
+	return bundle != nil && !bundle.ExplicitTLS && len(bundle.CACertPEM) > 0
+}
+
+// startMemberAnchorAdvertiser starts the anchor-only Noise NK listener for a
+// member that resolveTLS did not already start one for (its returned
+// bootstrapServers is nil): every admitted, unsealed member now advertises
+// the cluster CA trust anchor, not only the one node that happened to
+// generate it. It serves the IDENTICAL certificate every node already
+// caches locally -- caCertPEM, the bytes clusterenroll.Resolve, Join or
+// ResumeAdvertiser already persisted to ca.pem on this node -- never a
+// second, independently-sourced copy of the cluster CA, and never its
+// private key: clusterenroll.StartAnchorAdvertiser enforces that with the
+// same ValidateAnchorBundle check the first node's own listener already
+// applies.
+func startMemberAnchorAdvertiser(f *startFlags, caCertPEM []byte, logger *slog.Logger) (*clusterenroll.Advertiser, error) {
+	return clusterenroll.StartAnchorAdvertiser(caCertPEM, clusterenroll.AdvertiseOptions{
+		NoisePort: f.bootstrapNoisePort,
+		NoiseHost: resolveNoiseHost(f),
+		AdminPort: f.adminPort,
+	}, f.dataDir, logger)
+}

@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 No verbs of its own. The one flag involved is `qrdbd start
 --secure-memory-budget-mib` (int64 MiB, default `0` = derive from the host),

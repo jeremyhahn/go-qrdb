@@ -1,7 +1,7 @@
 # Multi-Tenancy — API
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-06
 
 Two gRPC services: tenant lifecycle and governance on
 `qrdb.v1.QRDBService`, and the per-tenant barrier on the dedicated
@@ -400,8 +400,8 @@ leaks to a caller with no access to the tier.
 
 ## Strict isolation — RULED
 
-> **Status: RULED — not implemented** (owner rulings 2026-10-01 and 2026-10-02).
-> Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
+> **Status: RULED — partially implemented** (owner rulings 2026-10-01 and
+> 2026-10-02). Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 > Plan: [engineering.md](engineering.md#implementation-plan). Every row below
 > ships on REST, gRPC, Unix, QUIC, MCP and embedded together, in one change, or
 > not at all.
@@ -409,6 +409,18 @@ leaks to a caller with no access to the tier.
 > **Correction (2026-10-05):** the first-admin-at-create capability below is
 > already shipped, unconditionally — see the architecture correction linked
 > above and the rows marked "already shipped".
+>
+> **Correction (2026-10-06):** the "Removed" list below is done, and done
+> unconditionally rather than gated by the isolation-policy rows above it —
+> see the architecture correction linked above for exactly what shipped at the
+> Go service/RBAC layer. None of the table rows below are reachable from any
+> transport yet: there is no REST/gRPC/QUIC/Unix/MCP/embedded surface for the
+> isolation-policy get/set verbs, `tenant_identity:read`/`write`, or anything
+> else in this table. `tenants:read:cross` and `tenants:delete:cross` exist as
+> permissions and are consulted by `AuthorizeTenantTarget`'s existing
+> `GET`/`DELETE /v1/tenants/{id}` routes (and their gRPC/QUIC/Unix/MCP/embedded
+> equivalents) today — those two rows are the only ones with a live transport
+> path, through routes that already existed before this ruling.
 
 ### New and changed capabilities
 

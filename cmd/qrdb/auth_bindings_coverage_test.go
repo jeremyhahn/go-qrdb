@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/fips140"
 	"errors"
 	"testing"
 	"time"
@@ -748,6 +749,16 @@ func TestCertBinding_Export_Success(t *testing.T) {
 		KeyPEM:     string(keyPEM),
 		Passphrase: "secret",
 	})
+	if fips140.Enforced() {
+		// PKCS#12 export is refused outright under strict FIPS
+		// enforcement; see the exemption register in
+		// docs/seal/fips140-mode.md.
+		var unavailable *cert.PKCS12FIPSUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("expected *cert.PKCS12FIPSUnavailableError, got %T: %v", err, err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}

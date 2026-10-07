@@ -106,19 +106,24 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 		t.Fatal("servedUserSvc must be the routed service, not the plain shared-store userSvc")
 	}
 
+	// Bound to the sealed tenant itself: the system-tenant lift was removed
+	// (owner ruling, 2026-10-01), so these calls now need a caller whose own
+	// identity matches the target tenant to reach the seal check at all.
+	tenantCtx := tenant.WithTenantID(ctx, sealedTenant)
+
 	// Direction 1 (fail closed): IAM against the sealed barrier tenant is
 	// refused with ErrTenantSealed and never falls back to the shared store.
-	if _, err := mgmt.servedRoleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+	if _, err := mgmt.servedRoleSvc.CreateRole(tenantCtx, &role.CreateRoleRequest{
 		Name: "r", TenantID: sealedTenant, Permissions: []permission.Permission{permission.KVGet},
 	}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("servedRoleSvc.CreateRole(sealed) = %v, want ErrTenantSealed", err)
 	}
-	if _, err := mgmt.servedUserSvc.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
+	if _, err := mgmt.servedUserSvc.CreateUser(tenantCtx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "u", TenantID: sealedTenant,
 	}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("servedUserSvc.CreateUser(sealed) = %v, want ErrTenantSealed", err)
 	}
-	if _, err := mgmt.servedRoleSvc.ListRoles(ctx, &role.ListRolesRequest{
+	if _, err := mgmt.servedRoleSvc.ListRoles(tenantCtx, &role.ListRolesRequest{
 		TenantID: sealedTenant,
 	}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("servedRoleSvc.ListRoles(sealed) = %v, want ErrTenantSealed", err)
@@ -138,12 +143,12 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 	if err := reg.InitializeTenant(ctx, sealedTenant, seal.Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant(%s): %v", sealedTenant, err)
 	}
-	if _, err := mgmt.servedRoleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+	if _, err := mgmt.servedRoleSvc.CreateRole(tenantCtx, &role.CreateRoleRequest{
 		Name: "r", TenantID: sealedTenant, Permissions: []permission.Permission{permission.KVGet},
 	}); err != nil {
 		t.Fatalf("servedRoleSvc.CreateRole(unsealed) must succeed: %v", err)
 	}
-	if _, err := mgmt.servedUserSvc.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
+	if _, err := mgmt.servedUserSvc.CreateUser(tenantCtx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "u", TenantID: sealedTenant,
 	}); err != nil {
 		t.Fatalf("servedUserSvc.CreateUser(unsealed) must succeed: %v", err)

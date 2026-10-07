@@ -16,7 +16,7 @@ limitations under the License.
 
 # Release — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## What a release is
 
@@ -39,48 +39,76 @@ tested together. A release whose tags point at different commits, or that
 lacks one of them, is *skewed*. `go get` can resolve a skewed release, and
 once a consumer has recorded it in `go.sum` nobody can take it back.
 
-## The one path that creates tags
+## Who creates a tag
+
+**The project agent, by hand, with `make release-alpha`** — the same
+standard every other first-party repository in this portfolio follows
+(release-versioning.md §1a, the "Alpha" row: *"the project agent, any time CI
+is green on main"*). There is no release bot, no bot secret and no workflow
+that creates a tag:
 
 ```
- release PR (VERSION + CHANGELOG)  ──review──▶  main
-                                                 │
-                         owner dispatches the Release workflow
-                                                 │
-                                                 ▼
- read VERSION ─▶ make release-alpha ─▶ one atomic push of every tag ─▶ lockstep audit
-                 (lockstep audit,        (all refs applied,             of the tags the
-                  CHANGELOG check,        or none)                       remote now holds
-                  standalone-resolution
-                  and duplicate-tag
-                  checks; signed tags)
+ release PR (VERSION + CHANGELOG)  ──review──▶  main  ──CI green──▶
+                                                                    │
+                                          operator runs, by hand,
+                                          make release-alpha VERSION=vX.Y.Z-alpha
+                                                                    │
+                   one atomic push of every tag ◀──────────────────┘
+                   (lockstep audit, CHANGELOG check, standalone-resolution
+                    and duplicate-tag checks already ran; signed tags)
+                                                                    │
+                                                                    ▼
+                               the tag push triggers the Release workflow
+                               (validate → gate → publish; see below)
 ```
 
 1. **VERSION is authoritative.** The release is the version the merged
    `VERSION` file names. A release is therefore reviewed like any other change,
    as a commit that bumps `VERSION` and adds the matching `CHANGELOG.md`
-   section, before anything is published. The workflow takes no version input.
-   A typed version would be a second source of truth.
-2. **The workflow wraps `make release-alpha`, and the recipe never writes
-   VERSION.** The recipe a person could run by hand is the recipe the workflow
-   runs, with the same checks. It tags the merged bump and creates no commit.
-   It refuses, before fetching or writing anything, when `VERSION` on `HEAD`
-   does not already name the requested release ("merge the VERSION/CHANGELOG
-   bump first"), when `HEAD` is unsigned, and when `HEAD` is not exactly the
-   commit the remote's `main` holds.
+   section, before anything is published.
+2. **`make release-alpha` never writes VERSION.** It tags the merged bump and
+   creates no commit. It refuses, before fetching or writing anything, when
+   `VERSION` on `HEAD` does not already name the requested release ("merge the
+   VERSION/CHANGELOG bump first"), when `HEAD` is unsigned, and when `HEAD` is
+   not exactly the commit the remote's `main` holds.
 3. **One atomic push of the tags.** The recipe audits the tags it has just
    created for lockstep, then pushes every tag in a single `git push --atomic`.
    The branch is not pushed: the release commit is already on `main`. The server
    applies all of the tags or none of them, so a skewed set cannot be
    half-published.
-4. **Tag protection makes it the only path.** The release tag patterns are
-   protected so that only the release bot, the identity the workflow
-   authenticates as, can create them. A direct tag push from a workstation is
-   refused at the server, and is not merely reported afterwards. The bot's token
-   is never persisted in the checkout: it reaches only the step that pushes, as
-   a per-step header in that step's environment.
-5. **The run ends on what the server holds.** After the push the workflow
-   fetches the remote's tags and runs the lockstep audit over them, so a
-   skewed set on the server fails the run that published it.
+4. **The operator signs as themselves.** Every tag is created and signed
+   through `AGENT_GIT`, the same identity and SSH key every other commit in
+   this repository already carries. There is no separate credential to
+   provision or protect: the write access that already lets an agent push a
+   reviewed commit to `main` is the write access that lets it tag one.
+
+## What the Release workflow does
+
+`.github/workflows/release.yml` triggers on `push: tags: ["v*"]` — the root
+tag only, since the lockstep tags (`sdk/go/v*`, `sdk/go/gorm/conformance/v*`)
+do not themselves start with `v`. It does not create anything; it validates
+what the operator just published and, once validated, publishes the release
+notes:
+
+1. **`validate`** — re-derives the facts `release-alpha` already checked
+   locally, against what the server now holds: the tag is a well-formed
+   semver (optionally `-alpha`), `VERSION` at the tagged commit is byte-equal
+   to it, and `CHANGELOG.md`'s newest released section names it too
+   (`scripts/check-version-reconciled.sh`). It then fetches and audits the
+   lockstep tags with a bounded retry: the atomic push makes the server apply
+   every tag together, but says nothing about how soon a *fetch* on a
+   different connection observes all of them.
+2. **`gate`** — re-runs the functional build/lint/test signal from ci.yml's
+   `lint`, `build` and `test` jobs against the exact tagged tree. It does not
+   repeat every ci.yml step: `release-alpha` refuses to tag anything but the
+   commit `main`'s own `ci-gate` already verified clean, so re-running a
+   guard's self-test or a whole-tree scan against the same tree would answer
+   a question that cannot have changed. What is worth re-running is the
+   functional result — a checkout resolving the wrong object, a toolchain
+   mismatch on this runner, a race the first run got lucky on.
+3. **`publish`** — needs both of the above green, then lifts the matching
+   `## [X.Y.Z]` section out of `CHANGELOG.md` and publishes it as this tag's
+   release notes through the forge's own releases API.
 
 The workflow does not build a consumer program against the published tags.
 The integration suites already exercise every SDK and API surface, and the
@@ -88,28 +116,33 @@ owner ruled a post-release consumer build unnecessary.
 
 ## Defence in depth
 
-The **Release Lockstep** workflow still audits every tag push and every push to
-`main`. It catches what a creation-time policy cannot see: a tag that is deleted
-or moved after the fact.
+The **Release Lockstep** workflow still audits every tag push and every push
+to `main`. It catches what `release-alpha`'s own pre-flight cannot see: a tag
+that is deleted or moved after the fact.
 
 ## Rejected alternatives
 
-- **A server-side pre-receive hook** that rejects a root tag without its
-  counterparts. It would be preventive too, but it lives in the forge's host
-  configuration, outside this repository, and it cannot answer who may cut a
-  release. It remains a possible second layer.
-- **A version input on the workflow.** Rejected because `VERSION` would then
-  be derived from the input, and a release would bypass the review of the
-  VERSION and CHANGELOG commit.
-- **A tag-push trigger that cuts the rest of the set.** Rejected because the
-  first tag would already be published before the workflow ran, which is
-  exactly the skew this design prevents.
+- **A workflow that creates the tags**, dispatched by the operator or
+  triggered some other way. Rejected by the 2026-10-06 ruling: every sibling
+  repository in the portfolio has the operator cut the tag directly, and a
+  bot identity existing only to re-perform a push the operator is already
+  trusted to make was overhead with no corresponding safety gain.
+- **A version input on a dispatch trigger.** Rejected because `VERSION` would
+  then be derived from the input, and a release would bypass the review of
+  the VERSION and CHANGELOG commit.
+- **A tag-push trigger that cuts the REST of the lockstep set** on seeing the
+  root tag. Rejected because the first tag would already be published before
+  the workflow ran, which is exactly the skew `release-alpha`'s single atomic
+  push exists to prevent. The tag-push trigger this repository uses instead
+  only validates a set `release-alpha` already published together.
 
 ## Release kinds
 
 This repository cuts **internal** releases (`vX.Y.Z-alpha`) on its development
-forge. The project's agent prepares the release (the VERSION and CHANGELOG
-commit) and dispatches the Release workflow. The workflow, running as the
-release bot, is what creates the tags. Release candidates and public releases
-are cut under the organisation's release policy and are out of scope here; a
-public release is published separately and only with the owner's approval.
+forge. The project agent prepares the release (the VERSION and CHANGELOG
+commit) and, once it is merged and CI is green on `main`, cuts and pushes the
+tags itself. Release candidates and public releases are cut under the
+organisation's release policy and are out of scope here; a public release is
+published separately and only with the owner's approval
+(version-control.md §5a) — the same `push: tags` event, wherever it lands,
+is what the Release workflow validates and annotates.

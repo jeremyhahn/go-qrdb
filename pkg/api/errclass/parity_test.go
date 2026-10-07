@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -143,6 +144,7 @@ func TestTransportLocalErrorsAgree(t *testing.T) {
 		{"quic.CeremonyCANotConfiguredError", &quic.CeremonyCANotConfiguredError{}, errclass.Unimplemented},
 		{"quic.InvalidArgumentError", &quic.InvalidArgumentError{Reason: "x"}, errclass.InvalidArgument},
 		{"quic.UnmarshalError", &quic.UnmarshalError{Err: http.ErrBodyNotAllowed}, errclass.InvalidArgument},
+		{"wire.UnknownArgumentError", &wire.UnknownArgumentError{Tool: "qrdb_database_create", Name: "engine"}, errclass.InvalidArgument},
 		// BL2/N5: a *rbac.ResolveError wrapping a DEFINITIVE cause must render
 		// the cause's own class on every transport, never the retryable
 		// Unavailable a transient *rbac.ResolveError gets (authSamples,

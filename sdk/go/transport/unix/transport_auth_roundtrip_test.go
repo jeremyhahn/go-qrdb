@@ -329,12 +329,12 @@ func startAuthServer(t *testing.T, opts ...unixserver.ServerOption) (*Transport,
 
 func TestUnixRT_CreateUser(t *testing.T) {
 	usvc := &mockUserSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc), unixserver.WithRoleService(tenantRoleSvc("t1")))
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc), unixserver.WithRoleService(tenantRoleSvc("system")))
 	defer cleanup()
 
 	got, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
-		TenantID: "t1",
+		TenantID: "system",
 		RoleIDs:  []string{"admin"},
 	})
 	if err != nil {

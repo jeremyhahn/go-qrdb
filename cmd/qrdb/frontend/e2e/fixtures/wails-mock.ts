@@ -6,7 +6,6 @@ import { test as base, type Page } from "@playwright/test";
 /** Minimal database info for mock responses. */
 export interface MockDatabaseInfo {
   name: string;
-  engine: string;
   backend: string;
   status: string;
   /** Wire protocol configuration — matches SDK DatabaseInfo.protocol field. */
@@ -1865,7 +1864,6 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         DatabaseBinding: {
           Create: async (req: {
             name: string;
-            engine: string;
             backend: string;
             protocol?: { mysql: boolean; postgresql: boolean };
             barrier?: { enabled: boolean; mode?: string; secret?: string; sharesRequired?: number; sharesTotal?: number };
@@ -1874,7 +1872,6 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const s = getState();
             const db: Record<string, unknown> = {
               name: req.name,
-              engine: req.engine,
               backend: req.backend || "pebble",
               status: "open",
             };

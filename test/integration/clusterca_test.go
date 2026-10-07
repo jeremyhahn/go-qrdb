@@ -147,3 +147,157 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 	}
 	t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
 }
+
+// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol
+// generalizes TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart (REST
+// only) to every CLI-selectable transport. The bootstrap/key-deletion/kill/
+// restart cycle happens once -- it is a daemon-internal event, not a CLI
+// operation -- but every transport's TLS listener serves the SAME
+// self-generated, Key-A-signed leaf certificate, so a `kv put`/`kv get`
+// round trip over each of REST, gRPC, QUIC, MCP, and Unix, both before Key
+// A is evicted from disk and after the restart reloads it, proves
+// cakey.SoftwareProvider.AdoptIfAbsent's fix holds for every transport's
+// connection stack, not just REST's.
+func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	dataDir := t.TempDir()
+	cfgPath := writeSealYAML(t, "seal:\n  enabled: true\n  strategy: none\n")
+	raftPort := allocatePorts(t, 1)[0]
+	quicPort := allocatePorts(t, 1)[0]
+	tcpPorts := allocateTCPPorts(t, 3)
+	adminPort, grpcPort, mcpPort := tcpPorts[0], tcpPorts[1], tcpPorts[2]
+
+	// Unix socket paths are limited to ~108 bytes by the kernel; keep the
+	// socket under a short /tmp path exactly as multi_protocol_helpers_test.go
+	// does for the same reason.
+	sockDir, err := os.MkdirTemp("", "qrdb-clusterca-")
+	if err != nil {
+		t.Fatalf("socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
+
+	args := []string{
+		"start",
+		"--config", cfgPath,
+		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPort),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
+		"--data-dir", dataDir,
+		"--sm", "pebble",
+		"--discovery", "static",
+		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPort),
+		"--shard-id", "1",
+		"--replica-id", "1",
+		"--admin-port", fmt.Sprintf("%d", adminPort),
+		"--grpc-port", fmt.Sprintf("%d", grpcPort),
+		"--auth-enabled=false",
+		"--enable-rest",
+		"--enable-grpc",
+		"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPort),
+		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
+		"--enable-unix", "--unix-socket-path", unixSocket,
+		// Deliberately no --tls-ca-file/--tls-cert-file/--tls-key-file: see
+		// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart.
+	}
+
+	caPath := filepath.Join(dataDir, "ca.pem")
+	keyPath := filepath.Join(dataDir, "ca-key.pem")
+
+	cmd := startNode(t, bin, args, "[clusterca-perprotocol-r1] ")
+	waitForFile(t, caPath, 30*time.Second)
+
+	connArgs := []string{
+		"--server", fmt.Sprintf("https://127.0.0.1:%d", adminPort),
+		"--ca-file", caPath,
+		"--timeout", "20s",
+	}
+	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
+	credDir := t.TempDir()
+	bootAdminIdentity(t, cli, caPath, adminPort, "SOPIN12345", "USERPIN12345",
+		filepath.Join(credDir, "admin-cert.pem"), filepath.Join(credDir, "admin-key.pem"), "",
+		"--barrier-strategy", "none")
+	waitForHealthy(t, dataDir, 60*time.Second)
+	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
+
+	protoConnArgs := func(proto multiProtocol) []string {
+		var serverURL string
+		switch proto.name {
+		case "rest":
+			serverURL = fmt.Sprintf("%s://127.0.0.1:%d", proto.scheme, adminPort)
+		case "grpc":
+			serverURL = fmt.Sprintf("%s://127.0.0.1:%d", proto.scheme, grpcPort)
+		case "quic":
+			serverURL = fmt.Sprintf("%s://127.0.0.1:%d", proto.scheme, quicPort)
+		case "mcp":
+			serverURL = fmt.Sprintf("%s://127.0.0.1:%d", proto.scheme, mcpPort)
+		case "unix":
+			serverURL = "unix://" + unixSocket
+		}
+		return []string{"--server", serverURL, "--ca-file", caPath, "--timeout", "20s"}
+	}
+
+	// Every transport's TLS listener serves the same self-generated,
+	// Key-A-signed leaf: prove each one is reachable before Key A is
+	// deleted from disk.
+	for _, proto := range multiProtocols {
+		key := "clusterca-survivor-" + proto.name
+		if out, err := runQRDB(t, cli, protoConnArgs(proto), "kv", "put", key, "v1"); err != nil {
+			t.Fatalf("[%s] kv put (pre-restart): %v\noutput: %s", proto.name, err, out)
+		}
+	}
+
+	// confirmClusterCAPersisted deletes ca-key.pem only after it has
+	// confirmed the key durably persisted into the replicated store --
+	// poll rather than assert immediately, since that runs after Raft
+	// leader election settles, not at the moment waitForHealthy returns.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ca-key.pem was never removed after confirmed persistence")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Kill hard, same as the sm-storage-file durability test: the fix must
+	// not depend on a graceful shutdown path.
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill first daemon: %v", err)
+	}
+	_ = cmd.Wait()
+
+	// Restart over the SAME data directory and ports.
+	startNode(t, bin, args, "[clusterca-perprotocol-r2] ")
+	// A restart ALWAYS comes back up sealed, even under strategy "none":
+	// reach the sealed-window listener, then unseal with an empty
+	// passphrase, which StrategyNone ignores.
+	pollUntilCLISucceeds(t, cli, connArgs, 30*time.Second)
+	if out, err := runQRDB(t, cli, connArgs, "barrier", "unseal", "--passphrase", ""); err != nil {
+		t.Fatalf("barrier unseal (restart): %v\noutput: %s", err, out)
+	}
+	waitForHealthy(t, dataDir, 60*time.Second)
+	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
+
+	// Every transport's TLS stack must also work against the RELOADED Key
+	// A after the restart.
+	for _, proto := range multiProtocols {
+		key := "clusterca-survivor-" + proto.name
+		deadline := time.Now().Add(30 * time.Second)
+		var out string
+		var err error
+		for time.Now().Before(deadline) {
+			out, err = runQRDB(t, cli, protoConnArgs(proto), "kv", "get", key)
+			if err == nil && strings.Contains(out, "v1") {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		if err != nil || !strings.Contains(out, "v1") {
+			t.Fatalf("[%s] value did not survive the restart: err=%v out=%s", proto.name, err, out)
+		}
+	}
+}

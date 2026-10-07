@@ -576,3 +576,43 @@ func (e *ResidueReconcileFailuresError) Unwrap() []error {
 	}
 	return out
 }
+
+// StrictRequiresDedicatedStorageError is returned when the effective
+// isolation policy for a tenant is strict but its isolation type is
+// IsolationPrefix: a prefix tenant has no store and no key of its own, so it
+// cannot be strict (owner ruling S2). It is returned by CreateTenant (a
+// prefix create under a strict floor), and by UpdateTenant (asking for the
+// strict tenant policy on a prefix tenant).
+type StrictRequiresDedicatedStorageError struct {
+	IsolationType IsolationType
+}
+
+func (e *StrictRequiresDedicatedStorageError) Error() string {
+	return "tenant: strict isolation requires dedicated storage; isolation type " +
+		string(e.IsolationType) + " has none of its own"
+}
+
+// IsolationPolicyChangeError is returned when a requested isolation-policy
+// change is not a legal transition: the cluster floor and a tenant's own
+// policy both tighten only (owner ruling: "it can be tightened later, never
+// loosened"), and a concurrent setter winning the same transition reports the
+// race the same way — the store is unchanged either way, and the caller
+// re-reads to see what won.
+type IsolationPolicyChangeError struct {
+	From string
+	To   string
+}
+
+func (e *IsolationPolicyChangeError) Error() string {
+	return "tenant: isolation policy cannot move from " + e.From + " to " + e.To + " (tighten only)"
+}
+
+// InvalidIsolationPolicyError is returned when a caller requests an
+// isolation-policy value this package does not recognize.
+type InvalidIsolationPolicyError struct {
+	Value string
+}
+
+func (e *InvalidIsolationPolicyError) Error() string {
+	return "tenant: invalid isolation policy " + strconv.Quote(e.Value)
+}

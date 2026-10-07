@@ -18,7 +18,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -27,13 +27,13 @@ import (
 // (unauthenticated -- the invited user holds no credential yet, so Redeem
 // dials its OWN connection rather than using the app's existing one).
 type InvitationBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewInvitationBinding creates a new InvitationBinding backed by the given
 // connection.
-func NewInvitationBinding(log *logger.Logger, conn *ConnectionBinding) *InvitationBinding {
+func NewInvitationBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *InvitationBinding {
 	return &InvitationBinding{logger: log, conn: conn}
 }
 

@@ -1,7 +1,7 @@
 # Volume Pools — CLI
 
-> **Status: APPROVED — ruled 2026-10-04; Phase 1 build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-04
+> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
+> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Each verb below gets a `CommandDefinition` and runs on every transport
 > through the root `--transport` flag, documented in
@@ -175,3 +175,38 @@ qrdb tenant move-status acme
 
 These now print `Pool:` instead of `DataRoot:`, and `Refused:` with the refusal
 code and message when the answering node will not serve the tenant.
+
+## `qrdbd start --allow-degraded-volume-boot` (decision D10, ruled 2026-10-06)
+
+This is the daemon's own flag, `cmd/qrdbd`, not the `qrdb` client -- it
+controls what happens when this node's `storage.volume_pools` names a pool
+whose mount this node cannot open.
+
+| Flag | Type | Default | Required | Meaning |
+|---|---|---|---|---|
+| `--allow-degraded-volume-boot` | bool | `false` | no | start every volume and database this node CAN open and skip only the ones on a pool that failed, instead of the default: fail startup outright |
+
+Equivalent config key: `storage.allow_degraded_volume_boot` (same default).
+An explicit `--allow-degraded-volume-boot` on the command line wins over the
+config file.
+
+```bash
+# Default: a configured pool that fails to open fails startup outright.
+qrdbd start --config qrdbd.yaml
+# volume: 1 volume pool(s) failed to open at boot (pass
+# --allow-degraded-volume-boot to start anyway, serving every volume and
+# database this node can): "fast" (provider "dir"): stat /mnt/nvme-a: no
+# such file or directory;
+# (exit 1)
+
+# Opt in to the old degraded-boot behavior: start anyway, serve what this
+# node can.
+qrdbd start --config qrdbd.yaml --allow-degraded-volume-boot
+```
+
+Under `--allow-degraded-volume-boot`, the skip is never silent: it is logged
+at ERROR, visible in `qrdb volume-pool get <pool>` (a `qrdb volume-pool get`,
+not `qrdbd`, verb -- see above), and exported as
+`qrdb_volume_pool_ready{pool}` = 0. A request for a database on the skipped
+pool is refused with `pool_unavailable` on every transport (see
+[api.md](api.md)), never a not-found error.

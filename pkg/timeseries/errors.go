@@ -58,12 +58,12 @@ func (e *ClosedError) Error() string {
 	return "timeseries: storage is closed"
 }
 
-// NilDBError is returned when a nil PebbleDB is passed.
+// NilDBError is returned when a nil storage.Storage is passed to New.
 type NilDBError struct{}
 
-// Error returns a human-readable description indicating a nil database.
+// Error returns a human-readable description indicating a nil storage.
 func (e *NilDBError) Error() string {
-	return "timeseries: pebble db is nil"
+	return "timeseries: storage is nil"
 }
 
 // EmptyDirError is returned when an empty data directory is provided to

@@ -57,7 +57,7 @@ func storedRaft(t *testing.T, m *Manager, name string) *DatabaseRaftConfig {
 func TestUpdateRaft_OmittedSecretsAreKept(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "kept", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "kept", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.UpdateRaft("kept", secretsRaft()); err != nil {
@@ -85,7 +85,7 @@ func TestUpdateRaft_OmittedSecretsAreKept(t *testing.T) {
 func TestUpdateRaft_SecretsRotateAndBlocksRemove(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "rotated", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "rotated", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.UpdateRaft("rotated", secretsRaft()); err != nil {
@@ -115,7 +115,7 @@ func TestUpdateRaft_SecretsRotateAndBlocksRemove(t *testing.T) {
 func TestUpdateRaft_NilRefusedOnARaftBackend(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "raftdb", Engine: EngineKV, Backend: BackendRaft}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "raftdb", Backend: BackendRaft}); err != nil {
 		t.Fatal(err)
 	}
 	err := m.UpdateRaft("raftdb", nil)
@@ -128,7 +128,7 @@ func TestUpdateRaft_NilRefusedOnARaftBackend(t *testing.T) {
 	}
 
 	// A database on another backend may drop its Raft configuration.
-	if _, err := m.Create(DatabaseConfig{Name: "memdb", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "memdb", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.UpdateRaft("memdb", nil); err != nil {

@@ -437,67 +437,43 @@ func adminConnArgs(t *testing.T, ca *testCA, port int) []string {
 	}
 }
 
-// TestCLI_Init_FollowerRefusesNamingLeader proves the coordinator decision
-// end to end on a real 3-node cluster: a second `qrdb init` lands
-// differently depending on which node answers it.
-//   - On a FOLLOWER it is refused up front, before anything is issued or
-//     signed, with a typed *service.AdminCredentialNotLeaderError naming the
-//     leader -- the CLI surfaces that message unchanged, which is the
-//     operator-facing guidance to retry there.
-//   - On the LEADER it is refused too, but for the different reason that
-//     the admin already holds a live binding
-//     (*service.AdminAlreadyBoundError) -- proving the leader gate is
-//     transparent to a request that reaches it, not a blanket refusal.
-//
-// Exactly one of the three nodes must answer with the "already bound"
-// reason (the leader) and the other two with the "not leader" reason,
-// naming a consistent remedy.
-func TestCLI_Init_FollowerRefusesNamingLeader(t *testing.T) {
+// TestCLI_Init_RetryOnAnyNodeIsAnsweredByLeader proves, end to end on a real
+// 3-node cluster, that a second `qrdb init` lands the same way whichever node
+// receives it: a follower forwards it to the leader in one hop (every node
+// serves every endpoint), and the leader refuses because the admin already
+// holds a live binding (*service.AdminAlreadyBoundError). No node refuses
+// locally with "must run on the Raft leader".
+func TestCLI_Init_RetryOnAnyNodeIsAnsweredByLeader(t *testing.T) {
 	cli := buildCLIBinary(t)
-	adminPorts, _, ca, _ := startThreeNodeClusterLogged(t, "pebble")
-
-	// Re-derive the leader: startThreeNodeClusterLogged's own leader-wait
-	// result is not exported, and the cluster is quiescent enough after
-	// boot that it is cheap and safe to ask again.
+	// SPIFFE node certificates are what let a follower forward the request
+	// on behalf of the original caller; without them the leader would
+	// authorize it as the forwarding node, which holds no account.
+	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 30*time.Second)
+	for _, port := range adminPorts {
+		if port != leaderPort {
+			waitForSettledFollowerView(t, ca, port, 30*time.Second)
+		}
+	}
 
-	var alreadyBoundHits, notLeaderHits int
 	for _, port := range adminPorts {
 		// The SO PIN must match the one the cluster was initialized with
 		// (harnessSOPIN/harnessUserPIN, via initAndUnsealBarrier): the
-		// reissue path now verifies the SO PIN before anything else,
-		// including whether the admin is already bound, so a non-matching
-		// PIN here would make the LEADER answer "pin: invalid PIN" instead
-		// of the "already bound" refusal this test asserts on.
+		// reissue path verifies the SO PIN before anything else, including
+		// whether the admin is already bound.
 		out, err := runQRDB(t, cli, adminConnArgs(t, ca, port),
 			"init", "--so-pin", harnessSOPIN, "--user-pin", harnessUserPIN, "--barrier-strategy", "none",
 			"--admin-generate")
 		if err == nil {
 			t.Fatalf("retry qrdb init on port %d should have been refused; output: %s", port, out)
 		}
-		switch {
-		case strings.Contains(out, "already holds a certificate binding"):
-			alreadyBoundHits++
-			if port != leaderPort {
-				t.Errorf("port %d answered the leader's refusal (already bound) but waitForLeaderViaAdmin named %d as leader", port, leaderPort)
-			}
-		case strings.Contains(out, "must run on the Raft leader"):
-			notLeaderHits++
-			if !strings.Contains(out, "qrdb init") {
-				t.Errorf("port %d (follower) refusal does not name the remedy: %s", port, out)
-			}
-			if port == leaderPort {
-				t.Errorf("port %d is the leader but answered the follower's refusal: %s", port, out)
-			}
-		default:
-			t.Errorf("port %d: unexpected refusal, want either the leader's or a follower's: %s", port, out)
+		if strings.Contains(out, "must run on the Raft leader") {
+			t.Errorf("port %d refused locally instead of forwarding to the leader: %s", port, out)
+			continue
 		}
-	}
-	if alreadyBoundHits != 1 {
-		t.Errorf("expected exactly 1 node (the leader) to answer 'already bound', got %d", alreadyBoundHits)
-	}
-	if notLeaderHits != 2 {
-		t.Errorf("expected exactly 2 nodes (the followers) to answer 'not leader', got %d", notLeaderHits)
+		if !strings.Contains(out, "already holds a certificate binding") {
+			t.Errorf("port %d: want the leader's already-bound refusal, got: %s", port, out)
+		}
 	}
 }
 

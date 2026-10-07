@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -17,7 +17,7 @@ func (c *Client) Sessions()        transport.SessionClient         // nil if uns
 Composition-plane options (Tier 2):
 
 ```go
-func WithFactorRegistry(reg authfactors.FactorRegistry) ServerOption
+func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
 func WithPINBackend(backend pin.PINBackend) ServerOption
 ```
 
@@ -584,6 +584,8 @@ server construction. Without `WithPINBackend` the daemon builds a default
 storage.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol and the factor-lookup wire-encoding suite (REST, gRPC, QUIC, MCP; in-process, no Unix). Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: each `PINBackend` method against `SoftwareBackend`, the 6-character
   floor enforced in `Service`, constant-time comparison, algorithm resolution

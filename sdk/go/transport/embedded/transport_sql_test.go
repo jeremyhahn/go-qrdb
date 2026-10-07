@@ -54,7 +54,7 @@ func newSQLScopeTransport(t *testing.T, defaultKV *mockKVService, reg sqlScopeRe
 	tr, err := New(defaultKV, &mockAdminService{},
 		WithServiceRegistry(reg),
 		WithDatabaseService(&mockDatabaseService{getFn: func(name string) (*database.DatabaseInfo, error) {
-			return &database.DatabaseInfo{Name: name, Engine: database.EngineKV, Status: database.StatusOpen}, nil
+			return &database.DatabaseInfo{Name: name, Status: database.StatusOpen}, nil
 		}}))
 	if err != nil {
 		t.Fatalf("New: %v", err)

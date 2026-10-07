@@ -1,11 +1,13 @@
 # Time Series — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
 > are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
+
+Test reference: `make integration-test-time-series`; coverage row: `test/integration/COVERAGE.md` `[time-series](../../docs/time-series/)`.
 
 Store metrics — a name, a value, a nanosecond timestamp, and some tags — and
 query them back by time range, filtered by tag, raw or aggregated.
@@ -126,16 +128,19 @@ a tag whose values are unique per request (a request ID, a user ID, a
 timestamp) creates a new series per point. Nothing stops you from doing this,
 so it has to be a discipline. Keep tags to bounded dimensions.
 
-**You want to keep a year of data without keeping every point.** Set a retention
-policy with `resolution_ns` and an `aggregation` — retention is designed to
-downsample, not only to delete. There is no CLI verb yet; use the REST call
-above. **Today the policy is saved but not applied**: no point is removed or
-downsampled yet, so plan storage as if retention were off.
+**You want data older than N days deleted.** Set a retention policy's
+`duration_ns`; there is no CLI verb yet, use the REST call above. A
+leader-driven sweep deletes points older than `duration_ns` within about a
+minute of them aging out. **Downsampling is not applied yet**: a policy's
+`resolution_ns`/`aggregation` are saved and returned but nothing replaces
+an expired point with a downsampled one, so a policy that wanted to keep a
+year at hourly resolution instead loses that year outright once
+`duration_ns` passes — plan storage as if retention only deletes.
 
-**Time-series calls fail with "not open" or "not configured".** Today time
-series needs the server's pebble storage. On a server using another storage
-backend it is unavailable. The coming multi-model change makes it available in
-every database on every backend.
+**Time-series calls fail with "not open" or "not configured".** Time series
+works on every backend — memory, file, pebble and objstore — as long as the
+binary was built with time-series support (`WITH_QRDB_TS=1`; see below). If
+it still answers "not configured", confirm with `qrdb admin capabilities`.
 
 **You deleted a series and more went than you expected.** `TSDeleteSeries` with
 no time range deletes the whole series. Pass `start_ns`/`end_ns` to bound it.

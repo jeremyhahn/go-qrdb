@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -303,7 +304,7 @@ func TestTenantOnboarding_AdminIssuesForExistingAccountOnly(t *testing.T) {
 			certPEM, keyPEM := c.onboardWithCSR(t, "acme", "alice")
 			alice := c.mustLogin(t, certPEM, keyPEM)
 
-			ctx := boundedCtx(t)
+			ctx := tenant.WithTenantID(boundedCtx(t), "acme")
 			svc := c.n.Services()
 			r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 				Name: "kv", TenantID: "acme",
@@ -418,7 +419,7 @@ func TestTenantOnboarding_AnchorCannotVouchAcrossTenants(t *testing.T) {
 				t.Fatalf("%s: create globex: %v", tk, err)
 			}
 
-			ctx := boundedCtx(t)
+			ctx := tenant.WithTenantID(boundedCtx(t), "acme")
 			// mallory holds trust-anchors:list in acme, so the refusal below
 			// can only be authentication: an authenticated mallory would be
 			// allowed the very call assertLoginRefused makes.

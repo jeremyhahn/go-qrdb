@@ -178,6 +178,29 @@ func TestNew_Defaults(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_Authorizer verifies the accessor returns the exact
+// authorizer instance New was built with, so an embedding host
+// (sdk/go/node.Node.Authorizer) reaches the same instance every transport
+// authorizes against rather than a copy or a second one.
+func TestAuthMiddleware_Authorizer(t *testing.T) {
+	authz := &mockAuthorizer{}
+	m := New(authz)
+
+	if got := m.Authorizer(); got != authz {
+		t.Errorf("Authorizer() = %v, want %v", got, authz)
+	}
+}
+
+// TestAuthMiddleware_Authorizer_NilReceiver verifies a nil *AuthMiddleware
+// (the "auth disabled" value every embedding host must also tolerate)
+// answers nil rather than panicking.
+func TestAuthMiddleware_Authorizer_NilReceiver(t *testing.T) {
+	var m *AuthMiddleware
+	if got := m.Authorizer(); got != nil {
+		t.Errorf("Authorizer() on nil receiver = %v, want nil", got)
+	}
+}
+
 func TestNew_WithOptions(t *testing.T) {
 	authz := &mockAuthorizer{}
 	authn := &mockAuthenticator{name: "test"}

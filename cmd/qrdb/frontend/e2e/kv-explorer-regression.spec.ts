@@ -13,8 +13,8 @@ const LOAD_TIMEOUT = 10_000;
 const kvState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "regression-kv", engine: "kv", backend: "pebble", status: "open" },
-    { name: "regression-kv-2", engine: "kv", backend: "pebble", status: "open" },
+    { name: "regression-kv", backend: "pebble", status: "open" },
+    { name: "regression-kv-2", backend: "pebble", status: "open" },
   ],
 };
 

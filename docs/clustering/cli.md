@@ -285,10 +285,11 @@ validated, and open no listener. See
 The joining node generates its own node key locally and submits a PKCS#10 CSR
 to an admitted member's join listener; that member signs it with the
 replicated cluster CA (Key A) and returns only the signed leaf, carrying the
-**token's bound identity** as its sole URI SAN — never the joiner's
-self-reported node URI, and never the signing member's own SANs. Neither
-private key ever crosses the wire. Exactly one transport is configured per
-joining node:
+**token's bound identity** as its URI SAN, plus that same identity's own
+address as an IP or DNS SAN (needed for go-quicraft's Raft QUIC transport to
+dial it) — never the joiner's self-reported node URI, and never the signing
+member's own SANs. Neither private key ever crosses the wire. Exactly one
+transport is configured per joining node:
 
 | Flag | Transport |
 |---|---|
@@ -320,6 +321,15 @@ on the same admin HTTPS listener `/v1/ca/bootstrap` already uses, and only
 once the barrier is unsealed — the cluster CA is not available before that, so
 the route is never a member of the sealed-window allowlist.
 
+**Every admitted, unsealed member with `--cluster-join-enabled` can sign,
+not only the one that generated the cluster CA.** `/v1/ca/bootstrap` and
+the Noise anchor listener are likewise served by any such member, from the
+same cached certificate — see
+[architecture.md](architecture.md#every-admitted-unsealed-member-serves-the-anchor).
+A joining node's `--bootstrap-addr`/`--bootstrap-join-url` (or the Noise
+equivalents) may name whichever member is reachable, including after the
+original node is gone for good.
+
 ```bash
 qrdbd start ... --cluster-join-enabled
 ```
@@ -344,8 +354,10 @@ path — and is consumed atomically on first use; a second presentation, or one
 past its expiry, is refused identically to an unknown token (no
 token-validity oracle). Copy it into the joining node's
 `--bootstrap-join-token-file` (or `--bootstrap-join-token-env`). Minting
-requires permission `cluster:join_token` (`ScopeCross`, platform-only: no
-built-in role carries it by default, only `Owner`) — see
+requires permission `cluster:join_token` (`ScopeCross`, platform-only: held
+by `Owner` and by the cluster `Admin` role — owner ruling, 2026-10-06, the
+grant that keeps this reachable under strict separation of duties, which
+voids `Owner`) — see
 [api.md](api.md#post-v1clusterjoin-tokens). The verb is implemented on all
 six transports (REST, gRPC, QUIC, Unix, MCP and embedded); the CLI above
 reaches it through whichever transport `qrdb` is connected with.
@@ -447,4 +459,5 @@ feature the cluster has activated exits with an error naming the feature; see
 
 Every verb here has a `CommandDefinition` in the integration parity suite. The
 3-node behaviour they drive is exercised by `make integration-test-cluster`,
-which is **not currently wired into CI**.
+which runs in CI as the `integration-cluster` job
+(`.github/workflows/ci.yml`), required by `ci-gate`.

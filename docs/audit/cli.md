@@ -11,11 +11,61 @@ hash chain (`audit:verify`). Audit entries are written by the
 subsystems that emit them and there is no CLI path to create, edit or delete
 one — which is the point.
 
-Both verbs read the **node-local** trail only. A separate, cluster-wide
+Both verbs read the **node-local** trail by default. A second, cluster-wide
 replicated audit chain exists at the storage/Raft layer
-([architecture.md](architecture.md#cluster-wide-replicated-trail)), but
-nothing proposes writes to it yet and it has no CLI surface — there is no
-`qrdb audit` verb that reads or writes it.
+([architecture.md](architecture.md#cluster-wide-replicated-trail)); both
+verbs take a `--replicated` flag that reads it instead, per-tenant opt-in via
+the tenant's `AllowReplicatedAudit` entitlement (off by default — see
+[architecture.md](architecture.md#opt-in-not-default-on)). There is still no
+verb to WRITE either trail directly: entries are emitted by the subsystems
+that perform the audited operations.
+
+## `--replicated`
+
+Both `qrdb audit query` and `qrdb audit verify` accept a `--replicated` flag.
+With it:
+
+- `qrdb audit query --replicated` reads the cluster-wide replicated chain —
+  Raft-replicated, so the SAME tenant's trail reads identically from any
+  node in the group, unlike the node-local file. A tenant whose
+  `AllowReplicatedAudit` entitlement is off sees an empty result
+  (`Total: -1`), never an error: indistinguishable from "no replicated audit
+  configured on this node."
+- `qrdb audit verify --replicated [--tenant-id ID]` verifies the hash-chain
+  CONTINUITY of the replicated chain for one tenant (the caller's own by
+  default; `--tenant-id` names another and is refused unless it IS the
+  caller's). This is a different check from the node-local `verify`'s
+  rotation-archive walk — see
+  [architecture.md](architecture.md#chain-hash-continuity-verification) for
+  what it means and what it cannot prove. A tenant not entitled to the
+  replicated chain is refused outright (a request failure, not a report),
+  because there is no chain to verify.
+
+```bash
+# Read the replicated chain for the caller's own tenant
+qrdb audit query --replicated --from 2026-08-01T00:00:00Z
+
+# Verify the replicated chain's hash continuity
+qrdb audit verify --replicated
+
+# Verify another tenant's replicated chain (refused unless it is yours)
+qrdb audit verify --replicated --tenant-id acme
+```
+
+Default-format output for `qrdb audit verify --replicated`:
+
+```
+Verified: true
+Records: 1842
+Head: 1842
+Low: 1
+Genesis: true
+```
+
+`Genesis: false` means the chain has been pruned (retention), not tampered
+with: the surviving tail still verifies, but the walk cannot prove anything
+about the sequence numbers that were deleted — the replicated-chain analogue
+of the node-local verify's own `Genesis: false` case.
 
 ## `qrdb audit query`
 
@@ -30,6 +80,7 @@ nothing proposes writes to it yet and it has no CLI surface — there is no
 | `--tenant-id` | string | — | your own tenant; any other is refused. Omitted, the query reads your own tenant |
 | `--limit` | int | server default **100**, max **1000** | maximum events |
 | `--cursor` | string | — | pagination cursor from a previous response |
+| `--replicated` | bool | `false` | read the cluster-wide replicated chain instead of the node-local trail |
 
 ```bash
 # Everything in a window
@@ -149,4 +200,6 @@ audited or where it goes. See [user.md](user.md).
 `qrdb audit query` and `qrdb audit verify` each have a `CommandDefinition` in
 the integration parity suite. `verify` is Tier-1 across all six transports
 (REST, gRPC, QUIC, MCP, Unix, embedded) — see
-[api.md](api.md#capability-matrix).
+[api.md](api.md#capability-matrix). The `--replicated` form of each verb
+reaches the same six transports plus the Go SDK, through the same
+capability matrix's replicated rows.

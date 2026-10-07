@@ -109,6 +109,10 @@ func (m *mockTSService) SetRetentionPolicy(_ context.Context, _ string, _ *times
 	return m.setRetentionErr
 }
 
+func (m *mockTSService) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *mockTSService) ListMetrics(_ string, _ int) ([]string, error) {
 	if m.listMetricsErr != nil {
 		return nil, m.listMetricsErr

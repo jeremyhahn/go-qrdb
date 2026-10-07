@@ -17,7 +17,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	stdlog "log"
 	"os"
 	"testing"
 )
@@ -344,5 +347,59 @@ func TestInitLogger_WithEmptyFile(t *testing.T) {
 	}
 	if log == nil {
 		t.Fatal("expected non-nil logger with empty file path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// routeStdLog
+// ---------------------------------------------------------------------------
+
+type recordingDebugLogger struct{ msgs []string }
+
+func (r *recordingDebugLogger) Debug(msg string, _ ...any) { r.msgs = append(r.msgs, msg) }
+
+func TestRouteStdLog_ForwardsLibraryOutputToDebug(t *testing.T) {
+	rec := &recordingDebugLogger{}
+	restore := routeStdLog(rec)
+	t.Cleanup(restore)
+
+	stdlog.Print("failed to sufficiently increase receive buffer size\n")
+
+	if len(rec.msgs) != 1 || rec.msgs[0] != "failed to sufficiently increase receive buffer size" {
+		t.Fatalf("expected one trimmed debug message, got %q", rec.msgs)
+	}
+}
+
+func TestRouteStdLog_LeavesStderrUntouched(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	restore := routeStdLog(&recordingDebugLogger{})
+	stdlog.Print("quic-go noise")
+	restore()
+	_ = w.Close()
+
+	data, _ := io.ReadAll(r)
+	if len(data) != 0 {
+		t.Fatalf("library log output reached stderr: %q", data)
+	}
+}
+
+func TestRouteStdLog_RestoreReinstatesPreviousOutput(t *testing.T) {
+	var buf bytes.Buffer
+	stdlog.SetOutput(&buf)
+	t.Cleanup(func() { stdlog.SetOutput(os.Stderr) })
+
+	restore := routeStdLog(&recordingDebugLogger{})
+	restore()
+	stdlog.Print("after restore")
+
+	if !bytes.Contains(buf.Bytes(), []byte("after restore")) {
+		t.Fatalf("restore did not reinstate the previous writer, buffer: %q", buf.String())
 	}
 }

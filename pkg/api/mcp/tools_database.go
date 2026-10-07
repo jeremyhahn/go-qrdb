@@ -22,6 +22,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -115,18 +116,17 @@ func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
 // toolDatabaseCreate defines the qrdb_database_create tool schema.
 func toolDatabaseCreate() mcp.Tool {
 	opts := []mcp.ToolOption{
-		mcp.WithDescription("Create a new database with the specified name, engine, and backend."),
+		mcp.WithDescription("Create a new database with the specified name and backend."),
 		mcp.WithString("name",
 			mcp.Required(),
 			mcp.Description("The database name. Must contain only alphanumeric characters, hyphens, and underscores."),
 		),
-		mcp.WithString("engine",
-			mcp.Required(),
-			mcp.Description("The data engine type: kv, timeseries, or vector."),
-		),
 		mcp.WithString("backend",
 			mcp.Required(),
 			mcp.Description("The storage backend type: memory, file, pebble, or raft."),
+		),
+		mcp.WithString("data_dir",
+			mcp.Description("An explicit data directory for the database. System-tenant only."),
 		),
 		mcp.WithNumber("replicas",
 			mcp.Description("Replication factor for a dedicated-raft database. Meaningful only for raft-backed databases; unset defaults to 1."),
@@ -174,13 +174,13 @@ func toolDatabaseCreate() mcp.Tool {
 // mirroring the REST POST /v1/databases handler.
 func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := wire.RejectUnknownArgs("qrdb_database_create", req.GetArguments(), createDatabaseKnownArgs); err != nil {
+			return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
+		}
+
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
-		}
-		engine := mcp.ParseString(req, "engine", "")
-		if engine == "" {
-			return mcp.NewToolResultError("engine is required"), nil
 		}
 		backend := mcp.ParseString(req, "backend", "")
 		if backend == "" {
@@ -189,7 +189,6 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 
 		cfg := database.DatabaseConfig{
 			Name:     name,
-			Engine:   database.EngineType(engine),
 			Backend:  database.BackendType(backend),
 			DataDir:  mcp.ParseString(req, "data_dir", ""),
 			Replicas: int(mcp.ParseInt64(req, "replicas", 0)),
@@ -727,6 +726,21 @@ func handleDatabaseUpdateCompaction(dbSvc service.DatabaseServicer) mcpserver.To
 // raftArgs names a Raft tool's top-level arguments. The create tool prefixes
 // them with raft_ beside its other arguments; the update tool does not. The
 // discovery arguments are named alike in both.
+// raftArgNames returns every MCP argument name raftToolOptions(names)
+// declares, for building a tool's set of known arguments (see
+// createDatabaseKnownArgs). It must stay in sync with raftToolOptions.
+func raftArgNames(names raftArgs) []string {
+	return []string{
+		names.clusterMode, names.replicaID, names.address, names.peers, names.localNodeCount,
+		"discovery_method",
+		"static_peers", "static_shared_secret",
+		"multicast_shared_secret", "multicast_group", "multicast_interface",
+		"multicast_min_peers", "multicast_announce_interval", "multicast_discover_timeout",
+		"dns_domain", "dns_service", "dns_proto", "dns_lookup_timeout",
+		"token_endpoint", "token_value", "token_cluster_size", "token_timeout",
+	}
+}
+
 type raftArgs struct {
 	clusterMode    string
 	replicaID      string
@@ -751,6 +765,25 @@ var (
 		localNodeCount: "local_node_count",
 	}
 )
+
+// createDatabaseKnownArgs is the set of argument names qrdb_database_create
+// recognizes: every name declared in its schema (toolDatabaseCreate). An
+// argument outside this set -- a stray "engine" (OD-13) or any other stale or
+// misspelled key -- is refused rather than silently ignored; see
+// handleDatabaseCreate and wire.RejectUnknownArgs.
+var createDatabaseKnownArgs = func() map[string]struct{} {
+	names := append([]string{
+		"name", "backend", "data_dir", "mode", "replicas", "mysql", "postgresql",
+		"etcd", "etcd_listen_addr", "etcd_advertise_urls",
+		"barrier_enabled", "barrier_mode", "barrier_shares_required", "barrier_shares_total", "barrier_secret",
+		"sql_concurrency",
+	}, raftArgNames(createRaftArgs)...)
+	known := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		known[n] = struct{}{}
+	}
+	return known
+}()
 
 // raftToolOptions declares every Raft argument a tool takes: the top-level
 // fields under names, then the discovery blocks. Together they reach every

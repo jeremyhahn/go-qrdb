@@ -1621,6 +1621,7 @@ type mockTSService struct {
 	deleteFn      func(ctx context.Context, req *timeseries.DeleteRequest) error
 	getRetFn      func(metric string) (*timeseries.RetentionPolicy, error)
 	setRetFn      func(metric string, policy *timeseries.RetentionPolicy) error
+	applyRetFn    func(ctx context.Context, metric string, cutoff time.Time) error
 	listMetricsFn func(prefix string, limit int) ([]string, error)
 }
 
@@ -1695,6 +1696,13 @@ func (m *mockTSService) GetRetentionPolicy(metric string) (*timeseries.Retention
 func (m *mockTSService) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetFn != nil {
 		return m.setRetFn(metric, policy)
+	}
+	return nil
+}
+
+func (m *mockTSService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	if m.applyRetFn != nil {
+		return m.applyRetFn(ctx, metric, cutoff)
 	}
 	return nil
 }

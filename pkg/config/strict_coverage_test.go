@@ -91,7 +91,7 @@ func TestCheckMergeValue_Sequence_SkipsNilAndNonMappingThenSucceeds(t *testing.T
 	cyclic.Alias = cyclic
 	scalar := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "oops"}
 	var good yaml.Node
-	if err := yaml.Unmarshal([]byte("name: ok\nengine: kv\nbackend: pebble\n"), &good); err != nil {
+	if err := yaml.Unmarshal([]byte("name: ok\nbackend: pebble\n"), &good); err != nil {
 		t.Fatal(err)
 	}
 	seq := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{cyclic, scalar, good.Content[0]}}

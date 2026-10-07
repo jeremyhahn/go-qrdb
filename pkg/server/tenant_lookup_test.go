@@ -98,3 +98,77 @@ func TestLookupDataRootSource_PropagatesRegistryError(t *testing.T) {
 		t.Fatalf("dataRootOf = %v, want *volume.AssignmentNotFoundError", err)
 	}
 }
+
+// TestTenantHostRegistry_Services_SkippedPoolTenantGetsPoolUnavailable
+// proves the owner's 2026-10-06 ruling's second half: a tenant assigned to
+// a pool this node never opened (the degraded-boot skip,
+// --allow-degraded-volume-boot) was never registered in the barrier
+// registry at all (reattachVolumeTenants/reattachRaftTenants skip it, as
+// reattach_refused_test.go's TestBoot_ALegacyTenantDoesNotBrickTheNode
+// shows for the barrierReg side). Before this fix, Services() stopped at
+// GetTenant's generic "not found" and never got as far as asking WHY. It
+// must now resolve through the volume allocator directly and surface
+// *volume.PoolUnavailableError -- classified Unavailable by
+// pkg/api/errclass on every transport -- not a not-found or an
+// uninformative internal error.
+func TestTenantHostRegistry_Services_SkippedPoolTenantGetsPoolUnavailable(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	ctx := context.Background()
+
+	allocVal, ok := testVolumeAllocators.Load(reg)
+	if !ok {
+		t.Fatal("reg was not built by newVolumePooledRegistry")
+	}
+	allocator := allocVal.(volume.Allocator)
+	catalogSvc, ok := allocator.(volume.Service)
+	if !ok {
+		t.Fatal("the test allocator must also be a volume.Service to CreatePool")
+	}
+	if _, err := catalogSvc.CreatePool(ctx, volume.CreatePoolRequest{Name: "broken", Provider: "dir"}); err != nil {
+		t.Fatalf("CreatePool(broken): %v", err)
+	}
+	// Reserve directly through the allocator -- NOT RegisterVolumeTenant --
+	// so the tenant's Assignment exists in the catalog (as it would on the
+	// node that created it, or any node that already restored it) but this
+	// registry's barrier map never learns about "ghost": exactly the state
+	// a degraded boot leaves a tenant on a pool it skipped in.
+	if _, err := allocator.Reserve(ctx, "ghost", "broken", "ghost", 0); err != nil {
+		t.Fatalf("Reserve(ghost, broken): %v", err)
+	}
+	if _, err := reg.GetTenant("ghost"); !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("GetTenant(ghost) = %v, want seal.ErrTenantNotFound (never registered, matching a degraded-boot skip)", err)
+	}
+
+	hostReg := NewTenantHostRegistry(reg, &lookupDataRootSource{registry: reg}, reattachTestLogger())
+	_, err := hostReg.Services(ctx, "ghost")
+	if err == nil {
+		t.Fatal("Services(ghost) succeeded; want *volume.PoolUnavailableError for a tenant on a pool this node never opened")
+	}
+	var poolErr *volume.PoolUnavailableError
+	if !errors.As(err, &poolErr) {
+		t.Fatalf("Services(ghost) = %T: %v, want *volume.PoolUnavailableError", err, err)
+	}
+	if poolErr.Pool != "broken" {
+		t.Errorf("PoolUnavailableError.Pool = %q, want %q", poolErr.Pool, "broken")
+	}
+}
+
+// TestTenantHostRegistry_Services_TrulyUnknownTenantGetsAssignmentNotFound
+// is the control case: a tenant with NO catalog assignment at all (never
+// created anywhere, not merely skipped on this node) still resolves to a
+// typed, specific error -- *volume.AssignmentNotFoundError, classified
+// NotFound -- rather than the generic ErrTenantNotFound the in-memory
+// lookup alone would give. The fix in Services() (consult the allocator
+// when GetTenant reports not-found) improves this case too: it used to
+// surface an untyped seal.ErrTenantNotFound wrapped in TenantHostError,
+// which pkg/api/errclass has no specific rule for.
+func TestTenantHostRegistry_Services_TrulyUnknownTenantGetsAssignmentNotFound(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	hostReg := NewTenantHostRegistry(reg, &lookupDataRootSource{registry: reg}, reattachTestLogger())
+
+	_, err := hostReg.Services(context.Background(), "never-existed")
+	var notFound *volume.AssignmentNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("Services(never-existed) = %T: %v, want *volume.AssignmentNotFoundError", err, err)
+	}
+}

@@ -172,12 +172,19 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	// ---------------------------------------------------------------------------
 	// Phase 2: tenant + role + user.
 	// ---------------------------------------------------------------------------
-	_, tStatus := createRaftTenant(t, sysClient, leaderPort, dwTenantID, "Test Tenant 1")
+	adminKeyPEM, tBody, tStatus := createRaftTenant(t, sysClient, leaderPort, dwTenantID, "Test Tenant 1")
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d", tStatus)
 	}
 
-	roleBody, rStatus := iraftAPIPost(t, sysClient,
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so this authenticates
+	// as the tenant's own onboarded admin; its built-in Admin role cannot
+	// create a NEW role (RolesCreate is SO-exclusive), so it self-assigns
+	// its own pre-seeded SO role first.
+	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tBody)
+	selfAssignTenantSO(t, leaderPort, dwTenantID, raftAdminClient)
+	roleBody, rStatus := iraftAPIPost(t, raftAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name": "db-admin", "tenant_id": dwTenantID,
@@ -196,7 +203,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 		t.Fatalf("decode role ID: %s", roleBody)
 	}
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, dwTenantID)
-	createBoundUser(t, sysClient, leaderPort,
+	createBoundUser(t, raftAdminClient, leaderPort,
 		map[string]interface{}{
 			"username": "admin", "email": "admin@" + dwTenantID + ".example.com", "tenant_id": dwTenantID,
 			"role_ids": []string{roleResp.ID},
@@ -211,7 +218,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 		body, status := iraftAPIPost(t, tenantClient,
 			fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
 			map[string]interface{}{
-				"name": name, "engine": "kv", "backend": "pebble",
+				"name": name, "backend": "pebble",
 				"replicas": 3, "dedicatedWal": dedicated,
 			})
 		if status != http.StatusCreated && status != http.StatusOK {

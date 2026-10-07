@@ -1166,3 +1166,143 @@ func testCeremonySignCSROverProtocol(t *testing.T, proto multiProtocol) {
 		t.Errorf("expected pin.ErrPINInvalid from the PIN backend, got: %s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Officer register and recovery flows on every transport.
+// ---------------------------------------------------------------------------
+
+// TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol generalizes
+// TestCLI_BarrierOfficerRegister_SealedWindow (REST and gRPC only) to every
+// CLI-selectable transport: the pre-host sealed-window listener accepts
+// `barrier officer register` identically over REST, gRPC, QUIC, MCP, and
+// Unix, since the sealed-window Health fix (see this package's and
+// barrier_permutations_cli_test.go's doc comments) made all five reachable
+// from a cold, uninitialized barrier.
+func TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol(t *testing.T) {
+	for _, proto := range coldSealedWindowProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			const threshold, total = 2, 3
+			node := startFreshSealedNode(t, "shamir", threshold, total)
+			noAuth := node.noAuthFlagsFor(proto)
+			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
+
+			workDir := t.TempDir()
+			csrPath, _ := generateOfficerCSR(t, workDir, "off-"+proto.name)
+			args := append(append([]string{}, noAuth...), "--output", "json", "barrier", "officer", "register",
+				"--username", "off-"+proto.name, "--csr-file", csrPath)
+			stdout, stderr, err := runCLISplit(t, node.cli, args...)
+			if err != nil {
+				t.Fatalf("[%s] officer register against the sealed-window listener: %v\nstderr: %s", proto.name, err, stderr)
+			}
+			var reg officerRegisterJSON
+			decodeJSON(t, stdout, &reg)
+			if reg.Role != "so" || !strings.Contains(reg.CertPEM, "-----BEGIN CERTIFICATE-----") {
+				t.Fatalf("[%s] expected a Security Officer with a CA-issued certificate, got: %s", proto.name, stdout)
+			}
+
+			// The officer list is not an anonymous sealed-window verb: the
+			// listener runs without authentication, and the list is served
+			// post-unseal to authenticated callers.
+			listArgs := append(append([]string{}, noAuth...), "barrier", "officer", "list", "--output", "json")
+			if out, _, err := runCLISplit(t, node.cli, listArgs...); err == nil {
+				t.Fatalf("[%s] barrier officer list succeeded anonymously on the sealed-window listener: %s", proto.name, out)
+			}
+		})
+	}
+}
+
+// TestCLI_RecoveryOfficerFlow_CLI_PerProtocol generalizes
+// TestCLI_RecoveryOfficerFlow_EndToEnd (REST register/claim/submit, Unix
+// register) to every CLI-selectable transport: recovery-domain officer
+// register, claim, `barrier recovery generate`, `barrier seal`, and
+// `barrier quorum submit` all run identically over REST, gRPC, QUIC, MCP,
+// and Unix, reusing the same systemScope/officer/quorum abstractions
+// TestBarrierPermutations_ShamirLifecycle_PerProtocol uses for the system
+// barrier's unseal domain -- scoped here to transport.DomainRecovery.
+func TestCLI_RecoveryOfficerFlow_CLI_PerProtocol(t *testing.T) {
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			node := startFreshSealedNode(t, "none", 0, 0)
+			noAuth := node.noAuthFlagsFor(proto)
+			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
+
+			// `qrdb init` is the only system bootstrap (go-qrdb#548): it
+			// brings the system barrier up itself (strategy "none" here),
+			// so no separate barrier-init call precedes it.
+			node.initSystem(t, proto, "--barrier-strategy", "none")
+			node.waitForFullBoot(t)
+			flags := node.flagsFor(proto)
+			ep := endpoint{serverURL: node.serverURLFor(proto), caFile: node.ca.CertPath}
+			scope := systemScope(transport.DomainRecovery)
+
+			off1 := registerOfficer(t, node.cli, workDir, flags, scope, "r1-"+proto.name)
+			off2 := registerOfficer(t, node.cli, workDir, flags, scope, "r2-"+proto.name)
+			off3 := registerOfficer(t, node.cli, workDir, flags, scope, "r3-"+proto.name)
+
+			out, err := runQRDB(t, node.cli, flags, "barrier", "recovery", "generate",
+				"--threshold", "2", "--so-pin", sealNodeSOPIN, "--output", "json")
+			if err != nil {
+				t.Fatalf("[%s] barrier recovery generate: %v\noutput: %s", proto.name, err, out)
+			}
+			var genResp recoveryKeysJSON
+			decodeJSON(t, out, &genResp)
+			if genResp.ShareCount != 3 {
+				t.Fatalf("[%s] barrier recovery generate: share_count = %d, want 3 (one per enrolled holder): %s", proto.name, genResp.ShareCount, out)
+			}
+
+			claimEnvelope(t, node.cli, workDir, ep, scope, off1)
+			claimEnvelope(t, node.cli, workDir, ep, scope, off2)
+
+			// An envelope is delivered once.
+			claimBeginArgs := append(off1.flags(ep), scope.officer...)
+			claimBeginArgs = append(claimBeginArgs, "claim-begin", "--username", off1.username)
+			claimBeginArgs = append(claimBeginArgs, scope.scopeArgs()...)
+			if out, err := runQRDB(t, node.cli, nil, claimBeginArgs...); err == nil || !strings.Contains(out, "no pending share") {
+				t.Fatalf("[%s] a second claim was not refused with 'no pending share': %v\noutput: %s", proto.name, err, out)
+			}
+
+			// An unknown holder cannot claim.
+			if out, err := runQRDB(t, node.cli, flags, "barrier", "officer", "claim-begin",
+				"--domain", "recovery", "--username", "no-such-officer"); err == nil || !strings.Contains(out, "officer not found") {
+				t.Fatalf("[%s] a claim for an unknown holder was not refused with 'officer not found': %v\noutput: %s", proto.name, err, out)
+			}
+
+			// The recover op requires the barrier SEALED; this node's
+			// primary strategy is "none", so the single-caller seal
+			// applies.
+			if out, err := runQRDB(t, node.cli, flags, "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN); err != nil {
+				t.Fatalf("[%s] barrier seal: %v\noutput: %s", proto.name, err, out)
+			}
+
+			// Signing with another holder's key cannot answer r1's factor:
+			// mTLS identity stays off1's own cert/key (the claimant), only
+			// the envelope-opening --key differs.
+			wrongKeyArgs := append(off1.flags(ep), "--output", "json")
+			wrongKeyArgs = append(wrongKeyArgs, scope.quorum...)
+			wrongKeyArgs = append(wrongKeyArgs, "submit", "--op", "recover", "--username", off1.username,
+				"--envelope", off1.envelope, "--key", off3.keyPath)
+			wrongKeyArgs = append(wrongKeyArgs, scope.scopeArgs()...)
+			if out, _, err := runCLISplit(t, node.cli, wrongKeyArgs...); err == nil {
+				t.Fatalf("[%s] a submission signed with another holder's key was accepted: %s", proto.name, out)
+			}
+			if _, stderr, err := quorumSubmit(t, node.cli, ep, scope, "recover", off1); err != nil {
+				t.Fatalf("[%s] recover submission for r1: %v\nstderr: %s", proto.name, err, stderr)
+			}
+			outcome, stderr, err := quorumSubmit(t, node.cli, ep, scope, "recover", off2)
+			if err != nil {
+				t.Fatalf("[%s] recover submission for r2: %v\nstderr: %s", proto.name, err, stderr)
+			}
+			if !outcome.Complete {
+				t.Fatalf("[%s] the second recovery holder did not complete the round: %+v", proto.name, outcome)
+			}
+
+			status := barrierStatus(t, node.cli, flags)
+			if status.Sealed {
+				t.Errorf("[%s] expected the barrier to be unsealed after a successful recovery, got: %+v", proto.name, status)
+			}
+		})
+	}
+}

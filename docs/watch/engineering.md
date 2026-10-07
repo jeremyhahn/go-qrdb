@@ -278,3 +278,7 @@ start-revision watch may see, and they answer different questions:
 - A cancelled watch logs its reason at the transport boundary.
 - Watch establishment and cancellation are audited through
   [../audit/](../audit/) where the audit logger is configured.
+
+## Integration testing
+
+`make integration-test-watch` runs this feature's self-spawned integration tests: `watch_cli_test.go`. The per-transport accounting, including every gap, is the `watch` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

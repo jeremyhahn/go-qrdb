@@ -31,6 +31,11 @@ import (
 // every consumer that uses it. Closing that gap needs a naming decision, not a
 // second alias.
 
+// EncodePKCS12 bundles a certificate, its private key and the CA certificate
+// into a passphrase-protected PKCS#12 archive, for importing an issued
+// identity into a browser or operating-system key store.
+var EncodePKCS12 = cert.EncodePKCS12
+
 // ---------------------------------------------------------------------------
 // Certificate revocation enforcement
 // ---------------------------------------------------------------------------

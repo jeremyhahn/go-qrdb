@@ -76,6 +76,9 @@ type QRDBSession struct {
 	// statementIndexOrigin -- see SetStatementIndexOrigin.
 	statementIndexOrigin atomic.Bool
 
+	// statementRestartIdentity -- see SetStatementRestartIdentity.
+	statementRestartIdentity atomic.Bool
+
 	// stmt is the resolution scope of the command in flight, opened by
 	// CommandBegin and closed by CommandEnd (see statementScope).
 	stmt atomic.Pointer[statementScope]
@@ -624,4 +627,29 @@ func (s *QRDBSession) SetStatementIndexOrigin(isStatementIndex bool) {
 // was marked a standalone CREATE INDEX.
 func (s *QRDBSession) StatementIndexOrigin() bool {
 	return s.statementIndexOrigin.Load()
+}
+
+// statementRestartIdentity records whether the TRUNCATE currently executing
+// on this session carried PostgreSQL's RESTART IDENTITY clause. The
+// PostgreSQL wire front end sets it around each TRUNCATE statement that
+// carries the clause (see pkg/sql/pgsql's HandleParse and
+// stripTruncateIdentityClause, which strips the clause -- the embedded
+// grammar does not parse it -- before the statement reaches the engine) so
+// RelationalTable.Truncate can apply the same epoch-fenced sequence reset
+// the MySQL wire always applies.
+//
+// The zero value (false) is CONTINUE IDENTITY, PostgreSQL's own default,
+// and the MySQL wire never sets this field at all: RelationalTable.Truncate
+// only consults it for a table opened with WithPostgreSQLDialect.
+
+// SetStatementRestartIdentity marks whether the TRUNCATE about to execute
+// carries RESTART IDENTITY.
+func (s *QRDBSession) SetStatementRestartIdentity(restart bool) {
+	s.statementRestartIdentity.Store(restart)
+}
+
+// StatementRestartIdentity reports whether the currently executing TRUNCATE
+// was marked RESTART IDENTITY.
+func (s *QRDBSession) StatementRestartIdentity() bool {
+	return s.statementRestartIdentity.Load()
 }

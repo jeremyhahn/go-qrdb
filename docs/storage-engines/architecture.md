@@ -2,7 +2,7 @@
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner ruling —
 > for the object-storage LSM target design.** · Scope: go-qrdb · Last verified:
-> 2026-10-05
+> 2026-10-06
 >
 > This document has two layers.
 >
@@ -52,7 +52,7 @@ projects share a shape without either importing the other's declaration.
 | File | `pkg/storage/file/` | hashed, flat, content-addressed filesystem mapping; shard configs, metadata |
 | Memory | `pkg/storage/memory/` | in-memory, for tests and ephemeral data |
 | PebbleDB | `pkg/storage/pebble/` | production-grade, extracted from the Raft state machine |
-| ObjStore | `pkg/storage/objstore/` | object-storage-backed, via go-objstore |
+| ObjStore | `pkg/storage/objstore/` | object-storage-backed, via go-objstore; arbitrary byte keys under encoded object names |
 | Namespace | `pkg/storage/namespace/` | tenant prefix isolation **wrapping any engine** |
 
 The namespace engine is the important one architecturally: isolation is
@@ -196,6 +196,55 @@ this at cluster join, and a backend-specific defect (the exact shape this
 section is about) is the kind of thing a mismatch would surface only
 indirectly, through a `StateMachineHash` divergence. There is no
 operational reason to mix it.
+
+### The objstore engine: encoded object names (BREAKING)
+
+**Object layout changed; no migration.** The objstore engine used to name
+each object with its key verbatim. A storage key is arbitrary bytes, but a
+go-objstore provider accepts only a UTF-8 object name of at most 1,024
+bytes, free of NUL, control characters, `..` and `//`. A filesystem provider
+also limits each path component to 255 bytes. Under the verbatim layout,
+a binary key, a key carrying any of those sequences, or a key past those
+lengths was refused by the provider, and a key such as `a/` named a
+directory, not an object. A key the rest of qrdb accepts — anything up to
+the global 65,535-byte cap (`protocol.MaxClientKeyLength`) — could not be
+stored.
+
+Every key is now stored under a name derived from it, in one of two forms:
+
+- **Direct**, `k/` + the key's lowercase hex, cut into segments of at most
+  128 characters joined by `/`, with `_` appended to the last. Every name
+  of this form is a valid object name on every provider, and no component
+  exceeds 129 bytes. Hex keeps byte order and keeps prefixes: the hex of a
+  byte prefix is a string prefix of the hex of every key it prefixes, so
+  `List(prefix)` still narrows on the provider. The `_` terminator means a
+  key's object can never share a name with the directory a longer key's
+  segments need.
+- **Hashed**, `h/` + the lowercase hex SHA-256 of the key, for a key whose
+  direct name would exceed the provider's 1,024-byte name limit (keys longer
+  than about 500 bytes). This is the file engine's approach above: the
+  object's body is a record carrying the key itself,
+  `uvarint(len(key)) || key || value`, and every read verifies that the
+  stored key hashes to the object's name and equals the key requested
+  (`KeyMismatchError`), refusing a truncated or malformed record
+  (`RecordCorruptError`). Hashed names cannot narrow a listing, so `List`
+  and iteration read every hashed record for its key. That cost falls only
+  on keys too long to name directly.
+
+Anything under `k/` or `h/` that is not the canonical name of some key is
+not a record — for example, a provider's in-flight temporary file — and
+every listing skips it.
+
+**Existing data.** `New` writes a format marker object
+(`qrdb-objstore-format`, version `2`) into an empty store, and refuses to
+open a store that is not empty and has no marker (`FormatMarkerMissingError`)
+or that carries another version (`FormatVersionMismatchError`). A store
+written under the verbatim layout is therefore refused at open, not read
+with its keys silently missing. Per the no-backward-compatibility policy
+there is no migration code. Move the data by reading it out through a
+binary from before this change and writing it in through one that carries
+it, or start the store empty. The store must be dedicated to the engine:
+any object the engine did not write makes an unmarked store non-empty.
 
 ### Alternatives rejected
 

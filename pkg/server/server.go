@@ -163,6 +163,10 @@ type Server struct {
 	// compactorCancel stops the compaction scheduler (see
 	// compaction_scheduler.go); nil when none is running.
 	compactorCancel context.CancelFunc
+
+	// retentionCancel stops the time-series retention scheduler (see
+	// retention_scheduler.go); nil when none is running.
+	retentionCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -240,6 +244,10 @@ type serverOptions struct {
 	// databases' policies; zero keeps DefaultCompactionInterval. See
 	// WithCompactionInterval.
 	compactionInterval time.Duration
+	// retentionInterval tunes how often the retention scheduler sweeps
+	// time-series metrics for expired points; zero keeps
+	// DefaultRetentionInterval. See WithRetentionInterval.
+	retentionInterval time.Duration
 	// collectionSweepLeader reports whether this node leads the system
 	// shard; see WithCollectionSweepLeader. Nil means a single node.
 	collectionSweepLeader func() bool
@@ -250,6 +258,7 @@ type serverOptions struct {
 	quotaAccountant       *quota.Accountant
 	webUI                 http.Handler
 	auditLogger           audit.AuditLogger
+	replicatedAudit       *service.OptInAuditLogger
 	authFactorSvc         service.AuthFactorServicer
 	userAuthFactorSvc     service.UserAuthFactorServicer
 	soAuthenticator       *auth.SOAuthenticator
@@ -281,6 +290,14 @@ type serverOptions struct {
 	// key files must live inside, confined via *os.Root. Only consulted
 	// when keyWrapRegistry is nil.
 	keyDir string
+
+	// dekKeyDir is keyDir's counterpart for the tenant DEK keyring's own
+	// "software" provider instance -- a distinct directory from keyDir
+	// because the keyring's key references default to tenant IDs, a
+	// different naming domain than backup's operator-chosen names.
+	// keyWrapRegistry/keyWrapProvider, when set, are shared with the DEK
+	// keyring too; only the key directory is DEK-specific.
+	dekKeyDir string
 
 	// pinBackend is the canonical PIN management implementation. nil
 	// means every PIN-gated operation fails closed with
@@ -966,6 +983,16 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(o *serverOptions) { o.auditLogger = l }
 }
 
+// WithReplicatedAuditLogger configures the cluster-wide, per-tenant-opt-in
+// replicated audit sink (docs/audit/architecture.md#cluster-wide-replicated-trail)
+// for all protocol servers -- lifecycle.Node.ReplicatedAudit in production.
+// When set, GET .../audit/events?replicated=true and the replicated verify
+// capability are registered on REST, gRPC (Unix socket), QUIC, and MCP
+// servers, alongside WithAuditLogger's node-local trail.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) ServerOption {
+	return func(o *serverOptions) { o.replicatedAudit = l }
+}
+
 // WithAuthFactorService configures the auth factor service for custodian
 // enrollment, challenge issuance, and verification across all protocol servers.
 func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
@@ -1055,6 +1082,21 @@ func WithKeyWrapProvider(p keywrap.Provider) ServerOption {
 // would be too late.
 func WithKeyDir(dir string) ServerOption {
 	return func(o *serverOptions) { o.keyDir = dir }
+}
+
+// WithDEKKeyDir configures the directory the built-in "software" key-wrap
+// provider's key files must live inside for the tenant DEK keyring --
+// WithKeyDir's counterpart for the Backup service. The two are distinct
+// directories because the keyring's key references default to tenant IDs,
+// a different naming domain than backup's operator-chosen names;
+// WithKeyWrapRegistry/WithKeyWrapProvider, when applied, are shared with
+// the DEK keyring too (one registry, two consumers).
+//
+// Like WithKeyDir, this is forwarded through ResolveCryptoOptions into
+// lifecycle.Infra.DEKKeyDir up front; passing it only to server.New would
+// be too late.
+func WithDEKKeyDir(dir string) ServerOption {
+	return func(o *serverOptions) { o.dekKeyDir = dir }
 }
 
 // WithPINBackend injects the canonical PIN backend. Without one every
@@ -1153,6 +1195,10 @@ type CryptoOptions struct {
 	KeyWrapRegistry keywrap.Registry
 	KeyWrapProvider keywrap.Provider
 	KeyDir          string
+	// DEKKeyDir carries WithDEKKeyDir into lifecycle.Infra.DEKKeyDir --
+	// KeyDir's counterpart for the tenant DEK keyring's own "software"
+	// provider instance.
+	DEKKeyDir string
 	// AuthFactorService is the caller-supplied AuthFactorServicer, if any.
 	// When non-nil the caller passed server.WithAuthFactorService explicitly.
 	// When nil and FactorRegistry is non-nil, the server and SDK node builders
@@ -1188,6 +1234,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		KeyWrapRegistry:        o.keyWrapRegistry,
 		KeyWrapProvider:        o.keyWrapProvider,
 		KeyDir:                 o.keyDir,
+		DEKKeyDir:              o.dekKeyDir,
 		AuthFactorService:      o.authFactorSvc,
 		CeremonyCA:             o.ceremonyCA,
 	}
@@ -1489,6 +1536,13 @@ func (s *Server) start() error {
 		return err
 	}
 
+	// Hand every module its tenant-target authorizer BEFORE any transport
+	// registers it (startREST/startGRPC/startQUIC/startUnix/startMCP all
+	// call the module's Register* hooks below), so a handler the module
+	// registers on any transport can call AuthorizeTenantTarget from the
+	// moment it is reachable.
+	s.wireModuleTenantTargetAuthorizers()
+
 	// The RAG pipeline resolves every record through the same
 	// per-(tenant, database) registry the transports use. A node with no
 	// database registry leaves it unbound, and RAG then refuses rather than
@@ -1595,12 +1649,43 @@ func (s *Server) start() error {
 	// compacted on it. A database with none is never compacted implicitly.
 	s.startCompactionScheduler()
 
+	// Metrics whose series configured a retention policy have their
+	// expired points pruned on it. A metric with none is never pruned
+	// implicitly.
+	s.startRetentionScheduler()
+
 	return nil
 }
 
 // startModules runs each registered module's Start hook in registration order.
 // It stops at the first error and returns it (the caller rolls back). Modules
 // already started are stopped by the caller's s.stopModules().
+// wireModuleTenantTargetAuthorizers hands every registered module its
+// tenant-target authorizer (go-qrdb#587), for a module implementing the
+// optional apimodule.ModuleTenantTargetAware extension. s.opts.authMW == nil
+// means auth is disabled, and every built-in tenant route treats that as
+// "admit unconditionally" (see e.g. rest.authorizeTenantRequest) rather than
+// a refusal; SetTenantTargetAuthorizer(nil) is called with a literal nil, as
+// a true nil interface, specifically so a module's own
+// "if authz == nil { admit }" check sees the identical nil a direct
+// comparison would -- assigning the (possibly nil) *authmw.AuthMiddleware
+// pointer to the interface parameter instead would box a nil pointer into a
+// NON-nil interface value, the classic Go pitfall, and silently invert the
+// module's own nil check.
+func (s *Server) wireModuleTenantTargetAuthorizers() {
+	for _, m := range s.opts.modules {
+		aware, ok := m.(apimodule.ModuleTenantTargetAware)
+		if !ok {
+			continue
+		}
+		if s.opts.authMW == nil {
+			aware.SetTenantTargetAuthorizer(nil)
+			continue
+		}
+		aware.SetTenantTargetAuthorizer(s.opts.authMW)
+	}
+}
+
 func (s *Server) startModules() error {
 	for _, m := range s.opts.modules {
 		if err := m.Start(context.Background()); err != nil {
@@ -1627,6 +1712,7 @@ func (s *Server) stopModules() {
 // for all background goroutines to complete.
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
+	s.stopRetentionScheduler()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()
@@ -1878,6 +1964,9 @@ func (s *Server) startREST() error {
 	if s.opts.auditLogger != nil {
 		restOpts = append(restOpts, rest.WithAuditLogger(s.opts.auditLogger))
 	}
+	if s.opts.replicatedAudit != nil {
+		restOpts = append(restOpts, rest.WithReplicatedAuditLogger(s.opts.replicatedAudit))
+	}
 	if s.opts.authFactorSvc != nil {
 		restOpts = append(restOpts, rest.WithAuthFactorService(s.opts.authFactorSvc))
 	}
@@ -2097,6 +2186,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.auditLogger != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuditLogger(s.opts.auditLogger))
 	}
+	if s.opts.replicatedAudit != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithReplicatedAuditLogger(s.opts.replicatedAudit))
+	}
 	if s.opts.collectionSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCollectionService(s.opts.collectionSvc))
 	}
@@ -2286,6 +2378,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.auditLogger != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuditLogger(s.opts.auditLogger))
 	}
+	if s.opts.replicatedAudit != nil {
+		quicOpts = append(quicOpts, quicapi.WithReplicatedAuditLogger(s.opts.replicatedAudit))
+	}
 	if s.opts.tenantSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithTenantService(s.opts.tenantSvc))
 	}
@@ -2453,6 +2548,9 @@ func (s *Server) startUnix() error {
 	if s.opts.auditLogger != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuditLogger(s.opts.auditLogger))
 	}
+	if s.opts.replicatedAudit != nil {
+		unixOpts = append(unixOpts, unixapi.WithReplicatedAuditLogger(s.opts.replicatedAudit))
+	}
 	if s.opts.barrierRegistry != nil {
 		if volumeSvc, ok := s.opts.barrierRegistry.VolumeService(); ok {
 			unixOpts = append(unixOpts, unixapi.WithVolumeService(volumeSvc))
@@ -2618,6 +2716,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.auditLogger != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithAuditLogger(s.opts.auditLogger))
+	}
+	if s.opts.replicatedAudit != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithReplicatedAuditLogger(s.opts.replicatedAudit))
 	}
 	if s.opts.tenantSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithTenantService(s.opts.tenantSvc))

@@ -26,7 +26,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
@@ -128,7 +127,7 @@ func (m *managedConnection) storeState(s ConnectionState) {
 // Profiles are persisted to disk at ~/.config/qrdb/connections.json and
 // loaded automatically on startup.
 type ConnectionManagerBinding struct {
-	logger      *logger.Logger
+	logger      *sdk.ConcreteLogger
 	mu          sync.Mutex // guards profiles slice and disk writes
 	profiles    []ConnectionProfile
 	connections sync.Map     // profileID string → *managedConnection
@@ -137,7 +136,7 @@ type ConnectionManagerBinding struct {
 }
 
 // NewConnectionManagerBinding creates a new ConnectionManagerBinding.
-func NewConnectionManagerBinding(log *logger.Logger) *ConnectionManagerBinding {
+func NewConnectionManagerBinding(log *sdk.ConcreteLogger) *ConnectionManagerBinding {
 	return &ConnectionManagerBinding{
 		logger: log,
 	}

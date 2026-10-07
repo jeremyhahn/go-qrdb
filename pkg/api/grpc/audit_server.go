@@ -25,6 +25,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -33,23 +34,38 @@ type auditServer struct {
 	pb.UnimplementedAuditServiceServer
 
 	auditLogger audit.AuditLogger
+
+	// replicatedAudit is the cluster-wide, per-tenant-opt-in replicated
+	// audit sink (docs/audit/architecture.md#cluster-wide-replicated-trail).
+	// Nil means this server exposes no replicated-chain capability.
+	replicatedAudit *service.OptInAuditLogger
 }
 
 // RegisterAuditService registers the AuditService on the given gRPC server.
-// When auditLogger is nil the service is not registered, matching the other
-// optional-service registrars in this package.
-func RegisterAuditService(srv *grpc.Server, auditLogger audit.AuditLogger) {
-	if auditLogger == nil {
+// When both auditLogger and replicatedAudit are nil the service is not
+// registered, matching the other optional-service registrars in this
+// package. replicatedAudit may be nil even when auditLogger is not: a
+// server with only the node-local trail configured still gets Query/
+// VerifyChain, with GetReplicated()/VerifyReplicatedChain answering
+// Unimplemented.
+func RegisterAuditService(srv *grpc.Server, auditLogger audit.AuditLogger, replicatedAudit *service.OptInAuditLogger) {
+	if auditLogger == nil && replicatedAudit == nil {
 		return
 	}
-	pb.RegisterAuditServiceServer(srv, &auditServer{auditLogger: auditLogger})
+	pb.RegisterAuditServiceServer(srv, &auditServer{auditLogger: auditLogger, replicatedAudit: replicatedAudit})
 }
 
 // Query handles the AuditService.Query RPC. The query is confined to the
 // caller's own tenant (tenant.ConfineAuditFilter); a request naming another
 // tenant is refused with PERMISSION_DENIED.
 func (s *auditServer) Query(ctx context.Context, req *pb.AuditQueryRequest) (*pb.AuditQueryResponse, error) {
-	if s.auditLogger == nil {
+	logger := s.auditLogger
+	if req.GetReplicated() {
+		if s.replicatedAudit == nil {
+			return nil, status.Error(codes.Unimplemented, "replicated audit not configured")
+		}
+		logger = s.replicatedAudit
+	} else if logger == nil {
 		return nil, status.Error(codes.Unimplemented, "audit service not configured")
 	}
 
@@ -83,7 +99,7 @@ func (s *auditServer) Query(ctx context.Context, req *pb.AuditQueryRequest) (*pb
 		return nil, mapServiceError(err)
 	}
 
-	page, err := s.auditLogger.Query(ctx, f)
+	page, err := logger.Query(ctx, f)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -142,6 +158,37 @@ func (s *auditServer) VerifyChain(ctx context.Context, _ *pb.AuditVerifyChainReq
 		Genesis:  report.Genesis,
 		Seed:     report.Seed,
 		Handoff:  report.Handoff,
+	}, nil
+}
+
+// VerifyReplicatedChain handles the AuditService.VerifyReplicatedChain RPC:
+// hash-chain continuity for the cluster-wide replicated audit chain, for the
+// caller's own tenant (tenant.Confine; a tenant_id naming another tenant is
+// refused with PERMISSION_DENIED). A tenant whose replicated-audit
+// entitlement is off is refused with PERMISSION_DENIED rather than
+// answering a trivially-true report for a chain that was never written to.
+func (s *auditServer) VerifyReplicatedChain(ctx context.Context, req *pb.AuditVerifyReplicatedChainRequest) (*pb.AuditVerifyReplicatedChainResponse, error) {
+	if s.replicatedAudit == nil {
+		return nil, status.Error(codes.Unimplemented, "replicated audit not configured")
+	}
+
+	tenantID, err := tenant.Confine(ctx, req.GetTenantId(), "verify replicated audit chain")
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	report, err := s.replicatedAudit.VerifyTenantChain(ctx, tenantID)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.AuditVerifyReplicatedChainResponse{
+		Verified: report.Verified,
+		Reason:   report.Reason,
+		Records:  report.Records,
+		HeadSeq:  report.Head,
+		LowSeq:   report.Low,
+		Genesis:  report.Genesis,
 	}, nil
 }
 

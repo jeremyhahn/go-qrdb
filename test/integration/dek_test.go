@@ -22,13 +22,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// writeDEKKeyFile provisions the built-in "software" key-wrap provider's
+// key file for the tenant DEK keyring's default key reference -- the
+// caller's tenant ID itself, "system" for every call these tests make
+// (mTLS-authenticated, no tenant header) -- inside dir, so --dek-key-dir
+// resolves it.
+func writeDEKKeyFile(t *testing.T, dir, tenantID string) {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	if err := os.WriteFile(filepath.Join(dir, tenantID), key, 0o600); err != nil {
+		t.Fatalf("write DEK key file: %v", err)
+	}
+}
 
 // The tenant DEK keyring end to end against real qrdbd processes: a keyring
 // record written through one node is replicated through the system shard, so
@@ -106,7 +124,9 @@ func decryptsOn(t *testing.T, ca *testCA, port int, ciphertext, aad []byte) []by
 }
 
 func TestDEK_Cluster_EveryNodeDecryptsEveryVersion(t *testing.T) {
-	ports, _, ca := startThreeNodeCluster(t, "memory")
+	dekKeyDir := t.TempDir()
+	writeDEKKeyFile(t, dekKeyDir, "system")
+	ports, _, ca := startThreeNodeCluster(t, "memory", "--dek-key-dir", dekKeyDir)
 	aad := []byte("system/db/password")
 
 	// Version 1 is created by the first encryption, on node 1.
@@ -191,6 +211,8 @@ func TestDEK_VersionsSurviveARestart(t *testing.T) {
 	adminPorts := allocateTCPPorts(t, 1)
 	grpcPorts := allocateTCPPorts(t, 1)
 	dataDir := t.TempDir()
+	dekKeyDir := t.TempDir()
+	writeDEKKeyFile(t, dekKeyDir, "system")
 	certPath, keyPath := ca.generateNodeCert(t)
 	args := []string{
 		"start",
@@ -207,6 +229,7 @@ func TestDEK_VersionsSurviveARestart(t *testing.T) {
 		"--tls-ca-file", ca.CertPath,
 		"--tls-cert-file", certPath,
 		"--tls-key-file", keyPath,
+		"--dek-key-dir", dekKeyDir,
 	}
 	// boot is bootstrapNodes on the first start and unsealNodes on the
 	// restart: the barrier the first boot initialized survives the restart

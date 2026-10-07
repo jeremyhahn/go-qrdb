@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -44,7 +45,7 @@ func TestUserAudit_CreateUser_AcceptsTenantAndRoles(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock), WithRoleService(tenantRoleServicer("acme")))
 
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
+	_, err := tr.CreateUser(tenant.WithTenantID(context.Background(), "acme"), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "bob",
 		TenantID: "acme",
 		RoleIDs:  []string{"role-user", "role-admin"},

@@ -45,6 +45,9 @@ var (
 var sdkCrossScopePermissions = []sdk.Permission{
 	sdk.PermissionTenantsListCross,
 	sdk.PermissionTenantsCreateCross,
+	sdk.PermissionTenantsReadCross,
+	sdk.PermissionTenantsDeleteCross,
+	sdk.PermissionTenantsUpdateCross,
 	sdk.PermissionTenantsApprove,
 	sdk.PermissionTenantsCreate,
 	sdk.PermissionTenantsSetIsolation,
@@ -114,6 +117,9 @@ func TestSDK_CrossScopePermissions_AreTheCanonicalOnes(t *testing.T) {
 	pairs := map[sdk.Permission]permission.Permission{
 		sdk.PermissionTenantsListCross:           permission.TenantsListCross,
 		sdk.PermissionTenantsCreateCross:         permission.TenantsCreateCross,
+		sdk.PermissionTenantsReadCross:           permission.TenantsReadCross,
+		sdk.PermissionTenantsDeleteCross:         permission.TenantsDeleteCross,
+		sdk.PermissionTenantsUpdateCross:         permission.TenantsUpdateCross,
 		sdk.PermissionTenantsApprove:             permission.TenantsApprove,
 		sdk.PermissionTenantsCreate:              permission.TenantsCreate,
 		sdk.PermissionTenantsSetIsolation:        permission.TenantsSetIsolation,

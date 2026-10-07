@@ -37,7 +37,6 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 
 	args := map[string]any{
 		"name":    req.Name,
-		"engine":  req.Engine,
 		"backend": req.Backend,
 	}
 

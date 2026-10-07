@@ -32,18 +32,21 @@ between tenants. Two tenants can create a namespace named `embeddings` with no
 conflict; the underlying keys are isolated as `tenant-a:embeddings` and
 `tenant-b:embeddings`.
 
-In STRICT mode (a FIPS 140-3 build where `crypto/fips140.Enabled()` is true,
-OR when `config.tenant.strict_isolation: true`), namespace creation without
-a tenant context is rejected — no implicit shared or system namespaces.
-Standard mode (default) uses the `system` tenant as the implicit owner for
-un-tenanted requests, suitable for single-tenant deployments.
+Under a `strict` cluster isolation-policy floor (a FIPS 140-3 build where
+`crypto/fips140.Enabled()` is true, or an operator-raised floor — see
+[multi-tenancy/architecture.md#the-isolation-policy](multi-tenancy/architecture.md#the-isolation-policy)),
+namespace creation without a tenant context is rejected — no implicit shared
+or system namespaces. Under `operator-access` (today's behavior, and the
+default for any deployment that has not raised the floor), the `system`
+tenant is the implicit owner for un-tenanted requests, suitable for
+single-tenant deployments.
 
 **Example: CreateNamespace behavior**
 
 ```
 CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "embeddings"})
-  → Binds the owner tenant from ctx (defaults to "system" if omitted in standard mode)
-  → In STRICT mode, error if no tenant context
+  → Binds the owner tenant from ctx (defaults to "system" if omitted under operator-access)
+  → Under a strict floor, error if no tenant context
   → Returns namespace scoped to that tenant's isolation context
 ```
 

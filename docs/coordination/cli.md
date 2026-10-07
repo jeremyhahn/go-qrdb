@@ -64,8 +64,8 @@ that only a running program can hold.
 
 ## The one CLI-visible thing
 
-Before writing a consumer, check which half of the surface the target node can
-serve. `AcquireLease` and `Watch` require raft mode:
+Before writing a consumer, check which parts of the surface the target node can
+serve:
 
 ```bash
 qrdb admin capabilities --output json
@@ -79,6 +79,11 @@ and refuses `AcquireLease` with a typed "unsupported" error; it still serves
 
 ## Parity
 
-No verbs, so no `CommandDefinition` entries in the integration parity suite. A
-`qrdb coordination` verb appearing in the parity suite without appearing here
-would be a defect in whichever is behind.
+No verbs, so no `_PerProtocol` CLI test. The surface is covered at SDK level by
+`TestCoordinator_SameOnEveryTransport` (`sdk/go/conformance`), which is not part
+of `make integration-test-coordination`: that target maps to no test files in
+`test/integration/features.mk` and runs zero tests, and says so. The
+`coordination` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md) is the
+accounting. A `qrdb coordination` verb appearing in the CLI suite without
+appearing here would be a defect in whichever is behind.

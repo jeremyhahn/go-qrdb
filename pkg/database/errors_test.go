@@ -51,33 +51,23 @@ func TestInvalidNameError_TypeAssertion(t *testing.T) {
 	}
 }
 
-func TestInvalidEngineError_Message(t *testing.T) {
-	tests := []struct {
-		name   string
-		engine string
-		want   string
-	}{
-		{"empty", "", `database: invalid engine type: ""`},
-		{"unknown", "graph", `database: invalid engine type: "graph"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := &InvalidEngineError{Engine: tt.engine}
-			if got := err.Error(); got != tt.want {
-				t.Errorf("Error() = %q, want %q", got, tt.want)
-			}
-		})
+func TestLegacyMetadataError_Message(t *testing.T) {
+	err := &LegacyMetadataError{Path: "/data/db/meta.json", Err: errors.New(`json: unknown field "engine"`)}
+	want := `database: unsupported metadata format "/data/db/meta.json": json: unknown field "engine"; recreate the database`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
 
-func TestInvalidEngineError_TypeAssertion(t *testing.T) {
-	var err error = &InvalidEngineError{Engine: "graph"}
-	var target *InvalidEngineError
+func TestLegacyMetadataError_TypeAssertion(t *testing.T) {
+	cause := errors.New("boom")
+	var err error = &LegacyMetadataError{Path: "/data/db/meta.json", Err: cause}
+	var target *LegacyMetadataError
 	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed for *InvalidEngineError")
+		t.Fatal("errors.As failed for *LegacyMetadataError")
 	}
-	if target.Engine != "graph" {
-		t.Errorf("Engine = %q, want %q", target.Engine, "graph")
+	if !errors.Is(err, cause) {
+		t.Error("Unwrap() did not expose the underlying cause")
 	}
 }
 
@@ -599,7 +589,6 @@ func TestAllErrorTypes_ImplementErrorInterface(t *testing.T) {
 	cause := errors.New("test cause")
 	errs := []error{
 		&InvalidNameError{Name: "x"},
-		&InvalidEngineError{Engine: "x"},
 		&InvalidBackendError{Backend: "x"},
 		&AlreadyExistsError{Name: "x"},
 		&NotFoundError{Name: "x"},
@@ -608,6 +597,7 @@ func TestAllErrorTypes_ImplementErrorInterface(t *testing.T) {
 		&CloseError{Name: "x", Err: cause},
 		&MetaReadError{Path: "x", Err: cause},
 		&MetaWriteError{Path: "x", Err: cause},
+		&LegacyMetadataError{Path: "x", Err: cause},
 		&DropError{Name: "x", Err: cause},
 		&StorageCreateError{Name: "x", Backend: "y", Err: cause},
 		&InvalidModeError{Mode: "x"},

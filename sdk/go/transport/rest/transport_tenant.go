@@ -40,10 +40,14 @@ type restTenant struct {
 	VolumePool    string                        `json:"volume_pool,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
-	CreatedAtStr  string                        `json:"createdAt"`
-	UpdatedAtStr  string                        `json:"updatedAt"`
-	CreatedAtAlt  string                        `json:"created_at"`
-	UpdatedAtAlt  string                        `json:"updated_at"`
+	// Refusal is set when the answering node will not serve this
+	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
+	// otherwise. Another node may still serve it.
+	Refusal      *transport.TenantRefusal `json:"refusal,omitempty"`
+	CreatedAtStr string                   `json:"createdAt"`
+	UpdatedAtStr string                   `json:"updatedAt"`
+	CreatedAtAlt string                   `json:"created_at"`
+	UpdatedAtAlt string                   `json:"updated_at"`
 }
 
 // restTenantBarrierInitRequest is the on-wire JSON for the init endpoint.
@@ -102,6 +106,7 @@ func (r *restTenant) toTenantInfo() transport.TenantInfo {
 		VolumePool:    r.VolumePool,
 		Quotas:        r.Quotas,
 		Entitlements:  r.Entitlements,
+		Refusal:       r.Refusal,
 	}
 	if ts := pickFirstNonEmpty(r.CreatedAtStr, r.CreatedAtAlt); ts != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {

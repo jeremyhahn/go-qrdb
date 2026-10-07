@@ -17,6 +17,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -54,6 +55,26 @@ func NewKVStoreAdapter(kv transport.KVClient, index transport.IndexClient) (KVSt
 		return nil, &NilIndexClientError{}
 	}
 	return &kvStoreAdapter{kv: kv, index: index}, nil
+}
+
+// translateIndexCapabilityError maps a wire-level capability refusal
+// (the server's statemachine has no index subsystem at all -- "memory",
+// "disk" and the other storage-generic raft.sm_types -- reported as HTTP
+// 501 / gRPC Unimplemented and decoded into *transport.CapabilityUnsupportedError)
+// to kvstore.ErrIndexUnsupported, the one sentinel pkg/dao probes for.
+//
+// Without this translation, the error reaching dao.New unchanged failed
+// errors.Is(err, kvstore.ErrIndexUnsupported): construction aborted instead
+// of degrading to full scans, which is the exact failure mode the
+// capability probe exists to avoid. Any other error (a transient failure,
+// a malformed request) passes through unchanged, since only this ONE
+// condition is a capability statement.
+func translateIndexCapabilityError(err error) error {
+	var capErr *transport.CapabilityUnsupportedError
+	if errors.As(err, &capErr) {
+		return kvstore.ErrIndexUnsupported
+	}
+	return err
 }
 
 // kvStoreAdapter bridges the SDK transport layer to the kvstore.KVStore
@@ -256,8 +277,24 @@ func (a *kvStoreAdapter) Scan(ctx context.Context, prefix string, fn func(key st
 	if err != nil {
 		return err
 	}
-	for key, value := range entries {
-		if err := fn(key, value); err != nil {
+
+	// entries is a map: Go randomizes map iteration order per iteration by
+	// design, so two Scan calls over the identical data would otherwise
+	// deliver it to fn in two different orders. A caller that scans
+	// repeatedly to page through a prefix (pkg/dao.GenericDAO.Page's
+	// default, no-SortField path issues one Scan per page) relies on a
+	// STABLE enumeration order across those calls for its offset to mean
+	// anything; without it, an entity can be skipped on one page and
+	// repeated on another. Sorting by key makes the order deterministic
+	// and matches what every Pebble-backed Scan already returns natively.
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if err := fn(key, entries[key]); err != nil {
 			return err
 		}
 	}
@@ -306,7 +343,7 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 			CaseInsensitive: !ei.CaseSensitive,
 		}
 		if err := a.index.IndexCreate(ctx, ei.ResolvedName(entityType), ei.JSONFieldName, cfg); err != nil {
-			return err
+			return translateIndexCapabilityError(err)
 		}
 	}
 	return nil
@@ -318,7 +355,7 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 func (a *kvStoreAdapter) QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
 	resp, err := a.index.IndexQuery(ctx, indexName, string(value))
 	if err != nil {
-		return nil, err
+		return nil, translateIndexCapabilityError(err)
 	}
 	keys := make([][]byte, len(resp.Keys))
 	for i, k := range resp.Keys {
@@ -338,7 +375,7 @@ func (a *kvStoreAdapter) QueryIndex(ctx context.Context, indexName string, value
 func (a *kvStoreAdapter) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
 	resp, err := a.index.IndexScan(ctx, indexName, transport.OptionalString(start), transport.OptionalString(end))
 	if err != nil {
-		return nil, err
+		return nil, translateIndexCapabilityError(err)
 	}
 	result := make(map[string][][]byte, len(resp.Entries))
 	for _, entry := range resp.Entries {

@@ -129,7 +129,7 @@ func TestManagerSQLConfig_ReadsTheCatalog(t *testing.T) {
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err := mgr.Create(database.DatabaseConfig{
-		Name: "shop", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "shop", Backend: database.BackendMemory,
 		SQL: &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
 	})
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestManagerSQLConfig_ReadsTheCatalog(t *testing.T) {
 
 	p := NewManagerProvider(mgr, nil)
 	assert.NotNil(t, p.sqlConfigOf)
-	db := p.newDatabase("shop", database.EngineKV).(*Database)
+	db := p.newDatabase("shop").(*Database)
 	assert.Equal(t, database.ConcurrencyPessimistic, db.concurrency(""))
 	assert.Equal(t, database.ConcurrencyOptimistic, (&Database{name: "x"}).concurrency(""))
 }

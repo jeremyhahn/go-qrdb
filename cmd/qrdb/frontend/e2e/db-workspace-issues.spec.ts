@@ -37,14 +37,14 @@ const LOAD_TIMEOUT = 10_000;
 const kvDbState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "test-kv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "test-kv", backend: "pebble", status: "open" },
   ],
 };
 
 const tsDbState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "test-ts", engine: "timeseries", backend: "pebble", status: "open" },
+    { name: "test-ts", backend: "pebble", status: "open" },
   ],
 };
 
@@ -106,10 +106,10 @@ test.describe("Issue 1: Horizontal tab bar — KV workspace", () => {
   });
 });
 
-test.describe("Issue 1: Horizontal tab bar — TimeSeries workspace", () => {
+test.describe("Issue 1: Horizontal tab bar — every engine is exposed", () => {
   test.use({ mockState: tsDbState });
 
-  test("timeseries workspace shows only Data, Batch, Settings tabs", async ({ page }) => {
+  test("workspace shows the Time Series and Vectors tabs beside the KV tabs", async ({ page }) => {
     await page.goto("/");
     await page.locator("aside").getByText("test-ts").click();
     await expect(
@@ -119,17 +119,9 @@ test.describe("Issue 1: Horizontal tab bar — TimeSeries workspace", () => {
     const tabList = page.locator("main [role='tablist']");
     await expect(tabList).toBeVisible({ timeout: LOAD_TIMEOUT });
 
-    // TimeSeries tabs must be present
-    await expect(tabList.getByText("Data", { exact: true })).toBeVisible();
-    await expect(tabList.getByText("Batch", { exact: true })).toBeVisible();
-    await expect(tabList.getByText("Settings", { exact: true })).toBeVisible();
-
-    // KV-only tabs must NOT be present
-    await expect(tabList.getByText("Collections", { exact: true })).not.toBeVisible();
-    await expect(tabList.getByText("Transactions", { exact: true })).not.toBeVisible();
-    await expect(tabList.getByText("Indexes", { exact: true })).not.toBeVisible();
-    await expect(tabList.getByText("Watch", { exact: true })).not.toBeVisible();
-    await expect(tabList.getByText("Leases", { exact: true })).not.toBeVisible();
+    for (const label of ["Data", "Collections", "Batch", "Time Series", "Vectors", "Settings"]) {
+      await expect(tabList.getByText(label, { exact: true })).toBeVisible();
+    }
   });
 });
 
@@ -157,8 +149,7 @@ test.describe("Issue 2: Database Settings tab — KV database", () => {
     // Database name inside the card (font-mono paragraph)
     await expect(infoCard.locator("p.font-mono", { hasText: "test-kv" })).toBeVisible();
 
-    // Engine and backend
-    await expect(infoCard.locator(".badge", { hasText: "kv" })).toBeVisible();
+    // Backend
     await expect(infoCard.getByText("pebble")).toBeVisible();
   });
 

@@ -41,7 +41,7 @@ const LOAD_TIMEOUT = 10_000;
 const stateWithDefault: MockState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "default", engine: "kv", backend: "pebble", status: "open" },
+    { name: "default", backend: "pebble", status: "open" },
   ],
 };
 
@@ -49,7 +49,7 @@ const stateWithDefault: MockState = {
 const raftStateWithDefault: MockState = {
   ...raftClusterState,
   databases: [
-    { name: "default", engine: "kv", backend: "pebble", status: "open" },
+    { name: "default", backend: "pebble", status: "open" },
   ],
 };
 
@@ -435,7 +435,7 @@ test.describe("Admin Views - Databases", () => {
     await expect(main.locator("th", { hasText: "Name" })).toBeVisible({
       timeout: LOAD_TIMEOUT,
     });
-    await expect(main.locator("th", { hasText: "Engine" })).toBeVisible();
+    await expect(main.locator("th", { hasText: "Backend" })).toBeVisible();
     await expect(main.locator("th", { hasText: "Status" })).toBeVisible();
 
     // Default database row

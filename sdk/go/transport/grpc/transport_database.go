@@ -32,8 +32,7 @@ var _ transport.DatabaseClient = (*Transport)(nil)
 // DatabaseClient implementation
 // ---------------------------------------------------------------------------
 
-// CreateDatabase creates a new database with the specified engine and storage
-// backend.
+// CreateDatabase creates a new database with the specified storage backend.
 func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateDatabaseRequest) (*transport.DatabaseInfo, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -41,7 +40,6 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 
 	pbReq := &pb.DatabaseCreateRequest{
 		Name:     req.Name,
-		Engine:   req.Engine,
 		Backend:  req.Backend,
 		DataDir:  req.DataDir,
 		Replicas: uint32(req.Replicas),

@@ -44,6 +44,36 @@ func orphanedMetadata(t *testing.T, svc *TenantService, id string) {
 	}
 }
 
+func TestRefusalOf(t *testing.T) {
+	if got := RefusalOf(nil); got != nil {
+		t.Fatalf("RefusalOf(nil) = %+v, want nil", got)
+	}
+
+	missingProvider := &volume.ProviderNotRegisteredError{Provider: "nvme", Available: []string{"file"}}
+	providerRefusal := RefusalOf(missingProvider)
+	if providerRefusal == nil {
+		t.Fatal("RefusalOf(provider error) = nil, want refusal")
+	}
+	if providerRefusal.Code != RefusalCodeProviderMissing {
+		t.Fatalf("provider refusal code = %q, want %q", providerRefusal.Code, RefusalCodeProviderMissing)
+	}
+	if providerRefusal.Message != missingProvider.Error() {
+		t.Fatalf("provider refusal message = %q, want %q", providerRefusal.Message, missingProvider.Error())
+	}
+
+	poolErr := errors.New("pool exhausted")
+	poolRefusal := RefusalOf(poolErr)
+	if poolRefusal == nil {
+		t.Fatal("RefusalOf(pool error) = nil, want refusal")
+	}
+	if poolRefusal.Code != RefusalCodePoolUnavailable {
+		t.Fatalf("pool refusal code = %q, want %q", poolRefusal.Code, RefusalCodePoolUnavailable)
+	}
+	if poolRefusal.Message != poolErr.Error() {
+		t.Fatalf("pool refusal message = %q, want %q", poolRefusal.Message, poolErr.Error())
+	}
+}
+
 // TestListTenants_ARefusedTenantDoesNotHideTheOthers: one tenant whose
 // catalog Assignment does not resolve on this node must not take the
 // listing -- and with it every node's boot -- down. It is listed with its
@@ -71,6 +101,37 @@ func TestListTenants_ARefusedTenantDoesNotHideTheOthers(t *testing.T) {
 	got, ok := byID["orphan"]
 	if !ok || !errors.As(got.Refusal, &notFound) {
 		t.Fatalf("orphan tenant = %+v (listed %v); want *volume.AssignmentNotFoundError", got, ok)
+	}
+}
+
+// TestGetTenant_ARefusedTenantCarriesItsRefusal proves a single GetTenant
+// reports the same refusal ListTenants already did: a tenant this node
+// cannot resolve is not silently returned as if it were served. Before
+// this fix, GetTenant skipped checkLocalResolution entirely, so `tenant
+// get` (unlike `tenant list`) never showed Refused: at all.
+func TestGetTenant_ARefusedTenantCarriesItsRefusal(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newReconcileService(t)
+	if _, err := svc.CreateTenant(ctx, "vlive", "Live", IsolationVolume); err != nil {
+		t.Fatal(err)
+	}
+	orphanedMetadata(t, svc, "orphan")
+
+	live, err := svc.GetTenant(ctx, "vlive")
+	if err != nil {
+		t.Fatalf("GetTenant(vlive) = %v", err)
+	}
+	if live.Refusal != nil {
+		t.Fatalf("live tenant = %+v; want served with no refusal", live)
+	}
+
+	orphan, err := svc.GetTenant(ctx, "orphan")
+	if err != nil {
+		t.Fatalf("GetTenant(orphan) = %v; a refused tenant is still returned, not an error", err)
+	}
+	var notFound *volume.AssignmentNotFoundError
+	if !errors.As(orphan.Refusal, &notFound) {
+		t.Fatalf("orphan.Refusal = %v, want *volume.AssignmentNotFoundError", orphan.Refusal)
 	}
 }
 

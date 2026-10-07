@@ -1,6 +1,6 @@
 # Attested Caller — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -96,6 +96,8 @@ decision's outcome, so the ordinary trail stays complete; the gate's own record
 `Reason`, `SecurityRelevant`, `Detail` and the wrapped `Err`.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-attested-caller` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test yet (the gate needs an injected verifier that a stock `qrdbd` does not carry), so the target runs zero tests and says so; this is a recorded gap, not a pass. Per-transport accounting is the `attested-caller` row of `test/integration/COVERAGE.md`.
 
 - **Fail-closed, case by case** (`pkg/auth/middleware/peer_attestation_test.go`),
   against the real mTLS authenticator and user store: no evidence, stale

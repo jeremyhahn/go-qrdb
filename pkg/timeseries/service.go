@@ -68,6 +68,12 @@ type TimeSeriesServicer interface {
 	// SetRetentionPolicy sets the retention policy for a metric.
 	SetRetentionPolicy(ctx context.Context, metric string, policy *RetentionPolicy) error
 
+	// ApplyRetention deletes points for metric older than cutoff. cutoff is
+	// fixed by the caller (the retention scheduler's leader, from its own
+	// clock) and applied identically on every replica -- the proposal
+	// never lets a replica consult its own clock.
+	ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error
+
 	// ListMetrics returns metric names matching the optional prefix.
 	ListMetrics(prefix string, limit int) ([]string, error)
 

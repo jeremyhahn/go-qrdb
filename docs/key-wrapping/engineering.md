@@ -1,6 +1,6 @@
 # Key Wrapping — Engineering Contract
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-04
+> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -204,6 +204,8 @@ own stored `KeyRef` resolves it), so there is nothing left for a
 not work, not a server-side failure.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-key-wrapping` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test yet, so the target runs zero tests and says so; this is a recorded gap (the `key-wrapping` row marks it), not a pass. Per-transport accounting is the `key-wrapping` row of `test/integration/COVERAGE.md`.
 
 - **Unit, `pkg/keywrap`**: `SoftwareProvider` round-trips a DEK through a
   real 32-byte key file; refuses a 31-byte and a 33-byte file with

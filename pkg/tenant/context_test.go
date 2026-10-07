@@ -81,7 +81,8 @@ func TestEffectiveTenant(t *testing.T) {
 		wantDenied bool
 	}{
 		{"system caller empty request defaults to system", tenantid.System, "", tenantid.System, false},
-		{"system caller may target any tenant", tenantid.System, "b", "b", false},
+		{"system caller cross-tenant request denied (no system lift)", tenantid.System, "b", "", true},
+		{"system caller matching request resolves to identity", tenantid.System, tenantid.System, tenantid.System, false},
 		{"tenant caller empty request resolves to identity", "a", "", "a", false},
 		{"tenant caller matching request resolves to identity", "a", "a", "a", false},
 		{"tenant caller cross-tenant request denied", "a", "b", "", true},
@@ -106,6 +107,46 @@ func TestEffectiveTenant(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Fatalf("EffectiveTenant = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOwnTenant(t *testing.T) {
+	tests := []struct {
+		name       string
+		identity   string
+		requested  string
+		want       string
+		wantDenied bool
+	}{
+		{"system caller empty request resolves to system", tenantid.System, "", tenantid.System, false},
+		{"system caller cross-tenant request denied, unlike EffectiveTenant", tenantid.System, "b", "", true},
+		{"system caller matching request resolves to system", tenantid.System, tenantid.System, tenantid.System, false},
+		{"tenant caller empty request resolves to identity", "a", "", "a", false},
+		{"tenant caller matching request resolves to identity", "a", "a", "a", false},
+		{"tenant caller cross-tenant request denied", "a", "b", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := WithTenantID(context.Background(), tc.identity)
+			got, err := OwnTenant(ctx, tc.requested, "op")
+			if tc.wantDenied {
+				var xt *CrossTenantDeniedError
+				if !errors.As(err, &xt) {
+					t.Fatalf("OwnTenant = (%q, %v), want CrossTenantDeniedError", got, err)
+				}
+				if xt.IdentityTenantID != tc.identity || xt.RequestedTenantID != tc.requested {
+					t.Fatalf("error tenants = (%q,%q), want (%q,%q)",
+						xt.IdentityTenantID, xt.RequestedTenantID, tc.identity, tc.requested)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("OwnTenant unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("OwnTenant = %q, want %q", got, tc.want)
 			}
 		})
 	}

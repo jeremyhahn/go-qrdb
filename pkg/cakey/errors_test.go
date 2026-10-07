@@ -123,10 +123,36 @@ func TestNotInitializedError(t *testing.T) {
 	}
 }
 
+func TestSignerRevokedError(t *testing.T) {
+	err := &SignerRevokedError{}
+	if !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("Error() = %q, want it to mention revoked", err.Error())
+	}
+}
+
 func TestNilProviderError(t *testing.T) {
 	err := &NilProviderError{}
 	if !strings.Contains(err.Error(), "nil") {
 		t.Fatalf("Error() = %q, want it to mention nil", err.Error())
+	}
+}
+
+func TestSealError(t *testing.T) {
+	wrapped := errors.New("inner")
+	err := &SealError{Op: "seal", Err: wrapped}
+	if !strings.Contains(err.Error(), "inner") {
+		t.Fatalf("Error() = %q, want it to contain %q", err.Error(), "inner")
+	}
+	if !strings.Contains(err.Error(), "seal") {
+		t.Fatalf("Error() = %q, want it to mention the op", err.Error())
+	}
+	if err.Unwrap() != wrapped {
+		t.Fatalf("Unwrap() = %v, want %v", err.Unwrap(), wrapped)
+	}
+
+	bare := &SealError{Op: "open"}
+	if !strings.Contains(bare.Error(), "open") {
+		t.Fatalf("Error() on a bare SealError = %q, want it to mention the op", bare.Error())
 	}
 }
 

@@ -199,23 +199,22 @@ type startFlags struct {
 	// admin HTTPS base URL. It is populated from cfg.Auth.PeerAdminURLs and
 	// pre-seeds the peerAdminRegistry so the cluster key sender can reach
 	// follower nodes even when they share a host but use distinct admin ports.
-	peerAdminURLs         map[string]string
-	strictTenantIsolation bool
-	sqlDatabase           string
-	tlsCAFile             string
-	tlsCertFile           string
-	tlsKeyFile            string
-	tlsClientAuth         string
-	tlsClientAuthSet      bool
-	bootstrapNoiseKey     string
-	bootstrapNoiseAddr    string
-	bootstrapNoisePort    int
-	bootstrapNoiseHost    string
-	bootstrapSPKIPin      string
-	bootstrapDANEDNS      string
-	bootstrapDANEDoT      bool
-	bootstrapDirectURL    string
-	bootstrapAddr         string
+	peerAdminURLs      map[string]string
+	sqlDatabase        string
+	tlsCAFile          string
+	tlsCertFile        string
+	tlsKeyFile         string
+	tlsClientAuth      string
+	tlsClientAuthSet   bool
+	bootstrapNoiseKey  string
+	bootstrapNoiseAddr string
+	bootstrapNoisePort int
+	bootstrapNoiseHost string
+	bootstrapSPKIPin   string
+	bootstrapDANEDNS   string
+	bootstrapDANEDoT   bool
+	bootstrapDirectURL string
+	bootstrapAddr      string
 
 	// bootstrapJoin* configure this node's JOINER side of member-side CSR
 	// join: either the Noise_NK transport (Addr+Key) or the SPKI/Direct
@@ -294,6 +293,15 @@ type startFlags struct {
 	// be restorable after --data-dir is lost entirely.
 	backupKeyDir string
 
+	// dekKeyDir is backupKeyDir's counterpart for the tenant DEK keyring's
+	// own "software" provider instance: every per-tenant key reference
+	// the keyring's default KeyRefFunc computes (the tenant ID itself) is
+	// a bare file name inside it, never a path. A distinct directory from
+	// backupKeyDir because the two naming domains (tenant IDs vs.
+	// operator-chosen backup key names) are unrelated; keyWrapInjection's
+	// registry/provider, when set, are shared with the DEK keyring too.
+	dekKeyDir string
+
 	// databases holds the database configurations loaded from the YAML
 	// config file. When no config file is provided, this defaults to a
 	// single "default" KV database with a pebble backend.
@@ -312,6 +320,14 @@ type startFlags struct {
 	// draw from when allocating a per-tenant Pebble. When no config
 	// file is provided, the empty default applies (no pools).
 	storageConfig qrdbconfig.StorageConfig
+
+	// allowDegradedVolumeBoot mirrors storageConfig.AllowDegradedVolumeBoot
+	// but is bound to its own CLI flag (--allow-degraded-volume-boot) so a
+	// flag set on the command line overrides the config file's value;
+	// applyConfigToFlags folds it back into storageConfig once the config
+	// file (if any) has been loaded. The default is false: a volume pool
+	// that fails to open fails qrdbd start outright.
+	allowDegradedVolumeBoot bool
 
 	// embeddingConfig holds the embedding provider configuration loaded from
 	// YAML. When no config file is provided, the empty default applies (no
@@ -636,8 +652,12 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 		"Name of the key file, inside --backup-key-dir, that overrides the key reference stored in the restored backup's own envelope (only needed if the backup's own key reference is not usable on this node)")
 	cmd.Flags().BoolVar(&f.allowPlaintextRestore, "allow-plaintext-restore", false,
 		"Explicit opt-in required to restore --restore-backup-id's backup when its own stored state is plaintext; refused with a typed error otherwise")
+	cmd.Flags().BoolVar(&f.allowDegradedVolumeBoot, "allow-degraded-volume-boot", false,
+		"Explicit opt-in to start qrdbd when a configured volume pool (storage.volume_pools) fails to open; starts every volume and database this node can and refuses only the ones on the failed pool, instead of the default: fail startup outright, naming every inaccessible volume and the reason")
 	cmd.Flags().StringVar(&f.backupKeyDir, "backup-key-dir", "",
 		"Directory the built-in \"software\" key-wrap provider's key files must live inside; every backup/restore key reference is a bare file name inside it, never a path (required to create or restore an encrypted backup with the built-in provider)")
+	cmd.Flags().StringVar(&f.dekKeyDir, "dek-key-dir", "",
+		"Directory the built-in \"software\" key-wrap provider's key files must live inside for the tenant DEK keyring; every tenant's key reference (its tenant ID, by default) is a bare file name inside it, never a path (required for dek encrypt/rotate with the built-in provider)")
 
 	return cmd, f
 }
@@ -816,9 +836,6 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if m := lifecycle.PeerAdminURLMap(cfg.Auth.PeerAdminURLs); m != nil {
 		f.peerAdminURLs = m
 	}
-	// Tenant isolation posture mirrors RBAC: config can raise strictness;
-	// FIPS-140 always enforces it.
-	f.strictTenantIsolation = cfg.Tenant.StrictIsolation
 	f.tenantConfig = cfg.Tenant
 	if !cmd.Flags().Changed("enable-mysql") {
 		f.enableMySQL = cfg.Protocols.MySQL
@@ -930,8 +947,14 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 
 	// Storage config (including volume_pools) is always inherited from
 	// YAML — there is no CLI flag equivalent for the multi-path pool
-	// definitions that barrier-mode tenants depend on.
+	// definitions that barrier-mode tenants depend on. The one exception
+	// is AllowDegradedVolumeBoot, which also has the
+	// --allow-degraded-volume-boot flag: an explicit flag wins over the
+	// config file's allow_degraded_volume_boot.
 	f.storageConfig = cfg.Storage
+	if cmd.Flags().Changed("allow-degraded-volume-boot") {
+		f.storageConfig.AllowDegradedVolumeBoot = f.allowDegradedVolumeBoot
+	}
 
 	// Embedding and RAG configs are always inherited from YAML — there are
 	// no CLI flag equivalents for the provider registry or chunking parameters.
@@ -1292,6 +1315,17 @@ func runStart(f *startFlags) (err error) {
 	var clusterJoin *lifecycle.ClusterJoin
 	defer func() { clusterJoin.Stop() }()
 
+	// memberAnchorAdv is the anchor-only Noise listener for a member that
+	// resolveTLS did not already start one for (bootServers above): every
+	// admitted, unsealed member now advertises the cluster CA trust anchor,
+	// closing the single point of failure where only the node that
+	// generated it ever could. Declared here for the same reason
+	// clusterJoin is: the deferred Stop must cover every return between its
+	// start (well below) and the explicit shutdown path, and it is wrapped
+	// in a closure because its final value is not known yet.
+	var memberAnchorAdv *clusterenroll.Advertiser
+	defer func() { memberAnchorAdv.Stop() }()
+
 	// Enable TLS certificate hot-reload when certs are file-backed.
 	// The CertReloader watches the data directory for cert changes and
 	// atomically swaps the certificate on every TLS handshake.
@@ -1507,6 +1541,20 @@ func runStart(f *startFlags) (err error) {
 			}
 			openVolumes, volumePoolRows := lifecycle.OpenConfiguredVolumes(sigCtx, nodeID, f.storageConfig.VolumePools, volumeRegistry, slog.Default())
 			defer lifecycle.CloseOpenedVolumes(context.Background(), volumePoolRows, slog.Default())
+			// Owner ruling 2026-10-06: a volume pool that fails to open at
+			// boot fails qrdbd start outright by default, naming every
+			// inaccessible volume and the reason — it does not serve with
+			// missing data. --allow-degraded-volume-boot (or its config-file
+			// equivalent storage.allow_degraded_volume_boot) is the explicit,
+			// operator-chosen opt-in to start every volume and database this
+			// node CAN open and skip the rest; OpenConfiguredVolumes has
+			// already logged each failure at ERROR and recorded it in
+			// qrdb_volume_pool_ready, and BuildNodeReport (below) keeps
+			// reporting the skip in this node's health for as long as it
+			// lasts.
+			if failed := lifecycle.FailedOpens(volumePoolRows); len(failed) > 0 && !f.storageConfig.AllowDegradedVolumeBoot {
+				return &volume.OpenAtBootError{Failures: failed}
+			}
 			if sealSub != nil && sealSub.VolumeLifecycle != nil {
 				for _, row := range volumePoolRows {
 					if lockable, ok := row.Vol.(volume.Lockable); ok {
@@ -1762,15 +1810,9 @@ func runStart(f *startFlags) (err error) {
 			// for the pre-host sealed-window listener; the listener was stopped
 			// before initializeNode, so this BuildServices call is the single
 			// owner of the barrier services for the rest of the daemon's lifetime.
-			// Strict tenant isolation: FIPS-140 always enforces it; operators opt in
-			// via config.Tenant.StrictIsolation (stored in f.strictTenantIsolation by
-			// applyConfigToFlags). Mirrors the strictSoD resolution pattern above.
-			strictTenant := fips140.Enabled() || f.strictTenantIsolation
-			if !strictTenant {
-				slog.Warn("tenant isolation: standard mode active — un-tenanted vector namespace creation is NOT refused; " +
-					"identities with no explicit tenant pool into the 'system' tenant. " +
-					"Set tenant.strict_isolation: true (or build with FIPS-140) to enforce per-tenant isolation.")
-			}
+			// Tenant isolation posture is the cluster-wide isolation-policy
+			// floor (pkg/tenant/isolation_policy.go), set below once svcNode
+			// exists; FIPS-140 always tightens it to strict.
 
 			// Reuse the ceremony core service from the sealed-window listener when
 			// one exists: officer registrations performed while sealed are
@@ -1866,6 +1908,7 @@ func runStart(f *startFlags) (err error) {
 				AuditLogger:               complianceAudit,
 				AuditFailurePolicy:        auditPolicy,
 				KeyDir:                    f.backupKeyDir,
+				DEKKeyDir:                 f.dekKeyDir,
 				KeyWrapRegistry:           keyWrapInjection.registry,
 				KeyWrapProvider:           keyWrapInjection.provider,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
@@ -1875,7 +1918,6 @@ func runStart(f *startFlags) (err error) {
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,
 				ImportSession:             f.importSessionConfig,
-				StrictTenantIsolation:     strictTenant,
 				DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 				DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
 				Encryptor:                 enc,
@@ -1898,6 +1940,23 @@ func runStart(f *startFlags) (err error) {
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				return err
+			}
+			// FIPS-140 always tightens the cluster-wide isolation-policy
+			// floor to strict (pkg/tenant/isolation_policy.go); an operator
+			// may also raise it explicitly via the isolation-policy verb.
+			// Best-effort: the floor only ever tightens, so a failure here
+			// (e.g. a peer already moved it, or this node raced another to
+			// the first write) leaves the floor exactly as strict or
+			// stricter than this call asked for, never weaker.
+			if fips140.Enabled() {
+				if setter, ok := svcNode.Tenant.(interface {
+					SetClusterIsolationPolicy(ctx context.Context, next tenant.ClusterIsolationPolicy) error
+				}); ok {
+					if err := setter.SetClusterIsolationPolicy(sigCtx, tenant.ClusterIsolationPolicyStrict); err != nil {
+						slog.Warn("tenant isolation: could not confirm the cluster floor is strict under FIPS-140",
+							slog.Any("error", err))
+					}
+				}
 			}
 			// Key B cache eviction (go-qrdb#591's review): watches for a
 			// deleted tenant's CA material/certificate, or the tenant's own
@@ -1958,6 +2017,24 @@ func runStart(f *startFlags) (err error) {
 					_ = svcNode.Stop(context.Background())
 				}
 			}()
+
+			// Every admitted, unsealed member serves the trust anchor from
+			// here on, not only the node that generated it: once that node
+			// is gone for good, FetchAnchor/Join can still reach any
+			// surviving member. The node that generated the CA already
+			// advertises via bootServers (resolveTLS's first-node path);
+			// every other member -- joined, or restarted from a cached,
+			// non-generating data directory -- starts the identical
+			// listener here, from the same locally-cached certificate
+			// (bundle.CACertPEM) rather than a second copy of the cluster
+			// CA.
+			if bootServers == nil && servesAnchor(bundle) {
+				memberAnchorAdv, err = startMemberAnchorAdvertiser(f, bundle.CACertPEM, slog.Default())
+				if err != nil {
+					_ = shutdownNode(nodeCloser)
+					return err
+				}
+			}
 
 			// Provision the configured databases now that BuildServices has
 			// attached the keyspace reclaimer (see provisionDatabases). It is
@@ -2552,6 +2629,13 @@ func runStart(f *startFlags) (err error) {
 			// Compliance audit logger is always wired so the /v1/audit/events
 			// endpoint is available regardless of auth-enabled state.
 			serverOpts = append(serverOpts, server.WithAuditLogger(complianceAudit))
+			// The cluster-wide, per-tenant-opt-in replicated audit chain
+			// (docs/audit/architecture.md#cluster-wide-replicated-trail) is
+			// always wired alongside it: BuildServices always populates
+			// ReplicatedAudit, and it degrades to "not entitled" for every
+			// tenant until a per-tenant grant (or the platform default) turns
+			// it on.
+			serverOpts = append(serverOpts, server.WithReplicatedAuditLogger(svcNode.ReplicatedAudit))
 
 			// Auth factor service is constructed tenant-routed (factor
 			// implementations return ErrFactorDisabled for absent hardware,
@@ -2720,14 +2804,18 @@ func runStart(f *startFlags) (err error) {
 			if svcNode.Rebalance != nil && !standalone {
 				serverOpts = append(serverOpts, server.WithRebalanceService(svcNode.Rebalance))
 			}
-			// A non-nil advertiser means this node advertises enrollment, NOT
-			// that a Noise listener is running (clusterenroll.Advertiser). The
-			// distinction is what keeps a FIPS 140-3 first node joinable: Noise
-			// is excluded there, and /v1/ca/bootstrap -- the endpoint SPKI, DANE
-			// and direct HTTPS all fetch -- is the approved half of the same
-			// surface, so it has to be registered on exactly this condition
-			// rather than on the presence of a Noise server.
-			if bootServers != nil {
+			// Registered on servesAnchor, not on the presence of a Noise
+			// server: a non-nil Advertiser means this node advertises
+			// enrollment, not that a Noise listener is running
+			// (clusterenroll.Advertiser) -- a FIPS 140-3 node gets a
+			// non-nil, Noise-disabled Advertiser and still needs this
+			// route, the approved half of the same surface. servesAnchor
+			// is also what makes the route universal rather than
+			// first-node-only: every admitted, unsealed member holding the
+			// cluster CA (bootServers' first-node listener or
+			// memberAnchorAdv's, started above for every other member)
+			// registers it identically.
+			if servesAnchor(bundle) {
 				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM))
 			}
 			// The SPKI/Direct HTTPS join route is the plain-HTTPS twin of the
@@ -2869,6 +2957,7 @@ func runStart(f *startFlags) (err error) {
 				if bootServers != nil {
 					bootServers.Stop()
 				}
+				memberAnchorAdv.Stop()
 				if bundle.Reloader != nil {
 					_ = bundle.Reloader.Stop()
 				}
@@ -2928,6 +3017,10 @@ func runStart(f *startFlags) (err error) {
 					}
 				}
 				withdrawFeatures(gateCloser)
+				// The next iteration starts its own anchor listener on the same
+				// Noise port, and memberAnchorAdv's deferred Stop only runs when
+				// runStart itself returns, so release the port here.
+				memberAnchorAdv.Stop()
 				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, memberRecord, bootCancel, sealSub)
 				// handleSystemMigration stopped svcNode to release its store locks
 				// for re-encryption; nil it so the deferred Stop above is skipped.

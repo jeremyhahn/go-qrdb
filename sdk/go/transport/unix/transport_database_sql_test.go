@@ -44,7 +44,7 @@ func TestUnixRT_CreateDatabase_CarriesSQL(t *testing.T) {
 	defer cleanup()
 
 	if _, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
-		Name: "db1", Engine: "kv", Backend: "memory",
+		Name: "db1", Backend: "memory",
 		SQL: &transport.DatabaseSQLConfig{Concurrency: "pessimistic"},
 	}); err != nil {
 		t.Fatalf("CreateDatabase: %v", err)

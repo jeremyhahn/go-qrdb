@@ -17,20 +17,20 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // LeaseBinding exposes distributed lease management to the Wails
 // frontend.
 type LeaseBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewLeaseBinding creates a new LeaseBinding backed by the given
 // connection.
-func NewLeaseBinding(log *logger.Logger, conn *ConnectionBinding) *LeaseBinding {
+func NewLeaseBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *LeaseBinding {
 	return &LeaseBinding{logger: log, conn: conn}
 }
 

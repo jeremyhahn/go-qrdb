@@ -40,7 +40,7 @@ const TOAST_TIMEOUT = 5_000;
 const stateWithKvDb = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "err-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "err-db", backend: "pebble", status: "open" },
   ],
 };
 

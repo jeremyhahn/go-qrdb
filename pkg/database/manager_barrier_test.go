@@ -204,7 +204,6 @@ func TestDatabase_TenantID(t *testing.T) {
 	cfg := DatabaseConfig{
 		TenantID: "tenant-xyz",
 		Name:     "test-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 	}
 	db := NewDatabase(cfg, newNoopBackend(), "/tmp/test")
@@ -302,7 +301,6 @@ func TestManager_Open_BarrierEnabled_SharedStoreRejected(t *testing.T) {
 	// silently registering an inert barrier.
 	meta := DatabaseMeta{
 		Name:    "shared-open-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},
 	}
@@ -666,7 +664,6 @@ func TestManager_Open_RegisterBarrierFails_CleansUp(t *testing.T) {
 	defer func() { _ = mgr2.Close() }()
 	meta := DatabaseMeta{
 		Name:    "collide-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},

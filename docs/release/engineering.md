@@ -16,31 +16,30 @@ limitations under the License.
 
 # Release — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Where it lives
 
 | File | Holds |
 |---|---|
-| `.github/workflows/release.yml` | the Release workflow: `workflow_dispatch` only, guarded off github.com, one release at a time and never cancelled mid-run |
-| `Makefile` — `release-alpha` | the release recipe: explicit version, lockstep audit, CHANGELOG reconciliation, standalone resolution of each nested module, duplicate-tag check, signed annotated tags, one atomic push, and a probe that asks the remote what it holds when a push reports failure |
-| `scripts/release-bot-git.sh` | the `AGENT_GIT` wrapper the workflow hands to `release-alpha`: the release bot's identity and SSH signing key, from the environment, with no fallback |
+| `Makefile` — `release-alpha` | the release recipe, run by hand: explicit version, lockstep audit, CHANGELOG reconciliation, standalone resolution of each nested module, duplicate-tag check, signed annotated tags, one atomic push, and a probe that asks the remote what it holds when a push reports failure |
+| `.github/workflows/release.yml` | the Release workflow: `push: tags: ["v*"]` only, three jobs (`validate`, `gate`, `publish`), no bot secret of any kind |
 | `scripts/check-tag-lockstep.sh`, `scripts/lockstep-modules.sh`, `lockstep-baseline` | the lockstep audit and the module-set derivation both the publisher and the auditor read |
+| `scripts/check-version-reconciled.sh` | VERSION/CHANGELOG/tag reconciliation, run by `release-alpha`, by the Release Lockstep workflow, and by `validate` above |
 | `.github/workflows/release-lockstep.yml` | the defence-in-depth audit on every tag push |
 
 ## Invariants
 
-- **The workflow never names a version.** It reads `VERSION` and passes
-  `VERSION="v$(cat VERSION)"` to `release-alpha`. `test/buildgates` fails if a
-  literal version, a version input or a trigger other than
-  `workflow_dispatch` appears.
-- **No step writes a tag by hand.** `release-alpha` is the only tag writer.
-  `test/buildgates` rejects any `git tag` or `git push` in a `run:` step of
-  this workflow or of any other workflow, and rejects any other workflow that
-  runs `make release-alpha`.
-- **The recipe never writes VERSION and never commits.** It tags `HEAD` and
-  refuses, before anything is fetched or written, unless three things hold:
-  `VERSION` on `HEAD` already names the requested release (otherwise:
+- **No workflow creates a tag or runs `make release-alpha`.** `test/buildgates`
+  scans every workflow file, `release.yml` included, for a hand-written
+  `git tag`/`git push --tags`/`refs/tags/` write or a `make release-alpha`
+  invocation, and fails if it finds either anywhere.
+- **`release.yml`'s only trigger is `push: tags: ["v*"]`.** Not the lockstep
+  modules' own tags (`sdk/go/v*` does not match the glob `v*`), and nothing
+  else — `test/buildgates` fails on an added trigger.
+- **`release-alpha` never writes VERSION and never commits.** It tags `HEAD`
+  and refuses, before anything is fetched or written, unless three things
+  hold: `VERSION` on `HEAD` already names the requested release (otherwise:
   "VERSION on HEAD names X, not Y; merge the VERSION/CHANGELOG bump first"),
   `HEAD` carries an SSH signature, and `HEAD` is exactly what the remote's
   `main` holds. `VERSION=` is still a required argument, as the operator's
@@ -52,35 +51,56 @@ limitations under the License.
   created.
 - **The push is one `git push --atomic`** of exactly the release tags, never
   `--tags` and never a branch.
-- **The bot token is never persisted.** The checkout sets
-  `persist-credentials: false`. The `make release-alpha` step alone receives
-  `secrets.RELEASE_BOT_TOKEN`, in its env, and `scripts/git-extraheader.sh`
-  turns it into an `http.<server>/.extraheader` set through `GIT_CONFIG_*` in
-  that step's environment, appended after any entries the runner already set.
-  The final audit step reads with the run's own token the same way.
-  `test/buildgates` fails if `persist-credentials` is not `false` or if the bot
-  token reaches any other step.
-- **The run ends with a lockstep audit of the remote's tags**, fetched after
-  the push, over the same module set `release-alpha` tagged
-  (`lockstep-modules.sh`).
+- **`validate` retries the lockstep audit.** The atomic push makes the server
+  apply every tag together; it says nothing about how soon a `git fetch` on a
+  different connection observes all of them, so the step fetches and
+  re-audits up to ten times, three seconds apart, before failing.
+- **`gate` runs the same commands as ci.yml's `lint`, `build` and `test`
+  jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
+  `make lint`, `go build ./...`, `make build-server`, `make coverage`,
+  `make test-tags`) against the exact tagged tree, not a re-run of every
+  ci.yml step — see architecture.md for why the rest is skipped.
+- **`publish` needs both `validate` and `gate`**, and addresses the forge's
+  own releases API through `${{ github.api_url }}` rather than a hardcoded
+  host, so the same workflow file publishes correctly on Gitea and on
+  GitHub. It authenticates with the run's own token
+  (`${{ secrets.GITHUB_TOKEN }}`, scoped by its job's own
+  `permissions: contents: write`) — there is no separate bot identity.
 
 ## Credentials
 
-| Name | Kind | Used for |
-|---|---|---|
-| `RELEASE_BOT_TOKEN` | secret | the `make release-alpha` step only: its fetch, its read of the remote's `main`, and the push. Tag protection admits this principal only |
-| `RELEASE_BOT_SIGNING_KEY` | secret | the bot's private SSH signing key. It is written to the runner's temporary directory with mode 0600 and removed in an `always()` step |
-| `RELEASE_BOT_NAME`, `RELEASE_BOT_EMAIL` | variables | the tagger identity |
-
-The workflow refuses to start, naming what is missing, when any of the four is
-unset. The wrapper refuses too, so a local misuse fails the same way.
+**None.** The operator's existing git identity signs every tag, and the
+Release workflow's `publish` job uses the run's own token, scoped by its
+`permissions:` block. Nothing here needs a dedicated secret or variable.
 
 ## Tests
 
 | Test | Proves |
 |---|---|
-| `scripts/check-release-alpha_test.sh` (`make test-release-alpha`) | the recipe against a local bare remote and a throwaway signing key, with the merged bump as the fixture's state: HEAD is tagged, no commit is made, every tag is signed and on HEAD, exactly the two tags are pushed, and three refusals -- a VERSION argument the file does not name, a bump the remote's `main` does not hold, and an unsigned HEAD. The first two fail on the recipe that still wrote VERSION itself |
-| `scripts/git-extraheader_test.sh` (`make test-git-extraheader`) | the per-step credential: git sees the header from the environment only, existing `GIT_CONFIG_*` entries survive, the value is masked, no config file is written, and an empty token stops the step |
+| `scripts/check-release-alpha_test.sh` (`make test-release-alpha`) | the recipe against a local bare remote and a throwaway signing key, with the merged bump as the fixture's state: HEAD is tagged, no commit is made, every tag is signed and on HEAD, exactly the two tags are pushed, and three refusals -- a VERSION argument the file does not name, a bump the remote's `main` does not hold, and an unsigned HEAD. The first two fail on a recipe that still wrote VERSION itself |
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
-| `test/buildgates/release_workflow_test.go` | the workflow's shape, with a mutation for each property: an added tag trigger, a cancellable run, running on github.com, the runner's own token, a hand-written tag push, a typed version, a persisted or unset `persist-credentials`, the bot token at checkout or outside the push step, no per-step header, a missing post-push audit, or an audit that does not fetch the remote's tags first |
+| `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a `gate` job missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate`, a hardcoded `github.com` instead of `github.api_url`, a reintroduced `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
+
+## Test tooling this feature folder also owns
+
+No `docs/testing/` folder exists, so the per-feature integration-test
+tooling that spans every OTHER folder documents itself here, beside the
+other whole-tree test/buildgates gates this file already tracks.
+
+| File | Holds |
+|---|---|
+| `test/integration/features.mk` | the ONE table mapping every `docs/<feature>/` folder to the integration test files, relative to `test/integration/`, whose `Test` functions belong to it |
+| `Makefile` — `integration-test-%` | the pattern rule, one target per feature (`make integration-test-<feature>`), that reads `features.mk`, extracts the mapped files' `Test` function names and runs exactly them over the self-spawned `sdk/go/testutil/qrdbdharness` suites — no Docker |
+| `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
+| `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
+| `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
+
+`AGENTS.md`'s Testing section is where a lane reads "how do I test my feature
+in isolation" first; this table is the engineering-level index of where that
+tooling lives, kept beside this folder's other test/buildgates entries rather
+than duplicated.
+
+## Integration Target
+
+Run `make integration-test-release` for this feature. The target intentionally selects zero Go integration tests because release is a tag/workflow process; the coverage accounting row is `test/integration/COVERAGE.md` under `release`.

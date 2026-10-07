@@ -17,7 +17,6 @@
 package timeseries
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -43,49 +42,44 @@ func TestStubNew(t *testing.T) {
 	}
 }
 
-// TestStubNewWithDir verifies the stub directory constructor reports that
-// time-series support is not compiled in.
-func TestStubNewWithDir(t *testing.T) {
-	if s, err := NewWithDir("/tmp/never-created"); !errors.Is(err, ErrNotCompiled) || s != nil {
-		t.Errorf("NewWithDir = (%v, %v), want (nil, ErrNotCompiled)", s, err)
-	}
-}
-
 // TestStubStorageOperations verifies every storage operation reports that
-// time-series support is not compiled in.
+// time-series support is not compiled in. A nil batch is passed wherever the
+// real build would require one: the stub never touches it.
 func TestStubStorageOperations(t *testing.T) {
 	s := &Storage{}
-	ctx := context.Background()
 	now := time.Now()
 
 	tests := []struct {
 		name string
 		op   func() error
 	}{
-		{"Write", func() error { return s.Write("cpu", 1.0, now, nil) }},
+		{"Write", func() error { return s.Write(nil, "cpu", 1.0, now, nil) }},
 		{"WritePoint", func() error {
-			return s.WritePoint(ctx, &DataPoint{Metric: "cpu", Timestamp: now})
+			return s.WritePoint(nil, &DataPoint{Metric: "cpu", Timestamp: now})
 		}},
 		{"WriteBatch", func() error {
-			return s.WriteBatch([]DataPoint{{Metric: "cpu", Timestamp: now}})
+			return s.WriteBatch(nil, []DataPoint{{Metric: "cpu", Timestamp: now}})
 		}},
 		{"Query", func() error {
 			_, err := s.Query("cpu", now.Add(-time.Hour), now, WithTSLimit(1))
 			return err
 		}},
 		{"QueryRich", func() error {
-			_, err := s.QueryRich(ctx, &QueryRequest{Metric: "cpu", StartTime: now.Add(-time.Hour), EndTime: now})
+			_, err := s.QueryRich(&QueryRequest{Metric: "cpu", StartTime: now.Add(-time.Hour), EndTime: now})
 			return err
 		}},
 		{"DeleteSeries", func() error {
-			return s.DeleteSeries(ctx, &DeleteRequest{Metric: "cpu"})
+			return s.DeleteSeries(nil, &DeleteRequest{Metric: "cpu"})
 		}},
 		{"GetRetentionPolicy", func() error {
 			_, err := s.GetRetentionPolicy("cpu")
 			return err
 		}},
 		{"SetRetentionPolicy", func() error {
-			return s.SetRetentionPolicy("cpu", &RetentionPolicy{Duration: time.Hour})
+			return s.SetRetentionPolicy(nil, "cpu", &RetentionPolicy{Duration: time.Hour})
+		}},
+		{"ApplyRetention", func() error {
+			return s.ApplyRetention(nil, "cpu", now)
 		}},
 		{"ListMetrics", func() error {
 			_, err := s.ListMetrics("", 0)
@@ -106,23 +100,11 @@ func TestStubStorageOperations(t *testing.T) {
 	}
 }
 
-// TestStubStorageZeroState verifies the stub storage reports empty state and
-// closes cleanly.
+// TestStubStorageZeroState verifies the stub storage closes cleanly.
 func TestStubStorageZeroState(t *testing.T) {
 	s := &Storage{}
-	if db := s.DB(); db != nil {
-		t.Errorf("DB() = %v, want nil", db)
-	}
 	if err := s.Close(); err != nil {
 		t.Errorf("Close() error = %v, want nil", err)
-	}
-}
-
-// TestStubStorageOptions verifies the stub option constructors return
-// applicable no-op options.
-func TestStubStorageOptions(t *testing.T) {
-	if opt := WithEncryptor(nil); opt == nil {
-		t.Error("WithEncryptor(nil) returned nil option")
 	}
 }
 
@@ -251,13 +233,13 @@ func TestStubRefusalIsAnAbsentCapabilityNotAFault(t *testing.T) {
 // classifier forgives; one that does not is a shard-killing entry point.
 func TestStubStorageRefusalsAreAllAbsentCapabilities(t *testing.T) {
 	s := &Storage{}
-	ctx := context.Background()
 	for name, op := range map[string]func() error{
-		"Write":              func() error { return s.Write("m", 1, time.Now(), nil) },
-		"WritePoint":         func() error { return s.WritePoint(ctx, &DataPoint{Metric: "m", Timestamp: time.Now()}) },
-		"WriteBatch":         func() error { return s.WriteBatch([]DataPoint{{Metric: "m", Timestamp: time.Now()}}) },
-		"DeleteSeries":       func() error { return s.DeleteSeries(ctx, &DeleteRequest{Metric: "m"}) },
-		"SetRetentionPolicy": func() error { return s.SetRetentionPolicy("m", &RetentionPolicy{}) },
+		"Write":              func() error { return s.Write(nil, "m", 1, time.Now(), nil) },
+		"WritePoint":         func() error { return s.WritePoint(nil, &DataPoint{Metric: "m", Timestamp: time.Now()}) },
+		"WriteBatch":         func() error { return s.WriteBatch(nil, []DataPoint{{Metric: "m", Timestamp: time.Now()}}) },
+		"DeleteSeries":       func() error { return s.DeleteSeries(nil, &DeleteRequest{Metric: "m"}) },
+		"SetRetentionPolicy": func() error { return s.SetRetentionPolicy(nil, "m", &RetentionPolicy{}) },
+		"ApplyRetention":     func() error { return s.ApplyRetention(nil, "m", time.Now()) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := op()

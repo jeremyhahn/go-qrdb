@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // AdminBinding exposes cluster administration operations to the Wails frontend.
 type AdminBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewAdminBinding creates a new AdminBinding backed by the given connection.
-func NewAdminBinding(log *logger.Logger, conn *ConnectionBinding) *AdminBinding {
+func NewAdminBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *AdminBinding {
 	return &AdminBinding{logger: log, conn: conn}
 }
 

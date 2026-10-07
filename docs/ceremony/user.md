@@ -90,11 +90,13 @@ session authentication, only until the initialization ceremony goes
 operational. That bypass exists because, before the ceremony completes,
 there is no IAM plane yet to authenticate against -- Key A is still the
 in-memory bootstrap key, and the SO PIN is the only credential available.
-Once enrollment closes, the sealed-window listener refuses `sign-csr`
-outright (there is no PIN that reopens it there); the verb itself is not
-retired, though -- it is served normally over the node's ordinary,
-authenticated API once unsealed, the same as any other ceremony verb, to a
-caller holding a valid session.
+Once enrollment closes, `sign-csr` is refused everywhere, not just on the
+sealed-window listener: `SignCSRInit` (`pkg/ceremony/ceremony.go`) only
+accepts a call while the ceremony is still `enrolling`, and once it reaches
+`operational` no PIN, session or certificate on any transport reopens it.
+There is no operational path back to this verb. A holder's existing
+certificate still verifies normally; only *minting a new one* through
+`sign-csr` is pre-operational only.
 
 Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
 characters from letters and digits, or a 12-digit random number. Before

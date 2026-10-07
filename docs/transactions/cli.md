@@ -105,4 +105,9 @@ qrdb batch import-formats
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`qrdb tx execute` is driven on every network transport by `tx_cli_test.go`
+(`make integration-test-transactions`); the `qrdb batch` verbs are driven by
+`batch_cli_test.go` and `batch_import_cli_test.go`, which
+`test/integration/features.mk` selects under `make integration-test-key-value`.
+Per-transport accounting: the `transactions` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

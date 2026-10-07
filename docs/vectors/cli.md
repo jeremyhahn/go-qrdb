@@ -1,7 +1,7 @@
 # Vector Database — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" notes describe the vector half of the multi-model database program
 > ([architecture.md](architecture.md)); they are approved by the owner on 2026-09-30 and not

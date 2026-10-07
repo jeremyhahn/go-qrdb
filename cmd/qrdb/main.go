@@ -21,13 +21,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
 // version, gitCommit, and buildDate are set at build time via ldflags:
@@ -83,12 +85,12 @@ func isGUIOnly() bool {
 }
 
 // initLogger creates a logger from the parsed log level and file flags.
-func initLogger(level, file string) (*logger.Logger, error) {
+func initLogger(level, file string) (*sdk.ConcreteLogger, error) {
 	if _, ok := validLogLevels[level]; !ok {
 		return nil, &InvalidLogLevelError{Level: level}
 	}
 
-	cfg := logger.LogConfig{
+	cfg := sdk.LogConfig{
 		Level:     level,
 		Format:    "console",
 		Output:    "stdout",
@@ -98,12 +100,44 @@ func initLogger(level, file string) (*logger.Logger, error) {
 		cfg.Output = "file"
 		cfg.File = file
 	}
-	return logger.New(cfg)
+	return sdk.NewLogger(cfg)
 }
 
 // hardenProcess is secure.HardenProcess, indirected only so a test can observe
 // run's handling of a refusal without making its own test binary
 // non-dumpable, which cannot be undone.
+// debugLogger is the one method routeStdLog needs from the application logger.
+type debugLogger interface {
+	Debug(msg string, args ...any)
+}
+
+// stdLogWriter forwards each standard-library log line to a debugLogger.
+type stdLogWriter struct{ log debugLogger }
+
+// Write implements io.Writer, emitting one debug record per line written.
+func (w stdLogWriter) Write(p []byte) (int, error) {
+	w.log.Debug(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+// routeStdLog sends the standard library's global logger to l at debug level
+// and returns a function that reinstates the previous output and flags.
+//
+// Third-party transports (quic-go's UDP receive-buffer warning) write to that
+// global logger, which defaults to standard error. A client's UDP buffer
+// size is not something a CLI user can act on, and the line lands on the same
+// stream a caller captures a command's result from, so it is surfaced only
+// under --log-level debug.
+func routeStdLog(l debugLogger) func() {
+	prevOut, prevFlags := stdlog.Writer(), stdlog.Flags()
+	stdlog.SetOutput(stdLogWriter{log: l})
+	stdlog.SetFlags(0)
+	return func() {
+		stdlog.SetOutput(prevOut)
+		stdlog.SetFlags(prevFlags)
+	}
+}
+
 var hardenProcess = secure.HardenProcess
 
 // hardenAtStartup applies process inspection hardening, sending any warning
@@ -165,6 +199,8 @@ func run() int {
 			return 0
 		}
 	}
+
+	defer routeStdLog(log)()
 
 	rootCmd := newRootCmd()
 

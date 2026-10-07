@@ -31,7 +31,6 @@ import (
 func TestDatabaseConfig_Validate_RemoteMode_NilConnection(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:       "remote-db",
-		Engine:     EngineKV,
 		Mode:       ModeRemote,
 		Connection: nil,
 	}
@@ -47,9 +46,8 @@ func TestDatabaseConfig_Validate_RemoteMode_NilConnection(t *testing.T) {
 
 func TestDatabaseConfig_Validate_RemoteMode_EmptyAddress(t *testing.T) {
 	cfg := DatabaseConfig{
-		Name:   "remote-db",
-		Engine: EngineKV,
-		Mode:   ModeRemote,
+		Name: "remote-db",
+		Mode: ModeRemote,
 		Connection: &DatabaseConnectionConfig{
 			Transport: "grpc",
 			Address:   "", // empty address should fail
@@ -63,9 +61,8 @@ func TestDatabaseConfig_Validate_RemoteMode_EmptyAddress(t *testing.T) {
 
 func TestDatabaseConfig_Validate_RemoteMode_Valid(t *testing.T) {
 	cfg := DatabaseConfig{
-		Name:   "remote-db",
-		Engine: EngineKV,
-		Mode:   ModeRemote,
+		Name: "remote-db",
+		Mode: ModeRemote,
 		Connection: &DatabaseConnectionConfig{
 			Transport: "grpc",
 			Address:   "localhost:9000",
@@ -218,7 +215,6 @@ func TestManager_CreateWithCredentials_BarrierConfigNoManager(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "barrier-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{
@@ -331,7 +327,6 @@ func TestManager_CreateWithCredentials_WithBarrierManager(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "enc-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{

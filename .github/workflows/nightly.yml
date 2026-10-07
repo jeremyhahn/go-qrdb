@@ -106,8 +106,9 @@ jobs:
     # non-approved algorithms, so a regulated path using MD5, SHA-1 or GCM with
     # a caller-chosen IV passes silently and the gate reports green on exactly
     # the thing it exists to catch. "only" makes those operations error or
-    # panic. Ratified by the owner 2026-08-17; see automatethethings
-    # software/conventions/configuration.md §5 and docs/seal/fips140-mode.md.
+    # panic. Ratified by the owner 2026-08-17; see
+    # ../handbook/software/conventions/configuration.md §5 and
+    # docs/seal/fips140-mode.md.
     #
     # If this job goes red, the failure IS the finding: something on a tested
     # path is using non-approved cryptography. Fix the call site, or -- when an

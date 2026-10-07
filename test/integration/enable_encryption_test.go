@@ -392,8 +392,15 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 
 	// Role + user so the tenant cert is authorized to create a database, do
 	// KV I/O, and read its own barrier status. Created AFTER the barrier
-	// init: the records land in the tenant's own encrypted IAM store.
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	// init: the records land in the tenant's own encrypted IAM store. The
+	// system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so this
+	// authenticates as the tenant's own onboarded admin; its built-in
+	// Admin role cannot create a NEW role (RolesCreate is SO-exclusive),
+	// so it self-assigns its own pre-seeded SO role first, exactly like
+	// tenant_isolation_cli_test.go's provisionTenantIdentityFor.
+	selfAssignTenantSO(t, adminPort, tenantID, onboardedAdminClient)
+	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 		map[string]interface{}{
 			"name":      "db-admin",
@@ -414,7 +421,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
-	createBoundUser(t, sysClient, adminPort,
+	createBoundUser(t, onboardedAdminClient, adminPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 		tenantCert)
 
@@ -426,7 +433,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 
 	dbBody, dbStatus := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", adminPort),
-		map[string]interface{}{"name": dbName, "engine": "kv", "backend": "pebble", "replicas": 1},
+		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 1},
 	)
 	if dbStatus != http.StatusCreated && dbStatus != http.StatusOK {
 		t.Fatalf("create tenant database: status %d, body: %s", dbStatus, dbBody)

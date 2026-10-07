@@ -28,10 +28,10 @@ import (
 )
 
 // serviceConnectorDSN is the DSN shape a caller-supplied-service connector
-// takes: it names the database and engine, but no backend, because the
-// connector creates no storage of its own.
+// takes: it names the database, but no backend, because the connector
+// creates no storage of its own.
 func serviceConnectorDSN(database string) *DSNConfig {
-	return &DSNConfig{Scheme: SchemeEmbedded, Database: database, Engine: "kv"}
+	return &DSNConfig{Scheme: SchemeEmbedded, Database: database}
 }
 
 // TestNewServiceConnector_RelationalTablesWork verifies a connector built over

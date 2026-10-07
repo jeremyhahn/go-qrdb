@@ -648,10 +648,26 @@ func TestAuthorize_SystemTenantRule_AdminAtSystem_CanReadAnyTenant(t *testing.T)
 		Roles:    []string{"admin-role"},
 	}
 
+	// ScopeSelf has no system-tenant lift (owner ruling, 2026-10-01): a
+	// system-tenant identity reaches tenants:read on its OWN tenant only.
+	if err := authz.Authorize(ctxFor(tenantid.System), identity, "tenants", "read"); err != nil {
+		t.Errorf("Admin@system should be allowed tenants:read on its own tenant, got: %v", err)
+	}
+	for _, target := range []string{"acme", "bob-corp"} {
+		if err := authz.Authorize(ctxFor(target), identity, "tenants", "read"); err == nil {
+			t.Errorf("Admin@system should NOT be allowed tenants:read on target %q via the self-scope permission alone", target)
+		}
+	}
+
+	// tenants:read:cross (ScopeCross) is the named replacement: it does not
+	// look at the target tenant at all, so holding it admits every target.
+	crossSvc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantsReadCross},
+	})
+	crossAuthz := New(crossSvc)
 	for _, target := range []string{"acme", "bob-corp", tenantid.System} {
-		err := authz.Authorize(ctxFor(target), identity, "tenants", "read")
-		if err != nil {
-			t.Errorf("Admin@system should be allowed tenants:read on target %q, got: %v", target, err)
+		if err := crossAuthz.Authorize(ctxFor(target), identity, "tenants", "read:cross"); err != nil {
+			t.Errorf("Admin@system holding tenants:read:cross should be allowed on target %q, got: %v", target, err)
 		}
 	}
 }
@@ -787,7 +803,9 @@ func TestAuthorize_CompileTimeInterface(t *testing.T) {
 		"admin-role": {permission.AdminHealth},
 	})
 	var authz auth.Authorizer = New(svc)
-	err := authz.Authorize(ctxFor("any-target"), &auth.Identity{
+	// Own tenant: this test exercises interface dispatch, not cross-tenant
+	// scope semantics (the system-tenant lift was removed, 2026-10-01).
+	err := authz.Authorize(ctxFor(tenantid.System), &auth.Identity{
 		Subject:  "platform-admin",
 		TenantID: tenantid.System,
 		Roles:    []string{"admin-role"},

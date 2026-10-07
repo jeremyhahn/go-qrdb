@@ -13,7 +13,6 @@ import { test, expect } from "./fixtures/daemon.ts";
 
 interface DatabaseInfoResponse {
   name: string;
-  engine: string;
   backend: string;
   status: string;
   protocol?: { mysql: boolean; postgresql: boolean };
@@ -36,7 +35,6 @@ test.describe("Database management (real backend)", () => {
       const resp = await request.post(`${daemon.adminUrl}/v1/databases`, {
         data: {
           name,
-          engine: "kv",
           backend: "pebble",
           protocol: { mysql: false, postgresql: false },
         },
@@ -48,7 +46,6 @@ test.describe("Database management (real backend)", () => {
       expect(resp.status()).toBe(201);
       const db = await resp.json() as DatabaseInfoResponse;
       expect(db.name).toBe(name);
-      expect(db.engine).toBe("kv");
 
       // Verify in list
       const listResp = await request.get(
@@ -72,7 +69,6 @@ test.describe("Database management (real backend)", () => {
     const createResp = await request.post(`${daemon.adminUrl}/v1/databases`, {
       data: {
         name,
-        engine: "kv",
         backend: "pebble",
         protocol: { mysql: false, postgresql: false },
       },
@@ -101,7 +97,6 @@ test.describe("Database management (real backend)", () => {
     const createResp = await request.post(`${daemon.adminUrl}/v1/databases`, {
       data: {
         name,
-        engine: "kv",
         backend: "pebble",
         protocol: { mysql: false, postgresql: false },
       },
@@ -127,14 +122,14 @@ test.describe("Database management (real backend)", () => {
     const key = "shared-key";
 
     const createA = await request.post(`${daemon.adminUrl}/v1/databases`, {
-      data: { name: dbA, engine: "kv", backend: "pebble", protocol: { mysql: false, postgresql: false } },
+      data: { name: dbA, backend: "pebble", protocol: { mysql: false, postgresql: false } },
       headers: { "Content-Type": "application/json" },
     });
     // No skip guard: the full daemon must support per-database routing.
     expect(createA.status()).toBe(201);
 
     const createB = await request.post(`${daemon.adminUrl}/v1/databases`, {
-      data: { name: dbB, engine: "kv", backend: "pebble", protocol: { mysql: false, postgresql: false } },
+      data: { name: dbB, backend: "pebble", protocol: { mysql: false, postgresql: false } },
       headers: { "Content-Type": "application/json" },
     });
     expect(createB.status()).toBe(201);
@@ -200,7 +195,6 @@ test.describe("Database management (real backend)", () => {
     const resp = await request.post(`${daemon.adminUrl}/v1/databases`, {
       data: {
         name,
-        engine: "kv",
         backend: "pebble",
         dataDir: `${daemon.dataDir}/databases-e2e/${name}`,
         barrier: { enabled: true, mode: "passphrase", secret: "correct horse battery" },
@@ -222,7 +216,7 @@ test.describe("Database management (real backend)", () => {
   test("a barrier on the shared default store is refused", async ({ request, daemon }) => {
     const name = dbName("barrier-shared");
     const resp = await request.post(`${daemon.adminUrl}/v1/databases`, {
-      data: { name, engine: "kv", backend: "pebble", barrier: { enabled: true, mode: "passphrase", secret: "x" } },
+      data: { name, backend: "pebble", barrier: { enabled: true, mode: "passphrase", secret: "x" } },
       headers: { "Content-Type": "application/json" },
     });
     expect(resp.status()).toBeGreaterThanOrEqual(400);

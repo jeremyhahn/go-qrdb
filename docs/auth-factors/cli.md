@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Command group: `qrdb auth`, with a `factor` subgroup implementing the N-factor
 model (one User → many AuthFactors). All verbs accept the root persistent flags
@@ -109,7 +109,7 @@ qrdb barrier init --barrier-strategy passphrase --passphrase '<pp>' \
                   --so-pin SO123 --user-pin USR123
 qrdb barrier seal --so-pin SO123 -y
 qrdb barrier rekey --so-pin SO123
-qrdb barrier recovery generate --threshold 3 --total 5 --so-pin SO123
+qrdb barrier recovery generate --threshold 3 --so-pin SO123
 ```
 
 **Dual control**: `--so-pin` requires `--user-pin` and vice versa at

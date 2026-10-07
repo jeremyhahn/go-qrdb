@@ -24,7 +24,6 @@ func TestInfo_FullPayload(t *testing.T) {
 	out := Info(&pb.DatabaseInfoResponse{
 		TenantId:     "t1",
 		Name:         "db1",
-		Engine:       "kv",
 		Backend:      "raft",
 		Status:       "ready",
 		DataDir:      "/data",

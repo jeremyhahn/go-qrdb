@@ -22,21 +22,13 @@
 
   let { client, database }: { client: Client; database: DatabaseInfo } = $props();
 
-  // ---------------------------------------------------------------------------
-  // Default queries by engine type
-  // ---------------------------------------------------------------------------
-
-  const DEFAULT_QUERIES: Readonly<Record<string, string>> = {
-    kv: "SELECT * FROM kv",
-    timeseries: "SELECT * FROM datapoints",
-    vector: "SELECT * FROM namespaces",
-  };
+  const DEFAULT_QUERY = "SELECT * FROM kv";
 
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
 
-  let query: string = $state("SELECT 1");
+  let query: string = $state(DEFAULT_QUERY);
   let result: SQLQueryResult | null = $state(null);
   let queryError: string | null = $state(null);
   let executing: boolean = $state(false);
@@ -48,7 +40,7 @@
 
   $effect(() => {
     void database.name;
-    query = DEFAULT_QUERIES[database.engine] ?? "SELECT 1";
+    query = DEFAULT_QUERY;
     result = null;
     queryError = null;
     queryHistory = [];
@@ -100,9 +92,6 @@
   {#snippet actions()}
     <div class="flex items-center gap-2">
       <span class="badge badge-sm badge-outline font-mono">{database.name}</span>
-      <span class="badge badge-sm {database.engine === 'kv' ? 'badge-secondary' : database.engine === 'timeseries' ? 'badge-warning' : 'badge-accent'}">
-        {database.engine}
-      </span>
       <button
         class="btn btn-ghost btn-sm"
         onclick={clearResults}

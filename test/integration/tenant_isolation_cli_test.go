@@ -68,9 +68,38 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
+
+// cliTenantAdminCred is a tenant's first-admin certificate/key pair, stashed
+// by createTenant/createTenantWithAdminCert so provisionTenantIdentityFor can
+// authenticate AS that tenant's own admin (ScopeSelf) to provision a second,
+// test-controlled identity in the SAME tenant -- the system-tenant identity
+// used here before can no longer reach into another tenant's IAM at all to do
+// it (owner ruling, 2026-10-01: ScopeSelf has no system-tenant lift).
+type cliTenantAdminCred struct{ certPath, keyPath string }
+
+var (
+	cliTenantAdminCredsMu sync.Mutex
+	cliTenantAdminCreds   = map[string]cliTenantAdminCred{}
+)
+
+func registerTenantAdminCred(tenantID, certPath, keyPath string) {
+	cliTenantAdminCredsMu.Lock()
+	defer cliTenantAdminCredsMu.Unlock()
+	cliTenantAdminCreds[tenantID] = cliTenantAdminCred{certPath: certPath, keyPath: keyPath}
+}
+
+func lookupTenantAdminCred(tenantID string) (cliTenantAdminCred, bool) {
+	cliTenantAdminCredsMu.Lock()
+	defer cliTenantAdminCredsMu.Unlock()
+	c, ok := cliTenantAdminCreds[tenantID]
+	return c, ok
+}
 
 // createTenant creates a tenant via the qrdb CLI over the given protocol
 // using the harness's system-admin identity (node.cliArgsFor), failing the
@@ -79,15 +108,8 @@ import (
 // tenant_cli_test.go.
 func createTenant(t *testing.T, node *multiProtoNode, proto multiProtocol, id, name, isolationType string, autoUnseal bool) {
 	t.Helper()
-	adminArgs := adminCSRArgsForTenant(t, node, proto, id+"-admin")
-	args := []string{"tenant", "create", "--id", id, "--name", name, "--isolation-type", isolationType}
-	if autoUnseal {
-		args = append(args, "--barrier-auto-unseal")
-	}
-	args = append(args, adminArgs...)
-	if out, err := runCLIProto(t, node, proto, args...); err != nil {
-		t.Fatalf("[%s] tenant create %s (isolation=%s): %v\noutput: %s", proto.name, id, isolationType, err, out)
-	}
+	certPath, keyPath := createTenantWithAdminCert(t, node, proto, id, name, isolationType, autoUnseal, id+"-admin")
+	registerTenantAdminCred(id, certPath, keyPath)
 }
 
 // createTenantWithAdminCert is createTenant, but keeps the first admin's
@@ -116,6 +138,7 @@ func createTenantWithAdminCert(t *testing.T, node *multiProtoNode, proto multiPr
 		t.Fatalf("[%s] tenant create %s (isolation=%s): %v\noutput: %s", proto.name, id, isolationType, err, out)
 	}
 	certPath = filepath.Join(certDir, "admin-cert.pem")
+	registerTenantAdminCred(id, certPath, keyPath)
 	return certPath, keyPath
 }
 
@@ -140,9 +163,21 @@ func provisionTenantIdentity(t *testing.T, node *multiProtoNode, tenantID, roleN
 // provisionTenantCLIIdentity), not the feature under test.
 func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string, certPath string) {
 	t.Helper()
-	sysClient := mtlsHTTPClient(t, node.ca, 15*time.Second)
+	// Authenticate as the tenant's OWN first admin, registered by
+	// createTenant/createTenantWithAdminCert. The system admin can no
+	// longer provision records inside another tenant at all (owner ruling,
+	// 2026-10-01), so it is used only as a fallback for a tenant this file
+	// did not create itself (there is none today, but a missing
+	// registration must not panic).
+	var adminClient *http.Client
+	if cred, ok := lookupTenantAdminCred(tenantID); ok {
+		adminClient = mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second)
+		selfAssignTenantSO(t, node.restPort, tenantID, adminClient)
+	} else {
+		adminClient = mtlsHTTPClient(t, node.ca, 15*time.Second)
+	}
 
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	roleBody, roleStatus := iraftAPIPost(t, adminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", node.restPort),
 		map[string]interface{}{
 			"name":        roleName,
@@ -160,9 +195,43 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 		t.Fatalf("provisionTenantIdentity: decode role id: %v body=%s", err, roleBody)
 	}
 
-	createBoundUser(t, sysClient, node.restPort,
+	createBoundUser(t, adminClient, node.restPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 		certPath)
+}
+
+// selfAssignTenantSO grants tenantID's own, already-seeded SO role
+// (role.BuiltInRoles/pkg/bootstrap.seedTenantRoles create one for every
+// tenant) to the identity authenticating as adminClient -- which must be
+// that tenant's own admin, looked up by its well-known username. Purely
+// test setup: the tenant's built-in Admin role cannot create NEW roles
+// (RolesCreate is SO-exclusive, pkg/permission/builtin_role_grants.go), but
+// roles:assign IS in Admin's grants, and self-assignment is not restricted
+// beyond it.
+func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
+	t.Helper()
+	adminUsername := tenantID + "-admin"
+	lookupBody, lookupStatus := iraftAPIGet(t, adminClient,
+		fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, adminUsername, tenantID))
+	if lookupStatus != http.StatusOK {
+		t.Fatalf("selfAssignTenantSO: look up tenant admin %s: status %d, body: %s", adminUsername, lookupStatus, lookupBody)
+	}
+	var adminResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(lookupBody, &adminResp); err != nil || adminResp.ID == "" {
+		t.Fatalf("selfAssignTenantSO: decode tenant admin id: %v body=%s", err, lookupBody)
+	}
+	assignBody, assignStatus := iraftAPIPost(t, adminClient,
+		fmt.Sprintf("https://127.0.0.1:%d/roles/assign", restPort),
+		map[string]interface{}{
+			"user_id": adminResp.ID,
+			"role_id": role.SystemRoleID(tenantID, role.RoleNameSO),
+		},
+	)
+	if assignStatus != http.StatusOK {
+		t.Fatalf("selfAssignTenantSO: self-assign SO to tenant admin %s: status %d, body: %s", adminUsername, assignStatus, assignBody)
+	}
 }
 
 // tenantCLIArgsForProto returns the root-level qrdb CLI flags that select
@@ -262,10 +331,10 @@ func testTenantIsolationOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	connA := tenantCLIArgsForProto(node, proto, certA, keyA)
 	connB := tenantCLIArgsForProto(node, proto, certB, keyB)
 
-	if out, err := runQRDB(t, node.cli, connA, "database", "create", dbA, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runQRDB(t, node.cli, connA, "database", "create", dbA, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] tenant A database create: %v\noutput: %s", proto.name, err, out)
 	}
-	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbB, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbB, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] tenant B database create: %v\noutput: %s", proto.name, err, out)
 	}
 
@@ -293,7 +362,7 @@ func testTenantIsolationOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	// PROOF (2): the system identity's own database, with the SAME key,
 	// holds a third disjoint value.
 	sysValue := "system-scope-secret-" + suffix
-	if out, err := runCLIProto(t, node, proto, "database", "create", dbSys, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runCLIProto(t, node, proto, "database", "create", dbSys, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] system database create: %v\noutput: %s", proto.name, err, out)
 	}
 	if out, err := runCLIProto(t, node, proto, "--database", dbSys, "kv", "put", key, sysValue); err != nil {
@@ -309,7 +378,7 @@ func testTenantIsolationOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	// uniqueness constraint is enforced regardless of which identity is
 	// asking, so a tenant can never "claim" a name it doesn't already own
 	// out from under its rightful owner.
-	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbA, "--engine", "kv", "--backend", "pebble"); err == nil {
+	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbA, "--backend", "pebble"); err == nil {
 		t.Fatalf("[%s] tenant B re-creating tenant A's database name %q should be rejected as already-owned, got: %s", proto.name, dbA, out)
 	}
 
@@ -364,25 +433,33 @@ var iamPermissions = []string{
 }
 
 // TestTenantIsolation_CrossTenantIAM_FailsClosed_PerProtocol proves the
-// CRITICAL cross-tenant IAM property: a tenant-local admin (identity tenant A)
-// that supplies a FOREIGN --tenant-id (tenant B) on an IAM command is refused
-// FORBIDDEN on EVERY transport -- it can neither enumerate, read, nor write
-// tenant B's users/roles -- while the identical command scoped to its OWN
-// tenant succeeds, and a SYSTEM admin may legitimately target tenant B.
+// CRITICAL cross-tenant IAM property: ANY caller -- a tenant-local admin
+// (identity tenant A) or the SYSTEM admin -- that supplies a FOREIGN
+// --tenant-id (tenant B) on an IAM command is refused FORBIDDEN on EVERY
+// transport -- it can neither enumerate, read, nor write tenant B's
+// users/roles -- while the identical command scoped to its OWN tenant
+// succeeds. The system tenant has no special cross-tenant reach any more
+// (owner ruling, 2026-10-01: "strict tenant isolation" removes the
+// `ScopeSelf` system-tenant lift unconditionally, under every isolation
+// policy); this test used to prove the SYSTEM admin's reach was the one
+// EXCEPTION, and now proves there is none.
 //
 // The --tenant-id flag lands in the request BODY (req.TenantID), NOT the
 // mTLS-derived context tenant, so transport RBAC (which authorizes the
 // caller's OWN tenant for the ScopeSelf users:*/roles:* grants) admits the
 // call; the IAM routing layer (pkg/user, pkg/role) then independently
-// reconciles the request tenant against the caller's identity and rejects the
-// mismatch with tenant.CrossTenantDeniedError -> 403 / codes.PermissionDenied.
-// This is the fix for the client-supplied-tenant IAM leak: the effective
-// tenant is NEVER sourced from the request for a non-system caller.
+// reconciles the request tenant against the caller's identity via
+// tenant.EffectiveTenant and rejects ANY mismatch -- the caller's own tenant
+// included no exception -- with tenant.CrossTenantDeniedError ->
+// 403 / codes.PermissionDenied. This is the fix for the client-supplied-tenant
+// IAM leak: the effective tenant is NEVER sourced from the request for ANY
+// caller.
 //
 // Both A and B are plain "prefix" tenants sharing the system store, so before
-// the fix tenant A's admin could read tenant B's records straight out of the
-// shared store by prefix -- the assertions below therefore also confirm no
-// tenant-B record name leaks into the refused output.
+// the ORIGINAL fix (confining non-system callers) tenant A's admin could read
+// tenant B's records straight out of the shared store by prefix -- the
+// assertions below therefore also confirm no tenant-B record name leaks into
+// the refused output, for every caller including the system admin.
 func TestTenantIsolation_CrossTenantIAM_FailsClosed_PerProtocol(t *testing.T) {
 	node := startMultiProtocolNode(t)
 
@@ -440,17 +517,16 @@ func testCrossTenantIAMOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] tenant A admin listing roles with no --tenant-id must succeed (scoped to A): %v\noutput: %s", proto.name, err, out)
 	}
 
-	// Direction 3 (system admin is cross-tenant authoritative): the SAME
-	// command that tenant A was refused succeeds for the system admin, whose
-	// identity IS the system tenant -- confirming the legitimate cross-tenant
-	// admin path is preserved.
-	out, err := runCLIProto(t, node, proto, "roles", "list", "--tenant-id", tenantB)
-	if err != nil {
-		t.Fatalf("[%s] system admin listing tenant B roles must succeed: %v\noutput: %s", proto.name, err, out)
-	}
-	if !strings.Contains(out, victimRole) {
-		t.Fatalf("[%s] system admin roles list for tenant B should contain %q, got: %s", proto.name, victimRole, out)
-	}
+	// Direction 3 (system is no longer cross-tenant authoritative): the
+	// SAME command tenant A's admin was refused is now ALSO refused for the
+	// system admin -- the ScopeSelf system-tenant lift was removed
+	// unconditionally (owner ruling, 2026-10-01: "strict tenant
+	// isolation"), so the system tenant is confined to its own tenant like
+	// any other, with no built-in cross-tenant IAM reach left. Nothing
+	// replaces it yet (tenant_identity:read/write is not wired to any
+	// transport), so this is a hard refusal, not a narrower one.
+	assertCrossTenantIAMForbidden(t, node, proto, node.cliArgsFor(proto), victimRole,
+		"roles", "list", "--tenant-id", tenantB)
 }
 
 // assertCrossTenantIAMForbidden runs an IAM CLI command as a non-system tenant
@@ -577,13 +653,22 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 	// Direction 1 (fail closed): every IAM op targeting the sealed tenant must
 	// be refused, and the refusal must be the barrier failing closed -- the
 	// error carries tenant.ErrTenantSealed's "barrier is sealed" text, never an
-	// RBAC "permission denied". The system admin is cross-tenant authoritative,
-	// so this is not an authz outcome.
-	assertSealedIAMRefused(t, node, proto, "roles", "create",
+	// RBAC "permission denied". The system admin is no longer cross-tenant
+	// authoritative over ScopeSelf data/IAM (owner ruling, 2026-10-01), so this
+	// must authenticate as the SEALED tenant's own pending admin -- its
+	// identity resolves to its own tenant, finalizeIdentity binds ctx to that
+	// tenant, and the lookup that establishes the identity is itself what the
+	// sealed barrier refuses.
+	sealedCred, ok := lookupTenantAdminCred(sealedID)
+	if !ok {
+		t.Fatalf("[%s] no registered admin credential for sealed tenant %s", proto.name, sealedID)
+	}
+	sealedConn := tenantCLIArgsForProto(node, proto, sealedCred.certPath, sealedCred.keyPath)
+	assertSealedIAMRefused(t, node, proto, sealedConn, "roles", "create",
 		"--name", "role-"+suffix, "--permissions", "kv:get", "--tenant-id", sealedID)
-	assertSealedIAMRefused(t, node, proto, "users", "create", "--without-email-login-key",
+	assertSealedIAMRefused(t, node, proto, sealedConn, "users", "create", "--without-email-login-key",
 		"--username", "user-"+suffix, "--tenant-id", sealedID)
-	assertSealedIAMRefused(t, node, proto, "roles", "list", "--tenant-id", sealedID)
+	assertSealedIAMRefused(t, node, proto, sealedConn, "roles", "list", "--tenant-id", sealedID)
 
 	// System-tenant IAM stays fully live: a create with no --tenant-id targets
 	// the shared system store, which is never barrier-sealed.
@@ -592,19 +677,30 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 		t.Fatalf("[%s] system-tenant roles create must still work while tenant %s is sealed: %v\noutput: %s", proto.name, sealedID, err, out)
 	}
 
-	// Direction 2 (succeeds when unsealed): the IDENTICAL command and caller
-	// against the UNSEALED barrier tenant resolve to that tenant's own
-	// barrier-backed store and succeed.
+	// Direction 2 (succeeds when unsealed): the OPEN tenant's own admin,
+	// authenticating as itself, resolves to that tenant's own unsealed
+	// barrier-backed store and succeeds. Its built-in Admin role cannot create
+	// NEW roles (RolesCreate is SO-exclusive), so it self-assigns its
+	// pre-seeded SO role before the "roles create" call, the same way
+	// provisionTenantIdentityFor does.
+	openCred, ok := lookupTenantAdminCred(openID)
+	if !ok {
+		t.Fatalf("[%s] no registered admin credential for open tenant %s", proto.name, openID)
+	}
+	openConn := tenantCLIArgsForProto(node, proto, openCred.certPath, openCred.keyPath)
+	openClient := mtlsHTTPClientFromFiles(t, node.ca, openCred.certPath, openCred.keyPath, 15*time.Second)
+	selfAssignTenantSO(t, node.restPort, openID, openClient)
+
 	openRole := "role-open-" + suffix
-	if out, err := runCLIProto(t, node, proto, "roles", "create",
+	if out, err := runQRDB(t, node.cli, openConn, "roles", "create",
 		"--name", openRole, "--permissions", "kv:get", "--tenant-id", openID); err != nil {
 		t.Fatalf("[%s] roles create against UNSEALED barrier tenant %s must succeed: %v\noutput: %s", proto.name, openID, err, out)
 	}
-	if out, err := runCLIProto(t, node, proto, "users", "create", "--without-email-login-key",
+	if out, err := runQRDB(t, node.cli, openConn, "users", "create", "--without-email-login-key",
 		"--username", "user-open-"+suffix, "--tenant-id", openID); err != nil {
 		t.Fatalf("[%s] users create against UNSEALED barrier tenant %s must succeed: %v\noutput: %s", proto.name, openID, err, out)
 	}
-	out, err := runCLIProto(t, node, proto, "roles", "list", "--tenant-id", openID)
+	out, err := runQRDB(t, node.cli, openConn, "roles", "list", "--tenant-id", openID)
 	if err != nil {
 		t.Fatalf("[%s] roles list against UNSEALED barrier tenant %s must succeed: %v\noutput: %s", proto.name, openID, err, out)
 	}
@@ -617,9 +713,9 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 // tenant over the given protocol and fails the test unless it is refused with
 // the barrier's fail-closed signal (tenant.ErrTenantSealed's "sealed" text),
 // disambiguating a barrier refusal from an RBAC "permission denied".
-func assertSealedIAMRefused(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) {
+func assertSealedIAMRefused(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, args ...string) {
 	t.Helper()
-	out, err := runCLIProto(t, node, proto, args...)
+	out, err := runQRDB(t, node.cli, conn, args...)
 	if err == nil {
 		t.Fatalf("[%s] %v against a SEALED barrier tenant must fail closed, got success: %s", proto.name, args, out)
 	}
@@ -662,7 +758,7 @@ func TestTenantIsolation_SystemSealed_BlocksTenantData_PerProtocol(t *testing.T)
 	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "db-admin", dataPlanePermissions)
 	tenantConn := tenantCLIArgsForProto(node, setupProto, certPath, keyPath)
 
-	if out, err := runQRDB(t, node.cli, tenantConn, "database", "create", dbName, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runQRDB(t, node.cli, tenantConn, "database", "create", dbName, "--backend", "pebble"); err != nil {
 		t.Fatalf("tenant database create: %v\noutput: %s", err, out)
 	}
 	if out, err := runQRDB(t, node.cli, tenantConn, "--database", dbName, "kv", "put", key, value); err != nil {
@@ -750,7 +846,7 @@ func testCrossTenantDatabaseBarrierOverProtocol(t *testing.T, node *multiProtoNo
 	connB := tenantCLIArgsForProto(node, proto, certB, keyB)
 
 	// Tenant B owns the database.
-	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbB, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbB, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] tenant B database create: %v\noutput: %s", proto.name, err, out)
 	}
 
@@ -867,7 +963,7 @@ func testOwnDatabaseCompactionOverProtocol(t *testing.T, node *multiProtoNode, p
 
 	write := func(conn []string, db, owner string) compactionHistory {
 		t.Helper()
-		if out, err := runQRDB(t, node.cli, conn, "database", "create", db, "--engine", "kv", "--backend", "pebble"); err != nil {
+		if out, err := runQRDB(t, node.cli, conn, "database", "create", db, "--backend", "pebble"); err != nil {
 			t.Fatalf("[%s] %s database create %s: %v\noutput: %s", proto.name, owner, db, err, out)
 		}
 		h := compactionHistory{conn: conn, db: db, first: owner + "-first-" + suffix}

@@ -611,7 +611,7 @@ func TestCollectionInfoToProto_FieldMapping(t *testing.T) {
 
 func TestHandleDatabaseCreate_NilService(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	payload, _ := json.Marshal(map[string]interface{}{"name": "mydb", "engine": "mvcc", "backend": "pebble"})
+	payload, _ := json.Marshal(map[string]interface{}{"name": "mydb", "backend": "pebble"})
 	_, err := srv.handleDatabaseCreate(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected ServiceNotConfiguredError, got nil")
@@ -631,7 +631,7 @@ func TestHandleDatabaseCreate_Success(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(dbSvc))
 
 	payload, _ := json.Marshal(map[string]interface{}{
-		"name": "testdb", "engine": "mvcc", "backend": "pebble",
+		"name": "testdb", "backend": "pebble",
 	})
 	resp, err := srv.handleDatabaseCreate(context.Background(), payload)
 	if err != nil {
@@ -652,7 +652,7 @@ func TestHandleDatabaseCreate_ServiceError(t *testing.T) {
 		createFn: func(_ database.DatabaseConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(dbSvc))
-	payload, _ := json.Marshal(map[string]interface{}{"name": "db", "engine": "mvcc", "backend": "pebble"})
+	payload, _ := json.Marshal(map[string]interface{}{"name": "db", "backend": "pebble"})
 	_, err := srv.handleDatabaseCreate(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
@@ -1117,7 +1117,6 @@ func TestHandleDatabaseCreate_WithEtcdProtocol(t *testing.T) {
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name":    "mydb",
-		"engine":  "mvcc",
 		"backend": "pebble",
 		"protocol": map[string]interface{}{
 			"mysql":      false,

@@ -58,7 +58,10 @@ type InvitationServicer interface {
 	// chains to the tenant's trust anchors. The token is consumed and the
 	// account activated with the binding; a token that is unknown, for
 	// another tenant, expired, already used, or for an account that is no
-	// longer pending is refused with one opaque *InvitationInvalidError.
+	// longer pending is refused with one opaque *InvitationInvalidError. A
+	// genuine storage or transport fault behind the lookup or the consuming
+	// write is NOT folded into that answer -- it is returned as itself, so
+	// it surfaces as retryable/unavailable rather than as a forged token.
 	RedeemInvitation(ctx context.Context, req *RedeemInvitationRequest) (*EnrolledCertificate, error)
 }
 
@@ -426,12 +429,22 @@ func (s *InvitationService) RedeemInvitation(ctx context.Context, req *RedeemInv
 	// context would otherwise resolve as the system tenant.
 	ctx = tenant.WithTenantID(ctx, req.TenantID)
 
-	// From here until the token is spent, every refusal is the opaque one:
-	// the redeemer is unauthenticated, so a sealed or deleted tenant, an
-	// unavailable store or an account that may not be activated must not be
-	// told apart from a bad token (and none may name the account).
+	// From here until the token is spent, a bad token -- unknown, for
+	// another tenant, expired, already used -- a sealed or deleted tenant,
+	// and an account that may not be activated all get the identical opaque
+	// refusal: the redeemer is unauthenticated, so none of those may be
+	// told apart from each other (and none may name the account). A genuine
+	// storage or transport fault behind the lookup is NOT one of those: it
+	// says nothing about any particular token or tenant, so it is reported
+	// as itself -- retryable or unavailable, logged and metered as the
+	// fault it is -- rather than folded into the opaque answer, which would
+	// otherwise hide an outage as "bad token" for every caller it touches.
 	entity, err := s.invites.Lookup(ctx, req.TenantID, req.Token)
 	if err != nil {
+		var storeErr *invite.StoreError
+		if errors.As(err, &storeErr) {
+			return nil, err
+		}
 		return nil, &InvitationInvalidError{}
 	}
 	// A pinned invitation enrols exactly one key. Any other is refused with
@@ -470,6 +483,10 @@ func (s *InvitationService) RedeemInvitation(ctx context.Context, req *RedeemInv
 
 	if _, err := s.invites.Redeem(ctx, req.TenantID, req.Token); err != nil {
 		settleCertAuditOn(ctx, s.audit, ev, err)
+		var storeErr *invite.StoreError
+		if errors.As(err, &storeErr) {
+			return nil, err
+		}
 		return nil, &InvitationInvalidError{}
 	}
 

@@ -102,10 +102,11 @@ func TestList_Prefix(t *testing.T) {
 }
 
 // TestList_PartialComponentPrefix_LocalProvider pins the byte-prefix contract
-// of storage.Storage against path-semantic providers: the local provider stats
-// the joined path and reports nothing for a prefix that is not a full path
-// component (e.g. "k0" matching keys k01..k03), so the engine must narrow only
-// by the directory-aligned portion and filter the remainder client-side.
+// of storage.Storage against the local provider: a prefix that is not a full
+// path component of the raw key (e.g. "k0" matching keys k01, k02) must still
+// narrow correctly once the key is segmented-hex encoded, and a prefix shared
+// only up to a point within a hex digit of two keys ("x/k03" vs "x/j04") must
+// not cross-match.
 func TestList_PartialComponentPrefix_LocalProvider(t *testing.T) {
 	e, err := New("local", map[string]string{"path": t.TempDir()})
 	require.NoError(t, err)

@@ -19,6 +19,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 )
 
 // argsRequest mirrors a holder request: scalars, bytes, and structured
@@ -140,5 +142,25 @@ func TestArgs_CeremonyFields(t *testing.T) {
 	}
 	if out.Threshold != 2 || len(out.Officers) != 1 || out.Officers[0].Username != "alice" || len(out.SANs) != 1 {
 		t.Errorf("round trip = %+v", out)
+	}
+}
+
+// TestRejectUnknownArgs covers both outcomes: every key known, and the first
+// unknown key refused.
+func TestRejectUnknownArgs(t *testing.T) {
+	known := map[string]struct{}{"a": {}, "b": {}}
+	if err := RejectUnknownArgs("qrdb_tool", map[string]any{"a": 1, "b": 2}, known); err != nil {
+		t.Errorf("every key is known, want nil, got %v", err)
+	}
+	err := RejectUnknownArgs("qrdb_tool", map[string]any{"a": 1, "stale": 2}, known)
+	var ue *UnknownArgumentError
+	if !errors.As(err, &ue) || ue.Tool != "qrdb_tool" || ue.Name != "stale" {
+		t.Fatalf("an unknown key must be refused as *UnknownArgumentError: %v", err)
+	}
+	if msg := ue.Error(); msg != `mcp: qrdb_tool: unknown argument "stale"` {
+		t.Errorf("Error() = %q", msg)
+	}
+	if ue.ErrorClass() != errclass.InvalidArgument {
+		t.Errorf("ErrorClass() = %v, want InvalidArgument", ue.ErrorClass())
 	}
 }

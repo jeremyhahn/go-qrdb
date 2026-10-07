@@ -43,7 +43,7 @@ func (r *provisioningRecorder) record(cfg database.DatabaseConfig) (*database.Da
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.created = append(r.created, cfg.Name)
-	return &database.DatabaseInfo{Name: cfg.Name, Engine: cfg.Engine, Backend: cfg.Backend}, nil
+	return &database.DatabaseInfo{Name: cfg.Name, Backend: cfg.Backend}, nil
 }
 
 func (r *provisioningRecorder) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -112,7 +112,7 @@ func TestServer_DatabaseCreateChecksProvisioningPermissions(t *testing.T) {
 				WithDatabaseService(rec),
 				WithTenantService(tenants),
 				WithAuthMiddleware(authmw.New(withoutPermissions{c.missing: true})))
-			cfg := database.DatabaseConfig{Name: "db", Engine: database.EngineKV, Backend: c.backend}
+			cfg := database.DatabaseConfig{Name: "db", Backend: c.backend}
 
 			_, err := service.CreateDatabaseForTenantWithCredentials(provisioningCtx(c.tenantID), srv.opts.databaseSvc, cfg, seal.Credentials{})
 			if err == nil {
@@ -146,7 +146,7 @@ func TestServer_DatabaseCreateOrdinaryNeedsNoProvisioningPermission(t *testing.T
 		WithAuthMiddleware(authmw.New(withoutPermissions{
 			permission.DatabasesCreateRaft: true, permission.DatabasesCreateVolume: true,
 		})))
-	cfg := database.DatabaseConfig{Name: "db", Engine: database.EngineKV, Backend: database.BackendPebble}
+	cfg := database.DatabaseConfig{Name: "db", Backend: database.BackendPebble}
 	if _, err := srv.opts.databaseSvc.CreateForTenant(provisioningCtx("acme"), cfg); err != nil {
 		t.Fatalf("ordinary create: %v", err)
 	}

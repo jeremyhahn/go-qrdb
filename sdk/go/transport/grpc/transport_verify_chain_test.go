@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -52,7 +53,7 @@ func startAuditVerifyServer(t *testing.T, auditLogger audit.AuditLogger) (string
 	srv := googlegrpc.NewServer()
 	grpc.RegisterService(srv, nil, nil)
 	if auditLogger != nil {
-		grpc.RegisterAuditService(srv, auditLogger)
+		grpc.RegisterAuditService(srv, auditLogger, nil)
 	}
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -61,6 +62,73 @@ func startAuditVerifyServer(t *testing.T, auditLogger audit.AuditLogger) (string
 	}
 	go func() { _ = srv.Serve(lis) }()
 	return lis.Addr().String(), func() { srv.Stop() }
+}
+
+// fakeReplicatedInner implements audit.AuditLogger and
+// service.TenantChainVerifier, standing in for a *service.ReplicatedLogger
+// in round-trip tests.
+type fakeReplicatedInner struct {
+	fakeVerifyingAuditLogger
+	report *audit.ChainContinuityReport
+}
+
+func (f *fakeReplicatedInner) VerifyTenantChain(context.Context, string) (*audit.ChainContinuityReport, error) {
+	return f.report, nil
+}
+
+type fakeEntitlementLookup struct{ enabled map[string]bool }
+
+func (f *fakeEntitlementLookup) ReplicatedAuditEnabled(_ context.Context, tenantID string) (bool, error) {
+	return f.enabled[tenantID], nil
+}
+
+func startReplicatedAuditServer(t *testing.T, replicatedAudit *service.OptInAuditLogger) (string, func()) {
+	t.Helper()
+	srv := googlegrpc.NewServer()
+	grpc.RegisterService(srv, nil, nil)
+	grpc.RegisterAuditService(srv, nil, replicatedAudit)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	return lis.Addr().String(), func() { srv.Stop() }
+}
+
+// TestGRPCVerifyReplicatedChain_RoundTrip verifies the client/server wire
+// shapes agree. The round trip has no mTLS identity attached, so the
+// caller resolves to the system tenant on both sides; the request names no
+// tenant (confirming the caller's own) and platformEnabled=true entitles
+// it, exercising success without needing to stand up identity propagation.
+func TestGRPCVerifyReplicatedChain_RoundTrip(t *testing.T) {
+	inner := &fakeReplicatedInner{report: &audit.ChainContinuityReport{Verified: true, Records: 5, Head: 5, Low: 1, Genesis: true}}
+	replicated := service.NewOptInAuditLogger(inner, &fakeEntitlementLookup{}, true)
+	addr, stop := startReplicatedAuditServer(t, replicated)
+	defer stop()
+	tr, cleanup := connectMiscTransport(t, addr)
+	defer cleanup()
+
+	result, err := tr.VerifyReplicatedChain(context.Background(), "")
+	if err != nil {
+		t.Fatalf("VerifyReplicatedChain: %v", err)
+	}
+	if !result.Verified || result.Records != 5 || result.Head != 5 || result.Low != 1 || !result.Genesis {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestGRPCVerifyReplicatedChain_NotImplemented(t *testing.T) {
+	addr, stop := startReplicatedAuditServer(t, nil)
+	defer stop()
+	tr, cleanup := connectMiscTransport(t, addr)
+	defer cleanup()
+
+	_, err := tr.VerifyReplicatedChain(context.Background(), "acme")
+	var nie *transport.NotImplementedError
+	if !errors.As(err, &nie) {
+		t.Fatalf("expected *transport.NotImplementedError, got %v", err)
+	}
 }
 
 func TestGRPCVerifyChain_RoundTrip(t *testing.T) {

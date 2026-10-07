@@ -1,7 +1,7 @@
 # Time Series — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
@@ -77,13 +77,17 @@ carries `points`, an optional `aggregated_value`, and `grouped_results` when
 ```
 
 `duration_ns` is how long points are kept; `resolution_ns` and `aggregation`
-make retention a downsampling policy rather than a delete horizon. **Measured:
-the policy is stored and returned but not applied** — see
+are intended to make retention a downsampling policy rather than a delete
+horizon. **Measured: `duration_ns` is enforced by a leader-driven sweep
+within about a minute of a point aging out; `resolution_ns`/`aggregation`
+downsampling is stored and returned but not applied** — see
 [engineering.md](engineering.md) and OD-16.
 
 **Target:** no request or response changes. Every capability is served for
-every database on every backend; today it requires a pebble state machine or a
-pebble standalone node, and elsewhere answers as not configured.
+every database on every backend that `MVCCEngine` composes over — memory,
+file, pebble and objstore, shipped (Lane 1A) — and answers as not configured
+only where time-series support was not compiled in (`WITH_QRDB_TS`). A
+dedicated per-database raft binding remains target work (Phase 2).
 
 `TSDeleteRequest`: `metric`, optional `tags`, optional `start_ns`/`end_ns`.
 **With no range, the whole series is deleted.**

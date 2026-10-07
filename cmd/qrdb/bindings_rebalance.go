@@ -17,20 +17,20 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // RebalanceBinding exposes shard rebalancing and load-distribution
 // operations to the Wails frontend.
 type RebalanceBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewRebalanceBinding creates a new RebalanceBinding backed by the given
 // connection.
-func NewRebalanceBinding(log *logger.Logger, conn *ConnectionBinding) *RebalanceBinding {
+func NewRebalanceBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *RebalanceBinding {
 	return &RebalanceBinding{logger: log, conn: conn}
 }
 

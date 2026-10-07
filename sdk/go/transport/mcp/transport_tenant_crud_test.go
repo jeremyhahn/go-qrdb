@@ -417,6 +417,29 @@ func TestMcpTenantInfoToTransport_Populated(t *testing.T) {
 	}
 }
 
+// TestMcpTenantInfoToTransport_CarriesRefusal proves the MCP client's wire
+// decode does not drop a tenant's refusal: before this fix, mcpTenantInfo
+// had no Refusal field at all, so a server response carrying
+// {"refusal":{"code":"pool_unavailable",...}} silently decoded to a
+// TenantInfo with Refusal == nil.
+func TestMcpTenantInfoToTransport_CarriesRefusal(t *testing.T) {
+	in := &mcpTenantInfo{
+		ID:   "bad",
+		Name: "bad",
+		Refusal: &transport.TenantRefusal{
+			Code:    "pool_unavailable",
+			Message: "volume: pool \"broken\" is unavailable on node \"1\"",
+		},
+	}
+	out := mcpTenantInfoToTransport(in)
+	if out.Refusal == nil {
+		t.Fatal("mcpTenantInfoToTransport dropped the refusal")
+	}
+	if out.Refusal.Code != "pool_unavailable" {
+		t.Errorf("Refusal.Code = %q, want %q", out.Refusal.Code, "pool_unavailable")
+	}
+}
+
 // TestMcpTenantInfoToTransport_Timestamps is a regression test: the
 // conversion previously dropped CreatedAt/UpdatedAt entirely, leaving them
 // at the zero time regardless of what the server reported.

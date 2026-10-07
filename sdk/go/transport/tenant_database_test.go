@@ -49,7 +49,6 @@ func (m *mockDatabaseClient) CreateDatabase(_ context.Context, req CreateDatabas
 	info := &DatabaseInfo{
 		TenantID: req.TenantID,
 		Name:     req.Name,
-		Engine:   req.Engine,
 		Backend:  req.Backend,
 		Status:   "open",
 	}
@@ -409,7 +408,6 @@ func TestTenantDatabaseClient_CreateDatabase_InjectsTenantID(t *testing.T) {
 
 	info, err := tc.CreateDatabase(ctx, CreateDatabaseRequest{
 		Name:    "mydb",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -438,7 +436,6 @@ func TestTenantDatabaseClient_CreateDatabase_InnerError(t *testing.T) {
 
 	_, err := tc.CreateDatabase(context.Background(), CreateDatabaseRequest{
 		Name:    "mydb",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err == nil {
@@ -459,7 +456,6 @@ func TestTenantDatabaseClient_CreateDatabase_OverridesTenantID(t *testing.T) {
 	info, err := tc.CreateDatabase(ctx, CreateDatabaseRequest{
 		TenantID: "evil-tenant",
 		Name:     "mydb",
-		Engine:   "kv",
 		Backend:  "pebble",
 	})
 	if err != nil {
@@ -479,7 +475,6 @@ func TestTenantDatabaseClient_GetDatabase_OwnedByTenant(t *testing.T) {
 	mock.databases["mydb"] = &DatabaseInfo{
 		TenantID: "acme",
 		Name:     "mydb",
-		Engine:   "kv",
 		Backend:  "pebble",
 		Status:   "open",
 	}
@@ -502,7 +497,6 @@ func TestTenantDatabaseClient_GetDatabase_CrossTenantDenied(t *testing.T) {
 	mock.databases["otherdb"] = &DatabaseInfo{
 		TenantID: "other-tenant",
 		Name:     "otherdb",
-		Engine:   "kv",
 		Backend:  "pebble",
 		Status:   "open",
 	}
@@ -926,7 +920,7 @@ func TestTenantDatabaseClient_Isolation(t *testing.T) {
 	tc2, _ := WithTenantDatabase(mock, "tenant2")
 
 	// Each tenant creates a database.
-	_, err := tc1.CreateDatabase(ctx, CreateDatabaseRequest{Name: "shared-name", Engine: "kv", Backend: "pebble"})
+	_, err := tc1.CreateDatabase(ctx, CreateDatabaseRequest{Name: "shared-name", Backend: "pebble"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +975,6 @@ func TestTenantDatabaseClient_CreateGetDropRoundtrip(t *testing.T) {
 	// Create.
 	info, err := tc.CreateDatabase(ctx, CreateDatabaseRequest{
 		Name:    "roundtrip-db",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err != nil {

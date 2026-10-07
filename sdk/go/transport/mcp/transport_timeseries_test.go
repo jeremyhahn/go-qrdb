@@ -182,6 +182,10 @@ func (m *mockTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeserie
 	return m.setRetentErr
 }
 
+func (m *mockTSSvc) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *mockTSSvc) ListMetrics(_ string, _ int) ([]string, error) {
 	if m.listMetricErr != nil {
 		return nil, m.listMetricErr

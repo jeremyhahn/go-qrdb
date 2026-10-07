@@ -178,7 +178,6 @@ func TestMultiDB_Scope_AllTransports(t *testing.T) {
 	// Create db2 once (shared database manager backs every transport).
 	if _, err := grpcClient.Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
 		Name:    "db2",
-		Engine:  "kv",
 		Backend: "memory",
 	}); err != nil {
 		t.Fatalf("create db2: %v", err)

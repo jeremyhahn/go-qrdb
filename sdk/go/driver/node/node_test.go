@@ -67,7 +67,6 @@ func TestScheme_ParsesEmbeddedGrammar(t *testing.T) {
 		dsn         string
 		wantDB      string
 		wantBackend string
-		wantEngine  string
 		wantDataDir string
 		wantTenant  string
 	}{
@@ -76,14 +75,12 @@ func TestScheme_ParsesEmbeddedGrammar(t *testing.T) {
 			dsn:         "node://memory?database=mydb",
 			wantDB:      "mydb",
 			wantBackend: "memory",
-			wantEngine:  "kv",
 		},
 		{
 			name:        "path and explicit backend",
 			dsn:         "node:///var/lib/qrdb?backend=pebble&database=mydb",
 			wantDB:      "mydb",
 			wantBackend: "pebble",
-			wantEngine:  "kv",
 			wantDataDir: "/var/lib/qrdb",
 		},
 		{
@@ -91,7 +88,6 @@ func TestScheme_ParsesEmbeddedGrammar(t *testing.T) {
 			dsn:         "node://memory?database=mydb&tenant=acme",
 			wantDB:      "mydb",
 			wantBackend: "memory",
-			wantEngine:  "kv",
 			wantTenant:  "acme",
 		},
 	}
@@ -110,9 +106,6 @@ func TestScheme_ParsesEmbeddedGrammar(t *testing.T) {
 			}
 			if cfg.Backend != tt.wantBackend {
 				t.Errorf("Backend = %q, want %q", cfg.Backend, tt.wantBackend)
-			}
-			if cfg.Engine != tt.wantEngine {
-				t.Errorf("Engine = %q, want %q", cfg.Engine, tt.wantEngine)
 			}
 			if cfg.DataDir != tt.wantDataDir {
 				t.Errorf("DataDir = %q, want %q", cfg.DataDir, tt.wantDataDir)

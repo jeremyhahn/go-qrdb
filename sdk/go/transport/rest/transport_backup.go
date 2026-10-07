@@ -31,34 +31,36 @@ var _ transport.BackupClient = (*Transport)(nil)
 // handlers. Timestamps are RFC3339 strings and durations are integer
 // milliseconds; we lift these into the transport.BackupInfo contract.
 type restBackupInfo struct {
-	ID           string            `json:"id"`
-	Timestamp    string            `json:"timestamp"`
-	Size         int64             `json:"size"`
-	ShardCount   int               `json:"shard_count"`
-	Status       string            `json:"status"`
-	Checksum     string            `json:"checksum"`
-	Destination  string            `json:"destination"`
-	Compression  string            `json:"compression"`
-	Encryption   string            `json:"encryption"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	DurationMs   int64             `json:"duration_ms"`
-	ErrorMessage string            `json:"error_message,omitempty"`
+	ID            string            `json:"id"`
+	Timestamp     string            `json:"timestamp"`
+	Size          int64             `json:"size"`
+	ShardCount    int               `json:"shard_count"`
+	Status        string            `json:"status"`
+	Checksum      string            `json:"checksum"`
+	Destination   string            `json:"destination"`
+	Compression   string            `json:"compression"`
+	Encryption    string            `json:"encryption"`
+	KeyProviderID string            `json:"key_provider_id,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	DurationMs    int64             `json:"duration_ms"`
+	ErrorMessage  string            `json:"error_message,omitempty"`
 }
 
 // toBackupInfo converts the on-wire shape to the transport contract.
 func (r *restBackupInfo) toBackupInfo() *transport.BackupInfo {
 	info := &transport.BackupInfo{
-		ID:           r.ID,
-		Size:         r.Size,
-		ShardCount:   r.ShardCount,
-		Status:       transport.BackupStatus(r.Status),
-		Checksum:     r.Checksum,
-		Destination:  r.Destination,
-		Compression:  transport.CompressionType(r.Compression),
-		Encryption:   transport.EncryptionType(r.Encryption),
-		Metadata:     r.Metadata,
-		Duration:     time.Duration(r.DurationMs) * time.Millisecond,
-		ErrorMessage: r.ErrorMessage,
+		ID:            r.ID,
+		Size:          r.Size,
+		ShardCount:    r.ShardCount,
+		Status:        transport.BackupStatus(r.Status),
+		Checksum:      r.Checksum,
+		Destination:   r.Destination,
+		Compression:   transport.CompressionType(r.Compression),
+		Encryption:    transport.EncryptionType(r.Encryption),
+		KeyProviderID: r.KeyProviderID,
+		Metadata:      r.Metadata,
+		Duration:      time.Duration(r.DurationMs) * time.Millisecond,
+		ErrorMessage:  r.ErrorMessage,
 	}
 	if r.Timestamp != "" {
 		if ts, err := time.Parse(time.RFC3339, r.Timestamp); err == nil {

@@ -296,14 +296,13 @@ func TestDatabaseCreate_Table(t *testing.T) {
 			gotCfg = cfg
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				Status:  "open",
 			}, nil
 		},
 	}
 
-	output, err := executeDatabaseCmd(t, dbSvc, "create", "metrics", "--engine", "timeseries", "--backend", "pebble")
+	output, err := executeDatabaseCmd(t, dbSvc, "create", "metrics", "--backend", "pebble")
 	if err != nil {
 		t.Fatalf("database create error: %v", err)
 	}
@@ -311,17 +310,28 @@ func TestDatabaseCreate_Table(t *testing.T) {
 	if gotCfg.Name != "metrics" {
 		t.Errorf("Name = %q, want %q", gotCfg.Name, "metrics")
 	}
-	if string(gotCfg.Engine) != "timeseries" {
-		t.Errorf("Engine = %q, want %q", gotCfg.Engine, "timeseries")
-	}
 	if string(gotCfg.Backend) != "pebble" {
 		t.Errorf("Backend = %q, want %q", gotCfg.Backend, "pebble")
 	}
 
-	for _, want := range []string{"Name:", "metrics", "Engine:", "timeseries", "Backend:", "pebble", "Status:", "open"} {
+	for _, want := range []string{"Name:", "metrics", "Backend:", "pebble", "Status:", "open"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q, got: %q", want, output)
 		}
+	}
+}
+
+// TestDatabaseCreate_EngineFlagRemoved verifies --engine fails as an unknown
+// flag (OD-13): every database serves every engine, so the flag is gone, not
+// silently ignored.
+func TestDatabaseCreate_EngineFlagRemoved(t *testing.T) {
+	dbSvc := &fnDatabaseService{}
+	_, err := executeDatabaseCmd(t, dbSvc, "create", "metrics", "--engine", "timeseries", "--backend", "pebble")
+	if err == nil {
+		t.Fatal("expected an error for the removed --engine flag, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("error = %q, want it to mention an unknown flag", err.Error())
 	}
 }
 
@@ -339,7 +349,6 @@ func TestDatabaseCreate_ReplicasFlag(t *testing.T) {
 			gotCfg = cfg
 			return &database.DatabaseInfo{
 				Name:     cfg.Name,
-				Engine:   cfg.Engine,
 				Backend:  cfg.Backend,
 				Replicas: cfg.Replicas,
 				Status:   "open",
@@ -348,7 +357,7 @@ func TestDatabaseCreate_ReplicasFlag(t *testing.T) {
 	}
 
 	if _, err := executeDatabaseCmd(t, dbSvc, "create", "rdb",
-		"--engine", "kv", "--backend", "raft", "--replicas", "3"); err != nil {
+		"--backend", "raft", "--replicas", "3"); err != nil {
 		t.Fatalf("database create error: %v", err)
 	}
 	if gotCfg.Replicas != 3 {
@@ -361,7 +370,6 @@ func TestDatabaseCreate_JSON(t *testing.T) {
 		createFn: func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				Status:  "open",
 				DataDir: "/data/metrics",
@@ -373,7 +381,7 @@ func TestDatabaseCreate_JSON(t *testing.T) {
 	outputFormat = "json"
 	t.Cleanup(func() { outputFormat = oldFormat })
 
-	output, err := executeDatabaseCmd(t, dbSvc, "create", "metrics", "--engine", "kv")
+	output, err := executeDatabaseCmd(t, dbSvc, "create", "metrics")
 	if err != nil {
 		t.Fatalf("database create json error: %v", err)
 	}
@@ -385,9 +393,6 @@ func TestDatabaseCreate_JSON(t *testing.T) {
 	if info.Name != "metrics" {
 		t.Errorf("Name = %q, want %q", info.Name, "metrics")
 	}
-	if info.Engine != "kv" {
-		t.Errorf("Engine = %q, want %q", info.Engine, "kv")
-	}
 	if info.DataDir != "/data/metrics" {
 		t.Errorf("DataDir = %q, want %q", info.DataDir, "/data/metrics")
 	}
@@ -398,7 +403,6 @@ func TestDatabaseCreate_YAML(t *testing.T) {
 		createFn: func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				Status:  "open",
 			}, nil
@@ -414,7 +418,7 @@ func TestDatabaseCreate_YAML(t *testing.T) {
 		t.Fatalf("database create yaml error: %v", err)
 	}
 
-	for _, want := range []string{"name:", "mydb", "engine:", "status:", "open"} {
+	for _, want := range []string{"name:", "mydb", "status:", "open"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q, got: %q", want, output)
 		}
@@ -429,7 +433,6 @@ func TestDatabaseCreate_DefaultFlags(t *testing.T) {
 			gotCfg = cfg
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				Status:  "open",
 			}, nil
@@ -441,9 +444,6 @@ func TestDatabaseCreate_DefaultFlags(t *testing.T) {
 		t.Fatalf("database create error: %v", err)
 	}
 
-	if string(gotCfg.Engine) != "kv" {
-		t.Errorf("default engine = %q, want %q", gotCfg.Engine, "kv")
-	}
 	if string(gotCfg.Backend) != "pebble" {
 		t.Errorf("default backend = %q, want %q", gotCfg.Backend, "pebble")
 	}
@@ -483,8 +483,8 @@ func TestDatabaseList_Table(t *testing.T) {
 	dbSvc := &fnDatabaseService{
 		listFn: func() ([]database.DatabaseInfo, error) {
 			return []database.DatabaseInfo{
-				{Name: "default", Engine: "kv", Backend: "pebble", Status: "open"},
-				{Name: "metrics", Engine: "timeseries", Backend: "pebble", Status: "open"},
+				{Name: "default", Backend: "pebble", Status: "open"},
+				{Name: "metrics", Backend: "pebble", Status: "open"},
 			}, nil
 		},
 	}
@@ -494,7 +494,7 @@ func TestDatabaseList_Table(t *testing.T) {
 		t.Fatalf("database list error: %v", err)
 	}
 
-	for _, want := range []string{"NAME", "ENGINE", "BACKEND", "STATUS", "default", "metrics", "kv", "timeseries", "pebble", "open"} {
+	for _, want := range []string{"NAME", "BACKEND", "STATUS", "default", "metrics", "pebble", "open"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q, got: %q", want, output)
 		}
@@ -505,7 +505,7 @@ func TestDatabaseList_JSON(t *testing.T) {
 	dbSvc := &fnDatabaseService{
 		listFn: func() ([]database.DatabaseInfo, error) {
 			return []database.DatabaseInfo{
-				{Name: "default", Engine: "kv", Backend: "pebble", Status: "open"},
+				{Name: "default", Backend: "pebble", Status: "open"},
 			}, nil
 		},
 	}
@@ -535,7 +535,7 @@ func TestDatabaseList_YAML(t *testing.T) {
 	dbSvc := &fnDatabaseService{
 		listFn: func() ([]database.DatabaseInfo, error) {
 			return []database.DatabaseInfo{
-				{Name: "default", Engine: "kv", Backend: "pebble", Status: "open"},
+				{Name: "default", Backend: "pebble", Status: "open"},
 			}, nil
 		},
 	}
@@ -549,7 +549,7 @@ func TestDatabaseList_YAML(t *testing.T) {
 		t.Fatalf("database list yaml error: %v", err)
 	}
 
-	for _, want := range []string{"name:", "default", "engine:", "kv"} {
+	for _, want := range []string{"name:", "default", "backend:", "pebble"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q, got: %q", want, output)
 		}
@@ -596,7 +596,6 @@ func TestDatabaseInfo_Table(t *testing.T) {
 		getFn: func(name string) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    name,
-				Engine:  "kv",
 				Backend: "pebble",
 				Status:  "open",
 				DataDir: "/data/default",
@@ -612,7 +611,6 @@ func TestDatabaseInfo_Table(t *testing.T) {
 
 	for _, want := range []string{
 		"Name:", "default",
-		"Engine:", "kv",
 		"Backend:", "pebble",
 		"Status:", "open",
 		"DataDir:", "/data/default",
@@ -629,7 +627,6 @@ func TestDatabaseInfo_JSON(t *testing.T) {
 		getFn: func(name string) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    name,
-				Engine:  "kv",
 				Backend: "pebble",
 				Status:  "open",
 				DataDir: "/data/default",
@@ -690,7 +687,6 @@ func TestDatabaseInfo_TableNoOptionalFields(t *testing.T) {
 		getFn: func(name string) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    name,
-				Engine:  "kv",
 				Backend: "pebble",
 				Status:  "open",
 			}, nil

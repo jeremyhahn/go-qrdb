@@ -1,6 +1,6 @@
 # Rate Limiting — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 **There is no CLI surface for this feature.**
 

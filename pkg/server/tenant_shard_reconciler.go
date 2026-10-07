@@ -263,6 +263,13 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 	for _, p := range placements {
 		key := raftShardKey{tenantID: p.TenantID, database: p.Database}
 		allPlacements[key] = p
+		if p.IsLocalBinding() {
+			// A single-node binding on a non-raft Backend (go-qrdb Lane 2B,
+			// OD-4 A): there is no Raft group to attach. The owning node
+			// materializes it through database resolution (pkg/server), not
+			// through this Raft-shard reconciler.
+			continue
+		}
 		if _, ok := p.ReplicaForNode(r.selfNodeID); !ok {
 			continue
 		}
@@ -617,6 +624,11 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 	switch ev.Type {
 	case placement.EventPut:
 		if ev.Placement == nil {
+			break
+		}
+		if ev.Placement.IsLocalBinding() {
+			// Same as ReconcileOnce: a local binding has no Raft group for
+			// this reconciler to attach.
 			break
 		}
 		if _, ok := ev.Placement.ReplicaForNode(r.selfNodeID); ok {

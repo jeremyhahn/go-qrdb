@@ -15,8 +15,13 @@
 package sdk
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
+
+// AvailableCodecs returns the sorted names of the wire and storage codecs
+// compiled into this build. The set depends on the codec build tags.
+var AvailableCodecs = codec.AvailableCodecs
 
 // ---------------------------------------------------------------------------
 // Daemon configuration

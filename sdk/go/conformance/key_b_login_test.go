@@ -168,6 +168,7 @@ func bootKeyBLoginCell(t *testing.T, tk transportKind) (*node.Node, *x509.CertPo
 	if _, err := svc.Tenant.CreateTenant(ctx, "acme", "Acme Corp", tenant.IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant(acme): %v", err)
 	}
+	ctx = tenant.WithTenantID(ctx, "acme")
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:     "key-b-login",
 		TenantID: "acme",

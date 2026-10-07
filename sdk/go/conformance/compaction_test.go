@@ -166,7 +166,7 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 	for _, id := range append([]string{tenantid.System}, compactionTenants...) {
 		db := compactionDatabase(id)
 		if _, err := n.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, id),
-			database.DatabaseConfig{Name: db, Engine: database.EngineKV, Backend: database.BackendPebble}); err != nil {
+			database.DatabaseConfig{Name: db, Backend: database.BackendPebble}); err != nil {
 			t.Fatalf("create database %s for %s: %v", db, id, err)
 		}
 		// Every cell, embedded included, needs the role: the embedded
@@ -197,7 +197,7 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) (roleID string, userID uint64) {
 	t.Helper()
 	svc := n.Services()
-	ctx := boundedCtx(t)
+	ctx := tenant.WithTenantID(boundedCtx(t), tenantID)
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:        "compaction-" + tenantID,
 		TenantID:    tenantID,
@@ -243,7 +243,7 @@ func dialAsTenant(t *testing.T, tk transportKind, n *node.Node, ca *qrdbdharness
 	if err != nil {
 		t.Fatalf("parse issued client cert for %s: %v", tenantID, err)
 	}
-	if _, err := n.Services().User.AddCertBinding(boundedCtx(t), userID, user.ComputeSPKIThumbprint(leaf), 0); err != nil {
+	if _, err := n.Services().User.AddCertBinding(tenant.WithTenantID(boundedCtx(t), tenantID), userID, user.ComputeSPKIThumbprint(leaf), 0); err != nil {
 		t.Fatalf("bind client cert for %s: %v", tenantID, err)
 	}
 

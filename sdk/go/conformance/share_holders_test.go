@@ -151,6 +151,19 @@ func newE2EHolder(t *testing.T, name, role string, curve elliptic.Curve, encKEM 
 	return h
 }
 
+// testEnvelopeKEM returns kem, except under FIPS 140 mode it substitutes
+// keydelivery.KEMP256 for an X25519-based kem (KEMX25519 or
+// KEMMLKEM768X25519): both are refused by keydelivery.LookupSuite under
+// GODEBUG=fips140=only (see docs/seal/fips140-mode.md), and every call site
+// that uses this helper needs the holder to have SOME separate envelope key
+// to drive a flow unrelated to the KEM itself.
+func testEnvelopeKEM(kem string) string {
+	if seal.FIPSEnabled() && (kem == keydelivery.KEMX25519 || kem == keydelivery.KEMMLKEM768X25519) {
+		return keydelivery.KEMP256
+	}
+	return kem
+}
+
 // registerRequest is the admin's enrolment request for the holder.
 func (h *e2eHolder) registerRequest() *transport.OfficerRegisterRequest {
 	req := &transport.OfficerRegisterRequest{
@@ -352,8 +365,8 @@ func newHolderE2E(t *testing.T, tk transportKind) *holderE2E {
 	for _, h := range []*e2eHolder{
 		newE2EHolder(t, "so-alice", transport.RoleSecurityOfficer, elliptic.P256(), "", false),
 		newE2EHolder(t, "so-bob", transport.RoleSecurityOfficer, elliptic.P384(), "", false),
-		newE2EHolder(t, "cust-carol", transport.RoleCustodian, elliptic.P256(), keydelivery.KEMX25519, true),
-		newE2EHolder(t, "cust-dave", transport.RoleCustodian, elliptic.P256(), keydelivery.KEMMLKEM768X25519, true),
+		newE2EHolder(t, "cust-carol", transport.RoleCustodian, elliptic.P256(), testEnvelopeKEM(keydelivery.KEMX25519), true),
+		newE2EHolder(t, "cust-dave", transport.RoleCustodian, elliptic.P256(), testEnvelopeKEM(keydelivery.KEMMLKEM768X25519), true),
 		newE2EHolder(t, "cust-erin", transport.RoleCustodian, elliptic.P256(), "", false),
 	} {
 		e.holders[h.name] = h

@@ -26,15 +26,7 @@
 -->
 <script lang="ts">
   import type { DatabaseInfo } from "@qrdb/sdk";
-  import {
-    Database,
-    TrendingUp,
-    Hexagon,
-    Plus,
-  } from "lucide-svelte";
-  // lucide-svelte icons are legacy Svelte 4 class components.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  type IconComponent = any;
+  import { Database, Plus } from "lucide-svelte";
   import { navStore, navigateToDatabase, navigateToCreateDatabase } from "../../stores/navigation.svelte.ts";
 
   // ---------------------------------------------------------------------------
@@ -61,28 +53,6 @@
     isActive = false,
     collapsed = false,
   }: Props = $props();
-
-  // ---------------------------------------------------------------------------
-  // Constants
-  // ---------------------------------------------------------------------------
-
-  const ENGINE_ICONS: Readonly<Record<string, IconComponent>> = {
-    kv: Database,
-    timeseries: TrendingUp,
-    vector: Hexagon,
-  };
-
-  const ENGINE_BADGE_CLASSES: Readonly<Record<string, string>> = {
-    kv: 'badge-secondary',
-    timeseries: 'badge-warning',
-    vector: 'badge-accent',
-  };
-
-  const ENGINE_BADGE_LABELS: Readonly<Record<string, string>> = {
-    kv: 'kv',
-    timeseries: 'ts',
-    vector: 'vec',
-  };
 
   // ---------------------------------------------------------------------------
   // Derived
@@ -119,7 +89,6 @@
   {/if}
 {:else}
   {#each databases as db (db.name)}
-    {@const EngineIcon = ENGINE_ICONS[db.engine] ?? Database}
     {@const isSelected = selectedDbName === db.name}
     <button
       class="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors duration-150
@@ -128,14 +97,11 @@
           : 'text-base-content/60 hover:bg-base-content/5 hover:text-base-content/90'}"
       class:justify-center={collapsed}
       onclick={() => handleSelectDatabase(db)}
-      title={collapsed ? `${db.name} (${db.engine})` : db.name}
+      title={db.name}
     >
-      <EngineIcon class="h-3.5 w-3.5 shrink-0 {isSelected ? 'text-primary' : ''}" />
+      <Database class="h-3.5 w-3.5 shrink-0 {isSelected ? 'text-primary' : ''}" />
       {#if !collapsed}
         <span class="flex-1 truncate text-left">{db.name}</span>
-        <span class="badge badge-xs text-[9px] {ENGINE_BADGE_CLASSES[db.engine] ?? 'badge-ghost'}">
-          {ENGINE_BADGE_LABELS[db.engine] ?? db.engine}
-        </span>
       {/if}
     </button>
   {/each}

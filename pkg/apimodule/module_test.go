@@ -16,6 +16,7 @@ package apimodule_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -24,8 +25,15 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
+
+// *authmw.AuthMiddleware satisfies apimodule.TenantTargetAuthorizer as-is --
+// no adapter required -- which is the whole point of declaring the latter as
+// a minimal structural interface rather than importing the concrete type
+// into this package (go-qrdb#587).
+var _ apimodule.TenantTargetAuthorizer = (*authmw.AuthMiddleware)(nil)
 
 // recordedRoute is one registration observed by the fake registrar helpers.
 type recordedRoute struct {
@@ -257,5 +265,73 @@ func TestGRPCPublicMethodListerIsOptional(t *testing.T) {
 
 	if _, ok := withoutDecls.(apimodule.GRPCPublicMethodLister); ok {
 		t.Error("a module without PublicGRPCMethods must not satisfy GRPCPublicMethodLister")
+	}
+}
+
+// fakeTenantTargetAuthorizer is a minimal apimodule.TenantTargetAuthorizer a
+// module test can seed with a canned decision, independent of the real RBAC
+// authorizer in pkg/auth/middleware.
+type fakeTenantTargetAuthorizer struct {
+	gotTenantID string
+	gotPerm     permission.Permission
+	err         error
+}
+
+func (f *fakeTenantTargetAuthorizer) AuthorizeTenantTarget(_ context.Context, tenantID string, perm permission.Permission) error {
+	f.gotTenantID = tenantID
+	f.gotPerm = perm
+	return f.err
+}
+
+var _ apimodule.TenantTargetAuthorizer = (*fakeTenantTargetAuthorizer)(nil)
+
+// tenantTargetAwareModule is a module that implements the optional
+// ModuleTenantTargetAware extension, recording the authorizer it was handed.
+type tenantTargetAwareModule struct {
+	apimodule.BaseModule
+	authz apimodule.TenantTargetAuthorizer
+}
+
+func (tenantTargetAwareModule) Name() string { return "tenant-target-aware" }
+
+func (m *tenantTargetAwareModule) SetTenantTargetAuthorizer(a apimodule.TenantTargetAuthorizer) {
+	m.authz = a
+}
+
+var _ apimodule.ModuleTenantTargetAware = (*tenantTargetAwareModule)(nil)
+
+// TestModuleTenantTargetAwareIsOptional pins the same detect-by-assertion
+// shape as every other optional ServiceModule extension (go-qrdb#587): a
+// module implementing SetTenantTargetAuthorizer is detected and, once
+// called, can authorize its own operation against a caller-supplied target
+// tenant through the authorizer it was handed; a module that does not
+// implement it is simply absent, not an error.
+func TestModuleTenantTargetAwareIsOptional(t *testing.T) {
+	var withExt apimodule.ServiceModule = &tenantTargetAwareModule{}
+	var withoutExt apimodule.ServiceModule = nameOnlyModule{}
+
+	aware, ok := withExt.(apimodule.ModuleTenantTargetAware)
+	if !ok {
+		t.Fatal("a module implementing SetTenantTargetAuthorizer must satisfy ModuleTenantTargetAware")
+	}
+
+	wantErr := errors.New("denied")
+	fake := &fakeTenantTargetAuthorizer{err: wantErr}
+	aware.SetTenantTargetAuthorizer(fake)
+
+	m := withExt.(*tenantTargetAwareModule)
+	if m.authz == nil {
+		t.Fatal("SetTenantTargetAuthorizer did not record the authorizer")
+	}
+	err := m.authz.AuthorizeTenantTarget(context.Background(), "acme", permission.DatabasesRead)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("AuthorizeTenantTarget err = %v, want the fake's canned denial", err)
+	}
+	if fake.gotTenantID != "acme" || fake.gotPerm != permission.DatabasesRead {
+		t.Errorf("fake saw (%q, %s), want (%q, %s)", fake.gotTenantID, fake.gotPerm, "acme", permission.DatabasesRead)
+	}
+
+	if _, ok := withoutExt.(apimodule.ModuleTenantTargetAware); ok {
+		t.Error("a module without SetTenantTargetAuthorizer must not satisfy ModuleTenantTargetAware")
 	}
 }

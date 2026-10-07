@@ -105,6 +105,12 @@ type TenantInfo struct {
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 
+	// IsolationPolicy is the tenant's own, self-selected isolation policy:
+	// inherit (default, the cluster floor decides) or strict (tighten-only;
+	// see pkg/tenant/isolation_policy.go and
+	// docs/multi-tenancy/architecture.md "The isolation policy").
+	IsolationPolicy TenantIsolationPolicy `json:"isolation_policy,omitempty"`
+
 	// Refusal is set, by ListTenants only, on a tenant this node will not
 	// serve: its volume pool or catalog Assignment does not resolve on this
 	// node (e.g. the pool failed to open, or the Assignment is missing or
@@ -129,6 +135,20 @@ type createTenantConfig struct {
 	// Empty means "no preference": the tenant's default pool (the first
 	// entry of its AllowedVolumePools) is used.
 	volumePool string
+
+	// isolationPolicy is the tenant's requested isolation-policy opt-in
+	// (WithIsolationPolicy). Empty (TenantIsolationPolicyInherit) is the
+	// default: the cluster floor alone decides the tenant's effective
+	// policy.
+	isolationPolicy TenantIsolationPolicy
+}
+
+// WithIsolationPolicy opts the new tenant into TenantIsolationPolicyStrict
+// regardless of the cluster floor. Refused with
+// *StrictRequiresDedicatedStorageError for a prefix tenant: a prefix tenant
+// has no store and no key of its own (owner ruling S2).
+func WithIsolationPolicy(p TenantIsolationPolicy) CreateTenantOption {
+	return func(c *createTenantConfig) { c.isolationPolicy = p }
 }
 
 // WithBarrierAutoUnseal selects the tenant's barrier key-management mode. Pass
@@ -188,6 +208,14 @@ type TenantPatch struct {
 	// The caller is responsible for ensuring the tenant has no data
 	// before changing the isolation type (the service enforces this).
 	IsolationType IsolationType
+
+	// IsolationPolicy, when non-empty, changes the tenant's own
+	// isolation-policy opt-in. Tighten-only: TenantIsolationPolicyInherit ->
+	// TenantIsolationPolicyStrict is the only legal transition; the reverse
+	// is refused with *IsolationPolicyChangeError. Requesting strict on a
+	// prefix tenant (or a tenant moving to prefix in the same patch) is
+	// refused with *StrictRequiresDedicatedStorageError.
+	IsolationPolicy TenantIsolationPolicy
 }
 
 // TenantServicer defines the interface for tenant lifecycle management
@@ -668,6 +696,19 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	if isolationType == "" {
 		isolationType = IsolationPrefix
 	}
+	// S2 (owner ruling): a prefix tenant has no store and no key of its own,
+	// so it cannot be strict, whether the cluster floor forces strict or the
+	// caller asked for it directly. Checked before any side effect.
+	if cfg.isolationPolicy != "" && !cfg.isolationPolicy.Valid() {
+		return nil, &InvalidIsolationPolicyError{Value: string(cfg.isolationPolicy)}
+	}
+	floor, err := s.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateIsolationModeAgainstPolicy(isolationType, EffectiveIsolationPolicy(floor, cfg.isolationPolicy)); err != nil {
+		return nil, err
+	}
 	// The system tenant is structurally a prefix tenant: its IAM data must
 	// remain in the shared store so bootstrap works while every tenant
 	// barrier is still sealed. Reject barrier isolation for it. (External
@@ -764,6 +805,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		IsolationType:     isolationType,
 		VolumePool:        volumePool,
 		BarrierAutoUnseal: cfg.barrierAutoUnseal,
+		IsolationPolicy:   cfg.isolationPolicy,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -981,9 +1023,15 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
 	}
+	if err := checkIsolationPolicyChangeFor(ctx, s, info, patch); err != nil {
+		return nil, err
+	}
 
 	if patch.IsolationType != "" {
 		info.IsolationType = patch.IsolationType
+	}
+	if patch.IsolationPolicy != "" {
+		info.IsolationPolicy = patch.IsolationPolicy
 	}
 	if patch.Name != "" {
 		info.Name = patch.Name
@@ -1024,6 +1072,16 @@ func (s *TenantService) GetTenant(ctx context.Context, tenantID string) (*Tenant
 	var info TenantInfo
 	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, &StoreError{Op: "unmarshal", Err: err}
+	}
+
+	// A single Get must show the same refusal ListTenants already does:
+	// one tenant this node cannot resolve is reported, not silently
+	// returned as if it were served.
+	if rerr := s.checkLocalResolution(ctx, &info); rerr != nil {
+		info.Refusal = rerr
+		s.logger.Error("tenant refused on this node; its data is not opened",
+			slog.String("tenant_id", info.ID),
+			slog.Any("error", rerr))
 	}
 
 	return &info, nil
@@ -1490,6 +1548,29 @@ func (s *TenantService) effectiveEntitlements(ctx context.Context, tenantID stri
 // CheckIsolation returns nil if the tenant is entitled to the given isolation
 // mode, or a *quota.EntitlementError otherwise. The system tenant is implicitly
 // entitled to every mode. Implements quota.EntitlementChecker.
+// ReplicatedAuditEnabled reports whether tenantID's events may be written to
+// the cluster-wide replicated audit chain: its own
+// Entitlements.AllowReplicatedAudit when its record sets one, otherwise the
+// operator-configured default, finally quota.DefaultEntitlements's
+// conservative false.
+//
+// Unlike CheckIsolation and CheckBarrierMode, the system tenant is NOT
+// implicitly entitled here: the system tenant's own platform-event trail is
+// not provisioned through this entitlements path at all, and is governed by
+// a separate top-level setting (the daemon's audit platform-events switch)
+// this method does not read. A caller resolving the system tenant's own
+// posture must check that setting itself.
+func (s *TenantService) ReplicatedAuditEnabled(ctx context.Context, tenantID string) (bool, error) {
+	if tenantid.IsSystem(tenantID) {
+		return false, nil
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return ents.AllowReplicatedAudit, nil
+}
+
 func (s *TenantService) CheckIsolation(ctx context.Context, tenantID, mode string) error {
 	if tenantid.IsSystem(tenantID) {
 		return nil

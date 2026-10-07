@@ -99,6 +99,24 @@ type AtomicKV interface {
 	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
 }
 
+// PutIfAbsentKV is the optional atomic-create capability a KV backend may
+// provide. When the configured KV also implements PutIfAbsentKV,
+// Store.ClaimPlacement commits a BRAND NEW placement entry with a
+// cluster-wide "first write wins" guarantee: two nodes racing to create the
+// same (tenant, database) -- the case a local binding's single owner must
+// be decided by, not a Put each node could issue unconditionally -- settle
+// on exactly one winner everywhere, never "whichever Put committed last on
+// this entry," which is what an unconditional Put would give (go-qrdb Lane
+// 2B). The shared system KVStore this package is normally configured with
+// (kvstore.KVStore, via lifecycle's kvStoreAdapter) already implements this.
+type PutIfAbsentKV interface {
+	// PutIfAbsent stores value under key only if key is not already
+	// present. It reports stored=true when this call created the key, and
+	// stored=false with a nil error when the key already existed -- in
+	// which case the store is unchanged.
+	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+}
+
 // EventType distinguishes a placement put from a placement delete.
 type EventType uint8
 
@@ -253,6 +271,61 @@ func (s *Store) CompareAndSwapPlacement(ctx context.Context, expected, next *Pla
 		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
 	}
 	return swapped, nil
+}
+
+// ClaimPlacement commits p as a brand-new placement entry for (p.TenantID,
+// p.Database), atomically and cluster-wide: the first call to reach the
+// store -- on this node or any other racing it for the same name -- wins,
+// and every other call observes claimed=false together with the winner's
+// own entry in existing, never a second write that silently overwrote it.
+// This is the primitive "a database created on one node resolves to the
+// same binding on every node" rests on (go-qrdb Lane 2B): a create that
+// only Put its own choice of owner would let two nodes racing the same name
+// each commit their own, and whichever Put lands last would silently win,
+// stranding the data the first owner already started serving.
+//
+// It is Put's counterpart for an entry that must not already exist, exactly
+// as CompareAndSwapPlacement is Put's counterpart for one that does:
+// neither ever falls back to a bare Put.
+//
+// Returns a *StoreError wrapping *AtomicWriteUnsupportedError when the
+// backing KV does not implement PutIfAbsentKV -- a capability refusal, not
+// a fallback: falling back to Put would defeat the entire reason a caller
+// chose this over Put, exactly as for CompareAndSwapPlacement.
+//
+// Returns existing as nil when claimed is true (there is nothing else to
+// report) or when claimed is false only because reading the winner's entry
+// itself failed -- that failure is returned as err instead.
+func (s *Store) ClaimPlacement(ctx context.Context, p *Placement) (claimed bool, existing *Placement, err error) {
+	if p == nil {
+		return false, nil, &StoreError{Op: "claim", Err: ErrPlacementNotFound}
+	}
+	if p.TenantID == "" {
+		return false, nil, &StoreError{Database: p.Database, Op: "claim", Err: ErrEmptyTenant}
+	}
+	if p.Database == "" {
+		return false, nil, &StoreError{TenantID: p.TenantID, Op: "claim", Err: ErrEmptyDatabase}
+	}
+	creator, ok := s.kv.(PutIfAbsentKV)
+	if !ok {
+		return false, nil, &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "claim", Err: &AtomicWriteUnsupportedError{}}
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		return false, nil, &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "claim", Err: err}
+	}
+	stored, err := creator.PutIfAbsent(ctx, placementKey(p.TenantID, p.Database), data)
+	if err != nil {
+		return false, nil, &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "claim", Err: err}
+	}
+	if stored {
+		return true, nil, nil
+	}
+	current, err := s.Get(ctx, p.TenantID, p.Database)
+	if err != nil {
+		return false, nil, err
+	}
+	return false, current, nil
 }
 
 // setDroppingMaxAttempts bounds SetDropping's optimistic-retry loop. Each

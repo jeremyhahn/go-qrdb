@@ -150,6 +150,14 @@ type fakeTenants struct {
 	createAlreadyErr bool
 	deleteCalls      []string
 	deleteErr        error
+
+	// autoUnseal makes CreateTenant's returned *tenant.TenantInfo report
+	// BarrierAutoUnseal: true, as the real TenantService does when the
+	// caller's CreateOptions included tenant.WithBarrierAutoUnseal(true) --
+	// this double ignores opts entirely, so a test that needs the
+	// auto-unseal immediate-completion path (ProvisionTenant) sets this
+	// field directly instead.
+	autoUnseal bool
 }
 
 // DeleteTenant implements tenantDeleter so an Exclusive ProvisionTenant's
@@ -173,7 +181,7 @@ func (f *fakeTenants) CreateTenant(_ context.Context, id, name string, isolation
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	return &tenant.TenantInfo{ID: id, Name: name, IsolationType: isolationType}, nil
+	return &tenant.TenantInfo{ID: id, Name: name, IsolationType: isolationType, BarrierAutoUnseal: f.autoUnseal}, nil
 }
 
 type fakeUsers struct {

@@ -483,7 +483,7 @@ func TestRegistryRefusesSealedRecords(t *testing.T) {
 
 	mgr := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	if _, err := mgr.Create(database.DatabaseConfig{Name: "app", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := mgr.Create(database.DatabaseConfig{Name: "app", Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	r.dbManager = mgr

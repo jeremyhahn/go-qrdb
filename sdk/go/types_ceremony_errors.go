@@ -102,9 +102,6 @@ var (
 	// ErrCeremonyInitFailed is returned when initialization fails.
 	ErrCeremonyInitFailed = ceremony.ErrInitFailed
 
-	// ErrCeremonyNotImplemented is returned when an operation is not implemented.
-	ErrCeremonyNotImplemented = ceremony.ErrNotImplemented
-
 	// ErrCeremonyCANotInitialized is returned when the CA is not initialized.
 	ErrCeremonyCANotInitialized = ceremony.ErrCANotInitialized
 

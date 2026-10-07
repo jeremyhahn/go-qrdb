@@ -1,7 +1,7 @@
 # Databases — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-01
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the multi-model database program in
 > [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
@@ -13,9 +13,11 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 ## `qrdb database create <name>`
 
+`--engine` is removed (shipped, Lane 1C); passing it is an unknown-flag
+error. Every database serves every compiled-in engine.
+
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--engine` | string | `kv` | `kv \| timeseries` — **removed in the target design** |
 | `--backend` | string | `pebble` | `pebble \| memory \| file \| raft \| objstore` — see below |
 | `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
 | `--cluster-mode` | string | `local` | `local \| distributed` — **raft backend only** |
@@ -31,10 +33,10 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 ```bash
 qrdb database create app
-qrdb database create billing --engine kv --backend raft --replicas 3 --cluster-mode distributed
+qrdb database create billing --backend raft --replicas 3 --cluster-mode distributed
 qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
-qrdb database create k8s --engine kv --backend raft --etcd --etcd-listen-addr :2379
+qrdb database create k8s --backend raft --etcd --etcd-listen-addr :2379
 ```
 
 **A barrier must be on the data path.** `--barrier-enabled` is accepted only on
@@ -52,10 +54,10 @@ Measured: `--backend` is recorded and, for most databases, not where the data
 lives, and `--backend objstore` fails when the store is opened. See
 [architecture.md](architecture.md) "Current state".
 
-### Target: `qrdb database create <name>`
+### Target: `qrdb database create <name>` (remaining, unshipped)
 
-`--engine` is removed; passing it is an unknown-flag error. Every database
-serves every compiled-in engine.
+`--engine`'s removal shipped in Lane 1C, above; the remaining rows are not yet
+implemented.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|

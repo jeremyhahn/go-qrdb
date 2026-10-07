@@ -1,7 +1,7 @@
 # Multi-Tenancy — Engineering Contract
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -1039,6 +1039,8 @@ did not.
 
 ## Test strategy
 
+**Integration target:** `make integration-test-multi-tenancy` (no Docker; selection in `test/integration/features.mk`). The tenant CLI suites (lifecycle, deleted-id retirement, isolation, barrier) run the real `qrdb` binary against a self-spawned `qrdbd`; the multi-tenancy row of the accounting file lists which transports each capability reaches and which it does not. Per-transport accounting is the `multi-tenancy` row of `test/integration/COVERAGE.md`.
+
 - **Unit**: entitlement checks running before quota checks, `Max*` semantics for
   `-1` and `0`, the isolation-change refusal, and the volume-pool precondition.
 - **The entitlement-before-quota ordering is its own test** — reversing it would
@@ -1081,14 +1083,22 @@ provisioning, quota and entitlement changes are audited through
 
 ## Strict isolation — engineering contract (RULED)
 
-> **Status: RULED — not implemented.** The owner ruled the design on 2026-10-01,
-> and S4 on 2026-10-02. Design and rulings:
+> **Status: RULED — partially implemented.** The owner ruled the design on
+> 2026-10-01, and S4 on 2026-10-02. Design and rulings:
 > [architecture.md](architecture.md#strict-tenant-isolation--design). This
 > section is what an implementation must satisfy, and the
 > [implementation plan](#implementation-plan) it is built in. File and line
-> references are to the tree at v0.26.0-alpha and record where things are
-> **today**. **Correction (2026-10-05):** phase 3's first-admin-by-CSR shape
-> already shipped since, independent of this plan — see that phase's row.
+> references are to the tree at v0.26.0-alpha and record where things were at
+> that point, not current line numbers. **Correction (2026-10-05):** phase 3's
+> first-admin-by-CSR shape already shipped since, independent of this plan —
+> see that phase's row. **Correction (2026-10-06):** phase 5's isolation
+> policy and the `ScopeSelf` system-tenant-lift removal (the first two
+> invariants under [Invariants](#invariants-2) below) shipped; see their
+> "Shipped 2026-10-06" notes. Phase 5's G1 (every strict tenant's database on
+> a dedicated WAL) did not ship — it depends on phase 4, which is also still
+> open — so the feature gate this phase would otherwise register
+> (`strict-isolation`) was deliberately not added: there is nothing yet for it
+> to gate. Every other phase (0, 1, 2, 4, 6-12) remains as described.
 
 ### Inventory — where tenant records live today
 
@@ -1219,28 +1229,99 @@ phase 5, by removing the system lift it rides on.
   that tenant's own CA.** A cluster-CA certificate naming the tenant is
   refused. The SPKI binding policy is `required` for strict tenants, whatever
   `auth.mtls_binding_policy` says for the rest.
-- **The policies only tighten.**
+- **The policies only tighten. Shipped 2026-10-06**
+  (`pkg/tenant/isolation_policy.go`).
   - The cluster floor and the tenant setting are each written with a
-    compare-and-swap.
+    compare-and-swap (`setClusterIsolationPolicy`, composed of
+    `PutIfAbsent`/`CompareAndDelete` over `clusterPolicyBackend`;
+    `checkIsolationPolicyChangeFor` for the tenant setting).
   - The floor permits only `unset → strict | operator-access` and
-    `operator-access → strict`.
+    `operator-access → strict` (`clusterIsolationTransitionAllowed`).
   - The tenant setting permits only `inherit → strict`.
-- **Strict tenants have storage of their own.** Creating a `prefix` tenant
+  - Not yet true: the floor's "unset" read defaults to
+    `ClusterIsolationPolicyOperatorAccess` (today's behavior) rather than to
+    `strict`, because nothing yet performs the "first-boot configuration,
+    recorded once" write this table's own row promises; see the slice
+    correction at the top of this section.
+- **Strict tenants have storage of their own. Shipped 2026-10-06**
+  (`tenant.ValidateIsolationModeAgainstPolicy`). Creating a `prefix` tenant
   under a strict floor, or setting `strict` on a `prefix` tenant, is refused
-  with `tenant.StrictRequiresDedicatedStorageError` before any write.
-- **`ScopeSelf` has no system lift.**
-  - The `inSystem ||` arm at `pkg/auth/rbac/rbac.go:804` is deleted under
-    every policy, and so is the system branch of `EffectiveTenant`
-    (`pkg/tenant/context.go:140-147`).
+  with `tenant.StrictRequiresDedicatedStorageError` before any write, in both
+  `TenantService.CreateTenant`/`UpdateTenant` and the no-seal
+  `kvTenantService`'s.
+- **`ScopeSelf` has no system lift. Shipped 2026-10-06, and unconditionally —
+  not gated by the isolation policy at all ("under every policy" in the
+  ruling).**
+  - The `inSystem ||` arm in `rbac.Authorize`'s `ScopeSelf` case
+    (`pkg/auth/rbac/rbac.go`) is deleted. `ScopeSelfStrict` is NOT yet folded
+    into `ScopeSelf` — they are now behaviorally identical, but remain
+    distinct enum values pending that follow-on cleanup.
+  - `tenant.EffectiveTenant` (`pkg/tenant/context.go`) lost its system-tenant
+    branch the same way: every identity, including the system tenant, may
+    only act on its own tenant through it. This is the layer that actually
+    gated `CreateUser`/`CreateRole`/factor-enrolment routing, independent of
+    the RBAC entry check.
   - Cross-tenant reach exists only through `ScopeCross` permissions. They act
     on system records or, for `tenant_identity:*` against a tenant whose
     effective policy is `operator-access`, on identity records in an
-    explicitly named tenant.
+    explicitly named tenant. **Not yet shipped:** `tenant_identity:read`/
+    `write` themselves — nothing wires an operator-access reach surface yet,
+    so under every floor value, cross-tenant identity reach is simply absent
+    rather than gated.
+  - `tenants:read:cross`, `tenants:delete:cross` and `tenants:update:cross`
+    (`pkg/permission/cross_scope.go`) replace the lift `tenants:read` /
+    `tenants:delete` / `tenants:update` relied on; `tenants:update` itself
+    stays self-scoped (see its own row in [Tenant-administration
+    authorization](#tenant-administration-authorization) above), but renaming
+    another tenant is ordinary platform administration like reading or
+    deleting it, so `AuthMiddleware.AuthorizeTenantTarget`
+    (`pkg/auth/middleware/middleware.go`) tries the self-scope permission
+    first and falls back to the matching cross one only when the target
+    differs from the caller's own tenant — a patch that both renames and
+    re-isolates a DIFFERENT tenant is admitted for a system caller holding
+    `tenants:update:cross` and `tenants:set_isolation`, each authorized on its
+    own merits.
+- **Three production regressions the `ScopeSelf` lift removal exposed,
+  surfaced only by running the real integration suite end-to-end (unit tests
+  construct already-correctly-bound contexts by hand and could not have
+  caught any of these), fixed in the same change:**
+  - `pkg/bootstrap.ProvisionTenant` seeded a new tenant's built-in roles and
+    created its first admin using the CALLER's ctx (the system admin's),
+    targeting the brand-new tenant — refused the instant the lift was gone,
+    breaking `tenant create` on every transport. Fixed by rebinding
+    `ctx = tenant.WithTenantID(ctx, cfg.TenantID)` once, near the top of
+    `ProvisionTenant`; this is legitimately privileged (`ProvisionTenant` is
+    reached only through the `ScopeCross` `tenants:create` gate), so the
+    identity in ctx (a separate key) is untouched and audit trails still name
+    the real caller.
+  - `pkg/auth/middleware.finalizeIdentity` bound ctx's tenant to the
+    authenticating identity's own (cert-derived) tenant AFTER calling
+    `m.lookupUser` (the routed `GetUserByUsername`) — but that lookup itself
+    now needs ctx already bound to match, so EVERY non-system-tenant mTLS
+    authentication failed closed. Fixed by moving the bind to immediately
+    after `identity.TenantID` normalization, before any lookup.
+  - A system-managed (auto-unseal) dedicated-isolation tenant's pending admin
+    (`pkg/tenantadmin`) was never completed: `registerDedicatedBarrier`'s
+    auto-unseal branch initializes the barrier directly through the registry
+    and never calls `notifyBarrierReady`, so nothing ever raises
+    `tenant.BarrierReadyHook` for it — unlike a self-managed tenant, whose own
+    admin later calls barrier-init/-unseal/-status to trigger it. Fixed in
+    `ProvisionTenant`, not `registerDedicatedBarrier`: the pending-admin
+    record `provisionPendingAdmin` writes does not exist yet at the point
+    `CreateTenant` runs (Step 1, before the pending-admin step), so the hook
+    would have fired too early even if wired there. `ProvisionTenant` now
+    calls `CompletePendingTenantAdmin` inline immediately afterward, gated on
+    `CreateTenant`'s returned `*tenant.TenantInfo.BarrierAutoUnseal` so a
+    self-managed tenant's (or an idempotent re-run's) deferred semantics are
+    unchanged.
 - **No permission reaches tenant data across tenants.** Every data-plane
   permission is `ScopeSelf` or `ScopeTenantOnly`, never `ScopeCross`. That
   covers KV, MVCC, SQL, collections, vectors, time series, locks, leases,
-  watch, etcd, sequences, transactions, indexes and tenant-group backups. A
-  table-driven test over the permission registry asserts it.
+  watch, etcd, sequences, transactions, indexes and tenant-group backups.
+  **Not yet shipped:** the table-driven test over the permission registry
+  that asserts it; today's assertion is indirect, via the `ScopeSelf`
+  lift-removal tests in `pkg/auth/rbac` and the routing-layer
+  `CrossTenantDeniedError` tests in `pkg/user`, `pkg/role` and `pkg/service`.
 - **Operator access is recorded twice.** A `tenant_identity:*` decision is
   written to the platform trail and to the tenant's own trail before the
   operation runs. If either write fails, the decision is refused, whatever the

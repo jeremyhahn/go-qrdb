@@ -200,7 +200,9 @@ the cluster CA it signs with is available only once the barrier is unsealed.
 
 Mints a single-use, identity-bound join token for an admin to hand to a
 joining node. Requires permission `cluster:join_token` (`ScopeCross`,
-platform-only — no built-in role carries it by default). Available whenever
+platform-only — held by `Owner` and by the cluster `Admin` role, owner
+ruling 2026-10-06; only the Admin grant survives strict separation of
+duties, see [../seal/fips140-mode.md](../seal/fips140-mode.md#strict-separation-of-duties-and-clusterjoin_token-under-fips)). Available whenever
 an admin service is configured; reports `501` when member-side CSR join
 itself is not configured on this node (no join-token store bound).
 
@@ -334,7 +336,7 @@ their own; their Go surface is in `pkg/clusterenroll`, re-exported from
 |---|---|
 | `NoiseAvailable() bool` | whether this runtime may use the Noise NK method; false in FIPS 140-3 mode |
 | `*NoiseFIPSUnavailableError` | a join configured with Noise as its only method, in FIPS 140-3 mode; the message names FIPS and the approved methods |
-| `(*Advertiser).NoiseEnabled() bool` | whether this first node is running a Noise listener; a non-nil `Advertiser` means the node advertises enrollment, which is a different question |
+| `(*Advertiser).NoiseEnabled() bool` | whether THIS node is running a Noise listener; a non-nil `Advertiser` means the node advertises enrollment, which is a different question. Every admitted, unsealed member gets one -- see [architecture.md](architecture.md#member-side-csr-join-key-a-cluster-ca) -- not only the node that generated the cluster CA |
 
 See [engineering.md](engineering.md#fips-140-3--the-noise-nk-method-is-unavailable)
 and [architecture.md](architecture.md) for the member-side CSR join design.

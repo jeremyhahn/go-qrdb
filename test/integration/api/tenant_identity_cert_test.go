@@ -6,6 +6,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -33,17 +34,24 @@ type tenantAdminIdentity struct {
 // No caller may issue a certificate into another tenant (certs:* is
 // ScopeSelfStrict), so a test that needs a tenant's certificate operations
 // performs them as the tenant's own administrator, which is what this builds.
-// The harness admin only provisions the tenant, role and user; the bootstrap
-// admin issues the final certificate.
+// The harness admin only provisions the tenant; the bootstrap admin creates the
+// role and user, and issues the final certificate.
 func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, tenantID string, perms ...string) *tenantAdminIdentity {
 	t.Helper()
 	ts := testTimestamp()
 	username := fmt.Sprintf("tadmin-%s-%d", proto, ts)
 	roleName := fmt.Sprintf("tadmin-role-%s-%d", proto, ts)
 
+	// The role and user are created by the tenant's own bootstrap admin, which
+	// also holds the tenant's Security Officer role (roles:create is SO-exclusive):
+	// the system tenant's admin holds no cross-tenant roles:create / users:create,
+	// and a tenant's first admin is the supported way to populate it.
+	boot := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
+	boot.grantSecurityOfficer(t, cfg, proto)
+
 	run := func(what string, args ...string) string {
 		t.Helper()
-		stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, args...)
+		stdout, stderr, err := boot.exec(t, cfg, proto, args...)
 		if err != nil {
 			t.Logf("stdout: %s", stdout)
 			t.Logf("stderr: %s", stderr)
@@ -51,23 +59,6 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 		}
 		return stdout
 	}
-
-	// A tenant is created with its first admin, or not at all. This bootstrap
-	// admin's certificate, signed by the tenant's own Key B CA, is what
-	// issues the final identity's certificate below -- never a key read
-	// straight from the node's own CA material.
-	bootstrapAdmin := fmt.Sprintf("tadmin-boot-%s-%d", proto, ts)
-	bootCSRDir := t.TempDir()
-	run("ca csr (bootstrap admin)", "ca", "csr", "--username", bootstrapAdmin, "--out", bootCSRDir)
-	bootCertDir := t.TempDir()
-	run("tenant create", "tenant", "create", "--id", tenantID, "--name", "Tenant "+tenantID,
-		"--admin-username", bootstrapAdmin, "--admin-csr", filepath.Join(bootCSRDir, "csr.pem"),
-		"--out", bootCertDir)
-	t.Cleanup(func() {
-		execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
-	})
-	bootstrapAdminCert := filepath.Join(bootCertDir, "admin-cert.pem")
-	bootstrapAdminKey := filepath.Join(bootCSRDir, "key.pem")
 
 	roleID := parseIDResponse(t, proto, "roles create", run("roles create",
 		"--output", "json", "roles", "create",
@@ -77,8 +68,8 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 		"--output", "json", "users", "create", "--without-email-login-key",
 		"--username", username, "--tenant-id", tenantID))
 	t.Cleanup(func() {
-		execCLIWithProtocol(t, cfg, proto, "users", "delete", userID) //nolint:errcheck
-		execCLIWithProtocol(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
+		boot.exec(t, cfg, proto, "users", "delete", userID) //nolint:errcheck
+		boot.exec(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
 	})
 	run("roles assign", "roles", "assign", "--user", userID, "--role", roleID)
 
@@ -94,7 +85,7 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 		t.Fatalf("[%s] ca csr for %s failed: %v", proto, username, err)
 	}
 	identityCertDir := t.TempDir()
-	stdout, stderr, err = execCLIWithProtocolAndCert(t, cfg, proto, bootstrapAdminCert, bootstrapAdminKey,
+	stdout, stderr, err = boot.exec(t, cfg, proto,
 		"ca", "issue", "--username", username,
 		"--csr", filepath.Join(identityCSRDir, "csr.pem"),
 		"--out", identityCertDir)
@@ -109,6 +100,87 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 		certFile: filepath.Join(identityCertDir, "cert.pem"),
 		keyFile:  filepath.Join(identityCSRDir, "key.pem"),
 	}
+}
+
+// newTenantBootstrapAdmin creates tenantID together with its mandatory first
+// admin -- a credential signed by the tenant's own Key B CA, never a key read
+// from the node's CA material -- and returns that admin. Its built-in Admin
+// role acts on its own tenant, which is how a test populates a tenant the
+// harness admin may not write into. The tenant is deleted on cleanup.
+func newTenantBootstrapAdmin(t *testing.T, cfg *TestConfig, proto ProtocolType, tenantID string) *tenantAdminIdentity {
+	t.Helper()
+	username := fmt.Sprintf("tadmin-boot-%s-%d", proto, testTimestamp())
+
+	run := func(what string, args ...string) {
+		t.Helper()
+		stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, args...)
+		if err != nil {
+			t.Logf("stdout: %s", stdout)
+			t.Logf("stderr: %s", stderr)
+			t.Fatalf("[%s] %s failed: %v", proto, what, err)
+		}
+	}
+
+	csrDir := t.TempDir()
+	certDir := t.TempDir()
+	run("ca csr (bootstrap admin)", "ca", "csr", "--username", username, "--out", csrDir)
+	run("tenant create", "tenant", "create", "--id", tenantID, "--name", "Tenant "+tenantID,
+		"--admin-username", username, "--admin-csr", filepath.Join(csrDir, "csr.pem"),
+		"--out", certDir)
+	t.Cleanup(func() {
+		execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID) //nolint:errcheck
+	})
+	return &tenantAdminIdentity{
+		tenantID: tenantID,
+		username: username,
+		certFile: filepath.Join(certDir, "admin-cert.pem"),
+		keyFile:  filepath.Join(csrDir, "key.pem"),
+	}
+}
+
+// grantSecurityOfficer assigns the tenant's own pre-seeded Security Officer
+// role to the admin, as the admin itself (the built-in Admin role holds
+// roles:assign). roles:create is Security Officer-exclusive, so a test that
+// must create roles in a tenant does it as that tenant's own admin holding
+// both roles. Test setup only.
+func (a *tenantAdminIdentity) grantSecurityOfficer(t *testing.T, cfg *TestConfig, proto ProtocolType) {
+	t.Helper()
+
+	run := func(what string, args ...string) string {
+		t.Helper()
+		stdout, stderr, err := a.exec(t, cfg, proto, args...)
+		if err != nil {
+			t.Logf("stdout: %s", stdout)
+			t.Logf("stderr: %s", stderr)
+			t.Fatalf("[%s] %s failed: %v", proto, what, err)
+		}
+		return stdout
+	}
+
+	var users struct {
+		Users []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"users"`
+	}
+	out := run("users list", "--output", "json", "users", "list")
+	if err := json.Unmarshal([]byte(out), &users); err != nil {
+		t.Fatalf("[%s] decode users list JSON: %v (output: %s)", proto, err, out)
+	}
+	var userID string
+	for _, u := range users.Users {
+		if u.Username == a.username {
+			userID = u.ID
+			break
+		}
+	}
+	if userID == "" {
+		t.Fatalf("[%s] users list did not contain tenant admin %s (output: %s)", proto, a.username, out)
+	}
+
+	soRoleID := parseIDResponse(t, proto, "roles get-by-name so",
+		run("roles get-by-name so", "--output", "json", "roles", "get-by-name", "so"))
+	run("roles assign (security officer)", "roles", "assign", "--user", userID, "--role", soRoleID)
 }
 
 // exec runs the CLI as this tenant administrator.

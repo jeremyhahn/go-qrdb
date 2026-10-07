@@ -20,8 +20,8 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -33,7 +33,7 @@ import (
 // Security Officers at initialization and released only through the
 // officer claim ceremony.
 type SealBinding struct {
-	logger        *logger.Logger
+	logger        *sdk.ConcreteLogger
 	conn          *ConnectionBinding
 	server        *EmbeddedServerBinding
 	configBinding *ConfigBinding
@@ -41,7 +41,7 @@ type SealBinding struct {
 
 // NewSealBinding creates a new SealBinding backed by the given
 // server and connection bindings.
-func NewSealBinding(log *logger.Logger, server *EmbeddedServerBinding, conn *ConnectionBinding) *SealBinding {
+func NewSealBinding(log *sdk.ConcreteLogger, server *EmbeddedServerBinding, conn *ConnectionBinding) *SealBinding {
 	return &SealBinding{
 		logger: log,
 		server: server,

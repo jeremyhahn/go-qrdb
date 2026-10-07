@@ -131,6 +131,24 @@ func (f *nodeReplicaForwarder) Forward(ctx context.Context, caller *auth.Identit
 	return fw.Forward(ctx, caller, method, database, payload, refusal)
 }
 
+// ForwardToLeader delegates to the node's *quic.FrameForwarder exactly as
+// Forward does, for a leader-only refusal rather than a non-replica one.
+func (f *nodeReplicaForwarder) ForwardToLeader(ctx context.Context, caller *auth.Identity, method, database string, payload []byte, leaderAddr string) (uint16, []byte, bool) {
+	srv := f.node.srv.Load()
+	if srv == nil {
+		return 0, nil, false
+	}
+	fw, err := srv.ReplicaForwarder()
+	if err != nil {
+		f.node.logger.Warn("admin forwarding: embedded call not forwarded", "leader_raft_addr", leaderAddr, "error", err)
+		return 0, nil, false
+	}
+	if fw == nil {
+		return 0, nil, false
+	}
+	return fw.ForwardToLeader(ctx, caller, method, database, payload, leaderAddr)
+}
+
 // embeddedForwardingOption returns the option that makes the node's embedded
 // client forward as the configured caller, or nil -- every such call is then
 // refused -- on a standalone node, with forwarding turned off, or with no

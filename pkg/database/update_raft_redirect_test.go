@@ -58,7 +58,7 @@ func TestUpdateRaft_ARedirectNeedsTheSecret(t *testing.T) {
 		t.Run(rd.name, func(t *testing.T) {
 			m := newTestManager(t)
 			t.Cleanup(func() { _ = m.Close() })
-			if _, err := m.Create(DatabaseConfig{Name: "redirected", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+			if _, err := m.Create(DatabaseConfig{Name: "redirected", Backend: BackendMemory}); err != nil {
 				t.Fatal(err)
 			}
 			if err := m.UpdateRaft("redirected", secretsRaft()); err != nil {
@@ -96,7 +96,7 @@ func TestUpdateRaft_ARedirectNeedsTheSecret(t *testing.T) {
 func TestUpdateRaft_ReorderedPeersKeepTheSecret(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "reordered", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "reordered", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := secretsRaft()
@@ -124,7 +124,7 @@ func TestUpdateRaft_TopLevelPeersAreAStaticDestination(t *testing.T) {
 		t.Run("discovery="+string(method), func(t *testing.T) {
 			m := newTestManager(t)
 			t.Cleanup(func() { _ = m.Close() })
-			if _, err := m.Create(DatabaseConfig{Name: "toplevel", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+			if _, err := m.Create(DatabaseConfig{Name: "toplevel", Backend: BackendMemory}); err != nil {
 				t.Fatal(err)
 			}
 			cfg := secretsRaft()
@@ -163,7 +163,7 @@ func TestUpdateRaft_TopLevelPeersAreAStaticDestination(t *testing.T) {
 func TestUpdateRaft_PeersMovedBetweenListsKeepTheSecret(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "moved", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "moved", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := secretsRaft()
@@ -187,7 +187,7 @@ func TestUpdateRaft_PeersMovedBetweenListsKeepTheSecret(t *testing.T) {
 func TestUpdateRaft_DestinationsCompareLiterally(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "literal", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "literal", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.UpdateRaft("literal", secretsRaft()); err != nil {
@@ -207,7 +207,7 @@ func TestUpdateRaft_DestinationsCompareLiterally(t *testing.T) {
 func TestUpdateRaft_TopLevelPeersOutsideStaticDiscoveryKeepTheSecret(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "mcast", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "mcast", Backend: BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := secretsRaft()

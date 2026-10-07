@@ -90,7 +90,7 @@ func TestEmbeddedCreateUser_NoMiddlewareSkipsOnlyAuthorization(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			_, err = tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+			_, err = tr.CreateUser(tenant.WithTenantID(context.Background(), "acme"), &transport.CreateUserRequest{
 				Username: "alice", TenantID: "acme", RoleIDs: tt.roleIDs,
 			})
 			tt.check(t, err)

@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -119,7 +120,8 @@ func newCertEnrollmentUserStore(t *testing.T) user.UserServicer {
 // only identities are a legitimate use, per CreateUserRequest.WithoutEmailLoginKey).
 func createTestAccount(t *testing.T, users user.UserServicer, tenantID, username string) *user.User {
 	t.Helper()
-	u, err := users.CreateUser(context.Background(), &user.CreateUserRequest{
+	ctx := tenant.WithTenantID(context.Background(), tenantID)
+	u, err := users.CreateUser(ctx, &user.CreateUserRequest{
 		Username:             username,
 		TenantID:             tenantID,
 		WithoutEmailLoginKey: true,

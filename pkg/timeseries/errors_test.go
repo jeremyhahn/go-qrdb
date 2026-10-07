@@ -49,8 +49,8 @@ func TestClosedError_Error_HasPrefix(t *testing.T) {
 func TestNilDBError_Error_ContainsMessage(t *testing.T) {
 	e := &NilDBError{}
 	got := e.Error()
-	if !strings.Contains(got, "pebble db is nil") {
-		t.Errorf("Error: expected nil db message, got %q", got)
+	if !strings.Contains(got, "storage is nil") {
+		t.Errorf("Error: expected nil storage message, got %q", got)
 	}
 }
 

@@ -67,6 +67,7 @@ test("vector round-trips through a wizard-created vector database against the li
 
   // --- Create a namespace through the real REST path. --------------------
   await page.locator("aside").getByText("embeddings", { exact: true }).click();
+  await page.getByRole("tab", { name: "Vectors", exact: true }).click();
   await page
     .getByRole("button", { name: /Create Namespace|New Namespace/i })
     .first()

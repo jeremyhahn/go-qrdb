@@ -31,7 +31,7 @@ import (
 func newBarrierServicesTestDatabase(t *testing.T, name string) *database.Database {
 	t.Helper()
 	backend := database.NewStandaloneBackend(memory.NewStorage())
-	cfg := database.DatabaseConfig{Name: name, Engine: database.EngineKV, Backend: database.BackendMemory}
+	cfg := database.DatabaseConfig{Name: name, Backend: database.BackendMemory}
 	return database.NewDatabase(cfg, backend, t.TempDir())
 }
 

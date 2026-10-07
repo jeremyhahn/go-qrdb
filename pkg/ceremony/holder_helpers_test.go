@@ -343,6 +343,22 @@ func mustSuite(t testing.TB, kem string) *keydelivery.Suite {
 	return s
 }
 
+// testEnvelopeKEM returns kem, except under FIPS 140 mode it substitutes
+// keydelivery.KEMP256 for an X25519-based kem (KEMX25519 or
+// KEMMLKEM768X25519): both are refused by keydelivery.LookupSuite under
+// GODEBUG=fips140=only (see docs/seal/fips140-mode.md), and every call site
+// that uses this helper rather than naming the KEM directly needs the
+// holder to have SOME separate envelope key -- typically because its
+// certificate key (Ed25519) has no DHKEM mapping at all -- not specifically
+// an X25519 one. TestRegisterOfficer_EnvelopeKEMs is the test that asserts
+// the X25519/hybrid behaviour itself and does not call this helper.
+func testEnvelopeKEM(kem string) string {
+	if seal.FIPSEnabled() && (kem == keydelivery.KEMX25519 || kem == keydelivery.KEMMLKEM768X25519) {
+		return keydelivery.KEMP256
+	}
+	return kem
+}
+
 // errorAs is a typed errors.As helper.
 func errorAs[T error](err error) bool {
 	var target T

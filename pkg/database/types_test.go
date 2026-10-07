@@ -20,44 +20,6 @@ import (
 	"testing"
 )
 
-func TestEngineType_Valid_RecognizedTypes(t *testing.T) {
-	tests := []struct {
-		name   string
-		engine EngineType
-	}{
-		{"kv", EngineKV},
-		{"timeseries", EngineTimeSeries},
-		{"vector", EngineVector},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !tt.engine.Valid() {
-				t.Errorf("EngineType(%q).Valid() = false, want true", tt.engine)
-			}
-		})
-	}
-}
-
-func TestEngineType_Valid_UnrecognizedTypes(t *testing.T) {
-	tests := []struct {
-		name   string
-		engine EngineType
-	}{
-		{"empty", EngineType("")},
-		{"unknown", EngineType("unknown")},
-		{"uppercase_KV", EngineType("KV")},
-		{"graph", EngineType("graph")},
-		{"spaces", EngineType("kv ")},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.engine.Valid() {
-				t.Errorf("EngineType(%q).Valid() = true, want false", tt.engine)
-			}
-		})
-	}
-}
-
 func TestBackendType_Valid_RecognizedTypes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -97,18 +59,6 @@ func TestBackendType_Valid_UnrecognizedTypes(t *testing.T) {
 	}
 }
 
-func TestEngineType_Constants(t *testing.T) {
-	if EngineKV != "kv" {
-		t.Errorf("EngineKV = %q, want %q", EngineKV, "kv")
-	}
-	if EngineTimeSeries != "timeseries" {
-		t.Errorf("EngineTimeSeries = %q, want %q", EngineTimeSeries, "timeseries")
-	}
-	if EngineVector != "vector" {
-		t.Errorf("EngineVector = %q, want %q", EngineVector, "vector")
-	}
-}
-
 func TestBackendType_Constants(t *testing.T) {
 	if BackendMemory != "memory" {
 		t.Errorf("BackendMemory = %q, want %q", BackendMemory, "memory")
@@ -143,35 +93,35 @@ func TestDatabaseConfig_Validate_ValidConfigs(t *testing.T) {
 	}{
 		{
 			name:   "kv_memory",
-			config: DatabaseConfig{Name: "testdb", Engine: EngineKV, Backend: BackendMemory},
+			config: DatabaseConfig{Name: "testdb", Backend: BackendMemory},
 		},
 		{
 			name:   "timeseries_pebble",
-			config: DatabaseConfig{Name: "metrics-db", Engine: EngineTimeSeries, Backend: BackendPebble},
+			config: DatabaseConfig{Name: "metrics-db", Backend: BackendPebble},
 		},
 		{
 			name:   "vector_raft",
-			config: DatabaseConfig{Name: "embeddings_store", Engine: EngineVector, Backend: BackendRaft},
+			config: DatabaseConfig{Name: "embeddings_store", Backend: BackendRaft},
 		},
 		{
 			name:   "kv_file",
-			config: DatabaseConfig{Name: "my-db-123", Engine: EngineKV, Backend: BackendFile},
+			config: DatabaseConfig{Name: "my-db-123", Backend: BackendFile},
 		},
 		{
 			name:   "alphanumeric_only",
-			config: DatabaseConfig{Name: "abc123", Engine: EngineKV, Backend: BackendMemory},
+			config: DatabaseConfig{Name: "abc123", Backend: BackendMemory},
 		},
 		{
 			name:   "hyphens_and_underscores",
-			config: DatabaseConfig{Name: "my-test_db-01", Engine: EngineKV, Backend: BackendMemory},
+			config: DatabaseConfig{Name: "my-test_db-01", Backend: BackendMemory},
 		},
 		{
 			name:   "single_char_name",
-			config: DatabaseConfig{Name: "a", Engine: EngineKV, Backend: BackendMemory},
+			config: DatabaseConfig{Name: "a", Backend: BackendMemory},
 		},
 		{
 			name:   "with_data_dir",
-			config: DatabaseConfig{Name: "testdb", Engine: EngineKV, Backend: BackendMemory, DataDir: "/tmp/data"},
+			config: DatabaseConfig{Name: "testdb", Backend: BackendMemory, DataDir: "/tmp/data"},
 		},
 	}
 	for _, tt := range tests {
@@ -184,7 +134,7 @@ func TestDatabaseConfig_Validate_ValidConfigs(t *testing.T) {
 }
 
 func TestDatabaseConfig_Validate_EmptyName(t *testing.T) {
-	cfg := DatabaseConfig{Name: "", Engine: EngineKV, Backend: BackendMemory}
+	cfg := DatabaseConfig{Name: "", Backend: BackendMemory}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() returned nil, want *InvalidNameError")
@@ -219,7 +169,7 @@ func TestDatabaseConfig_Validate_InvalidNameCharacters(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConfig{Name: tt.dbName, Engine: EngineKV, Backend: BackendMemory}
+			cfg := DatabaseConfig{Name: tt.dbName, Backend: BackendMemory}
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("Validate() returned nil, want *InvalidNameError")
@@ -230,34 +180,6 @@ func TestDatabaseConfig_Validate_InvalidNameCharacters(t *testing.T) {
 			}
 			if nameErr.Name != tt.wantName {
 				t.Errorf("InvalidNameError.Name = %q, want %q", nameErr.Name, tt.wantName)
-			}
-		})
-	}
-}
-
-func TestDatabaseConfig_Validate_InvalidEngine(t *testing.T) {
-	tests := []struct {
-		name       string
-		engine     EngineType
-		wantEngine string
-	}{
-		{"empty_engine", EngineType(""), ""},
-		{"unknown_engine", EngineType("graph"), "graph"},
-		{"uppercase_engine", EngineType("KV"), "KV"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConfig{Name: "testdb", Engine: tt.engine, Backend: BackendMemory}
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatal("Validate() returned nil, want *InvalidEngineError")
-			}
-			var engineErr *InvalidEngineError
-			if !errors.As(err, &engineErr) {
-				t.Fatalf("Validate() error type = %T, want *InvalidEngineError", err)
-			}
-			if engineErr.Engine != tt.wantEngine {
-				t.Errorf("InvalidEngineError.Engine = %q, want %q", engineErr.Engine, tt.wantEngine)
 			}
 		})
 	}
@@ -275,7 +197,7 @@ func TestDatabaseConfig_Validate_InvalidBackend(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConfig{Name: "testdb", Engine: EngineKV, Backend: tt.backend}
+			cfg := DatabaseConfig{Name: "testdb", Backend: tt.backend}
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("Validate() returned nil, want *InvalidBackendError")
@@ -293,8 +215,8 @@ func TestDatabaseConfig_Validate_InvalidBackend(t *testing.T) {
 
 func TestDatabaseConfig_Validate_ErrorPriority(t *testing.T) {
 	// Name validation runs first, so an invalid name should take priority
-	// over invalid engine and backend.
-	cfg := DatabaseConfig{Name: "", Engine: EngineType("bad"), Backend: BackendType("bad")}
+	// over an invalid backend.
+	cfg := DatabaseConfig{Name: "", Backend: BackendType("bad")}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() returned nil, want error")
@@ -361,9 +283,6 @@ func TestDatabaseMeta_BackwardCompat_MissingSQL(t *testing.T) {
 	if meta.Name != "legacy-db" {
 		t.Errorf("Name = %q, want %q", meta.Name, "legacy-db")
 	}
-	if meta.Engine != EngineKV {
-		t.Errorf("Engine = %q, want %q", meta.Engine, EngineKV)
-	}
 	if meta.Backend != BackendMemory {
 		t.Errorf("Backend = %q, want %q", meta.Backend, BackendMemory)
 	}
@@ -384,7 +303,6 @@ func TestDatabaseInfo_ProtocolConfig_OmitEmpty(t *testing.T) {
 	// sql field is always present with the correct values.
 	info := DatabaseInfo{
 		Name:     "omit-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Status:   StatusOpen,
 		Protocol: ProtocolConfig{MySQL: false, PostgreSQL: false},
@@ -422,7 +340,6 @@ func TestDatabaseInfo_ProtocolConfig_OmitEmpty(t *testing.T) {
 	// when Protocol is the zero value.
 	meta := DatabaseMeta{
 		Name:     "omit-meta-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Protocol: ProtocolConfig{},
 	}
@@ -1073,7 +990,6 @@ func TestDatabaseConnectionConfig_Validate_MissingAddress(t *testing.T) {
 func TestDatabaseConfig_Validate_EmptyModeDefaultsToEmbedded(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:    "testdb",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		Mode:    "", // empty mode
 	}
@@ -1087,9 +1003,8 @@ func TestDatabaseConfig_Validate_EmptyModeDefaultsToEmbedded(t *testing.T) {
 
 func TestDatabaseConfig_Validate_RemoteRequiresConnection(t *testing.T) {
 	cfg := DatabaseConfig{
-		Name:   "remote-db",
-		Engine: EngineKV,
-		Mode:   ModeRemote,
+		Name: "remote-db",
+		Mode: ModeRemote,
 		// Connection is nil
 	}
 	err := cfg.Validate()
@@ -1104,9 +1019,8 @@ func TestDatabaseConfig_Validate_RemoteRequiresConnection(t *testing.T) {
 
 func TestDatabaseConfig_Validate_RemoteWithConnection(t *testing.T) {
 	cfg := DatabaseConfig{
-		Name:   "remote-db",
-		Engine: EngineKV,
-		Mode:   ModeRemote,
+		Name: "remote-db",
+		Mode: ModeRemote,
 		Connection: &DatabaseConnectionConfig{
 			Transport: "grpc",
 			Address:   "localhost:9090",
@@ -1120,7 +1034,6 @@ func TestDatabaseConfig_Validate_RemoteWithConnection(t *testing.T) {
 func TestDatabaseConfig_Validate_InvalidMode(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:    "testdb",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		Mode:    DatabaseMode("hybrid"),
 	}
@@ -1140,7 +1053,6 @@ func TestDatabaseConfig_Validate_InvalidMode(t *testing.T) {
 func TestDatabaseConfig_Validate_EmbeddedRequiresBackend(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:    "testdb",
-		Engine:  EngineKV,
 		Backend: BackendType("invalid"),
 		Mode:    ModeEmbedded,
 	}
@@ -1161,7 +1073,6 @@ func TestDatabaseConfig_Validate_WithRaftConfig(t *testing.T) {
 	// Valid embedded config with valid raft config.
 	cfg := DatabaseConfig{
 		Name:    "raft-db",
-		Engine:  EngineKV,
 		Backend: BackendRaft,
 		Mode:    ModeEmbedded,
 		Raft:    &DatabaseRaftConfig{ClusterMode: RaftDistributed},
@@ -1187,7 +1098,6 @@ func TestDatabaseConfig_Validate_RemoteSkipsBackendValidation(t *testing.T) {
 	// backend validation is skipped for remote databases.
 	cfg := DatabaseConfig{
 		Name:    "remote-db",
-		Engine:  EngineKV,
 		Backend: BackendType("invalid"),
 		Mode:    ModeRemote,
 		Connection: &DatabaseConnectionConfig{
@@ -1212,9 +1122,6 @@ func TestDatabaseMeta_BackwardCompat_MissingMode(t *testing.T) {
 	if meta.Name != "legacy-db" {
 		t.Errorf("Name = %q, want %q", meta.Name, "legacy-db")
 	}
-	if meta.Engine != EngineKV {
-		t.Errorf("Engine = %q, want %q", meta.Engine, EngineKV)
-	}
 	if meta.Backend != BackendMemory {
 		t.Errorf("Backend = %q, want %q", meta.Backend, BackendMemory)
 	}
@@ -1237,7 +1144,6 @@ func TestDatabaseMeta_BackwardCompat_MissingMode(t *testing.T) {
 func TestDatabaseInfo_NewFields_JSONRoundTrip(t *testing.T) {
 	info := DatabaseInfo{
 		Name:    "full-db",
-		Engine:  EngineVector,
 		Backend: BackendRaft,
 		Status:  StatusOpen,
 		Mode:    ModeEmbedded,
@@ -1339,7 +1245,6 @@ func TestDatabaseConfig_Validate_WithBarrierConfig(t *testing.T) {
 	// Valid embedded config with barrier config should pass.
 	cfg := DatabaseConfig{
 		Name:    "barrier-db",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 		Mode:    ModeEmbedded,
 		Barrier: &DatabaseBarrierConfig{
@@ -1517,7 +1422,6 @@ func TestDatabaseConfig_TenantID_ValidatesWithTenantID(t *testing.T) {
 	cfg := DatabaseConfig{
 		TenantID: "tenant-xyz",
 		Name:     "test",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -1529,7 +1433,6 @@ func TestDatabaseConfig_TenantID_EmptyIsValid(t *testing.T) {
 	cfg := DatabaseConfig{
 		TenantID: "",
 		Name:     "test",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -1559,7 +1462,6 @@ func TestDatabaseMeta_TenantID_JSONRoundTrip(t *testing.T) {
 	meta := DatabaseMeta{
 		TenantID: "tenant-abc",
 		Name:     "tenant-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Mode:     ModeEmbedded,
 	}
@@ -1581,7 +1483,6 @@ func TestDatabaseMeta_TenantID_JSONRoundTrip(t *testing.T) {
 func TestDatabaseMeta_TenantID_OmittedWhenEmpty(t *testing.T) {
 	meta := DatabaseMeta{
 		Name:    "no-tenant-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 
@@ -1600,7 +1501,6 @@ func TestDatabaseInfo_TenantID_JSONRoundTrip(t *testing.T) {
 	info := DatabaseInfo{
 		TenantID: "tenant-info-abc",
 		Name:     "info-db",
-		Engine:   EngineKV,
 		Backend:  BackendMemory,
 		Status:   StatusOpen,
 	}
@@ -1624,35 +1524,35 @@ func TestDatabaseInfo_TenantID_JSONRoundTrip(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDatabaseConfig_HasDedicatedStore_DefaultPathIsShared(t *testing.T) {
-	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendPebble}
+	cfg := DatabaseConfig{Name: "db", Backend: BackendPebble}
 	if cfg.HasDedicatedStore() {
 		t.Error("HasDedicatedStore() = true for empty DataDir + non-raft backend, want false")
 	}
 }
 
 func TestDatabaseConfig_HasDedicatedStore_ExplicitDataDir(t *testing.T) {
-	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendPebble, DataDir: "/data/tenant/db"}
+	cfg := DatabaseConfig{Name: "db", Backend: BackendPebble, DataDir: "/data/tenant/db"}
 	if !cfg.HasDedicatedStore() {
 		t.Error("HasDedicatedStore() = false with explicit DataDir, want true")
 	}
 }
 
 func TestDatabaseConfig_HasDedicatedStore_WhitespaceOnlyDataDirIsShared(t *testing.T) {
-	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendPebble, DataDir: "   "}
+	cfg := DatabaseConfig{Name: "db", Backend: BackendPebble, DataDir: "   "}
 	if cfg.HasDedicatedStore() {
 		t.Error("HasDedicatedStore() = true for whitespace-only DataDir, want false")
 	}
 }
 
 func TestDatabaseConfig_HasDedicatedStore_RaftBackend(t *testing.T) {
-	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendRaft}
+	cfg := DatabaseConfig{Name: "db", Backend: BackendRaft}
 	if !cfg.HasDedicatedStore() {
 		t.Error("HasDedicatedStore() = false for BackendRaft, want true")
 	}
 }
 
 func TestDatabaseConfig_HasDedicatedStore_MemoryBackendNoDataDir(t *testing.T) {
-	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendMemory}
+	cfg := DatabaseConfig{Name: "db", Backend: BackendMemory}
 	if cfg.HasDedicatedStore() {
 		t.Error("HasDedicatedStore() = true for BackendMemory without DataDir, want false")
 	}

@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 A per-tenant, versioned keyring of AES-256-GCM data encryption keys. A caller
 encrypts and decrypts its own data through the server; the keys never leave
@@ -71,6 +71,54 @@ old epoch would also strand any of the tenant's stored data still under it.
 Updates use compare-and-swap on the record, so concurrent rotations on
 different nodes each add a version; none overwrites another.
 
+### Key wrapping
+
+Each version's own key is itself a data-encrypting key (DEK), wrapped
+under a key-encrypting key (KEK) through
+[pkg/keywrap](../key-wrapping/architecture.md)'s `Provider`/`Registry`
+seam — the same seam [backup](../backup-restore/architecture.md) uses.
+`dek.NewKeyring` resolves the built-in `"software"` provider by default,
+confined to an operator-configured key directory (`dek.WithKeyDir`,
+`lifecycle.Infra.DEKKeyDir`, `qrdbd --dek-key-dir`);
+`dek.WithKeyWrapRegistry`/`WithKeyWrapProvider` install a
+go-xkms-registered hardware or cloud-KMS provider instead — the SAME
+registry/provider Backup consumes
+(`lifecycle.Infra.KeyWrapRegistry`/`KeyWrapProvider`), so an embedder
+registers a hardware KEK once and both consumers resolve it.
+
+**Each tenant's key reference is tenant-scoped and configurable.**
+`dek.WithKeyRef` computes it; the default is the tenant ID itself, which
+gives every tenant a distinct KEK reference under the configured provider
+with no further composition required. For the built-in `"software"`
+provider this means one 32-byte key file per tenant, named after the
+tenant's ID, inside the configured key directory.
+
+**The stored record never carries a version's plaintext key** — only its
+wrapped bytes, the provider ID that wrapped it, and the key reference it
+was wrapped under. `Status` surfaces the provider ID and key reference for
+each version (never the key itself), so an operator can audit which KEK
+protects which version. Changing the active provider or key reference
+(`WithProviderID`, `WithKeyRef`) affects only NEW versions; an existing
+version keeps the provider and reference it was wrapped under, and
+`Rewrap` moves a ciphertext's key to the current version, wrapped under
+the CURRENT provider and reference.
+
+**There is no plaintext escape hatch.** Unlike backup, which may create an
+explicitly plaintext backup, every tenant DEK keyring version is always
+wrapped under a KEK: `Encrypt`/`Rotate` refuse with a typed, server-side
+error (`*dek.KeyDirNotConfiguredError`) when the built-in `"software"`
+provider is resolved but no key directory was ever configured, rather than
+falling back to an unwrapped key or an implicit location. An unregistered
+provider ID, a bad key reference, or a KEK authentication failure
+(wrong KEK, or a tampered wrapped key) collapse into one answer,
+`*dek.KeyWrapFailedError` — deliberately not distinguished further, the
+same discipline `*AuthenticationFailedError` holds one layer up.
+
+**A record written before this integration existed stored a version's key
+in plaintext.** Such a record is refused with a typed error,
+`*dek.LegacyKeyringFormatError`, on every verb that reads it — never
+treated as merely corrupt, and never migrated to the new format silently.
+
 ### Ciphertext
 
 Opaque to callers. Internally:
@@ -128,4 +176,5 @@ existed. All three are gone; this keyring is the one tenant DEK in the stack.
 
 - [engineering.md](engineering.md) · [api.md](api.md) · [cli.md](cli.md) · [user.md](user.md)
 - [multi-tenancy](../multi-tenancy/architecture.md) — isolation modes and tenant teardown
-- [barrier-seal](../barrier-seal/architecture.md) — the barrier that wraps the keyring
+- [barrier-seal](../barrier-seal/architecture.md) — the barrier that wraps the keyring's STORED RECORD
+- [key-wrapping](../key-wrapping/architecture.md) — the KEK seam that wraps each version's KEY

@@ -46,18 +46,23 @@ import (
 // lessor and watch hub raft mode's MVCC state machine uses, applied in
 // process instead of through the log.
 
-// coordinationCells is the parity grid: standalone over both MVCC-capable
-// backends, and the default raft state machine, on every transport.
+// coordinationCells is the parity grid: standalone over every backend, and the
+// default raft state machine, on every transport. Every backend composes the
+// MVCC engine, so every backend serves the same families. The objstore row runs
+// on the embedded transport only: a remote cell seeds an RBAC identity, and the
+// identity store's claim keys carry a separator go-objstore's key validation
+// rejects, so no objstore node can create a user on any transport.
 func coordinationCells() []cell {
 	var cells []cell
 	for _, tk := range transportKinds {
 		cells = append(cells,
 			cell{backend: database.BackendMemory, mode: standalone, transport: tk},
+			cell{backend: database.BackendFile, mode: standalone, transport: tk},
 			cell{backend: database.BackendPebble, mode: standalone, transport: tk},
 			cell{backend: database.BackendPebble, mode: raft, transport: tk},
 		)
 	}
-	return cells
+	return append(cells, cell{backend: database.BackendObjstore, mode: standalone, transport: embeddedTransport})
 }
 
 // coordinationPermissions are the verbs the suite exercises.
@@ -411,100 +416,150 @@ func assertLockLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 	}
 }
 
-// TestCoordinationFamilies_FileBackendServesWatchOnly: a standalone node on the
-// file or objstore backend composes the plain KV engine, which publishes
-// changes but keeps no revisions and no leases. It serves watch and plain
-// value/version transactions, and refuses MVCC, lease, lock and any
-// lease-carrying write per call with the typed capability refusal -- the same
-// answer a raft state machine without those planes gives -- on every
-// transport. A transaction op naming a lease is refused and writes nothing:
-// stored lease-less, it would never expire.
+// TestCoordinator_SameOnEveryTransport covers the composed CoordinationClient
+// surface itself (sdk.Client.Coordination: Get, Put, CompareAndSwap,
+// AcquireLease, Watch) end to end on every transport.
 //
-// MCP is the one exception for watch, and it is the transport's, not the
-// node's: MCP has no stream, so its client polls with a start revision to
-// stay gap-free, and a store that keeps no revisions cannot replay one. It
-// ends the watch with the typed WatchStartRevisionUnsupportedError rather than
-// silently dropping changes between polls.
-func TestCoordinationFamilies_FileBackendServesWatchOnly(t *testing.T) {
-	// The objstore row runs on the embedded transport only. A remote cell
-	// seeds an RBAC identity, and the identity store's claim keys carry a
-	// separator go-objstore's key validation rejects, so no objstore node can
-	// create a user on any transport -- a limitation of the objstore backend
-	// under IAM, independent of these families. The engine under test is the
-	// same plain KV engine the file row runs on every transport.
-	cells := []cell{{backend: database.BackendObjstore, mode: standalone, transport: embeddedTransport}}
-	for _, tk := range transportKinds {
-		cells = append(cells, cell{backend: database.BackendFile, mode: standalone, transport: tk})
-	}
-	for _, c := range cells {
-		tk := c.transport
+// This is a different layer from TestCoordinationFamilies_SameOnStandaloneAndRaft
+// above, which drives the lease, watch and lock sub-clients the Coordinator is
+// built from. The composition had never run over a real transport:
+// coordination_standalone_test.go and coordination_raft_test.go construct it
+// only from an in-process node.Client() with every protocol server disabled.
+// There is deliberately no CLI command for it -- see
+// ../../docs/coordination/cli.md's "Why not" -- so test/integration has
+// nothing to drive; this is the SDK-level coverage that gap calls for instead.
+func TestCoordinator_SameOnEveryTransport(t *testing.T) {
+	for _, c := range coordinationCells() {
 		t.Run(c.name(), func(t *testing.T) {
 			client, ctx := c.bootClient(t)
-			if tk == mcpTransport {
-				t.Run("watch-refused", func(t *testing.T) { assertWatchRefusedForNoRevisions(t, ctx, client) })
-			} else {
-				t.Run("watch", func(t *testing.T) { assertPrefixWatch(t, ctx, client) })
+			coord, err := client.Coordination()
+			if err != nil {
+				t.Fatalf("Coordination: %v", err)
 			}
-			t.Run("watch-cancel", func(t *testing.T) { assertWatchEndsOnCancel(t, ctx, client) })
-
-			refused := map[string]error{}
-			_, refused["lease"] = client.Lease().LeaseGrant(ctx, 5)
-			_, refused["lock"] = client.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{Key: "cp/file/lock", HolderID: "a", TTL: 5})
-			_, refused["mvcc"] = client.MVCC().GetRevision(ctx, "cp/file/k")
-			_, refused["leased-txn"] = client.Transaction().ExecuteTransaction(ctx, &transport.TransactionRequest{
-				SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("cp/file/leased"), Value: []byte("v"), LeaseID: 7}},
-			})
-			for family, err := range refused {
-				var unsupported *transport.CapabilityUnsupportedError
-				if !errors.As(err, &unsupported) {
-					t.Errorf("%s on the %s backend: err = %T (%v), want *transport.CapabilityUnsupportedError", family, c.backend, err, err)
-				}
-			}
-			if _, err := client.KV().Get(ctx, "cp/file/leased"); err == nil {
-				t.Error("the refused leased transaction op wrote its key")
-			}
-
-			// Plain value/version transactions are served on this engine.
-			if err := client.KV().Put(ctx, "cp/file/tx", []byte("a")); err != nil {
-				t.Fatalf("put: %v", err)
-			}
-			resp, err := client.Transaction().ExecuteTransaction(ctx, &transport.TransactionRequest{
-				Compares:   []transport.Compare{{Key: []byte("cp/file/tx"), Target: transport.CompareValue, Result: transport.CompareEqual, Value: []byte("a")}},
-				SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("cp/file/tx"), Value: []byte("b")}},
-			})
-			if err != nil || !resp.Succeeded {
-				t.Fatalf("value-compare transaction on the %s backend = %+v, %v; want served and succeeded", c.backend, resp, err)
-			}
+			t.Run("get-put-cas", func(t *testing.T) { assertCoordinatorGetPutCAS(t, ctx, coord) })
+			t.Run("lease", func(t *testing.T) { assertCoordinatorLease(t, ctx, coord) })
+			t.Run("watch", func(t *testing.T) { assertCoordinatorWatch(t, ctx, coord) })
 		})
 	}
 }
 
-// assertWatchRefusedForNoRevisions: once the polling client has seen a change
-// it needs replay from that revision, and the watch ends with the typed
-// refusal a store without revision history gives -- never a silent gap.
-func assertWatchRefusedForNoRevisions(t *testing.T, parent context.Context, c *sdk.Client) {
+// assertCoordinatorGetPutCAS: Get, Put and CompareAndSwap served through the
+// composed surface -- absence, a round trip, create-if-absent exclusivity and
+// a value-match swap.
+func assertCoordinatorGetPutCAS(t *testing.T, ctx context.Context, coord *sdk.Coordinator) {
+	got, err := coord.Get(ctx, "coord/compose/x")
+	if err != nil || got != nil {
+		t.Fatalf("Get absent = (%v, %v), want (nil, nil)", got, err)
+	}
+	if err := coord.Put(ctx, "coord/compose/x", []byte("v1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err = coord.Get(ctx, "coord/compose/x")
+	if err != nil || string(got) != "v1" {
+		t.Fatalf("Get = (%q, %v), want (v1, nil)", got, err)
+	}
+
+	ok, err := coord.CompareAndSwap(ctx, "coord/compose/leader", nil, []byte("node-a"))
+	if err != nil || !ok {
+		t.Fatalf("CAS create = (%v, %v), want (true, nil)", ok, err)
+	}
+	ok, err = coord.CompareAndSwap(ctx, "coord/compose/leader", nil, []byte("node-b"))
+	if err != nil || ok {
+		t.Fatalf("CAS create (second) = (%v, %v), want (false, nil)", ok, err)
+	}
+	ok, err = coord.CompareAndSwap(ctx, "coord/compose/leader", []byte("node-a"), []byte("node-c"))
+	if err != nil || !ok {
+		t.Fatalf("CAS value-match = (%v, %v), want (true, nil)", ok, err)
+	}
+	got, err = coord.Get(ctx, "coord/compose/leader")
+	if err != nil || string(got) != "node-c" {
+		t.Fatalf("final value = (%q, %v), want (node-c, nil)", got, err)
+	}
+}
+
+// assertCoordinatorLease: exclusive acquisition, a contender refused with
+// LeaseHeldError, a successful renewal, and release freeing the bound key for
+// the next acquirer.
+func assertCoordinatorLease(t *testing.T, ctx context.Context, coord *sdk.Coordinator) {
+	l, err := coord.AcquireLease(ctx, "coord/compose/elect", 30*time.Second)
+	if err != nil {
+		t.Fatalf("AcquireLease: %v", err)
+	}
+	if l.Key() != "coord/compose/elect" {
+		t.Fatalf("Key() = %q, want coord/compose/elect", l.Key())
+	}
+
+	var held *sdk.LeaseHeldError
+	if _, err := coord.AcquireLease(ctx, "coord/compose/elect", 30*time.Second); !errors.As(err, &held) {
+		t.Fatalf("second acquirer: err = %T (%v), want *sdk.LeaseHeldError", err, err)
+	}
+
+	if err := l.Renew(ctx); err != nil {
+		t.Fatalf("Renew: %v", err)
+	}
+	if err := l.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	got, err := coord.Get(ctx, "coord/compose/elect")
+	if err != nil || got != nil {
+		t.Fatalf("Get after release = (%v, %v), want (nil, nil): the bound key must be deleted", got, err)
+	}
+	if _, err := coord.AcquireLease(ctx, "coord/compose/elect", 30*time.Second); err != nil {
+		t.Fatalf("AcquireLease after release: %v", err)
+	}
+}
+
+// assertCoordinatorWatch: a prefix watch opened through the composed surface
+// sees a put made through the same surface, and ends when its context is
+// cancelled.
+func assertCoordinatorWatch(t *testing.T, parent context.Context, coord *sdk.Coordinator) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	ch, err := c.Watch().WatchPrefix(ctx, "cp/norev/", transport.WatchOptions{})
-	tick := time.NewTicker(500 * time.Millisecond)
-	defer tick.Stop()
-	for err == nil {
-		select {
-		case resp, ok := <-ch:
-			if !ok {
-				t.Fatal("watch stream closed without a terminal refusal")
-			}
-			err = resp.Err()
-		case <-tick.C:
-			if perr := c.KV().Put(ctx, "cp/norev/a", []byte("1")); perr != nil {
-				t.Fatalf("put: %v", perr)
-			}
-		case <-ctx.Done():
-			t.Fatal("no refusal before the deadline")
+
+	w, err := coord.Watch(ctx, "coord/compose/watch/")
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	put := func() {
+		if err := coord.Put(ctx, "coord/compose/watch/a", []byte("1")); err != nil {
+			t.Errorf("put: %v", err)
 		}
 	}
-	var unsupported *transport.WatchStartRevisionUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("err = %T (%v), want *transport.WatchStartRevisionUnsupportedError", err, err)
+	put()
+
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	var ev sdk.Event
+	for {
+		select {
+		case got, ok := <-w.Events():
+			if !ok {
+				t.Fatalf("watch stream closed before an event arrived, err = %v", w.Err())
+			}
+			ev = got
+		case <-tick.C:
+			put()
+			continue
+		case <-ctx.Done():
+			t.Fatal("no watch event before the deadline")
+		}
+		break
+	}
+	if ev.Type != sdk.EventPut || ev.Key != "coord/compose/watch/a" {
+		t.Fatalf("event = %+v, want a PUT of coord/compose/watch/a", ev)
+	}
+
+	cancel()
+	deadline := time.After(callTimeout)
+	for {
+		select {
+		case _, ok := <-w.Events():
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the watch stream did not end after its context was cancelled")
+		}
 	}
 }

@@ -55,7 +55,7 @@ func seedAdminRole(t *testing.T, roleSvc role.RoleServicer, tenantID string) str
 		}
 	}
 	require.NotEmpty(t, adminPerms, "canonical Admin permissions must resolve")
-	_, err := roleSvc.CreateRole(context.Background(), &role.CreateRoleRequest{
+	_, err := roleSvc.CreateRole(tenant.WithTenantID(context.Background(), tenantID), &role.CreateRoleRequest{
 		ID:          id,
 		Name:        role.RoleNameAdmin,
 		TenantID:    tenantID,
@@ -75,7 +75,7 @@ func seedAdminRole(t *testing.T, roleSvc role.RoleServicer, tenantID string) str
 // drift out from under the assertion.
 func seedNarrowRole(t *testing.T, roleSvc role.RoleServicer, tenantID, name string, perms ...permission.Permission) string {
 	t.Helper()
-	r, err := roleSvc.CreateRole(context.Background(), &role.CreateRoleRequest{
+	r, err := roleSvc.CreateRole(tenant.WithTenantID(context.Background(), tenantID), &role.CreateRoleRequest{
 		Name:        name,
 		TenantID:    tenantID,
 		Permissions: perms,

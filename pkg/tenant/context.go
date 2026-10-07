@@ -60,29 +60,60 @@ func IDFromContext(ctx context.Context) (string, bool) {
 
 // EffectiveTenant reconciles a request-supplied tenant against the caller's
 // authenticated identity tenant and returns the tenant that an IAM operation
-// MUST act on. For a normal tenant caller the effective tenant is NEVER
-// sourced from a client-supplied request field — it is the identity tenant —
-// mirroring the data-plane rule enforced by the REST scope middleware.
+// MUST act on. The effective tenant is NEVER sourced from a client-supplied
+// request field — it is always the identity tenant — mirroring the
+// data-plane rule enforced by the REST scope middleware.
 //
-// Rules:
-//   - System-tenant callers (identity == tenantid.System) may target any
-//     tenant: the request-supplied tenant is honoured, defaulting to the
-//     system tenant when empty. This is the legitimate cross-tenant admin
-//     path (first-boot bootstrap, platform provisioning).
-//   - Normal tenant callers may act only on their own tenant. An empty or
-//     matching request tenant resolves to the identity tenant; a non-empty
-//     request tenant that differs from the identity tenant is rejected with a
-//     *CrossTenantDeniedError (fail closed — never silently coerced).
+// Every identity, the system tenant included, may act only on its own
+// tenant: an empty or matching request tenant resolves to the identity
+// tenant; a non-empty request tenant that differs from the identity tenant is
+// rejected with a *CrossTenantDeniedError (fail closed — never silently
+// coerced).
+//
+// There is no system-tenant lift here (owner ruling, 2026-10-01:
+// "tenant.EffectiveTenant stops honouring a requested tenant from a
+// system-tenant caller" — docs/multi-tenancy/architecture.md "Strict tenant
+// isolation"). A platform-internal flow that legitimately provisions another
+// tenant's records (e.g. seeding a new tenant's built-in roles at creation)
+// must act on a store already scoped to that tenant directly, never through
+// this function with an elevated identity.
 //
 // op names the attempted operation for the error message (e.g. "create user").
 func EffectiveTenant(ctx context.Context, requested, op string) (string, error) {
 	identityTenant := FromContext(ctx)
-	if tenantid.IsSystem(identityTenant) {
-		if requested == "" {
-			return tenantid.System, nil
+	if requested != "" && requested != identityTenant {
+		return "", &CrossTenantDeniedError{
+			IdentityTenantID:  identityTenant,
+			RequestedTenantID: requested,
+			Op:                op,
 		}
-		return requested, nil
 	}
+	return identityTenant, nil
+}
+
+// OwnTenant reconciles a request-supplied tenant against the caller's
+// authenticated identity tenant with NO exception for the system tenant: a
+// system identity is held to the same "act only on your own tenant" rule as
+// every other caller.
+//
+// This is EffectiveTenant's rule minus its system-tenant lift. qrdb's own
+// IAM routing uses EffectiveTenant because the system tenant legitimately
+// acts across tenants (first-boot bootstrap, platform provisioning,
+// AuthorizeTenantTarget's RBAC-gated admin paths). A caller enforcing the
+// irreducible "no caller, system included, ever acts on another tenant"
+// rule (go-qrdb#587) uses OwnTenant instead; go-quicbaas's audit surfaces
+// are one such caller.
+//
+// Rules:
+//   - An empty or matching request tenant resolves to the identity tenant.
+//   - A non-empty request tenant that differs from the identity tenant is
+//     rejected with a *CrossTenantDeniedError (fail closed), regardless of
+//     whether the identity is the system tenant.
+//
+// op names the attempted operation for the error message (e.g. "list audit
+// records").
+func OwnTenant(ctx context.Context, requested, op string) (string, error) {
+	identityTenant := FromContext(ctx)
 	if requested != "" && requested != identityTenant {
 		return "", &CrossTenantDeniedError{
 			IdentityTenantID:  identityTenant,

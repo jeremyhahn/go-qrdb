@@ -495,6 +495,7 @@ func buildRoutedIAMNode(t *testing.T) (*lifecycle.Node, *seal.BarrierRegistry) {
 		SealBarrier:       barrier,
 		BarrierRegistry:   registry,
 		CredentialCoreSvc: credSvc,
+		KeyWrapRegistry:   fakeSoftwareKeyWrapRegistry(),
 	})
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)
@@ -544,7 +545,8 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 
 	// Write a user into the barrier tenant. The routing decorator must send
 	// this to the tenant's barrier-backed store, not the shared system store.
-	created, err := node.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
+	secureCtx := tenant.WithTenantID(ctx, barrierTenant)
+	created, err := node.User.CreateUser(secureCtx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: barrierTenant,
 	})
@@ -554,7 +556,7 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 
 	// Lookup scoped to the barrier tenant must find the user (routed to the
 	// barrier store on both write and read).
-	got, err := node.User.GetUserByUsername(ctx, barrierTenant, "alice")
+	got, err := node.User.GetUserByUsername(secureCtx, barrierTenant, "alice")
 	if err != nil {
 		t.Fatalf("GetUserByUsername(barrier tenant): %v", err)
 	}
@@ -566,7 +568,8 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 	// barrier tenant's record lives in its own store, never the shared system
 	// store. This is the load-bearing assertion that the routing decorator —
 	// not a plain shared-store service — is installed.
-	if _, err := node.User.GetUserByUsername(ctx, tenantid.System, "alice"); err == nil {
+	sysCtx := tenant.WithTenantID(ctx, tenantid.System)
+	if _, err := node.User.GetUserByUsername(sysCtx, tenantid.System, "alice"); err == nil {
 		t.Fatal("system-tenant lookup found a barrier-tenant user: routing decorator not installed (data leaked to shared store)")
 	} else {
 		var notFound *user.UserNotFoundError
@@ -602,7 +605,8 @@ func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
 		}
 	}
 
-	victim, err := node.Role.CreateRole(ctx, &role.CreateRoleRequest{
+	victimCtx := tenant.WithTenantID(ctx, victimTenant)
+	victim, err := node.Role.CreateRole(victimCtx, &role.CreateRoleRequest{
 		Name:        "victim-admin",
 		TenantID:    victimTenant,
 		Permissions: []permission.Permission{permission.KVGet},
@@ -611,8 +615,10 @@ func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
 		t.Fatalf("CreateRole(victim): %v", err)
 	}
 
-	// The capture attempt: the captor names the victim's id explicitly.
-	_, err = node.Role.CreateRole(ctx, &role.CreateRoleRequest{
+	// The capture attempt: the captor names the victim's id explicitly, as
+	// its own caller.
+	captorCtx := tenant.WithTenantID(ctx, captorTenant)
+	_, err = node.Role.CreateRole(captorCtx, &role.CreateRoleRequest{
 		ID:          victim.ID,
 		Name:        "impostor",
 		TenantID:    captorTenant,
@@ -625,7 +631,7 @@ func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
 
 	// Nothing was written for the captor: the claim is settled BEFORE the
 	// record, so a refused capture leaves no orphan behind.
-	captorRoles, err := node.Role.ListRoles(ctx, &role.ListRolesRequest{TenantID: captorTenant})
+	captorRoles, err := node.Role.ListRoles(captorCtx, &role.ListRolesRequest{TenantID: captorTenant})
 	if err != nil {
 		t.Fatalf("ListRoles(captor): %v", err)
 	}
@@ -635,7 +641,7 @@ func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
 	}
 
 	// And the id still routes to the victim's role, unchanged.
-	got, err := node.Role.GetRole(ctx, victim.ID)
+	got, err := node.Role.GetRole(victimCtx, victim.ID)
 	if err != nil {
 		t.Fatalf("GetRole after the refused capture: %v", err)
 	}
@@ -1558,7 +1564,7 @@ func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
 			"so every prefix tenant shares one keyspace")
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	acme, err := node.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice", TenantID: "acme",
 	})
@@ -1566,8 +1572,13 @@ func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
 		t.Fatalf("CreateUser(acme): %v", err)
 	}
 
-	// globex must not see acme's user by name...
-	if _, gerr := node.User.GetUserByUsername(ctx, "globex", "alice"); gerr == nil {
+	// globex must not see acme's user by name... as globex's own caller
+	// (the system-tenant lift was removed, owner ruling 2026-10-01, so a
+	// cross-tenant attempt now reads *CrossTenantDeniedError before the
+	// keyspace question is even reached; the keyspace-sharing question this
+	// test is about is tested from globex's own identity instead).
+	globexCtx := tenant.WithTenantID(context.Background(), "globex")
+	if _, gerr := node.User.GetUserByUsername(globexCtx, "globex", "alice"); gerr == nil {
 		t.Fatal("globex resolved acme's user by username — the two prefix " +
 			"tenants share one IAM keyspace")
 	} else {
@@ -1578,7 +1589,7 @@ func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
 	}
 
 	// ...nor by listing.
-	listed, err := node.User.ListUsers(ctx, &user.ListUsersRequest{TenantID: "globex"})
+	listed, err := node.User.ListUsers(globexCtx, &user.ListUsersRequest{TenantID: "globex"})
 	if err != nil {
 		t.Fatalf("ListUsers(globex): %v", err)
 	}
@@ -1679,7 +1690,7 @@ func TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns(t *testing.T) {
 	defer func() { _ = node.Stop(ctx) }()
 
 	if _, err := mgr.Create(database.DatabaseConfig{
-		Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "reports", Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}

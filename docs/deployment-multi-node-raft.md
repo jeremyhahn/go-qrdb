@@ -127,7 +127,6 @@ curl -X POST https://localhost:9090/v1/databases \
   --cert client.crt --key client.key \
   --cacert ca.crt \
   -d '{
-    "engine": "kv",
     "backend": "raft",
     "replicas": 3,
     "dedicatedWal": true

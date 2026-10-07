@@ -1036,6 +1036,43 @@ func TestHandler_MembershipAdd_ForwardsOnNotLeader(t *testing.T) {
 	}
 }
 
+// TestHandler_MembershipAdd_NotLeader_SelfAddress_NotForwarded proves that a
+// NotLeaderError naming THIS node's own raft address is never forwarded:
+// go-quicraft can report this node as the leader in the same breath it
+// refuses a membership-change proposal as not-leader (a readiness lag right
+// after a group's first leader election), and forwarding in that case would
+// dial this node's own admin listener and re-enter this exact handler,
+// never resolving on its own the way forwardToLeader's hop-count guard
+// assumes a genuine loop does. The leader server below must never receive a
+// request; the response must be the ordinary (retryable) NotLeaderError
+// classification, not a wasted hop followed by a loop-detected failure.
+func TestHandler_MembershipAdd_NotLeader_SelfAddress_NotForwarded(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("self-address NotLeaderError must never be forwarded")
+	}))
+	defer leaderSrv.Close()
+
+	const selfAddr = "10.0.0.1:63001"
+	adminSvc := &mockAdminService{
+		addMemberFn: func(_ context.Context, _, _ uint64, _ string) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 1, LeaderAddress: selfAddr}
+		},
+	}
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register(selfAddr, leaderSrv.URL)
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0",
+		WithLeaderForwarding(reg), WithHost(&mockHost{addr: selfAddr}))
+
+	body := `{"shard_id":1,"replica_id":3,"address":"10.0.0.3:63001"}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/add", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /membership/add (not leader, self address) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 // TestHandler_MembershipAdd_NotLeader_NoResolver verifies that, absent
 // leader forwarding configuration, a NotLeaderError from AddMember still
 // surfaces as a non-panicking error response (not a 500 buried inside an
@@ -1053,8 +1090,13 @@ func TestHandler_MembershipAdd_NotLeader_NoResolver(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("POST /membership/add (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// No resolver configured: tryForwardWrite declines to forward, and the
+	// NotLeaderError falls through membershipChangeStatus to its ordinary
+	// classification (503) -- the same transient-retry signal every other
+	// "leadership is still settling" condition in this codebase produces,
+	// not a permanent failure.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /membership/add (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 

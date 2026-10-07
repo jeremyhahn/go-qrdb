@@ -1,6 +1,6 @@
 # etcd Compatibility — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 This feature is **not** one of the six qrdb transports. It is a separate,
 per-database gRPC listener speaking upstream etcd's own v3 API
@@ -103,8 +103,8 @@ kube-apiserver \
 
 **Requirements:**
 
-- The database must be `engine: kv` with `etcd: enabled`; enabling etcd on any other engine is refused at create and on update with `database.EtcdEngineUnsupportedError` (`400` / `INVALID_ARGUMENT`). Any backend serves it: the listener resolves the database's engines through the service registry.
-- The node must run in mode `raft`: the etcd listener is a raft-only surface (`capabilities.Etcd`), and a standalone node's listener refuses to start (`service.CapabilityUnsupportedError`, "requires mode: raft"). *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
+- The database needs only `etcd: enabled`. Any backend serves it: the listener resolves the database through the service registry. *(Corrected twice: `backend: raft` was documented as required and was neither required nor checked; and this requirement previously also read `engine: kv`, refusing any other engine with `database.EtcdEngineUnsupportedError` -- Lane 1C deleted the `engine` concept and that error entirely, OD-12/OD-13, so etcd now serves any database regardless of what it stores.)*
+- The node must run in mode `raft`: the etcd listener is a raft-only surface (`capabilities.Etcd`), and a standalone node's listener refuses to start (`service.CapabilityUnsupportedError`, "requires mode: raft").
 - The `sm_type` must be `mvcc` (Kubernetes requires MVCC semantics: revisions, watches, leases, transactions).
 - mTLS must be enabled with certificates signed by the same CA as the `kube-apiserver` client certificate.
 - The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and `lease:*` permissions, and must be issued to a user of the tenant that owns the database. Add `mvcc:compact` if the client compacts (`kube-apiserver` does): it compacts that database's history only.

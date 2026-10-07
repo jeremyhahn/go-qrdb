@@ -122,6 +122,21 @@ func (a *atomicKV) CompareAndSwap(_ context.Context, key string, expected, next 
 	return true, nil
 }
 
+// PutIfAbsent gives atomicKV the PutIfAbsentKV capability, so tests can
+// exercise ClaimPlacement's create-if-absent path rather than only its
+// capability-refusal fallback.
+func (a *atomicKV) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.data[key]; ok {
+		return false, nil
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	a.data[key] = cp
+	return true, nil
+}
+
 func samplePlacement(tenant, db string, shardID uint64) *Placement {
 	return &Placement{
 		TenantID:        tenant,
@@ -421,6 +436,172 @@ func TestStore_CompareAndSwapPlacement_BackendError(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want to wrap %v", err, boom)
 	}
+}
+
+// TestStore_ClaimPlacement_CreatesWhenAbsent proves the first claim of a
+// (tenant, database) name commits the entry and reports claimed=true with
+// no existing value to report.
+func TestStore_ClaimPlacement_CreatesWhenAbsent(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	p := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+
+	claimed, existing, err := s.ClaimPlacement(ctx, p)
+	if err != nil {
+		t.Fatalf("ClaimPlacement: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("claimed = false, want true for the first claim")
+	}
+	if existing != nil {
+		t.Fatalf("existing = %+v, want nil when claimed", existing)
+	}
+
+	got, err := s.Get(ctx, "acme", "orders")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Backend != BackendFile || got.ShardID != 1000 {
+		t.Fatalf("stored placement = %+v, want the claimed entry", got)
+	}
+}
+
+// TestStore_ClaimPlacement_DeclinesAndReturnsExistingOnConflict proves a
+// second claim of the same name -- the race a local binding's single
+// owner must be decided by -- declines and reports the first claim's own
+// entry, never silently overwriting it: a database created on one node
+// must resolve to the same binding everywhere, including on the node that
+// lost the race.
+func TestStore_ClaimPlacement_DeclinesAndReturnsExistingOnConflict(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	first := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1,
+		Replicas: []Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}}, LeaderReplicaID: 1}
+	claimed, _, err := s.ClaimPlacement(ctx, first)
+	if err != nil || !claimed {
+		t.Fatalf("first ClaimPlacement: claimed=%v err=%v", claimed, err)
+	}
+
+	second := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 2000, RF: 1,
+		Replicas: []Replica{{ReplicaID: 1, NodeID: "n2", RaftAddr: "n2:1"}}, LeaderReplicaID: 1}
+	claimed, existing, err := s.ClaimPlacement(ctx, second)
+	if err != nil {
+		t.Fatalf("second ClaimPlacement: %v", err)
+	}
+	if claimed {
+		t.Fatalf("second claim: claimed = true, want false")
+	}
+	if existing == nil || existing.Replicas[0].NodeID != "n1" {
+		t.Fatalf("existing = %+v, want the first claim's own entry (owner n1)", existing)
+	}
+}
+
+// TestStore_ClaimPlacement_UnsupportedWithoutPutIfAbsentKV proves a KV
+// backend that cannot PutIfAbsent is refused, not silently degraded to an
+// unconditional Put -- degrading would let two racing creates both "win".
+func TestStore_ClaimPlacement_UnsupportedWithoutPutIfAbsentKV(t *testing.T) {
+	s, err := NewStore(newFakeKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	p := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+
+	_, _, err = s.ClaimPlacement(context.Background(), p)
+	if uerr := (*AtomicWriteUnsupportedError)(nil); !errors.As(err, &uerr) {
+		t.Fatalf("error = %v, want *AtomicWriteUnsupportedError", err)
+	}
+}
+
+// TestStore_ClaimPlacement_Validation proves a nil placement or an empty
+// tenant/database is refused before any store access.
+func TestStore_ClaimPlacement_Validation(t *testing.T) {
+	s, err := NewStore(newAtomicKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := s.ClaimPlacement(ctx, nil); !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("nil placement error = %v, want ErrPlacementNotFound", err)
+	}
+	if _, _, err := s.ClaimPlacement(ctx, &Placement{Database: "orders"}); !errors.Is(err, ErrEmptyTenant) {
+		t.Fatalf("empty tenant error = %v, want ErrEmptyTenant", err)
+	}
+	if _, _, err := s.ClaimPlacement(ctx, &Placement{TenantID: "acme"}); !errors.Is(err, ErrEmptyDatabase) {
+		t.Fatalf("empty database error = %v, want ErrEmptyDatabase", err)
+	}
+}
+
+// erroringPutIfAbsentKV overrides PutIfAbsent to fail, standing in for a
+// genuine backend error rather than a declined create.
+type erroringPutIfAbsentKV struct {
+	*atomicKV
+	err error
+}
+
+func (e *erroringPutIfAbsentKV) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return false, e.err
+}
+
+// TestStore_ClaimPlacement_BackendError proves a genuine failure from the
+// backing PutIfAbsentKV -- not a declined create -- is wrapped and
+// returned as an error, not silently reported as claimed=false.
+func TestStore_ClaimPlacement_BackendError(t *testing.T) {
+	boom := errors.New("kv: unavailable")
+	s, err := NewStore(&erroringPutIfAbsentKV{atomicKV: newAtomicKV(), err: boom})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	p := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+
+	_, _, err = s.ClaimPlacement(context.Background(), p)
+	if !errors.Is(err, boom) {
+		t.Fatalf("error = %v, want to wrap %v", err, boom)
+	}
+}
+
+// TestStore_ClaimPlacement_GetErrorOnConflict proves a failure reading back
+// the winner's entry after losing the race is returned as an error, not
+// silently reported as a declined claim with no existing value.
+func TestStore_ClaimPlacement_GetErrorOnConflict(t *testing.T) {
+	boom := errors.New("kv: unavailable")
+	kv := newAtomicKV()
+	s, err := NewStore(kv)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	first := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+	if claimed, _, err := s.ClaimPlacement(ctx, first); err != nil || !claimed {
+		t.Fatalf("first ClaimPlacement: claimed=%v err=%v", claimed, err)
+	}
+
+	s2, err := NewStore(&erroringGetKV{atomicKV: kv, err: boom})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	second := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 2000, RF: 1}
+	_, _, err = s2.ClaimPlacement(ctx, second)
+	if !errors.Is(err, boom) {
+		t.Fatalf("error = %v, want to wrap %v", err, boom)
+	}
+}
+
+// erroringGetKV overrides Get to fail, while leaving PutIfAbsent/CompareAndSwap
+// pointed at the shared backing data so a prior claim is still visible.
+type erroringGetKV struct {
+	*atomicKV
+	err error
+}
+
+func (e *erroringGetKV) Get(_ context.Context, _ string) ([]byte, error) {
+	return nil, e.err
 }
 
 // TestStore_SetDropping_SurvivesConcurrentStaleWrite is the exact scenario

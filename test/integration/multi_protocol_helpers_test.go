@@ -207,6 +207,13 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 	// production.
 	backupKeyDir := t.TempDir()
 
+	// The tenant DEK keyring resolves its default key reference through the
+	// same provider, from its own key directory (tenant-dek/engineering.md,
+	// Composition); every dek CLI test against this harness needs the
+	// "system" tenant's key file there.
+	dekKeyDir := t.TempDir()
+	writeDEKKeyFile(t, dekKeyDir, "system")
+
 	raftPorts := allocatePorts(t, 1)
 	quicPorts := allocatePorts(t, 1)
 	tcpPorts := allocateTCPPorts(t, 3) // admin (REST), grpc, mcp
@@ -238,6 +245,7 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
 		"--enable-unix", "--unix-socket-path", unixSocket,
 		"--backup-key-dir", backupKeyDir,
+		"--dek-key-dir", dekKeyDir,
 	}
 	if smType != "" {
 		args = append(args, "--sm", smType)

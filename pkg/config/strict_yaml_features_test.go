@@ -39,7 +39,6 @@ raft:
 databases:
   - &base
     name: "base"
-    engine: "kv"
     backend: "pebble"
   - <<: *base
     name: "app"
@@ -57,7 +56,7 @@ databases:
 	if len(cfg.Databases) != 3 {
 		t.Fatalf("Databases: got %d entries, want 3", len(cfg.Databases))
 	}
-	if got := cfg.Databases[1]; got.Name != "app" || got.Engine != "kv" || got.Backend != "pebble" {
+	if got := cfg.Databases[1]; got.Name != "app" || got.Backend != "pebble" {
 		t.Errorf("Databases[1] (merged from the anchor): got %+v", got)
 	}
 	if got := cfg.Databases[2]; got.Name != "cache" || got.Backend != "memory" {
@@ -100,7 +99,6 @@ storage:
   objstore:
     settings:
       base: &base
-        engine: "kv"
         bakend: "pebble"
 databases:
   - <<: *base

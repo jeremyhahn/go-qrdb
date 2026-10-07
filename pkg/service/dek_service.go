@@ -69,6 +69,14 @@ func NewDEKService(keyring *dek.Keyring) (*DEKService, error) {
 	return &DEKService{keyring: keyring}, nil
 }
 
+// Close releases the underlying keyring's cached "software" key-wrap
+// provider, if it ever resolved one. Mirrors BackupService.Close for the
+// identical reason: constructing the provider fresh on every call would
+// leak one open directory file descriptor per call.
+func (s *DEKService) Close() error {
+	return s.keyring.Close()
+}
+
 // Status implements DEKServicer.
 func (s *DEKService) Status(ctx context.Context, tenantID string) (*dek.Status, error) {
 	t, err := dekTenant(ctx, tenantID)

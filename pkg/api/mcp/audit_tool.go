@@ -25,17 +25,29 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// auditTools returns the MCP tool registrations for audit event retrieval.
-// Authorization: requires "audit:query" permission.
+// auditTools returns the MCP tool registrations for audit event retrieval:
+// qrdb_audit_query (against the node-local trail, or the cluster-wide
+// replicated chain when its "replicated" parameter is true and
+// replicatedAudit is non-nil -- docs/audit/architecture.md
+// #cluster-wide-replicated-trail), qrdb_audit_verify (node-local), and
+// qrdb_audit_verify_replicated (registered only when replicatedAudit is
+// non-nil). Authorization: requires "audit:query"/"audit:verify" permission.
 // TODO: switch to permission.AuditQuery constant once Phase 2 lands.
-func auditTools(l audit.AuditLogger) []serverTool {
-	return []serverTool{
-		{Tool: toolAuditQuery(), Perm: permission.AuditQuery, Handler: handleAuditQuery(l)},
+func auditTools(l audit.AuditLogger, replicatedAudit *service.OptInAuditLogger) []serverTool {
+	tools := []serverTool{
+		{Tool: toolAuditQuery(), Perm: permission.AuditQuery, Handler: handleAuditQuery(l, replicatedAudit)},
 		{Tool: toolAuditVerify(), Perm: permission.AuditVerify, Handler: handleAuditVerify(l)},
 	}
+	if replicatedAudit != nil {
+		tools = append(tools, serverTool{
+			Tool: toolAuditVerifyReplicated(), Perm: permission.AuditVerifyReplicated, Handler: handleAuditVerifyReplicated(replicatedAudit),
+		})
+	}
+	return tools
 }
 
 // toolAuditQuery defines the qrdb_audit_query tool schema.
@@ -69,13 +81,28 @@ func toolAuditQuery() mcp.Tool {
 		mcp.WithString("cursor",
 			mcp.Description("Opaque pagination cursor from a previous response."),
 		),
+		mcp.WithBoolean("replicated",
+			mcp.Description("Read the cluster-wide replicated audit chain instead of the node-local "+
+				"trail. A tenant not entitled to it answers an empty page (total -1), never an error."),
+		),
 	)
 }
 
 // handleAuditQuery returns a tool handler that queries the audit logger,
 // confined to the caller's own tenant (tenant.ConfineAuditFilter).
-func handleAuditQuery(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
+// replicated=true in the request reads replicatedAudit instead of l.
+func handleAuditQuery(l audit.AuditLogger, replicatedAudit *service.OptInAuditLogger) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		logger := l
+		if mcp.ParseBoolean(req, "replicated", false) {
+			if replicatedAudit == nil {
+				return nil, &ToolError{Tool: "qrdb_audit_query", Err: &ServiceNotConfiguredError{Service: "replicated audit"}}
+			}
+			logger = replicatedAudit
+		} else if logger == nil {
+			return nil, &ToolError{Tool: "qrdb_audit_query", Err: &ServiceNotConfiguredError{Service: "audit"}}
+		}
+
 		f := audit.Filter{
 			Actor:    mcp.ParseString(req, "actor", ""),
 			Resource: mcp.ParseString(req, "resource", ""),
@@ -112,7 +139,7 @@ func handleAuditQuery(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_audit_query", Err: err}
 		}
 
-		page, err := l.Query(ctx, f)
+		page, err := logger.Query(ctx, f)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_audit_query", Err: err}
 		}
@@ -149,6 +176,45 @@ func handleAuditVerify(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
 		b, err := json.Marshal(report)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_audit_verify", Err: err}
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// toolAuditVerifyReplicated defines the qrdb_audit_verify_replicated tool
+// schema: hash-chain continuity for the cluster-wide replicated audit chain
+// (docs/audit/architecture.md#cluster-wide-replicated-trail), for the
+// caller's own tenant.
+func toolAuditVerifyReplicated() mcp.Tool {
+	return mcp.NewTool("qrdb_audit_verify_replicated",
+		mcp.WithDescription("Verify the hash-chain continuity of the cluster-wide REPLICATED audit "+
+			"chain for the caller's own tenant. Requires audit:verify_replicated permission. A response with "+
+			"\"verified\": false is a tamper verdict, not a tool failure. A tenant not entitled to "+
+			"the replicated chain is refused rather than answering a trivially-true report."),
+		mcp.WithString("tenant_id",
+			mcp.Description("The caller's own tenant ID. Omitted means the caller's own tenant; naming another tenant is refused."),
+		),
+	)
+}
+
+// handleAuditVerifyReplicated returns a tool handler that verifies one
+// tenant's replicated hash-chain continuity, confined to the caller's own
+// tenant (tenant.Confine).
+func handleAuditVerifyReplicated(replicatedAudit *service.OptInAuditLogger) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenantID, err := tenant.Confine(ctx, mcp.ParseString(req, "tenant_id", ""), "verify replicated audit chain")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_audit_verify_replicated", Err: err}
+		}
+
+		report, err := replicatedAudit.VerifyTenantChain(ctx, tenantID)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_audit_verify_replicated", Err: err}
+		}
+
+		b, err := json.Marshal(report)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_audit_verify_replicated", Err: err}
 		}
 		return mcp.NewToolResultText(string(b)), nil
 	}

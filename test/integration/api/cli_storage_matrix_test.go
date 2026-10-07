@@ -13,96 +13,87 @@ import (
 
 // TestCLIStorageMatrixLifecycle tests the full database management lifecycle
 // (create, info, list, drop) for every valid combination of backend (memory,
-// file, pebble) x engine (kv, timeseries) x protocol (unix, rest, grpc, mcp,
-// quic). The raft backend is excluded because it requires a multi-node cluster
-// that is not available in the single-node integration environment.
+// file, pebble) x protocol (unix, rest, grpc, mcp, quic). The raft backend is
+// excluded because it requires a multi-node cluster that is not available in
+// the single-node integration environment. There is no per-database engine
+// dimension any more: `--engine` is removed outright (OD-13, Lane 1C), and
+// every database serves every compiled-in engine.
 func TestCLIStorageMatrixLifecycle(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
 
 	backends := []string{"memory", "file", "pebble"}
-	engines := []string{"kv", "timeseries"}
 
 	for _, backend := range backends {
-		for _, engine := range engines {
-			for _, proto := range AllProtocols() {
-				t.Run(fmt.Sprintf("%s/%s/%s", backend, engine, proto), func(t *testing.T) {
-					if !cfg.IsProtocolAvailable(t, proto) {
-						t.Fatalf("server not available for protocol %s", proto)
-					}
+		for _, proto := range AllProtocols() {
+			t.Run(fmt.Sprintf("%s/%s", backend, proto), func(t *testing.T) {
+				if !cfg.IsProtocolAvailable(t, proto) {
+					t.Fatalf("server not available for protocol %s", proto)
+				}
 
-					// Skip timeseries engine if the feature is not available.
-					if engine == "timeseries" {
-						requireFeature(t, cfg, "ts")
-					}
+				dbName := fmt.Sprintf("mx-%s-%s-%d", backend, proto, testTimestamp())
 
-					dbName := fmt.Sprintf("mx-%s-%s-%s-%d", backend, engine, proto, testTimestamp())
-
-					// Register cleanup before any mutations.
-					t.Cleanup(func() {
-						execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
-					})
-
-					// Step 1: Create a database with the specified backend and engine.
-					stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-						"database", "create", dbName,
-						"--backend", backend,
-						"--engine", engine)
-					if err != nil {
-						t.Logf("stdout: %s", stdout)
-						t.Logf("stderr: %s", stderr)
-						t.Fatalf("[%s] database create --backend %s --engine %s failed: %v", proto, backend, engine, err)
-					}
-					assertContains(t, stdout, "Name:",
-						fmt.Sprintf("[%s] database create should contain 'Name:'", proto))
-					t.Logf("[%s] created database %s with backend=%s engine=%s", proto, dbName, backend, engine)
-
-					// Step 2: Verify info output contains correct backend and engine.
-					stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-					if err != nil {
-						t.Logf("stdout: %s", stdout)
-						t.Logf("stderr: %s", stderr)
-						t.Fatalf("[%s] database info failed: %v", proto, err)
-					}
-					assertContains(t, strings.ToLower(stdout), backend,
-						fmt.Sprintf("[%s] database info should contain backend '%s'", proto, backend))
-					assertContains(t, strings.ToLower(stdout), engine,
-						fmt.Sprintf("[%s] database info should contain engine '%s'", proto, engine))
-
-					// Step 3: Verify list includes the database.
-					stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "list")
-					if err != nil {
-						t.Logf("stdout: %s", stdout)
-						t.Logf("stderr: %s", stderr)
-						t.Fatalf("[%s] database list failed: %v", proto, err)
-					}
-					assertContains(t, stdout, dbName,
-						fmt.Sprintf("[%s] database list should contain '%s'", proto, dbName))
-
-					// Step 4: Drop the database.
-					stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
-					if err != nil {
-						t.Logf("stdout: %s", stdout)
-						t.Logf("stderr: %s", stderr)
-						t.Fatalf("[%s] database drop failed: %v", proto, err)
-					}
-					assertContains(t, stdout, "OK",
-						fmt.Sprintf("[%s] database drop should output 'OK'", proto))
-
-					// Step 5: Verify list no longer includes the database.
-					stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "list")
-					if err != nil {
-						t.Logf("stdout: %s", stdout)
-						t.Logf("stderr: %s", stderr)
-						t.Fatalf("[%s] database list after drop failed: %v", proto, err)
-					}
-					if strings.Contains(stdout, dbName) {
-						t.Fatalf("[%s] database list should not contain '%s' after drop", proto, dbName)
-					}
-
-					t.Logf("[%s] storage matrix lifecycle passed for backend=%s engine=%s", proto, backend, engine)
+				// Register cleanup before any mutations.
+				t.Cleanup(func() {
+					execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
 				})
-			}
+
+				// Step 1: Create a database with the specified backend.
+				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+					"database", "create", dbName,
+					"--backend", backend)
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] database create --backend %s failed: %v", proto, backend, err)
+				}
+				assertContains(t, stdout, "Name:",
+					fmt.Sprintf("[%s] database create should contain 'Name:'", proto))
+				t.Logf("[%s] created database %s with backend=%s", proto, dbName, backend)
+
+				// Step 2: Verify info output contains the correct backend.
+				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] database info failed: %v", proto, err)
+				}
+				assertContains(t, strings.ToLower(stdout), backend,
+					fmt.Sprintf("[%s] database info should contain backend '%s'", proto, backend))
+
+				// Step 3: Verify list includes the database.
+				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "list")
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] database list failed: %v", proto, err)
+				}
+				assertContains(t, stdout, dbName,
+					fmt.Sprintf("[%s] database list should contain '%s'", proto, dbName))
+
+				// Step 4: Drop the database.
+				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] database drop failed: %v", proto, err)
+				}
+				assertContains(t, stdout, "OK",
+					fmt.Sprintf("[%s] database drop should output 'OK'", proto))
+
+				// Step 5: Verify list no longer includes the database.
+				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "list")
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] database list after drop failed: %v", proto, err)
+				}
+				if strings.Contains(stdout, dbName) {
+					t.Fatalf("[%s] database list should not contain '%s' after drop", proto, dbName)
+				}
+
+				t.Logf("[%s] storage matrix lifecycle passed for backend=%s", proto, backend)
+			})
 		}
 	}
 }
@@ -352,74 +343,6 @@ func TestCLIStorageMatrixBackendVerification(t *testing.T) {
 	}
 }
 
-// TestCLIStorageMatrixEngineVerification verifies that the engine reported by
-// database info matches the engine requested at creation time. Each engine
-// type is tested across all protocols to ensure the engine value is correctly
-// persisted and reported.
-func TestCLIStorageMatrixEngineVerification(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	engines := []string{"kv", "timeseries"}
-
-	for _, engine := range engines {
-		for _, proto := range AllProtocols() {
-			t.Run(fmt.Sprintf("%s/%s", engine, proto), func(t *testing.T) {
-				if !cfg.IsProtocolAvailable(t, proto) {
-					t.Fatalf("server not available for protocol %s", proto)
-				}
-
-				// Skip timeseries engine if the feature is not available.
-				if engine == "timeseries" {
-					requireFeature(t, cfg, "ts")
-				}
-
-				dbName := fmt.Sprintf("eng-%s-%s-%d", engine, proto, testTimestamp())
-
-				// Register cleanup before any mutations.
-				t.Cleanup(func() {
-					execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
-				})
-
-				// Create database with specific engine.
-				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-					"database", "create", dbName,
-					"--engine", engine)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database create --engine %s failed: %v", proto, engine, err)
-				}
-				t.Logf("[%s] created database %s with engine=%s", proto, dbName, engine)
-
-				// Verify info shows the correct engine.
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database info failed: %v", proto, err)
-				}
-				assertContains(t, stdout, "Engine:",
-					fmt.Sprintf("[%s] database info should contain 'Engine:'", proto))
-				assertContains(t, strings.ToLower(stdout), engine,
-					fmt.Sprintf("[%s] database info Engine should be '%s'", proto, engine))
-
-				// Drop the database.
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database drop failed: %v", proto, err)
-				}
-				assertContains(t, stdout, "OK",
-					fmt.Sprintf("[%s] database drop should output 'OK'", proto))
-
-				t.Logf("[%s] engine verification passed for engine=%s", proto, engine)
-			})
-		}
-	}
-}
-
 // TestCLIStorageMatrixInvalidBackend tests that creating a database with an
 // invalid backend name fails gracefully and returns an error.
 func TestCLIStorageMatrixInvalidBackend(t *testing.T) {
@@ -450,40 +373,6 @@ func TestCLIStorageMatrixInvalidBackend(t *testing.T) {
 			}
 
 			t.Logf("[%s] database create --backend invalidbackend correctly failed: %v", proto, err)
-		})
-	}
-}
-
-// TestCLIStorageMatrixInvalidEngine tests that creating a database with an
-// invalid engine name fails gracefully and returns an error.
-func TestCLIStorageMatrixInvalidEngine(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			dbName := fmt.Sprintf("bad-eng-%s-%d", proto, testTimestamp())
-
-			// Register cleanup in case the create unexpectedly succeeds.
-			t.Cleanup(func() {
-				execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
-			})
-
-			// Attempt to create a database with an invalid engine.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"database", "create", dbName,
-				"--engine", "invalidengine")
-			if err == nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database create --engine invalidengine should have failed but succeeded", proto)
-			}
-
-			t.Logf("[%s] database create --engine invalidengine correctly failed: %v", proto, err)
 		})
 	}
 }

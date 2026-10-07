@@ -38,6 +38,18 @@ const (
 	// outside the caller's own scope.
 	PermissionTenantsCreateCross = permission.TenantsCreateCross
 
+	// PermissionTenantsReadCross ("tenants:read:cross") reads another tenant's
+	// registry record.
+	PermissionTenantsReadCross = permission.TenantsReadCross
+
+	// PermissionTenantsDeleteCross ("tenants:delete:cross") deletes another
+	// tenant's registry record.
+	PermissionTenantsDeleteCross = permission.TenantsDeleteCross
+
+	// PermissionTenantsUpdateCross ("tenants:update:cross") updates another
+	// tenant's registry record.
+	PermissionTenantsUpdateCross = permission.TenantsUpdateCross
+
 	// PermissionTenantsApprove ("tenants:approve") approves a pending tenant
 	// registration.
 	PermissionTenantsApprove = permission.TenantsApprove

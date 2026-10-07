@@ -15,6 +15,7 @@
 package conformance
 
 import (
+	"crypto/fips140"
 	"errors"
 	"slices"
 	"testing"
@@ -73,6 +74,7 @@ func seedJoinTokenFixtures(t *testing.T, n *node.Node, callerTenant, roleName st
 			t.Fatalf("CreateTenant(%s): %v", callerTenant, err)
 		}
 	}
+	ctx = tenant.WithTenantID(ctx, callerTenant)
 	if _, err := svc.Role.ReconcileBuiltInRoles(ctx, callerTenant); err != nil {
 		t.Fatalf("ReconcileBuiltInRoles(%s): %v", callerTenant, err)
 	}
@@ -144,11 +146,13 @@ func requireMinter(t *testing.T, tk transportKind, c *sdk.Client) transport.Clus
 var clusterJoinTokenRefusals = crossTenantRefusals
 
 // TestMintJoinToken_SystemOwnerSucceeds_TenantAdminRefused proves
-// cluster:join_token mints identically for the system tenant's Owner (the
-// only built-in role that holds a platform-only permission), and is
-// refused identically -- the ScopeCross denial, not a missing-capability
-// error -- for a tenant's Admin, on every remote transport (REST, gRPC,
-// QUIC, Unix, MCP).
+// cluster:join_token mints identically for the system tenant's Owner, mints
+// identically for the system tenant's ADMIN (owner ruling, 2026-10-06 --
+// the grant that keeps this capability reachable under strict separation of
+// duties, which the "system-owner" subtest's FIPS branch below shows voids
+// Owner), and is refused identically -- the ScopeCross denial, not a
+// missing-capability error -- for a tenant's Admin, on every remote
+// transport (REST, gRPC, QUIC, Unix, MCP).
 func TestMintJoinToken_SystemOwnerSucceeds_TenantAdminRefused(t *testing.T) {
 	for _, tk := range transportKinds {
 		if !tk.remote() {
@@ -160,8 +164,56 @@ func TestMintJoinToken_SystemOwnerSucceeds_TenantAdminRefused(t *testing.T) {
 			minter := requireMinter(t, tk, client)
 
 			resp, err := minter.MintJoinToken(boundedCtx(t), &transport.MintJoinTokenRequest{NodeID: "node-owner-" + string(tk)})
+			if fips140.Enabled() {
+				// A FIPS build is always strict separation-of-duties
+				// (strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties,
+				// sdk/go/node/node.go), which voids the Owner role as
+				// defense-in-depth (docs/12-configuration.md
+				// "separation_of_duties"). cluster:join_token has no
+				// other built-in-role grant
+				// (TestClusterJoinToken_IsPlatformOnly), so under a FIPS
+				// build the bare system Owner no longer succeeds here:
+				// an operator must grant the permission explicitly, the
+				// way TestMintJoinToken_ExplicitTenantGrantStillRefused's
+				// role does.
+				if err == nil {
+					t.Fatalf("%s: system Owner MintJoinToken succeeded under strict separation of duties (FIPS build); the owner role is voided", tk)
+				}
+				refused, ok := clusterJoinTokenRefusals[tk]
+				if !ok {
+					t.Fatalf("%s declares no permission-denied refusal", tk)
+				}
+				if !refused(err) {
+					t.Fatalf("%s: system Owner MintJoinToken error = %T (%v), want the permission-denied refusal", tk, err, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("%s: system Owner MintJoinToken: %v", tk, err)
+			}
+			if resp.Token == "" {
+				t.Fatalf("%s: MintJoinToken returned an empty token", tk)
+			}
+			if !resp.ExpiresAt.After(time.Now()) {
+				t.Fatalf("%s: MintJoinToken's ExpiresAt (%v) is not in the future", tk, resp.ExpiresAt)
+			}
+		})
+
+		t.Run(string(tk)+"/system-admin-succeeds", func(t *testing.T) {
+			// The 2026-10-06 ruling: the cluster Admin built-in role holds
+			// cluster:join_token unconditionally, not only outside a FIPS
+			// build, so a system-tenant Admin mints a token whether or not
+			// strict separation of duties is active -- unlike the bare
+			// system Owner above, which strict SoD voids. This is the
+			// sanctioned-path proof docs/seal/fips140-mode.md's "Strict
+			// separation of duties and cluster:join_token under FIPS"
+			// section once recorded as unverified for the system tenant.
+			client := bootJoinTokenCell(t, tk, tenantid.System, role.RoleNameAdmin)
+			minter := requireMinter(t, tk, client)
+
+			resp, err := minter.MintJoinToken(boundedCtx(t), &transport.MintJoinTokenRequest{NodeID: "node-system-admin-" + string(tk)})
+			if err != nil {
+				t.Fatalf("%s: system Admin MintJoinToken: %v", tk, err)
 			}
 			if resp.Token == "" {
 				t.Fatalf("%s: MintJoinToken returned an empty token", tk)
@@ -206,6 +258,7 @@ func bootJoinTokenCellWithExplicitGrant(t *testing.T, tk transportKind, callerTe
 		if _, err := svc.Tenant.CreateTenant(ctx, callerTenant, "Tenant "+callerTenant, tenant.IsolationPrefix); err != nil {
 			t.Fatalf("CreateTenant(%s): %v", callerTenant, err)
 		}
+		ctx = tenant.WithTenantID(ctx, callerTenant)
 		if _, err := svc.Role.ReconcileBuiltInRoles(ctx, callerTenant); err != nil {
 			t.Fatalf("ReconcileBuiltInRoles(%s): %v", callerTenant, err)
 		}
@@ -290,16 +343,18 @@ func TestMintJoinToken_ExplicitTenantGrantStillRefused(t *testing.T) {
 // cluster:join_token in the system tenant exactly as it must over REST/gRPC/
 // QUIC/unix/MCP. The identity bound below is the embedded equivalent of the
 // client certificate bootJoinTokenCell's remote cells authenticate as: the
-// system tenant's built-in Owner, the same role seedJoinTokenFixtures grants
-// it.
+// system tenant's built-in Admin, which holds cluster:join_token
+// unconditionally as of the 2026-10-06 ruling (unlike Owner, which strict
+// separation of duties -- always on in a FIPS build -- voids outright), so
+// this succeeds the same way with or without fips140.Enabled().
 func TestMintJoinToken_EmbeddedCapabilityExists(t *testing.T) {
-	client := bootJoinTokenCell(t, embeddedTransport, tenantid.System, role.RoleNameOwner)
+	client := bootJoinTokenCell(t, embeddedTransport, tenantid.System, role.RoleNameAdmin)
 	minter := requireMinter(t, embeddedTransport, client)
 
 	ctx := tenant.WithTenantID(auth.WithIdentity(boundedCtx(t), &auth.Identity{
 		Subject:  "matrix",
 		TenantID: tenantid.System,
-		Roles:    []string{role.SystemRoleID(tenantid.System, role.RoleNameOwner)},
+		Roles:    []string{role.SystemRoleID(tenantid.System, role.RoleNameAdmin)},
 	}), tenantid.System)
 
 	resp, err := minter.MintJoinToken(ctx, &transport.MintJoinTokenRequest{NodeID: "node-embedded"})

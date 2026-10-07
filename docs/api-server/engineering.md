@@ -1,6 +1,6 @@
 # Unified API Server — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -45,6 +45,8 @@ type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 type ModuleAuthFallback           = apimodule.ModuleAuthFallback
 type ModuleConnObserver           = apimodule.ConnObserver
 type ModuleTransport              = apimodule.Transport   // + ModuleTransportGRPC … ModuleTransportQUIC
+type TenantTargetAuthorizer       = apimodule.TenantTargetAuthorizer
+type ModuleTenantTargetAware      = apimodule.ModuleTenantTargetAware
 
 var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
 ```
@@ -120,7 +122,24 @@ type ConnObserver interface {
 	ConnOpened(t Transport)   // Transport: grpc, unix, rest, http3, mcp, quic
 	ConnClosed(t Transport)
 }
+
+type TenantTargetAuthorizer interface {
+	AuthorizeTenantTarget(ctx context.Context, tenantID string, perm permission.Permission) error
+}
+
+type ModuleTenantTargetAware interface {
+	SetTenantTargetAuthorizer(a TenantTargetAuthorizer)
+}
 ```
+
+`*middleware.AuthMiddleware` satisfies `TenantTargetAuthorizer` as-is — the
+interface is declared minimally in `pkg/apimodule` precisely so that package
+need not import `pkg/auth/middleware`. `wireModuleTenantTargetAuthorizers`
+(`pkg/server`) calls `SetTenantTargetAuthorizer` on every module implementing
+the extension, before any transport's `Register*` hook runs, passing the
+server's own `*authmw.AuthMiddleware`, or a literal (true) `nil` when auth is
+disabled — never a `nil` pointer boxed into the interface, which would leave
+a module's own `if authz == nil` check unable to see it.
 
 `ConnObserver` is wired from each transport's existing `WithServiceModules`
 option: at `Start`, every listener collects the modules that implement it
@@ -355,3 +374,7 @@ follows the run mode ([../run-modes/](../run-modes/)).
 - `GET /metrics` in Prometheus format, gated on a configured gatherer.
 - `GET /health` public, `GET /status` and `GET /capabilities` authenticated —
   see [../clustering/](../clustering/api.md) and [../run-modes/](../run-modes/).
+
+## Integration Target
+
+Run `make integration-test-api-server` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `api-server`.

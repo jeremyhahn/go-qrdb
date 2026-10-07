@@ -36,6 +36,7 @@ import (
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -441,6 +442,73 @@ func TestServer_StopModules_ReverseOrderAndContinuesPastErrors(t *testing.T) {
 	}
 }
 
+// tenantTargetAwareModule records the authorizer the server hands it via
+// SetTenantTargetAuthorizer, so wireModuleTenantTargetAuthorizers' wiring is
+// observable.
+type tenantTargetAwareModule struct {
+	apimodule.BaseModule
+	name string
+	got  apimodule.TenantTargetAuthorizer
+	// set distinguishes "called with nil" from "never called".
+	set bool
+}
+
+func (m *tenantTargetAwareModule) Name() string { return m.name }
+
+func (m *tenantTargetAwareModule) SetTenantTargetAuthorizer(a apimodule.TenantTargetAuthorizer) {
+	m.got = a
+	m.set = true
+}
+
+var _ apimodule.ServiceModule = (*tenantTargetAwareModule)(nil)
+var _ apimodule.ModuleTenantTargetAware = (*tenantTargetAwareModule)(nil)
+
+// TestWireModuleTenantTargetAuthorizers_PassesTheLiveAuthMiddleware: a module
+// implementing ModuleTenantTargetAware receives the server's own
+// *authmw.AuthMiddleware, and a module that does not implement the
+// extension (stubModule) is skipped without panicking (go-qrdb#587).
+func TestWireModuleTenantTargetAuthorizers_PassesTheLiveAuthMiddleware(t *testing.T) {
+	mw := authmw.New(nil)
+	aware := &tenantTargetAwareModule{name: "aware"}
+	s := &Server{opts: serverOptions{
+		authMW: mw,
+		modules: []apimodule.ServiceModule{
+			aware,
+			&stubModule{name: "plain"},
+		},
+	}}
+
+	s.wireModuleTenantTargetAuthorizers()
+
+	if !aware.set {
+		t.Fatal("SetTenantTargetAuthorizer was never called")
+	}
+	if aware.got != mw {
+		t.Errorf("SetTenantTargetAuthorizer got %v, want the server's own *authmw.AuthMiddleware", aware.got)
+	}
+}
+
+// TestWireModuleTenantTargetAuthorizers_NilAuthMWIsATrueNilInterface: when
+// auth is disabled (authMW nil), the module must see a genuinely nil
+// interface value (comparable to nil with ==), not a non-nil interface
+// boxing a nil *authmw.AuthMiddleware -- the classic Go pitfall that would
+// silently invert a module's own "if authz == nil { admit }" check.
+func TestWireModuleTenantTargetAuthorizers_NilAuthMWIsATrueNilInterface(t *testing.T) {
+	aware := &tenantTargetAwareModule{name: "aware"}
+	s := &Server{opts: serverOptions{
+		modules: []apimodule.ServiceModule{aware},
+	}}
+
+	s.wireModuleTenantTargetAuthorizers()
+
+	if !aware.set {
+		t.Fatal("SetTenantTargetAuthorizer was never called")
+	}
+	if aware.got != nil {
+		t.Errorf("SetTenantTargetAuthorizer got %#v, want a true nil interface", aware.got)
+	}
+}
+
 // TestWithClusterEncryptionMigrator_Sets: the cluster migrator takes
 // precedence over the local scoped router, so wiring it is observable.
 func TestWithClusterEncryptionMigrator_Sets(t *testing.T) {
@@ -493,7 +561,7 @@ func TestResolveDedicatedDatabaseBarrier_RefusesCrossTenantAccess(t *testing.T) 
 	r, mgr := newBarrierResolveRegistry(t)
 
 	if _, err := mgr.Create(database.DatabaseConfig{
-		Name: "acme-db", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "acme-db", Backend: database.BackendMemory,
 		TenantID: "acme", DataDir: t.TempDir(),
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -523,7 +591,7 @@ func TestResolveDedicatedDatabaseBarrier_RefusesWithoutABarrier(t *testing.T) {
 	r, mgr := newBarrierResolveRegistry(t)
 
 	if _, err := mgr.Create(database.DatabaseConfig{
-		Name: "plain", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "plain", Backend: database.BackendMemory,
 		TenantID: "acme", DataDir: t.TempDir(),
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -566,7 +634,7 @@ func TestResolveDedicatedDatabaseBarrier_SystemTenantReachesUnownedDatabases(t *
 	r, mgr := newBarrierResolveRegistry(t)
 
 	if _, err := mgr.Create(database.DatabaseConfig{
-		Name: "unowned", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "unowned", Backend: database.BackendMemory,
 		DataDir: t.TempDir(),
 	}); err != nil {
 		t.Fatalf("Create: %v", err)

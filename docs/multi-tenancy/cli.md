@@ -1,7 +1,7 @@
 # Multi-Tenancy — CLI
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
+> implemented) · Scope: go-qrdb · Last verified: 2026-10-06
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
 quotas and entitlements, and drive their dedicated barriers. All verbs accept
@@ -23,7 +23,7 @@ Creates a tenant **together with its first admin**, or not at all.
 | `--id` | string | — | required; tenant ID, must be unique |
 | `--name` | string | — | required; human-readable name |
 | `--isolation-type` | string | `prefix` | `prefix \| barrier \| volume \| raft` |
-| `--data-root` | string | — | **retired, refused** (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`): a tenant's location is a named volume pool resolved on each node, never a path |
+| `--pool` | string | the tenant's default pool | for a `volume`/`raft` tenant, place it on this named volume pool instead of its default; the tenant must be entitled to the pool |
 | `--barrier-auto-unseal` | bool | false | for a dedicated-isolation tenant, use **system-managed** auto-unseal instead of the secure self-managed default — **entitlement-gated** |
 | `--admin-username` | string | — | required; the tenant's first admin |
 | `--admin-csr` | string | — | the first admin's PEM certificate signing request; signed by the tenant's own CA |
@@ -49,6 +49,8 @@ qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume \
 qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
      --admin-username ops --admin-cert ops.pem --trust-anchors corp-root.pem
 ```
+
+There is no `--data-root` flag: the API field of that name is retired and the server refuses it (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`), because a tenant's location is a named volume pool resolved on each node, never a path. *(Corrected 2026-10-06: this guide listed a `--data-root` flag and omitted `--pool` and `--allowed-volume-pools`.)*
 
 A `volume` or `raft` tenant is allocated a directory from the node's volume
 pool. The replicated record names the pool and the slot within it, never a
@@ -189,6 +191,7 @@ quotas.
 | `--allow-dedicated-raft` | bool | permit dedicated Raft-backed databases |
 | `--allow-volume-storage` | bool | permit databases on a dedicated volume |
 | `--allow-system-managed-barrier` | bool | permit opting into system-managed auto-unseal |
+| `--allowed-volume-pools` | strings | named volume pools the tenant may be placed on; the first is its default; **empty = no pool, fail-closed** |
 | `--allowed-barrier-modes` | strings | sealing strategies the tenant may select, e.g. `none,passphrase,shamir` or an xkms hardware id; **empty = software defaults, hardware fail-closed** |
 
 ```bash
@@ -321,12 +324,22 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation — RULED
 
-> **Status: RULED — not implemented** (owner rulings 2026-10-01 and 2026-10-02).
-> Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
+> **Status: RULED — partially implemented** (owner rulings 2026-10-01 and
+> 2026-10-02). Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 >
 > **Correction (2026-10-05):** `tenant create --admin-username`/`--admin-csr`
 > and `barrier-init` restricted to the bound admin already shipped — see the
 > architecture correction linked above and the `tenant create` row below.
+>
+> **Correction (2026-10-06):** the isolation-policy setting and `ScopeSelf`
+> system-lift removal shipped at the Go service layer
+> (`pkg/tenant/isolation_policy.go`, `pkg/auth/rbac`, `pkg/tenant/context.go`)
+> — see the architecture correction linked above. The two CLI commands below
+> are **not yet wired to any transport**: no REST/gRPC/QUIC/Unix/MCP endpoint
+> exists for them yet, so running them today fails the same way they would
+> against any unimplemented verb. Everything else in this section (the
+> per-node `barrier-init` fan-out, `tenant_identity:read`/`write`, etc.)
+> remains unimplemented.
 
 | Command | What it does |
 |---|---|

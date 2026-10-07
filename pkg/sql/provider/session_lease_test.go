@@ -62,7 +62,7 @@ func newCountedLockHarness(t *testing.T) (*lockHarness, *leaseCounter) {
 	counter := &leaseCounter{LeaseServicer: inner}
 	reg.LeaseServiceFn = func(string, string) (service.LeaseServicer, error) { return counter, nil }
 
-	prov := NewProviderWithEngine("shop", h.KVSvc, "", WithRegistry(h.Registry))
+	prov := NewProvider("shop", h.KVSvc, WithRegistry(h.Registry))
 	eng := sqlengine.New(sqlengine.Config{Provider: prov})
 	t.Cleanup(func() { _ = eng.Close() })
 	return &lockHarness{prov: prov, mvcc: h.MVCCSvc, eng: eng}, counter
@@ -118,7 +118,7 @@ func TestSessionEnd_RevokesOnceAndDeletesNoRecord(t *testing.T) {
 	require.NoError(t, err)
 	counter := &lockDeleteCounter{TransactionServicer: inner}
 	reg.TransactionServiceFn = func(string, string) (service.TransactionServicer, error) { return counter, nil }
-	prov := NewProviderWithEngine("shop", h.KVSvc, "", WithRegistry(h.Registry))
+	prov := NewProvider("shop", h.KVSvc, WithRegistry(h.Registry))
 	eng := sqlengine.New(sqlengine.Config{Provider: prov})
 	t.Cleanup(func() { _ = eng.Close() })
 	lh := &lockHarness{prov: prov, mvcc: h.MVCCSvc, eng: eng}

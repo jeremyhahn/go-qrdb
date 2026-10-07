@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Give qrdbd locked memory
 

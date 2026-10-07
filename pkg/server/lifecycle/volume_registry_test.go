@@ -242,3 +242,38 @@ func TestCloseOpenedVolumes_LogsAndContinuesOnCloseFailure(t *testing.T) {
 	// Must not panic and must not block on the never-opened (nil Vol) row.
 	CloseOpenedVolumes(context.Background(), rows, slog.Default())
 }
+
+// TestFailedOpens_CollectsOnlyTheFailedRows proves FailedOpens names every
+// row whose Err is set, in order, carrying the pool, the provider this
+// node's own configuration selected, and the cause -- and skips rows that
+// opened successfully.
+func TestFailedOpens_CollectsOnlyTheFailedRows(t *testing.T) {
+	boom := errors.New("boom")
+	rows := []OpenedVolumePool{
+		{Name: "fast", Provider: "dir", Vol: openRealDirVolume(t, "fast")},
+		{Name: "vault", Provider: "luks2", Err: boom},
+		{Name: "bulk", Provider: "dir", Err: errors.New("not mounted")},
+	}
+	failed := FailedOpens(rows)
+	if len(failed) != 2 {
+		t.Fatalf("len(failed) = %d, want 2", len(failed))
+	}
+	if failed[0].Pool != "vault" || failed[0].Provider != "luks2" || failed[0].Err != boom {
+		t.Fatalf("failed[0] = %+v, want {vault luks2 boom}", failed[0])
+	}
+	if failed[1].Pool != "bulk" || failed[1].Provider != "dir" {
+		t.Fatalf("failed[1] = %+v, want pool=bulk provider=dir", failed[1])
+	}
+}
+
+// TestFailedOpens_NoFailuresIsEmpty proves FailedOpens returns an empty
+// slice, not nil-vs-empty ambiguity that would trip a caller checking
+// len(failed) == 0, when every row opened.
+func TestFailedOpens_NoFailuresIsEmpty(t *testing.T) {
+	rows := []OpenedVolumePool{
+		{Name: "fast", Provider: "dir", Vol: openRealDirVolume(t, "fast")},
+	}
+	if failed := FailedOpens(rows); len(failed) != 0 {
+		t.Fatalf("len(failed) = %d, want 0", len(failed))
+	}
+}

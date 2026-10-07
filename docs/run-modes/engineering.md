@@ -1,6 +1,6 @@
 # Run Modes — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -440,11 +440,11 @@ in-process and on the wire; `pkg/server/standalone_gate.go` passes
   refusal, and `StartLocalLeaseExpiry` deleting an expired lease's key.
 - **Parity, not refusal, is the important property now.**
   `sdk/go/conformance`'s `TestCoordinationFamilies_SameOnStandaloneAndRaft`
-  runs one suite against a standalone memory node, a standalone pebble node and
-  a raft node on all six transports: lease lifecycle, lease expiry deleting its
-  key (proves the sweeper is wired), prefix watch, revision resume,
-  cancellation, lock lifecycle. `TestCoordinationFamilies_FileBackendServesWatchOnly`
-  pins the file-backend row. Before this change every standalone cell failed with
+  runs one suite against a standalone memory, file and pebble node and a raft
+  node on all six transports (and an objstore node embedded): lease lifecycle,
+  lease expiry deleting its key (proves the sweeper is wired), prefix watch,
+  revision resume, cancellation, lock lifecycle. Every backend composes the
+  MVCC engine. Before this change every standalone cell failed with
   `requires mode: raft`.
 - **Restart**: `sdk/go/node`'s `TestStandaloneNode_LeaseAndLockSurviveRestart`
   closes a standalone pebble node holding a lease and a lock and reopens it.
@@ -459,7 +459,8 @@ in-process and on the wire; `pkg/server/standalone_gate.go` passes
   `Close`; asserting nil afterwards on a node that never populated them would
   be vacuous.
 - **Integration**: the standalone stage runs the standalone composition; the
-  cluster stage runs raft, and is **not currently wired into CI**.
+  cluster stage runs raft and runs in CI as the `integration-cluster` job
+  (`.github/workflows/ci.yml`), required by `ci-gate`.
 
 ## Observability
 

@@ -1,7 +1,7 @@
 # Volume Pools — Architecture
 
-> **Status: APPROVED — ruled 2026-10-04; Phase 1 build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-04
+> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
+> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
 >
 > This folder is the requirements contract for named volume pools. Every
 > decision below is ruled; see [Decisions](#decisions-ruled-2026-10-04).
@@ -246,17 +246,34 @@ not built now.
 Every node that later serves the tenant joins the assignment's `path` onto its
 own `fast` mount, after checking that the result is strictly inside the mount.
 
-**Boot.** Each node opens every pool its configuration maps, through that
-pool's provider, before it restores tenants. Opening a `Lockable` volume maps
-the device without unlocking it -- that only happens on unseal, see
-"Encrypted volumes and the cluster seal" above. A pool whose volume does not
-open (a missing mount, an absent device, an unregistered provider) is
-reported as unhealthy. The node still boots, and every tenant assigned to
-that pool is **refused on this node** with a typed error. Its data is not
-opened, and the rest are served. This matches the rule that one refused
-tenant never takes the others down. A pool mapped to a `Lockable` provider
-whose volume opened but has not yet been unlocked (the node is still sealed)
-reports `StateLocked` and refuses its tenants the same way.
+**Boot (decision D10, ruled 2026-10-06).** Each node opens every pool its
+configuration maps, through that pool's provider, before it restores
+tenants. Opening a `Lockable` volume maps the device without unlocking it --
+that only happens on unseal, see "Encrypted volumes and the cluster seal"
+above.
+
+A pool whose volume does not open (a missing mount, an absent device, an
+unregistered provider) fails `qrdbd start` outright by **default**: the
+daemon never serves with some of its tenants' data unopened and silently
+unreachable. The error is typed (`*volume.OpenAtBootError`), names every
+inaccessible pool and the reason, and the process exits non-zero before any
+database or tenant store opens.
+
+The operator opts into the OLD behavior with `--allow-degraded-volume-boot`
+(or its config-file equivalent, `storage.allow_degraded_volume_boot`): with
+it set, a pool that fails to open is reported as unhealthy, the node still
+boots, and every tenant assigned to that pool is **refused on this node**
+with a typed error (`*volume.PoolUnavailableError`, classified `Unavailable`
+on every transport -- see [engineering.md](engineering.md#error-semantics)).
+Its data is not opened, and the rest are served. This matches the rule that
+one refused tenant never takes the others down. Each skipped pool is logged
+at ERROR, reported in this node's health (`qrdb volume-pool get`) and
+exported as `qrdb_volume_pool_ready{pool}` (0), so the degradation stays
+visible and is never silent. A pool mapped to a `Lockable` provider whose
+volume opened but has not yet been unlocked (the node is still sealed)
+reports `StateLocked` and refuses its tenants the same way, under either
+boot mode -- `StateLocked` is a normal, transient part of the unseal
+sequence, not an open failure the default's fail-fast check reacts to.
 
 **Raft placement.** The placement scheduler places a `raft` tenant's replicas
 only on nodes whose latest health report shows the tenant's pool healthy. A
@@ -460,3 +477,15 @@ above, which this entry only summarizes.
 - **D9. Records written by the interim fix (`{pool, slot}`): (a) refuse
   them like path records** -- the tenant is deleted and re-created --
   **per the no-backward-compatibility ruling.** Approved as written.
+- **D10. Boot behavior when a volume or volume pool cannot be opened
+  (ruled 2026-10-06): fail loudly by default, with an explicit opt-in to
+  the old degraded-continue behavior.** Verbatim: "volumes that are
+  inaccessible at boot should fail loudly. we should offer a flag that
+  allows the admin to ignore the error and continue starting the
+  databases and volumes it can, however." This supersedes this folder's
+  earlier framing of invariant 6 ("boot never fails because of a pool")
+  as the *only* behavior -- it is now the behavior under
+  `--allow-degraded-volume-boot` /
+  `storage.allow_degraded_volume_boot`, not the unconditional default.
+  See ["Boot"](#data-flow) above and
+  [engineering.md](engineering.md#invariants) invariant 6.

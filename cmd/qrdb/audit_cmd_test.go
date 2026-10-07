@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -441,5 +442,145 @@ func TestPrintAuditVerifyResult_EveryField(t *testing.T) {
 		if strings.Contains(bare.String(), absent) {
 			t.Errorf("an empty field printed %q: %q", absent, bare.String())
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// audit query/verify --replicated
+// ---------------------------------------------------------------------------
+
+// fakeReplicatedInner implements audit.AuditLogger and
+// service.TenantChainVerifier, standing in for a *service.ReplicatedLogger.
+type fakeReplicatedInner struct {
+	mockAuditLogger
+	verifyReport *audit.ChainContinuityReport
+}
+
+func (f *fakeReplicatedInner) VerifyTenantChain(context.Context, string) (*audit.ChainContinuityReport, error) {
+	return f.verifyReport, nil
+}
+
+// executeAuditCmdReplicated builds an embedded SDK client with both a
+// node-local logger and a replicated audit sink wired, and executes the
+// "audit" command tree. The embedded transport binds no identity, so the
+// caller always resolves to the system tenant (platformEnabled governs it).
+func executeAuditCmdReplicated(t *testing.T, logger audit.AuditLogger, replicatedAudit *service.OptInAuditLogger, args ...string) (string, error) {
+	t.Helper()
+
+	tr, err := embedded.New(&noopKVService{}, newMockAdminService(),
+		embedded.WithAuditLogger(logger),
+		embedded.WithReplicatedAuditLogger(replicatedAudit),
+	)
+	if err != nil {
+		t.Fatalf("embedded.New: %v", err)
+	}
+	sdkClient, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = sdkClient.Close() })
+
+	oldClient := client
+	oldWriter := outputWriter
+	t.Cleanup(func() {
+		client = oldClient
+		outputWriter = oldWriter
+	})
+
+	client = sdkClient
+	var buf bytes.Buffer
+	outputWriter = &buf
+
+	cmd := newAuditCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(os.Stderr)
+	cmd.SetArgs(args)
+
+	execErr := cmd.ExecuteContext(context.Background())
+	return buf.String(), execErr
+}
+
+// fakePlatformEntitlement answers ReplicatedAuditEnabled unconditionally;
+// the embedded transport's unbound caller resolves to the system tenant,
+// whose posture OptInAuditLogger reads from platformEnabled, not this
+// lookup -- so its answer is never consulted in these tests, only its
+// presence (a nil AuditEntitlementLookup would panic for a non-system
+// caller).
+type fakePlatformEntitlement struct{}
+
+func (fakePlatformEntitlement) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func TestAuditQuery_Replicated_ReadsReplicatedLoggerNotNodeLocal(t *testing.T) {
+	nodeLocal := &mockAuditLogger{queryFn: func(context.Context, audit.Filter) (*audit.Page, error) {
+		t.Fatal("node-local logger must not be queried when --replicated is set")
+		return nil, nil
+	}}
+	inner := &fakeReplicatedInner{mockAuditLogger: mockAuditLogger{
+		queryFn: func(_ context.Context, f audit.Filter) (*audit.Page, error) {
+			return &audit.Page{Events: []audit.AuditEvent{{Actor: "op"}}, Total: -1}, nil
+		},
+	}}
+	replicated := service.NewOptInAuditLogger(inner, fakePlatformEntitlement{}, true)
+
+	output, err := executeAuditCmdReplicated(t, nodeLocal, replicated, "query", "--replicated")
+	if err != nil {
+		t.Fatalf("audit query --replicated: %v", err)
+	}
+	if !strings.Contains(output, "op") {
+		t.Errorf("output missing the replicated logger's event, got: %q", output)
+	}
+}
+
+func TestAuditQuery_Replicated_NotEntitled(t *testing.T) {
+	inner := &fakeReplicatedInner{}
+	replicated := service.NewOptInAuditLogger(inner, fakePlatformEntitlement{}, false)
+
+	output, err := executeAuditCmdReplicated(t, &mockAuditLogger{}, replicated, "query", "--replicated")
+	if err != nil {
+		t.Fatalf("audit query --replicated: %v", err)
+	}
+	if !strings.Contains(output, "Total: -1") {
+		t.Errorf("output missing Total: -1 for a not-entitled tenant, got: %q", output)
+	}
+}
+
+func TestAuditVerify_Replicated_Verified(t *testing.T) {
+	inner := &fakeReplicatedInner{verifyReport: &audit.ChainContinuityReport{Verified: true, Records: 4, Head: 4, Low: 1, Genesis: true}}
+	replicated := service.NewOptInAuditLogger(inner, fakePlatformEntitlement{}, true)
+
+	output, err := executeAuditCmdReplicated(t, &mockAuditLogger{}, replicated, "verify", "--replicated")
+	if err != nil {
+		t.Fatalf("audit verify --replicated: %v", err)
+	}
+	for _, want := range []string{"Verified: true", "Records: 4", "Head: 4", "Low: 1", "Genesis: true"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q, got: %q", want, output)
+		}
+	}
+}
+
+func TestAuditVerify_Replicated_NotEntitledIsAnError(t *testing.T) {
+	inner := &fakeReplicatedInner{}
+	replicated := service.NewOptInAuditLogger(inner, fakePlatformEntitlement{}, false)
+
+	_, err := executeAuditCmdReplicated(t, &mockAuditLogger{}, replicated, "verify", "--replicated")
+	if err == nil {
+		t.Fatal("expected an error for a tenant not entitled to the replicated chain")
+	}
+}
+
+func TestAuditVerify_Replicated_Tampered(t *testing.T) {
+	inner := &fakeReplicatedInner{verifyReport: &audit.ChainContinuityReport{Verified: false, Reason: "broken link at sequence 3"}}
+	replicated := service.NewOptInAuditLogger(inner, fakePlatformEntitlement{}, true)
+
+	output, err := executeAuditCmdReplicated(t, &mockAuditLogger{}, replicated, "verify", "--replicated")
+	var tampered *AuditChainTamperedError
+	if !errors.As(err, &tampered) {
+		t.Fatalf("expected *AuditChainTamperedError, got %v", err)
+	}
+	if !strings.Contains(output, "Verified: false") || !strings.Contains(output, "broken link at sequence 3") {
+		t.Errorf("output missing the tamper report, got: %q", output)
 	}
 }

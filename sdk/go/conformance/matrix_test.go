@@ -601,8 +601,7 @@ func assertEmptyKeyRefusedSafely(t *testing.T, c cell, cl clients) {
 // matrix, and pins it as a deviation rather than letting it pass unnoticed.
 //
 // create_revision and mod_revision compares need MVCC revisions to compare
-// against. The file engine keeps none, nor does any raft sm_type but the
-// default MVCC store (their transactions compare on value and version, as the
+// against. No raft sm_type but the default MVCC store keeps any (their transactions compare on value and version, as the
 // daemon's pebble state machine does), and they refuse them explicitly rather
 // than reading revision 0 — because a client written for the MVCC engine does
 // read-then-CAS on a revision, would read 0 here, compare equal, and commit, so

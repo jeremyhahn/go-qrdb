@@ -295,7 +295,7 @@ func (n *node) cli(as *qrdbdharness.KeyPair, verb ...string) (string, error) {
 // size in targets.
 func (n *node) measureMode(mode string, targets []int) ([]result, error) {
 	name := "sqlpk_" + mode
-	if _, err := n.cli(n.client, "database", "create", name, "--engine", "kv", "--backend", "pebble", "--sql-concurrency", mode); err != nil {
+	if _, err := n.cli(n.client, "database", "create", name, "--backend", "pebble", "--sql-concurrency", mode); err != nil {
 		return nil, err
 	}
 	if _, err := n.cli(n.client, "database", "update-protocol", name, "--mysql"); err != nil {

@@ -362,7 +362,19 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	tenantID := fmt.Sprintf("rr-%s-%d", proto.name, time.Now().UnixNano())
 	createTenant(t, node, proto, tenantID, "Reconcile Tenant", "prefix", false)
 
-	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "list", "--tenant-id", tenantID)
+	// The system tenant's admin may not act on another tenant's roles, so
+	// the new tenant's own administrator drives every call that names it.
+	cred, ok := lookupTenantAdminCred(tenantID)
+	if !ok {
+		t.Fatalf("[%s] no registered admin credential for tenant %s", proto.name, tenantID)
+	}
+	tenantConn := tenantCLIArgsForProto(node, proto, cred.certPath, cred.keyPath)
+	// Reconciling a tenant's built-in roles needs roles:create, which is
+	// Security Officer-exclusive.
+	selfAssignTenantSO(t, node.restPort, tenantID,
+		mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second))
+
+	out, err = runQRDB(t, node.cli, tenantConn, "--output", "json", "roles", "list", "--tenant-id", tenantID)
 	if err != nil {
 		t.Fatalf("[%s] roles list --tenant %s immediately after create: %v\noutput: %s", proto.name, tenantID, err, out)
 	}
@@ -382,7 +394,7 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		}
 	}
 
-	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
+	out, err = runQRDB(t, node.cli, tenantConn, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
 	if err != nil {
 		t.Fatalf("[%s] roles reconcile --tenant %s immediately after create: %v\noutput: %s", proto.name, tenantID, err, out)
 	}
@@ -399,7 +411,7 @@ func testRolesReconcileOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 
 	// A second, immediate call must converge to the SAME empty report too:
 	// idempotent either way.
-	out, err = runCLIProto(t, node, proto, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
+	out, err = runQRDB(t, node.cli, tenantConn, "--output", "json", "roles", "reconcile", "--tenant", tenantID)
 	if err != nil {
 		t.Fatalf("[%s] second roles reconcile --tenant %s: %v\noutput: %s", proto.name, tenantID, err, out)
 	}

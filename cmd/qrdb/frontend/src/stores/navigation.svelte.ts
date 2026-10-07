@@ -49,8 +49,9 @@ export type AdminView =
 
 /**
  * The set of per-database tool views.
- * Availability of individual tools depends on the database engine and
- * server capability flags; callers are responsible for filtering.
+ * Every database exposes every compiled-in engine; availability of individual
+ * tools depends on server capability flags, and callers are responsible for
+ * filtering.
  */
 export type DbTool =
     | 'data'
@@ -61,6 +62,8 @@ export type DbTool =
     | 'watch'
     | 'leases'
     | 'locks'
+    | 'timeseries'
+    | 'vector'
     | 'sql'
     | 'db-settings';
 
@@ -109,6 +112,8 @@ export const DB_TOOL_LABELS: Readonly<Record<DbTool, string>> = {
     'watch': 'Watch',
     'leases': 'Leases',
     'locks': 'Locks',
+    'timeseries': 'Time Series',
+    'vector': 'Vectors',
     'sql': 'SQL Browser',
     'db-settings': 'Settings',
 } as const;

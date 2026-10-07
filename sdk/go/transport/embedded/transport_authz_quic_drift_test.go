@@ -104,6 +104,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"admin.StopShard":               "StopShard",
 	"audit.Query":                   "AuditClient.QueryAudit",
 	"audit.VerifyChain":             "AuditClient.VerifyChain",
+	"audit.VerifyReplicatedChain":   "AuditClient.VerifyReplicatedChain",
 	"authfactor.Challenge":          "ChallengeFactor",
 	"authfactor.Enroll":             "EnrollFactor",
 	"authfactor.List":               "ListFactors",

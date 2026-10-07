@@ -135,10 +135,20 @@ func startDataRootTenantNode(t *testing.T, bin, cli, logPrefix string) (adminPor
 // OU=tenantID, see (*testCA).generateClientCertForTenant) the permissions
 // needed to create databases and do KV I/O, and returns CLI connArgs bound to
 // that identity.
-func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, sysClient *http.Client, tenantID string) []string {
+func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, tenantAdminCertPath, tenantAdminKeyPath, tenantID string) []string {
 	t.Helper()
 
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	// Authenticate as the tenant's OWN admin (the CSR-provisioned identity
+	// tenant create just bound), not the system admin: the system tenant can
+	// no longer provision records inside another tenant's IAM at all (owner
+	// ruling, 2026-10-01: ScopeSelf has no system-tenant lift). The tenant's
+	// built-in Admin role cannot create a NEW role (RolesCreate is
+	// SO-exclusive), so it self-assigns its own pre-seeded SO role first,
+	// exactly like tenant_isolation_cli_test.go's provisionTenantIdentityFor.
+	adminClient := mtlsHTTPClientFromFiles(t, ca, tenantAdminCertPath, tenantAdminKeyPath, 15*time.Second)
+	selfAssignTenantSO(t, adminPort, tenantID, adminClient)
+
+	roleBody, roleStatus := iraftAPIPost(t, adminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 		map[string]interface{}{
 			"name":      "db-admin",
@@ -159,7 +169,7 @@ func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, sysClie
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, tenantID)
-	createBoundUser(t, sysClient, adminPort,
+	createBoundUser(t, adminClient, adminPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 		tenantCertPath)
 	return restConnArgs(ca, tenantCertPath, tenantKeyPath, adminPort)
@@ -247,17 +257,19 @@ func TestCLI_TenantCreate_PoolPlacement_Volume_PlacesDataAndEncrypts(t *testing.
 	cli := buildCLIBinary(t)
 
 	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, cli, "[tenant-pool-volume] ")
-	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	tenantID := fmt.Sprintf("vol-pool-%d", time.Now().UnixNano())
 	tenantRoot := filepath.Join(poolDir, tenantID)
 	adminArgs := adminCSRArgsForDataRootTenant(t, cli, sysConnArgs, tenantID+"-admin")
+	adminKeyPath := filepath.Join(filepath.Dir(adminArgs[3]), "key.pem")
+	adminCertDir := t.TempDir()
 
 	out, err := runQRDB(t, cli, sysConnArgs, append([]string{"--output", "json", "tenant", "create",
 		"--id", tenantID,
 		"--name", "Volume Pool Tenant",
 		"--isolation-type", "volume",
 		"--barrier-auto-unseal",
+		"--out", adminCertDir,
 	}, adminArgs...)...)
 	if err != nil {
 		t.Fatalf("tenant create: %v\noutput: %s", err, out)
@@ -274,10 +286,11 @@ func TestCLI_TenantCreate_PoolPlacement_Volume_PlacesDataAndEncrypts(t *testing.
 		t.Fatalf("barrier subdirectory not found under %q: %v", tenantRoot, statErr)
 	}
 
-	tenantConnArgs := provisionTenantCLIIdentity(t, ca, adminPort, sysClient, tenantID)
+	adminCertPath := filepath.Join(adminCertDir, "admin-cert.pem")
+	tenantConnArgs := provisionTenantCLIIdentity(t, ca, adminPort, adminCertPath, adminKeyPath, tenantID)
 
 	dbName := "appdata"
-	out, err = runQRDB(t, cli, tenantConnArgs, "database", "create", dbName, "--engine", "kv", "--backend", "pebble")
+	out, err = runQRDB(t, cli, tenantConnArgs, "database", "create", dbName, "--backend", "pebble")
 	if err != nil {
 		t.Fatalf("tenant database create: %v\noutput: %s", err, out)
 	}
@@ -310,17 +323,19 @@ func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T)
 	cli := buildCLIBinary(t)
 
 	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, cli, "[tenant-pool-raft] ")
-	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
 	tenantID := fmt.Sprintf("raft-pool-%d", time.Now().UnixNano())
 	tenantRoot := filepath.Join(poolDir, tenantID)
 	adminArgs := adminCSRArgsForDataRootTenant(t, cli, sysConnArgs, tenantID+"-admin")
+	adminKeyPath := filepath.Join(filepath.Dir(adminArgs[3]), "key.pem")
+	adminCertDir := t.TempDir()
 
 	out, err := runQRDB(t, cli, sysConnArgs, append([]string{"--output", "json", "tenant", "create",
 		"--id", tenantID,
 		"--name", "Raft Pool Tenant",
 		"--isolation-type", "raft",
 		"--barrier-auto-unseal",
+		"--out", adminCertDir,
 	}, adminArgs...)...)
 	if err != nil {
 		t.Fatalf("tenant create: %v\noutput: %s", err, out)
@@ -337,7 +352,8 @@ func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T)
 		t.Fatalf("barrier subdirectory not found under %q: %v", tenantRoot, statErr)
 	}
 
-	tenantConnArgs := provisionTenantCLIIdentity(t, ca, adminPort, sysClient, tenantID)
+	adminCertPath := filepath.Join(adminCertDir, "admin-cert.pem")
+	tenantConnArgs := provisionTenantCLIIdentity(t, ca, adminPort, adminCertPath, adminKeyPath, tenantID)
 
 	dbName := "orders"
 	out, err = runQRDB(t, cli, tenantConnArgs, "--output", "json", "database", "create", dbName,

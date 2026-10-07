@@ -673,7 +673,13 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		}
 		return nil
 	case permission.ScopeSelf:
-		if inSystem || identity.TenantID == targetTenantID {
+		// No system-tenant lift (owner ruling, 2026-10-01: "the inSystem ||
+		// arm ... is deleted under every policy" —
+		// docs/multi-tenancy/architecture.md "Strict tenant isolation"). A
+		// ScopeSelf permission is now identical in behavior to
+		// ScopeSelfStrict; the two scopes remain distinct types pending a
+		// follow-on cleanup to fold them into one.
+		if identity.TenantID == targetTenantID {
 			return nil
 		}
 		return &PermissionDeniedError{

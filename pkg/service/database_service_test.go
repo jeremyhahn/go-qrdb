@@ -45,7 +45,6 @@ func newTestDatabaseService(t *testing.T) DatabaseServicer {
 func testDBConfig(name string) database.DatabaseConfig {
 	return database.DatabaseConfig{
 		Name:    name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	}
 }
@@ -61,9 +60,6 @@ func TestDatabaseService_Create(t *testing.T) {
 	if info.Name != "mydb" {
 		t.Errorf("Info.Name = %q, want %q", info.Name, "mydb")
 	}
-	if info.Engine != database.EngineKV {
-		t.Errorf("Info.Engine = %q, want %q", info.Engine, database.EngineKV)
-	}
 	if info.Backend != database.BackendMemory {
 		t.Errorf("Info.Backend = %q, want %q", info.Backend, database.BackendMemory)
 	}
@@ -77,7 +73,6 @@ func TestDatabaseService_Create_InvalidConfig(t *testing.T) {
 
 	cfg := database.DatabaseConfig{
 		Name:    "",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	}
 	_, err := svc.Create(cfg)
@@ -105,9 +100,6 @@ func TestDatabaseService_Get(t *testing.T) {
 	}
 	if got.Name != created.Name {
 		t.Errorf("Get().Name = %q, want %q", got.Name, created.Name)
-	}
-	if got.Engine != created.Engine {
-		t.Errorf("Get().Engine = %q, want %q", got.Engine, created.Engine)
 	}
 	if got.Backend != created.Backend {
 		t.Errorf("Get().Backend = %q, want %q", got.Backend, created.Backend)

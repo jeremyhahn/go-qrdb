@@ -1,6 +1,6 @@
 # RAG — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Command group: `qrdb rag` — ingest documents, run semantic queries, and manage
 the document store. All verbs accept the root persistent flags documented in

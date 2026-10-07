@@ -19,6 +19,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -52,6 +53,10 @@ func TestSuite_RoundTripEveryKEM(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s, err := LookupSuite(name)
 			if err != nil {
+				var notApproved *SuiteNotApprovedError
+				if errors.As(err, &notApproved) {
+					t.Skipf("%s is not FIPS 140-3 approved; refused by LookupSuite under GODEBUG=fips140=only, see docs/seal/fips140-mode.md", name)
+				}
 				t.Fatal(err)
 			}
 			sk, err := s.GenerateKey()
@@ -92,9 +97,13 @@ func TestSuite_RoundTripEveryKEM(t *testing.T) {
 // TestSuite_OpenRefusesAKeyFromAnotherKEM pins that a suite never decrypts
 // with a key of a different KEM, instead of failing opaquely deeper in.
 func TestSuite_OpenRefusesAKeyFromAnotherKEM(t *testing.T) {
+	// P-384 vs. P-256 rather than X25519 vs. P-256: both are FIPS 140-3
+	// approved, so this proves the generic KEM-identity mismatch (Open
+	// compares sk.KEM().ID() against the suite's own) without depending on
+	// a KEM that GODEBUG=fips140=only refuses to even generate a key for.
 	p256s, _ := LookupSuite(KEMP256)
-	x25519s, _ := LookupSuite(KEMX25519)
-	sk, err := x25519s.GenerateKey()
+	p384s, _ := LookupSuite(KEMP384)
+	sk, err := p384s.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,21 +153,44 @@ func TestSuite_RejectsBadInput(t *testing.T) {
 // types can be sealed to, and that RSA and Ed25519 are refused rather than
 // silently mapped.
 func TestRecipientFromPublicKey_MapsCurvesAndRefusesTheRest(t *testing.T) {
-	p256, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	p521, _ := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	x, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
-	edPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p521, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rk, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	cases := []struct {
+	type recipientCase struct {
 		name string
 		pub  any
 		want string
-	}{
+	}
+	cases := []recipientCase{
 		{"ecdsa p256", &p256.PublicKey, KEMP256},
 		{"ecdsa p384", &p384.PublicKey, KEMP384},
-		{"ecdh x25519", x.PublicKey(), KEMX25519},
+	}
+	// X25519 key generation is itself refused under GODEBUG=fips140=only
+	// (crypto/ecdh), so this positive case is unreachable there; see
+	// docs/seal/fips140-mode.md "Skipped tests under fips140=only". It is
+	// included whenever generation succeeds, which is every other build.
+	if x, xerr := ecdh.X25519().GenerateKey(rand.Reader); xerr == nil {
+		cases = append(cases, recipientCase{"ecdh x25519", x.PublicKey(), KEMX25519})
+	} else if !fips140.Enforced() {
+		t.Fatalf("ecdh.X25519().GenerateKey: %v", xerr)
 	}
 	for _, tc := range cases {
 		got, raw, err := RecipientFromPublicKey(tc.pub)
@@ -179,7 +211,10 @@ func TestRecipientFromPublicKey_MapsCurvesAndRefusesTheRest(t *testing.T) {
 		}
 	}
 
-	der, _ := x509.MarshalPKIXPublicKey(&p384.PublicKey)
+	der, err := x509.MarshalPKIXPublicKey(&p384.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got, _, err := RecipientFromPKIX(der); err != nil || got != KEMP384 {
 		t.Fatalf("RecipientFromPKIX = %q, %v", got, err)
 	}
@@ -191,21 +226,38 @@ func TestRecipientFromPublicKey_MapsCurvesAndRefusesTheRest(t *testing.T) {
 // TestPrivateKeyFor_EnforcesTheSuite pins the private-key side of the same
 // mapping, including the refusal to use a P-384 key under the P-256 suite.
 func TestPrivateKeyFor_EnforcesTheSuite(t *testing.T) {
-	p256, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	x, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	edPub, edPriv, _ := ed25519.GenerateKey(rand.Reader)
-	_ = edPub
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	for _, tc := range []struct {
+	type suiteCase struct {
 		suite string
 		priv  any
 		pub   any
-	}{
+	}
+	cases := []suiteCase{
 		{KEMP256, p256, &p256.PublicKey},
 		{KEMP384, p384, &p384.PublicKey},
-		{KEMX25519, x, x.PublicKey()},
-	} {
+	}
+	// X25519 key generation is itself refused under GODEBUG=fips140=only,
+	// so this case is unreachable there; see docs/seal/fips140-mode.md
+	// "Skipped tests under fips140=only".
+	if x, xerr := ecdh.X25519().GenerateKey(rand.Reader); xerr == nil {
+		cases = append(cases, suiteCase{KEMX25519, x, x.PublicKey()})
+	} else if !fips140.Enforced() {
+		t.Fatalf("ecdh.X25519().GenerateKey: %v", xerr)
+	}
+
+	for _, tc := range cases {
 		sk, err := PrivateKeyFor(tc.suite, tc.priv)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.suite, err)

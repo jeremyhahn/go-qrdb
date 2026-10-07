@@ -650,6 +650,13 @@ func TestRunStart_DynamicMembership_StartsOnPebble(t *testing.T) {
 func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 	poolPath := filepath.Join(dir, "pool0")
+	// The pool's mount must exist and open cleanly: this test exercises the
+	// shutdown path for a VOLUME POOL THAT IS SERVING, not the default
+	// fail-loud boot behavior for one that failed to open (owner ruling
+	// 2026-10-06, see TestRunStart_VolumePoolConfigured_DefaultFailsLoud).
+	if err := os.MkdirAll(poolPath, 0o700); err != nil {
+		t.Fatalf("MkdirAll(poolPath): %v", err)
+	}
 
 	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)

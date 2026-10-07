@@ -350,8 +350,10 @@ keep-alive starts returning not-found does anyway.
   by waiting — the repo rule and the only way these tests stay deterministic on
   a loaded runner.
 - **Integration**: lease parity across transports in the standalone stage.
-  Multi-node expiry (leader change mid-lease) belongs to the cluster stage,
-  which is **not currently wired into CI**.
+  Multi-node expiry (leader change mid-lease) belongs to the cluster stage
+  (`make integration-test-cluster`), which runs in CI as the
+  `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  `ci-gate`.
 - **Fault injection**: the leader seam allows a leadership change to be forced
   between grant and expiry.
 
@@ -405,3 +407,7 @@ the injectable clock seam, which this test is a named consumer of.
   [../audit/](../audit/).
 - Cascade deletes appear as ordinary delete events on
   [../watch/](../watch/) streams, which is how a consumer learns a session ended.
+
+## Integration testing
+
+`make integration-test-leases` runs this feature's self-spawned integration tests: `lease_binding_test.go` and `lease_cli_test.go`. The per-transport accounting, including every gap, is the `leases` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

@@ -171,7 +171,7 @@ func (s *raftE2EStack) createRaftTenantDB(t *testing.T, tenantID, db string) (st
 		t.Fatalf("CreateTenant(%s): %v", tenantID, err)
 	}
 	info, err := s.dbSvc.CreateForTenant(tenant.WithTenantID(ctx, tenantID),
-		database.DatabaseConfig{Name: db, Engine: database.EngineKV})
+		database.DatabaseConfig{Name: db})
 	if err != nil {
 		t.Fatalf("CreateForTenant(%s/%s): %v", tenantID, db, err)
 	}

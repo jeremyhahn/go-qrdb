@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Command group: `qrdb dek` — the caller tenant's data encryption keyring. All
 verbs accept the root persistent flags documented in
@@ -15,15 +15,23 @@ Ciphertexts and associated data are base64 on the command line.
 
 ## `qrdb dek status`
 
-Show the keyring's versions — never key material.
+Show the keyring's versions — never key material. PROVIDER and KEY REF name
+the key-wrap KEK that wrapped each version's key, for audit; both are
+empty for a retired version. See
+[key-wrapping/architecture.md](../key-wrapping/architecture.md).
 
 ```bash
 qrdb dek status
 # tenant acme: AES-256-GCM, current v2
-# VERSION  STATE    CREATED               RETIRED
+# VERSION  STATE    CREATED               RETIRED               PROVIDER  KEY REF
 # 1        retired  2026-10-01T12:00:00Z  2026-10-01T13:00:00Z
-# 2        current  2026-10-01T12:30:00Z
+# 2        current  2026-10-01T12:30:00Z                        software  acme
 ```
+
+The built-in `"software"` provider requires `qrdbd start --dek-key-dir
+<dir>` with one 32-byte key file per tenant, named after the tenant's ID
+(see [key-wrapping/cli.md](../key-wrapping/cli.md)); without it, `dek
+encrypt`/`dek rotate` refuse to mint a key.
 
 ## `qrdb dek rotate`
 

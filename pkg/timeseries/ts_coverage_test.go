@@ -20,8 +20,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"testing"
-
-	"github.com/cockroachdb/pebble/v2"
 )
 
 // ---------------------------------------------------------------------------
@@ -165,8 +163,8 @@ func TestStorage_GetRetentionPolicy_CorruptData(t *testing.T) {
 	// Write corrupt retention policy data (fewer than 17 bytes required).
 	key := []byte(KeyPrefixRetention + "corrupt.metric")
 	corruptData := []byte{0x01, 0x02} // too short for a valid policy
-	if err := s.DB().Set(key, corruptData, pebble.Sync); err != nil {
-		t.Fatalf("DB.Set corrupt data: %v", err)
+	if err := s.stg.Set(key, corruptData); err != nil {
+		t.Fatalf("stg.Set corrupt data: %v", err)
 	}
 
 	_, err := s.GetRetentionPolicy("corrupt.metric")
@@ -201,5 +199,5 @@ func TestSetRetentionPolicy_NilPolicy(t *testing.T) {
 
 	// If it doesn't panic, it should at minimum not return nil error
 	// when given a nil pointer (encodeRetentionPolicy dereferences *p).
-	_ = s.SetRetentionPolicy("some.metric", nil)
+	_ = setRetentionPolicy(t, s, "some.metric", nil)
 }

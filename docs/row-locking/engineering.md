@@ -314,7 +314,6 @@ Per database — YAML, at creation, and through `UpdateDatabaseSQL`:
 ```yaml
 databases:
   - name: app
-    engine: kv
     backend: pebble
     sql:
       concurrency: pessimistic   # optimistic (default) | pessimistic
@@ -508,3 +507,7 @@ mean.
 - `sdk/go/gorm`: GORM's `TestConcurrentMany2ManyAssociation` scenario (one user,
   concurrent many-to-many `Append`s) passes in pessimistic mode, where the
   optimistic default loses appends to 1213.
+
+## Integration testing
+
+`make integration-test-row-locking` runs this feature's self-spawned integration tests: `sql_row_lock_test.go`, over the MySQL wire only. The per-transport accounting, including every gap, is the `row-locking` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

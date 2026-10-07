@@ -117,7 +117,7 @@ func DatabaseConfinement(t *testing.T, start DatabaseStartFunc) {
 					t.Errorf("%s on acme's database = %v, want NotFound, as for a missing database", verb, err)
 				}
 			}
-			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Backend: database.BackendMemory}); err != nil {
 				t.Fatalf("create the system tenant's own database: %v", err)
 			}
 			// The list names the caller's own databases and only those.

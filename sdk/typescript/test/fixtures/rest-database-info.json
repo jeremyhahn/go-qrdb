@@ -1,7 +1,6 @@
 {
   "tenantId": "acme",
   "name": "orders",
-  "engine": "kv",
   "backend": "raft",
   "status": "open",
   "protocol": {

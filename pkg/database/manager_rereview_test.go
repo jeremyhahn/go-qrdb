@@ -35,7 +35,7 @@ func TestManager_Create_WithoutAReclaimerRefusesADroppedName(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewManager(nil, dir)
 	mgr.SetKeyspaceReclaimer(&spyReclaimer{})
-	_, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 	require.NoError(t, mgr.Close())
@@ -43,7 +43,7 @@ func TestManager_Create_WithoutAReclaimerRefusesADroppedName(t *testing.T) {
 	restarted := NewManager(nil, dir)
 	t.Cleanup(func() { _ = restarted.Close() })
 	require.NoError(t, restarted.OpenAll())
-	_, err = restarted.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err = restarted.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.Error(t, err, "a dropped name was created with no way to mark it live")
 	var required *ReclaimerRequiredError
 	require.ErrorAs(t, err, &required)
@@ -54,7 +54,7 @@ func TestManager_Create_WithoutAReclaimerRefusesADroppedName(t *testing.T) {
 	// Once the data plane is attached the create succeeds, and the record of
 	// the drop is cleared with it.
 	restarted.SetKeyspaceReclaimer(&spyReclaimer{})
-	_, err = restarted.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err = restarted.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	dropped, err := restarted.droppedHere("orders")
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestManager_Create_WithoutAReclaimerRefusesADroppedName(t *testing.T) {
 func TestManager_Create_WithoutAReclaimerCreatesANeverDroppedName(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	_, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 }
 
@@ -111,7 +111,7 @@ func TestManager_GetIgnoringFence(t *testing.T) {
 func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 	dir := t.TempDir()
 	raftCfg := func(name string) DatabaseConfig {
-		return DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: &DatabaseRaftConfig{ClusterMode: "none"}}
+		return DatabaseConfig{Name: name, Backend: BackendMemory, Raft: &DatabaseRaftConfig{ClusterMode: "none"}}
 	}
 
 	replicated := kvstore.NewMemoryKVStore()
@@ -147,7 +147,7 @@ func TestManager_Create_FailureRemovesWhatItCreated(t *testing.T) {
 	external := filepath.Join(root, "external", "orders-data")
 	failing.err = os.ErrClosed
 
-	_, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendFile, DataDir: external})
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendFile, DataDir: external})
 	require.Error(t, err)
 
 	_, statErr := os.Stat(mgr.dbDir("orders"))
@@ -166,7 +166,7 @@ func TestManager_Create_FailureKeepsAPreexistingDataDir(t *testing.T) {
 	external := filepath.Join(root, "external", "orders-data")
 	require.NoError(t, os.MkdirAll(external, 0o750))
 
-	_, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendFile, DataDir: external})
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendFile, DataDir: external})
 	require.Error(t, err)
 	_, statErr := os.Stat(external)
 	assert.NoError(t, statErr, "a pre-existing data directory must survive a failed create")
@@ -180,7 +180,7 @@ func TestManager_Provision_ClearsTheTombstoneOfADroppedName(t *testing.T) {
 	spy := &spyReclaimer{}
 	mgr := NewManager(nil, dir)
 	mgr.SetKeyspaceReclaimer(spy)
-	cfg := DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory}
+	cfg := DatabaseConfig{Name: "orders", Backend: BackendMemory}
 	_, err := mgr.Create(cfg)
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
@@ -205,7 +205,7 @@ func TestManager_Provision_ClearsTheTombstoneOfADroppedName(t *testing.T) {
 // is opened rather than created.
 func TestManager_Provision_ReturnsOrOpensAnExistingDatabase(t *testing.T) {
 	dir := t.TempDir()
-	cfg := DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory}
+	cfg := DatabaseConfig{Name: "orders", Backend: BackendMemory}
 	mgr := NewManager(nil, dir)
 	created, err := mgr.Provision(context.Background(), cfg)
 	require.NoError(t, err)
@@ -239,7 +239,7 @@ func TestManager_Provision_RefusesANameLiveElsewhere(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	mgr.SetKeyspaceReclaimer(spy)
 
-	_, err := mgr.Provision(context.Background(), DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Provision(context.Background(), DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	var exists *AlreadyExistsError
 	require.ErrorAs(t, err, &exists)
 	assert.True(t, exists.Elsewhere)
@@ -259,7 +259,7 @@ func TestManager_Create_RefusesANameLiveElsewhere(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	mgr.SetKeyspaceReclaimer(spy)
 
-	_, err := mgr.Create(DatabaseConfig{Name: "orders", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	exists, ok := err.(*AlreadyExistsError)
 	require.True(t, ok, "want *AlreadyExistsError unwrapped, got %T", err)
 	assert.True(t, exists.Elsewhere)

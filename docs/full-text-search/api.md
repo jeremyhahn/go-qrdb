@@ -31,7 +31,7 @@ Closing it would need, at minimum:
 - a `service` layer entry point that resolves tenant and database scope, since
   `pkg/fts` currently takes a raw `storage.Storage` from its caller;
 - `sdk/go/transport` client interface plus the five transport implementations;
-- a `qrdb fts` CLI verb group with `CommandDefinition`s in the parity suite.
+- a `qrdb fts` CLI verb group with `_PerProtocol` integration tests.
 
 The shape of that surface is an architecture decision and belongs to the owner,
 not to this document.

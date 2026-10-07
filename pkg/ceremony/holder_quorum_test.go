@@ -34,8 +34,8 @@ func fiveHolders(t *testing.T) []*testHolder {
 	return []*testHolder{
 		newHolder(t, "so-alice", seal.RoleSecurityOfficer),
 		newP384Holder(t, "so-bob", seal.RoleSecurityOfficer),
-		newHolder(t, "cust-carol", seal.RoleCustodian).withEncryptionKey(t, keydelivery.KEMX25519).withAuthenticator(t),
-		newHolder(t, "cust-dave", seal.RoleCustodian).withEncryptionKey(t, keydelivery.KEMMLKEM768X25519).withAuthenticator(t),
+		newHolder(t, "cust-carol", seal.RoleCustodian).withEncryptionKey(t, testEnvelopeKEM(keydelivery.KEMX25519)).withAuthenticator(t),
+		newHolder(t, "cust-dave", seal.RoleCustodian).withEncryptionKey(t, testEnvelopeKEM(keydelivery.KEMMLKEM768X25519)).withAuthenticator(t),
 		newHolder(t, "cust-erin", seal.RoleCustodian),
 	}
 }

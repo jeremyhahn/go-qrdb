@@ -1,6 +1,6 @@
 # Shamir Custody — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Custody verbs live under `qrdb barrier` (`officer`, `quorum`, `rekey`,
 `init-shamir`, `recovery`) for the system barrier and under `qrdb tenant`
@@ -67,6 +67,7 @@ Split the unseal key to the enrolled unseal-domain holders.
 | `--threshold` | int | M |
 | `--total` | int | N; must equal the number of enrolled holders |
 | `--policy` | string | `designated` (default) or `any-enrolled` |
+| `--so-pin`, `--user-pin` | string | optional PIN pair; each requires the other |
 
 ```bash
 qrdb barrier init-shamir --threshold 3 --total 5
@@ -189,6 +190,16 @@ Every remaining holder claims a new envelope once the round completes.
 `qrdb tenant barrier-quorum begin|submit` and `qrdb tenant barrier-rekey`
 take `--tenant-id` and otherwise the same flags, without `--domain` and
 without `--so-pin` (tenant rekey and revocation are authorized by RBAC).
+
+## Database barriers
+
+`qrdb database barrier-officer register|list|claim|claim-begin|claim-complete|revoke|unenrol`,
+`qrdb database barrier-quorum begin|submit`, `qrdb database barrier-rekey` and
+`qrdb database barrier-init-shamir` take `--database` and otherwise the same
+flags, without `--domain` and `--so-pin`. `barrier-init-shamir` takes only
+`--policy`: the M-of-N was fixed when the database was created. `unenrol`
+removes a holder before initialization only. See
+[../databases/cli.md](../databases/cli.md#share-holder-verbs-shamir-database-barrier).
 
 ## Desktop application
 

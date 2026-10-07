@@ -225,31 +225,37 @@ resolved lazily by `pkg/cert.DefaultCertProvider`) — are
 `cakey.SoftwareProvider` instances. Per the owner's CA-at-rest ruling, the
 stored record carries no additional barrier encryption of its own; the
 barrier GATES whether this process will touch the key at all
-(`IsSealed()`), not an AEAD wrap of the record. While unsealed, the key is
-held as an ordinary `*ecdsa.PrivateKey` — not a `secure.Buffer` or any
-other locked-memory enclave — and is zero-filled with `secure.Wipe` (a
-plain, compiler-optimization-resistant overwrite, not an mlock'd page)
-whenever it is replaced or on `Seal()`.
+(`IsSealed()`), not an AEAD wrap of the record. The IN-MEMORY cache is a
+different matter: while unsealed, the key is held as a `*secure.Secret` —
+a go-enclave `SealedEnclave`, AES-256-GCM under the process Sealer — never
+as a bare `*ecdsa.PrivateKey`. Signing opens it into an mlocked
+`secure.Buffer` for exactly the duration of one `Sign` call and destroys
+the Buffer before returning. `Seal()` destroys the `Secret` outright. See
+[../barrier-seal/architecture.md](../barrier-seal/architecture.md#ca-key-lifecycle)
+and
+[../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey)
+for the normative description.
 
 ### Bootstrap
 
 1. Generate ECDSA P-256 CA key pair (`crypto/rand`)
-2. Encode the key and a self-signed certificate for it TOGETHER as one JSON
-   record (no barrier encryption of the record itself)
-3. `kvStore.PutIfAbsent(__sys:cert_ca/{tenantID}/material, record)` — the
-   atomic primitive that makes two callers racing a brand-new tenant's
-   first-ever boot converge on exactly one CA
-4. Cache the key and certificate in memory
+2. Encode the key as the "material" record and the self-signed cert as the
+   SEPARATE "certificate" record
+3. `kvStore.PutAllIfAllUnchanged(__sys:cert_ca/{tenantID}/material,
+   __sys:cert_ca/{tenantID}/certificate)` — ONE atomic guarded batch,
+   guarded on both being absent, the primitive that makes two callers
+   racing a brand-new tenant's first-ever boot converge on exactly one CA
+4. Seal the key into a `secure.Secret`; cache the certificate in the clear
 
 ### Unseal to Operational
 
-1. Load the material record from KVStore
-2. Decode the key and certificate from it
-3. Cache both in memory
+1. Load BOTH the material and certificate records from KVStore
+2. Decode the key from material, the cert from certificate
+3. Seal the key into a `secure.Secret`; cache the certificate in the clear
 
 ### Seal
 
-1. `secure.Wipe` the in-memory key, then nil the cached key reference
+1. Destroy the cached `secure.Secret` outright (wipes the sealed key)
 2. The cached certificate (public data) is NOT cleared
 3. Every `Signer`/`Certificate` call returns `BarrierSealedError` until
    `Unseal` runs again

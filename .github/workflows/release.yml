@@ -1,48 +1,75 @@
-# Release -- the ONLY path that creates a release tag (#13; owner ruling
-# 2026-09-30, "workflow wraps release-alpha").
+# Release -- validates a release tag after it is published (owner ruling
+# 2026-10-06: "all our projects should follow the same standards" --
+# go-quicraft, go-xkms and go-quicbaas all cut alpha releases the same way,
+# and this workflow brings go-qrdb into line with them).
 #
-# WHY A WORKFLOW. check-tag-lockstep and the Release Lockstep workflow are
-# audits: they report a skewed tag set after it has been published, and a
-# published tag cannot be retracted (a consumer's go.sum already holds it).
-# Prevention needs two things together: one path that creates tags correctly,
-# and tag protection that makes it the only path. This workflow is the first;
-# the second is repository configuration the owner applies. docs/release/
-# user.md lists both steps.
+# WHO CREATES THE TAG. The project agent does, by hand, with
+# `make release-alpha VERSION=vX.Y.Z-alpha` (release-versioning.md §1a, the
+# "Alpha" row: "the project agent, any time CI is green on main"). That
+# recipe already carries every preventive check a release needs -- the
+# lockstep audit, the CHANGELOG reconciliation, the duplicate-tag check, the
+# standalone-resolution check for each nested module, signed annotated tags,
+# one atomic `git push --atomic` of exactly those tags -- and it refuses
+# before touching anything unless `HEAD` is exactly what `main` holds and is
+# SSH-signed. There is no bot, no bot secret and no workflow that creates a
+# tag: this file does not write one, and test/buildgates/release_workflow_test.go
+# fails if any workflow in this repository does.
 #
-# WHAT IT DOES, in order:
-#   1. reads VERSION on main. VERSION is AUTHORITATIVE: the release is whatever
-#      the merged VERSION bump says, so a release is reviewed like any change,
-#      as a VERSION + CHANGELOG commit, before it is cut;
-#   2. runs `make release-alpha` -- the same recipe, lockstep audit,
-#      CHANGELOG reconciliation, standalone-resolution and duplicate-tag checks
-#      a manual release runs. Because VERSION already names the release, the
-#      recipe takes its VERSION-authoritative path: HEAD is the release commit
-#      and only the tags are created, signed by the release bot;
-#   3. pushes the root tag and every lockstep module's tag (sdk/go/vX,
-#      sdk/go/gorm/conformance/vX) in ONE `git push --atomic`, which the recipe
-#      does itself, so the server applies all of them or none;
-#   4. fetches the published tags back and runs the lockstep audit over them,
-#      so the run ends on what the server now holds, not on what it sent.
+# WHAT THIS WORKFLOW DOES, once the tag push above triggers it:
 #
-# The secrets and variable it needs are listed under "Require the release-bot
-# credentials" below, and it refuses to start without any one of them.
+#   1. validate -- re-derives the same facts release-alpha already checked
+#      before cutting the tag, against what the server now holds rather than
+#      against the operator's local clone: the tag is a well-formed semver
+#      (optionally `-alpha`), `VERSION` at the tagged commit is byte-equal to
+#      it, and CHANGELOG.md's newest released section names it too
+#      (scripts/check-version-reconciled.sh -- the same script release-alpha
+#      and the Release Lockstep workflow both run). It then fetches and
+#      audits the lockstep tags (sdk/go/vX.Y.Z, sdk/go/gorm/conformance/vX.Y.Z)
+#      against this one, with a bounded retry: release-alpha publishes every
+#      lockstep tag in ONE atomic push, but that does not bound how soon a
+#      `git fetch` on a different connection observes all of them, so the
+#      first fetch failing to see a sibling tag is not yet evidence of a
+#      skew.
+#   2. gate -- re-runs the build/lint/test signal from ci.yml's `lint`,
+#      `build` and `test` jobs against the exact tagged tree: `make fmt`,
+#      `make vet`, `make vet-tags`, `make secure-analyzer`, `make lint`,
+#      `go build ./...`, `make build-server`, `make coverage`,
+#      `make test-tags`. It does NOT re-run every ci.yml step: `release-alpha`
+#      refuses to tag anything but the commit the remote's `main` holds, so
+#      the tagged tree is bit-for-bit what `ci-gate` already verified clean
+#      moments earlier, and re-running a guard's own self-test or a
+#      whole-tree scan that cannot have changed since (check-publication-bound,
+#      check-public-releasable, every `test-*` meta-guard, the integration and
+#      security/trivy suites) would re-check the same guard code against the
+#      same tree for the same answer. What CAN still fail here, and is worth
+#      the re-run, is the FUNCTIONAL signal: a checkout that resolved the
+#      wrong object, a toolchain mismatch on this runner, a race the first
+#      run got lucky on.
+#   3. publish -- needs both of the above green, then lifts the matching
+#      `## [X.Y.Z]` section out of CHANGELOG.md and publishes it as this
+#      tag's release notes, through the forge's own releases API
+#      (`${{ github.api_url }}`, which resolves to the right base on Gitea
+#      and on GitHub without this file knowing which one it is running on).
 #
-# NOT ON github.com. Releases are cut on the internal forge; publishing to
-# GitHub is a separate, owner-approved step (handbook version-control.md 5a).
-# The job is guarded off github.com, and release-alpha independently refuses a
-# remote that points there.
+# NOT A PUBLICATION STEP. Nothing here pushes anywhere; it only reads the tag
+# that already exists and writes release notes for it. Publishing the tag set
+# itself to github.com is version-control.md §5a's separate, owner-approved
+# step, and when that push lands, this same workflow validates and annotates
+# the mirrored tag there too -- there is no bot secret guarding it off that
+# plane anymore, so there is nothing to gate it on.
 
 name: Release
 
 on:
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
-# One release at a time, and never cancelled mid-flight: a cancelled run could
-# stop between the tag creation and the push, and the recipe's own rollback is
-# what should handle that, not a runner kill.
-concurrency:
-  group: release
-  cancel-in-progress: false
+# No concurrency block. Unlike a branch ref, a tag is immutable and unique --
+# release-alpha refuses to create one that already exists, locally or on the
+# remote -- so two runs of this workflow for the SAME ref cannot both be
+# in flight from a live publication race the way two pushes to `main` can.
+# release-lockstep.yml, the other tag-triggered workflow here, carries none
+# either, for the same reason.
 
 permissions:
   contents: read
@@ -50,109 +77,155 @@ permissions:
 env:
   # Kept in lockstep with ci.yml, including the reason (#540).
   GO_VERSION: "1.27.0"
+  GOLANGCI_LINT_VERSION: "v2.13.2"
   GOWORK: "off"
   GOFLAGS: "-buildvcs=false"
 
 jobs:
-  release:
-    name: Cut the release VERSION names
-    if: github.server_url != 'https://github.com'
+  validate:
+    name: Validate the tag, VERSION and CHANGELOG
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     steps:
-      # NO CREDENTIAL IS PERSISTED. The checkout uses the run's own read
-      # token and does not write it into .git/config, so no later step -- and
-      # nothing those steps start, make and go included -- can read a token
-      # from the clone. The release bot's token, which tag protection alone
-      # admits, reaches exactly one step: make release-alpha, the step that
-      # pushes (scripts/git-extraheader.sh).
+      # Full history AND every tag: check-tag-lockstep.sh walks ancestry
+      # between arbitrary past root tags and their lockstep counterparts
+      # (`git merge-base --is-ancestor`), which a shallow clone cannot answer.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: main
           fetch-depth: 0
-          persist-credentials: false
+
+      - name: The tag is a well-formed release version
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          printf '%s' "${TAG}" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha)?$' || {
+            echo "::error::${TAG} does not name a vX.Y.Z or vX.Y.Z-alpha release"
+            exit 1
+          }
+
+      # VERSION byte-equal to the tag, and CHANGELOG.md's newest released
+      # section naming the same version -- both halves of
+      # release-versioning.md §2, checked by the one script release-alpha
+      # already ran against this exact commit before it was tagged.
+      - name: VERSION and CHANGELOG.md agree with the tag
+        run: ./scripts/check-version-reconciled.sh . "${GITHUB_REF_NAME}"
+
+      # BOUNDED RETRY, NOT A SINGLE SHOT. release-alpha's `git push --atomic`
+      # makes the server apply every lockstep tag or none, but says nothing
+      # about how soon a fetch on a different connection sees all of them --
+      # so the first attempt failing to find a sibling tag is "not visible
+      # yet", not "missing", and the only way to tell them apart is to ask
+      # again. Ten attempts, three seconds apart: generous next to how this
+      # forge's own tag-push event already fired for THIS job to be running.
+      - name: Fetch and audit the lockstep tags
+        run: |
+          set -eu
+          attempt=1
+          max_attempts=10
+          while :; do
+            git fetch --quiet --tags origin
+            if ./scripts/check-tag-lockstep.sh; then
+              break
+            fi
+            if [ "${attempt}" -ge "${max_attempts}" ]; then
+              echo "::error::the lockstep tags for ${GITHUB_REF_NAME} were still not in lockstep after ${max_attempts} attempts; see the audit output above"
+              exit 1
+            fi
+            echo "lockstep audit not clean yet (attempt ${attempt}/${max_attempts}); sibling tags from the same atomic push may not have reached this fetch. Retrying in 3s."
+            attempt=$((attempt + 1))
+            sleep 3
+          done
+
+  gate:
+    name: Build, lint and test the tagged tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # Fail closed, naming what is missing. An empty signing key would fail
-      # at the first tag; it is cheaper here. The bot token is checked in the
-      # one step that receives it.
-      - name: Require the release-bot credentials
-        env:
-          RELEASE_BOT_SIGNING_KEY: ${{ secrets.RELEASE_BOT_SIGNING_KEY }}
-          RELEASE_BOT_NAME: ${{ vars.RELEASE_BOT_NAME }}
-          RELEASE_BOT_EMAIL: ${{ vars.RELEASE_BOT_EMAIL }}
+      # Same commands as ci.yml's `lint` job, minus that job's own meta-guards
+      # (tool-version pin assertions, every guard's self-test, the
+      # publication-bound and public-releasable scans): those check the
+      # GUARD against a tree that cannot have changed since `ci-gate` already
+      # ran them, because release-alpha refuses to tag anything but the exact
+      # commit `main` holds. What is kept is the functional signal.
+      - name: gofmt
+        run: make fmt
+
+      - name: go vet
+        run: make vet
+
+      - name: go vet across every supported tag set
+        run: make vet-tags
+
+      - name: pkg/secure rules hold across every module and tag set
+        run: make secure-analyzer
+
+      - name: golangci-lint
+        run: make lint
+
+      # Same commands as ci.yml's `build` job.
+      - name: Build all packages (default tags)
+        run: go build ./...
+
+      - name: Build qrdbd with the default feature set
+        run: make build-server
+
+      # Same commands as ci.yml's `test` job.
+      - name: Unit tests (race) + coverage gate
+        run: make coverage
+
+      - name: Protocol-family build tags (runtime)
+        run: make test-tags
+
+  publish:
+    name: Publish the release notes
+    needs: [validate, gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # The section between this version's `## [X.Y.Z]` heading and the next
+      # one, exclusive of both -- `validate` already proved this heading
+      # exists and names this exact version, so a match here is guaranteed
+      # rather than hoped for.
+      - name: Extract this version's CHANGELOG section
         run: |
           set -eu
-          missing=''
-          [ -n "${RELEASE_BOT_SIGNING_KEY:-}" ] || missing="${missing} secret RELEASE_BOT_SIGNING_KEY"
-          [ -n "${RELEASE_BOT_NAME:-}" ] || missing="${missing} variable RELEASE_BOT_NAME"
-          [ -n "${RELEASE_BOT_EMAIL:-}" ] || missing="${missing} variable RELEASE_BOT_EMAIL"
-          if [ -n "${missing}" ]; then
-            echo "::error::not configured on this repository:${missing}. See docs/release/user.md."
+          VER="${GITHUB_REF_NAME#v}"
+          awk -v ver="${VER}" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > "${RUNNER_TEMP}/release-notes.md"
+          if [ ! -s "${RUNNER_TEMP}/release-notes.md" ]; then
+            echo "::error::found no CHANGELOG.md section for ${GITHUB_REF_NAME}"
             exit 1
           fi
 
-      # VERSION is authoritative. It is validated here for a readable error;
-      # release-alpha re-validates it, since it is the recipe that publishes.
-      - name: Read VERSION
-        id: version
-        run: |
-          set -eu
-          v="v$(tr -d '[:space:]' < VERSION)"
-          printf '%s' "$v" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha$' || {
-            echo "::error::VERSION does not name a vX.Y.Z-alpha release: $v"
-            exit 1; }
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "Releasing $v"
-
-      # The key lives in the runner's temp directory for this job only, mode
-      # 0600, and is removed in the always() step at the end.
-      - name: Install the release-bot signing key
+      # ${{ github.api_url }} resolves to this forge's own API base, Gitea or
+      # GitHub, so one call publishes the release on whichever plane the tag
+      # push landed on. ${{ secrets.GITHUB_TOKEN }} is the run's own token,
+      # scoped by the `permissions:` block above -- there is no separate bot
+      # identity to authenticate as.
+      - name: Create the release
         env:
-          RELEASE_BOT_SIGNING_KEY: ${{ secrets.RELEASE_BOT_SIGNING_KEY }}
+          FORGE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          umask 077
-          printf '%s\n' "$RELEASE_BOT_SIGNING_KEY" > "$RUNNER_TEMP/release-bot.key"
-          ssh-keygen -y -f "$RUNNER_TEMP/release-bot.key" > /dev/null
-
-      # The only step that holds the release bot's token. It fetches the tags,
-      # reads the remote's main and pushes the release tags, all as the bot;
-      # the header lives in this step's environment and ends with it.
-      - name: make release-alpha
-        env:
-          FORGE_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
-          RELEASE_BOT_NAME: ${{ vars.RELEASE_BOT_NAME }}
-          RELEASE_BOT_EMAIL: ${{ vars.RELEASE_BOT_EMAIL }}
-          VERSION_TAG: ${{ steps.version.outputs.version }}
-        run: |
-          set -eu
-          [ -n "${FORGE_TOKEN:-}" ] || {
-            echo "::error::not configured on this repository: secret RELEASE_BOT_TOKEN. See docs/release/user.md."
-            exit 1; }
-          . ./scripts/git-extraheader.sh
-          export RELEASE_BOT_SIGNING_KEY_FILE="$RUNNER_TEMP/release-bot.key"
-          make release-alpha \
-            VERSION="$VERSION_TAG" \
-            RELEASE_REMOTE=origin \
-            AGENT_GIT="$GITHUB_WORKSPACE/scripts/release-bot-git.sh"
-
-      # The recipe audits its own tags before the push. This re-reads the
-      # remote's tag set after it, so a skew the server holds -- whatever put
-      # it there -- fails the run that published it.
-      # Read-only, with the run's own token rather than the bot's.
-      - name: Lockstep audit of the published tags
-        env:
-          FORGE_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          . ./scripts/git-extraheader.sh
-          git fetch --quiet --tags origin
-          make check-tag-lockstep
-
-      - name: Remove the signing key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/release-bot.key"
+          jq -n \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg name "${GITHUB_REF_NAME}" \
+            --rawfile body "${RUNNER_TEMP}/release-notes.md" \
+            --argjson prerelease "$(case "${GITHUB_REF_NAME}" in *-alpha) echo true ;; *) echo false ;; esac)" \
+            '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: $prerelease}' \
+            > "${RUNNER_TEMP}/release-payload.json"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${FORGE_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/releases" \
+            -d @"${RUNNER_TEMP}/release-payload.json"

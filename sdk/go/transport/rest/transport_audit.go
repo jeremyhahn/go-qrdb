@@ -55,7 +55,6 @@ func (t *Transport) EmitAudit(ctx context.Context, ev transport.AuditEvent) erro
 
 // QueryAudit queries the audit log via GET /v1/audit/events.
 // Authorization: requires "audit:query" permission.
-// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
 func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*transport.AuditPage, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -88,6 +87,9 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 	}
 	if f.Cursor != "" {
 		params.Set("cursor", f.Cursor)
+	}
+	if f.Replicated {
+		params.Set("replicated", "true")
 	}
 
 	rawURL := t.baseURL + "/v1/audit/events"
@@ -159,6 +161,51 @@ func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResu
 	var result transport.AuditVerifyResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, &transport.RequestError{Method: "VerifyChain", Err: err}
+	}
+	return &result, nil
+}
+
+// VerifyReplicatedChain verifies the cluster-wide replicated audit chain's
+// hash continuity for tenantID via GET /v1/audit/replicated/verify. A
+// non-2xx status means verification could not be PERFORMED (including a
+// tenant not entitled to the replicated chain, which answers 403); a 200
+// response with Verified=false is a TAMPER VERDICT, not an error.
+// Authorization: requires "audit:verify_replicated" permission.
+func (t *Transport) VerifyReplicatedChain(ctx context.Context, tenantID string) (*transport.ChainContinuityResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	rawURL := t.baseURL + "/v1/audit/replicated/verify"
+	if tenantID != "" {
+		rawURL = rawURL + "?" + url.Values{"tenant_id": {tenantID}}.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotImplemented {
+		return nil, &transport.NotImplementedError{Method: "VerifyReplicatedChain"}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &transport.RequestError{
+			Method: "VerifyReplicatedChain",
+			Err:    &transport.UnexpectedStatusError{StatusCode: resp.StatusCode, Body: string(body)},
+		}
+	}
+
+	var result transport.ChainContinuityResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: err}
 	}
 	return &result, nil
 }

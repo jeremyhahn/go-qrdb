@@ -101,28 +101,29 @@ internal `\x1f` namespace-scoping separator), preventing key-injection attacks.
 ## Tenant Isolation Modes
 
 > Two different axes share the word "isolation". This section covers the
-> **deployment posture** (`tenant.strict_isolation`) that governs whether
-> un-tenanted identities may pool into `system`. The separate **per-tenant
-> isolation ladder** (`prefix` / `barrier` / `volume` / `raft`), which controls
-> how strongly an individual tenant's data is separated, is documented in
+> **cluster-wide isolation-policy floor** (`strict` / `operator-access`;
+> see [multi-tenancy/architecture.md#the-isolation-policy](multi-tenancy/architecture.md#the-isolation-policy)),
+> which governs, among other things, whether un-tenanted identities may pool
+> into `system`. The separate **per-tenant isolation ladder** (`prefix` /
+> `barrier` / `volume` / `raft`), which controls how strongly an individual
+> tenant's data is separated, is documented in
 > [multi-tenancy.md](multi-tenancy/architecture.md).
 
-QRDB supports two tenant isolation postures, selected via `tenant.strict_isolation`
-in the YAML configuration (or forced to strict by a FIPS-140 build):
+There is no `tenant.strict_isolation` configuration key — it was removed
+(go-qrdb v0.45) because it only ever governed vector namespace creation. Its
+behavior is one small piece of the real, cluster-wide isolation-policy floor:
 
-### Standard Mode (`strict_isolation: false`, the default)
+### `operator-access` (today's behavior, and the default)
 
 - Un-tenanted identities — those whose mTLS certificate carries no `TenantID` — are
   silently assigned to the structurally privileged `system` tenant.
 - Vector namespace creation is **not refused** for system-tenant identities. All
   un-owned namespaces pool into `system`.
-- **This is NOT cross-tenant isolation.** Standard mode is a single-tenant convenience
+- **This is NOT cross-tenant isolation.** It is a single-tenant convenience
   for local development, single-operator deployments, or trusted internal tools where
   namespace ownership is not a security boundary.
-- A startup `WARN` log is emitted when standard mode is active so operators are never
-  silently running in the weaker posture.
 
-### Strict Mode (`strict_isolation: true`, or any FIPS-140 build)
+### `strict` (or any FIPS-140 build, which always tightens the floor to it)
 
 - Vector namespace creation is **refused** (`403 Forbidden`, `tenant required`) when
   the authenticated identity resolves to the `system` tenant, preventing accidental
@@ -131,11 +132,13 @@ in the YAML configuration (or forced to strict by a FIPS-140 build):
   fallback.
 - Required for multi-tenant SaaS, HIPAA, PCI-DSS, or any deployment where namespace
   ownership must be enforced per authenticated identity.
-- Cannot be relaxed when the binary is compiled with FIPS-140 (`GOFIPS140=latest`
+- Tighten-only: cannot be lowered back to `operator-access` once set, and never
+  relaxed when the binary is compiled with FIPS-140 (`GOFIPS140=latest`
   or `GODEBUG=fips140=on`).
 
-See [12-configuration.md](12-configuration.md) for the `tenant.strict_isolation` YAML
-field reference.
+See [multi-tenancy/architecture.md#the-isolation-policy](multi-tenancy/architecture.md#the-isolation-policy)
+for the full setting, including the per-tenant opt-in and the RBAC
+consequences of the floor beyond vector namespaces.
 
 ## Error Cases
 

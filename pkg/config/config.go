@@ -337,14 +337,6 @@ func (c ImportSessionConfig) ResolvedSessionTTLSeconds() int64 {
 
 // TenantConfig configures tenant isolation behaviour.
 type TenantConfig struct {
-	// StrictIsolation rejects vector namespace operations when no tenant ID
-	// is present in the request context. When false (default) the system
-	// tenant is used as the implicit owner for un-tenanted requests, which
-	// is appropriate for single-tenant deployments. Set to true in
-	// multi-tenant production environments; it is automatically enabled
-	// when the process runs in FIPS-140 mode.
-	StrictIsolation bool `yaml:"strict_isolation"`
-
 	// DefaultQuotas are the resource limits applied to tenants whose own
 	// quotas are unset (nil). Conservative production defaults.
 	DefaultQuotas TenantQuotaDefaults `yaml:"default_quotas"`
@@ -428,6 +420,14 @@ type TenantEntitlementDefaults struct {
 	// running storage.volume_pools must also grant this to create any
 	// IsolationVolume/IsolationRaft tenant.
 	AllowedVolumePools []string `yaml:"allowed_volume_pools"`
+	// AllowReplicatedAudit permits a tenant's audit events to be written to
+	// the cluster-wide replicated hash chain
+	// (docs/audit/architecture.md#cluster-wide-replicated-trail), in
+	// addition to the always-on node-local trail. False (the secure
+	// default) unless an operator's hardened compliance configuration sets
+	// this so every tenant is covered without a per-tenant
+	// tenants:set_entitlements grant.
+	AllowReplicatedAudit bool `yaml:"allow_replicated_audit"`
 }
 
 // ToEntitlements converts the config defaults into a quota.Entitlements value.
@@ -444,6 +444,7 @@ func (d TenantEntitlementDefaults) ToEntitlements() *quota.Entitlements {
 		AllowDedicatedWAL:         d.AllowDedicatedWAL,
 		AllowedBarrierModes:       d.AllowedBarrierModes,
 		AllowedVolumePools:        d.AllowedVolumePools,
+		AllowReplicatedAudit:      d.AllowReplicatedAudit,
 	}
 }
 
@@ -462,14 +463,11 @@ type CodecConfig struct {
 }
 
 // DatabaseConfig defines a single database instance in the configuration.
-// Engine and Backend are validated as plain strings to avoid circular imports
-// with the database package.
+// Backend is validated as a plain string to avoid a circular import with the
+// database package.
 type DatabaseConfig struct {
 	// Name is the unique identifier for the database.
 	Name string `yaml:"name" json:"name"`
-
-	// Engine selects the database engine: "kv", "timeseries", or "vector".
-	Engine string `yaml:"engine" json:"engine"`
 
 	// Backend selects the storage backend: "memory", "file", "pebble", or "raft".
 	Backend string `yaml:"backend" json:"backend"`
@@ -746,6 +744,19 @@ type StorageConfig struct {
 	// disables volume-pool placement on this node — keyspace-mode tenants
 	// are unaffected.
 	VolumePools []VolumePoolConfig `yaml:"volume_pools,omitempty"`
+
+	// AllowDegradedVolumeBoot permits qrdbd start to continue when one or
+	// more entries of VolumePools fails to open. The default (false)
+	// fails startup outright, naming every inaccessible volume and the
+	// reason, and the node exits non-zero rather than serve with some
+	// tenants' data unopened. Set true (or pass
+	// --allow-degraded-volume-boot) to start every volume and database
+	// this node CAN open and skip only the ones on a pool that failed;
+	// each skip is logged at ERROR, reported in this node's health
+	// report and exported as qrdb_volume_pool_ready, and a request for a
+	// database on a skipped pool gets a typed, classified "volume
+	// unavailable" error rather than succeeding or 404ing.
+	AllowDegradedVolumeBoot bool `yaml:"allow_degraded_volume_boot,omitempty"`
 
 	// Objstore configures the object-storage key-value backend, used when
 	// Backend (or a database's backend) is "objstore".
@@ -1369,10 +1380,39 @@ type SQLConfig struct {
 	// socket while a statement runs. Parsed as a Go duration string; "0"
 	// disables it. Default: "30s".
 	QueryTimeout string `yaml:"query_timeout"`
+
+	// WaitTimeout is MySQL's wait_timeout: the maximum time a MySQL wire
+	// connection may sit idle with no command from the client before the
+	// server closes it. A connection holding an open server-side cursor
+	// (COM_STMT_FETCH) that the client stopped fetching from is idle by this
+	// same definition, so this is also what releases the resources that
+	// cursor's statement holds -- the gap QueryTimeout does not cover,
+	// because the cursor is served without ever reaching the query handler
+	// QueryTimeout bounds. Parsed as a Go duration string; "0" disables it.
+	// Default: "8h" (28800s, MySQL's wait_timeout default).
+	WaitTimeout string `yaml:"wait_timeout"`
+
+	// WriteTimeout is MySQL's net_write_timeout: the maximum time the server
+	// waits for a single write to a stalled client -- one that stopped
+	// reading a result set -- before closing the connection. Parsed as a Go
+	// duration string; "0" disables it. Default: "60s" (MySQL's
+	// net_write_timeout default).
+	WriteTimeout string `yaml:"write_timeout"`
 }
 
 // DefaultSQLQueryTimeout is sql.query_timeout's default.
 const DefaultSQLQueryTimeout = 30 * time.Second
+
+// DefaultSQLWaitTimeout is MySQL's wait_timeout default: the number of
+// seconds an idle connection -- one issuing no command, including one
+// holding an open server-side cursor its client stopped fetching from -- may
+// sit before the server closes it.
+const DefaultSQLWaitTimeout = 28800 * time.Second
+
+// DefaultSQLWriteTimeout is MySQL's net_write_timeout default: the number of
+// seconds the server waits for a single write to a stalled client before
+// closing the connection.
+const DefaultSQLWriteTimeout = 60 * time.Second
 
 // QueryTimeoutDuration returns sql.query_timeout as a duration:
 // DefaultSQLQueryTimeout when unset, zero when it is "0" (no timeout).
@@ -1383,6 +1423,32 @@ func (c SQLConfig) QueryTimeoutDuration() (time.Duration, error) {
 	d, err := parseDuration(c.QueryTimeout)
 	if err != nil || d < 0 {
 		return 0, &ValidationError{Field: "sql.query_timeout", Reason: "must be a valid Go duration string, zero or more"}
+	}
+	return d, nil
+}
+
+// WaitTimeoutDuration resolves WaitTimeout: unset is the default (8h),
+// "0" disables the bound, and a malformed or negative duration is refused.
+func (c SQLConfig) WaitTimeoutDuration() (time.Duration, error) {
+	if c.WaitTimeout == "" {
+		return DefaultSQLWaitTimeout, nil
+	}
+	d, err := parseDuration(c.WaitTimeout)
+	if err != nil || d < 0 {
+		return 0, &ValidationError{Field: "sql.wait_timeout", Reason: "must be a valid Go duration string, zero or more"}
+	}
+	return d, nil
+}
+
+// WriteTimeoutDuration resolves WriteTimeout: unset is the default (60s),
+// "0" disables the bound, and a malformed or negative duration is refused.
+func (c SQLConfig) WriteTimeoutDuration() (time.Duration, error) {
+	if c.WriteTimeout == "" {
+		return DefaultSQLWriteTimeout, nil
+	}
+	d, err := parseDuration(c.WriteTimeout)
+	if err != nil || d < 0 {
+		return 0, &ValidationError{Field: "sql.write_timeout", Reason: "must be a valid Go duration string, zero or more"}
 	}
 	return d, nil
 }
@@ -1694,6 +1760,8 @@ func DefaultConfig() *Config {
 			DefaultDatabase: "qrdb",
 			MaxConnections:  100,
 			QueryTimeout:    "30s",
+			WaitTimeout:     "8h",
+			WriteTimeout:    "60s",
 		},
 		Codec: CodecConfig{
 			StorageCodec: "msgpack",
@@ -1718,7 +1786,7 @@ func DefaultConfig() *Config {
 			NoisePort: 63006,
 		},
 		Databases: []DatabaseConfig{
-			{Name: "system", Engine: "kv", Backend: "pebble"},
+			{Name: "system", Backend: "pebble"},
 		},
 		RAG: RAGConfig{
 			DefaultChunkStrategy: "fixed",
@@ -1786,7 +1854,7 @@ func Load(path string) (*Config, error) {
 			backend = "pebble"
 		}
 		cfg.Databases = []DatabaseConfig{
-			{Name: "system", Engine: "kv", Backend: backend},
+			{Name: "system", Backend: backend},
 		}
 	}
 
@@ -1992,13 +2060,6 @@ var validDiscoveryMethods = map[string]struct{}{
 	"multicast": {},
 	"dns":       {},
 	"token":     {},
-}
-
-// validDatabaseEngines contains the accepted database engine strings.
-var validDatabaseEngines = map[string]struct{}{
-	"kv":         {},
-	"timeseries": {},
-	"vector":     {},
 }
 
 // validCodecTypes contains the accepted codec type strings.
@@ -2284,6 +2345,12 @@ func (c *Config) Validate() error {
 	if _, err := c.SQL.QueryTimeoutDuration(); err != nil {
 		return err
 	}
+	if _, err := c.SQL.WaitTimeoutDuration(); err != nil {
+		return err
+	}
+	if _, err := c.SQL.WriteTimeoutDuration(); err != nil {
+		return err
+	}
 	if _, err := c.ReplicaForwarding.TimeoutDuration(); err != nil {
 		return err
 	}
@@ -2380,9 +2447,6 @@ func (c *Config) Validate() error {
 	for _, db := range c.Databases {
 		if db.Name == "" {
 			return &DatabaseConfigError{Name: "", Message: "name must not be empty"}
-		}
-		if _, ok := validDatabaseEngines[db.Engine]; !ok {
-			return &DatabaseConfigError{Name: db.Name, Message: "engine must be one of: kv, timeseries, vector"}
 		}
 		if _, ok := validDatabaseBackends[db.Backend]; !ok {
 			return &DatabaseConfigError{Name: db.Name, Message: "backend must be one of: memory, file, pebble, raft, objstore"}

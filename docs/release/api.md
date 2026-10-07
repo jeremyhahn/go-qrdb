@@ -16,18 +16,27 @@ limitations under the License.
 
 # Release — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 **There is no transport API for this feature.** Releasing is repository
 tooling, not a capability of a running node, so none of the six transports
 (REST, gRPC, Unix, QUIC, MCP, embedded) exposes it.
 
-The only programmatic entry point is the forge's workflow-dispatch API, which
-starts the **Release** workflow (`.github/workflows/release.yml`) on `main`.
-The workflow takes **no inputs**: the version is whatever `VERSION` on `main`
-names ([architecture.md](architecture.md)). A dispatch against any ref other
-than `main` fails, because the workflow checks out `main` and `release-alpha`
-refuses to run on any other branch.
+**The only entry point is the tag push itself.** `make release-alpha`, run by
+hand, creates and pushes the tags (architecture.md); there is no
+workflow-dispatch input and nothing to call to start a release. Pushing the
+tag is what starts `.github/workflows/release.yml`, and that workflow takes
+no inputs of its own — everything it checks comes from the tag
+(`${{ github.ref_name }}`) and the repository content at the commit it
+points to.
+
+`release.yml` exposes one indirect side effect a caller can observe: once its
+`validate` and `gate` jobs pass, `publish` calls the forge's own releases API
+(`POST {{ github.api_url }}/repos/{owner}/{repo}/releases`) with the matching
+`CHANGELOG.md` section as the release body. That call is the workflow's only
+write; everything before it is read-only re-verification of what
+`release-alpha` already published.
 
 What a consumer sees is the published result: three Go module versions at one
-commit, as described in [architecture.md](architecture.md).
+commit, plus a release object carrying that version's CHANGELOG section, as
+described in [architecture.md](architecture.md).

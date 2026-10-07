@@ -987,6 +987,113 @@ func TestProvisionTenant_BarrierIsolation_NonExclusiveReRunKeepsTheRecordedCrede
 	}
 }
 
+// TestProvisionTenant_BarrierIsolation_AutoUnseal_CompletesAdminImmediately
+// proves the fix for a severe pre-existing bug found via integration testing
+// (go-qrdb strict-tenant-isolation work, 2026-10-06): a system-managed
+// (auto-unseal) barrier tenant's pending admin was never completed, because
+// nothing else ever fires tenant.BarrierReadyHook for it -- unlike a
+// self-managed barrier, whose own admin later calls barrier-init/-unseal to
+// raise the hook. ProvisionTenant now completes it inline, immediately,
+// whenever CreateTenant reports BarrierAutoUnseal: true.
+func TestProvisionTenant_BarrierIsolation_AutoUnseal_CompletesAdminImmediately(t *testing.T) {
+	ctx := context.Background()
+	roles := &fakeRoles{}
+	users := &fakeUsers{}
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+
+	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: &fakeTenants{autoUnseal: true}, Users: users, Roles: roles,
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdmins: pending, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if result.AdminAwaitsBarrierInit {
+		t.Error("result.AdminAwaitsBarrierInit = true, want false (the auto-unseal barrier is already ready)")
+	}
+	if len(users.createCalls) != 1 {
+		t.Fatalf("user createCalls = %d, want 1 (the pending admin's account, created immediately)", len(users.createCalls))
+	}
+	if got := users.createCalls[0].Username; got != "admin" {
+		t.Errorf("completed admin username = %q, want %q", got, "admin")
+	}
+	if len(roles.createCalls) == 0 {
+		t.Error("role createCalls = 0, want the tenant's built-in roles seeded as part of completion")
+	}
+	rec, err := pending.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("pending.Get(acme): %v", err)
+	}
+	if rec != nil {
+		t.Error("pending record still present after immediate completion, want it deleted")
+	}
+}
+
+// TestProvisionTenant_BarrierIsolation_AutoUnseal_StillSealedIsNotFatal
+// proves that a completion attempt refused with tenant.ErrTenantSealed --
+// not expected for a real auto-unseal tenant (its barrier is never sealed),
+// but a reachable code path (CompletePendingTenantAdmin is generic) -- is
+// tolerated exactly like the hook itself tolerates it: ProvisionTenant still
+// succeeds, and the pending record is left for a later retry.
+func TestProvisionTenant_BarrierIsolation_AutoUnseal_StillSealedIsNotFatal(t *testing.T) {
+	ctx := context.Background()
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+
+	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: &fakeTenants{autoUnseal: true}, Users: &fakeUsers{createErr: tenant.ErrTenantSealed}, Roles: &fakeRoles{},
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdmins: pending, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v, want nil (a sealed completion attempt is deferred, not fatal)", err)
+	}
+	if !result.AdminAwaitsBarrierInit {
+		t.Error("result.AdminAwaitsBarrierInit = false, want true (completion did not actually succeed)")
+	}
+	rec, err := pending.Get(ctx, "acme")
+	if err != nil || rec == nil {
+		t.Fatalf("pending.Get(acme) = %v, %v; want the record still present for a later retry", rec, err)
+	}
+}
+
+// TestProvisionTenant_BarrierIsolation_AutoUnseal_OtherCompletionErrorIsNotFatal
+// proves an unrelated completion failure (anything but ErrTenantSealed) is
+// logged and swallowed, not propagated: the tenant record it created above
+// genuinely exists, and failing ProvisionTenant now would report a tenant
+// that demonstrably exists as "not created" -- the same best-effort
+// reasoning CreateTenant's own role-seeding step already documents.
+func TestProvisionTenant_BarrierIsolation_AutoUnseal_OtherCompletionErrorIsNotFatal(t *testing.T) {
+	ctx := context.Background()
+	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
+	boom := errors.New("boom")
+
+	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: validAdminCSR(t),
+	}, Dependencies{
+		Tenants: &fakeTenants{autoUnseal: true}, Users: &fakeUsers{createErr: boom}, Roles: &fakeRoles{},
+		Signer: &fakeSigner{cert: realCertPEM(t)}, Binder: &fakeBinder{},
+		PendingAdmins: pending, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v, want nil (a completion failure is best-effort, not fatal)", err)
+	}
+	if !result.AdminAwaitsBarrierInit {
+		t.Error("result.AdminAwaitsBarrierInit = false, want true (completion did not actually succeed)")
+	}
+	rec, err := pending.Get(ctx, "acme")
+	if err != nil || rec == nil {
+		t.Fatalf("pending.Get(acme) = %v, %v; want the record still present for a later retry", rec, err)
+	}
+}
+
 func TestProvisionTenant_BarrierIsolation_PendingAdminsReadErrorWrapped(t *testing.T) {
 	sentinel := errors.New("store unavailable")
 	pending := &pendingAdminsFaulting{inner: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), getErr: sentinel}

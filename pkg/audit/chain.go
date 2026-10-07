@@ -331,3 +331,196 @@ func (c *Chain) Query(r storage.Reader, tenantID string, f Filter) (*Page, error
 	}
 	return &Page{Events: events, Next: next, Total: -1}, nil
 }
+
+// ChainContinuityReport is the outcome of verifying one tenant's replicated
+// audit chain's hash continuity (Chain.Verify). Verified is the only field
+// a caller MUST check, mirroring pkg/audit.VerificationReport for the
+// node-local file chain -- the two are deliberately distinct types, because
+// this one answers for a single tenant's REPLICATED chain and carries no
+// file/rotation concepts at all.
+type ChainContinuityReport struct {
+	// Verified is true only if every surviving event folds, in sequence,
+	// into the chain's own authoritative head digest.
+	Verified bool
+	// Reason is a human-readable description of the break; empty when
+	// Verified.
+	Reason string
+	// Records is the number of surviving events folded (head.seq - lo + 1),
+	// zero for a tenant with no chain at all.
+	Records int64
+	// Head is the highest surviving sequence number.
+	Head uint64
+	// Low is the lowest surviving sequence number.
+	Low uint64
+	// Genesis is true when Low == 1: the walk reached the chain's true
+	// origin rather than a retention-pruned tail. Exactly as for the
+	// node-local file chain, a pruned prefix is indistinguishable from a
+	// deleted one by the hash alone, so a pruned tenant chain always
+	// verifies with Genesis: false rather than being refused.
+	Genesis bool
+}
+
+// Verify recomputes tenantID's replicated hash chain over every surviving
+// event in r -- from the chain's own low-watermark through its head -- and
+// reports whether the fold reaches the AUTHORITATIVE head digest this Chain
+// already holds in memory (restored from the head record every replica
+// applies identically). Unlike the node-local file chain, there is no
+// externally-supplied seed to trust: the first surviving event's PrevHash is
+// taken as the chain's own claim for what preceded it (exactly as a pruned
+// node-local trail reports Genesis: false rather than refusing), but the
+// TERMINAL digest is checked against replicated state no caller could have
+// forged, because every replica derived it identically at apply time.
+//
+// A tenant with no chain at all (head.seq == 0) verifies trivially: Verified
+// true, Records 0, Genesis true.
+func (c *Chain) Verify(r storage.Reader, tenantID string) (*ChainContinuityReport, error) {
+	if err := validateTenantID(tenantID); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	head := c.heads[tenantID]
+	c.mu.Unlock()
+
+	if head.seq == 0 {
+		return &ChainContinuityReport{Verified: true, Genesis: true}, nil
+	}
+
+	it := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: eventRangeStart(tenantID, head.lo),
+		UpperBound: eventRangeEnd(tenantID),
+	})
+	defer func() { _ = it.Close() }()
+
+	var digest [32]byte
+	seen := uint64(0)
+	expectedSeq := head.lo
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		seq, seqOK := eventSeq(it.Key(), tenantID)
+		if !seqOK {
+			return nil, &CorruptTableError{Key: string(it.Key()), Reason: "malformed event key"}
+		}
+		if seq != expectedSeq {
+			return &ChainContinuityReport{
+				Verified: false,
+				Reason:   "missing sequence " + strconv.FormatUint(expectedSeq, 10),
+				Records:  int64(seen),
+				Head:     head.seq,
+				Low:      head.lo,
+				Genesis:  head.lo == 1,
+			}, nil
+		}
+
+		body := it.Value()
+		var ev AuditEvent
+		if err := json.Unmarshal(body, &ev); err != nil {
+			return nil, &CorruptTableError{Key: string(it.Key()), Reason: "malformed event record"}
+		}
+
+		if seq == head.lo {
+			// The chain's own claim for what preceded the surviving range.
+			// At genesis (lo == 1) this must be empty, matching Append's own
+			// zero-value seed; a pruned tenant (lo > 1) names a digest whose
+			// preimage was deleted by retention and so cannot be
+			// independently checked, exactly as a retention-pruned
+			// node-local trail reports Genesis: false rather than refusing.
+			seed, ok := decodeReplicatedDigest(ev.PrevHash)
+			if !ok {
+				return &ChainContinuityReport{
+					Verified: false,
+					Reason:   "malformed seed at sequence " + strconv.FormatUint(seq, 10),
+					Records:  int64(seen),
+					Head:     head.seq,
+					Low:      head.lo,
+					Genesis:  head.lo == 1,
+				}, nil
+			}
+			if head.lo == 1 && ev.PrevHash != "" {
+				return &ChainContinuityReport{
+					Verified: false,
+					Reason:   "genesis event carries a non-empty PrevHash",
+					Records:  int64(seen),
+					Head:     head.seq,
+					Low:      head.lo,
+					Genesis:  true,
+				}, nil
+			}
+			digest = seed
+		} else {
+			want := "sha256:" + hex.EncodeToString(digest[:])
+			if ev.PrevHash != want {
+				return &ChainContinuityReport{
+					Verified: false,
+					Reason:   "broken link at sequence " + strconv.FormatUint(seq, 10),
+					Records:  int64(seen),
+					Head:     head.seq,
+					Low:      head.lo,
+					Genesis:  head.lo == 1,
+				}, nil
+			}
+		}
+
+		folded := make([]byte, 0, len(digest)+len(body))
+		folded = append(folded, digest[:]...)
+		folded = append(folded, body...)
+		digest = sha256.Sum256(folded)
+
+		seen++
+		expectedSeq++
+	}
+	if err := it.Error(); err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	if seen != head.seq-head.lo+1 {
+		return &ChainContinuityReport{
+			Verified: false,
+			Reason:   "missing sequence " + strconv.FormatUint(expectedSeq, 10),
+			Records:  int64(seen),
+			Head:     head.seq,
+			Low:      head.lo,
+			Genesis:  head.lo == 1,
+		}, nil
+	}
+
+	want := "sha256:" + hex.EncodeToString(head.digest[:])
+	got := "sha256:" + hex.EncodeToString(digest[:])
+	if got != want {
+		return &ChainContinuityReport{
+			Verified: false,
+			Reason:   "head digest mismatch",
+			Records:  int64(seen),
+			Head:     head.seq,
+			Low:      head.lo,
+			Genesis:  head.lo == 1,
+		}, nil
+	}
+
+	return &ChainContinuityReport{
+		Verified: true,
+		Records:  int64(seen),
+		Head:     head.seq,
+		Low:      head.lo,
+		Genesis:  head.lo == 1,
+	}, nil
+}
+
+// decodeReplicatedDigest decodes a replicated-chain PrevHash value --
+// "" (genesis) or "sha256:<hex>" -- into its raw digest. Unlike the
+// node-local file chain's PrevHash (bare hex, no prefix), Chain.Append
+// always writes the "sha256:" prefix, so Verify must strip exactly that one.
+func decodeReplicatedDigest(prevHash string) ([sha256.Size]byte, bool) {
+	var out [sha256.Size]byte
+	if prevHash == "" {
+		return out, true
+	}
+	const prefix = "sha256:"
+	if !strings.HasPrefix(prevHash, prefix) {
+		return out, false
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(prevHash, prefix))
+	if err != nil || len(raw) != sha256.Size {
+		return out, false
+	}
+	copy(out[:], raw)
+	return out, true
+}

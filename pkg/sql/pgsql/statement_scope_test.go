@@ -36,7 +36,7 @@ import (
 func TestPGWire_StatementResolvesEachTableOnce(t *testing.T) {
 	hs := sqltest.NewHarness()
 	counting := hs.CountTableReads()
-	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	prov := provider.NewProvider("qrdb", hs.KVSvc, provider.WithRegistry(hs.Registry))
 	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
 	t.Cleanup(func() { _ = eng.Close() })
 	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")
@@ -65,7 +65,7 @@ func TestPGWire_StatementResolvesEachTableOnce(t *testing.T) {
 func TestPGWire_PrepareResolvesEachTableOnce(t *testing.T) {
 	hs := sqltest.NewHarness()
 	counting := hs.CountTableReads()
-	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	prov := provider.NewProvider("qrdb", hs.KVSvc, provider.WithRegistry(hs.Registry))
 	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
 	t.Cleanup(func() { _ = eng.Close() })
 	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")
@@ -108,7 +108,7 @@ func TestBeginCommand(t *testing.T) {
 func newScopeHandler(t *testing.T) (*ParseHandler, context.Context, *provider.QRDBSession) {
 	t.Helper()
 	hs := sqltest.NewHarness()
-	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	prov := provider.NewProvider("qrdb", hs.KVSvc, provider.WithRegistry(hs.Registry))
 	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
 	t.Cleanup(func() { _ = eng.Close() })
 	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")

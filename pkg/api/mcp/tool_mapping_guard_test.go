@@ -304,6 +304,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_rag_delete_document":                   permission.RAGDeleteDocument,
 	"qrdb_audit_query":                           permission.AuditQuery,
 	"qrdb_audit_verify":                          permission.AuditVerify,
+	"qrdb_audit_verify_replicated":               permission.AuditVerifyReplicated,
 	"qrdb_authfactor_enroll":                     permission.AuthFactorEnroll,
 	"qrdb_authfactor_challenge":                  permission.AuthFactorChallenge,
 	"qrdb_authfactor_verify":                     permission.AuthFactorVerify,
@@ -365,6 +366,22 @@ func (guardAuditLogger) Query(context.Context, audit.Filter) (*audit.Page, error
 }
 func (guardAuditLogger) Close() error { return nil }
 
+// guardReplicatedInner additionally implements service.TenantChainVerifier,
+// standing in for a *service.ReplicatedLogger in the guard fixture.
+type guardReplicatedInner struct{ guardAuditLogger }
+
+func (guardReplicatedInner) VerifyTenantChain(context.Context, string) (*audit.ChainContinuityReport, error) {
+	return &audit.ChainContinuityReport{Verified: true, Genesis: true}, nil
+}
+
+// guardReplicatedEntitlement is a minimal no-op service.AuditEntitlementLookup
+// wired solely so the guard fixture can register qrdb_audit_verify_replicated.
+type guardReplicatedEntitlement struct{}
+
+func (guardReplicatedEntitlement) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 // newFullyWiredGuardServer builds a *Server with every optional service
 // wired so every conditional addTools group in NewServer fires, reusing the
 // package's existing test doubles where they are visible under the plain
@@ -401,6 +418,7 @@ func newFullyWiredGuardServer(t *testing.T, extra ...ServerOption) *Server {
 		WithAuthFactorService(newCovMockAuthFactorSvc()),
 		WithUserAuthFactorService(newCovMockUserAuthFactorSvc()),
 		WithAuditLogger(guardAuditLogger{}),
+		WithReplicatedAuditLogger(service.NewOptInAuditLogger(guardReplicatedInner{}, guardReplicatedEntitlement{}, false)),
 	}
 	opts = append(opts, extra...)
 	return NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", opts...)

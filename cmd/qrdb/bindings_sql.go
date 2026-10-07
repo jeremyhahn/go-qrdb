@@ -18,60 +18,39 @@ package main
 
 import (
 	"context"
-	"sync/atomic"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// SQLQueryResult holds the result of a SQL query execution. It is the
-// canonical service-layer result type; the alias keeps the Wails IPC
-// surface name stable (columns/rows/rowCount/duration).
-type SQLQueryResult = service.SQLQueryResult
+// SQLQueryResult holds the result of a SQL query execution. The alias keeps
+// the Wails IPC surface name stable (columns/rows/rowCount/duration).
+type SQLQueryResult = transport.SQLQueryResult
 
-// SQLBinding exposes SQL query execution to the Wails frontend. It
-// delegates to the canonical SQL query service (pkg/sql/query), the same
-// execution core used by the REST API's POST /sql/query handler.
+// SQLBinding exposes SQL query execution to the Wails frontend over the
+// active connection's SDK SQL client, on whichever transport it uses.
 type SQLBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
-	sqlSvc atomic.Pointer[service.SQLServicer]
 }
 
 // NewSQLBinding creates a new SQLBinding.
-func NewSQLBinding(log *logger.Logger, conn *ConnectionBinding) *SQLBinding {
+func NewSQLBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *SQLBinding {
 	return &SQLBinding{logger: log, conn: conn}
 }
 
-// SetServices sets the service layer interfaces needed for SQL execution.
-// Called by EmbeddedServerBinding during startup.
-func (b *SQLBinding) SetServices(kvSvc service.KVServicer, dbSvc service.DatabaseServicer) {
-	if kvSvc == nil {
-		b.sqlSvc.Store(nil)
-		return
-	}
-	svc := sqlquery.NewService(kvSvc, dbSvc)
-	b.sqlSvc.Store(&svc)
-}
-
-// ClearServices clears the service references. Called during shutdown.
-func (b *SQLBinding) ClearServices() {
-	b.sqlSvc.Store(nil)
-}
-
-// Execute runs a SQL query and returns the results. The underlying service
-// scopes the provider to the database's engine type when the database
-// service is available, so that only engine-appropriate tables are exposed.
+// Execute runs a SQL query against the named database and returns the
+// results.
 func (b *SQLBinding) Execute(query string, dbName string) (*SQLQueryResult, error) {
 	b.logger.Debug("Execute called", "query", query, "database", dbName)
 
-	svcPtr := b.sqlSvc.Load()
-	if svcPtr == nil {
-		return nil, &SQLNotAvailableError{}
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("Execute failed", "error", err)
+		return nil, err
 	}
 
-	result, err := (*svcPtr).Execute(context.Background(), dbName, query)
+	result, err := cl.SQL().Query(context.Background(), dbName, query)
 	if err != nil {
 		b.logger.Error("Execute failed", "query", query, "error", err)
 		return nil, &SQLExecutionError{Query: query, Err: err}

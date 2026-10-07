@@ -83,7 +83,7 @@ func newAuditedHolderDatabaseService(t *testing.T, trail audit.AuditLogger) (*Da
 	// caller-supplied data directory and only a volume or raft tenant gets a
 	// dedicated store, which this test does not need to provision.
 	cfg := database.DatabaseConfig{
-		TenantID: "acme", Name: "vault", Engine: database.EngineKV, Backend: database.BackendMemory,
+		TenantID: "acme", Name: "vault", Backend: database.BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModeShamir, SharesRequired: 2, SharesTotal: 2},
 	}
@@ -250,7 +250,7 @@ func TestDatabaseHolders_Refusals(t *testing.T) {
 		t.Fatalf("revoke without a username = %v, want ErrMissingUsername", err)
 	}
 
-	plain := database.DatabaseConfig{Name: "plain", Engine: database.EngineKV, Backend: database.BackendMemory}
+	plain := database.DatabaseConfig{Name: "plain", Backend: database.BackendMemory}
 	if _, err := svc.CreateForTenant(ctx, plain); err != nil {
 		t.Fatal(err)
 	}

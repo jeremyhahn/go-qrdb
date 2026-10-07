@@ -3378,8 +3378,9 @@ message ListDocumentsResponse {
 
 // DatabaseCreateRequest contains parameters for creating a new database.
 message DatabaseCreateRequest {
+    reserved 2;
+    reserved "engine"; // removed in v0.45 (OD-13): every database serves every engine.
     string name = 1;
-    string engine = 2;
     string backend = 3;
     string data_dir = 4;
     DatabaseProtocolConfig protocol = 5;
@@ -3413,8 +3414,9 @@ message DatabaseListResponse {
 
 // DatabaseInfoResponse holds runtime information about a database.
 message DatabaseInfoResponse {
+    reserved 2;
+    reserved "engine"; // removed in v0.45 (OD-13): every database serves every engine.
     string name = 1;
-    string engine = 2;
     string backend = 3;
     string status = 4;
     DatabaseProtocolConfig protocol = 5;
@@ -4494,11 +4496,15 @@ message TenantDEKRetireRequest {
 }
 
 // TenantDEKVersion describes one keyring version. retired_at_unix is 0 while
-// the version is live.
+// the version is live. provider_id and key_ref name the KEK (pkg/keywrap)
+// that wrapped this version's key, for audit -- never the key itself. Both
+// are empty once the version is retired.
 message TenantDEKVersion {
     uint64 version         = 1;
     int64  created_at_unix = 2;
     int64  retired_at_unix = 3;
+    string provider_id     = 4;
+    string key_ref         = 5;
 }
 
 // TenantDEKStatusResponse describes a tenant's keyring. current_version 0
@@ -5411,6 +5417,19 @@ service AuditService {
     rpc VerifyChain(AuditVerifyChainRequest) returns (AuditVerifyChainResponse) {
         option (qrdb.v1.permission) = "audit:verify";
     }
+
+    // VerifyReplicatedChain verifies the hash-chain continuity of the
+    // cluster-wide REPLICATED audit chain (docs/audit/architecture.md
+    // #cluster-wide-replicated-trail) for one tenant -- a different trail
+    // from the node-local one VerifyChain above checks, with no files or
+    // rotation concepts: it has one authority per tenant, replicated by
+    // Raft rather than written by one process. Verified=false with a
+    // Reason is a TAMPER VERDICT; a non-nil error means verification could
+    // not be performed (no replicated audit configured) or the tenant is
+    // not entitled to the replicated chain at all.
+    rpc VerifyReplicatedChain(AuditVerifyReplicatedChainRequest) returns (AuditVerifyReplicatedChainResponse) {
+        option (qrdb.v1.permission) = "audit:verify_replicated";
+    }
 }
 
 // AuditQueryRequest carries the filter criteria for an audit query.
@@ -5433,6 +5452,11 @@ message AuditQueryRequest {
     int32  limit     = 8;
     // cursor is an opaque pagination token from a previous AuditQueryResponse.
     string cursor    = 9;
+    // replicated, when true, reads the cluster-wide replicated audit chain
+    // (docs/audit/architecture.md#cluster-wide-replicated-trail) instead of
+    // the node-local trail. A tenant not entitled to it answers an empty
+    // page (total -1), never an error.
+    bool replicated  = 10;
 }
 
 // AuditQueryResponse carries a paginated page of audit events.
@@ -5487,6 +5511,33 @@ message AuditVerifyChainResponse {
     string seed = 7;
     // handoff is the hex digest the tail ends on.
     string handoff = 8;
+}
+
+// AuditVerifyReplicatedChainRequest names which tenant's replicated chain to
+// verify. tenant_id is optional; empty means the caller's own tenant. Any
+// other value is refused with PERMISSION_DENIED, exactly as Query confines
+// tenant_id.
+message AuditVerifyReplicatedChainRequest {
+    string tenant_id = 1;
+}
+
+// AuditVerifyReplicatedChainResponse reports the outcome of verifying the
+// cluster-wide replicated audit chain's hash continuity for one tenant.
+message AuditVerifyReplicatedChainResponse {
+    // verified is true only if every surviving event folds into the
+    // chain's own authoritative head digest.
+    bool verified = 1;
+    // reason is a human-readable description of the break; empty when verified.
+    string reason = 2;
+    // records is the number of surviving events folded.
+    int64 records = 3;
+    // head_seq is the highest surviving sequence number.
+    uint64 head_seq = 4;
+    // low_seq is the lowest surviving sequence number.
+    uint64 low_seq = 5;
+    // genesis is true when low_seq == 1: the walk reached the chain's true
+    // origin rather than a retention-pruned tail.
+    bool genesis = 6;
 }
 
 // ===========================================================================

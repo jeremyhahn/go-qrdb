@@ -17,8 +17,8 @@
 
 <!--
   DatabaseWorkspace renders the database workspace with a horizontal tab bar
-  at the top and the active tool view below it. Tab visibility is filtered by
-  the database engine and by the presence of SQL protocol configuration.
+  at the top and the active tool view below it. Every database exposes every
+  engine; the SQL tab is shown only when SQL protocol configuration is present.
 
   Navigation is driven through navStore.selectDbTool.
 -->
@@ -64,8 +64,8 @@
     readonly label: string;
   }
 
-  /** Tabs for KV databases. */
-  const KV_TABS: readonly TabDef[] = [
+  /** Tabs for every database; each database exposes every engine. */
+  const DB_TABS: readonly TabDef[] = [
     { id: 'data',         label: 'Data' },
     { id: 'collections',  label: 'Collections' },
     { id: 'indexes',      label: 'Indexes' },
@@ -74,12 +74,8 @@
     { id: 'watch',        label: 'Watch' },
     { id: 'leases',       label: 'Leases' },
     { id: 'locks',        label: 'Locks' },
-  ];
-
-  /** Tabs for TimeSeries and Vector databases. */
-  const ENGINE_TABS: readonly TabDef[] = [
-    { id: 'data',  label: 'Data' },
-    { id: 'batch', label: 'Batch' },
+    { id: 'timeseries',   label: 'Time Series' },
+    { id: 'vector',       label: 'Vectors' },
   ];
 
   /** SQL Browser tab — injected when SQL protocols are enabled. */
@@ -103,9 +99,7 @@
   );
 
   const visibleTabs = $derived.by((): readonly TabDef[] => {
-    const base: TabDef[] = database.engine === 'kv'
-      ? [...KV_TABS]
-      : [...ENGINE_TABS];
+    const base: TabDef[] = [...DB_TABS];
     if (hasSql) base.push(SQL_TAB);
     base.push(SETTINGS_TAB);
     return base;
@@ -141,54 +135,30 @@
 
   <!-- Tool view -->
   <div class="flex-1 overflow-y-auto p-6" id="tabpanel-{activeTool}" role="tabpanel">
-    {#if database.engine === 'kv'}
-
-      {#if activeTool === 'data'}
-        <KVExplorer client={dbClient} />
-      {:else if activeTool === 'collections'}
-        <CollectionView {client} {database} />
-      {:else if activeTool === 'indexes'}
-        <IndexManager client={dbClient} />
-      {:else if activeTool === 'transactions'}
-        <TransactionView client={dbClient} />
-      {:else if activeTool === 'batch'}
-        <BatchView client={dbClient} />
-      {:else if activeTool === 'watch'}
-        <WatchView client={dbClient} />
-      {:else if activeTool === 'leases'}
-        <LeaseManager client={dbClient} />
-      {:else if activeTool === 'locks'}
-        <LockManager client={dbClient} />
-      {:else if activeTool === 'sql'}
-        <SQLBrowserScoped {client} {database} />
-      {:else if activeTool === 'db-settings'}
-        <DatabaseSettingsView {client} {database} />
-      {/if}
-
-    {:else if database.engine === 'timeseries'}
-
-      {#if activeTool === 'data'}
-        <TimeSeriesView client={dbClient} />
-      {:else if activeTool === 'batch'}
-        <BatchView client={dbClient} />
-      {:else if activeTool === 'sql'}
-        <SQLBrowserScoped {client} {database} />
-      {:else if activeTool === 'db-settings'}
-        <DatabaseSettingsView {client} {database} />
-      {/if}
-
-    {:else if database.engine === 'vector'}
-
-      {#if activeTool === 'data'}
-        <VectorView client={dbClient} />
-      {:else if activeTool === 'batch'}
-        <BatchView client={dbClient} />
-      {:else if activeTool === 'sql'}
-        <SQLBrowserScoped {client} {database} />
-      {:else if activeTool === 'db-settings'}
-        <DatabaseSettingsView {client} {database} />
-      {/if}
-
+    {#if activeTool === 'data'}
+      <KVExplorer client={dbClient} />
+    {:else if activeTool === 'collections'}
+      <CollectionView {client} {database} />
+    {:else if activeTool === 'indexes'}
+      <IndexManager client={dbClient} />
+    {:else if activeTool === 'transactions'}
+      <TransactionView client={dbClient} />
+    {:else if activeTool === 'batch'}
+      <BatchView client={dbClient} />
+    {:else if activeTool === 'watch'}
+      <WatchView client={dbClient} />
+    {:else if activeTool === 'leases'}
+      <LeaseManager client={dbClient} />
+    {:else if activeTool === 'locks'}
+      <LockManager client={dbClient} />
+    {:else if activeTool === 'timeseries'}
+      <TimeSeriesView client={dbClient} />
+    {:else if activeTool === 'vector'}
+      <VectorView client={dbClient} />
+    {:else if activeTool === 'sql'}
+      <SQLBrowserScoped {client} {database} />
+    {:else if activeTool === 'db-settings'}
+      <DatabaseSettingsView {client} {database} />
     {/if}
   </div>
 

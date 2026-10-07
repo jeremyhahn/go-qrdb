@@ -46,6 +46,12 @@ type AuditFilter struct {
 	TenantID string    `json:"tenantID,omitempty"`
 	Limit    int       `json:"limit,omitempty"`
 	Cursor   string    `json:"cursor,omitempty"`
+
+	// Replicated, when true, reads the cluster-wide replicated audit chain
+	// (docs/audit/architecture.md#cluster-wide-replicated-trail) instead of
+	// the node-local trail. A tenant not entitled to it answers an empty
+	// page (Total: -1), never an error.
+	Replicated bool `json:"replicated,omitempty"`
 }
 
 // AuditPage is the response for a paginated audit query.
@@ -89,6 +95,36 @@ type AuditVerifyResult struct {
 	Handoff string `json:"handoff,omitempty"`
 }
 
+// ChainContinuityResult is the outcome of verifying one tenant's
+// cluster-wide REPLICATED audit chain's hash continuity
+// (docs/audit/architecture.md#cluster-wide-replicated-trail). It mirrors
+// pkg/audit.ChainContinuityReport for SDK transport use, and is
+// deliberately a different shape from AuditVerifyResult above: there are no
+// files, rotation or order concepts here -- one tenant has one
+// Raft-replicated chain, not a set of NDJSON archives.
+type ChainContinuityResult struct {
+	// Verified is true only if every surviving event folds, in sequence,
+	// into the chain's own authoritative head digest.
+	Verified bool `json:"verified"`
+
+	// Reason is a human-readable description of the break. Empty when
+	// Verified is true.
+	Reason string `json:"reason,omitempty"`
+
+	// Records is the number of surviving events folded.
+	Records int64 `json:"records"`
+
+	// Head is the highest surviving sequence number.
+	Head uint64 `json:"head"`
+
+	// Low is the lowest surviving sequence number.
+	Low uint64 `json:"low"`
+
+	// Genesis is true when Low == 1: the walk reached the chain's true
+	// origin rather than a retention-pruned tail.
+	Genesis bool `json:"genesis"`
+}
+
 // AuditClient is the interface for audit event emission and retrieval over
 // any transport.
 // Authorization: EmitAudit requires "audit:emit"; QueryAudit requires
@@ -111,4 +147,12 @@ type AuditClient interface {
 	// PERFORMED (unsupported backend, missing file, or a rotation race);
 	// AuditVerifyResult.Verified == false is a TAMPER VERDICT, not an error.
 	VerifyChain(ctx context.Context) (*AuditVerifyResult, error)
+
+	// VerifyReplicatedChain verifies the hash-chain continuity of the
+	// cluster-wide replicated audit chain for tenantID (empty means the
+	// caller's own tenant; naming another tenant is refused). A tenant
+	// whose replicated-audit entitlement is off is refused rather than
+	// answering a trivially-true report for a chain that was never written
+	// to. Requires "audit:verify_replicated" permission.
+	VerifyReplicatedChain(ctx context.Context, tenantID string) (*ChainContinuityResult, error)
 }

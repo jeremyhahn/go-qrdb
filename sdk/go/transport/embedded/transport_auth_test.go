@@ -264,7 +264,7 @@ func TestCreateUser_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock), WithRoleService(tenantRoleServicer("tenant-a")))
 
-	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
+	u, err := tr.CreateUser(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "tenant-a",
 		RoleIDs:  []string{"role-admin"},

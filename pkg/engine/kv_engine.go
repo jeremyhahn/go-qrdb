@@ -20,8 +20,6 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
@@ -80,7 +78,6 @@ type KVEngine struct {
 	// exactly as indexScopes does for single-field indexes.
 	compoundIndexScopes map[string][]byte
 	hub                 *watch.Hub
-	pebbleDB            *pebble.DB
 	logger              *logger.Logger
 	handlers            map[byte]kvHandler
 	extHandlers         map[byte]extHandler
@@ -101,15 +98,6 @@ type KVOption func(*KVEngine)
 func WithKVWatchHub(hub *watch.Hub) KVOption {
 	return func(e *KVEngine) {
 		e.hub = hub
-	}
-}
-
-// WithKVPebbleDB provides a PebbleDB instance for durable secondary
-// indexes. When set, index create operations use PebbleIndex; otherwise
-// they fall back to MemoryIndex.
-func WithKVPebbleDB(db *pebble.DB) KVOption {
-	return func(e *KVEngine) {
-		e.pebbleDB = db
 	}
 }
 
@@ -779,19 +767,21 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 		return res, nil
 	}
 
+	batch := e.stg.Batch()
+	defer func() { _ = batch.Close() }()
+
 	// Pre-validate unique-index constraints for the whole selected op set
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
-	// consensus stall — matching the MVCC and batch handlers.
-	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	// consensus stall — matching the MVCC and batch handlers. Read through
+	// the batch so a uniqueness check sees an index write staged earlier in
+	// this same batch (storage.Reader).
+	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, aerr
 		}
 		return sm.Result{}, verr
 	}
-
-	batch := e.stg.Batch()
-	defer func() { _ = batch.Close() }()
 
 	// Watch notifications are collected during the batch and emitted only after
 	// a successful commit, so a failed commit publishes nothing.

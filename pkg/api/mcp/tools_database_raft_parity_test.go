@@ -100,7 +100,6 @@ func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
 
 	args := fullDiscoveryArgs()
 	args["name"] = "parity"
-	args["engine"] = "kv"
 	args["backend"] = "memory"
 	args["raft_cluster_mode"] = "distributed"
 	args["raft_replica_id"] = 2
@@ -272,7 +271,7 @@ func TestDatabaseRaftTools_PeersMustBeStrings(t *testing.T) {
 		t.Fatalf("update with a string for peers accepted: %s", resultText(t, r))
 	}
 	r, err = handleDatabaseCreate(svc)(context.Background(), buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name": "badpeers", "engine": "kv", "backend": "memory",
+		"name": "badpeers", "backend": "memory",
 		"raft_cluster_mode": "distributed", "raft_peers": []any{1},
 	}))
 	if err != nil {

@@ -240,7 +240,6 @@
               <thead>
                 <tr>
                   <th>Name</th>
-                  <th>Engine</th>
                   <th>Backend</th>
                   <th>Status</th>
                 </tr>
@@ -249,16 +248,6 @@
                 {#each databases as db (db.name)}
                   <tr>
                     <td class="font-mono text-sm">{db.name}</td>
-                    <td>
-                      <span
-                        class="badge badge-sm"
-                        class:badge-primary={db.engine === "kv"}
-                        class:badge-secondary={db.engine === "timeseries"}
-                        class:badge-accent={db.engine === "vector"}
-                      >
-                        {db.engine}
-                      </span>
-                    </td>
                     <td class="text-xs">{db.backend}</td>
                     <td>
                       <span

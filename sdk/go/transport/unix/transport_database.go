@@ -41,7 +41,6 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 
 	pbReq := &pb.DatabaseCreateRequest{
 		Name:     req.Name,
-		Engine:   req.Engine,
 		Backend:  req.Backend,
 		DataDir:  req.DataDir,
 		Replicas: uint32(req.Replicas),

@@ -1,6 +1,6 @@
 # Shamir Custody — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Every capability below is served on all six transports with the same
 semantics and the same error classes. gRPC service `qrdb.v1.QRDBService`
@@ -29,13 +29,13 @@ The barrier's own operations are [../barrier-seal/api.md](../barrier-seal/api.md
 
 ## Capability matrix — distribution
 
-| Capability | REST | gRPC / Unix | QUIC | MCP tool | `scp` permission |
-|---|---|---|---|---|---|
-| Initialize Shamir custody | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `seal:initialize_shamir` |
-| Generate recovery key | `POST /v1/barrier/recovery/generate` | `BarrierRecoveryGenerate` | `barrier.RecoveryGenerate` | `qrdb_barrier_recovery_generate` | `seal:generate_recovery` + SO PIN |
-| Recovery status | `GET /v1/barrier/recovery/status` | `BarrierRecoveryStatus` | `barrier.RecoveryStatus` | `qrdb_barrier_recovery_status` | `seal:status` |
-| Delete recovery key | `DELETE /v1/barrier/recovery` | `BarrierRecoveryDelete` | `barrier.RecoveryDelete` | `qrdb_barrier_recovery_delete` | `seal:generate_recovery` |
-| Initialization ceremony with holders | `POST /v1/ceremony/initialize` | `CeremonyInitialize` | `ceremony.Initialize` | `qrdb_ceremony_initialize` | `ceremony:initialize` |
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | `scp` permission |
+|---|---|---|---|---|---|---|
+| Initialize Shamir custody | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `BarrierInitializeShamir` | `seal:initialize_shamir` |
+| Generate recovery key | `POST /v1/barrier/recovery/generate` | `BarrierRecoveryGenerate` | `barrier.RecoveryGenerate` | `qrdb_barrier_recovery_generate` | `BarrierGenerateRecoveryKeys` | `seal:generate_recovery` + SO PIN |
+| Recovery status | `GET /v1/barrier/recovery/status` | `BarrierRecoveryStatus` | `barrier.RecoveryStatus` | `qrdb_barrier_recovery_status` | `BarrierHasRecoveryKeys` | `seal:status` |
+| Delete recovery key | `DELETE /v1/barrier/recovery` | `BarrierRecoveryDelete` | `barrier.RecoveryDelete` | `qrdb_barrier_recovery_delete` | `BarrierDeleteRecoveryKeys` | `seal:generate_recovery` |
+| Initialization ceremony with holders | `POST /v1/ceremony/initialize` | `CeremonyInitialize` | `ceremony.Initialize` | `qrdb_ceremony_initialize` | `CeremonyInitialize` | `ceremony:initialize` |
 
 Unseal, seal, root-token, recovery and the completion of a rekey have no
 route of their own: each is the quorum submission with its `op`.

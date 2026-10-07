@@ -321,7 +321,7 @@ func TestRouting_GetUserByUsername_SealedTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	_, err = svc.GetUserByUsername(context.Background(), "vault", "alice")
+	_, err = svc.GetUserByUsername(tenant.WithTenantID(context.Background(), "vault"), "vault", "alice")
 	if !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("GetUserByUsername(sealed) = %v, want ErrTenantSealed", err)
 	}
@@ -489,7 +489,7 @@ func TestRouting_GetUserByUsername_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "rt")
 	// Create user and then look up by username.
 	_, createErr := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "routeuser", TenantID: "rt"})
 	if createErr != nil {
@@ -616,14 +616,14 @@ func TestRouting_AddCertBinding_Success(t *testing.T) {
 }
 
 // EffectiveTenant honors an explicit tenant for a system-tenant caller.
+// EffectiveTenant refuses a system-tenant caller a different, explicit
+// tenant: the system-tenant lift was removed (owner ruling, 2026-10-01).
 func TestEffectiveTenant_SystemExplicit(t *testing.T) {
 	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
-	got, err := tenant.EffectiveTenant(ctx, "my-tenant", "create user")
-	if err != nil {
-		t.Fatalf("EffectiveTenant: %v", err)
-	}
-	if got != "my-tenant" {
-		t.Errorf("EffectiveTenant(system, %q) = %q, want my-tenant", "my-tenant", got)
+	_, err := tenant.EffectiveTenant(ctx, "my-tenant", "create user")
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("EffectiveTenant(system, %q) err = %v, want *CrossTenantDeniedError", "my-tenant", err)
 	}
 }
 

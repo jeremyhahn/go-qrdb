@@ -12,11 +12,50 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
+
+// fakeKeyWrapProvider is a same-shaped test double standing in for a real
+// go-xkms hardware or cloud-KMS provider -- or, registered under
+// keywrap.SoftwareProviderID, for the built-in provider when a test has no
+// need to touch a real key file. It "wraps" by copying bytes verbatim, the
+// identical shape pkg/keywrap's own fakeHardwareProvider test double uses.
+type fakeKeyWrapProvider struct{ id string }
+
+var _ keywrap.Provider = (*fakeKeyWrapProvider)(nil)
+
+func (p *fakeKeyWrapProvider) ProviderID() string { return p.id }
+
+func (p *fakeKeyWrapProvider) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	out := make([]byte, len(dek))
+	copy(out, dek)
+	return out, nil
+}
+
+func (p *fakeKeyWrapProvider) Unwrap(_ context.Context, _ string, wrapped []byte) ([]byte, error) {
+	out := make([]byte, len(wrapped))
+	copy(out, wrapped)
+	return out, nil
+}
+
+// testKeyWrapRegistry returns a Registry whose "software" entry is the fake
+// provider above, so a test gets a fully working Keyring with no filesystem
+// dependency -- every call site that used to get a zero-config Keyring
+// before key wrapping existed uses this instead.
+func testKeyWrapRegistry() keywrap.Registry {
+	r := keywrap.NewRegistry()
+	_ = r.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return &fakeKeyWrapProvider{id: keywrap.SoftwareProviderID}, nil
+	})
+	return r
+}
 
 // tenantStores is an in-memory StoreResolver: one isolated MemoryKVStore per
 // tenant, standing in for the tenant.StoreResolver the server wires.
@@ -47,7 +86,7 @@ func (r *tenantStores) Resolve(_ context.Context, tenantID string) (kvstore.KVSt
 func newTestKeyring(t *testing.T) (*Keyring, *tenantStores) {
 	t.Helper()
 	stores := newTenantStores()
-	k, err := NewKeyring(stores)
+	k, err := NewKeyring(stores, WithKeyWrapRegistry(testKeyWrapRegistry()))
 	if err != nil {
 		t.Fatalf("NewKeyring: %v", err)
 	}
@@ -306,7 +345,7 @@ func TestRetiredKeyMaterialIsGoneFromTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v1Key := append([]byte(nil), rec1.Versions[0].Key...)
+	v1Key := append([]byte(nil), rec1.Versions[0].WrappedKey...)
 
 	if _, err := k.Rotate(ctx, "acme"); err != nil {
 		t.Fatal(err)
@@ -328,7 +367,7 @@ func TestRetiredKeyMaterialIsGoneFromTheStore(t *testing.T) {
 func TestVersionsSurviveARestart(t *testing.T) {
 	stores := newTenantStores()
 	ctx := context.Background()
-	first, err := NewKeyring(stores)
+	first, err := NewKeyring(stores, WithKeyWrapRegistry(testKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +377,7 @@ func TestVersionsSurviveARestart(t *testing.T) {
 	}
 	v2 := mustEncrypt(t, first, "acme", []byte("two"), nil)
 
-	second, err := NewKeyring(stores)
+	second, err := NewKeyring(stores, WithKeyWrapRegistry(testKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,8 +420,11 @@ func TestStatusNeverCarriesKeyMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// VersionInfo has no key field at all; this guards a regression that adds one.
-	if len(st.Versions) != 1 || st.Versions[0].Version != 1 || len(rec.Versions[0].Key) != KeySize {
+	// VersionInfo has no key-material field at all; this guards a
+	// regression that adds one. ProviderID/KeyRef are metadata, not key
+	// material, and are expected on the status.
+	if len(st.Versions) != 1 || st.Versions[0].Version != 1 || st.Versions[0].ProviderID != "software" ||
+		st.Versions[0].KeyRef != "acme" || len(rec.Versions[0].WrappedKey) != KeySize {
 		t.Fatalf("status = %+v", st)
 	}
 }
@@ -476,4 +518,343 @@ func TestDecodeRejectsACorruptRecord(t *testing.T) {
 	if _, err := k.Status(ctx, "acme"); !errors.Is(err, ErrCorruptKeyring) {
 		t.Fatalf("err = %v, want ErrCorruptKeyring", err)
 	}
+}
+
+// TestEncryptWrapsTheVersionKeyUnderTheConfiguredProviderAndKeyRef: the
+// default composition -- no WithProviderID/WithKeyRef -- wraps under
+// "software" and the tenant ID itself, and the stored record carries that
+// metadata (never the plaintext key).
+func TestEncryptWrapsTheVersionKeyUnderTheConfiguredProviderAndKeyRef(t *testing.T) {
+	k, stores := newTestKeyring(t)
+	ctx := context.Background()
+	mustEncrypt(t, k, "acme", []byte("x"), nil)
+	store, _ := stores.Resolve(ctx, "acme")
+	rec, err := k.load(ctx, "acme", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := rec.Versions[0]
+	if v.ProviderID != "software" || v.KeyRef != "acme" || len(v.WrappedKey) == 0 {
+		t.Fatalf("version record = %+v, want provider=software keyRef=acme with a wrapped key", v)
+	}
+}
+
+// TestWithProviderIDAndKeyRefAreConfigurable: an embedder can route new
+// versions through a different provider ID and a different tenant-scoped
+// key reference.
+func TestWithProviderIDAndKeyRefAreConfigurable(t *testing.T) {
+	ctx := context.Background()
+	stores := newTenantStores()
+	registry := keywrap.NewRegistry()
+	_ = registry.Register("hsm", func() (keywrap.Provider, error) {
+		return &fakeKeyWrapProvider{id: "hsm"}, nil
+	})
+	k, err := NewKeyring(stores,
+		WithKeyWrapRegistry(registry),
+		WithProviderID("hsm"),
+		WithKeyRef(func(tenantID string) string { return "kek-for-" + tenantID }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustEncrypt(t, k, "acme", []byte("x"), nil)
+	store, _ := stores.Resolve(ctx, "acme")
+	rec, err := k.load(ctx, "acme", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := rec.Versions[0]
+	if v.ProviderID != "hsm" || v.KeyRef != "kek-for-acme" {
+		t.Fatalf("version record = %+v, want provider=hsm keyRef=kek-for-acme", v)
+	}
+	// It still round-trips under that provider.
+	o, err := k.Decrypt(ctx, "acme", mustEncrypt(t, k, "acme", []byte("y"), nil).Ciphertext, nil)
+	if err != nil || string(o.Plaintext) != "y" {
+		t.Fatalf("decrypt under hsm provider: %+v, %v", o, err)
+	}
+}
+
+// TestNewKeyringRefusesAWithKeyWrapProviderCollision mirrors
+// service.NewBackupService's identical refusal: installing
+// WithKeyWrapProvider under an ID already present in the registry it is
+// being installed into is an error, not a silent no-op that discards the
+// earlier registration.
+func TestNewKeyringRefusesAWithKeyWrapProviderCollision(t *testing.T) {
+	registry := testKeyWrapRegistry() // already has "software"
+	_, err := NewKeyring(newTenantStores(),
+		WithKeyWrapRegistry(registry),
+		WithKeyWrapProvider(&fakeKeyWrapProvider{id: keywrap.SoftwareProviderID}),
+	)
+	var collision *keywrap.ProviderAlreadyRegisteredError
+	if !errors.As(err, &collision) {
+		t.Fatalf("err = %v, want *keywrap.ProviderAlreadyRegisteredError", err)
+	}
+}
+
+// TestZeroConfigKeyringRefusesToMintAKeyUntilConfigured: with no
+// WithKeyWrapRegistry/WithKeyWrapProvider/WithKeyDir at all, the default
+// "software" provider has no key directory to resolve, so minting a key
+// (Encrypt, Rotate) is refused with a typed, server-side error rather than
+// silently storing a plaintext key or falling back to an implicit
+// location -- there is no "no KEK" escape hatch.
+func TestZeroConfigKeyringRefusesToMintAKeyUntilConfigured(t *testing.T) {
+	k, err := NewKeyring(newTenantStores())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := k.Encrypt(ctx, "acme", []byte("x"), nil); !errors.Is(err, ErrKeyDirNotConfigured) {
+		t.Fatalf("Encrypt err = %v, want ErrKeyDirNotConfigured", err)
+	}
+	if _, err := k.Rotate(ctx, "acme"); !errors.Is(err, ErrKeyDirNotConfigured) {
+		t.Fatalf("Rotate err = %v, want ErrKeyDirNotConfigured", err)
+	}
+}
+
+// TestWithKeyDirUsesARealSoftwareProvider proves the default "software"
+// provider -- not merely a test double -- works end to end once WithKeyDir
+// names a real key directory, and that Close releases it.
+func TestWithKeyDirUsesARealSoftwareProvider(t *testing.T) {
+	ctx := context.Background()
+	keyDir := t.TempDir()
+	// The software provider resolves a bare file NAME inside keyDir; the
+	// default key reference is the tenant ID itself, so the operator
+	// provisions one 32-byte key file per tenant.
+	if err := os.WriteFile(filepath.Join(keyDir, "acme"), bytes.Repeat([]byte{0x42}, KeySize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k, err := NewKeyring(newTenantStores(), WithKeyDir(keyDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := k.Encrypt(ctx, "acme", []byte("hunter2"), nil)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	o, err := k.Decrypt(ctx, "acme", s.Ciphertext, nil)
+	if err != nil || string(o.Plaintext) != "hunter2" {
+		t.Fatalf("Decrypt = %+v, %v", o, err)
+	}
+	if err := k.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Close on a Keyring that never resolved the software provider is a
+	// no-op, not a panic.
+	k2, err := NewKeyring(newTenantStores(), WithKeyDir(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k2.Close(); err != nil {
+		t.Fatalf("Close of an unused provider: %v", err)
+	}
+}
+
+// TestLegacyFormatRecordIsRefused: a record written before key wrapping
+// existed -- format 1, a plaintext key per version -- is refused with
+// *LegacyKeyringFormatError on every verb that reads it, never treated as
+// corrupt and never migrated.
+func TestLegacyFormatRecordIsRefused(t *testing.T) {
+	ctx := context.Background()
+	k, stores := newTestKeyring(t)
+	store, _ := stores.Resolve(ctx, "acme")
+	legacy := `{"format":1,"current":1,"versions":[{"version":1,"key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","created_at":"2026-01-01T00:00:00Z"}]}`
+	if err := store.Put(ctx, keyringStoreKey, []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	for op, err := range map[string]error{
+		"status":  second(k.Status(ctx, "acme")),
+		"encrypt": second(k.Encrypt(ctx, "acme", []byte("x"), nil)),
+		"decrypt": second(k.Decrypt(ctx, "acme", validLookingCiphertext(), nil)),
+		"rewrap":  second(k.Rewrap(ctx, "acme", validLookingCiphertext(), nil)),
+		"rotate":  second(k.Rotate(ctx, "acme")),
+		"retire":  second(k.Retire(ctx, "acme", 1)),
+	} {
+		var le *LegacyKeyringFormatError
+		if !errors.As(err, &le) || !errors.Is(err, ErrLegacyKeyringFormat) || le.TenantID != "acme" || le.Format != 1 {
+			t.Errorf("%s: err = %v, want *LegacyKeyringFormatError for acme format 1", op, err)
+		}
+		if errors.Is(err, ErrCorruptKeyring) {
+			t.Errorf("%s: a legacy-format record was reported as corrupt", op)
+		}
+	}
+}
+
+// TestUnwrapFailureIsAKeyWrapFailure: a provider whose Unwrap refuses (the
+// wrong KEK, or a tampered wrapped key) is reported as *KeyWrapFailedError,
+// never as a ciphertext authentication failure -- the two are checked at
+// different layers and conflating them would mislead an operator debugging
+// which one actually broke.
+func TestUnwrapFailureIsAKeyWrapFailure(t *testing.T) {
+	ctx := context.Background()
+	stores := newTenantStores()
+	registry := keywrap.NewRegistry()
+	_ = registry.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return &refusingUnwrapProvider{}, nil
+	})
+	k, err := NewKeyring(stores, WithKeyWrapRegistry(registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Encrypt(ctx, "acme", []byte("x"), nil); !errors.Is(err, ErrKeyWrapFailed) {
+		t.Fatalf("Encrypt under a provider that cannot even Wrap: err = %v, want ErrKeyWrapFailed", err)
+	}
+}
+
+// TestResolveSoftwareProviderReportsAnUnopenableKeyDir: WithKeyDir naming a
+// path the software provider cannot open (missing, or not a directory) is
+// a server-side configuration mistake distinct from "never configured" --
+// it collapses into *KeyWrapFailedError like any other provider-resolution
+// failure, wrapping the software provider's own *keywrap.KeyDirectoryError.
+func TestResolveSoftwareProviderReportsAnUnopenableKeyDir(t *testing.T) {
+	ctx := context.Background()
+	notADir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k, err := NewKeyring(newTenantStores(), WithKeyDir(notADir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = k.Encrypt(ctx, "acme", []byte("x"), nil)
+	var kwf *KeyWrapFailedError
+	if !errors.As(err, &kwf) {
+		t.Fatalf("err = %v, want *KeyWrapFailedError", err)
+	}
+	var dirErr *keywrap.KeyDirectoryError
+	if !errors.As(err, &dirErr) {
+		t.Fatalf("err = %v, want it to wrap *keywrap.KeyDirectoryError", err)
+	}
+}
+
+// TestUnregisteredProviderAtDecryptIsAKeyWrapFailure: a version wrapped
+// under a provider ID that is no longer registered -- an embedder removed
+// a hardware provider, or pointed a second Keyring at the same stores with
+// a narrower registry -- is reported the same way as any other provider
+// resolution failure at Decrypt/Rewrap time, never a ciphertext
+// authentication failure.
+func TestUnregisteredProviderAtDecryptIsAKeyWrapFailure(t *testing.T) {
+	ctx := context.Background()
+	stores := newTenantStores()
+	withCustom := keywrap.NewRegistry()
+	_ = withCustom.Register("custom", func() (keywrap.Provider, error) {
+		return &fakeKeyWrapProvider{id: "custom"}, nil
+	})
+	writer, err := NewKeyring(stores, WithKeyWrapRegistry(withCustom), WithProviderID("custom"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := writer.Encrypt(ctx, "acme", []byte("x"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withoutCustom := testKeyWrapRegistry() // only "software"
+	reader, err := NewKeyring(stores, WithKeyWrapRegistry(withoutCustom))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.Decrypt(ctx, "acme", sealed.Ciphertext, nil)
+	if !errors.Is(err, ErrKeyWrapFailed) {
+		t.Fatalf("err = %v, want ErrKeyWrapFailed", err)
+	}
+	if errors.Is(err, ErrAuthenticationFailed) {
+		t.Error("an unregistered provider was reported as a forged ciphertext")
+	}
+}
+
+// TestProviderUnwrapFailureDuringDecryptIsAKeyWrapFailure: a provider that
+// can wrap and unwrap once (Encrypt itself unwraps the just-minted key to
+// seal the plaintext) but refuses every unwrap after that is reported as
+// *KeyWrapFailedError on a later Decrypt, not as a forged ciphertext.
+func TestProviderUnwrapFailureDuringDecryptIsAKeyWrapFailure(t *testing.T) {
+	ctx := context.Background()
+	stores := newTenantStores()
+	provider := &failAfterNUnwraps{n: 1}
+	registry := keywrap.NewRegistry()
+	_ = registry.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return provider, nil
+	})
+	k, err := NewKeyring(stores, WithKeyWrapRegistry(registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := k.Encrypt(ctx, "acme", []byte("x"), nil)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	_, err = k.Decrypt(ctx, "acme", sealed.Ciphertext, nil)
+	if !errors.Is(err, ErrKeyWrapFailed) {
+		t.Fatalf("err = %v, want ErrKeyWrapFailed", err)
+	}
+}
+
+// failAfterNUnwraps wraps by copying bytes verbatim and unwraps the same
+// way for its first n calls, then refuses every call after -- standing in
+// for a KEK that becomes unreachable partway through a single request
+// (Rewrap unwraps the FROM version to read the plaintext, then the
+// CURRENT version to re-seal it; this lets a test fail only the second).
+type failAfterNUnwraps struct {
+	n   int
+	hit atomic.Int64
+}
+
+var _ keywrap.Provider = (*failAfterNUnwraps)(nil)
+
+func (p *failAfterNUnwraps) ProviderID() string { return keywrap.SoftwareProviderID }
+
+func (p *failAfterNUnwraps) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	out := make([]byte, len(dek))
+	copy(out, dek)
+	return out, nil
+}
+
+func (p *failAfterNUnwraps) Unwrap(_ context.Context, _ string, wrapped []byte) ([]byte, error) {
+	if p.hit.Add(1) > int64(p.n) {
+		return nil, errors.New("KEK unreachable")
+	}
+	out := make([]byte, len(wrapped))
+	copy(out, wrapped)
+	return out, nil
+}
+
+// TestRewrapReportsAFailureUnwrappingTheCurrentVersion: Rewrap unwraps TWO
+// versions -- the ciphertext's own (to read the plaintext) and the current
+// one (to re-seal it). A KEK that fails only on the second is reported as
+// *KeyWrapFailedError, and the plaintext is never returned to the caller.
+func TestRewrapReportsAFailureUnwrappingTheCurrentVersion(t *testing.T) {
+	ctx := context.Background()
+	stores := newTenantStores()
+	provider := &failAfterNUnwraps{n: 1}
+	registry := keywrap.NewRegistry()
+	_ = registry.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return provider, nil
+	})
+	k, err := NewKeyring(stores, WithKeyWrapRegistry(registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := mustEncrypt(t, k, "acme", []byte("x"), nil)
+	if _, err := k.Rotate(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = k.Rewrap(ctx, "acme", old.Ciphertext, nil)
+	if !errors.Is(err, ErrKeyWrapFailed) {
+		t.Fatalf("err = %v, want ErrKeyWrapFailed", err)
+	}
+}
+
+// refusingUnwrapProvider's Wrap always fails, standing in for a KEK that
+// has become unreachable (an HSM unplugged, a cloud KMS call refused).
+type refusingUnwrapProvider struct{}
+
+var _ keywrap.Provider = (*refusingUnwrapProvider)(nil)
+
+func (refusingUnwrapProvider) ProviderID() string { return keywrap.SoftwareProviderID }
+
+func (refusingUnwrapProvider) Wrap(context.Context, string, []byte) ([]byte, error) {
+	return nil, errors.New("KEK unreachable")
+}
+
+func (refusingUnwrapProvider) Unwrap(context.Context, string, []byte) ([]byte, error) {
+	return nil, errors.New("KEK unreachable")
 }

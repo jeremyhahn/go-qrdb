@@ -61,8 +61,6 @@ type quicRevokeFactorRequest struct {
 }
 
 // handleAuthFactorEnroll handles authfactor.Enroll QUIC frames.
-//
-// TODO: apply permission.AuthFactorEnroll once Phase 2 ships.
 func (s *Server) handleAuthFactorEnroll(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.authFactorSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "authfactor"}
@@ -101,8 +99,6 @@ func (s *Server) handleAuthFactorEnroll(ctx context.Context, payload []byte) ([]
 }
 
 // handleAuthFactorChallenge handles authfactor.Challenge QUIC frames.
-//
-// TODO: apply permission.AuthFactorChallenge once Phase 2 ships.
 func (s *Server) handleAuthFactorChallenge(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.authFactorSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "authfactor"}
@@ -131,8 +127,6 @@ func (s *Server) handleAuthFactorChallenge(ctx context.Context, payload []byte) 
 }
 
 // handleAuthFactorVerify handles authfactor.Verify QUIC frames.
-//
-// TODO: apply permission.AuthFactorVerify once Phase 2 ships.
 func (s *Server) handleAuthFactorVerify(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.authFactorSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "authfactor"}
@@ -162,8 +156,6 @@ func (s *Server) handleAuthFactorVerify(ctx context.Context, payload []byte) ([]
 }
 
 // handleAuthFactorList handles authfactor.List QUIC frames.
-//
-// TODO: apply permission.AuthFactorList once Phase 2 ships.
 func (s *Server) handleAuthFactorList(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.authFactorSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "authfactor"}
@@ -200,8 +192,6 @@ func (s *Server) handleAuthFactorList(ctx context.Context, payload []byte) ([]by
 }
 
 // handleAuthFactorRevoke handles authfactor.Revoke QUIC frames.
-//
-// TODO: apply permission.AuthFactorRevoke once Phase 2 ships.
 func (s *Server) handleAuthFactorRevoke(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.authFactorSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "authfactor"}

@@ -128,10 +128,19 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 
 	sys := mtlsHTTPClient(t, ca, 15*time.Second)
 	createVolumePoolREST(t, sys, leaderPort, "default")
-	if _, st := createRaftTenant(t, sys, leaderPort, shardIDsTenantID, "Shard IDs Test Tenant"); st != http.StatusCreated && st != http.StatusOK {
-		t.Fatalf("create tenant: status %d", st)
+	adminKeyPEM, tBody, tStatus := createRaftTenant(t, sys, leaderPort, shardIDsTenantID, "Shard IDs Test Tenant")
+	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
+		t.Fatalf("create tenant: status %d", tStatus)
 	}
-	roleBody, st := iraftAPIPost(t, sys, fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
+
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so this authenticates
+	// as the tenant's own onboarded admin; its built-in Admin role cannot
+	// create a NEW role (RolesCreate is SO-exclusive), so it self-assigns
+	// its own pre-seeded SO role first.
+	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tBody)
+	selfAssignTenantSO(t, leaderPort, shardIDsTenantID, raftAdminClient)
+	roleBody, st := iraftAPIPost(t, raftAdminClient, fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name": "db-admin", "tenant_id": shardIDsTenantID,
 			"permissions": []string{
@@ -149,7 +158,7 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 		t.Fatalf("decode role id: %s", roleBody)
 	}
 	certPath, keyPath := ca.generateClientCertForTenant(t, shardIDsTenantID)
-	createBoundUser(t, sys, leaderPort,
+	createBoundUser(t, raftAdminClient, leaderPort,
 		map[string]interface{}{
 			"username": "admin", "email": "admin@" + shardIDsTenantID + ".example.com",
 			"tenant_id": shardIDsTenantID, "role_ids": []string{role.ID},
@@ -164,7 +173,7 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 	// tenant's identity records and answers "sealed". Placing one database on
 	// all three nodes is what lets the tests below create through any node.
 	body, st := iraftAPIPost(t, c.tenant, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
-		map[string]interface{}{"name": "sid-anchor", "engine": "kv", "backend": "pebble", "replicas": 3})
+		map[string]interface{}{"name": "sid-anchor", "backend": "pebble", "replicas": 3})
 	if st != http.StatusCreated && st != http.StatusOK {
 		t.Fatalf("create anchor database: status %d, body %s", st, body)
 	}
@@ -209,7 +218,7 @@ func (c *shardIDsCluster) createThrough(t *testing.T, node int, name string) uin
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		body, st := iraftAPIPost(t, c.tenant, url, map[string]interface{}{
-			"name": name, "engine": "kv", "backend": "pebble", "replicas": 1,
+			"name": name, "backend": "pebble", "replicas": 1,
 		})
 		if st == http.StatusCreated || st == http.StatusOK {
 			var info struct {

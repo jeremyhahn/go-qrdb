@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // BackupBinding exposes backup and restore operations to the Wails frontend.
 type BackupBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewBackupBinding creates a new BackupBinding backed by the given connection.
-func NewBackupBinding(log *logger.Logger, conn *ConnectionBinding) *BackupBinding {
+func NewBackupBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *BackupBinding {
 	return &BackupBinding{logger: log, conn: conn}
 }
 

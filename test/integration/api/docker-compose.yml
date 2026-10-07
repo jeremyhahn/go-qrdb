@@ -98,7 +98,7 @@ services:
         # only warns -- never fails boot -- when a configured pool's path is
         # missing, so an un-created mount point here leaves "default"
         # permanently unopened on this node instead of surfacing at startup.
-        mkdir -p /var/run/qrdbd /data /data/volumes/default /app/build/bin /backup-keys
+        mkdir -p /var/run/qrdbd /data /data/volumes/default /app/build/bin /backup-keys /dek-keys
         # qrdbd is built into the image; container start is a server start.
         # --backup-key-dir points at the SAME shared volume the
         # integration-tests container mounts read-write at the same path
@@ -107,8 +107,16 @@ services:
         # KeyRef, exactly as a real deployment's own operator-managed key
         # directory would be -- the server here is a separate container,
         # not a subprocess of the test binary, so no other path is shared.
+        #
+        # --dek-key-dir is this container's OWN, local volume (/dek-keys is
+        # not shared with the integration-tests container): the tenant DEK
+        # keyring's default key reference is the caller's tenant ID itself
+        # ("system" for this fixture's bootstrap admin, cli_tenants_test.go),
+        # never a value a test chooses per run, so the key file is
+        # provisioned once, right here, before qrdbd ever starts.
+        head -c 32 /dev/urandom > /dek-keys/system
         echo "Starting qrdbd server..."
-        /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml --backup-key-dir /backup-keys &
+        /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml --backup-key-dir /backup-keys --dek-key-dir /dek-keys &
         QRDBD_PID=$!
         # Wait for the admin endpoint to come up so we can bootstrap the node.
         #
@@ -423,7 +431,11 @@ services:
       # test in the selected packages; overlays (e.g. docker-compose.embedding.yml)
       # set it to scope the run to a specific suite.
       - INTEGRATION_RUN=${INTEGRATION_RUN:-}
-      # Build tags for the test compilation. Defaults to just "integration";
+      # Build tags for the test compilation. The Makefile's integration stages
+      # pass the default feature set plus "integration" (INT_FEATURE_TAGS), so
+      # the test process compiles the same codecs and protocols as the binaries
+      # it drives (a DAO client built without codec_json refuses the json codec).
+      # Bare "integration" is only the fallback for a direct `docker compose up`;
       # overlays add tags (e.g. "integration,ollama") to compile in suites
       # gated behind extra build constraints, keeping them out of the fast run.
       - INTEGRATION_TAGS=${INTEGRATION_TAGS:-integration}

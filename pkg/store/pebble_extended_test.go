@@ -32,6 +32,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -118,15 +120,11 @@ func openStoreWithTS(t *testing.T) *PebbleStateMachine {
 		t.Fatalf("Open: %v", err)
 	}
 
-	// Create a separate PebbleDB for time-series storage.
-	tsDir := t.TempDir()
-	tsDB, err := pebble.Open(tsDir, nil)
-	if err != nil {
-		t.Fatalf("open ts pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = tsDB.Close() })
-
-	ts, err := timeseries.New(tsDB)
+	// Time series must ride the SAME PebbleDB as the state machine: tsAutoCommit
+	// stages every time-series write into a batch built over s.db, so a
+	// *timeseries.Storage built over a different DB would write where nothing
+	// ever reads from.
+	ts, err := timeseries.New(pebbleStorage.NewFromDB(s.db, true))
 	if err != nil {
 		t.Fatalf("create ts storage: %v", err)
 	}
@@ -1201,6 +1199,81 @@ func TestPebbleStateMachine_WatchDelete(t *testing.T) {
 	}
 }
 
+// guardedWatchEvent applies one guarded-verb entry and returns the single
+// event a watcher on key receives.
+func guardedWatchEvent(t *testing.T, s *PebbleStateMachine, hub *watch.Hub, key string, index uint64, cmd []byte) *watch.Event {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := hub.Watch(ctx, key)
+	if err != nil {
+		t.Fatalf("Watch(%s): %v", key, err)
+	}
+	defer func() { _ = w.Close() }()
+
+	applyExtEntries(t, s, []sm.Entry{{Index: index, Cmd: cmd}})
+
+	select {
+	case resp := <-w.Events():
+		if len(resp.Events) != 1 {
+			t.Fatalf("expected 1 event for %s, got %d", key, len(resp.Events))
+		}
+		return resp.Events[0]
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for the watch event on %s", key)
+	}
+	return nil
+}
+
+// TestPebbleStateMachine_GuardedVerbs_NotifyWatchers proves PutIfAbsent,
+// CompareAndSwap and CompareAndDelete each deliver the event a watcher of the
+// key expects, with the value the verb committed.
+func TestPebbleStateMachine_GuardedVerbs_NotifyWatchers(t *testing.T) {
+	s, hub := openStoreWithHub(t)
+
+	put := guardedWatchEvent(t, s, hub, "guard-key", 1, mustEncode(kv.EncodePutIfAbsent([]byte("guard-key"), []byte("v1"))))
+	if put.Type != watch.EventPut || string(put.Kv.Value) != "v1" {
+		t.Fatalf("PutIfAbsent event = type %d value %q, want EventPut v1", put.Type, put.Kv.Value)
+	}
+
+	swap := guardedWatchEvent(t, s, hub, "guard-key", 2,
+		mustEncode(protocol.EncodeCompareAndSwap([]byte("guard-key"), []byte("v1"), []byte("v2"))))
+	if swap.Type != watch.EventPut || string(swap.Kv.Value) != "v2" {
+		t.Fatalf("CompareAndSwap event = type %d value %q, want EventPut v2", swap.Type, swap.Kv.Value)
+	}
+
+	del := guardedWatchEvent(t, s, hub, "guard-key", 3,
+		mustEncode(protocol.EncodeCompareAndDelete([]byte("guard-key"), []byte("v2"))))
+	if del.Type != watch.EventDelete {
+		t.Fatalf("CompareAndDelete event type = %d, want EventDelete", del.Type)
+	}
+}
+
+// TestPebbleStateMachine_GuardedVerbs_RefuseReservedKeys proves the guarded
+// verbs refuse the reserved key space with a typed application error, as a
+// plain Put does, rather than writing into it.
+func TestPebbleStateMachine_GuardedVerbs_RefuseReservedKeys(t *testing.T) {
+	reserved := []byte{0x00, 'r', 'e', 's'}
+	cmds := map[string][]byte{
+		"PutIfAbsent":      mustEncode(kv.EncodePutIfAbsent(reserved, []byte("v"))),
+		"CompareAndSwap":   mustEncode(protocol.EncodeCompareAndSwap(reserved, []byte("a"), []byte("b"))),
+		"CompareAndDelete": mustEncode(protocol.EncodeCompareAndDelete(reserved, []byte("a"))),
+	}
+	for name, cmd := range cmds {
+		t.Run(name, func(t *testing.T) {
+			s := openExtendedStore(t)
+			res := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
+			if len(res[0].Data) == 0 {
+				t.Fatalf("%s on a reserved key returned no refusal: %+v", name, res[0])
+			}
+			if _, err := s.Lookup(context.Background(), reserved); err == nil {
+				t.Fatalf("%s wrote into the reserved key space", name)
+			}
+		})
+	}
+}
+
 func TestPebbleStateMachine_WatchMVCCPut(t *testing.T) {
 	s, hub := openStoreWithHub(t)
 
@@ -1269,13 +1342,10 @@ func TestPebbleStateMachine_SetTimeSeries(t *testing.T) {
 		t.Fatal("expected nil TimeSeries")
 	}
 
-	tsDB, err := pebble.Open(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = tsDB.Close() }()
+	tsStg := memory.NewStorage()
+	defer func() { _ = tsStg.Close() }()
 
-	ts, err := timeseries.New(tsDB)
+	ts, err := timeseries.New(tsStg)
 	if err != nil {
 		t.Fatalf("ts new: %v", err)
 	}

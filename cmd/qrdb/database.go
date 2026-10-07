@@ -67,7 +67,6 @@ func newDatabaseCmd() *cobra.Command {
 // newDatabaseCreateCmd creates the "database create" subcommand.
 func newDatabaseCreateCmd() *cobra.Command {
 	var (
-		engine      string
 		backend     string
 		dataDir     string
 		replicas    int
@@ -83,7 +82,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new database",
-		Long: "Create a new database with the specified engine and storage backend.\n\n" +
+		Long: "Create a new database with the specified storage backend.\n\n" +
 			"A per-database encryption barrier (--barrier-enabled) can only be enabled " +
 			"on a database that has a dedicated store of its own: an explicit --data-dir, " +
 			"a dedicated-raft (--backend raft) database, or a database created for an " +
@@ -92,7 +91,6 @@ func newDatabaseCreateCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 	}
 
-	cmd.Flags().StringVar(&engine, "engine", "kv", "Database engine type (kv, timeseries)")
 	cmd.Flags().StringVar(&backend, "backend", "pebble", "Storage backend (pebble, memory, file, raft)")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Dedicated data directory for this database (required for a real per-database encryption barrier)")
 	cmd.Flags().IntVar(&replicas, "replicas", 0, "Replication factor for a dedicated-raft database (raft backend only; defaults to 1)")
@@ -112,7 +110,6 @@ func newDatabaseCreateCmd() *cobra.Command {
 
 		req := transport.CreateDatabaseRequest{
 			Name:     name,
-			Engine:   engine,
 			Backend:  backend,
 			DataDir:  dataDir,
 			Replicas: replicas,
@@ -240,10 +237,10 @@ func newDatabaseListCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(databases)
 			default:
-				headers := []string{"NAME", "ENGINE", "BACKEND", "STATUS", "PROTOCOLS"}
+				headers := []string{"NAME", "BACKEND", "STATUS", "PROTOCOLS"}
 				rows := make([][]string, len(databases))
 				for i, db := range databases {
-					rows[i] = []string{db.Name, db.Engine, db.Backend, db.Status, formatProtocols(db.Protocol)}
+					rows[i] = []string{db.Name, db.Backend, db.Status, formatProtocols(db.Protocol)}
 				}
 				printTable(headers, rows)
 				return nil
@@ -463,7 +460,6 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 		return printYAML(info)
 	default:
 		_, _ = fmt.Fprintf(outputWriter, "Name:    %s\n", info.Name)
-		_, _ = fmt.Fprintf(outputWriter, "Engine:  %s\n", info.Engine)
 		_, _ = fmt.Fprintf(outputWriter, "Backend: %s\n", info.Backend)
 		_, _ = fmt.Fprintf(outputWriter, "Status:  %s\n", info.Status)
 		if info.DataDir != "" {

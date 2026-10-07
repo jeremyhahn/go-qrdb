@@ -425,6 +425,10 @@ func (m *mockTimeSeriesService) SetRetentionPolicy(_ context.Context, _ string, 
 	return nil
 }
 
+func (m *mockTimeSeriesService) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *mockTimeSeriesService) ListMetrics(_ string, _ int) ([]string, error) {
 	return nil, nil
 }

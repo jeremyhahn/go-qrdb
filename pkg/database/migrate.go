@@ -84,7 +84,6 @@ func MigrateIfNeeded(logger *slog.Logger, dataDir string) error {
 	// Write meta.json for default KV database.
 	meta := DatabaseMeta{
 		Name:    "default",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 	}
 	if err := writeMetaFile(filepath.Join(defaultDBDir, metaFile), meta); err != nil {
@@ -109,7 +108,6 @@ func MigrateIfNeeded(logger *slog.Logger, dataDir string) error {
 
 		vectorMeta := DatabaseMeta{
 			Name:    "vectors",
-			Engine:  EngineVector,
 			Backend: BackendPebble,
 		}
 		if err := writeMetaFile(filepath.Join(vectorDBDir, metaFile), vectorMeta); err != nil {

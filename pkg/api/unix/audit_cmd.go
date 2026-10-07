@@ -19,6 +19,7 @@ package unix
 import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // The audit service wire types are the canonical qrdb.v1 protobuf messages.
@@ -38,4 +39,12 @@ type AuditQueryResponse = pb.AuditQueryResponse
 // Authorization: requires "audit:query" permission.
 func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
+}
+
+// WithReplicatedAuditLogger configures the Unix socket server with the
+// cluster-wide, per-tenant-opt-in replicated audit sink
+// (docs/audit/architecture.md#cluster-wide-replicated-trail), enabling
+// AuditService.Query's replicated=true branch and VerifyReplicatedChain.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) ServerOption {
+	return func(s *Server) { s.replicatedAudit = l }
 }

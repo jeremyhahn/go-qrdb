@@ -1,6 +1,6 @@
 # Key Wrapping — API
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-04
+> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
 
 Key wrapping adds no new RPC surface of its own. It changes the request and
 response shapes of `POST /v1/backups` and `POST /v1/backups/restore`

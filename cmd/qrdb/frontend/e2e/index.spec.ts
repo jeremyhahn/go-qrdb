@@ -12,7 +12,7 @@ const LOAD_TIMEOUT = 10_000;
 const indexState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "idx-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "idx-db", backend: "pebble", status: "open" },
   ],
 };
 

@@ -287,12 +287,11 @@ func TestEmbeddedTenant_CrossTenantCallerDenied(t *testing.T) {
 				ctx := identityCtx(caller, "member")
 				err := tc.op(ctx, tr, svc)
 
-				// ScopeSelf and ScopeCross both lift the system tenant --
-				// ScopeSelf across every tenant, ScopeCross regardless of
-				// target entirely. ScopeTenantOnly denies the system
-				// tenant exactly like "acme".
-				admitted := caller == tenantid.System &&
-					(scope == permission.ScopeSelf || scope == permission.ScopeCross)
+				// ScopeSelf has no system-tenant lift: only ScopeCross
+				// admits the system tenant, regardless of target.
+				// ScopeSelf and ScopeTenantOnly deny the system tenant
+				// exactly like "acme".
+				admitted := caller == tenantid.System && scope == permission.ScopeCross
 				if admitted {
 					if err != nil {
 						t.Errorf("caller=%s: want admitted (scope=%v), got %v", caller, scope, err)
@@ -311,6 +310,42 @@ func TestEmbeddedTenant_CrossTenantCallerDenied(t *testing.T) {
 				if !errors.Is(err, auth.ErrUnauthorized) {
 					t.Errorf("caller=%s: err = %v, want an authorization denial", caller, err)
 				}
+			}
+		})
+	}
+}
+
+// TestEmbeddedTenant_SystemCrossPermissionReachesAnotherTenant: a system-tenant
+// caller holding the named tenants:<op>:cross permission reaches another
+// tenant's registry record; holding only the self permission it does not.
+func TestEmbeddedTenant_SystemCrossPermissionReachesAnotherTenant(t *testing.T) {
+	cross := map[string]permission.Permission{
+		"GetTenant":    permission.TenantsReadCross,
+		"DeleteTenant": permission.TenantsDeleteCross,
+		"UpdateTenant": permission.TenantsUpdateCross,
+	}
+	for _, tc := range tenantAuthzCases() {
+		crossPerm, ok := cross[tc.name]
+		if !ok {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fullTenantMock{}
+			tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newGrantingAuthMW(tc.perm, crossPerm)))
+			if err := tc.op(identityCtx(tenantid.System, "member"), tr, svc); err != nil {
+				t.Fatalf("system caller holding %s: %v", crossPerm, err)
+			}
+			if !svc.called {
+				t.Fatal("service was never reached despite admission")
+			}
+
+			svc.called = false
+			selfOnly := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newGrantingAuthMW(tc.perm)))
+			if err := tc.op(identityCtx(tenantid.System, "member"), selfOnly, svc); !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("system caller holding only %s: err = %v, want an authorization denial", tc.perm, err)
+			}
+			if svc.called {
+				t.Fatal("service was reached despite a denial")
 			}
 		})
 	}

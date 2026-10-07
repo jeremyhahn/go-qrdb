@@ -18,6 +18,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -92,6 +93,14 @@ func TestParseAnchors_RefusesP224(t *testing.T) {
 // probe: a certificate self-signed with SHA-1 is refused as a trust anchor
 // even though it is otherwise well formed.
 func TestParseAnchors_RefusesSHA1Signature(t *testing.T) {
+	if fips140.Enforced() {
+		// crypto/sha1 PANICS under GODEBUG=fips140=only rather than
+		// returning an error, so there is no way to construct a SHA-1
+		// signed certificate fixture here at all -- this refusal path is
+		// unreachable under strict enforcement. See
+		// docs/seal/fips140-mode.md "Skipped tests under fips140=only".
+		t.Skip("crypto/sha1 panics under fips140=only; a SHA-1 signed certificate cannot be constructed")
+	}
 	//nolint:staticcheck // deliberately generating a SHA-1 signed certificate to test its refusal
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

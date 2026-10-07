@@ -744,45 +744,57 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 // resolveScaleLeader's doc comment for the full return-value rationale,
 // which applies unchanged here.
 //
-// A MOVE has one additional case resolveScaleLeader never needs to handle:
-// the source replica (move.FromNode) may be the LOCAL node itself, which
-// may ALSO be the group's current leader. Removing the current leader via
-// RemoveFollowerNode without first transferring leadership away is unsafe
-// (see transferLeadershipAwayFromRemoved's doc comment) -- but RaftHost only
-// ever exposes the LOCAL node's Raft state, so once this node transfers
-// leadership away from itself it can no longer complete the removal
-// itself; go-quicraft would reject a RemoveFollowerNode call from a node
-// that is no longer the leader. So when the source IS this node AND this
-// node IS the leader, resolveMoveLeader proactively transfers leadership to
-// another voting replica right here -- BEFORE any placement mutation, so
-// it is always safe to retry the whole request -- and reports itself as
-// NOT the leader, with the address of the NEW leader. The REST layer's
-// tryForwardWrite then retries the ENTIRE MOVE there, where the source is
-// a different (non-executing) replica and this case can never recur for
-// the same request.
+// A MOVE has two additional cases resolveScaleLeader never needs to handle,
+// both rooted in the same fact: RaftHost only ever exposes the LOCAL node's
+// Raft state, so a node holding no replica of the group at all cannot name
+// its current leader (LeaderReplicaID errors for a group the host does not
+// run) and must fall back to SOME other member's address.
 //
-// KNOWN LIMITATION: the REST layer's forwardToLeader tolerates at most ONE
-// forwarding hop per client request (a deliberate, deployment-wide loop
-// guard shared by every forwarded write -- KV PUT/DELETE, database scale,
-// and this MOVE alike). A MOVE request that originates from a node that is
-// NOT a member of the dedicated group at all first takes resolveGroupLeader's
-// "guess any member" hop; if that guessed member happens to ALSO be both the
-// live leader AND the MOVE's source, resolveMoveLeader's own transfer-and-
-// forward above would need a SECOND hop, which forwardToLeader rejects with
-// *LeaderForwardLoopError even though this is not a genuine loop. This was
-// observed directly in practice (not merely theorized) while developing this
-// fix. Until resolved, callers SHOULD target the MOVE's source or another
-// existing member of the dedicated group directly (never an arbitrary node)
-// to stay within resolveMoveLeader's own worst case of exactly one hop --
-// see the integration test isolation_raft_rebalance_test.go for the
-// concrete pattern. Fixing this generally would mean either teaching
-// forwardToLeader to tolerate a small BOUNDED number of hops (a
-// deployment-wide behavior change affecting every forwarded write, not
-// merely rebalance) or giving the "guess any member" fallback a way to
-// guess the actual current leader instead of an arbitrary member -- both
-// are non-trivial, deployment-wide changes intentionally left out of this
-// fix's scope pending an explicit decision.
+// 1. Self is the source AND the leader. Removing the current leader via
+// RemoveFollowerNode without first transferring leadership away is unsafe
+// (see transferLeadershipAwayFromRemoved's doc comment), and once this node
+// transfers leadership away from itself it can no longer complete the
+// removal itself -- go-quicraft rejects a RemoveFollowerNode call from a
+// node that is no longer the leader. So when the source IS this node AND
+// this node IS the leader, resolveMoveLeader proactively transfers
+// leadership to another voting replica right here -- BEFORE any placement
+// mutation, so it is always safe to retry the whole request -- and reports
+// itself as NOT the leader, with the address of the NEW leader. The REST
+// layer's tryForwardWrite then retries the ENTIRE MOVE there, where the
+// source is a different (non-executing) replica and this case can never
+// recur for the same request.
+//
+// 2. Self holds no replica of the group at all (the request was submitted
+// to, or forwarded to, a node outside the dedicated group). Naively
+// guessing any member here -- as resolveGroupLeader's own fallback does,
+// having no notion of the MOVE at all -- can guess the source itself; if
+// that guess then also turns out to be the current leader, case 1 fires on
+// the VERY NEXT hop and needs yet another hop to reach the transfer's new
+// leader, two hops where the naive guess budgeted for none. This was
+// observed directly in practice. resolveMoveLeader closes this by never
+// guessing the source: when this node is not a member, it picks any OTHER
+// replica instead (anyMemberAddrExcept), guaranteed not to be the MOVE's
+// source. Forwarding there ends in at most two further hops: if that
+// replica turns out to BE the leader, case 1 cannot apply to it either (it
+// is not the source), so it executes the MOVE directly; if it is not the
+// leader, it IS a real member, so resolveGroupLeader there resolves the
+// ACTUAL current leader from its own local Raft state (never another
+// guess) -- and only if THAT leader happens to be the source does case 1
+// apply, for exactly one more hop to the transfer's new leader. Three hops,
+// maximum, deterministically -- never unbounded -- which is exactly what
+// the REST layer's forwardToLeader (maxForwardHops, pkg/api/rest/server.go)
+// is sized for; a chain any longer is a genuine loop and is still rejected.
+// The one case with no alternative member to pick is RF=1, where the sole
+// replica IS the source by definition: there is no OTHER replica to guess
+// regardless, so resolveMoveLeader falls back to resolveGroupLeader's
+// ordinary guess (that replica itself), unchanged from before.
 func (s *RebalanceService) resolveMoveLeader(ctx context.Context, move RebalanceMovePlan, p *placement.Placement) (isLocalLeader bool, leaderAddr string) {
+	if s.raftHost != nil && s.selfNodeID != "" && !isPlacementMember(p, s.selfNodeID) {
+		if alt, ok := anyMemberAddrExcept(p, move.FromNode); ok {
+			return false, alt
+		}
+	}
+
 	isLocalLeader, leaderAddr, _ = resolveGroupLeader(ctx, s.raftHost, s.selfNodeID, p)
 	if !isLocalLeader || s.raftHost == nil {
 		return isLocalLeader, leaderAddr
@@ -821,6 +833,34 @@ func findReplicaByAddr(p *placement.Placement, addr string) (placement.Replica, 
 		}
 	}
 	return placement.Replica{}, false
+}
+
+// isPlacementMember reports whether nodeID matches the NodeID of any
+// replica in p. It mirrors resolveGroupLeader's own membership check
+// (database_service.go) so resolveMoveLeader can decide, before consulting
+// RaftHost, whether local Raft state can say anything about this group at
+// all.
+func isPlacementMember(p *placement.Placement, nodeID string) bool {
+	for i := range p.Replicas {
+		if p.Replicas[i].NodeID == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+// anyMemberAddrExcept returns the RaftAddr of a replica in p other than the
+// one at excludeAddr, for resolveMoveLeader's non-member leader-resolution
+// fallback (see its doc comment, case 2). ok is false only when every
+// replica shares excludeAddr's address -- the degenerate RF=1 case, where
+// no alternative exists.
+func anyMemberAddrExcept(p *placement.Placement, excludeAddr string) (addr string, ok bool) {
+	for _, r := range p.Replicas {
+		if r.RaftAddr != excludeAddr {
+			return r.RaftAddr, true
+		}
+	}
+	return "", false
 }
 
 // placementMaxReplicaID returns the largest ReplicaID across all replicas in

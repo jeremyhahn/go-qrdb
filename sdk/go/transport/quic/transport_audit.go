@@ -63,10 +63,15 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		return nil, &transport.ClosedError{}
 	}
 
-	// The frame's payload is an audit.Filter: transport.AuditFilter names its
-	// tenant "tenantID" where the server reads "tenant_id", so marshaling it
-	// directly dropped the tenant from every query.
-	payload, err := json.Marshal(auditconv.FilterToDomain(f))
+	// The frame's payload is an audit.Filter plus "replicated" (flattened,
+	// matching pkg/api/quic/audit_frame.go's auditQueryPayload exactly):
+	// transport.AuditFilter names its tenant "tenantID" where the server
+	// reads "tenant_id", so marshaling audit.Filter directly dropped the
+	// tenant from every query.
+	payload, err := json.Marshal(struct {
+		audit.Filter
+		Replicated bool `json:"replicated,omitempty"`
+	}{Filter: auditconv.FilterToDomain(f), Replicated: f.Replicated})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: &MarshalError{Err: err}}
 	}
@@ -112,6 +117,40 @@ func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResu
 	var result transport.AuditVerifyResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, &transport.RequestError{Method: "VerifyChain", Err: &UnmarshalError{Err: err}}
+	}
+	return &result, nil
+}
+
+// VerifyReplicatedChain verifies the cluster-wide replicated audit chain's
+// hash continuity for tenantID via the QUIC "audit.VerifyReplicatedChain"
+// wire method. A non-nil error means verification could not be PERFORMED,
+// including a tenant not entitled to the replicated chain; a successful
+// response with Verified=false is a TAMPER VERDICT, not an error.
+// Authorization: requires "audit:verify_replicated" permission.
+func (t *Transport) VerifyReplicatedChain(ctx context.Context, tenantID string) (*transport.ChainContinuityResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(struct {
+		TenantID string `json:"tenant_id,omitempty"`
+	}{TenantID: tenantID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "audit.VerifyReplicatedChain", payload)
+	if err != nil {
+		var unsupported *transport.CapabilityUnsupportedError
+		if errors.As(err, &unsupported) {
+			return nil, &transport.NotImplementedError{Method: "VerifyReplicatedChain"}
+		}
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: err}
+	}
+
+	var result transport.ChainContinuityResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: &UnmarshalError{Err: err}}
 	}
 	return &result, nil
 }

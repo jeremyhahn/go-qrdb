@@ -190,7 +190,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	// Phase 2: Create tenant "t1" with IsolationRaft + barrier_auto_unseal.
 	// ---------------------------------------------------------------------------
 	t.Log("creating tenant t1 with IsolationRaft + barrier_auto_unseal")
-	tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, iraftTenantID, "Test Tenant 1")
+	adminKeyPEM, tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, iraftTenantID, "Test Tenant 1")
 	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tenantStatus, tenantBody)
 	}
@@ -199,10 +199,17 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	// ---------------------------------------------------------------------------
 	// Phase 3: Create a role + user in tenant "t1" so the tenant cert is
 	// authorized to create databases. First-boot only seeds the system tenant;
-	// non-system tenants require explicit role/user setup.
+	// non-system tenants require explicit role/user setup. The system tenant
+	// can no longer provision records inside another tenant's IAM at all
+	// (owner ruling, 2026-10-01), so this authenticates as the tenant's own
+	// onboarded admin; its built-in Admin role cannot create a NEW role
+	// (RolesCreate is SO-exclusive), so it self-assigns its own pre-seeded SO
+	// role first.
 	// ---------------------------------------------------------------------------
+	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody)
+	selfAssignTenantSO(t, leaderPort, iraftTenantID, raftAdminClient)
 	t.Log("creating role 'db-admin' in tenant t1")
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	roleBody, roleStatus := iraftAPIPost(t, raftAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name":      "db-admin",
@@ -234,7 +241,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 
 	t.Log("creating user 'admin' in tenant t1, bound to the tenant certificate")
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, iraftTenantID)
-	createBoundUser(t, sysClient, leaderPort,
+	createBoundUser(t, raftAdminClient, leaderPort,
 		map[string]interface{}{
 			"username":  "admin",
 			"email":     "admin@" + iraftTenantID + ".example.com",
@@ -257,7 +264,6 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
 		map[string]interface{}{
 			"name":     iraftDBName,
-			"engine":   "kv",
 			"backend":  "pebble",
 			"replicas": 3,
 		},

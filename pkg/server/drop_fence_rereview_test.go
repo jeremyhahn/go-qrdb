@@ -104,7 +104,7 @@ func TestDropFence_CollectionsWorkAfterDropAndRecreate(t *testing.T) {
 	if err := f.mgr.Drop(ctx, "orders"); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
-	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("re-Create: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestRaftBackendFactory_ColdDedicatedDatabaseIsDroppable(t *testing.T) {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
 	tctx := tenant.WithTenantID(ctx, "rt")
-	if _, err := dbSvc.CreateForTenant(tctx, database.DatabaseConfig{Name: "orders", Engine: database.EngineKV}); err != nil {
+	if _, err := dbSvc.CreateForTenant(tctx, database.DatabaseConfig{Name: "orders"}); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 	if len(raftReg.ListStarted()) != 0 {

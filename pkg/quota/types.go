@@ -188,6 +188,19 @@ type Entitlements struct {
 	// is no software default pool to fall back to. See decision D1 in
 	// docs/volume-pools/architecture.md.
 	AllowedVolumePools []string `json:"allowed_volume_pools,omitempty"`
+
+	// AllowReplicatedAudit permits a tenant's audit events to be written to
+	// the cluster-wide replicated hash chain (docs/audit/architecture.md
+	// #cluster-wide-replicated-trail) instead of being silently dropped by
+	// the replicated sink. False (the secure, overhead-avoiding default) is
+	// what every tenant gets unless the platform-wide default entitlement or
+	// an explicit tenants:set_entitlements grant turns it on; a compliance
+	// deployment's hardened reference config sets the platform default to
+	// true so every tenant is covered without a per-tenant grant. This
+	// governs only the REPLICATED sink: it has no effect on the optional
+	// NDJSON export, which is a per-node operator choice, not a tenant
+	// entitlement.
+	AllowReplicatedAudit bool `json:"allow_replicated_audit,omitempty"`
 }
 
 // defaultBarrierModes are the built-in software sealing strategies an isolated

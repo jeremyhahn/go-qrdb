@@ -851,7 +851,10 @@ func TestRoutingReconcileBuiltInRoles_RoutesToTenantStore(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+	// The caller's own tenant is the target: the system-tenant lift was
+	// removed (owner ruling, 2026-10-01), so routing to another tenant's
+	// store is proven from that tenant's own identity, not system's.
+	ctx := tenant.WithTenantID(context.Background(), "secure")
 	report, err := svc.ReconcileBuiltInRoles(ctx, "secure")
 	if err != nil {
 		t.Fatalf("ReconcileBuiltInRoles: %v", err)
@@ -906,7 +909,7 @@ func TestRoutingReconcileBuiltInRoles_SealedTenantFailsClosed(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+	ctx := tenant.WithTenantID(context.Background(), "sealed")
 	if _, err := svc.ReconcileBuiltInRoles(ctx, "sealed"); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("ReconcileBuiltInRoles(sealed) = %v, want ErrTenantSealed", err)
 	}

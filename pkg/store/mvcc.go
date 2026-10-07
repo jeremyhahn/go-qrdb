@@ -193,11 +193,11 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	if s.auditChain != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCAuditChain(s.auditChain))
 	}
-	engineOpts = append(engineOpts, engine.WithMVCCPebbleDB(db))
-
-	// Create time-series storage if enabled.
+	// Create time-series storage if enabled. It rides the same storage.Storage
+	// the engine itself is built over, so a time-series write lands in the
+	// same apply batch as everything else the entry does.
 	if s.enableTimeSeries {
-		ts, tsErr := timeseries.New(db)
+		ts, tsErr := timeseries.New(s.storage)
 		if tsErr != nil {
 			_ = db.Close()
 			s.db = nil
@@ -483,7 +483,6 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 	if s.auditChain != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCAuditChain(s.auditChain))
 	}
-	engineOpts = append(engineOpts, engine.WithMVCCPebbleDB(s.db))
 	if s.engine != nil && s.engine.TimeSeries() != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCTimeSeries(s.engine.TimeSeries()))
 	}

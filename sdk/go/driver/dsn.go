@@ -47,9 +47,6 @@ type DSNConfig struct {
 	// Backend is the storage backend type for embedded mode (memory, file, pebble).
 	Backend string
 
-	// Engine is the engine type for embedded mode (kv, timeseries, vector).
-	Engine string
-
 	// DataDir is the data directory for file/pebble backends in embedded mode.
 	DataDir string
 
@@ -115,7 +112,7 @@ func ParseDSN(dsn string) (*DSNConfig, error) {
 }
 
 // ParseEmbeddedDSN extracts in-process-mode fields (database, backend,
-// engine, data directory, tenant, user, location) from the URL.
+// data directory, tenant, user, location) from the URL.
 //
 // It is exported because it is the DSN grammar of an in-process connection,
 // not of one particular scheme: sdk/go/driver/node's "node" scheme accepts
@@ -129,7 +126,6 @@ func ParseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 	}
 
 	cfg.Backend = q.Get("backend")
-	cfg.Engine = q.Get("engine")
 	cfg.Tenant = q.Get("tenant")
 	cfg.User = q.Get("user")
 	cfg.Location = q.Get("loc")
@@ -161,11 +157,6 @@ func ParseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 	// Default backend to memory when not specified.
 	if cfg.Backend == "" {
 		cfg.Backend = "memory"
-	}
-
-	// Default engine to kv when not specified.
-	if cfg.Engine == "" {
-		cfg.Engine = "kv"
 	}
 
 	return nil

@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/crypto/aesgcm"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
@@ -76,9 +75,9 @@ func TestCorruptRecordRefusesUseAndNamesTheReason(t *testing.T) {
 	ctx := context.Background()
 	for raw, reason := range map[string]string{
 		`{"format":7,"current":1,"versions":[]}`:                                                  "unsupported record format",
-		`{"format":1,"current":1,"versions":[]}`:                                                  "record has no versions",
-		`{"format":1,"current":1,"versions":[{"version":1,"key":"AAAA"}]}`:                        "current version is missing or unusable",
-		`{"format":1,"current":1,"versions":[{"version":1,"retired_at":"2026-01-01T00:00:00Z"}]}`: "current version is missing or unusable",
+		`{"format":2,"current":1,"versions":[]}`:                                                  "record has no versions",
+		`{"format":2,"current":1,"versions":[{"version":1,"wrapped_key":"AAAA"}]}`:                "current version is missing or unusable",
+		`{"format":2,"current":1,"versions":[{"version":1,"retired_at":"2026-01-01T00:00:00Z"}]}`: "current version is missing or unusable",
 	} {
 		k, stores := newTestKeyring(t)
 		store, _ := stores.Resolve(ctx, "acme")
@@ -103,11 +102,12 @@ func TestCorruptRecordRefusesUseAndNamesTheReason(t *testing.T) {
 	}
 }
 
-// TestDamagedOldVersionKeyIsACryptoError: validation guarantees only the
-// current version key; a non-current version whose stored key has the wrong
-// length is reported as a cryptographic failure, never as a forged
-// ciphertext, and never decrypts.
-func TestDamagedOldVersionKeyIsACryptoError(t *testing.T) {
+// TestDamagedOldVersionKeyIsAKeyWrapFailure: validation guarantees only the
+// current version's key; a non-current version whose stored wrapped key
+// unwraps to the wrong length is reported as a KEK-layer failure, never as
+// a forged ciphertext (checked at a different layer entirely), and never
+// decrypts.
+func TestDamagedOldVersionKeyIsAKeyWrapFailure(t *testing.T) {
 	k, stores := newTestKeyring(t)
 	ctx := context.Background()
 	old := mustEncrypt(t, k, "acme", []byte("x"), nil)
@@ -119,7 +119,11 @@ func TestDamagedOldVersionKeyIsACryptoError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec.Versions[0].Key = rec.Versions[0].Key[:16]
+	// testKeyWrapRegistry's fake provider unwraps by copying bytes
+	// verbatim, so truncating the stored wrapped key truncates what
+	// Unwrap returns -- standing in for a provider that returns the
+	// wrong-length key for any reason.
+	rec.Versions[0].WrappedKey = rec.Versions[0].WrappedKey[:16]
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)
@@ -132,9 +136,9 @@ func TestDamagedOldVersionKeyIsACryptoError(t *testing.T) {
 		"decrypt": second(k.Decrypt(ctx, "acme", old.Ciphertext, nil)),
 		"rewrap":  second(k.Rewrap(ctx, "acme", old.Ciphertext, nil)),
 	} {
-		var ke *aesgcm.InvalidKeyLengthError
-		if !errors.Is(err, ErrCrypto) || !errors.As(err, &ke) {
-			t.Errorf("%s: err = %v, want ErrCrypto wrapping *aesgcm.InvalidKeyLengthError", op, err)
+		var ke *KeyWrapFailedError
+		if !errors.Is(err, ErrKeyWrapFailed) || !errors.As(err, &ke) {
+			t.Errorf("%s: err = %v, want ErrKeyWrapFailed wrapping *KeyWrapFailedError", op, err)
 		}
 		if errors.Is(err, ErrAuthenticationFailed) {
 			t.Errorf("%s: a damaged key was reported as a forged ciphertext", op)
@@ -192,7 +196,7 @@ func TestFirstEncryptAdoptsARivalsKeyring(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			mem := kvstore.NewMemoryKVStore()
-			rival, err := NewKeyring(fixedResolver{mem})
+			rival, err := NewKeyring(fixedResolver{mem}, WithKeyWrapRegistry(testKeyWrapRegistry()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -207,7 +211,7 @@ func TestFirstEncryptAdoptsARivalsKeyring(t *testing.T) {
 				rivalCT = s.Ciphertext
 			}
 			race(rs)
-			k, err := NewKeyring(fixedResolver{rs})
+			k, err := NewKeyring(fixedResolver{rs}, WithKeyWrapRegistry(testKeyWrapRegistry()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,11 +251,11 @@ func TestRotationAndRetirementOnOneNodeAreInForceOnAnother(t *testing.T) {
 	stores := newTenantStores()
 	ctx := context.Background()
 	aad := []byte("aad")
-	nodeA, err := NewKeyring(stores)
+	nodeA, err := NewKeyring(stores, WithKeyWrapRegistry(testKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeB, err := NewKeyring(stores)
+	nodeB, err := NewKeyring(stores, WithKeyWrapRegistry(testKeyWrapRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,34 +324,4 @@ func TestRetireOfAnAlreadyRetiredVersionDoesNotWrite(t *testing.T) {
 	if !again.Versions[0].RetiredAt.Equal(*first.Versions[0].RetiredAt) {
 		t.Fatalf("retirement time moved: %v -> %v", first.Versions[0].RetiredAt, again.Versions[0].RetiredAt)
 	}
-}
-
-// TestWipeZeroesEveryKey: wipe clears every version key in memory, and is
-// safe on a nil record.
-func TestWipeZeroesEveryKey(t *testing.T) {
-	k, stores := newTestKeyring(t)
-	ctx := context.Background()
-	mustEncrypt(t, k, "acme", []byte("x"), nil)
-	if _, err := k.Rotate(ctx, "acme"); err != nil {
-		t.Fatal(err)
-	}
-	store, _ := stores.Resolve(ctx, "acme")
-	rec, err := k.load(ctx, "acme", store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zero := make([]byte, KeySize)
-	for _, v := range rec.Versions {
-		if len(v.Key) != KeySize || bytes.Equal(v.Key, zero) {
-			t.Fatalf("v%d key is not a live key before wipe", v.Version)
-		}
-	}
-	rec.wipe()
-	for _, v := range rec.Versions {
-		if !bytes.Equal(v.Key, zero) {
-			t.Fatalf("v%d key survived wipe", v.Version)
-		}
-	}
-	var none *keyringRecord
-	none.wipe() // must not panic
 }

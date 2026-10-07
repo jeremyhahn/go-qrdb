@@ -745,10 +745,6 @@ const envelopeFormatVersion uint32 = 1
 // data-encrypting key.
 const dekLength = 32
 
-// shardNonceLength is the AES-256-GCM nonce length used when encrypting
-// each shard's payload under the backup's DEK.
-const shardNonceLength = 12
-
 // keyWrapRegistry returns the configured keywrap.Registry.
 func (s *BackupService) keyWrapRegistry() keywrap.Registry {
 	return s.keyWrap
@@ -841,17 +837,16 @@ func newShardGCM(dek []byte) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cipher.NewGCM(block)
+	return cipher.NewGCMWithRandomNonce(block)
 }
 
 // encryptShard seals plaintext under gcm, binding it to aad, and returns a
 // fresh 12-byte nonce prepended to the ciphertext.
+// encryptShard seals plaintext under gcm (cipher.NewGCMWithRandomNonce),
+// which samples its own 96-bit nonce and prepends it to the ciphertext --
+// SP 800-38D requires the module to own IV generation.
 func encryptShard(gcm cipher.AEAD, aad, plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, shardNonceLength)
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, aad), nil
+	return gcm.Seal(nil, nil, plaintext, aad), nil // #nosec G407 -- the AEAD is NewGCMWithRandomNonce (newShardGCM), which draws a fresh random nonce per Seal and prepends it; the nil nonce argument is required, a non-nil one panics
 }
 
 // decryptShard splits stored into its nonce and ciphertext and opens it
@@ -862,12 +857,13 @@ func encryptShard(gcm cipher.AEAD, aad, plaintext []byte) ([]byte, error) {
 // authentication has nothing to do with the KEK or the wrapped DEK, and
 // reporting it as "wrong key-encrypting key" was misleading (go-qrdb
 // security review, backup-encrypt-default).
+// decryptShard opens stored (the nonce-prepended ciphertext exactly what
+// encryptShard returned) under gcm. The nonce argument to Open must be
+// empty: the AEAD reads its own nonce back off the front of stored,
+// including the short-input check that shardNonceLength used to do by
+// hand.
 func decryptShard(gcm cipher.AEAD, aad, stored []byte) ([]byte, error) {
-	if len(stored) < shardNonceLength {
-		return nil, &BackupShardIntegrityError{}
-	}
-	nonce, ciphertext := stored[:shardNonceLength], stored[shardNonceLength:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
+	plaintext, err := gcm.Open(nil, nil, stored, aad)
 	if err != nil {
 		return nil, &BackupShardIntegrityError{}
 	}

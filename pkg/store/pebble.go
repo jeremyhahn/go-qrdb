@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -41,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -98,6 +100,15 @@ type PebbleStateMachine struct {
 	// owner, the explicit index API.
 	indexOwners map[string]string
 
+	// indexFields holds the JSON field name each index was created for, by
+	// index name. Required to maintain the index on every subsequent write.
+	indexFields map[string]string
+
+	// indexScopes holds the key scope each index is maintained under, by
+	// index name (engine.ComposeIndexScope). A nil/absent entry is the
+	// unscoped index: every key in this state machine is in scope.
+	indexScopes map[string][]byte
+
 	// ts is the time-series storage engine. Nil if not configured.
 	ts *timeseries.Storage
 
@@ -120,6 +131,8 @@ func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 		opts:        opts,
 		indexes:     make(map[string]index.Index),
 		indexOwners: make(map[string]string),
+		indexFields: make(map[string]string),
+		indexScopes: make(map[string][]byte),
 	}
 	s.updateHandlers = s.buildUpdateHandlers()
 	return s
@@ -289,6 +302,23 @@ func (s *PebbleStateMachine) SetTimeSeries(ts *timeseries.Storage) {
 	s.ts = ts
 }
 
+// tsAutoCommit runs fn against a fresh, synchronously-committed storage.Batch
+// over this state machine's own PebbleDB, then commits it. pkg/timeseries's
+// write methods take a caller-owned batch so a Raft apply loop can share one
+// across an entry's whole effect; this disk state machine is not built over
+// that abstraction (it manages its own *pebble.Batch per command), so each
+// time-series write here gets its own batch and commits immediately --
+// exactly the self-committing behaviour this state machine's time-series
+// support has always had.
+func (s *PebbleStateMachine) tsAutoCommit(fn func(storage.Batch) error) error {
+	batch := pebbleStorage.NewFromDB(s.db, true).Batch()
+	defer func() { _ = batch.Close() }()
+	if err := fn(batch); err != nil {
+		return err
+	}
+	return batch.Commit()
+}
+
 // SetTimeSeriesEnabled instructs the PebbleStateMachine to create a
 // time-series storage engine when the database is opened. Must be
 // called before Open().
@@ -334,7 +364,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// Create time-series storage if enabled. Uses the same PebbleDB
 	// instance so that TS data shares the same durability guarantees.
 	if s.enableTimeSeries && s.ts == nil {
-		ts, tsErr := timeseries.New(db)
+		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true))
 		if tsErr != nil {
 			_ = db.Close()
 			s.db = nil
@@ -497,6 +527,8 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 //   - kv.ListQuery: returns sorted []string of keys matching the prefix
 //   - lease.LeaseTimeToLiveQuery: returns *lease.Lease for the given ID
 //   - lease.LeasesQuery: returns []*lease.Lease for all active leases
+//   - audit.QueryRequest: returns *audit.Page for the confined tenant and filter
+//   - audit.VerifyRequest: returns *audit.ChainContinuityReport for the confined tenant
 //   - index.IndexQueryRequest: returns []uint64 entity IDs matching the value
 //   - index.IndexScanRequest: returns map[string][]uint64 for the range
 //   - index.IndexListRequest: returns []string of index names
@@ -542,6 +574,18 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		}
 		return s.lessor.Leases(), nil
 
+	case audit.QueryRequest:
+		if s.auditChain == nil {
+			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
+		}
+		return s.auditChain.Query(pebbleStorage.NewFromDB(s.db, true), q.TenantID, q.Filter)
+
+	case audit.VerifyRequest:
+		if s.auditChain == nil {
+			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
+		}
+		return s.auditChain.Verify(pebbleStorage.NewFromDB(s.db, true), q.TenantID)
+
 	case index.IndexQueryRequest:
 		idx, ok := s.indexes[q.IndexName]
 		if !ok {
@@ -579,7 +623,7 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		if s.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return s.ts.QueryRich(context.Background(), q.Request)
+		return s.ts.QueryRich(q.Request)
 
 	case timeseries.TSGetRetentionRequest:
 		if s.ts == nil {
@@ -1080,8 +1124,16 @@ func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte)
 		return res, nil, nil
 	}
 
-	// Capture previous value for watch notifications.
+	// Capture previous value for index maintenance and watch notifications.
+	oldValue, _ := s.getKeyInBatch(batch, cmd.Key)
 	prevKv := s.watchPrevKV(batch, cmd.Key)
+
+	// Index maintenance runs BEFORE the data write is staged: a unique
+	// violation must refuse the whole write, never land it and then
+	// discover the index disagrees.
+	if res, handled, ierr := s.precheckAndUpdateIndexes(cmd.Key, oldValue, cmd.Value); handled {
+		return res, nil, ierr
+	}
 
 	if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
@@ -1135,6 +1187,12 @@ func pebbleHandlePutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload
 	}
 	if !absent {
 		return sm.Result{Value: kv.ResultNotStored}, nil, nil
+	}
+
+	// The key was absent, so there is no previous value to remove from any
+	// index; still apply a unique violation BEFORE staging the write.
+	if res, handled, ierr := s.precheckAndUpdateIndexes(cmd.Key, nil, cmd.Value); handled {
+		return res, nil, ierr
 	}
 
 	if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
@@ -1193,6 +1251,10 @@ func pebbleHandleCompareAndDelete(s *PebbleStateMachine, batch *pebble.Batch, pa
 		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
 	}
 
+	if err := s.removeIndexesOnDelete(key, current); err != nil {
+		return sm.Result{}, nil, err
+	}
+
 	prevLease := s.leaseOf(key)
 	if derr := batch.Delete(key, pebble.Sync); derr != nil {
 		return sm.Result{}, nil, &WriteError{Err: derr}
@@ -1247,6 +1309,10 @@ func pebbleHandleCompareAndSwap(s *PebbleStateMachine, batch *pebble.Batch, payl
 		return sm.Result{Value: protocol.ResultNotSwapped}, nil, nil
 	}
 
+	if res, handled, ierr := s.precheckAndUpdateIndexes(key, current, next); handled {
+		return res, nil, ierr
+	}
+
 	if serr := batch.Set(key, next, pebble.Sync); serr != nil {
 		return sm.Result{}, nil, &WriteError{Err: serr}
 	}
@@ -1285,8 +1351,13 @@ func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []by
 		return res, nil, nil
 	}
 
-	// Capture previous value for watch notifications.
+	// Capture previous value for index maintenance and watch notifications.
+	oldValue, _ := s.getKeyInBatch(batch, cmd.Key)
 	prevKv := s.watchPrevKV(batch, cmd.Key)
+
+	if err := s.removeIndexesOnDelete(cmd.Key, oldValue); err != nil {
+		return sm.Result{}, nil, err
+	}
 
 	if err := batch.Delete(cmd.Key, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
@@ -1615,7 +1686,21 @@ func validatePebbleOps(ops []protocol.DecodedOp) error {
 func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.DecodedOp) ([]pebbleNotification, error) {
 	switch op.Type {
 	case protocol.OpMVCCPut:
+		oldValue, _ := s.getKeyInBatch(batch, op.Key)
 		prevKv := s.watchPrevKV(batch, op.Key)
+
+		// A Batch/Transaction op executes unconditionally once its opcodes
+		// are validated: pebbleExecuteOp has no per-op result slot to carry
+		// an application-level outcome the way a single Put's sm.Result
+		// does, so a unique conflict here -- unlike the single-op paths --
+		// still surfaces as an apply-level error. The pre-check still runs
+		// first so a conflict leaves no partial index mutation behind.
+		if verr := engine.CheckUniqueViolation(nil, s.indexes, s.indexFields, s.indexScopes, op.Key, op.Value); verr != nil {
+			return nil, verr
+		}
+		if err := s.updateIndexesOnWrite(op.Key, oldValue, op.Value); err != nil {
+			return nil, err
+		}
 
 		if err := batch.Set(op.Key, op.Value, pebble.Sync); err != nil {
 			return nil, &WriteError{Err: err}
@@ -1637,7 +1722,12 @@ func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.Dec
 		return notifs, nil
 
 	case protocol.OpMVCCDelete:
+		oldValue, _ := s.getKeyInBatch(batch, op.Key)
 		prevKv := s.watchPrevKV(batch, op.Key)
+
+		if err := s.removeIndexesOnDelete(op.Key, oldValue); err != nil {
+			return nil, err
+		}
 
 		if err := batch.Delete(op.Key, pebble.Sync); err != nil {
 			return nil, &WriteError{Err: err}
@@ -1987,7 +2077,7 @@ func countOpenImportSessions(r pebble.Reader, tenantID string) (int, error) {
 // pebbleHandleIndexCreate creates a new secondary index backed by the
 // same PebbleDB instance.
 func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	name, _, opts, err := protocol.DecodeIndexCreateOpts(payload)
+	name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -2031,8 +2121,21 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	if idxErr != nil {
 		return sm.Result{}, nil, idxErr
 	}
+
+	// The key scope composes the namespace half read back off name (every
+	// transport namespaces both keys and index names identically) with the
+	// declared half the creator named (opts.KeyPrefix, go-qrdb#410). Both
+	// maintenance on every subsequent write and this create's own backfill
+	// below apply it, which is what keeps an index named for one database
+	// from indexing another database's keys sharing this same shard.
+	scope := engine.ComposeIndexScope(name, opts.KeyPrefix)
+
 	s.indexes[name] = idx
 	s.indexOwners[name] = opts.Owner
+	s.indexFields[name] = fieldName
+	s.indexScopes[name] = scope
+
+	s.backfillIndex(idx, fieldName, scope)
 
 	return sm.Result{Value: 1}, nil, nil
 }
@@ -2065,8 +2168,188 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 	}
 	delete(s.indexes, name)
 	delete(s.indexOwners, name)
+	delete(s.indexFields, name)
+	delete(s.indexScopes, name)
 
 	return sm.Result{Value: 1}, nil, nil
+}
+
+// backfillIndex populates idx from every currently-stored key within scope
+// whose value carries fieldName, for an index just created over EXISTING
+// data. A scan failure or a single entry's insert failure must not fail the
+// create apply (that would stall consensus), so both are logged and the
+// index is left as complete as the backfill could make it -- mirroring
+// pkg/engine's BackfillIndex contract for the "mvcc"/engine-backed state
+// machines.
+func (s *PebbleStateMachine) backfillIndex(idx index.Index, fieldName string, scope []byte) {
+	start, end := pebbleBackfillRange(scope)
+	iter, err := s.db.NewIter(&pebble.IterOptions{LowerBound: start, UpperBound: end})
+	if err != nil {
+		slog.Warn("pebble: index backfill scan failed; index created without backfill",
+			"field", fieldName, "error", err)
+		return
+	}
+	defer func() { _ = iter.Close() }()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		if statemachine.IsReservedKey(key) || !engine.KeyInScope(scope, key) {
+			continue
+		}
+		val, verr := iter.ValueAndErr()
+		if verr != nil || len(val) == 0 {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(val, &fields) != nil {
+			continue
+		}
+		raw, exists := fields[fieldName]
+		if !exists {
+			continue
+		}
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		if err := idx.Put(keyCopy, engine.UnquoteJSON(raw)); err != nil {
+			slog.Warn("pebble: index backfill entry failed; index built without this entry",
+				"field", fieldName, "key", string(keyCopy), "error", err)
+		}
+	}
+	if err := iter.Error(); err != nil {
+		slog.Warn("pebble: index backfill scan failed partway; index built without the remainder",
+			"field", fieldName, "error", err)
+	}
+}
+
+// pebbleBackfillRange returns the [start, end) key range an index-create
+// backfill scans for scope. A scoped index reads only its own keyspace; an
+// unscoped one keeps the whole-keyspace range this engine has always used.
+func pebbleBackfillRange(scope []byte) (start, end []byte) {
+	if len(scope) == 0 {
+		return []byte{0x00}, []byte{0xFF}
+	}
+	if e := prefixUpperBound(scope); e != nil {
+		return scope, e
+	}
+	return scope, []byte{0xFF}
+}
+
+// updateIndexesOnWrite maintains every registered secondary index for a
+// write of newValue under key, removing any entry oldValue (nil if there was
+// none) contributed and adding the new one. A unique-constraint violation
+// aborts and returns the error; callers MUST call this BEFORE staging the
+// key/value write into the Raft-applied batch, so a refused write never
+// lands in the state machine.
+//
+// index.Index writes its own entries directly (it is not an
+// index.BatchableIndex over this engine's raw *pebble.Batch), so this is not
+// joined into the SAME low-level Pebble transaction as the data write below
+// it -- unlike pkg/engine's UpdateIndexesBatch, which shares one
+// storage.Batch with both. The window that leaves open is a crash between
+// this call and the data batch's Commit, which pebble.Sync-backed writes
+// make vanishingly rare and which an operator recovers from exactly as they
+// would any other interrupted Raft apply.
+func (s *PebbleStateMachine) updateIndexesOnWrite(key, oldValue, newValue []byte) error {
+	if len(s.indexes) == 0 || statemachine.IsReservedKey(key) {
+		return nil
+	}
+
+	var newFields map[string]json.RawMessage
+	if json.Unmarshal(newValue, &newFields) != nil {
+		return nil // not a flat JSON object; nothing to index
+	}
+	var oldFields map[string]json.RawMessage
+	if len(oldValue) > 0 {
+		_ = json.Unmarshal(oldValue, &oldFields) // best-effort
+	}
+
+	for name, idx := range s.indexes {
+		scope := s.indexScopes[name]
+		if !engine.KeyInScope(scope, key) {
+			continue
+		}
+		fieldName, ok := s.indexFields[name]
+		if !ok {
+			continue
+		}
+
+		if oldFields != nil {
+			if oldRaw, exists := oldFields[fieldName]; exists {
+				if err := idx.Delete(key, engine.UnquoteJSON(oldRaw)); err != nil {
+					return err
+				}
+			}
+		}
+		if newRaw, exists := newFields[fieldName]; exists {
+			if err := idx.Put(key, engine.UnquoteJSON(newRaw)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// precheckAndUpdateIndexes performs index maintenance for a write of
+// newValue under key in the two steps a unique constraint requires: a
+// READ-ONLY pre-check first (engine.CheckUniqueViolation), encoded as a
+// non-fatal application result when it fails so Raft consensus still
+// advances, and the actual index mutation (updateIndexesOnWrite) only once
+// that pre-check has passed.
+//
+// Letting idx.Put's OWN internal uniqueness check discover the conflict --
+// what this engine did before -- returns a Go error from the apply path.
+// go-quicraft treats that as a state machine FAULT, not a declined write:
+// an ordinary, expected unique-constraint rejection trips its SM circuit
+// breaker and the shard stops serving, exactly the failure
+// pkg/engine's MVCCEngine.handleBaseKVPut's own comment warns against for
+// the identical reason.
+//
+// handled=true means the caller must return (res, notifs, err) immediately
+// without touching its data batch. handled=false means maintenance
+// succeeded (or there was nothing to maintain) and the caller proceeds to
+// its own write.
+func (s *PebbleStateMachine) precheckAndUpdateIndexes(key, oldValue, newValue []byte) (res sm.Result, handled bool, err error) {
+	if verr := engine.CheckUniqueViolation(nil, s.indexes, s.indexFields, s.indexScopes, key, newValue); verr != nil {
+		var uce *engine.UniqueConstraintError
+		if errors.As(verr, &uce) {
+			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, uce.Error())}, true, nil
+		}
+		return sm.Result{}, true, verr
+	}
+	// Uniqueness was pre-validated above, so any error here is a genuine
+	// storage fault and is correctly fatal.
+	if err := s.updateIndexesOnWrite(key, oldValue, newValue); err != nil {
+		return sm.Result{}, true, err
+	}
+	return sm.Result{}, false, nil
+}
+
+// removeIndexesOnDelete removes every registered secondary index's entry
+// for key, given the value it held before the delete.
+func (s *PebbleStateMachine) removeIndexesOnDelete(key, oldValue []byte) error {
+	if len(s.indexes) == 0 || len(oldValue) == 0 || statemachine.IsReservedKey(key) {
+		return nil
+	}
+	var oldFields map[string]json.RawMessage
+	if json.Unmarshal(oldValue, &oldFields) != nil {
+		return nil
+	}
+	for name, idx := range s.indexes {
+		scope := s.indexScopes[name]
+		if !engine.KeyInScope(scope, key) {
+			continue
+		}
+		fieldName, ok := s.indexFields[name]
+		if !ok {
+			continue
+		}
+		if oldRaw, exists := oldFields[fieldName]; exists {
+			if err := idx.Delete(key, engine.UnquoteJSON(oldRaw)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2084,7 +2367,9 @@ func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebbl
 		return sm.Result{}, nil, err
 	}
 
-	if err := s.ts.Write(params.Metric, params.Value, time.Unix(0, params.Timestamp), params.Tags); err != nil {
+	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		return s.ts.Write(b, params.Metric, params.Value, time.Unix(0, params.Timestamp), params.Tags)
+	}); err != nil {
 		return statemachine.RefusalResult(err), nil, nil
 	}
 
@@ -2112,7 +2397,9 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 		}
 	}
 
-	if err := s.ts.WriteBatch(points); err != nil {
+	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		return s.ts.WriteBatch(b, points)
+	}); err != nil {
 		return statemachine.RefusalResult(err), nil, nil
 	}
 
@@ -2136,7 +2423,9 @@ func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *
 		Timestamp: time.Unix(0, params.Timestamp),
 		Tags:      params.Tags,
 	}
-	if err := s.ts.WritePoint(context.Background(), dp); err != nil {
+	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		return s.ts.WritePoint(b, dp)
+	}); err != nil {
 		return statemachine.RefusalResult(err), nil, nil
 	}
 
@@ -2165,7 +2454,9 @@ func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _
 		req.EndTime = time.Unix(0, params.EndNs)
 	}
 
-	if err := s.ts.DeleteSeries(context.Background(), req); err != nil {
+	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		return s.ts.DeleteSeries(b, req)
+	}); err != nil {
 		return statemachine.RefusalResult(err), nil, nil
 	}
 
@@ -2189,7 +2480,9 @@ func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _
 		Aggregation: timeseries.AggFunc(params.Aggregation),
 	}
 
-	if err := s.ts.SetRetentionPolicy(params.Metric, policy); err != nil {
+	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		return s.ts.SetRetentionPolicy(b, params.Metric, policy)
+	}); err != nil {
 		return statemachine.RefusalResult(err), nil, nil
 	}
 

@@ -32,7 +32,6 @@ raft:
 
 databases:
   - name: "default"
-    engine: "kv"
     backend: "file"
 
 tls:

@@ -157,6 +157,7 @@ func TestResolveJoinPathNeverPersistsACAKeyAnOlderMemberServes(t *testing.T) {
 // Noise NK session from a real first node and asserts on what arrives: the
 // PEM bundle and every DER certificate in the response.
 func TestNoisePayloadNeverCarriesTheCAPrivateKey(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	adv, _ := startFirstNode(t)
 
 	client, err := noiseboot.NewClient(&noiseboot.ClientConfig{
@@ -194,6 +195,7 @@ func TestNoisePayloadNeverCarriesTheCAPrivateKey(t *testing.T) {
 // while this package handed it the key; this package's own guarantee must
 // not rest on a property of a dependency's handler.
 func TestAdvertiserBundleProviderNeverCarriesTheCAPrivateKey(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	var captured noiseboot.BundleProvider
 	prev := newNoiseServer
 	newNoiseServer = func(cfg *noiseboot.ServerConfig) (*noiseboot.Server, error) {

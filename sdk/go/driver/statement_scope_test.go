@@ -47,7 +47,7 @@ func (c *countingTableService) GetTable(ctx context.Context, database, name stri
 // driving the driver directly as well as through database/sql.
 func TestEmbedded_OverlappingStatementsAreRefused(t *testing.T) {
 	ctx := context.Background()
-	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "overlap", Backend: "memory", Engine: "kv"}
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "overlap", Backend: "memory"}
 	dc, err := NewEmbeddedConnector(cfg, WithRegistry(newRelationalRegistry())).Connect(ctx)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -201,7 +201,7 @@ func TestEmbedded_TxStatementWhileRowsAreOpenIsRefused(t *testing.T) {
 // a connection valid: an open statement proves the session alive.
 func TestEmbedded_ResetSessionWhileACommandIsOpen(t *testing.T) {
 	ctx := context.Background()
-	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "resetopen", Backend: "memory", Engine: "kv"}
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "resetopen", Backend: "memory"}
 	dc, err := NewEmbeddedConnector(cfg, WithRegistry(newRelationalRegistry())).Connect(ctx)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -244,7 +244,7 @@ func TestEmbedded_ResetSessionWhileACommandIsOpen(t *testing.T) {
 // reset that passed would hand them to the next caller.
 func TestEmbedded_ResetSessionWithAnAutocommitStatementOpen(t *testing.T) {
 	ctx := context.Background()
-	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "resetauto", Backend: "memory", Engine: "kv"}
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "resetauto", Backend: "memory"}
 	dc, err := NewEmbeddedConnector(cfg, WithRegistry(newRelationalRegistry())).Connect(ctx)
 	if err != nil {
 		t.Fatalf("connect: %v", err)

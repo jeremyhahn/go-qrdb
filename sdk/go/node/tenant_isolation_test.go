@@ -350,7 +350,7 @@ func TestNode_ClusteredIsolationRaft_KV(t *testing.T) {
 	// the tenant record without requiring explicit backend flags in the call.
 	_, err = n.Services().Database.CreateForTenant(
 		tenant.WithTenantID(ctx, "acme"),
-		database.DatabaseConfig{Name: "orders", Engine: database.EngineKV},
+		database.DatabaseConfig{Name: "orders"},
 	)
 	require.NoError(t, err, "CreateForTenant(orders) must succeed for IsolationRaft tenant")
 
@@ -418,7 +418,7 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 
 	_, err = n.Services().Database.CreateForTenant(
 		tenant.WithTenantID(ctx, "beta"),
-		database.DatabaseConfig{Name: "sales", Engine: database.EngineKV},
+		database.DatabaseConfig{Name: "sales"},
 	)
 	require.NoError(t, err)
 

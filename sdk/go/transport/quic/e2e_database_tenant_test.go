@@ -33,7 +33,7 @@ import (
 func TestE2E_CreateDatabase_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("db.Create", func(_ []byte) (uint16, []byte) {
-		info := transport.DatabaseInfo{Name: "db", Engine: "pebble", Backend: "local", Status: "open"}
+		info := transport.DatabaseInfo{Name: "db", Backend: "local", Status: "open"}
 		b, _ := json.Marshal(info)
 		return wire.StatusOK, b
 	})

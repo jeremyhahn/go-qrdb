@@ -106,7 +106,6 @@ func TestHandleDatabaseUpdateEtcd_Success(t *testing.T) {
 	dbSvc.updateEtcdFn = func(_ string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:   "mydb",
-			Engine: database.EngineKV,
 			Status: database.StatusOpen,
 		}, nil
 	}
@@ -185,7 +184,6 @@ func TestHandleDatabaseUpdateRaft_Success(t *testing.T) {
 	dbSvc.updateRaftFn = func(_ string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:   "mydb",
-			Engine: database.EngineKV,
 			Status: database.StatusOpen,
 		}, nil
 	}
@@ -266,7 +264,6 @@ func TestHandleDatabaseUpdateBarrier_Success(t *testing.T) {
 	dbSvc.updateBarrierFn = func(_ string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:   "mydb",
-			Engine: database.EngineKV,
 			Status: database.StatusOpen,
 		}, nil
 	}
@@ -382,7 +379,6 @@ func TestHandleDatabaseUpdateConnection_Success(t *testing.T) {
 	dbSvc.updateConnectionFn = func(_ string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:   "mydb",
-			Engine: database.EngineKV,
 			Status: database.StatusOpen,
 		}, nil
 	}

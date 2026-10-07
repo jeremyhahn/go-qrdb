@@ -46,7 +46,7 @@ func TestMCP_Database_UpdateDatabaseSQL(t *testing.T) {
 	}
 
 	if _, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
-		Name: "mydb2", Engine: "kv", Backend: "memory",
+		Name: "mydb2", Backend: "memory",
 		SQL: &transport.DatabaseSQLConfig{Concurrency: "pessimistic"},
 	}); err != nil {
 		t.Fatalf("CreateDatabase: %v", err)

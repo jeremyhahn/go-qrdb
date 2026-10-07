@@ -106,6 +106,16 @@ func (f *failingBackend) Exists(ctx context.Context, key string) (bool, error) {
 }
 func (f *failingBackend) Close() error { return nil }
 
+type recordingRoleSeeder struct {
+	calls []string
+	err   error
+}
+
+func (s *recordingRoleSeeder) ReconcileBuiltInRoles(_ context.Context, tenantID string) error {
+	s.calls = append(s.calls, tenantID)
+	return s.err
+}
+
 // testLogger returns a discard logger for tests.
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -259,6 +269,64 @@ func TestTenantService_CreateGet(t *testing.T) {
 	}
 	if got.ID != info.ID || got.Name != info.Name {
 		t.Errorf("get mismatch: got %+v, want %+v", got, info)
+	}
+}
+
+func TestTenantService_CreateSeedsPrefixTenantRoles(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	seeder := &recordingRoleSeeder{}
+	svc, err := NewTenantService(store, reg, testLogger(), WithVolumeAllocator(volumeAllocatorFor(t, reg)), WithRoleSeeder(seeder))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+
+	if _, err := svc.CreateTenant(context.Background(), "acme-roles", "Acme Roles", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if len(seeder.calls) != 1 || seeder.calls[0] != "acme-roles" {
+		t.Fatalf("seeded tenants = %v, want [acme-roles]", seeder.calls)
+	}
+}
+
+func TestTenantService_CreateRoleSeedFailureDoesNotRollbackTenant(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	seeder := &recordingRoleSeeder{err: errors.New("seed unavailable")}
+	svc, err := NewTenantService(store, reg, testLogger(), WithVolumeAllocator(volumeAllocatorFor(t, reg)), WithRoleSeeder(seeder))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+
+	if _, err := svc.CreateTenant(context.Background(), "seed-lag", "Seed Lag", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if len(seeder.calls) != 1 || seeder.calls[0] != "seed-lag" {
+		t.Fatalf("seeded tenants = %v, want [seed-lag]", seeder.calls)
+	}
+	got, err := svc.GetTenant(context.Background(), "seed-lag")
+	if err != nil {
+		t.Fatalf("GetTenant after seed failure: %v", err)
+	}
+	if got.ID != "seed-lag" {
+		t.Fatalf("tenant ID after seed failure = %q, want seed-lag", got.ID)
+	}
+}
+
+func TestTenantService_CreateDoesNotSeedDedicatedTenantRoles(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	seeder := &recordingRoleSeeder{}
+	svc, err := NewTenantService(store, reg, testLogger(), WithVolumeAllocator(volumeAllocatorFor(t, reg)), WithRoleSeeder(seeder))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+
+	if _, err := svc.CreateTenant(context.Background(), "barrier-roles", "Barrier Roles", IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if len(seeder.calls) != 0 {
+		t.Fatalf("seeded tenants = %v, want none", seeder.calls)
 	}
 }
 

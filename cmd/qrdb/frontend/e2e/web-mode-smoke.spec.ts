@@ -43,7 +43,7 @@ const LOAD_TIMEOUT = 10_000;
 const webModeState: MockState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "default", engine: "kv", backend: "pebble", status: "open" },
+    { name: "default", backend: "pebble", status: "open" },
   ],
 };
 

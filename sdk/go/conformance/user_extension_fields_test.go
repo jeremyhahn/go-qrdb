@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -70,7 +71,7 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 			// A binding may name only its holder's own tenant, the system
 			// tenant's users included: one naming tenant-a is refused on every
 			// transport and leaves nothing behind.
-			if _, err := c.rawRoles.CreateRole(ctx, &role.CreateRoleRequest{
+			if _, err := c.rawRoles.CreateRole(tenant.WithTenantID(ctx, "tenant-a"), &role.CreateRoleRequest{
 				ID:       "role-a",
 				Name:     "role-a",
 				TenantID: "tenant-a",

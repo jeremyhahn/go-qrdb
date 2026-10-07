@@ -237,7 +237,7 @@ func (s *CredentialService) DeleteCredential(ctx context.Context, name string) e
 			return err
 		}
 	case StrategyBarrier:
-		if err := s.barrier.Delete(ctx, credentialPrefix+name); err != nil {
+		if err := s.deleteBarrierAll(ctx, name); err != nil {
 			return err
 		}
 	default:

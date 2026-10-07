@@ -1,6 +1,6 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Issuing, exporting and revoking the client certificates that authenticate every
 caller. Authentication is mTLS throughout the store, so this is the feature that
@@ -557,13 +557,13 @@ Bootstrap (barrier unsealed)
   ├─ kvStore.PutAllIfAllUnchanged(__sys:cert_ca/{tenantID}/material,
   │  __sys:cert_ca/{tenantID}/certificate) -- ONE atomic guarded batch,
   │  guarded on BOTH being absent
-  └─ Cache CA key + cert in memory
+  └─ Seal the key into protected memory (secure.Secret); cache the cert in the clear
 
 Unseal (load-only; auto-establishes on a cold cache with nothing persisted
 yet -- see Initialize)
   ├─ Load BOTH the material and certificate records from KVStore
   ├─ Decode the key from material, the cert from certificate
-  └─ Cache CA key + cert in memory
+  └─ Seal the key into protected memory (secure.Secret); cache the cert in the clear
 
 CertificateOnly (the handshake / trust-decision path -- IsTenantIssuer,
 CACertPEMs' per-tenant load)
@@ -573,8 +573,8 @@ CACertPEMs' per-tenant load)
      *NotInitializedError, never a freshly-minted CA
 
 Seal
-  ├─ secure.Wipe(caKey) → zero memory
-  ├─ nil CA key reference (the cached certificate, public data, is NOT cleared)
+  ├─ Destroy the cached secure.Secret outright (wipes the sealed key;
+  │  the cached certificate, public data, is NOT cleared)
   └─ All operations return BarrierSealedError
 
 Issue Certificate (barrier unsealed)
@@ -827,12 +827,15 @@ This is why `ceremony-sign-csr` (`sealedwindow.VerbCeremonySignCSR`) is
 `PreOperationalOnly`, the same flag `officer-register` already carries: its
 anonymous, sealed-window exemption is justified only before the init
 ceremony completes, while Key A is still the in-memory `StaticProvider`.
-After the ceremony is operational, signing a new officer CSR requires the
-barrier to be unsealed first (so `cakey.SoftwareProvider` can load Key A).
+After the ceremony is operational, `SignCSRInit` (`pkg/ceremony/ceremony.go`)
+refuses every call outright, on every transport, regardless of seal state or
+session: it only accepts a call while the ceremony is still `enrolling`, so
+there is no post-unseal path to mint a new officer CSR this way.
 **Verifying a certificate an officer already holds needs only the CA
 certificate**, which is public and already part of every node's cached TLS
-identity — so an existing officer unseals exactly as before; only *minting a
-new* CSR-signed certificate moves to post-unseal.
+identity — so an existing officer unseals exactly as before; minting a *new*
+CSR-signed holder certificate through this verb is only possible during the
+ceremony, never after.
 
 ## Component boundaries
 
@@ -1070,10 +1073,14 @@ provider.
 - **Each tenant's CA key is stored like every other replicated system
   record — no additional per-record encryption of its own** (the owner's
   CA-at-rest ruling; see "Trust boundaries" in the backup-restore feature
-  for what actually protects it). The in-memory key lives in protected
-  memory only while unsealed: sealing destroys it (not the cached
-  certificate, public data); every mutating operation then returns
-  `BarrierSealedError`.
+  for what actually protects it). The IN-MEMORY cache is a different
+  matter: whenever established, the key lives in a `secure.Secret`
+  (go-enclave protected memory, AES-256-GCM under the process Sealer),
+  never a bare `*ecdsa.PrivateKey`; `Signer` opens it into an mlocked
+  `secure.Buffer` for exactly the duration of one `Sign` call and destroys
+  the Buffer before returning. Sealing destroys the `Secret` outright (not
+  the cached certificate, public data); every mutating operation then
+  returns `BarrierSealedError`.
 - **`getCAMaterial()` resolves the SPECIFIC tenant's CA directly** through
   the `cakey.Provider` it just resolved (`prov.Signer`/`prov.Certificate`),
   never through any shared, process-wide cache. Two different tenants'

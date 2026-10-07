@@ -79,6 +79,7 @@ func uniqueConfig(name string) IndexConfig {
 	return IndexConfig{
 		Name:          name,
 		Type:          IndexTypeUnique,
+		Unique:        true,
 		CaseSensitive: true,
 	}
 }

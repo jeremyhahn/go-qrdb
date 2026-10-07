@@ -64,7 +64,7 @@ func TestManager_CreateRefusesAnUnsplittableShamirScheme(t *testing.T) {
 	m := NewManager(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), dir)
 	t.Cleanup(func() { _ = m.Close() })
 	_, err := m.CreateWithCredentials(context.Background(), DatabaseConfig{
-		Name: "vault", Engine: EngineKV, Backend: BackendMemory, DataDir: t.TempDir(),
+		Name: "vault", Backend: BackendMemory, DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModeShamir, SharesRequired: 2, SharesTotal: 256},
 	}, seal.Credentials{})
 	var scheme *InvalidShamirSchemeError

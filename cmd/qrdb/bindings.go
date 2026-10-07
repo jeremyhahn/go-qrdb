@@ -18,7 +18,6 @@ import (
 	"context"
 	"sync/atomic"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
@@ -29,14 +28,14 @@ import (
 // atomic pointer is retained for backward compatibility with the CLI
 // path which does not use the connection manager.
 type ConnectionBinding struct {
-	logger  *logger.Logger
+	logger  *sdk.ConcreteLogger
 	client  atomic.Pointer[sdk.Client]
 	manager *ConnectionManagerBinding
 	ctx     context.Context
 }
 
 // NewConnectionBinding creates a new ConnectionBinding.
-func NewConnectionBinding(log *logger.Logger) *ConnectionBinding {
+func NewConnectionBinding(log *sdk.ConcreteLogger) *ConnectionBinding {
 	return &ConnectionBinding{
 		logger: log,
 		ctx:    context.Background(),

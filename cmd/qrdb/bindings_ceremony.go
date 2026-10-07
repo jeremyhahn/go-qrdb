@@ -22,8 +22,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -65,13 +65,13 @@ type CeremonyInitializeResult struct {
 // equally against an embedded server or a remote daemon: it holds no
 // ceremony state of its own, only the connection.
 type CeremonyBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewCeremonyBinding creates a new CeremonyBinding backed by the given
 // connection.
-func NewCeremonyBinding(log *logger.Logger, conn *ConnectionBinding) *CeremonyBinding {
+func NewCeremonyBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *CeremonyBinding {
 	return &CeremonyBinding{logger: log, conn: conn}
 }
 

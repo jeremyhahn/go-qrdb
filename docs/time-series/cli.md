@@ -1,7 +1,7 @@
 # Time Series — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they

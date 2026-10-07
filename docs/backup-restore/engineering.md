@@ -1,6 +1,6 @@
 # Backup and Restore — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -231,9 +231,10 @@ path.
   explicit `none` writes plaintext and warns/audits) lives in
   `sdk/go/conformance`.
 - **Integration**: `backup_restore_test.go` lives in the **cluster stage**
-  (`make integration-test-cluster`), which is **not currently wired into CI** —
-  so backup and restore are not exercised end to end by CI today. This is a
-  known gap.
+  (`make integration-test-cluster`), which runs in CI as the
+  `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  `ci-gate` — so backup and restore are exercised end to end on every push and
+  pull request.
 
 ## Observability
 

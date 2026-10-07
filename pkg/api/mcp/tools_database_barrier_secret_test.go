@@ -64,7 +64,6 @@ func TestHandleDatabaseCreate_MCP_WithBarrierSecret_RoutesToCredentialedCreate(t
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
 		"name":                    "secured",
-		"engine":                  "kv",
 		"backend":                 "memory",
 		"barrier_enabled":         true,
 		"barrier_mode":            "passphrase",
@@ -99,7 +98,7 @@ func TestHandleDatabaseCreate_MCP_WithoutBarrier_NoBarrierConfig(t *testing.T) {
 	handler := handleDatabaseCreate(mock)
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name": "plain", "engine": "kv", "backend": "memory",
+		"name": "plain", "backend": "memory",
 	})
 
 	if _, err := handler(context.Background(), req); err != nil {

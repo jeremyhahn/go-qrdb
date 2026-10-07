@@ -160,7 +160,9 @@ store's ordering.
 - **Error tests** for each function, minimum happy path plus error path.
 - **Integration**: lock parity across transports in the standalone stage.
   Contention across nodes and lock survival through a leader change belong to
-  the cluster stage, which is **not currently wired into CI**.
+  the cluster stage (`make integration-test-cluster`), which runs in CI as the
+  `integration-cluster` job (`.github/workflows/ci.yml`), required by
+  `ci-gate`.
 
 ## Known documentation drift
 
@@ -175,3 +177,7 @@ correct; [api.md](api.md) records the real paths.
 - Lock acquisition and release appear as key events under `__sys:lock/` and are
   therefore not visible on a user watch — use `qrdb lock list` for visibility.
   `qrdb lock list` shows the caller's own `(tenant, database)` scope only.
+
+## Integration testing
+
+`make integration-test-distributed-locks` runs this feature's self-spawned integration tests: `lock_cli_test.go`. The per-transport accounting, including every gap, is the `distributed-locks` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

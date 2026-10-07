@@ -204,7 +204,6 @@ func TestDatabaseBinding_Create_Success(t *testing.T) {
 		createFn: func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				Status:  "open",
 			}, nil
@@ -216,7 +215,6 @@ func TestDatabaseBinding_Create_Success(t *testing.T) {
 
 	info, err := b.Create(&transport.CreateDatabaseRequest{
 		Name:    "metrics",
-		Engine:  "timeseries",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -227,9 +225,6 @@ func TestDatabaseBinding_Create_Success(t *testing.T) {
 	}
 	if info.Name != "metrics" {
 		t.Errorf("Name = %q, want %q", info.Name, "metrics")
-	}
-	if info.Engine != "timeseries" {
-		t.Errorf("Engine = %q, want %q", info.Engine, "timeseries")
 	}
 	if info.Backend != "pebble" {
 		t.Errorf("Backend = %q, want %q", info.Backend, "pebble")
@@ -244,8 +239,7 @@ func TestDatabaseBinding_Create_NotConnected(t *testing.T) {
 	b := NewDatabaseBinding(testLogger(t), conn)
 
 	_, err := b.Create(&transport.CreateDatabaseRequest{
-		Name:   "testdb",
-		Engine: "kv",
+		Name: "testdb",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -267,8 +261,7 @@ func TestDatabaseBinding_Create_ServiceError(t *testing.T) {
 	b := NewDatabaseBinding(testLogger(t), conn)
 
 	_, err := b.Create(&transport.CreateDatabaseRequest{
-		Name:   "dup",
-		Engine: "kv",
+		Name: "dup",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -288,7 +281,6 @@ func TestDatabaseBinding_Get_Success(t *testing.T) {
 		getFn: func(name string) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:    name,
-				Engine:  "kv",
 				Backend: "pebble",
 				Status:  "open",
 				DataDir: "/data/default",
@@ -309,9 +301,6 @@ func TestDatabaseBinding_Get_Success(t *testing.T) {
 	}
 	if info.Name != "default" {
 		t.Errorf("Name = %q, want %q", info.Name, "default")
-	}
-	if info.Engine != "kv" {
-		t.Errorf("Engine = %q, want %q", info.Engine, "kv")
 	}
 	if info.DataDir != "/data/default" {
 		t.Errorf("DataDir = %q, want %q", info.DataDir, "/data/default")
@@ -366,8 +355,8 @@ func TestDatabaseBinding_List_Success(t *testing.T) {
 	dbSvc := &bindingDatabaseService{
 		listFn: func() ([]database.DatabaseInfo, error) {
 			return []database.DatabaseInfo{
-				{Name: "default", Engine: "kv", Backend: "pebble", Status: "open"},
-				{Name: "metrics", Engine: "timeseries", Backend: "pebble", Status: "open"},
+				{Name: "default", Backend: "pebble", Status: "open"},
+				{Name: "metrics", Backend: "pebble", Status: "open"},
 			}, nil
 		},
 	}
@@ -532,7 +521,6 @@ func TestDatabaseBinding_UpdateProtocol_Success(t *testing.T) {
 		updateProtocolFn: func(name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error) {
 			return &database.DatabaseInfo{
 				Name:   name,
-				Engine: "kv",
 				Status: "open",
 			}, nil
 		},
@@ -615,7 +603,7 @@ func TestDatabaseBinding_UpdateRaft_NotConnected(t *testing.T) {
 func TestDatabaseBinding_UpdateRaft_Success(t *testing.T) {
 	dbSvc := &bindingDatabaseService{
 		updateRaftFn: func(name string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-			return &database.DatabaseInfo{Name: name, Engine: "mvcc"}, nil
+			return &database.DatabaseInfo{Name: name}, nil
 		},
 	}
 

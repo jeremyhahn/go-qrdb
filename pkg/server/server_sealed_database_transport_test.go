@@ -137,7 +137,7 @@ func openLegacyVault(t *testing.T) (*database.Manager, *database.Database) {
 	mgr := database.NewManager(nil, dataDir, database.WithBarrierManager(newSealedDBBarrierManager(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
-	meta := []byte(`{"name":"legacyvault","engine":"kv","backend":"raft","protocol":{"mysql":true,"postgresql":true},"raft":{"clusterMode":"local"},"barrier":{"enabled":true,"mode":"passphrase"}}`)
+	meta := []byte(`{"name":"legacyvault","backend":"raft","protocol":{"mysql":true,"postgresql":true},"raft":{"clusterMode":"local"},"barrier":{"enabled":true,"mode":"passphrase"}}`)
 	dbDir := filepath.Join(dataDir, "databases", "legacyvault")
 	if err := os.MkdirAll(dbDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)

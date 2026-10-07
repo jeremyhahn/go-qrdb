@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -51,6 +52,7 @@ func TestAuthMethodVocabulary_IsPerNode(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = without.Close() })
 
+	ctx = tenant.WithTenantID(ctx, "t1")
 	u, err := withOAuth.Services().User.CreateUser(ctx, &user.CreateUserRequest{
 		Username: "olga", Email: "olga@example.com", TenantID: "t1", AuthMethods: policy,
 	})

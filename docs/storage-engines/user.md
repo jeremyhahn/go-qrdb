@@ -1,7 +1,9 @@
 # Storage Engines and Volume Pools — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-05
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-06
+
+Test reference: `make integration-test-storage-engines`; coverage row: `test/integration/COVERAGE.md` `[storage-engines](../../docs/storage-engines/)`.
 
 Storage engines decide where bytes land. Most of the time you choose one once,
 in the server config or when creating a database, and never think about it
@@ -115,6 +117,17 @@ not portable.
 **The server would not start, complaining about a directory.** Backing
 directories are opened at startup, not lazily at first write, so a permissions
 or path problem shows up immediately rather than at the first busy moment.
+
+**An objstore backend refused to open with "carries no qrdb-objstore-format
+marker".** The bucket or directory already holds objects that this
+engine's current layout did not write. Usually they come from a release
+that named each object with its key verbatim. The engine now stores each
+key under an encoded name, so that any key can be stored, and it refuses
+the old layout rather than read it with keys missing. There is no in-place
+migration. Point the backend at an empty bucket or directory and copy the
+data across with a release from before the change, or start empty. Give
+the engine a bucket or prefix of its own: any object it did not write
+causes the same refusal.
 
 **You want an S3 or GCS backend.** Those come from go-objstore and are
 build-tag gated — rebuild with `WITH_AWS_S3=1`, `WITH_GCP_STORAGE=1` and so on.

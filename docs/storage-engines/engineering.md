@@ -2,7 +2,7 @@
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner ruling —
 > for the object-storage LSM target design (see "Target design" at the end).**
-> · Scope: go-qrdb · Last verified: 2026-10-05
+> · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -48,6 +48,15 @@ Re-exported as `sdk.ErrStorageClosed`, `sdk.StorageClosedError` and
 
 Implementations: `pkg/storage/file`, `pkg/storage/memory`,
 `pkg/storage/pebble`, `pkg/storage/objstore`, `pkg/storage/namespace`.
+
+`pkg/storage/objstore`'s typed errors, beside `UnsupportedProviderError`:
+
+```go
+type FormatMarkerMissingError struct{ Provider string }   // non-empty store, no marker
+type FormatVersionMismatchError struct{ Found, Want string }
+type RecordCorruptError struct{ Name, Reason string }     // hashed record unparseable
+type KeyMismatchError struct{ Name string }               // hashed record holds another key
+```
 
 `pkg/storage/pool`:
 
@@ -193,6 +202,8 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Iterator created before `Close` and advanced after it | serves its pinned version; never panics. `Close` reported the leak | — |
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
+| Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
+| Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
 | A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
 | Seal barrier enabled with `sm_type: disk`/`fast` over `file` `sm_storage` | refused at start (`statemachine.SMStorageUnencryptedError`; `qrdbd`: `SealedSMStoragePlaintextError`; SDK: `ConfigError` on `raft.sm_storage`), nothing opened | **yes** |
@@ -229,6 +240,18 @@ an error value, so an unchecked call panics rather than failing cleanly.
   exists; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
   bytes) is a client-input policy enforced before and at Apply, independent
   of any particular backend's constraints.
+- **Objstore engine**: one object per key, named by the key's encoding,
+  never by the key itself. A key whose segmented lowercase hex name fits the
+  provider's 1,024-byte limit is stored as `k/<hex…>_`, with its value as the
+  body. A longer key is stored as `h/<sha256-hex>`, with a
+  `uvarint(len(key)) || key || value` record that every read verifies. Every
+  key up to the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
+  bytes), whatever its bytes, round-trips on every provider. `New` refuses a
+  non-empty store lacking the `qrdb-objstore-format` marker for version `2`
+  (`FormatMarkerMissingError`, `FormatVersionMismatchError`), so a store
+  written by the previous verbatim-name layout is refused, not misread.
+  There is no migration. See
+  [architecture.md](architecture.md#the-objstore-engine-encoded-object-names-breaking).
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.
 - **Namespace engine**: no storage of its own; it rewrites keys.
@@ -257,6 +280,16 @@ an error value, so an unchecked call panics rather than failing cleanly.
   (`pkg/statemachine/disk_prefix_collision_test.go`), and end to end through
   a real daemon and the CLI, including the deep-key case, in
   `test/integration/sm_storage_file_test.go`.
+- **Objstore object names** (`pkg/storage/objstore/keys_test.go`,
+  `faults_test.go`): binary and edge-case keys (NUL, `0xff`, invalid UTF-8,
+  `..`, `//`, absolute paths, control characters, the marker's own name)
+  round-tripping through Set/Get/Exists/List/iteration/Delete on the
+  `memory` and `local` providers; key lengths across both name forms up to
+  the 65,535-byte cap, with every direct name checked against go-objstore's
+  own `ValidateKey` and the 255-byte component limit; non-canonical names
+  skipped; corrupt and misplaced hashed records refused; the format marker
+  refusing an unmarked or mismatched store; and provider read, list,
+  exists and delete faults surfacing as themselves.
 - **Volume pool**: `LocalOnly` refusing a non-local backend, and `Pick`
   returning a usable local path.
 - **Error tests** per function, happy path plus error path.

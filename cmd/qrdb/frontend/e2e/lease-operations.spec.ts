@@ -32,7 +32,7 @@ const LOAD_TIMEOUT = 10_000;
 const leaseOpsState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "lease-ops-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "lease-ops-db", backend: "pebble", status: "open" },
   ],
 };
 

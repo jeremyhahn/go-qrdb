@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Two distinct gRPC services, because there are two distinct factor models:
 
@@ -13,13 +13,15 @@ The Unix socket transport serves the same gRPC wire over a UDS.
 
 | Capability | REST | gRPC / Unix (`UserAuthFactorService/`) | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
-| Add | `POST /v1/users/factors` | `Add` | `userauthfactor.Add` | `qrdb_user_authfactor_add` | `Client.UserAuthFactors().Add` | `userauthfactors:add` |
-| List | `GET /v1/users/factors` | `List` | `userauthfactor.List` | `qrdb_user_authfactor_list` | `Client.UserAuthFactors().List` | `userauthfactors:list` |
-| Get | `GET /v1/users/factors/{id}` | `Get` | `userauthfactor.Get` | `qrdb_user_authfactor_get` | `Client.UserAuthFactors().Get` | `userauthfactors:get` |
-| Remove | `DELETE /v1/users/factors/{id}` | `Remove` | `userauthfactor.Remove` | `qrdb_user_authfactor_remove` | `Client.UserAuthFactors().Remove` | `userauthfactors:remove` |
-| Rotate | `POST /v1/users/factors/{id}/rotate` | `Rotate` | `userauthfactor.Rotate` | `qrdb_user_authfactor_rotate` | `Client.UserAuthFactors().Rotate` | `userauthfactors:rotate` |
-| Relabel | `POST /v1/users/factors/{id}/relabel` | `Relabel` | `userauthfactor.Relabel` | `qrdb_user_authfactor_relabel` | `Client.UserAuthFactors().Relabel` | `userauthfactors:relabel` |
-| Login | `POST /v1/users/factors/login` | `Login` | `userauthfactor.Login` | `qrdb_user_authfactor_login` | `Client.UserAuthFactors().Login` | `userauthfactors:login` |
+| Add | `POST /v1/users/factors` | `Add` | `userauthfactor.Add` | `qrdb_user_authfactor_add` | `Client.UserAuthFactors().Add` | `user_authfactors:add` |
+| List | `GET /v1/users/factors/list` | `List` | `userauthfactor.List` | `qrdb_user_authfactor_list` | `Client.UserAuthFactors().List` | `user_authfactors:list` |
+| Get | `GET /v1/users/factors/{id}` | `Get` | `userauthfactor.Get` | `qrdb_user_authfactor_get` | `Client.UserAuthFactors().Get` | `user_authfactors:get` |
+| Remove | `DELETE /v1/users/factors/{id}` | `Remove` | `userauthfactor.Remove` | `qrdb_user_authfactor_remove` | `Client.UserAuthFactors().Remove` | `user_authfactors:remove` |
+| Rotate | `POST /v1/users/factors/rotate` | `Rotate` | `userauthfactor.Rotate` | `qrdb_user_authfactor_rotate` | `Client.UserAuthFactors().Rotate` | `user_authfactors:rotate` |
+| Relabel | `PUT /v1/users/factors/{id}/label` | `Relabel` | `userauthfactor.Relabel` | `qrdb_user_authfactor_relabel` | `Client.UserAuthFactors().Relabel` | `user_authfactors:relabel` |
+| Login | `POST /v1/users/factors/login` | `Login` | `userauthfactor.Login` | `qrdb_user_authfactor_login` | `Client.UserAuthFactors().Login` | `user_authfactors:login` |
+
+*(Corrected 2026-10-06: the list, rotate and relabel REST routes and every permission name in both matrices were written to the wrong values. The rotate route carries the factor in the request body, not the path.)*
 
 ## Capability matrix — ceremony custodian factors (`Client.AuthFactors()`)
 
@@ -36,11 +38,11 @@ them.
 
 | Capability | REST | gRPC / Unix (`AuthFactorService/`) | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
-| Enroll | `POST /v1/authfactors/{factor}/enroll` | `EnrollFactor` | `authfactor.Enroll` | `qrdb_authfactor_enroll` | `Client.AuthFactors().EnrollFactor` | `authfactors:enroll` |
-| Challenge | `POST /v1/authfactors/{id}/challenge` | `ChallengeFactor` | `authfactor.Challenge` | `qrdb_authfactor_challenge` | `Client.AuthFactors().ChallengeFactor` | `authfactors:challenge` |
-| Verify | `POST /v1/authfactors/{id}/verify` | `VerifyFactor` | `authfactor.Verify` | `qrdb_authfactor_verify` | `Client.AuthFactors().VerifyFactor` | `authfactors:verify` |
-| List | `GET /v1/authfactors/list` | `ListFactors` | `authfactor.List` | `qrdb_authfactor_list` | `Client.AuthFactors().ListFactors` | `authfactors:list` |
-| Revoke | `DELETE /v1/authfactors/{id}` | `RevokeFactor` | `authfactor.Revoke` | `qrdb_authfactor_revoke` | `Client.AuthFactors().RevokeFactor` | `authfactors:revoke` |
+| Enroll | `POST /v1/authfactors/{factor}/enroll` | `EnrollFactor` | `authfactor.Enroll` | `qrdb_authfactor_enroll` | `Client.AuthFactors().EnrollFactor` | `authfactor:enroll` |
+| Challenge | `POST /v1/authfactors/{id}/challenge` | `ChallengeFactor` | `authfactor.Challenge` | `qrdb_authfactor_challenge` | `Client.AuthFactors().ChallengeFactor` | `authfactor:challenge` |
+| Verify | `POST /v1/authfactors/{id}/verify` | `VerifyFactor` | `authfactor.Verify` | `qrdb_authfactor_verify` | `Client.AuthFactors().VerifyFactor` | `authfactor:verify` |
+| List | `GET /v1/authfactors/list` | `ListFactors` | `authfactor.List` | `qrdb_authfactor_list` | `Client.AuthFactors().ListFactors` | `authfactor:list` |
+| Revoke | `DELETE /v1/authfactors/{id}` | `RevokeFactor` | `authfactor.Revoke` | `qrdb_authfactor_revoke` | `Client.AuthFactors().RevokeFactor` | `authfactor:revoke` |
 
 ### The challenge id is opaque, and carries its own storage location
 
@@ -146,12 +148,6 @@ caller reaching nil here is using a transport built outside this repository.
 Nil-check it anyway; the nil is not an error value. The same nil-check
 applies to `Factors()`, `Login()` and `Sessions()`, whose transport coverage
 is not this feature's claim to make.
-
-> **Known gap.** The auth-factor and audit handlers across REST, QUIC, MCP,
-> Unix and the SDK transports currently carry **hardcoded permission strings**
-> pending `permission.AuthFactor*` and `permission.AuditQuery` constants. The
-> permissions above name the intended constants; the code does not yet use them.
-> That is a tracked defect, not a naming choice.
 
 ## PINs
 

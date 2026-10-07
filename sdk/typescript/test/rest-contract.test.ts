@@ -313,7 +313,6 @@ describe('Bug 4 – database protocol endpoint path and body', () => {
         const client = await connectedClient();
         const calls = installMockFetch({
             name: 'default',
-            engine: 'mvcc',
             backend: 'pebble',
             protocol: { mysql: true, postgresql: false },
         });
@@ -335,7 +334,6 @@ describe('Bug 4 – database protocol endpoint path and body', () => {
         const client = await connectedClient();
         const calls = installMockFetch({
             name: 'my db',
-            engine: 'mvcc',
             backend: 'pebble',
             protocol: { mysql: false, postgresql: true },
         });
@@ -364,7 +362,7 @@ describe('database SQL settings (concurrency)', () => {
         const client = await connectedClient();
         const calls = installMockFetch({
             name: 'shop',
-            engine: 'kv',
+           
             backend: 'pebble',
             status: 'open',
             sql: { concurrency: 'pessimistic' },
@@ -382,7 +380,7 @@ describe('database SQL settings (concurrency)', () => {
 
     it('omitting the settings sends no sql, restoring the defaults', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ name: 'shop', engine: 'kv', backend: 'pebble', status: 'open' });
+        const calls = installMockFetch({ name: 'shop', backend: 'pebble', status: 'open' });
 
         const info = await client.database.updateSQL('shop');
 
@@ -393,7 +391,7 @@ describe('database SQL settings (concurrency)', () => {
 
     it('percent-encodes the database name', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ name: 'my db', engine: 'kv', backend: 'pebble', status: 'open' });
+        const calls = installMockFetch({ name: 'my db', backend: 'pebble', status: 'open' });
 
         await client.database.updateSQL('my db', { concurrency: 'optimistic' });
 
@@ -404,7 +402,7 @@ describe('database SQL settings (concurrency)', () => {
         const client = await connectedClient();
         const calls = installMockFetch({
             name: 'shop',
-            engine: 'kv',
+           
             backend: 'pebble',
             status: 'open',
             protocol: { mysql: true, postgresql: false },
@@ -413,7 +411,7 @@ describe('database SQL settings (concurrency)', () => {
 
         const info = await client.database.create({
             name: 'shop',
-            engine: 'kv',
+           
             backend: 'pebble',
             protocol: { mysql: true, postgresql: false },
             sql: { concurrency: 'pessimistic' },
@@ -444,7 +442,7 @@ describe('database compaction policy', () => {
         const client = await connectedClient();
         const calls = installMockFetch({
             name: 'shop',
-            engine: 'kv',
+           
             backend: 'pebble',
             status: 'open',
             compaction: { mode: 'revision', retainRevisions: 1000 },
@@ -464,7 +462,7 @@ describe('database compaction policy', () => {
         const client = await connectedClient();
         const calls = installMockFetch({
             name: 'shop',
-            engine: 'kv',
+           
             backend: 'pebble',
             status: 'open',
             compaction: { mode: 'period', retainPeriod: '24h' },
@@ -479,7 +477,7 @@ describe('database compaction policy', () => {
 
     it('omitting the policy sends no compaction, turning it off', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ name: 'shop', engine: 'kv', backend: 'pebble', status: 'open' });
+        const calls = installMockFetch({ name: 'shop', backend: 'pebble', status: 'open' });
 
         const info = await client.database.updateCompaction('shop');
 
@@ -490,7 +488,7 @@ describe('database compaction policy', () => {
 
     it('percent-encodes the database name', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ name: 'my db', engine: 'kv', backend: 'pebble', status: 'open' });
+        const calls = installMockFetch({ name: 'my db', backend: 'pebble', status: 'open' });
 
         await client.database.updateCompaction('my db', { mode: 'off' });
 
@@ -1123,11 +1121,11 @@ describe('Outbound — database.create sends the barrier secret', () => {
 
     it('posts barrier.enabled, mode and secret to /v1/databases', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ name: 'orders', engine: 'kv', backend: 'pebble', status: 'open' });
+        const calls = installMockFetch({ name: 'orders', backend: 'pebble', status: 'open' });
 
         await client.database.create({
             name: 'orders',
-            engine: 'kv',
+           
             backend: 'pebble',
             dataDir: '/var/lib/qrdb/orders',
             barrier: { enabled: true, mode: 'passphrase', secret: 'correct horse' },

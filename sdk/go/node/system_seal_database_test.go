@@ -42,7 +42,7 @@ func TestStandaloneNode_SystemSealMarksBarrierDatabasesSealed(t *testing.T) {
 	t.Cleanup(func() { _ = n.Close() })
 	const name = "securedb"
 	if _, err := n.Client().Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name: name, Engine: string(database.EngineKV), Backend: string(database.BackendPebble), DataDir: t.TempDir(),
+		Name: name, Backend: string(database.BackendPebble), DataDir: t.TempDir(),
 		Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "passphrase", Secret: dbSecret},
 	}); err != nil {
 		t.Fatalf("create: %v", err)

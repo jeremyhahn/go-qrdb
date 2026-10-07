@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
@@ -29,7 +27,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -2781,28 +2781,26 @@ func TestMVCCEngine_BaseKVPut_WithHub(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Time-series with pebble.DB
+// Time-series over the engine's own storage
 // ---------------------------------------------------------------------------
 
-func newPebbleTS(t *testing.T) (*pebble.DB, *timeseries.Storage) {
+// newTS builds a timeseries.Storage over the same storage.Storage the engine
+// under test is built over, so a time-series write and a KV write in the same
+// apply batch land in the same store.
+func newTS(t *testing.T, stg storage.Storage) *timeseries.Storage {
 	t.Helper()
-	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
-	if err != nil {
-		t.Fatalf("pebble.Open: %v", err)
-	}
-	ts, err := timeseries.New(db)
+	ts, err := timeseries.New(stg)
 	if err != nil {
 		t.Fatalf("timeseries.New: %v", err)
 	}
-	return db, ts
+	return ts
 }
 
 func TestMVCCEngine_TSWrite(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -2826,8 +2824,7 @@ func TestMVCCEngine_TSWritePoint(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -2851,8 +2848,7 @@ func TestMVCCEngine_TSWriteBatch(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -2879,8 +2875,7 @@ func TestMVCCEngine_TSDeleteSeries(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -2914,8 +2909,7 @@ func TestMVCCEngine_TSSetRetention(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -2938,8 +2932,7 @@ func TestMVCCEngine_TSQuery(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -2975,8 +2968,7 @@ func TestMVCCEngine_TSAggregate(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3016,8 +3008,7 @@ func TestMVCCEngine_TSGetRetention(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3047,8 +3038,7 @@ func TestMVCCEngine_TSListMetrics(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3079,40 +3069,14 @@ func TestMVCCEngine_TSListMetrics(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WithMVCCPebbleDB and WithMVCCTimeSeries options
+// WithMVCCTimeSeries option
 // ---------------------------------------------------------------------------
-
-func TestMVCCEngine_WithMVCCPebbleDB(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
-	if err != nil {
-		t.Fatalf("pebble.Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	eng, err := NewMVCCEngine(stg, WithMVCCPebbleDB(db))
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-	defer func() { _ = eng.Close(context.Background()) }()
-
-	// Create index -- should use PebbleIndex.
-	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("index create: %v", err)
-	}
-}
 
 func TestMVCCEngine_WithMVCCTimeSeries(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3125,6 +3089,47 @@ func TestMVCCEngine_WithMVCCTimeSeries(t *testing.T) {
 	}
 }
 
+func TestMVCCEngine_WithMVCCLogger_SetsTheField(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng, err := NewMVCCEngine(stg, WithMVCCLogger(log))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	if eng.logger != log {
+		t.Error("WithMVCCLogger did not set the engine's logger field")
+	}
+}
+
+// TestMVCCEngine_WithMVCCLogger_UsedForIndexCreate exercises the non-default
+// branch of handleIndexCreate's `log := e.logger; if log == nil { ... }`:
+// a configured logger is passed to the storage-backed index instead of
+// defaultLogger().
+func TestMVCCEngine_WithMVCCLogger_UsedForIndexCreate(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	eng, err := NewMVCCEngine(stg, WithMVCCLogger(testLogger(t)))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{
+		indexCreateEntry(t, 1, "by_name", "name", protocol.IndexCreateOptions{}),
+		mvccPutEntry(2, []byte("u:1"), []byte(`{"name":"alice"}`), 0),
+	})
+
+	keys := indexQueryKeys(t, eng, "by_name", []byte("alice"))
+	if len(keys) != 1 {
+		t.Fatalf("index query with a configured logger = %q, want exactly 1 match", keys)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TSDeleteSeries with zero timestamps
 // ---------------------------------------------------------------------------
@@ -3133,8 +3138,7 @@ func TestMVCCEngine_TSDeleteSeries_ZeroTimestamps(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3159,8 +3163,7 @@ func TestMVCCEngine_TSRichQuery(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3449,8 +3452,7 @@ func TestMVCCEngine_TSWrite_InvalidPayload(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3471,8 +3473,7 @@ func TestMVCCEngine_TSWriteBatch_InvalidPayload(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3493,8 +3494,7 @@ func TestMVCCEngine_TSWritePoint_InvalidPayload(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3515,8 +3515,7 @@ func TestMVCCEngine_TSDeleteSeries_InvalidPayload(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3537,8 +3536,7 @@ func TestMVCCEngine_TSSetRetention_InvalidPayload(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
 
-	db, ts := newPebbleTS(t)
-	defer func() { _ = db.Close() }()
+	ts := newTS(t, stg)
 
 	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
 	if err != nil {
@@ -3552,6 +3550,97 @@ func TestMVCCEngine_TSSetRetention_InvalidPayload(t *testing.T) {
 	err = eng.Update(context.Background(), entries, results)
 	if err == nil {
 		t.Fatal("expected error for invalid TS set retention payload")
+	}
+}
+
+func TestMVCCEngine_TSApplyRetention_DeletesExpiredPoints(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	ts := newTS(t, stg)
+
+	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	now := time.Now()
+	oldPoint := now.Add(-2 * time.Hour)
+	newPoint := now.Add(-time.Minute)
+
+	writeOld := mustEncode(protocol.EncodeTSWrite("cpu.usage", oldPoint.UnixNano(), 1, nil))
+	writeNew := mustEncode(protocol.EncodeTSWrite("cpu.usage", newPoint.UnixNano(), 2, nil))
+	wEntries := []sm.Entry{{Index: 1, Cmd: writeOld}, {Index: 2, Cmd: writeNew}}
+	wResults := make([]sm.Result, 2)
+	if err := eng.Update(context.Background(), wEntries, wResults); err != nil {
+		t.Fatalf("TS write: %v", err)
+	}
+
+	// cutoff falls strictly between the two points: the old one is
+	// expired, the new one is not.
+	cutoff := now.Add(-time.Hour)
+	applyCmd := mustEncode(protocol.EncodeTSApplyRetention("cpu.usage", cutoff.UnixNano()))
+	aEntries := []sm.Entry{{Index: 3, Cmd: applyCmd}}
+	aResults := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), aEntries, aResults); err != nil {
+		t.Fatalf("TS apply retention: %v", err)
+	}
+	if aResults[0].Value != 1 {
+		t.Errorf("result = %d, want 1", aResults[0].Value)
+	}
+
+	got, err := eng.Lookup(context.Background(), service.TSQueryRequest{
+		Metric: "cpu.usage",
+		Start:  now.Add(-24 * time.Hour),
+		End:    now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("TS query: %v", err)
+	}
+	points, ok := got.([]timeseries.DataPoint)
+	if !ok {
+		t.Fatalf("unexpected query result type %T", got)
+	}
+	if len(points) != 1 {
+		t.Fatalf("len(points) = %d, want 1 (expired point should be deleted)", len(points))
+	}
+	if !points[0].Timestamp.Equal(newPoint) {
+		t.Errorf("surviving point timestamp = %v, want %v", points[0].Timestamp, newPoint)
+	}
+}
+
+func TestMVCCEngine_TSApplyRetention_NilTimeSeries(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	cmd := mustEncode(protocol.EncodeTSApplyRetention("cpu.usage", time.Now().UnixNano()))
+	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
+	results := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("TS apply retention on unconfigured engine should not fault: %v", err)
+	}
+}
+
+func TestMVCCEngine_TSApplyRetention_InvalidPayload(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	ts := newTS(t, stg)
+
+	eng, err := NewMVCCEngine(stg, WithMVCCTimeSeries(ts))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	cmd := []byte{protocol.OpTSApplyRetention, 0x01}
+	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
+	results := make([]sm.Result, 1)
+	err = eng.Update(context.Background(), entries, results)
+	if err == nil {
+		t.Fatal("expected error for invalid TS apply retention payload")
 	}
 }
 
@@ -3810,23 +3899,22 @@ func TestMVCCEngine_UniqueIndex_UpdateSameKeyAllowed(t *testing.T) {
 // Numeric index E2E tests
 // ---------------------------------------------------------------------------
 
-// newMVCCEngineWithPebble creates an MVCCEngine backed by an in-memory storage
-// and a PebbleDB instance so that numeric indexes use PebbleIndex.
+// newMVCCEngineWithPebble creates an MVCCEngine backed by a real pebble-backed
+// storage.Storage, so the "pebble-index" branch of its callers exercises
+// index.StoragePebbleIndex end to end over Pebble rather than over memory.
 func newMVCCEngineWithPebble(t *testing.T) (*MVCCEngine, func()) {
 	t.Helper()
-	stg := memory.NewStorage()
-	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
+	pstg, err := pebblestore.New(pebblestore.TestConfig(t.TempDir()))
 	if err != nil {
-		t.Fatalf("pebble.Open: %v", err)
+		t.Fatalf("pebblestore.New: %v", err)
 	}
-	eng, err := NewMVCCEngine(stg, WithMVCCPebbleDB(db))
+	eng, err := NewMVCCEngine(pstg)
 	if err != nil {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 	return eng, func() {
 		_ = eng.Close(context.Background())
-		_ = db.Close()
-		_ = stg.Close()
+		_ = pstg.Close()
 	}
 }
 

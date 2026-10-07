@@ -17,11 +17,17 @@ re-deciding on the new value, the progress precondition that separates a stall
 from contention, and the bounded retry. Those need code, which is why this
 feature ships as an SDK helper.
 
-Note that `qrdb` exposes no transaction verb at all today — there is no
-`qrdb txn` to build on, and adding one is a change to the locked CLI surface,
-not a guarded-swap decision. The locked CLI surface is defined in the Software
-Department's `docs/11-cli-surface.md`, not in this repository; new verbs are
-added there, not per-feature.
+The transaction plane it composes does have a verb, `qrdb tx execute`
+([../transactions/cli.md](../transactions/cli.md)), which submits one
+caller-written compare-and-swap transaction from a JSON file. That is a single
+attempt with the guard spelled out by hand, not a guarded swap. The locked CLI
+surface is defined in the handbook's `docs/11-cli-surface.md`, not in this
+repository; new verbs are added there, not per-feature.
+
+Integration coverage: the feature-gate activation of guarded writes is driven
+over every remote transport by `make integration-test-guarded-swap`
+(`feature_gate_cluster_test.go`); see the `guarded-swap` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).
 
 Operators looking for contention should read the transaction plane's existing
 metrics rather than expect a swap-specific verb: a swap that loses its guard is

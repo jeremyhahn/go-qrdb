@@ -35,9 +35,6 @@ func TestConfig_DefaultConfig_HasDefaultDatabase(t *testing.T) {
 	if db.Name != "system" {
 		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "system")
 	}
-	if db.Engine != "kv" {
-		t.Errorf("Databases[0].Engine: got %q, want %q", db.Engine, "kv")
-	}
 	if db.Backend != "pebble" {
 		t.Errorf("Databases[0].Backend: got %q, want %q", db.Backend, "pebble")
 	}
@@ -55,33 +52,33 @@ func TestConfig_Validate_DatabaseConfig_Valid(t *testing.T) {
 		{
 			name: "single_kv_pebble",
 			databases: []DatabaseConfig{
-				{Name: "default", Engine: "kv", Backend: "pebble"},
+				{Name: "default", Backend: "pebble"},
 			},
 		},
 		{
 			name: "single_timeseries_memory",
 			databases: []DatabaseConfig{
-				{Name: "metrics", Engine: "timeseries", Backend: "memory"},
+				{Name: "metrics", Backend: "memory"},
 			},
 		},
 		{
 			name: "single_vector_raft",
 			databases: []DatabaseConfig{
-				{Name: "vectors", Engine: "vector", Backend: "raft"},
+				{Name: "vectors", Backend: "raft"},
 			},
 		},
 		{
 			name: "single_kv_file",
 			databases: []DatabaseConfig{
-				{Name: "archive", Engine: "kv", Backend: "file"},
+				{Name: "archive", Backend: "file"},
 			},
 		},
 		{
 			name: "multiple_databases",
 			databases: []DatabaseConfig{
-				{Name: "default", Engine: "kv", Backend: "pebble"},
-				{Name: "metrics", Engine: "timeseries", Backend: "memory"},
-				{Name: "embeddings", Engine: "vector", Backend: "raft"},
+				{Name: "default", Backend: "pebble"},
+				{Name: "metrics", Backend: "memory"},
+				{Name: "embeddings", Backend: "raft"},
 			},
 		},
 	}
@@ -112,7 +109,7 @@ func TestConfig_Validate_DatabaseConfig_EmptySlice(t *testing.T) {
 func TestConfig_Validate_DatabaseConfig_EmptyName(t *testing.T) {
 	cfg := validConfig()
 	cfg.Databases = []DatabaseConfig{
-		{Name: "", Engine: "kv", Backend: "pebble"},
+		{Name: "", Backend: "pebble"},
 	}
 
 	err := cfg.Validate()
@@ -132,33 +129,10 @@ func TestConfig_Validate_DatabaseConfig_EmptyName(t *testing.T) {
 	}
 }
 
-func TestConfig_Validate_DatabaseConfig_InvalidEngine(t *testing.T) {
-	cfg := validConfig()
-	cfg.Databases = []DatabaseConfig{
-		{Name: "mydb", Engine: "graph", Backend: "pebble"},
-	}
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate: expected error for invalid engine, got nil")
-	}
-
-	var dce *DatabaseConfigError
-	if !errors.As(err, &dce) {
-		t.Fatalf("Validate: expected *DatabaseConfigError, got %T: %v", err, err)
-	}
-	if dce.Name != "mydb" {
-		t.Errorf("DatabaseConfigError.Name: got %q, want %q", dce.Name, "mydb")
-	}
-	if !strings.Contains(dce.Message, "engine must be one of") {
-		t.Errorf("DatabaseConfigError.Message: got %q, want substring %q", dce.Message, "engine must be one of")
-	}
-}
-
 func TestConfig_Validate_DatabaseConfig_InvalidBackend(t *testing.T) {
 	cfg := validConfig()
 	cfg.Databases = []DatabaseConfig{
-		{Name: "mydb", Engine: "kv", Backend: "sqlite"},
+		{Name: "mydb", Backend: "sqlite"},
 	}
 
 	err := cfg.Validate()
@@ -181,8 +155,8 @@ func TestConfig_Validate_DatabaseConfig_InvalidBackend(t *testing.T) {
 func TestConfig_Validate_DatabaseConfig_DuplicateName(t *testing.T) {
 	cfg := validConfig()
 	cfg.Databases = []DatabaseConfig{
-		{Name: "mydb", Engine: "kv", Backend: "pebble"},
-		{Name: "mydb", Engine: "timeseries", Backend: "memory"},
+		{Name: "mydb", Backend: "pebble"},
+		{Name: "mydb", Backend: "memory"},
 	}
 
 	err := cfg.Validate()
@@ -203,24 +177,6 @@ func TestConfig_Validate_DatabaseConfig_DuplicateName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Validate - all valid engines
-// ---------------------------------------------------------------------------
-
-func TestConfig_Validate_DatabaseConfig_AllValidEngines(t *testing.T) {
-	for _, engine := range []string{"kv", "timeseries", "vector"} {
-		t.Run(engine, func(t *testing.T) {
-			cfg := validConfig()
-			cfg.Databases = []DatabaseConfig{
-				{Name: "testdb", Engine: engine, Backend: "pebble"},
-			}
-			if err := cfg.Validate(); err != nil {
-				t.Errorf("engine %q should be valid, got %v", engine, err)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Validate - all valid backends
 // ---------------------------------------------------------------------------
 
@@ -229,7 +185,7 @@ func TestConfig_Validate_DatabaseConfig_AllValidBackends(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Databases = []DatabaseConfig{
-				{Name: "testdb", Engine: "kv", Backend: backend},
+				{Name: "testdb", Backend: backend},
 			}
 			if err := cfg.Validate(); err != nil {
 				t.Errorf("backend %q should be valid, got %v", backend, err)
@@ -275,9 +231,6 @@ tls:
 	if db.Name != "system" {
 		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "system")
 	}
-	if db.Engine != "kv" {
-		t.Errorf("Databases[0].Engine: got %q, want %q", db.Engine, "kv")
-	}
 	// DefaultConfig provides backend="pebble"; absent YAML key preserves this.
 	if db.Backend != "pebble" {
 		t.Errorf("Databases[0].Backend: got %q, want %q (from DefaultConfig)", db.Backend, "pebble")
@@ -316,9 +269,6 @@ databases: []
 	db := cfg.Databases[0]
 	if db.Name != "system" {
 		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "system")
-	}
-	if db.Engine != "kv" {
-		t.Errorf("Databases[0].Engine: got %q, want %q", db.Engine, "kv")
 	}
 	// Backend is inherited from storage.backend.
 	if db.Backend != "memory" {
@@ -376,10 +326,8 @@ tls:
   enabled: false
 databases:
   - name: "primary"
-    engine: "kv"
     backend: "raft"
   - name: "metrics"
-    engine: "timeseries"
     backend: "memory"
 `
 	path := writeTemp(t, yamlContent)
@@ -395,18 +343,12 @@ databases:
 	if cfg.Databases[0].Name != "primary" {
 		t.Errorf("Databases[0].Name: got %q, want %q", cfg.Databases[0].Name, "primary")
 	}
-	if cfg.Databases[0].Engine != "kv" {
-		t.Errorf("Databases[0].Engine: got %q, want %q", cfg.Databases[0].Engine, "kv")
-	}
 	if cfg.Databases[0].Backend != "raft" {
 		t.Errorf("Databases[0].Backend: got %q, want %q", cfg.Databases[0].Backend, "raft")
 	}
 
 	if cfg.Databases[1].Name != "metrics" {
 		t.Errorf("Databases[1].Name: got %q, want %q", cfg.Databases[1].Name, "metrics")
-	}
-	if cfg.Databases[1].Engine != "timeseries" {
-		t.Errorf("Databases[1].Engine: got %q, want %q", cfg.Databases[1].Engine, "timeseries")
 	}
 	if cfg.Databases[1].Backend != "memory" {
 		t.Errorf("Databases[1].Backend: got %q, want %q", cfg.Databases[1].Backend, "memory")
@@ -420,13 +362,13 @@ databases:
 func TestDatabaseConfigError_ErrorString(t *testing.T) {
 	dce := &DatabaseConfigError{
 		Name:    "mydb",
-		Message: "engine must be one of: kv, timeseries, vector",
+		Message: "backend must be one of: memory, file, pebble, raft",
 	}
 	got := dce.Error()
 	if !strings.Contains(got, "mydb") {
 		t.Errorf("DatabaseConfigError.Error: missing name in %q", got)
 	}
-	if !strings.Contains(got, "engine must be one of") {
+	if !strings.Contains(got, "backend must be one of") {
 		t.Errorf("DatabaseConfigError.Error: missing message in %q", got)
 	}
 	if !strings.Contains(got, "invalid database") {
@@ -446,33 +388,13 @@ func TestDatabaseConfigError_EmptyNameErrorString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Validate - empty engine and empty backend
+// Validate - empty backend
 // ---------------------------------------------------------------------------
-
-func TestConfig_Validate_DatabaseConfig_EmptyEngine(t *testing.T) {
-	cfg := validConfig()
-	cfg.Databases = []DatabaseConfig{
-		{Name: "mydb", Engine: "", Backend: "pebble"},
-	}
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate: expected error for empty engine, got nil")
-	}
-
-	var dce *DatabaseConfigError
-	if !errors.As(err, &dce) {
-		t.Fatalf("Validate: expected *DatabaseConfigError, got %T: %v", err, err)
-	}
-	if !strings.Contains(dce.Message, "engine must be one of") {
-		t.Errorf("DatabaseConfigError.Message: got %q, want substring %q", dce.Message, "engine must be one of")
-	}
-}
 
 func TestConfig_Validate_DatabaseConfig_EmptyBackend(t *testing.T) {
 	cfg := validConfig()
 	cfg.Databases = []DatabaseConfig{
-		{Name: "mydb", Engine: "kv", Backend: ""},
+		{Name: "mydb", Backend: ""},
 	}
 
 	err := cfg.Validate()

@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -500,12 +501,18 @@ func TestGRPC_CreateUser_Success(t *testing.T) {
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
-	roleSvc := &mockRoleService{getResult: &role.Role{ID: "r1", TenantID: "t1"}}
+	roleSvc := &mockRoleService{getResult: &role.Role{ID: "r1", TenantID: tenantid.System}}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc), WithRoleService(roleSvc))
 	defer cleanup()
 
+	// No explicit TenantId: the test client carries no bound tenant identity
+	// (RBAC is not wired here), so it folds to the system tenant. The
+	// system-tenant lift was removed (owner ruling, 2026-10-01), so an
+	// explicit "t1" here -- a different tenant -- would now be refused by
+	// tenant.EffectiveTenant before ever reaching the mock. The mock's
+	// canned createResult (TenantID "t1") is unaffected either way.
 	resp, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{WithoutEmailLoginKey: true,
-		Username: "alice", TenantId: "t1", RoleIds: []string{"r1"},
+		Username: "alice", RoleIds: []string{"r1"},
 	})
 	if err != nil {
 		t.Fatalf("CreateUser failed: %v", err)

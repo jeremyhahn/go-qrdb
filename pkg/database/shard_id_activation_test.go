@@ -43,7 +43,7 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 	m.SetShardIDClaimer(claimer)
 	t.Cleanup(func() { _ = m.Close() })
 
-	cfg := DatabaseConfig{Name: "early", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)}
+	cfg := DatabaseConfig{Name: "early", Backend: BackendMemory, Raft: validRaftConfig(0)}
 	_, err = m.Create(cfg)
 	var inactive *featuregate.NotActiveError
 	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
@@ -60,7 +60,7 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 	}
 
 	// A database with no Raft configuration claims nothing and is not held up.
-	if _, err := m.Create(DatabaseConfig{Name: "plain", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "plain", Backend: BackendMemory}); err != nil {
 		t.Fatalf("non-raft create before activation: %v", err)
 	}
 

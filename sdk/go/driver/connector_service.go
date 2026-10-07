@@ -27,7 +27,6 @@ import (
 	sqle "github.com/dolthub/go-mysql-server"
 	gmssql "github.com/dolthub/go-mysql-server/sql"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
@@ -253,12 +252,7 @@ func (c *serviceConnector) getOrCreateEngine() (*sqle.Engine, error) {
 		provOpts = append(provOpts, provider.WithPrescopedKV())
 	}
 
-	prov := provider.NewProviderWithEngine(
-		c.cfg.Database,
-		svcs.kv,
-		database.EngineType(c.cfg.Engine),
-		provOpts...,
-	)
+	prov := provider.NewProvider(c.cfg.Database, svcs.kv, provOpts...)
 
 	c.engine = engine.New(engine.Config{Provider: prov})
 	return c.engine, nil

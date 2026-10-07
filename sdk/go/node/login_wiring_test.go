@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -172,7 +173,7 @@ func (fakePIVVerifier) Verify(_ context.Context, factor *auth.AuthFactor, ch tra
 // service, injected SessionIssuer, and injected FactorVerifier all flow
 // through, and the resolved Identity reflects the qrdb user mapping.
 func TestBuildEmbeddedOpts_WiresFunctionalLoginCeremony(t *testing.T) {
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
 	issuer := newFakeSessionIssuer()
 
 	n := newMemoryNodeWithUser(t,

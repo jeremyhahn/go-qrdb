@@ -33,14 +33,14 @@ const LOAD_TIMEOUT = 10_000;
 // State: no databases yet — wizard creates one.
 const vectorWizardState = {
   ...secondLaunchEmbeddedState,
-  databases: [] as { name: string; engine: string; backend: string; status: string }[],
+  databases: [] as { name: string; backend: string; status: string }[],
 };
 
 // State: pre-existing vector database for namespace tests.
 const vectorDbState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "vec-db", engine: "vector", backend: "pebble", status: "open" },
+    { name: "vec-db", backend: "pebble", status: "open" },
   ],
 };
 
@@ -219,6 +219,7 @@ async function navigateToVectorDb(page: Page): Promise<void> {
   await expect(page.locator(".breadcrumbs").getByText("vec-db", { exact: false })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
+  await page.getByRole("tab", { name: "Vectors", exact: true }).click();
 }
 
 // ---------------------------------------------------------------------------

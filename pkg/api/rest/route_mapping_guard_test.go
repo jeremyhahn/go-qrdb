@@ -71,6 +71,16 @@ const guardCACertPEM = "-----BEGIN CERTIFICATE-----\nZ3VhcmQ=\n-----END CERTIFIC
 // ServerOption wired so every conditional route registration in
 // registerRoutes fires. It reuses the package's existing test doubles so the
 // guard exercises the same construction surface as the rest of the suite.
+// guardEntitlementLookup is a minimal no-op service.AuditEntitlementLookup,
+// wired solely so newFullyWiredGuardServer can register
+// GET /v1/audit/replicated/verify (gated on a non-nil replicatedAudit; see
+// server.go registerRoutes). The structural guard never calls through it.
+type guardEntitlementLookup struct{}
+
+func (guardEntitlementLookup) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func newFullyWiredGuardServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -109,7 +119,8 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithCeremonyCA(&coverageCeremonyCA{}),
 		WithCredentialService(newCoverageCredentialService()), // gates /v1/credentials*
 		WithAuditLogger(&stubAuditLogger{}),                   // gates /v1/audit/events
-		WithGatherer(prometheus.NewRegistry()),                // gates /metrics
+		WithReplicatedAuditLogger(service.NewOptInAuditLogger(&stubAuditLogger{}, &guardEntitlementLookup{}, false)), // gates /v1/audit/replicated/verify
+		WithGatherer(prometheus.NewRegistry()), // gates /metrics
 	}
 	opts = append(opts, sqlGuardOptions(kvSvc, dbSvc)...) // gates /sql/query, /v1/sql/query (qrdb_sql only)
 
@@ -466,6 +477,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 
 		// Audit.
 		{"GET", "/v1/audit/events", permission.AuditQuery},
+		{"GET", "/v1/audit/replicated/verify", permission.AuditVerifyReplicated},
 
 		// Auth factors (factor-type lifecycle + per-user model).
 		{"GET", "/v1/authfactors/list", permission.AuthFactorList},

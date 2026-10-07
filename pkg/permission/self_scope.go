@@ -92,9 +92,14 @@ func selfScopedPermissions() []Permission {
 		// AuditVerify is NOT here: it is registered ScopeCross in
 		// cross_scope.go instead, because the hash chain it verifies covers
 		// the whole node's audit trail, not a tenant-filtered slice of it.
+		// AuditVerifyReplicated IS here, deliberately unlike AuditVerify: it
+		// verifies one tenant's own independent replicated chain, which is
+		// exactly the tenant-filtered slice AuditVerify's comment says it
+		// lacks.
 		AuditQuery,
 		AuditRead,
 		AuditStream,
+		AuditVerifyReplicated,
 
 		// authfactor
 		AuthFactorChallenge,

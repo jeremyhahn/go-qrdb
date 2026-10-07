@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, DatabaseInfo, CreateDatabaseRequest, DatabaseProtocolConfig } from "@qrdb/sdk";
-  import { ChevronLeft, Server, HardDrive, MemoryStick, Network, KeyRound, Clock, Compass } from "lucide-svelte";
+  import { ChevronLeft, Server, HardDrive, MemoryStick, Network } from "lucide-svelte";
   import { onMount } from "svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import StatusBadge from "../../components/StatusBadge.svelte";
@@ -37,37 +37,6 @@
   // ---------------------------------------------------------------------------
 
   const NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
-
-  interface EngineOption {
-    readonly value: string;
-    readonly label: string;
-    readonly description: string;
-    readonly badges: readonly string[];
-  }
-
-  const ENGINE_OPTIONS: readonly EngineOption[] = [
-    {
-      value: "kv",
-      label: "Key-Value",
-      description:
-        "General-purpose key-value store with MVCC versioning, transactions, batch operations, and watch support.",
-      badges: ["MVCC", "Transactions", "Batch", "Watch"],
-    },
-    {
-      value: "timeseries",
-      label: "Time Series",
-      description:
-        "Optimized for time-stamped metric data with retention policies, aggregation, and high-throughput ingestion.",
-      badges: ["Retention", "Aggregation", "High-Throughput"],
-    },
-    {
-      value: "vector",
-      label: "Vector",
-      description:
-        "Vector similarity search with HNSW/IVF indexes for embeddings, k-nearest-neighbor queries, and hybrid search.",
-      badges: ["HNSW", "IVF", "KNN", "Hybrid Search"],
-    },
-  ] as const;
 
   interface BackendOption {
     readonly value: string;
@@ -112,7 +81,6 @@
 
   // Create form state
   let name: string = $state("");
-  let engine: string = $state("kv");
   let backend: string = $state("pebble");
   let sqlMySQL: boolean = $state(false);
   let sqlPostgreSQL: boolean = $state(false);
@@ -145,16 +113,6 @@
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-
-  /** Returns a DaisyUI badge class for the given engine type. */
-  function engineBadgeClass(eng: string): string {
-    const map: Record<string, string> = {
-      kv: "badge-secondary",
-      timeseries: "badge-warning",
-      vector: "badge-accent",
-    };
-    return map[eng] ?? "badge-ghost";
-  }
 
   /** Maps a database status string to a StatusBadge variant. */
   function statusVariant(
@@ -206,7 +164,6 @@
       saving = true;
       const req: CreateDatabaseRequest = {
         name: name.trim(),
-        engine,
         backend,
         ...((sqlMySQL || sqlPostgreSQL)
           ? { protocol: { mysql: sqlMySQL, postgresql: sqlPostgreSQL } }
@@ -334,48 +291,6 @@
         </div>
       </div>
 
-      <!-- Engine selection cards -->
-      <div class="card bg-base-200 shadow">
-        <div class="card-body">
-          <h3 class="card-title text-base">Engine</h3>
-          <p class="text-base-content/70 text-sm">
-            Choose the data model for this database.
-          </p>
-          <div class="grid grid-cols-1 gap-3 pt-2 md:grid-cols-3">
-            {#each ENGINE_OPTIONS as opt (opt.value)}
-              <button
-                type="button"
-                class="card cursor-pointer border-2 bg-base-100 p-4 text-left transition-all hover:shadow-md"
-                class:border-primary={engine === opt.value}
-                class:border-transparent={engine !== opt.value}
-                onclick={() => {
-                  engine = opt.value;
-                }}
-              >
-                <div class="flex items-center gap-2">
-                  {#if opt.value === "kv"}
-                    <KeyRound class="h-5 w-5 text-secondary" />
-                  {:else if opt.value === "timeseries"}
-                    <Clock class="h-5 w-5 text-warning" />
-                  {:else}
-                    <Compass class="h-5 w-5 text-accent" />
-                  {/if}
-                  <span class="font-semibold">{opt.label}</span>
-                </div>
-                <p class="text-base-content/70 mt-2 text-xs leading-relaxed">
-                  {opt.description}
-                </p>
-                <div class="mt-3 flex flex-wrap gap-1">
-                  {#each opt.badges as badge}
-                    <span class="badge badge-xs badge-outline">{badge}</span>
-                  {/each}
-                </div>
-              </button>
-            {/each}
-          </div>
-        </div>
-      </div>
-
       <!-- Backend selection cards -->
       <div class="card bg-base-200 shadow">
         <div class="card-body">
@@ -476,14 +391,6 @@
           <div>
             <span class="text-base-content/60 text-xs font-semibold">Name</span>
             <p class="font-mono">{existingDb.name}</p>
-          </div>
-          <div>
-            <span class="text-base-content/60 text-xs font-semibold">Engine</span>
-            <p>
-              <span class="badge badge-sm {engineBadgeClass(existingDb.engine)}">
-                {existingDb.engine}
-              </span>
-            </p>
           </div>
           <div>
             <span class="text-base-content/60 text-xs font-semibold">Backend</span>

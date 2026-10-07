@@ -338,7 +338,6 @@ func TestPrintDatabaseInfo_Table_Basic(t *testing.T) {
 
 	info := &transport.DatabaseInfo{
 		Name:    "mydb",
-		Engine:  "kv",
 		Backend: "pebble",
 		Status:  "open",
 	}
@@ -348,7 +347,7 @@ func TestPrintDatabaseInfo_Table_Basic(t *testing.T) {
 	}
 
 	out := buf.String()
-	for _, want := range []string{"mydb", "kv", "pebble", "open"} {
+	for _, want := range []string{"mydb", "pebble", "open"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in output %q", want, out)
 		}
@@ -369,7 +368,6 @@ func TestPrintDatabaseInfo_Table_WithAllFields(t *testing.T) {
 
 	info := &transport.DatabaseInfo{
 		Name:    "fulldb",
-		Engine:  "mvcc",
 		Backend: "pebble",
 		Status:  "open",
 		DataDir: "/data/fulldb",
@@ -400,7 +398,7 @@ func TestPrintDatabaseInfo_Table_WithAllFields(t *testing.T) {
 
 	out := buf.String()
 	for _, want := range []string{
-		"fulldb", "mvcc", "pebble", "open",
+		"fulldb", "pebble", "open",
 		"/data/fulldb", "42",
 		"Etcd:", "2379", "Raft:", "single",
 		"Barrier:", "Connection:", "grpc",
@@ -425,7 +423,6 @@ func TestPrintDatabaseInfo_JSON(t *testing.T) {
 
 	info := &transport.DatabaseInfo{
 		Name:   "jsondb",
-		Engine: "kv",
 		Status: "open",
 	}
 	err := printDatabaseInfo(info)
@@ -451,7 +448,6 @@ func TestPrintDatabaseInfo_YAML(t *testing.T) {
 
 	info := &transport.DatabaseInfo{
 		Name:   "yamldb",
-		Engine: "kv",
 		Status: "open",
 	}
 	err := printDatabaseInfo(info)

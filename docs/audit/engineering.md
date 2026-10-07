@@ -1,6 +1,6 @@
 # Audit — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -11,8 +11,22 @@ func (c *Client) Audit() transport.AuditClient   // nil if the transport lacks A
 
 type AuditClient interface {
 	EmitAudit(ctx context.Context, ev AuditEvent) error
-	QueryAudit(ctx context.Context, f AuditFilter) (*AuditPage, error)
-	VerifyChain(ctx context.Context) (*AuditVerifyResult, error)
+	QueryAudit(ctx context.Context, f AuditFilter) (*AuditPage, error)   // f.Replicated reads the cluster-wide chain
+	VerifyChain(ctx context.Context) (*AuditVerifyResult, error)          // node-local hash chain
+	VerifyReplicatedChain(ctx context.Context, tenantID string) (*ChainContinuityResult, error)
+}
+
+// ChainContinuityResult is the replicated chain's verification outcome --
+// a different shape from AuditVerifyResult: no files, order, seed or
+// handoff, because one tenant has one Raft-replicated chain, not a
+// rotation set.
+type ChainContinuityResult struct {
+	Verified bool
+	Reason   string
+	Records  int64
+	Head     uint64
+	Low      uint64
+	Genesis  bool
 }
 ```
 
@@ -734,49 +748,60 @@ client does. Before that the QUIC client sent `tenantID`, which the server
 never read, and the REST, QUIC and MCP clients decoded every event without its
 tenant, client IP, request id and chain hash.
 
-## Known gap
-
-The audit query handlers across REST, QUIC, MCP, Unix and the SDK transports
-currently carry a **hardcoded permission string** pending a
-`permission.AuditQuery` constant. The intended permission is `audit:query`; the
-code does not yet use a constant for it. Tracked defect, not a naming choice —
-the same gap affects the auth-factor handlers, see
-[../auth-factors/api.md](../auth-factors/api.md).
 
 ## Persistence
 
 The durable trail is `audit-events.ndjson` in the data directory: one JSON
 object per line, each carrying the hash of its predecessor. It is **node-local
 and not Raft-replicated** — each node records what it did, so reconstructing a
-cluster-wide trail means collecting from every node. (A second, separate
-mechanism — the replicated audit chain below — IS Raft-replicated; nothing
-in this binary proposes writes to it yet, so in production the statement
-above still holds for every record this feature actually produces today.)
+cluster-wide trail means collecting from every node, for this sink alone. (A
+second, separate mechanism — the replicated audit chain below — IS
+Raft-replicated and per-tenant opt-in via `AllowReplicatedAudit`: an entitled
+tenant's events reach BOTH the node-local sink above and the replicated
+chain, and the replicated chain's copy reads identically from any node in
+the group. The statement above still holds for the node-local sink itself,
+and for every tenant that has not opted into the replicated chain.)
 
 `ChainFileLogger` rotates at its size bound and, when it opens, deletes
 archives older than its retention window (90 days by default). Retention is
 therefore a **deletion deadline, not a backup**: nothing copies an archive
 anywhere before it is removed.
 
-## The replicated chain (cluster-wide, phase 1)
+## The replicated chain (cluster-wide, phase 1 and 2)
 
 See [architecture.md](architecture.md#cluster-wide-replicated-trail) for the
 design rationale and [Status of the replicated chain](architecture.md#status-of-the-replicated-chain)
 for exactly what has and has not shipped. This section is the implementation
 map.
 
-**Package layout.**
+**Package layout, phase 1 (the apply-time mechanism).**
 
 | File | Contents |
 |---|---|
 | `pkg/audit/table.go` | `TablePrefix`, key encoding/decoding, head record codec |
-| `pkg/audit/chain.go` | `Chain` — `Append`, `Prune`, `Query`, `Restore` |
+| `pkg/audit/chain.go` | `Chain` — `Append`, `Prune`, `Query`, `Restore`, `Verify` |
 | `pkg/audit/chain_errors.go` | `TableWriteError`, `TableReadError`, `CorruptTableError`, `EncodeEventError`, `MissingTimestampError`, `InvalidCursorError`, `TenantMismatchError`, `InvalidTenantIDError` |
 | `pkg/protocol/audit.go` | `OpAuditAppend`, `AuditSubtypeAppend`/`AuditSubtypePrune`, `EncodeAuditAppend`, `EncodeAuditPrune`, `DecodeAuditCommand` |
 | `pkg/cluster/featuregate/featuregate.go` | `AuditAppend` feature |
-| `pkg/engine/mvcc_engine.go` | `MVCCEngine.handleAuditAppend`, `WithMVCCAuditChain`, `resyncAuditChain` |
-| `pkg/store/pebble.go` | `PebbleStateMachine.pebbleHandleAuditAppend`, `pebbleAuditWriter`, `SetAuditChain`/`restoreAuditChain` |
+| `pkg/engine/mvcc_engine.go` | `MVCCEngine.handleAuditAppend`, `WithMVCCAuditChain`, `resyncAuditChain`, the `audit.QueryRequest`/`audit.VerifyRequest` `Lookup` cases |
+| `pkg/store/pebble.go` | `PebbleStateMachine.pebbleHandleAuditAppend`, `pebbleAuditWriter`, `SetAuditChain`/`restoreAuditChain`, the same two `Lookup` cases |
 | `pkg/store/factory.go`, `pkg/store/mvcc.go` | `WithAuditChain` / `SetAuditChain` / `AuditChain` accessors mirroring the lessor's |
+
+**Package layout, phase 2 (the entitlement, the proposer, and the read API).**
+
+| File | Contents |
+|---|---|
+| `pkg/audit/query_request.go` | `QueryRequest`, `VerifyRequest` — the `Lookup` query types phase 1's dispatch answers |
+| `pkg/quota/types.go` | `Entitlements.AllowReplicatedAudit` |
+| `pkg/tenant/service.go` | `TenantService.ReplicatedAuditEnabled` |
+| `pkg/service/audit_shard_resolver.go` | `AuditShardResolver`, `AuditIsolationLookup`, `SystemShardAuditResolver` |
+| `pkg/service/audit_replicated_logger.go` | `ReplicatedLogger` (`Emit`/`Query`/`VerifyTenantChain`), `routingTenant` |
+| `pkg/service/audit_optin_logger.go` | `AuditEntitlementLookup`, `OptInAuditLogger`, `TenantChainVerifier` |
+| `pkg/service/audit_errors.go` | `AuditFeatureNotActiveError`, `DedicatedTenantAuditNotSupportedError`, `ReplicatedAuditNotEntitledError` |
+| `pkg/server/lifecycle/lifecycle.go`, `audit_replicated.go` | `Node.ReplicatedAudit`, `Infra.ReplicatedAuditPlatformEnabled`, the lazy `nodeAuditIsolationLookup`/`nodeAuditEntitlementLookup` adapters `BuildServices` binds before `Node.Tenant` exists |
+| `pkg/api/{rest,grpc,quic,mcp,unix}` | the replicated query/verify capability per transport (`handleAuditQuery`'s `replicated` branch, `handleAuditVerifyReplicated(Chain)`) |
+| `sdk/go/transport/*`, `sdk/go/node/node.go` | `AuditFilter.Replicated`, `AuditClient.VerifyReplicatedChain`, `ChainContinuityResult`, the embedded transport's `WithReplicatedAuditLogger` |
+| `cmd/qrdb/audit.go` | `--replicated` on `qrdb audit query` / `qrdb audit verify` |
 
 **Error classification at apply time.** `Chain.Append`/`Chain.Prune` errors
 split into exactly two buckets, and the handler on both engine families
@@ -832,6 +857,8 @@ for why a conditional attachment would be a cluster-state-divergence bug,
 not a degraded feature.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-audit` (no Docker; selection in `test/integration/features.mk`). It runs the audit query/verify CLI suite per protocol and the tenant-confinement suite. Per-transport accounting is the `audit` row of `test/integration/COVERAGE.md`.
 
 - **Every sink's `Emit` error path has a test**, including the three that can
   never fail — each of those asserts the *reason* nil is the truthful answer,

@@ -2133,7 +2133,7 @@ func TestCovParseUint64_Invalid(t *testing.T) {
 
 func TestCovAuditTools_Registration(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	tools := auditTools(logger)
+	tools := auditTools(logger, nil)
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
@@ -2147,7 +2147,7 @@ func TestCovAuditTools_Registration(t *testing.T) {
 
 func TestCovHandleAuditQuery_Success(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
 		"actor":    "alice",
 		"resource": "barrier",
@@ -2170,7 +2170,7 @@ func TestCovHandleAuditQuery_Success(t *testing.T) {
 
 func TestCovHandleAuditQuery_WithTimeRange(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
 		"from": "2026-01-01T00:00:00Z",
 		"to":   "2026-12-31T23:59:59Z",
@@ -2186,7 +2186,7 @@ func TestCovHandleAuditQuery_WithTimeRange(t *testing.T) {
 
 func TestCovHandleAuditQuery_WithLimit(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{"limit": "50"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -2199,7 +2199,7 @@ func TestCovHandleAuditQuery_WithLimit(t *testing.T) {
 
 func TestCovHandleAuditQuery_BadFromTime(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{"from": "not-a-time"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -2209,7 +2209,7 @@ func TestCovHandleAuditQuery_BadFromTime(t *testing.T) {
 
 func TestCovHandleAuditQuery_BadToTime(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{"to": "not-a-time"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -2219,7 +2219,7 @@ func TestCovHandleAuditQuery_BadToTime(t *testing.T) {
 
 func TestCovHandleAuditQuery_BadLimit(t *testing.T) {
 	logger := &covMockAuditLogger{}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{"limit": "not-a-number"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -2233,7 +2233,7 @@ func TestCovHandleAuditQuery_ServiceError(t *testing.T) {
 			return nil, errors.New("query err")
 		},
 	}
-	handler := handleAuditQuery(logger)
+	handler := handleAuditQuery(logger, nil)
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{})
 	_, err := handler(context.Background(), req)
 	if err == nil {

@@ -616,6 +616,17 @@ const (
 	// other tenant. Reserved for the system tenant, like every cross-scope
 	// permission (the tenants:*:cross set, certs:revoke:cross).
 	AuditVerify Permission = "audit:verify"
+	// AuditVerifyReplicated grants access to verify the hash-chain
+	// continuity of the cluster-wide REPLICATED audit chain
+	// (docs/audit/architecture.md#cluster-wide-replicated-trail) for the
+	// caller's own tenant.
+	//
+	// Self-scope (ScopeSelf, registered in self_scope.go), deliberately NOT
+	// cross-scope like AuditVerify above: each tenant's replicated chain is
+	// its own independent Raft-replicated table, so verifying one tenant's
+	// chain exposes nothing about any other tenant's -- the exact property
+	// that makes AuditVerify cross-scope does not hold here.
+	AuditVerifyReplicated Permission = "audit:verify_replicated"
 )
 
 // ---------------------------------------------------------------------------
@@ -1100,7 +1111,7 @@ var categories = []Category{
 		Name:  "Audit",
 		Group: "Admin Services",
 		Permissions: []Permission{
-			AuditRead, AuditQuery, AuditStream, AuditVerify,
+			AuditRead, AuditQuery, AuditStream, AuditVerify, AuditVerifyReplicated,
 		},
 	},
 	{
@@ -1118,6 +1129,7 @@ var categories = []Category{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
 			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
+			TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
 			TenantsListDeleted, TenantsReconcileDeleted,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
 			TenantBarrierOfficerRegister, TenantBarrierOfficerList,

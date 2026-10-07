@@ -210,18 +210,6 @@ func TestSQLExecutionError_ErrorsAs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SQLNotAvailableError (additional coverage)
-// ---------------------------------------------------------------------------
-
-func TestSQLNotAvailableError_ErrorsAs(t *testing.T) {
-	var target *SQLNotAvailableError
-	e := &SQLNotAvailableError{}
-	if !errors.As(e, &target) {
-		t.Fatal("expected errors.As to match *SQLNotAvailableError")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // InstanceAlreadyExistsError
 // ---------------------------------------------------------------------------
 

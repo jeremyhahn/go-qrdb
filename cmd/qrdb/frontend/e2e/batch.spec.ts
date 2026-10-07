@@ -12,7 +12,7 @@ const LOAD_TIMEOUT = 10_000;
 const batchState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "batch-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "batch-db", backend: "pebble", status: "open" },
   ],
 };
 

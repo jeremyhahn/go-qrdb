@@ -81,7 +81,11 @@ func TestCheckPublicKeyStrength_RSA(t *testing.T) {
 
 	weak, err := rsa.GenerateKey(rand.Reader, 1024) // #nosec G403 -- deliberately weak key to prove CheckPublicKeyStrength refuses it; the test IS the rejection path
 	if err != nil {
-		t.Fatalf("GenerateKey (1024): %v", err)
+		// crypto/rsa itself refuses to generate a sub-2048-bit key under
+		// GODEBUG=fips140=only, which makes CheckPublicKeyStrength's own
+		// weak-key refusal unreachable there: see
+		// docs/seal/fips140-mode.md "Skipped tests under fips140=only".
+		t.Skipf("cannot generate RSA-1024 in this toolchain: %v", err)
 	}
 	var weakErr *WeakKeyError
 	if err := CheckPublicKeyStrength(&weak.PublicKey); !errors.As(err, &weakErr) {

@@ -121,7 +121,10 @@ OU becomes the tenant ID. There is no password authentication to configure.
 
 ## Parity
 
-`qrdb sql query` has a `CommandDefinition` in the integration parity suite. The
-wire protocol servers are exercised by `make test-sql-mysql` and
-`make test-sql-pgsql` rather than by the CLI parity suite, since they have no
-`qrdb` verb.
+`qrdb sql query` is driven on every network transport by `sql_query_cli_test.go`
+and `sql_query_tenant_scope_test.go` (`make integration-test-sql`).
+Per-transport accounting: the `sql` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md). The wire
+protocol servers are exercised by the same target's wire-protocol suites and, as
+unit tests, by `make test-sql-mysql` and `make test-sql-pgsql`, rather than by
+the CLI suite, since they have no `qrdb` verb.

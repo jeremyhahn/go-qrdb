@@ -15,6 +15,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -429,7 +430,6 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 
 	m.logger.Info("database created",
 		slog.String("name", cfg.Name),
-		slog.String("engine", string(cfg.Engine)),
 		slog.String("backend", string(cfg.Backend)))
 
 	return db, nil
@@ -470,7 +470,6 @@ func (m *Manager) Open(name string) (*Database, error) {
 	cfg := DatabaseConfig{
 		TenantID:     meta.TenantID,
 		Name:         meta.Name,
-		Engine:       meta.Engine,
 		Backend:      meta.Backend,
 		Protocol:     meta.Protocol,
 		DataDir:      meta.DataDir,
@@ -576,7 +575,6 @@ func (m *Manager) Open(name string) (*Database, error) {
 
 	m.logger.Info("database opened",
 		slog.String("name", name),
-		slog.String("engine", string(meta.Engine)),
 		slog.String("backend", string(meta.Backend)))
 
 	return db, nil
@@ -838,9 +836,6 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 	}
 	db, err := m.loadDatabase(name)
 	if err != nil {
-		return err
-	}
-	if err := etcdEngineError(name, db.Config().Engine, etcd); err != nil {
 		return err
 	}
 	db.UpdateEtcd(etcd)
@@ -1114,7 +1109,6 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 	return DatabaseMeta{
 		TenantID:     cfg.TenantID,
 		Name:         cfg.Name,
-		Engine:       cfg.Engine,
 		Backend:      cfg.Backend,
 		Protocol:     cfg.Protocol,
 		DataDir:      cfg.DataDir,
@@ -1504,6 +1498,13 @@ func writeFileAtomic(dir, name string, data []byte) error {
 }
 
 // readMeta reads the DatabaseMeta from the meta.json file.
+//
+// Decoding is strict (json.Decoder.DisallowUnknownFields): a field this
+// version no longer understands -- today, only a pre-v0.45 "engine" key --
+// is refused as LegacyMetadataError rather than silently dropped and the
+// file rewritten without it (OD-13; superseded the migrate-on-open
+// alternative per the no-backward-compat ruling of 2026-10-02). Any other
+// decode failure (truncated or corrupt JSON) stays MetaReadError.
 func (m *Manager) readMeta(dbDir string) (*DatabaseMeta, error) {
 	path := filepath.Join(dbDir, metaFile)
 	data, err := os.ReadFile(path)
@@ -1511,8 +1512,21 @@ func (m *Manager) readMeta(dbDir string) (*DatabaseMeta, error) {
 		return nil, &MetaReadError{Path: path, Err: err}
 	}
 	var meta DatabaseMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&meta); err != nil {
+		if isUnknownMetaFieldError(err) {
+			return nil, &LegacyMetadataError{Path: path, Err: err}
+		}
 		return nil, &MetaReadError{Path: path, Err: err}
 	}
 	return &meta, nil
+}
+
+// isUnknownMetaFieldError reports whether err is the "json: unknown field"
+// error a strict decoder returns for a stale meta.json key. encoding/json
+// does not expose this as a distinct type, only as this exact message
+// prefix, so the prefix is the match.
+func isUnknownMetaFieldError(err error) bool {
+	return strings.HasPrefix(err.Error(), "json: unknown field ")
 }

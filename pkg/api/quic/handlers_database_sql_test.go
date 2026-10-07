@@ -39,7 +39,7 @@ func TestHandleDatabaseSQL_CreateAndUpdate(t *testing.T) {
 	ctx := context.Background()
 
 	create, _ := json.Marshal(map[string]any{
-		"name": "shop", "engine": "kv", "backend": "memory",
+		"name": "shop", "backend": "memory",
 		"sql": map[string]string{"concurrency": "pessimistic"},
 	})
 	resp, err := srv.handleDatabaseCreate(ctx, create)
@@ -71,7 +71,7 @@ func TestHandleDatabaseSQL_CreateAndUpdate(t *testing.T) {
 func TestHandleDatabaseSQL_Refusals(t *testing.T) {
 	srv := newSQLConfigQUICServer(t)
 	ctx := context.Background()
-	create, _ := json.Marshal(map[string]any{"name": "shop", "engine": "kv", "backend": "memory"})
+	create, _ := json.Marshal(map[string]any{"name": "shop", "backend": "memory"})
 	if _, err := srv.handleDatabaseCreate(ctx, create); err != nil {
 		t.Fatalf("handleDatabaseCreate: %v", err)
 	}

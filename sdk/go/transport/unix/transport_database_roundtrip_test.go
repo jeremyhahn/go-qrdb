@@ -57,7 +57,6 @@ func (m *mockDatabaseSvc) Create(cfg database.DatabaseConfig) (*database.Databas
 	}
 	return &database.DatabaseInfo{
 		Name:    cfg.Name,
-		Engine:  cfg.Engine,
 		Backend: cfg.Backend,
 		Status:  "ready",
 		DataDir: cfg.DataDir,
@@ -224,7 +223,6 @@ func TestUnixRT_CreateDatabase(t *testing.T) {
 
 	resp, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "db1",
-		Engine:  "pebble",
 		Backend: "raft",
 	})
 	if err != nil {
@@ -408,12 +406,11 @@ func TestUnixRT_UpdateDatabaseConnection(t *testing.T) {
 func TestUnixRT_CreateDatabase_PropagatesCfg(t *testing.T) {
 	svc := &mockDatabaseSvc{
 		createFn: func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
-			if cfg.Name != "main" || string(cfg.Engine) != "pebble" || string(cfg.Backend) != "raft" {
+			if cfg.Name != "main" || string(cfg.Backend) != "raft" {
 				t.Errorf("server got cfg=%+v", cfg)
 			}
 			return &database.DatabaseInfo{
 				Name:    cfg.Name,
-				Engine:  cfg.Engine,
 				Backend: cfg.Backend,
 				Status:  "ready",
 			}, nil
@@ -424,7 +421,6 @@ func TestUnixRT_CreateDatabase_PropagatesCfg(t *testing.T) {
 
 	resp, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "main",
-		Engine:  "pebble",
 		Backend: "raft",
 	})
 	if err != nil {

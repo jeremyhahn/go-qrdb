@@ -39,7 +39,7 @@ const LOAD_TIMEOUT = 10_000;
 const tsState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "test-ts", engine: "timeseries", backend: "pebble", status: "open" },
+    { name: "test-ts", backend: "pebble", status: "open" },
   ],
 };
 
@@ -200,6 +200,7 @@ async function navigateToTimeSeries(
   await expect(page.locator(".breadcrumbs").getByText("test-ts", { exact: false })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
+  await page.getByRole("tab", { name: "Time Series", exact: true }).click();
 }
 
 /** Write a data point via the UI slide panel, clearing the metric field first. */

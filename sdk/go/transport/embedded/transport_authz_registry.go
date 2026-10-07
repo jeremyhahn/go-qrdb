@@ -315,8 +315,9 @@ var operationPermissions = map[string]permission.Permission{
 	// Audit (the read-side sub-client; EmitAudit is handled on its own in
 	// audit.go, because its tenant is stamped from the caller, not read
 	// from a request field).
-	"AuditClient.QueryAudit":  permission.AuditQuery,
-	"AuditClient.VerifyChain": permission.AuditVerify,
+	"AuditClient.QueryAudit":            permission.AuditQuery,
+	"AuditClient.VerifyChain":           permission.AuditVerify,
+	"AuditClient.VerifyReplicatedChain": permission.AuditVerifyReplicated,
 
 	// FactorClient (userID-scoped MFA enrollment lifecycle; the same
 	// underlying userAuthFactorSvc the "User auth factors" block above

@@ -1,6 +1,6 @@
 # Configuration — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Configuration is a **daemon** concern. `qrdbd` reads it; the `qrdb` client has
 no verb that changes it, only `admin capabilities` to report what took effect.

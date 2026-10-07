@@ -17,18 +17,8 @@ package sdk
 import "github.com/jeremyhahn/go-qrdb/pkg/database"
 
 // ---------------------------------------------------------------------------
-// Database engine and backend type enumerations
+// Database backend type enumeration
 // ---------------------------------------------------------------------------
-
-// EngineType identifies the state machine engine (kv, timeseries, vector, etc.).
-type EngineType = database.EngineType
-
-// EngineType constants.
-const (
-	EngineKV         = database.EngineKV
-	EngineTimeSeries = database.EngineTimeSeries
-	EngineVector     = database.EngineVector
-)
 
 // BackendType identifies the storage/consensus backend.
 type BackendType = database.BackendType
@@ -196,9 +186,6 @@ var NewDatabaseBarrierManager = database.NewDatabaseBarrierManager
 
 // DBInvalidNameError is returned when a database name is invalid.
 type DBInvalidNameError = database.InvalidNameError
-
-// DBInvalidEngineError is returned when an engine type is invalid.
-type DBInvalidEngineError = database.InvalidEngineError
 
 // DBInvalidBackendError is returned when a backend type is invalid.
 type DBInvalidBackendError = database.InvalidBackendError

@@ -114,7 +114,6 @@ func TestEmbeddedBackendFactory_Create_Memory(t *testing.T) {
 	factory := NewEmbeddedBackendFactory()
 	cfg := DatabaseConfig{
 		Name:    "test-mem",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 
@@ -145,7 +144,6 @@ func TestEmbeddedBackendFactory_Create_File(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := DatabaseConfig{
 		Name:    "test-file",
-		Engine:  EngineKV,
 		Backend: BackendFile,
 	}
 
@@ -176,7 +174,6 @@ func TestEmbeddedBackendFactory_Create_Pebble(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := DatabaseConfig{
 		Name:    "test-pebble",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 	}
 
@@ -206,7 +203,6 @@ func TestEmbeddedBackendFactory_Create_InvalidBackend(t *testing.T) {
 	factory := NewEmbeddedBackendFactory()
 	cfg := DatabaseConfig{
 		Name:    "test-invalid",
-		Engine:  EngineKV,
 		Backend: BackendType("nosql"),
 	}
 
@@ -228,7 +224,6 @@ func TestEmbeddedBackendFactory_Create_RaftBackend(t *testing.T) {
 	factory := NewEmbeddedBackendFactory()
 	cfg := DatabaseConfig{
 		Name:    "test-raft",
-		Engine:  EngineKV,
 		Backend: BackendRaft,
 	}
 

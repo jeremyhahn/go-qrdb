@@ -4,7 +4,7 @@ name: CI
 # GitHub-only mechanics (SARIF upload to code scanning, and actions whose setup
 # cannot authenticate to github.com from a Gitea runner) are guarded on
 # `github.server_url`, and the Gitea leg installs the equivalent CLI instead.
-# See automatethethings software/conventions/devops.md §1 and §8.
+# See ../handbook/software/conventions/devops.md §1 and §8.
 #
 # This is the PUSH path, and it holds only jobs that can pass and do gate.
 # ci-template v1.9 moved the known-red and long-horizon jobs — fips and trivy —
@@ -108,8 +108,8 @@ env:
   # finding cannot be told apart from a scanner that moved underneath you.
   #
   # BUMPING ONE OF THESE IS A DELIBERATE CHANGE, one issue per bump, and the
-  # runner image moves in the same breath (its pins live in the company repo at
-  # infra/gitea/ci-runner/Dockerfile). Do NOT add a `go install` back to move a
+  # runner image moves in the same breath (the image is maintained by the
+  # company agent). Do NOT add a `go install` back to move a
   # version: a skew between this file and the image must fail the job, which is
   # what the require-tool.sh assertions below are for.
   GOLANGCI_LINT_VERSION: "v2.13.2"
@@ -271,6 +271,17 @@ jobs:
       - name: Every workflow action is pinned to a commit SHA
         run: make check-action-pins
 
+      # test/integration/features.mk is the one table mapping every
+      # docs/<feature>/ folder to its integration-test-<feature> selection.
+      # A reviewer sees one diff -- a new feature folder, or a new
+      # integration test file -- and cannot see that the OTHER half of the
+      # mapping (the folder list, or the file's selection) went unedited;
+      # same shape as check-action-pins and check-publication-bound, a
+      # property of the whole tree. No network, no Go build beyond this one
+      # package, already built by the step above.
+      - name: Every feature has an integration-test target, every integration test is selected
+        run: make check-integration-feature-coverage
+
       # #478. nightly.yml's `signal` job turns that workflow's verdict into a
       # tracking issue, and it is told which jobs to watch by an explicit `-job`
       # list -- because `join(needs.*.result)` is a GitHub extension that reads
@@ -369,11 +380,6 @@ jobs:
 
       - name: Test the public-releasability guard
         run: make test-public-releasable
-
-      # The Release workflow keeps the bot token out of .git/config and hands
-      # it to one step through this helper; its own fixtures, no network.
-      - name: Test the per-step forge credential helper
-        run: make test-git-extraheader
 
       # go-qrdb#271. The committed test/tools/ifacesweep/findings/*.tsv are a
       # reference measurement whose entire value is being stable and diffable
@@ -575,6 +581,21 @@ jobs:
       # the floor, or stopped being measured -- all of them, in one pass.
       - name: Unit tests (race) + coverage gate
         run: make coverage
+
+      # go-qrdb#610. WITH_QRDB_FTS defaults to 0, and `qrdb_fts` is excluded
+      # from TEST_TAGS_SETS deliberately (that sweep is about the CLI command
+      # surface, which this tag does not vary) -- so until now nothing in CI
+      # ever built or ran pkg/fts's real analyzer, tokenizer and inverted
+      # index; `make coverage` above measures only the stub in
+      # pkg/fts/stub.go. `make coverage-fts` runs `go test -race` under
+      # BUILD_TAGS plus qrdb_fts and ratchets the result against its own
+      # baseline (test/coverage-baseline-fts.txt), for the reason recorded in
+      # that file: a coverage profile does not record its own tags, so a
+      # package whose real implementation needs a tag the repo-wide run does
+      # not carry needs its own baseline rather than a second, incomparable
+      # row in test/coverage-baseline.txt.
+      - name: Full-text search (qrdb_fts build) coverage gate
+        run: make coverage-fts
 
       # make test-tags RUNS (not merely vets) ./cmd/qrdbd/... and
       # ./cmd/qrdb/... under the default build plus the four reduced

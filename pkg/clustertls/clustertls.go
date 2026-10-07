@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
 
@@ -272,8 +273,65 @@ func NodeLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Certific
 // (its SPIFFE node ID); peers verify this certificate by that identity, not
 // by any SAN enumerating addresses. A non-empty URI that fails to parse
 // returns a GenerateError.
+// IdentityLeafTemplate builds the x509 certificate template for a leaf
+// issued to ANOTHER node's key -- member-side cluster join's
+// clusterca.IssueLeafForKey, reached through HandleJoinRequest on both
+// transports. It carries no DNS/IP SANs of the SIGNING member's own: unlike
+// NodeLeafTemplate, LocalSANs here would carry the signer's own hostnames and
+// interface IPs onto a certificate a completely different node is about to
+// start serving traffic from.
+//
+// It DOES carry the joining node's own address as a SAN, recovered from the
+// SPIFFE node URI nodeURI itself supplies (spiffe://<trustDomain>/node/<addr>)
+// via the same spiffe.ParseNodeID recovery clusterenroll.issueAndAdmit uses
+// to key the pre-membership feature advertisement: classified as an
+// IPAddress SAN when addr parses as an IP, a DNSName SAN otherwise. Without
+// it, the certificate carries only the URI SAN, and go-quicraft's own Raft
+// QUIC transport dials a peer by exactly this address and runs the standard
+// x509 SAN check against it (go-quicraft/pkg/internal/transport/conn.go,
+// dialAndPool, sets tls.Config.ServerName to the dial host before Dial) --
+// there is no SPIFFE-aware substitute for that check anywhere in the
+// transport, so a leaf with no matching SAN can never be dialed as a raft
+// peer, only reached by a caller (like the admin HTTPS client) that skips
+// the hostname check outright. A non-empty URI that fails to parse returns a
+// GenerateError; one that parses but is not a node SPIFFE URI, or carries no
+// recoverable address, yields no address SAN -- same as before this.
 func IdentityLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Certificate, error) {
-	return leafTemplate(validity, nil, nil, nodeURI...)
+	dnsNames, ipAddrs, err := addressSANs(nodeURI...)
+	if err != nil {
+		return nil, err
+	}
+	return leafTemplate(validity, dnsNames, ipAddrs, nodeURI...)
+}
+
+// addressSANs recovers the address embedded in a node SPIFFE URI
+// (spiffe://<trustDomain>/node/<addr>) and classifies it as an IP or DNS SAN
+// for IdentityLeafTemplate. addr itself may carry a port (the raft address
+// form every caller in this codebase uses); only the host portion is a valid
+// SAN, so a port is split off first when present. A URI that is not a node
+// SPIFFE URI, or carries no address, yields no SANs rather than an error --
+// IdentityLeafTemplate's own URI SAN handling is what rejects a malformed
+// URI.
+func addressSANs(nodeURI ...string) ([]string, []net.IP, error) {
+	if len(nodeURI) == 0 || nodeURI[0] == "" {
+		return nil, nil, nil
+	}
+	u, err := url.Parse(nodeURI[0])
+	if err != nil {
+		return nil, nil, &GenerateError{Err: err}
+	}
+	identity, ok, err := spiffe.ParseNodeID(u)
+	if err != nil || !ok {
+		return nil, nil, nil
+	}
+	host := identity.NodeID
+	if h, _, splitErr := net.SplitHostPort(host); splitErr == nil {
+		host = h
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return nil, []net.IP{ip}, nil
+	}
+	return []string{host}, nil, nil
 }
 
 // leafTemplate is the shared builder behind NodeLeafTemplate and

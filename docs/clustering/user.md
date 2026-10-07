@@ -106,6 +106,15 @@ admitted member signs nothing while sealed. There is no admission-token flag
 here: the member validates a presented token against whatever an admin has
 minted into the replicated store, not a value it was configured with.
 
+**Any admitted, unsealed member can be the one you point at** — not only
+the node that originally generated the cluster CA. Every such member
+registers `/v1/ca/bootstrap` and runs the Noise anchor listener from the
+same certificate it already caches locally, so `--bootstrap-addr`,
+`--bootstrap-join-url`, and `--bootstrap-noise-addr`/`--bootstrap-join-addr`
+may all name whichever member is reachable, including after the original
+node is gone for good. See
+[architecture.md](architecture.md#every-admitted-unsealed-member-serves-the-anchor).
+
 **Minting a token for the joining node:**
 
 ```bash
@@ -117,7 +126,10 @@ qrdb admin join-token mint node-7 --ttl 1h
 Copy the printed token into the joining node's `--bootstrap-join-token-file`
 (it is shown exactly once — there is no way to retrieve it again, only to
 mint a fresh one). Minting requires permission `cluster:join_token`, held by
-`Owner` by default.
+`Owner` and by the cluster `Admin` role by default (owner ruling,
+2026-10-06) — only the Admin grant survives strict separation of duties,
+which is always on in a FIPS build and voids `Owner`; see
+[../seal/fips140-mode.md](../seal/fips140-mode.md#strict-separation-of-duties-and-clusterjoin_token-under-fips).
 
 ```bash
 # Admitted member: sign joins over both transports
@@ -546,6 +558,13 @@ is running in FIPS mode, where that method cannot be used. Configure
 `--bootstrap-direct-url` instead — see
 [Forming a cluster](#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
 The refusal happens before the node dials anything, so nothing was written.
+
+**The node that generated the cluster CA is gone for good.** Point a new
+node's `--bootstrap-addr` / `--bootstrap-join-url` (or the Noise
+equivalents) at any OTHER admitted, unsealed member instead — every one of
+them serves the identical trust anchor and signs CSRs from the same
+replicated Key A, not only the node that happened to generate it. See
+[Adding a node](#adding-a-node-member-side-csr-join).
 
 **A FIPS first node logs no Noise public key.** That is correct there. It logs a
 WARN naming FIPS and the admin port instead; point joining nodes at

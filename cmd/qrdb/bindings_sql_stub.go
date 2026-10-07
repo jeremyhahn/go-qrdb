@@ -17,34 +17,27 @@
 package main
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// SQLQueryResult holds the result of a SQL query execution. It is the
-// canonical service-layer result type; the alias keeps the Wails IPC
-// surface name stable (columns/rows/rowCount/duration).
-type SQLQueryResult = service.SQLQueryResult
+// SQLQueryResult holds the result of a SQL query execution. The alias keeps
+// the Wails IPC surface name stable (columns/rows/rowCount/duration).
+type SQLQueryResult = transport.SQLQueryResult
 
 // SQLBinding is a stub that returns FeatureDisabledError for Execute when
 // the SQL feature is not compiled in. It preserves the full Wails binding
 // surface of the real SQLBinding so callers (EmbeddedServerBinding, the
 // desktop GUI bind list) compile unchanged.
 type SQLBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewSQLBinding creates a new SQLBinding.
-func NewSQLBinding(log *logger.Logger, conn *ConnectionBinding) *SQLBinding {
+func NewSQLBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *SQLBinding {
 	return &SQLBinding{logger: log, conn: conn}
 }
-
-// SetServices is a no-op when the SQL feature is not compiled in.
-func (b *SQLBinding) SetServices(_ service.KVServicer, _ service.DatabaseServicer) {}
-
-// ClearServices is a no-op when the SQL feature is not compiled in.
-func (b *SQLBinding) ClearServices() {}
 
 // Execute returns a FeatureDisabledError.
 func (b *SQLBinding) Execute(_ string, _ string) (*SQLQueryResult, error) {

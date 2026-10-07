@@ -83,6 +83,21 @@ func (t *Transport) authorizeTenantTarget(ctx context.Context, tenantID string, 
 	return t.authMW.AuthorizeTenant(ctx, tenantid.Normalize(tenantID), perm)
 }
 
+// authorizeTenantRecord authorizes a read or delete of the named tenant's
+// registry record: the ambient-self ENTRY check (which charges the rate-limit
+// token and writes the audit record, as a network transport's route
+// middleware does), then AuthorizeTenantTarget against the named tenant, which
+// also admits a system-tenant holder of the matching *:cross permission.
+func (t *Transport) authorizeTenantRecord(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if err := t.authorizeTenantSelf(ctx, perm); err != nil {
+		return err
+	}
+	if t.authMW == nil {
+		return nil
+	}
+	return t.authMW.AuthorizeTenantTarget(ctx, tenantid.Normalize(tenantID), perm)
+}
+
 // authorizeTenantUpdate authorizes a tenant PATCH the same way
 // AuthMiddleware.AuthorizeTenantUpdate does on every network transport:
 // tenants:update against the named tenant, plus tenants:set_isolation (a

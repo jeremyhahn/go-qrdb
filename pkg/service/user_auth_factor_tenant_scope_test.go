@@ -458,20 +458,18 @@ func TestRoutedFactorEnrolmentFollowsTheUsersTenant(t *testing.T) {
 	}
 
 	cred := []byte("enrolled-without-a-tenant-context")
-	// A privileged (system) context naming no tenant of its own.
-	if err := h.svc.Add(context.Background(), 55, mtlsFactor("owner-routed", 55, cred)); err != nil {
-		t.Fatalf("Add: %v", err)
+	// A privileged (system) context naming no tenant of its own is refused
+	// the same as any other foreign-tenant caller: the system-tenant lift
+	// was removed (owner ruling, 2026-10-01). Routing to the owning tenant
+	// happens only for a caller already admitted to reach it.
+	err = h.svc.Add(context.Background(), 55, mtlsFactor("owner-routed", 55, cred))
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("Add = %v, want *tenant.CrossTenantDeniedError", err)
 	}
 
-	got, err := h.svc.LookupByCredentialKey(ctxFor("acme"), auth.AuthFactorMTLS, cred)
-	if err != nil {
-		t.Fatalf("the user's own tenant cannot resolve the enrolment: %v", err)
-	}
-	if got.ID != "owner-routed" {
-		t.Fatalf("resolved %q", got.ID)
-	}
-	if _, err := h.svc.LookupByCredentialKey(ctxFor("globex"), auth.AuthFactorMTLS, cred); err == nil {
-		t.Fatal("globex resolved a factor owned by acme's user")
+	if _, err := h.svc.LookupByCredentialKey(ctxFor("acme"), auth.AuthFactorMTLS, cred); err == nil {
+		t.Fatal("a refused enrolment must not resolve from the owning tenant")
 	}
 }
 

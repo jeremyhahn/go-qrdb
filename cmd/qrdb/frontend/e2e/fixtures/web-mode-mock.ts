@@ -31,7 +31,6 @@ import { test as base, expect, type Page } from "@playwright/test";
 /** Minimal database info for mock responses. */
 export interface WebMockDatabaseInfo {
   name: string;
-  engine: string;
   backend: string;
   status: string;
 }

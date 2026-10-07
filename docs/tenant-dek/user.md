@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Encrypt your application's data under your tenant's own key without ever
 holding the key.
@@ -68,9 +68,17 @@ answers `ErrVersionRetired` (409 / `FAILED_PRECONDITION`) from then on.
   system-tenant administrator.
 - **A sealed tenant is unavailable.** While your tenant's barrier is sealed,
   every call answers 503 / `UNAVAILABLE`; unseal and retry.
-- **Barrier protection `none`.** The keyring is stored without at-rest
-  encryption, exactly as the rest of a `none` tenant's data. Use a keyed
-  barrier strategy if the keys must be protected at rest.
+- **Barrier protection `none`.** The keyring's stored record is kept
+  without at-rest encryption, exactly as the rest of a `none` tenant's
+  data. Use a keyed barrier strategy if the record must be protected at
+  rest. This is independent of key wrapping, below: even under `none`,
+  every version's own key is still wrapped under a KEK, never plaintext.
+- **Every version's key is wrapped under a key-encrypting key (KEK) —
+  there is no unwrapped option.** The operator configures the built-in
+  software provider's key directory (`qrdbd --dek-key-dir`) or a
+  go-xkms-registered hardware/cloud-KMS provider; without either, encrypt
+  and rotate are refused. See
+  [key-wrapping/user.md](../key-wrapping/user.md).
 - **Deleting the tenant destroys the keyring.** Its ciphertexts become
   permanently undecryptable.
 

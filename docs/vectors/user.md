@@ -1,12 +1,14 @@
 # Vector Database — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" notes describe the vector half of the multi-model database program
 > ([architecture.md](architecture.md)); they are approved by the owner on 2026-09-30 and not
 > implemented. OD-n refers to the ruled decisions in
 > [../databases/architecture.md](../databases/architecture.md).
+
+Test reference: `make integration-test-vectors`; coverage row: `test/integration/COVERAGE.md` `[vectors](../../docs/vectors/)`.
 
 Store embeddings and find the ones closest to a query. This feature stores and
 searches vectors; producing them from text is
@@ -134,10 +136,14 @@ are replicated with everything else in it; dropping the database drops them.
 
 ## Troubleshooting
 
-**Similarity search returns nothing after the server restarted.** Today the
-search index is not reloaded at startup. Run `qrdb vector rebuild-index` for
-the namespace and poll `rebuild-progress`. The target design reloads indexes at
-startup and answers "index warming, retry" until one is ready.
+**Similarity search returns nothing after the server restarted.** This is
+fixed as of 2026-10-06: the search index is rebuilt from the stored vectors,
+under the namespace's own metric, when the server starts. If you still see
+empty results after a restart on a server built before that fix, run
+`qrdb vector rebuild-index` for the namespace and poll `rebuild-progress` as
+a workaround. The target design additionally answers "index warming, retry"
+while a large namespace's rebuild is still in progress, instead of
+returning an empty result.
 
 **"dimension mismatch" on upsert.** Your vector has a different length from the
 namespace. That is refused rather than padded, because a padded vector produces

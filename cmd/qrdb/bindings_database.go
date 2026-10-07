@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // DatabaseBinding exposes database management operations to the Wails frontend.
 type DatabaseBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewDatabaseBinding creates a new DatabaseBinding backed by the given connection.
-func NewDatabaseBinding(log *logger.Logger, conn *ConnectionBinding) *DatabaseBinding {
+func NewDatabaseBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *DatabaseBinding {
 	return &DatabaseBinding{logger: log, conn: conn}
 }
 

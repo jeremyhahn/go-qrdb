@@ -47,6 +47,29 @@ func TenantFromContext(ctx context.Context) (string, bool) {
 	return tenant.IDFromContext(ctx)
 }
 
+// CrossTenantDeniedError is returned by EffectiveTenant and OwnTenant when a
+// caller authenticated to one tenant supplies a different, non-empty target
+// tenant. (Aliases pkg/tenant.CrossTenantDeniedError.)
+type CrossTenantDeniedError = tenant.CrossTenantDeniedError
+
+// EffectiveTenant reconciles a request-supplied tenant against the caller's
+// authenticated identity tenant and returns the tenant an IAM operation MUST
+// act on: a system-tenant identity may target any tenant (the legitimate
+// cross-tenant admin path — first-boot bootstrap, platform provisioning); a
+// normal tenant identity may act only on its own, and a non-empty, differing
+// request tenant is refused with a *CrossTenantDeniedError. op names the
+// attempted operation for the error message. (Aliases pkg/tenant.EffectiveTenant.)
+var EffectiveTenant = tenant.EffectiveTenant
+
+// OwnTenant is EffectiveTenant's rule with NO exception for the system
+// tenant: every identity, system included, may act only on its own tenant,
+// and a non-empty, differing request tenant is refused with a
+// *CrossTenantDeniedError. Use this for a caller that must enforce the
+// irreducible "no caller ever acts on another tenant" rule rather than
+// EffectiveTenant's legitimate cross-tenant admin path.
+// (Aliases pkg/tenant.OwnTenant.)
+var OwnTenant = tenant.OwnTenant
+
 // ---------------------------------------------------------------------------
 // Tenant metadata types
 //

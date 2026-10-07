@@ -54,7 +54,6 @@ func TestShardIDs_NeverCollideAcrossNodes(t *testing.T) {
 		name := []string{"orders", "ledger", "events", "audit"}[i]
 		db, err := node.Create(DatabaseConfig{
 			Name:    name,
-			Engine:  EngineKV,
 			Backend: BackendMemory,
 			Raft:    validRaftConfig(0),
 		})
@@ -91,7 +90,7 @@ func TestShardIDs_RestoreToAFreshDataDirNeverReissues(t *testing.T) {
 	before := clusterNode(t, original)
 	issued := make(map[uint64]string)
 	for _, name := range []string{"kept", "dropped"} {
-		db, err := before.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+		db, err := before.Create(DatabaseConfig{Name: name, Backend: BackendMemory, Raft: validRaftConfig(0)})
 		if err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
@@ -104,7 +103,7 @@ func TestShardIDs_RestoreToAFreshDataDirNeverReissues(t *testing.T) {
 	// A fresh data directory: nothing of the old node's disk survives.
 	after := clusterNode(t, restoreInto(t, original))
 	for _, name := range []string{"dropped", "new"} {
-		db, err := after.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+		db, err := after.Create(DatabaseConfig{Name: name, Backend: BackendMemory, Raft: validRaftConfig(0)})
 		if err != nil {
 			t.Fatalf("create %s after restore: %v", name, err)
 		}
@@ -120,7 +119,7 @@ func TestShardIDs_RestoreToAFreshDataDirNeverReissues(t *testing.T) {
 func TestShardIDs_NoNodeLocalShardState(t *testing.T) {
 	m := clusterNode(t, kvstore.NewMemoryKVStore())
 	for _, name := range []string{"a", "b"} {
-		if _, err := m.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)}); err != nil {
+		if _, err := m.Create(DatabaseConfig{Name: name, Backend: BackendMemory, Raft: validRaftConfig(0)}); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
 	}
@@ -151,7 +150,7 @@ func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	m.SetShardIDClaimer(failingClaimer{err: storeDown})
 	t.Cleanup(func() { _ = m.Close() })
 
-	_, err := m.Create(DatabaseConfig{Name: "refused", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+	_, err := m.Create(DatabaseConfig{Name: "refused", Backend: BackendMemory, Raft: validRaftConfig(0)})
 	var claimErr *ShardIDClaimError
 	if !errors.As(err, &claimErr) || !errors.Is(err, storeDown) {
 		t.Fatalf("create with a failing claimer = %v, want *ShardIDClaimError wrapping the store error", err)

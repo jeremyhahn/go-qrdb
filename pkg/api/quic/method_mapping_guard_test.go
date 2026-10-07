@@ -210,6 +210,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"admin.RetireJoinIdentity":         permission.ClusterJoinIdentityRetire,
 	"audit.Query":                      permission.AuditQuery,
 	"audit.VerifyChain":                permission.AuditVerify,
+	"audit.VerifyReplicatedChain":      permission.AuditVerifyReplicated,
 	"authfactor.Enroll":                permission.AuthFactorEnroll,
 	"authfactor.Challenge":             permission.AuthFactorChallenge,
 	"authfactor.Verify":                permission.AuthFactorVerify,

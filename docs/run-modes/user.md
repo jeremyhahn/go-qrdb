@@ -1,6 +1,8 @@
 # Run Modes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+
+Test reference: `make integration-test-run-modes`; coverage row: `test/integration/COVERAGE.md` `[run-modes](../../docs/run-modes/)`.
 
 A qrdb server runs in one of two modes. The mode decides whether there is a
 cluster, so it is the answer when a cluster feature "is not there".

@@ -447,8 +447,15 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
 
 	// Role + user, created AFTER the barrier init so the records land in the
-	// tenant's own encrypted IAM store.
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	// tenant's own encrypted IAM store. The system tenant can no longer
+	// provision records inside another tenant's IAM at all (owner ruling,
+	// 2026-10-01), so this authenticates as the tenant's own onboarded
+	// admin; its built-in Admin role cannot create a NEW role (RolesCreate
+	// is SO-exclusive), so it self-assigns its own pre-seeded SO role
+	// first, exactly like tenant_isolation_cli_test.go's
+	// provisionTenantIdentityFor.
+	selfAssignTenantSO(t, leaderPort, tenantID, onboardedAdminClient)
+	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name": "db-admin", "tenant_id": tenantID,
@@ -469,7 +476,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
 		t.Fatalf("decode role id: %v body=%s", err, roleBody)
 	}
-	createBoundUser(t, sysClient, leaderPort,
+	createBoundUser(t, onboardedAdminClient, leaderPort,
 		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 		tenantCert)
 
@@ -477,7 +484,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// delivers the (self-managed) tenant barrier key to each follower.
 	if b, s := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
-		map[string]interface{}{"name": dbName, "engine": "kv", "backend": "pebble", "replicas": 3},
+		map[string]interface{}{"name": dbName, "backend": "pebble", "replicas": 3},
 	); s != http.StatusCreated && s != http.StatusOK {
 		t.Fatalf("create database: status %d, body: %s", s, b)
 	}

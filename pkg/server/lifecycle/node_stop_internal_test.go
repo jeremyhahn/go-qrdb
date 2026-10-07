@@ -50,7 +50,7 @@ func TestNode_StopRunsEveryCloserLIFOAndReturnsTheFirstFailure(t *testing.T) {
 // nowhere to keep a tenant's DEK, so the service is refused with a typed
 // error rather than built to fail on first use.
 func TestBuildDEKService_RefusesANilResolver(t *testing.T) {
-	svc, err := buildDEKService(nil)
+	svc, err := buildDEKService(nil, nil, nil, "")
 	if svc != nil {
 		t.Fatalf("buildDEKService(nil) returned a service: %v", svc)
 	}

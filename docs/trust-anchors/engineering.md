@@ -1,6 +1,6 @@
 # Trust Anchors — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Packages
 
@@ -122,3 +122,7 @@ classes are rows in `pkg/api/errclass` (see [api.md](api.md)).
   `auth.mtls_binding_policy: required`, a bring-your-own admin logs in under a
   registered anchor, and a certificate from tenant A's anchor naming a tenant B
   account is refused at enrollment and at login.
+
+## Integration Target
+
+Run `make integration-test-trust-anchors` for this feature. The target intentionally selects zero Go integration tests today; the gap is recorded in `test/integration/COVERAGE.md` under `trust-anchors`.

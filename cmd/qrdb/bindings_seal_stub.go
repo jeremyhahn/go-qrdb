@@ -17,7 +17,7 @@
 package main
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -26,7 +26,7 @@ import (
 type SealBinding struct{}
 
 // NewSealBinding creates a stub SealBinding.
-func NewSealBinding(_ *logger.Logger, _ *EmbeddedServerBinding, _ *ConnectionBinding) *SealBinding {
+func NewSealBinding(_ *sdk.ConcreteLogger, _ *EmbeddedServerBinding, _ *ConnectionBinding) *SealBinding {
 	return &SealBinding{}
 }
 

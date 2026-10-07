@@ -26,7 +26,7 @@ const LOAD_TIMEOUT = 10_000;
 const watchState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "watch-adv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "watch-adv", backend: "pebble", status: "open" },
   ],
 };
 

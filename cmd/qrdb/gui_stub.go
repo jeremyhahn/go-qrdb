@@ -16,10 +16,10 @@
 
 package main
 
-import "github.com/jeremyhahn/go-qrdb/pkg/logger"
+import sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 
 // launchGUI returns a GUIUnavailableError when the binary is built
 // without the desktop build tag. The caller falls through to the CLI.
-func launchGUI(_ *logger.Logger, _ string) error {
+func launchGUI(_ *sdk.ConcreteLogger, _ string) error {
 	return &GUIUnavailableError{}
 }

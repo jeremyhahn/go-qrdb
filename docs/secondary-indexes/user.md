@@ -27,7 +27,7 @@ Build a DAO for `User` and the indexes exist. No `index create` call, no
 migration step. Then query by intent and let the planner pick the access path:
 
 ```go
-users, err := dao.Find().Where("Email = ?", "alice@example.com").All(ctx)
+users, err := dao.Find(ctx).Where("Email = ?", "alice@example.com").Execute()
 ```
 
 ## Creating an index by hand

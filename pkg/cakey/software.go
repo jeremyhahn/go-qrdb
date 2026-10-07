@@ -41,7 +41,9 @@ import (
 const serialBits = 128
 
 // SoftwareProvider is qrdb's built-in Provider: an ECDSA P-256 CA key held
-// in memory only while unsealed. It is the default behind the Provider seam
+// in memory only while unsealed, and even then only inside go-enclave
+// protected memory (pkg/secure.Secret) -- never as a bare *ecdsa.PrivateKey
+// on the ordinary Go heap. It is the default behind the Provider seam
 // whenever an embedder does not inject one of its own (go-xkms
 // HSM/TPM/PKCS#11/KMS, via cakey.Adapter).
 //
@@ -66,7 +68,7 @@ const serialBits = 128
 // never even fetched from the store, let alone parsed, unless something
 // calls Signer.
 //
-// The records carry no additional AEAD wrap of their own. An earlier
+// The STORED records carry no additional AEAD wrap of their own. An earlier
 // revision wrapped the key with THIS node's seal.EncryptionBarrier before
 // the Put; that made the record readable only by the node that wrote it, so
 // every other node sharing the same replicated record failed to decrypt it
@@ -80,6 +82,18 @@ const serialBits = 128
 // therefore gates ONLY whether this provider will touch key material at
 // all (IsSealed()), exactly as cert.CertProvider's own seal gate does -- it
 // no longer performs any encryption of its own.
+//
+// The IN-MEMORY cache is a different matter, and is this package's own to
+// protect: whenever material is established, the private key lives in a
+// secure.Secret -- a go-enclave SealedEnclave, AES-256-GCM under the
+// process Sealer -- not a plain *ecdsa.PrivateKey. Signing opens it into a
+// secure.Buffer (mlocked, guard-paged) for exactly the duration of one
+// Sign call and destroys the Buffer before returning, so the DER bytes
+// are protected right up until crypto/ecdsa itself parses them; what
+// crypto/ecdsa does with that scalar internally is its own concern, not
+// this package's (see barrierCheckedSigner.Sign's doc comment on Go
+// 1.26's ecdsa.PrivateKey.D deprecation). Seal destroys the Secret
+// outright. See barrierCheckedSigner and loadKeySecret.
 type SoftwareProvider struct {
 	kvStore  kvstore.MultiGuardedBatchKVStore
 	barrier  seal.EncryptionBarrier
@@ -93,9 +107,17 @@ type SoftwareProvider struct {
 	adoptKeyPEM  []byte
 	adoptCertPEM []byte
 
-	mu   sync.RWMutex
-	key  *ecdsa.PrivateKey
-	cert *x509.Certificate
+	mu sync.RWMutex
+	// keySecret holds this provider's private key SEALED in go-enclave
+	// protected memory (pkg/secure.Secret) whenever material has been
+	// established and the provider has not been Seal'd since: never a bare
+	// *ecdsa.PrivateKey sitting in ordinary heap memory between signatures.
+	// Signer resolves it eagerly (establishing or loading material if
+	// nothing is cached yet) but does NOT open it; Sign opens it fresh on
+	// EVERY call, into a secure.Buffer it destroys before returning, so the
+	// plaintext key exists only for the duration of one signing operation.
+	keySecret *secure.Secret
+	cert      *x509.Certificate
 
 	// gen counts Seal calls. Every barrierCheckedSigner captures the
 	// generation current when Signer handed it out; Seal bumps it, so a
@@ -202,27 +224,32 @@ func (p *SoftwareProvider) Initialize(ctx context.Context) error {
 		return &BarrierSealedError{}
 	}
 
-	key, cert, keyDER, certDER, err := p.generate()
+	_, cert, keyDER, certDER, err := p.generate()
 	if err != nil {
 		return err
 	}
-	defer secure.Wipe(keyDER)
 
 	applied, err := p.writeIfBothAbsent(ctx, keyDER, certDER)
 	if err != nil {
+		secure.Wipe(keyDER)
 		return err
 	}
 	if !applied {
 		// Lost the race, or material already existed from an earlier boot:
 		// either way, the store now holds the record that counts. Load it
 		// rather than assume our own candidate was the one written.
+		secure.Wipe(keyDER)
 		return p.load(ctx)
 	}
 
-	p.mu.Lock()
-	p.key = key
-	p.cert = cert
-	p.mu.Unlock()
+	// keyDER is now durably written; seal it directly into protected memory
+	// rather than caching the plaintext key. NewSecret consumes and wipes
+	// keyDER on every return path.
+	sec, err := secure.NewSecret(ctx, keyDER)
+	if err != nil {
+		return &SealError{Op: "seal", Err: err}
+	}
+	p.setMaterial(sec, cert)
 	return nil
 }
 
@@ -241,6 +268,21 @@ func (p *SoftwareProvider) writeIfBothAbsent(ctx context.Context, keyDER, certDE
 		return false, &StoreError{Op: "putallifallunchanged", Detail: materialPath, Err: err}
 	}
 	return applied, nil
+}
+
+// setMaterial atomically swaps in sec as this provider's protected key
+// secret and cert as its cached certificate, destroying whatever secret was
+// cached before (if any) once the swap is visible. Every path that
+// establishes or reloads material -- Initialize, AdoptIfAbsent, load,
+// loadKeySecret -- funnels through this so there is exactly one place that
+// retires a superseded secret.
+func (p *SoftwareProvider) setMaterial(sec *secure.Secret, cert *x509.Certificate) {
+	p.mu.Lock()
+	old := p.keySecret
+	p.keySecret = sec
+	p.cert = cert
+	p.mu.Unlock()
+	old.Destroy()
 }
 
 // generate creates a fresh ECDSA P-256 key and a self-signed CA certificate
@@ -378,19 +420,21 @@ func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []
 	if err != nil {
 		return &GenerateError{Err: err}
 	}
-	defer secure.Wipe(keyDER)
 
 	applied, err := p.writeIfBothAbsent(ctx, keyDER, cert.Raw)
 	if err != nil {
+		secure.Wipe(keyDER)
 		return err
 	}
 	if applied {
-		p.mu.Lock()
-		p.key = key
-		p.cert = cert
-		p.mu.Unlock()
+		sec, sealErr := secure.NewSecret(ctx, keyDER)
+		if sealErr != nil {
+			return &SealError{Op: "seal", Err: sealErr}
+		}
+		p.setMaterial(sec, cert)
 		return nil
 	}
+	secure.Wipe(keyDER)
 
 	// Lost the race, or material already existed: load the winning
 	// certificate -- cert-only, the key stays untouched -- and verify it is
@@ -431,9 +475,11 @@ func (p *SoftwareProvider) loadMatching(ctx context.Context, certPEM []byte) err
 	p.mu.RUnlock()
 	if !match {
 		p.mu.Lock()
-		p.key = nil
+		old := p.keySecret
+		p.keySecret = nil
 		p.cert = nil
 		p.mu.Unlock()
+		old.Destroy()
 		return &MaterialMismatchError{}
 	}
 	return nil
@@ -456,21 +502,29 @@ func (p *SoftwareProvider) Unseal(ctx context.Context) error {
 // exists" fallback), so loading the key here is not a violation of the
 // cert-only reads Certificate uses -- it is load's whole purpose.
 func (p *SoftwareProvider) load(ctx context.Context) error {
-	key, err := p.loadKeyRecord(ctx)
+	data, err := p.loadKeyRecordBytes(ctx)
 	if err != nil {
+		return err
+	}
+	key, err := decodeKey(data)
+	if err != nil {
+		secure.Wipe(data)
 		return err
 	}
 	cert, _, err := p.loadCertRecord(ctx)
 	if err != nil {
+		secure.Wipe(data)
 		return err
 	}
 	if err := checkKeyMatchesCert(key, cert); err != nil {
+		secure.Wipe(data)
 		return err
 	}
-	p.mu.Lock()
-	p.key = key
-	p.cert = cert
-	p.mu.Unlock()
+	sec, err := secure.NewSecret(ctx, data)
+	if err != nil {
+		return &SealError{Op: "seal", Err: err}
+	}
+	p.setMaterial(sec, cert)
 	return nil
 }
 
@@ -491,9 +545,11 @@ func checkKeyMatchesCert(key *ecdsa.PrivateKey, cert *x509.Certificate) error {
 	return nil
 }
 
-// loadKeyRecord reads and decodes this provider's stored private-key
-// record, without touching the certificate record.
-func (p *SoftwareProvider) loadKeyRecord(ctx context.Context) (*ecdsa.PrivateKey, error) {
+// loadKeyRecordBytes reads this provider's stored private-key record as raw
+// SEC1 DER bytes, without decoding or touching the certificate record. The
+// returned slice is the caller's: seal it into a secure.Secret (which wipes
+// it) or wipe it directly on a failure path.
+func (p *SoftwareProvider) loadKeyRecordBytes(ctx context.Context) ([]byte, error) {
 	materialPath := p.prefix + keyMaterial
 	data, err := p.kvStore.Get(ctx, materialPath)
 	if err != nil {
@@ -502,7 +558,7 @@ func (p *SoftwareProvider) loadKeyRecord(ctx context.Context) (*ecdsa.PrivateKey
 	if data == nil {
 		return nil, &NotInitializedError{}
 	}
-	return decodeKey(data)
+	return data, nil
 }
 
 // loadCertRecord reads and decodes this provider's stored certificate
@@ -533,75 +589,106 @@ func (p *SoftwareProvider) loadCertRecord(ctx context.Context) (*x509.Certificat
 // like cert.CertProvider's CACertPEM, remains cached: it is public data.
 func (p *SoftwareProvider) Seal() {
 	p.mu.Lock()
-	p.key = nil
+	old := p.keySecret
+	p.keySecret = nil
 	p.mu.Unlock()
+	old.Destroy()
 	p.gen.Add(1)
 }
 
-// Signer returns a crypto.Signer backed by the cached key, auto-initializing
-// from the store first when the barrier is unsealed but nothing has been
-// loaded into memory yet (the ordinary case on every boot after the first,
-// or right after Seal). The returned Signer is opaque: it cannot be type-
-// asserted back to *ecdsa.PrivateKey, re-checks the barrier on every Sign
-// call rather than only at the time Signer was fetched, and is revoked by
-// Seal -- see barrierCheckedSigner's own doc comment.
+// Signer returns a crypto.Signer backed by the protected key secret,
+// auto-initializing from the store first when the barrier is unsealed but
+// nothing has been sealed into memory yet (the ordinary case on every boot
+// after the first, or right after Seal). It does not itself open the
+// secret -- the plaintext key is never materialized here, only captured as
+// a public-key byte string for Public(). The returned Signer is opaque: it
+// cannot be type-asserted back to *ecdsa.PrivateKey, re-checks the barrier
+// on every Sign call rather than only at the time Signer was fetched, opens
+// the key secret fresh for each Sign and wipes it immediately after, and is
+// revoked by Seal -- see barrierCheckedSigner's own doc comment.
 func (p *SoftwareProvider) Signer(ctx context.Context) (crypto.Signer, error) {
-	key, err := p.signingKey(ctx)
-	if err != nil {
+	if err := p.ensureKeySecret(ctx); err != nil {
 		return nil, err
 	}
-	return &barrierCheckedSigner{provider: p, key: key, gen: p.gen.Load()}, nil
+	p.mu.RLock()
+	cert := p.cert
+	gen := p.gen.Load()
+	p.mu.RUnlock()
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, &KeyCertMismatchError{}
+	}
+	pubBytes, err := pub.Bytes()
+	if err != nil {
+		return nil, &GenerateError{Err: err}
+	}
+	return &barrierCheckedSigner{provider: p, pubBytes: pubBytes, curve: pub.Curve, gen: gen}, nil
 }
 
-// signingKey returns the cached private key, loading it from the store
-// first if nothing is cached (the first call since the process started, or
-// since Seal last ran).
-func (p *SoftwareProvider) signingKey(ctx context.Context) (*ecdsa.PrivateKey, error) {
+// ensureKeySecret makes sure p.keySecret is populated -- establishing fresh
+// material, adopting it, or loading persisted material first if nothing is
+// cached (the first call since the process started, or since Seal last
+// ran). It does not itself open the secret: Sign does that, once per call.
+func (p *SoftwareProvider) ensureKeySecret(ctx context.Context) error {
 	if p.barrier.IsSealed() {
-		return nil, &BarrierSealedError{}
+		return &BarrierSealedError{}
 	}
 
 	p.mu.RLock()
-	key := p.key
+	has := p.keySecret != nil
 	p.mu.RUnlock()
-	if key != nil {
-		return key, nil
+	if has {
+		return nil
 	}
 
 	if err := p.ensureEstablished(ctx); err != nil {
-		return nil, err
+		return err
 	}
 	p.mu.RLock()
-	key = p.key
+	has = p.keySecret != nil
 	p.mu.RUnlock()
-	if key != nil {
-		return key, nil
+	if has {
+		return nil
 	}
 
 	// ensureEstablished confirmed this provider's material is the one the
-	// store holds, but did not necessarily cache the key: AdoptIfAbsent's
+	// store holds, but did not necessarily seal the key: AdoptIfAbsent's
 	// "lost the race, but it is ours" path verifies and caches the
 	// CERTIFICATE only (loadCertRecord), deliberately never touching the
 	// key record for that check. Now that establishment is confirmed, load
 	// the key directly -- one more Get, not a re-run of Initialize or
 	// AdoptIfAbsent, so this cannot loop.
-	key, err := p.loadKeyRecord(ctx)
+	return p.loadKeySecret(ctx)
+}
+
+// loadKeySecret reads this provider's key record, verifies it against the
+// already-cached certificate, and seals it into p.keySecret. p.cert is
+// guaranteed non-nil here: every caller already confirmed establishment
+// (ensureEstablished), which always caches the certificate even when it
+// does not cache the key.
+func (p *SoftwareProvider) loadKeySecret(ctx context.Context) error {
+	data, err := p.loadKeyRecordBytes(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	// p.cert is guaranteed non-nil here: every path that reaches this line
-	// already confirmed establishment (ensureEstablished above), which
-	// always caches the certificate even when it does not cache the key.
+	key, err := decodeKey(data)
+	if err != nil {
+		secure.Wipe(data)
+		return err
+	}
 	p.mu.RLock()
 	cert := p.cert
 	p.mu.RUnlock()
 	if err := checkKeyMatchesCert(key, cert); err != nil {
-		return nil, err
+		secure.Wipe(data)
+		return err
 	}
-	p.mu.Lock()
-	p.key = key
-	p.mu.Unlock()
-	return key, nil
+	sec, err := secure.NewSecret(ctx, data)
+	if err != nil {
+		return &SealError{Op: "seal", Err: err}
+	}
+	p.setMaterial(sec, cert)
+	return nil
 }
 
 // Certificate returns the cached CA certificate, reading ONLY the
@@ -685,7 +772,7 @@ func (p *SoftwareProvider) CertificateOnly(ctx context.Context) (*x509.Certifica
 // ensureEstablished runs this provider's one-time bootstrap -- adopting
 // in-memory material supplied through WithAdoptMaterial, or generating
 // fresh material -- if the store holds none yet. It is the shared tail of
-// signingKey's and Certificate's cold-cache paths.
+// ensureKeySecret's and Certificate's cold-cache paths.
 func (p *SoftwareProvider) ensureEstablished(ctx context.Context) error {
 	if len(p.adoptKeyPEM) > 0 || len(p.adoptCertPEM) > 0 {
 		return p.AdoptIfAbsent(ctx, p.adoptKeyPEM, p.adoptCertPEM)
@@ -700,17 +787,31 @@ func isNotInitialized(err error) bool {
 }
 
 // barrierCheckedSigner is the crypto.Signer SoftwareProvider.Signer
-// returns. It holds the *ecdsa.PrivateKey privately -- there is no
-// exported accessor, and its dynamic type is never *ecdsa.PrivateKey, so a
-// type assertion against the Signer a caller was handed cannot recover it,
-// and Public returns a deep copy rather than a pointer into the key, so a
-// caller cannot corrupt (or, via the embedded-struct layout
-// *ecdsa.PrivateKey.Public relies on, read back D from) the live key by
-// mutating what Public returned. That is the guarantee: ordinary use
-// through this type's exported surface cannot extract or corrupt the key.
-// It is NOT a guarantee against unsafe.Pointer or reflection reaching into
-// this struct's own fields from elsewhere in the SAME process -- no
-// exported Go API defends against that, and this type does not claim to.
+// returns. It never holds the private key: there is no *ecdsa.PrivateKey
+// field at all, so a type assertion against the Signer a caller was handed
+// has nothing to recover. Sign opens the provider's keySecret fresh for
+// its own duration, into a secure.Buffer it destroys before returning --
+// the plaintext DER bytes exist only for the span of one Sign call, never
+// cached on this struct between calls. The *ecdsa.PrivateKey Sign parses
+// out of those bytes is left to the garbage collector like any other
+// crypto/ecdsa caller's: Go 1.26 deprecated reaching into
+// (*ecdsa.PrivateKey).D to scrub it by hand (its own internal
+// representation is no longer guaranteed to be just that field), so this
+// package no longer attempts to, and relies on the DER-bytes wipe above as
+// its actual protected-memory boundary. Public is served from
+// pubBytes/curve, captured once at
+// construction from the certificate's own public key (verified to match
+// the private key by checkKeyMatchesCert on every load/generate/adopt
+// path), so it never touches protected memory and returns a deep copy
+// each call rather than a pointer into anything shared, so a caller
+// cannot corrupt a subsequent Public() result or walk back to secret
+// state by mutating what an earlier call returned. That is the guarantee:
+// ordinary use through this type's exported surface cannot extract or
+// corrupt the key. It is NOT a guarantee against unsafe.Pointer or
+// reflection reaching into this struct's own fields, or into the
+// go-enclave pages Sign transiently opens, from elsewhere in the SAME
+// process -- no exported Go API defends against that, and this type does
+// not claim to.
 //
 // It also re-checks the barrier on EVERY Sign, not only when Signer was
 // fetched, and compares its own captured generation against the
@@ -719,32 +820,33 @@ func isNotInitialized(err error) bool {
 // though the caller is still holding the same crypto.Signer value.
 type barrierCheckedSigner struct {
 	provider *SoftwareProvider
-	key      *ecdsa.PrivateKey
+	// pubBytes/curve are the signer's public key, captured once at
+	// construction from the (already barrier/checkKeyMatchesCert-verified)
+	// certificate -- never derived from the private key, so Public never
+	// needs to touch protected memory. Public data, held in the clear.
+	pubBytes []byte
+	curve    elliptic.Curve
 	gen      uint64
 }
 
 // Compile-time interface check.
 var _ crypto.Signer = (*barrierCheckedSigner)(nil)
 
-// Public returns a deep copy of the signer's public key. Unlike Sign, this
-// is not secret and is served regardless of barrier or revocation state,
-// mirroring Certificate's own seal-independent contract for public data --
-// but it is a COPY, never a pointer into the live *ecdsa.PrivateKey: the
-// stdlib's own PrivateKey.Public returns `&priv.PublicKey`, a pointer into
-// the same struct the private scalar D lives in, so handing that out
-// directly would let a caller corrupt the signer's key by mutating the
-// "public" key it received, or walk the embedded-struct layout to reach D.
+// Public returns a freshly parsed copy of the signer's public key. Unlike
+// Sign, this is not secret and is served regardless of barrier or
+// revocation state, mirroring Certificate's own seal-independent contract
+// for public data -- it never opens the provider's keySecret, and it is a
+// fresh value on every call, never a pointer shared across calls, so a
+// caller cannot corrupt a later Public() result by mutating an earlier one.
 func (s *barrierCheckedSigner) Public() crypto.PublicKey {
-	raw, err := s.key.PublicKey.Bytes()
+	pub, err := ecdsa.ParseUncompressedPublicKey(s.curve, s.pubBytes)
 	if err != nil {
-		// The key was already validated when this signer was constructed;
-		// re-encoding it here cannot fail without that invariant having
-		// already been violated elsewhere, which is a programming error.
-		panic(fmt.Sprintf("cakey: barrierCheckedSigner holds an unencodable public key: %v", err))
-	}
-	pub, err := ecdsa.ParseUncompressedPublicKey(s.key.PublicKey.Curve, raw)
-	if err != nil {
-		panic(fmt.Sprintf("cakey: barrierCheckedSigner's own encoding did not round-trip: %v", err))
+		// pubBytes was already validated (round-tripped through
+		// ecdsa.PublicKey.Bytes) when this signer was constructed;
+		// failing to parse it back here cannot happen without that
+		// invariant having already been violated elsewhere, which is a
+		// programming error.
+		panic(fmt.Sprintf("cakey: barrierCheckedSigner holds an unparseable public key: %v", err))
 	}
 	return pub
 }
@@ -762,7 +864,38 @@ func (s *barrierCheckedSigner) Sign(rand io.Reader, digest []byte, opts crypto.S
 	if s.provider.gen.Load() != s.gen {
 		return nil, &SignerRevokedError{}
 	}
-	return s.key.Sign(rand, digest, opts)
+
+	s.provider.mu.RLock()
+	sec := s.provider.keySecret
+	s.provider.mu.RUnlock()
+	if sec == nil {
+		return nil, &NotInitializedError{}
+	}
+
+	// crypto.Signer has no context parameter. The Secret opened here is
+	// sealed under go-enclave's process-local Sealer, which this package
+	// never backs with anything that performs I/O or blocks, so
+	// context.Background() is safe: there is nothing for it to cancel.
+	buf, err := sec.Open(context.Background())
+	if err != nil {
+		return nil, &SealError{Op: "open", Err: err}
+	}
+	defer buf.Destroy()
+
+	var sig []byte
+	signErr := buf.WithBytes(func(der []byte) error {
+		key, decodeErr := decodeKey(der)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		signature, err := key.Sign(rand, digest, opts)
+		sig = signature
+		return err
+	})
+	if signErr != nil {
+		return nil, signErr
+	}
+	return sig, nil
 }
 
 // errInvalidCertPEM is the underlying error wrapped by GenerateError when

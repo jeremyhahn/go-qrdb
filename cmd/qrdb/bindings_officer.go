@@ -17,9 +17,8 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -86,13 +85,13 @@ type HolderRekeyParams struct {
 // barriers and database barriers. It drives the same holderTarget the CLI
 // does.
 type OfficerBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewOfficerBinding creates a new OfficerBinding backed by the given
 // connection.
-func NewOfficerBinding(log *logger.Logger, conn *ConnectionBinding) *OfficerBinding {
+func NewOfficerBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *OfficerBinding {
 	return &OfficerBinding{logger: log, conn: conn}
 }
 
@@ -154,7 +153,7 @@ func (b *OfficerBinding) ClaimEnvelope(req *HolderClaimParams) (*transport.Share
 		}
 		keyPEM := []byte(req.KeyPEM)
 		defer secure.Wipe(keyPEM)
-		signer, err := mtls.ParseSignerPEM(keyPEM)
+		signer, err := sdk.ParseHolderSignerPEM(keyPEM)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +181,7 @@ func (b *OfficerBinding) SubmitShare(req *HolderSubmitParams) (*transport.Quorum
 		keyPEM := []byte(req.KeyPEM)
 		defer secure.Wipe(keyPEM)
 		defer secure.Wipe(req.EncryptionKey)
-		signer, err := mtls.ParseSignerPEM(keyPEM)
+		signer, err := sdk.ParseHolderSignerPEM(keyPEM)
 		if err != nil {
 			return nil, err
 		}

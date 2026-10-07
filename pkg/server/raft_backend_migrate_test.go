@@ -113,7 +113,7 @@ func (s *raftMigrateStack) createDedicatedRaftDB(t *testing.T, tenantID, db stri
 		t.Fatalf("InitializeTenant(%s): %v", tenantID, err)
 	}
 	if _, err := s.dbSvc.CreateForTenant(tenant.WithTenantID(ctx, tenantID),
-		database.DatabaseConfig{Name: db, Engine: database.EngineKV}); err != nil {
+		database.DatabaseConfig{Name: db}); err != nil {
 		t.Fatalf("CreateForTenant(%s/%s): %v", tenantID, db, err)
 	}
 	if _, err := s.tenants.GetTenant(ctx, tenantID); err != nil {

@@ -33,7 +33,7 @@ import (
 func TestProvider_DatabaseLookupScopedToSessionTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	for owner, name := range map[string]string{"acme": "acme_ledger", "": "ops"} {
-		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: name, Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: name, Backend: database.BackendMemory}); err != nil {
 			t.Fatalf("Create(%s): %v", name, err)
 		}
 	}

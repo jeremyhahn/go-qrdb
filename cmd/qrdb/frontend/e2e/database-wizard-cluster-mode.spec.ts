@@ -72,7 +72,6 @@ async function installRaftAndCapture(page: Page): Promise<void> {
         w.__dbCreateReq = req;
         return {
           name: req.name,
-          engine: req.engine,
           backend: (req.backend as string) || "pebble",
           status: "open",
         };

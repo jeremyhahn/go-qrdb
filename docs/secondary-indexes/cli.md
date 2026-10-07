@@ -85,4 +85,7 @@ qrdb --database billing index list
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+Every verb here is driven on every network transport by `index_cli_test.go`
+(`make integration-test-secondary-indexes`). Per-transport accounting: the
+`secondary-indexes` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

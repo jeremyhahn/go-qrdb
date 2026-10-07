@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -93,7 +94,7 @@ func issueThroughNode(t *testing.T, n *node.Node, username, tenantID string) str
 func grantKV(t *testing.T, n *node.Node, tenantID, username string) string {
 	t.Helper()
 	svc := n.Services()
-	ctx := boundedCtx(t)
+	ctx := tenant.WithTenantID(boundedCtx(t), tenantID)
 
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:     "kv-confinement-check",

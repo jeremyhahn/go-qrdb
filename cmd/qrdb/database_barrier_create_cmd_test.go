@@ -55,7 +55,7 @@ func (m *credentialedDatabaseService) Create(cfg database.DatabaseConfig) (*data
 	if m.createInfo != nil {
 		return m.createInfo, nil
 	}
-	return &database.DatabaseInfo{Name: cfg.Name, Engine: cfg.Engine, Backend: cfg.Backend, DataDir: cfg.DataDir, Status: "open", Barrier: cfg.Barrier}, nil
+	return &database.DatabaseInfo{Name: cfg.Name, Backend: cfg.Backend, DataDir: cfg.DataDir, Status: "open", Barrier: cfg.Barrier}, nil
 }
 
 func (m *credentialedDatabaseService) CreateWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
@@ -68,7 +68,7 @@ func (m *credentialedDatabaseService) CreateWithCredentials(_ context.Context, c
 	if m.createInfo != nil {
 		return m.createInfo, nil
 	}
-	return &database.DatabaseInfo{Name: cfg.Name, Engine: cfg.Engine, Backend: cfg.Backend, DataDir: cfg.DataDir, Status: "open", Barrier: cfg.Barrier}, nil
+	return &database.DatabaseInfo{Name: cfg.Name, Backend: cfg.Backend, DataDir: cfg.DataDir, Status: "open", Barrier: cfg.Barrier}, nil
 }
 
 func (m *credentialedDatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {

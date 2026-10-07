@@ -58,7 +58,6 @@ func newMockDatabaseSvc() *mockDatabaseSvc {
 	return &mockDatabaseSvc{
 		infoResp: &database.DatabaseInfo{
 			Name:    "db1",
-			Engine:  "kv",
 			Backend: "pebble",
 			Status:  "open",
 			DataDir: "/tmp",
@@ -239,7 +238,6 @@ func TestCreateDatabase_Success(t *testing.T) {
 
 	info, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "db1",
-		Engine:  "kv",
 		Backend: "pebble",
 		DataDir: "/tmp",
 	})
@@ -258,7 +256,7 @@ func TestCreateDatabase_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	if _, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
-		Name: "x", Engine: "kv", Backend: "pebble",
+		Name: "x", Backend: "pebble",
 	}); err == nil {
 		t.Fatal("expected error")
 	}

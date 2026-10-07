@@ -55,13 +55,6 @@ const (
 	ProtocolPostgreSQL ProtocolType = "postgresql"
 )
 
-// engineTables maps each engine type to the table names it exposes.
-var engineTables = map[database.EngineType][]string{
-	database.EngineKV:         {tableName},
-	database.EngineTimeSeries: {datapointsTableName, metricsTableName},
-	database.EngineVector:     {namespacesTableName, vectorsTableName},
-}
-
 // Provider implements sql.DatabaseProvider and sql.MutableDatabaseProvider
 // for QRDB. In legacy mode it serves a single database (configured name,
 // default "qrdb") whose tables are backed by the KV service layer. When
@@ -72,7 +65,6 @@ type Provider struct {
 	kvSvc         service.KVServicer         // shared KV service for table access
 	manager       *database.Manager          // nil when using legacy single-database mode
 	protocol      ProtocolType               // empty means allow all databases
-	engine        database.EngineType        // engine for single-database mode with scoping
 	collectionSvc service.CollectionServicer // nil when collections are not available
 	indexSvc      index.IndexServicer        // nil when index acceleration is not available
 	readOnly      bool                       // true strips write capability from every served table
@@ -228,15 +220,25 @@ func WithRegistry(reg service.Registry) func(*Provider) {
 	}
 }
 
-// NewProvider creates a new Provider that serves a single database with
-// the given name, backed by the provided KV service. This is the legacy
-// constructor that does not support CREATE/DROP DATABASE.
-func NewProvider(dbName string, kvSvc service.KVServicer) *Provider {
-	return &Provider{
+// NewProvider creates a new Provider that serves a single database with the
+// given name, backed by the provided KV service. This is the legacy
+// constructor that does not support CREATE/DROP DATABASE; it is also used
+// outside a database.Manager context (the Wails SQL binding, the ad-hoc SQL
+// query service, and similar embedded contexts). Optional functional options
+// (e.g. WithReadOnly, WithPrescopedKV, WithRegistry) configure the served
+// tables' capabilities and namespace scoping. Every compiled-in engine's
+// tables are always exposed (OD-12): there is no per-database engine
+// selector to scope them by.
+func NewProvider(dbName string, kvSvc service.KVServicer, opts ...func(*Provider)) *Provider {
+	p := &Provider{
 		dbName:    dbName,
 		kvSvc:     kvSvc,
 		estimates: newRowEstimates(),
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // NewManagerProvider creates a Provider backed by a database.Manager.
@@ -269,26 +271,6 @@ func managerSQLConfig(manager *database.Manager) SQLConfigResolver {
 	}
 }
 
-// NewProviderWithEngine creates a single-database Provider with engine
-// scoping. The database exposes only tables matching the given engine type.
-// This constructor does not require a database.Manager and is intended for
-// use by the Wails SQL binding, the ad-hoc SQL query service, and similar
-// embedded contexts. Optional functional options (e.g. WithReadOnly,
-// WithPrescopedKV) configure the served tables' capabilities and namespace
-// scoping.
-func NewProviderWithEngine(name string, kvSvc service.KVServicer, engine database.EngineType, opts ...func(*Provider)) *Provider {
-	p := &Provider{
-		dbName:    name,
-		kvSvc:     kvSvc,
-		engine:    engine,
-		estimates: newRowEstimates(),
-	}
-	for _, opt := range opts {
-		opt(p)
-	}
-	return p
-}
-
 // isAllowed reports whether the given database is visible under the
 // provider's current protocol filter. ProtocolAny allows all databases.
 func (p *Provider) isAllowed(db *database.Database) bool {
@@ -304,16 +286,15 @@ func (p *Provider) isAllowed(db *database.Database) bool {
 	}
 }
 
-// newDatabase builds the sql.Database served for name over the given engine,
-// carrying the provider's service wiring and scoping flags. When the provider
-// is read-only the result is wrapped so that DDL-capability interfaces are
+// newDatabase builds the sql.Database served for name, carrying the
+// provider's service wiring and scoping flags. When the provider is
+// read-only the result is wrapped so that DDL-capability interfaces are
 // structurally unreachable (see readOnlyDatabase); this is the single place
 // that decision is made, so no construction site can forget it.
-func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Database {
+func (p *Provider) newDatabase(name string) sqle.Database {
 	db := &Database{
 		name:          name,
 		kvSvc:         p.kvSvc,
-		engine:        engine,
 		collectionSvc: p.collectionSvc,
 		indexSvc:      p.indexSvc,
 		readOnly:      p.readOnly,
@@ -365,13 +346,13 @@ func (p *Provider) Database(ctx *sqle.Context, name string) (sqle.Database, erro
 		if !p.isAllowed(db) {
 			return nil, &DatabaseNotFoundError{Name: name}
 		}
-		return p.newDatabase(name, db.Engine()), nil
+		return p.newDatabase(name), nil
 	}
 	// Legacy single-database mode.
 	if !strings.EqualFold(name, p.dbName) {
 		return nil, &DatabaseNotFoundError{Name: name}
 	}
-	return p.newDatabase(p.dbName, p.engine), nil
+	return p.newDatabase(p.dbName), nil
 }
 
 // servesPGCatalog reports whether this provider serves the PostgreSQL
@@ -445,11 +426,11 @@ func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
 					continue
 				}
 			}
-			dbs = append(dbs, p.newDatabase(info.Name, info.Engine))
+			dbs = append(dbs, p.newDatabase(info.Name))
 		}
 		return dbs
 	}
-	return []sqle.Database{p.newDatabase(p.dbName, p.engine)}
+	return []sqle.Database{p.newDatabase(p.dbName)}
 }
 
 // sessionDatabase returns the managed database name when the session's tenant
@@ -489,10 +470,10 @@ func providerSessionTenantID(ctx *sqle.Context) string {
 	return tenantid.System
 }
 
-// CreateDatabase creates a new database for the session's tenant. The
-// database defaults to the KV engine with pebble backend (SQL syntax for
-// engine and backend selection is not yet supported). Returns
-// MutableOperationNotSupportedError in legacy single-database mode.
+// CreateDatabase creates a new database for the session's tenant, defaulting
+// to the pebble backend (SQL syntax for backend selection is not yet
+// supported). Returns MutableOperationNotSupportedError in legacy
+// single-database mode.
 //
 // The statement is the API's database create in SQL clothing, and is held to
 // the same rules: the caller needs databases:create, the database is owned by
@@ -515,7 +496,6 @@ func (p *Provider) CreateDatabase(ctx *sqle.Context, name string) error {
 	}
 	cfg := database.DatabaseConfig{
 		Name:    name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 	}
 	var err error
@@ -611,16 +591,15 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	return nil
 }
 
-// Database is a sql.Database backed by the QRDB KV service. When the
-// engine field is set, it tracks which database engine type this database
-// uses, allowing engine-specific table exposure in future updates. When
-// collectionSvc is set, collection names are dynamically resolved as
-// additional SQL tables. When indexSvc is set, KV and collection tables
-// use secondary index acceleration for WHERE clause evaluation.
+// Database is a sql.Database backed by the QRDB KV service. Every
+// compiled-in engine's tables are exposed (OD-12: there is no per-database
+// engine selector to scope them by). When collectionSvc is set, collection
+// names are dynamically resolved as additional SQL tables. When indexSvc is
+// set, KV and collection tables use secondary index acceleration for WHERE
+// clause evaluation.
 type Database struct {
 	name          string
 	kvSvc         service.KVServicer
-	engine        database.EngineType        // empty string = legacy KV-only
 	collectionSvc service.CollectionServicer // nil when collections are not available
 	indexSvc      index.IndexServicer        // nil when index acceleration is not available
 	readOnly      bool                       // true strips write capability from served tables
@@ -646,12 +625,6 @@ func (d *Database) Name() string {
 	return d.name
 }
 
-// Engine returns the database engine type. Returns an empty string for
-// legacy databases created without a manager.
-func (d *Database) Engine() database.EngineType {
-	return d.engine
-}
-
 // allTableNames lists all table names served by the database, in
 // alphabetical order.
 var allTableNames = []string{
@@ -662,18 +635,12 @@ var allTableNames = []string{
 	vectorsTableName,
 }
 
-// hasTable reports whether the given table name is allowed for this
-// database's engine type. When engine is empty (legacy), all tables
-// are allowed.
+// hasTable reports whether the given table name is one of the database's
+// built-in tables. It is always one of allTableNames (OD-12: every database
+// exposes every compiled-in engine's tables; there is no per-database engine
+// selector to scope them by).
 func (d *Database) hasTable(name string) bool {
-	if d.engine == "" {
-		return true
-	}
-	tables, ok := engineTables[d.engine]
-	if !ok {
-		return false
-	}
-	for _, t := range tables {
+	for _, t := range allTableNames {
 		if t == name {
 			return true
 		}
@@ -875,23 +842,12 @@ func (d *Database) maybeReadOnly(t sqle.Table) sqle.Table {
 	return t
 }
 
-// GetTableNames returns available table names. When the database has an
-// engine type set, only tables belonging to that engine are returned.
-// Legacy databases (empty engine) return all tables.
+// GetTableNames returns available table names: every built-in table (OD-12:
+// there is no per-database engine selector to scope them by), plus every
+// entity, relational and collection table the database serves.
 func (d *Database) GetTableNames(ctx *sqle.Context) ([]string, error) {
-	var tables []string
-	if d.engine == "" {
-		tables = make([]string, len(allTableNames))
-		copy(tables, allTableNames)
-	} else {
-		engineTbls, ok := engineTables[d.engine]
-		if !ok {
-			tables = nil
-		} else {
-			tables = make([]string, len(engineTbls))
-			copy(tables, engineTbls)
-		}
-	}
+	tables := make([]string, len(allTableNames))
+	copy(tables, allTableNames)
 
 	// Append entity type names from the global entity registry.
 	for _, reg := range entity.Global().ListForDatabase(d.name) {

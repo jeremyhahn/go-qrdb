@@ -207,6 +207,17 @@ const (
 	// featuregate.ImportStaging: a replica that does not understand this
 	// opcode must never be sent it.
 	OpImportStage byte = 69
+
+	// OpTSApplyRetention deterministically deletes points for a metric
+	// older than a cutoff the proposing leader computed from its own
+	// clock, applying the metric's retention policy identically on every
+	// replica -- a replica never consults its own clock. Added after the
+	// time-series range (60-69) filled; see OpMVCCPutIfAbsent (65) and
+	// OpImportStage (69) above for the same pattern. Payload:
+	// [metricLen:2 LE][metric][cutoffNs:8 LE]. Gated behind
+	// featuregate.TimeSeriesRetention: a replica that does not understand
+	// this opcode must never be sent it.
+	OpTSApplyRetention byte = 80
 )
 
 // Range flags (bit mask for OpMVCCRange).
@@ -2104,5 +2115,68 @@ func DecodeTSSetRetention(payload []byte) (TSRetentionParams, error) {
 		DurationNs:   durationNs,
 		ResolutionNs: resolutionNs,
 		Aggregation:  aggregation,
+	}, nil
+}
+
+// TSApplyRetentionParams holds decoded parameters for a time-series
+// retention sweep.
+type TSApplyRetentionParams struct {
+	Metric   string
+	CutoffNs int64
+}
+
+// EncodeTSApplyRetention creates a binary Time-Series ApplyRetention
+// command. Format: [op:1][metricLen:2 LE][metric][cutoffNs:8 LE]. cutoffNs
+// is computed by the proposing leader's clock, never a replica's own
+// clock, so every replica deletes the identical set of points (see
+// docs/time-series/engineering.md "Retention enforcement").
+func EncodeTSApplyRetention(metric string, cutoffNs int64) ([]byte, error) {
+	metricBytes := []byte(metric)
+	if err := checkUint16Len(len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
+	size := headerSize + 2 + len(metricBytes) + 8
+
+	buf := make([]byte, size)
+	off := 0
+
+	buf[off] = OpTSApplyRetention
+	off++
+
+	if err := putUint16Len(buf[off:], len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
+	off += 2
+	copy(buf[off:], metricBytes)
+	off += len(metricBytes)
+
+	binary.LittleEndian.PutUint64(buf[off:], uint64(cutoffNs))
+
+	return buf, nil
+}
+
+// DecodeTSApplyRetention decodes a Time-Series ApplyRetention payload.
+func DecodeTSApplyRetention(payload []byte) (TSApplyRetentionParams, error) {
+	if len(payload) < 2 {
+		return TSApplyRetentionParams{}, &InvalidCommandError{Reason: "ts apply retention: payload too short"}
+	}
+
+	off := 0
+	metricLen := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+	if off+metricLen > len(payload) {
+		return TSApplyRetentionParams{}, &InvalidCommandError{Reason: "ts apply retention: metric length exceeds payload"}
+	}
+	metric := string(payload[off : off+metricLen])
+	off += metricLen
+
+	if off+8 > len(payload) {
+		return TSApplyRetentionParams{}, &InvalidCommandError{Reason: "ts apply retention: missing cutoffNs"}
+	}
+	cutoffNs := int64(binary.LittleEndian.Uint64(payload[off:]))
+
+	return TSApplyRetentionParams{
+		Metric:   metric,
+		CutoffNs: cutoffNs,
 	}, nil
 }

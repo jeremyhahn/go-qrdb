@@ -90,6 +90,12 @@ type fwdCluster struct {
 	// writerID and writerRole are fwdWriter's user and role.
 	writerID   uint64
 	writerRole string
+
+	// admin authenticates as fwdTenantID's own onboarded admin: the system
+	// tenant can no longer provision records inside another tenant's IAM at
+	// all (owner ruling, 2026-10-01), so createRole and the tenant's bound
+	// users are created through this identity instead of sys.
+	admin *http.Client
 }
 
 // writerContext is a context an embedded node's in-process call is made in as
@@ -271,17 +277,37 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	// A tenant is created with its first admin, or not at all (go-qrdb
 	// tenant onboarding): the admin keeps its own key, only the CSR crosses
 	// the wire.
-	_, adminCSRPEM, err := certtest.NewCSR(fwdTenantID + "-admin")
+	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(fwdTenantID + "-admin")
 	if err != nil {
 		t.Fatalf("certtest.NewCSR: %v", err)
 	}
-	if body, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
+	tenantBody, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
 		"id": fwdTenantID, "name": "Replica Forwarding Tenant",
 		"isolation_type": "raft", "barrier_auto_unseal": true,
 		"admin_username": fwdTenantID + "-admin", "admin_csr_pem": string(adminCSRPEM),
-	}); st != http.StatusCreated && st != http.StatusOK {
-		t.Fatalf("create tenant through node %d: status %d, body %s", c.creator+1, st, body)
+	})
+	if st != http.StatusCreated && st != http.StatusOK {
+		t.Fatalf("create tenant through node %d: status %d, body %s", c.creator+1, st, tenantBody)
 	}
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so createRole and the
+	// tenant's bound users below authenticate as the tenant's own onboarded
+	// admin; its built-in Admin role cannot create a NEW role (RolesCreate
+	// is SO-exclusive), so it self-assigns its own pre-seeded SO role first.
+	var createResp struct {
+		Admin struct {
+			CertPEM string `json:"cert_pem"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(tenantBody, &createResp); err != nil || createResp.Admin.CertPEM == "" {
+		t.Fatalf("decode tenant create admin cert: %v body=%s", err, tenantBody)
+	}
+	adminTLSCert, err := tls.X509KeyPair([]byte(createResp.Admin.CertPEM), adminKeyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair for the onboarded admin: %v", err)
+	}
+	c.admin = qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
+	selfAssignTenantSO(t, adminPorts[c.creator], fwdTenantID, c.admin)
 	writerRole := c.createRole(t, base, "kv-writer", "databases:create", "databases:create_raft", "databases:read",
 		"databases:list", "databases:delete", "kv:put", "kv:get", "kv:delete", "watch:watch")
 	listerRole := c.createRole(t, base, "db-lister", "databases:list")
@@ -302,7 +328,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	// auth.mtls_binding_policy defaults to "required": a tenant user's
 	// certificate authenticates only once it is enrolled as their binding.
 	newUser := func(username, roleID, certPath string) uint64 {
-		return createBoundUser(t, c.sys, adminPorts[c.creator], map[string]any{
+		return createBoundUser(t, c.admin, adminPorts[c.creator], map[string]any{
 			"username": username, "email": username + "@" + fwdTenantID + ".example.com",
 			"tenant_id": fwdTenantID, "role_ids": []string{roleID},
 		}, certPath)
@@ -321,7 +347,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 // createRole creates a tenant role with perms and returns its ID.
 func (c *fwdCluster) createRole(t *testing.T, base, name string, perms ...string) string {
 	t.Helper()
-	body, st := iraftAPIPost(t, c.sys, base+"/roles", map[string]interface{}{
+	body, st := iraftAPIPost(t, c.admin, base+"/roles", map[string]interface{}{
 		"name": name, "tenant_id": fwdTenantID, "permissions": perms,
 	})
 	if st != http.StatusCreated && st != http.StatusOK {
@@ -361,7 +387,7 @@ func (c *fwdCluster) createDatabase(t *testing.T, name string, replicas int) uin
 	deadline := time.Now().Add(90 * time.Second)
 	for {
 		body, st := iraftAPIPost(t, c.tenant, url, map[string]interface{}{
-			"name": name, "engine": "kv", "backend": "pebble", "replicas": replicas,
+			"name": name, "backend": "pebble", "replicas": replicas,
 		})
 		if st == http.StatusCreated || st == http.StatusOK {
 			var info struct {

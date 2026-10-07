@@ -87,8 +87,6 @@ type enrollmentEntry struct {
 // ---------------------------------------------------------------------------
 
 // handleAuthFactorEnroll handles POST /v1/authfactors/{factor}/enroll.
-//
-// TODO: apply permission.AuthFactorEnroll once Phase 2 ships.
 func (s *Server) handleAuthFactorEnroll(w http.ResponseWriter, r *http.Request) {
 	if s.authFactorSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "authfactor"})
@@ -132,8 +130,6 @@ func (s *Server) handleAuthFactorEnroll(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleAuthFactorChallenge handles POST /v1/authfactors/{enrollment_id}/challenge.
-//
-// TODO: apply permission.AuthFactorChallenge once Phase 2 ships.
 func (s *Server) handleAuthFactorChallenge(w http.ResponseWriter, r *http.Request) {
 	if s.authFactorSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "authfactor"})
@@ -162,8 +158,6 @@ func (s *Server) handleAuthFactorChallenge(w http.ResponseWriter, r *http.Reques
 }
 
 // handleAuthFactorVerify handles POST /v1/authfactors/{enrollment_id}/verify.
-//
-// TODO: apply permission.AuthFactorVerify once Phase 2 ships.
 func (s *Server) handleAuthFactorVerify(w http.ResponseWriter, r *http.Request) {
 	if s.authFactorSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "authfactor"})
@@ -206,8 +200,6 @@ func (s *Server) handleAuthFactorVerify(w http.ResponseWriter, r *http.Request) 
 //
 // Query params:
 //   - subject (optional) filter by user ID
-//
-// TODO: apply permission.AuthFactorList once Phase 2 ships.
 func (s *Server) handleAuthFactorList(w http.ResponseWriter, r *http.Request) {
 	if s.authFactorSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "authfactor"})
@@ -234,8 +226,6 @@ func (s *Server) handleAuthFactorList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthFactorRevoke handles DELETE /v1/authfactors/{enrollment_id}.
-//
-// TODO: apply permission.AuthFactorRevoke once Phase 2 ships.
 func (s *Server) handleAuthFactorRevoke(w http.ResponseWriter, r *http.Request) {
 	if s.authFactorSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "authfactor"})

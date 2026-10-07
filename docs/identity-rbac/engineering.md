@@ -483,6 +483,34 @@ token that ever reaches storage; `Entity.KeyPin`, when set, is NOT a secret
 the redeemer proves possession of the matching private key by signing the
 CSR it presents, not by presenting the pin itself.
 
+**A miss and a storage fault are different errors, end to end.**
+`kvstore.KVStore.Get` is specified as `(nil, nil)` on a missing key, so
+`pkg/dao`'s `genericDAO.Get` treats a nil read as `dao.NotFoundError` and
+returns every other failure unchanged — `dao.IsNotFound` is the one check a
+consumer makes to tell them apart, and it is never duplicated with a
+package-local type. `DAOStore.find` and `.checkUsable`
+(`pkg/invite/store.go`) use it to decide between the two cases a read can
+mean: `ErrNotFound` (or, in `checkUsable`, "not yet redeemed") for a
+confirmed miss, and `*invite.StoreError` wrapping the cause for anything
+else — a storage or transport fault must never be reported as the token
+being unknown, inside `pkg/invite` or by the service above it. `*StoreError`
+classifies as Internal (`pkg/api/errclass`'s generic `*<pkg>.StoreError`
+row, the same one `user`/`role`/`cert`/`tenant` use for their own backing
+stores), so it renders as a server fault on every transport rather than the
+Unauthenticated a bad token gets.
+
+`InvitationService.RedeemInvitation` keeps the single opaque
+`*InvitationInvalidError` for a bad, expired, used or wrong-tenant token —
+and for a sealed or deleted tenant, which the SAME opaque answer must cover
+since telling it apart from a bad token would let an unauthenticated caller
+enumerate tenants. It does NOT fold a `*invite.StoreError` into that answer:
+`errors.As` at the `Lookup` and `Redeem` call sites lets the fault through
+unchanged, so an outage is retried and alerted on rather than silently read
+as every presented token being forged for as long as it lasts. See
+[../../pkg/invite/store_failures_test.go](../../pkg/invite/store_failures_test.go)
+and [../../pkg/service/invitation_test.go](../../pkg/service/invitation_test.go)
+for the tests that pin this down.
+
 **`bootstrap.InvitationIssuer` and a deferred-tenant-admin tie-in were
 deliberately left out of this port.** The upstream design this was ported
 from returned a pending tenant admin's invitation token from
@@ -1263,6 +1291,8 @@ only one compiled, in every build.
 part of the on-disk contract. Changing it invalidates every existing binding.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-identity-rbac` (no Docker; selection in `test/integration/features.mk`). It runs the role, user and invitation CLI suites per protocol. Per-transport accounting is the `identity-rbac` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: `MatchesCert` for each `CertBindingKind`, thumbprint stability
   across certificate renewal for the same key, effective-permission resolution

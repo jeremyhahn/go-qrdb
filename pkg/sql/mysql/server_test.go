@@ -336,7 +336,6 @@ func TestStartStop_WithDatabaseManager(t *testing.T) {
 	// to serve.
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "testdb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 	})
 	require.NoError(t, err)
@@ -474,7 +473,6 @@ func TestStartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing.T) {
 	_, err := mgr.Create(database.DatabaseConfig{
 		TenantID: "acme",
 		Name:     "testdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
 		Protocol: database.ProtocolConfig{MySQL: true},
 	})
@@ -515,7 +513,6 @@ func TestStartStop_WithCollectionService_ListsCollection(t *testing.T) {
 	_, err := mgr.Create(database.DatabaseConfig{
 		TenantID: "acme",
 		Name:     "testdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
 		Protocol: database.ProtocolConfig{MySQL: true},
 	})

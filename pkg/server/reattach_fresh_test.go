@@ -191,7 +191,6 @@ func TestReattachRaftTenants_FreshRegistryReRegisters(t *testing.T) {
 	tctx := tenant.WithTenantID(ctx, "rfresh")
 	cfg := database.DatabaseConfig{
 		Name:    "app",
-		Engine:  database.EngineKV,
 		Backend: database.BackendRaft,
 		Raft:    &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal},
 		DataDir: filepath.Join(rtDataRoot, "databases", "app"),

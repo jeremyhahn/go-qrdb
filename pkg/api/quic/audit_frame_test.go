@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -306,5 +308,108 @@ func TestWithAuditLogger_SetsField(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(logger))
 	if srv.auditLogger == nil {
 		t.Error("expected auditLogger to be set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// replicated audit chain: handleAuditQuery(replicated=true) and
+// handleAuditVerifyReplicatedChain
+// ---------------------------------------------------------------------------
+
+// mockReplicatedInner implements audit.AuditLogger and
+// service.TenantChainVerifier, standing in for a *service.ReplicatedLogger.
+type mockReplicatedInner struct {
+	mockAuditLogger
+	verifyReport *audit.ChainContinuityReport
+	verifyErr    error
+}
+
+func (m *mockReplicatedInner) VerifyTenantChain(context.Context, string) (*audit.ChainContinuityReport, error) {
+	return m.verifyReport, m.verifyErr
+}
+
+type stubOptInEntitlement struct{ enabled map[string]bool }
+
+func (s *stubOptInEntitlement) ReplicatedAuditEnabled(_ context.Context, tenantID string) (bool, error) {
+	return s.enabled[tenantID], nil
+}
+
+func TestHandleAuditQuery_Replicated_NilNotConfigured(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(&mockAuditLogger{}))
+
+	_, err := srv.handleAuditQuery(context.Background(), []byte(`{"replicated":true}`))
+	var sncErr *ServiceNotConfiguredError
+	if !errors.As(err, &sncErr) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T (%v)", err, err)
+	}
+	if sncErr.Service != "replicated audit" {
+		t.Errorf("service = %q, want %q", sncErr.Service, "replicated audit")
+	}
+}
+
+func TestHandleAuditQuery_Replicated_ReadsReplicatedLoggerNotNodeLocal(t *testing.T) {
+	nodeLocal := &mockAuditLogger{queryFn: func(context.Context, audit.Filter) (*audit.Page, error) {
+		t.Fatal("node-local logger must not be queried when replicated=true")
+		return nil, nil
+	}}
+	inner := &mockReplicatedInner{mockAuditLogger: mockAuditLogger{
+		queryFn: func(_ context.Context, f audit.Filter) (*audit.Page, error) {
+			return &audit.Page{Events: []audit.AuditEvent{{Actor: "op"}}, Total: -1}, nil
+		},
+	}}
+	replicated := service.NewOptInAuditLogger(inner, &stubOptInEntitlement{enabled: map[string]bool{"acme": true}}, false)
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(nodeLocal), WithReplicatedAuditLogger(replicated))
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
+	resp, err := srv.handleAuditQuery(ctx, []byte(`{"replicated":true,"tenant_id":"acme"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var page audit.Page
+	if err := json.Unmarshal(resp, &page); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Actor != "op" {
+		t.Fatalf("got %+v, want the replicated logger's event", page.Events)
+	}
+}
+
+func TestHandleAuditVerifyReplicatedChain_NilNotConfigured(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	_, err := srv.handleAuditVerifyReplicatedChain(context.Background(), nil)
+	var sncErr *ServiceNotConfiguredError
+	if !errors.As(err, &sncErr) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T (%v)", err, err)
+	}
+}
+
+func TestHandleAuditVerifyReplicatedChain_Success(t *testing.T) {
+	inner := &mockReplicatedInner{verifyReport: &audit.ChainContinuityReport{Verified: true, Records: 3, Head: 3, Low: 1, Genesis: true}}
+	replicated := service.NewOptInAuditLogger(inner, &stubOptInEntitlement{enabled: map[string]bool{"acme": true}}, false)
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithReplicatedAuditLogger(replicated))
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
+	resp, err := srv.handleAuditVerifyReplicatedChain(ctx, []byte(`{"tenant_id":"acme"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var report audit.ChainContinuityReport
+	if err := json.Unmarshal(resp, &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !report.Verified || report.Records != 3 {
+		t.Fatalf("got %+v", report)
+	}
+}
+
+func TestHandleAuditVerifyReplicatedChain_NotEntitled(t *testing.T) {
+	inner := &mockReplicatedInner{}
+	replicated := service.NewOptInAuditLogger(inner, &stubOptInEntitlement{enabled: map[string]bool{}}, false)
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithReplicatedAuditLogger(replicated))
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
+	_, err := srv.handleAuditVerifyReplicatedChain(ctx, []byte(`{"tenant_id":"acme"}`))
+	if err == nil {
+		t.Fatal("expected an error for a tenant not entitled to the replicated chain")
 	}
 }

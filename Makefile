@@ -542,6 +542,7 @@ PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
 PKG_QUIC           := ./pkg/api/quic/...
 PKG_MCP            := ./pkg/api/mcp/...
+PKG_FTS            := ./pkg/fts/...
 
 # SDK (separate Go module)
 SDK_DIR            := sdk/go
@@ -551,6 +552,11 @@ SDK_PKG_QRDBDHARNESS := ./testutil/qrdbdharness/...
 
 # Integration test paths
 INT_TEST_DIR  := ./test/integration
+
+# Per-feature integration test selection (test/integration/features.mk) --
+# see that file's header for the mapping it declares and
+# test/buildgates/feature_integration_coverage_test.go for the gate over it.
+include test/integration/features.mk
 
 # ============================================================================
 # Primary targets
@@ -651,6 +657,18 @@ proto:
 .PHONY: test
 test:
 	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/... ./test/buildgates/...
+
+# Run one package's unit tests under the same build tags `make test` uses --
+# the uniform escape hatch for a package that has no named test-<pkg> target
+# of its own yet (and for `./...` wildcards a named target can't take, e.g. a
+# package with several sub-packages). Usage: make test-pkg PKG=./pkg/foo/...
+.PHONY: test-pkg
+test-pkg:
+	@if [ -z "$(PKG)" ]; then \
+		echo "usage: make test-pkg PKG=./pkg/foo/..."; \
+		exit 1; \
+	fi
+	$(GOTEST) $(TAG_FLAG) $(PKG)
 
 .PHONY: test-stubs
 test-stubs:
@@ -905,6 +923,18 @@ test-quic:
 test-mcp:
 	$(GOTEST) $(TAG_FLAG) $(PKG_MCP)
 
+# WITH_QRDB_FTS defaults to 0, so neither this target's own $(TAG_FLAG) nor
+# `make test` ever compiles pkg/fts's real implementation -- only the stub in
+# pkg/fts/stub.go. FTS_TAGS is BUILD_TAGS plus qrdb_fts explicitly, so the real
+# analyzer, tokenizer and inverted index run under -race on every push rather
+# than only when someone happens to build with WITH_QRDB_FTS=1 by hand
+# (go-qrdb#610). See coverage-fts below for the matching coverage gate.
+FTS_TAGS := $(strip $(BUILD_TAGS)) qrdb_fts
+
+.PHONY: test-fts
+test-fts:
+	$(GOTEST) -tags "$(FTS_TAGS)" $(PKG_FTS)
+
 .PHONY: test-sql
 test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege test-sql-pgcatalog
 
@@ -1075,6 +1105,7 @@ integration-test-standalone: integration-image
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
+		INTEGRATION_TAGS='$(INT_FEATURE_TAGS)' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
@@ -1105,6 +1136,7 @@ integration-test-cluster: integration-image
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
+		INTEGRATION_TAGS='$(INT_FEATURE_TAGS)' \
 		INTEGRATION_RUN='$(INTEGRATION_RUN)' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
@@ -1133,6 +1165,17 @@ CLUSTER_TENANCY_RUN := ^(TestIsolationRaft|TestTenantIsolation_|TestTenant_|Test
 .PHONY: integration-test-cluster-tenancy
 integration-test-cluster-tenancy:
 	@$(MAKE) -s -C $(CURDIR) integration-test-cluster INT_PROJECT=$(INT_PROJECT) INTEGRATION_RUN='$(CLUSTER_TENANCY_RUN)'
+
+# DAO/entity-storage stage: the real-binary GenericDAO suites (entity CRUD,
+# every index kind and query operator, WithDatabase tenant scoping,
+# optimistic concurrency, an atomic UnitOfWork batch, pagination/ordering,
+# and the 3-node cluster leader-kill/restart case). The cluster stage
+# narrowed by DAO_RUN, through the same compose path, so a test behaves
+# identically here and in the full run.
+DAO_RUN := ^TestDAO_
+.PHONY: integration-test-dao
+integration-test-dao:
+	@$(MAKE) -s -C $(CURDIR) integration-test-cluster INT_PROJECT=$(INT_PROJECT) INTEGRATION_RUN='$(DAO_RUN)'
 
 # Backward-compatible alias: the standalone multi-protocol suite.
 .PHONY: integration-test-api
@@ -1177,6 +1220,65 @@ endif
 .PHONY: integration-test-local
 integration-test-local:
 	$(GOTEST) -tags integration -timeout=25m ./test/integration/...
+
+# ----------------------------------------------------------------------------
+# Per-feature integration targets: one `make integration-test-<feature>` per
+# docs/<feature>/ folder, selected from test/integration/features.mk -- see
+# that file's header for the mapping and what an empty entry means. Each
+# target runs ONLY the self-spawned qrdbdharness suites (./test/integration,
+# ./test/integration/auth): no Docker, no compose stack, so it runs inside a
+# lane container. Where a feature's ONLY coverage is in the Docker-based
+# test/integration/api suite, its entry below is empty and says so.
+#
+# BUILD_TAGS plus "integration": the one build constraint among these files
+# (tenant_barrier_sealed_window_cli_test.go carries `//go:build integration`)
+# is satisfied, with the full default feature set besides so a mapped file
+# that also happens to need a WITH_QRDB_* tag still compiles. The qrdbd/qrdb
+# BINARIES these tests spawn are built separately, per test file, through
+# sdk/go/testutil/qrdbdharness -- this flag only governs what the TEST
+# PACKAGE itself compiles.
+#
+# `=` (recursive), not `:=`: LINT_TAGS -- BUILD_TAGS already comma-joined --
+# is defined further down this file, and a `:=` here would capture it before
+# that point as empty. `go test -tags` refuses a value that mixes space and
+# comma separators ("-tags space-separated list contains comma"), which a
+# plain "$(BUILD_TAGS),integration" produces since BUILD_TAGS is
+# space-separated; LINT_TAGS is the comma-joined form this needs instead.
+#
+# A feature whose only integration test needs a WITH_QRDB_* tag that
+# defaults OFF (full-text-search / qrdb_fts is the one case today) cannot
+# rely on BUILD_TAGS alone: `make integration-test-full-text-search` with no
+# override would otherwise silently select zero compiled tests rather than
+# failing (go-qrdb#500's lesson). features.mk may declare an OPTIONAL
+# `INTTAGS_<feature> := <tag>` beside `INTTEST_<feature>`; the pattern
+# rule below appends it to this feature's own tag set only, leaving every
+# other feature's tags (and this variable) unchanged.
+INT_FEATURE_TAGS = $(LINT_TAGS),integration
+
+.PHONY: integration-test-%
+integration-test-%:
+	@files="$(strip $(INTTEST_$(subst -,_,$*)))"; \
+	if [ -z "$$files" ]; then \
+		echo "==> integration-test-$*: no non-Docker integration test is mapped to this feature yet (see test/integration/features.mk)"; \
+		exit 0; \
+	fi; \
+	paths=""; dirs=""; \
+	for f in $$files; do \
+		paths="$$paths $(INT_TEST_DIR)/$$f"; \
+		d=$$(dirname "$$f"); \
+		if [ "$$d" = "." ]; then p="$(INT_TEST_DIR)"; else p="$(INT_TEST_DIR)/$$d"; fi; \
+		case " $$dirs " in *" $$p "*) ;; *) dirs="$$dirs $$p" ;; esac; \
+	done; \
+	names=$$(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' $$paths | paste -sd '|' -); \
+	if [ -z "$$names" ]; then \
+		echo "==> integration-test-$*: mapped files contain no Test function"; \
+		exit 0; \
+	fi; \
+	tags="$(INT_FEATURE_TAGS)"; \
+	extra_tags="$(strip $(INTTAGS_$(subst -,_,$*)))"; \
+	if [ -n "$$extra_tags" ]; then tags="$$tags,$$extra_tags"; fi; \
+	echo "==> integration-test-$*: running $$(echo $$names | tr '|' ' ')"; \
+	$(GOTEST) -tags "$$tags" -run "^($$names)$$"$$dirs
 
 # ============================================================================
 # Benchmarks (always run in devcontainer)
@@ -1360,6 +1462,30 @@ coverage: | _cover-dir
 coverage-baseline: | _cover-dir
 	$(COVERAGE_MERGE_SUBPROCESS)
 	$(COVER_RATCHET) -write
+
+# coverage-fts is `coverage`'s sibling for the one package `coverage` cannot
+# measure honestly: WITH_QRDB_FTS=0 by default, so the repo-wide run above
+# builds pkg/fts's STUB and its 100.00 baseline row says nothing about the
+# real analyzer/tokenizer/inverted-index code (go-qrdb#610). coverratchet
+# checks exactly one "-tags" assertion against one baseline file, and this
+# package's tags differ from BUILD_TAGS by qrdb_fts, so it needs its OWN
+# baseline (test/coverage-baseline-fts.txt) rather than a second row in
+# test/coverage-baseline.txt. -discovery-floor 1 because this profile
+# deliberately measures a single package, not the whole repo.
+FTS_COVER_BASELINE := test/coverage-baseline-fts.txt
+
+.PHONY: coverage-fts
+coverage-fts: | _cover-dir
+	$(GOTEST) -tags "$(FTS_TAGS)" -coverprofile=$(COVER_DIR)/fts.out $(PKG_FTS)
+	$(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/fts.out -baseline $(FTS_COVER_BASELINE) -tags "$(FTS_TAGS)" -min $(COVER_MIN) -discovery-floor 1
+
+# Regenerate test/coverage-baseline-fts.txt the same way coverage-baseline
+# regenerates the main one: after RAISING pkg/fts's real coverage, never by
+# hand.
+.PHONY: coverage-fts-baseline
+coverage-fts-baseline: | _cover-dir
+	$(GOTEST) -tags "$(FTS_TAGS)" -coverprofile=$(COVER_DIR)/fts.out $(PKG_FTS)
+	$(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/fts.out -baseline $(FTS_COVER_BASELINE) -tags "$(FTS_TAGS)" -discovery-floor 1 -write
 
 # The gate's own tests. It fails CI when it misreads a profile, so it has to be
 # tested more carefully than what it measures -- every failure path has a
@@ -1698,7 +1824,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable test-git-extraheader secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1921,13 +2047,6 @@ check-public-releasable:
 test-public-releasable:
 	@./scripts/check-public-releasable_test.sh
 
-# The Release workflow's per-step forge credential (scripts/git-extraheader.sh):
-# git sees the header from the environment only, nothing is written to a git
-# config file, and an empty token stops the step. No network.
-.PHONY: test-git-extraheader
-test-git-extraheader:
-	@./scripts/git-extraheader_test.sh
-
 # Every `uses:` in every workflow resolves to a 40-hex commit (#367).
 #
 # A tag is a ref its owner can move, and the review job holds a WRITE-SCOPED
@@ -1951,6 +2070,16 @@ test-git-extraheader:
 .PHONY: check-action-pins
 check-action-pins:
 	$(GOTEST) ./test/buildgates/...
+
+# test/integration/features.mk maps every docs/*/architecture.md folder to
+# the integration-test-<feature> targets' file selection; this is the gate
+# over that mapping -- a feature folder added with no corresponding
+# integration-test-<feature> entry, or a new integration test nobody's
+# selection picks up. Scoped with -run to this gate alone: the rest of
+# test/buildgates already runs under `make test` and `check-action-pins`.
+.PHONY: check-integration-feature-coverage
+check-integration-feature-coverage:
+	$(GOTEST) -run '^TestIntegrationFeatureCoverage' ./test/buildgates/...
 
 # The nightly's verdict has to reach somebody (#478).
 #
@@ -3572,9 +3701,10 @@ help:
 	@echo "Release (see the release-alpha comment block for the full contract):"
 	@echo "  release-alpha VERSION=vX.Y.Z-alpha   Cut and publish a signed release"
 	@echo "                         Fetches tags from the release remote first (adds"
-	@echo "                         refs, prunes nothing), then commits VERSION, cuts"
-	@echo "                         signed tags for the root and every sdk/ module,"
-	@echo "                         and pushes exactly those refs atomically."
+	@echo "                         refs, prunes nothing), then cuts signed tags for"
+	@echo "                         the root and every sdk/ module (VERSION is never"
+	@echo "                         written here; it must already be on HEAD), and"
+	@echo "                         pushes exactly those refs atomically."
 	@echo "  check-tag-lockstep     Audit root and nested-module tags for lockstep"
 	@echo "  check-version-reconciled [RELEASE_TAG=vX.Y.Z-alpha]"
 	@echo "                         Reconcile VERSION, CHANGELOG and tag"
@@ -3720,10 +3850,16 @@ export GOWORK=off
 #
 #     make release-alpha VERSION=v0.17.0-alpha
 #
-# THE RELEASE WORKFLOW IS THE CALLER (#13, owner ruling 2026-09-30: "workflow
-# wraps release-alpha"). .github/workflows/release.yml reads VERSION from main,
-# which is authoritative, and runs this recipe as the release bot, whose token
-# tag protection alone admits.
+# THE PROJECT AGENT IS THE CALLER (owner ruling 2026-10-06: "all our projects
+# should follow the same standards" -- go-quicraft, go-xkms and go-quicbaas all
+# cut alpha releases this way). release-versioning.md §1a's "Alpha" row names
+# the gate: CI green on main, at any time. The agent runs this recipe by hand
+# with its own git identity, no bot and no bot token involved; signing is
+# whatever AGENT_GIT below resolves to on this operator's PATH, the same
+# identity every other commit in this repository already carries.
+# .github/workflows/release.yml does not call this recipe and creates no tag:
+# it is tag-triggered, runs AFTER the push below, and only validates what the
+# server now holds and publishes the release notes.
 #
 # VERSION IS AUTHORITATIVE, SO THIS RECIPE NEVER WRITES IT. The release is the
 # reviewed commit that bumps VERSION and CHANGELOG; this recipe tags that commit

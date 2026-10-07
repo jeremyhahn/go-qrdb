@@ -59,6 +59,22 @@ func forceNoiseAvailable(t *testing.T, available bool) {
 	noiseAvailable = func() bool { return available }
 }
 
+// skipIfNoiseUnavailable skips a test that needs a REAL, working Noise NK
+// listener or handshake -- not merely the gating decision forceNoiseAvailable
+// simulates. Under GODEBUG=fips140=only the underlying X25519 static key can
+// never be generated (go-truststrap's noiseproto has no FIPS awareness of its
+// own, and the Go module refuses the key at generation), so forcing
+// noiseAvailable past NoiseAvailable()'s real answer here would not bring the
+// listener up -- it would just move the failure one call deeper, into
+// StartJoinServer itself. This is the permanent, documented gap: see
+// docs/seal/fips140-mode.md and ../clustering/architecture.md.
+func skipIfNoiseUnavailable(t *testing.T) {
+	t.Helper()
+	if !NoiseAvailable() {
+		t.Skip("Noise NK is unavailable under FIPS 140 mode; a real listener or handshake cannot be constructed")
+	}
+}
+
 // assertAdvertises asserts the half of the first-node enrollment contract that
 // holds in EVERY runtime, and reports whether this runtime also serves Noise so
 // the caller can go on to assert the Noise-specific half.

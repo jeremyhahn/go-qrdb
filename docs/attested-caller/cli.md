@@ -1,6 +1,6 @@
 # Attested Caller — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 **There is no CLI or configuration-file surface for this feature.**
 

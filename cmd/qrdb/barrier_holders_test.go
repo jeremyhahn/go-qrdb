@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -113,6 +114,7 @@ type cliHolder struct {
 	keyFile    string
 	csrFile    string
 	envFile    string
+	encKEM     string
 	encPubFile string
 	encPrvFile string
 	fido       *factortest.Authenticator
@@ -138,7 +140,17 @@ func newCLIHolder(t *testing.T, name, role string, x25519, fido bool) *cliHolder
 	h.csrFile = h.write(t, "csr.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr}))
 	h.envFile = filepath.Join(h.dir, "envelope.json")
 	if x25519 {
-		suite, err := keydelivery.LookupSuite(keydelivery.KEMX25519)
+		// dhkem-x25519 is refused under GODEBUG=fips140=only
+		// (keydelivery.LookupSuite); this holder just needs SOME
+		// separate envelope key to drive the lifecycle under test, so
+		// fall back to the always-approved P-256 suite there. See
+		// docs/seal/fips140-mode.md.
+		kem := keydelivery.KEMX25519
+		if fips140.Enforced() {
+			kem = keydelivery.KEMP256
+		}
+		h.encKEM = kem
+		suite, err := keydelivery.LookupSuite(kem)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +192,7 @@ func (h *cliHolder) ctx() context.Context {
 func (h *cliHolder) registerArgs() []string {
 	args := []string{"--username", h.name, "--role", h.role, "--csr-file", h.csrFile}
 	if h.encPubFile != "" {
-		args = append(args, "--encryption-kem", keydelivery.KEMX25519, "--encryption-key-file", h.encPubFile)
+		args = append(args, "--encryption-kem", h.encKEM, "--encryption-key-file", h.encPubFile)
 	}
 	if h.fido != nil {
 		params, _ := json.Marshal(h.fido.EnrollParams())

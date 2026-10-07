@@ -41,7 +41,6 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 	return &database.DatabaseInfo{
 		TenantID: "acme",
 		Name:     "orders",
-		Engine:   database.EngineType("kv"),
 		Backend:  database.BackendType("raft"),
 		Status:   database.StatusType("open"),
 		Protocol: database.ProtocolConfig{

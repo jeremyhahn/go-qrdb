@@ -488,3 +488,35 @@ func TestTenantBarrierStatus_BadJSON(t *testing.T) {
 		t.Fatal("expected JSON decode error")
 	}
 }
+
+// TestRestTenant_ToTenantInfo_CarriesRefusal proves the REST client's wire
+// decode does not drop a tenant's refusal: before this fix, restTenant had
+// no Refusal field at all, so a server response carrying
+// {"refusal":{"code":"pool_unavailable",...}} silently decoded to a
+// TenantInfo with Refusal == nil.
+func TestRestTenant_ToTenantInfo_CarriesRefusal(t *testing.T) {
+	rt := restTenant{
+		ID:   "bad",
+		Name: "bad",
+		Refusal: &transport.TenantRefusal{
+			Code:    "pool_unavailable",
+			Message: "volume: pool \"broken\" is unavailable on node \"1\"",
+		},
+	}
+	info := rt.toTenantInfo()
+	if info.Refusal == nil {
+		t.Fatal("toTenantInfo() dropped the refusal")
+	}
+	if info.Refusal.Code != "pool_unavailable" {
+		t.Fatalf("Refusal.Code = %q, want %q", info.Refusal.Code, "pool_unavailable")
+	}
+}
+
+// TestRestTenant_ToTenantInfo_NoRefusalStaysNil proves a served tenant
+// (no refusal on the wire) still decodes with a nil Refusal.
+func TestRestTenant_ToTenantInfo_NoRefusalStaysNil(t *testing.T) {
+	rt := restTenant{ID: "good", Name: "good"}
+	if info := rt.toTenantInfo(); info.Refusal != nil {
+		t.Fatalf("Refusal = %+v, want nil", info.Refusal)
+	}
+}

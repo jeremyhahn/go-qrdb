@@ -37,7 +37,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -74,7 +73,7 @@ const (
 // starts the service layer, and injects an SDK client backed by the
 // embedded transport into the ConnectionBinding.
 type EmbeddedServerBinding struct {
-	logger       *logger.Logger
+	logger       *sdk.ConcreteLogger
 	conn         *ConnectionBinding
 	sqlBinding   *SQLBinding
 	mu           sync.Mutex
@@ -139,7 +138,7 @@ func (b *EmbeddedServerBinding) SetTrustAnchors(r trustanchor.Registry) {
 
 // NewEmbeddedServerBinding creates a new EmbeddedServerBinding backed
 // by the given connection binding.
-func NewEmbeddedServerBinding(log *logger.Logger, conn *ConnectionBinding, sqlBinding *SQLBinding) *EmbeddedServerBinding {
+func NewEmbeddedServerBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding, sqlBinding *SQLBinding) *EmbeddedServerBinding {
 	return &EmbeddedServerBinding{
 		logger:     log,
 		conn:       conn,
@@ -343,11 +342,6 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		opts = append(opts, embedded.WithAuditLogger(trail))
 	}
 
-	// Wire SQL services so the SQL browser can execute queries.
-	if b.sqlBinding != nil {
-		b.sqlBinding.SetServices(kvSvc, svcNode.Database)
-	}
-
 	// Hold a reference to the lifecycle node so StopEmbedded can call Stop.
 	b.svcNode = svcNode
 
@@ -493,9 +487,6 @@ func (b *EmbeddedServerBinding) StopEmbedded() error {
 		b.cancelFn()
 		b.cancelFn = nil
 	}
-	if b.sqlBinding != nil {
-		b.sqlBinding.ClearServices()
-	}
 	// Stop all per-database instances.
 	if b.registry != nil {
 		_ = b.registry.StopAll()
@@ -613,17 +604,14 @@ func (b *EmbeddedServerBinding) startLocalNode(cfg *EmbeddedConfig, hub *watch.H
 	// Retain a reference so StopEmbedded can close it and release file locks.
 	b.storage = stg
 
-	// Create store engine. Default to "mvcc" for backends that support
-	// binary key encoding (pebble, memory). File backends default to "kv"
-	// because MVCC key encoding uses binary prefixes that are invalid as
-	// filenames.
+	// Create store engine. Every backend -- memory, file, pebble and objstore
+	// alike -- defaults to "mvcc": secondary indexes and time series are
+	// storage-backed, so they work identically over any storage.Storage (see
+	// pkg/server/lifecycle.NewLocalEngine). "kv" is kept as an explicit,
+	// non-default opt-in only; it is never chosen silently.
 	engineType := cfg.StoreEngine
 	if engineType == "" {
-		if cfg.StorageBackend == "file" {
-			engineType = "kv"
-		} else {
-			engineType = "mvcc"
-		}
+		engineType = "mvcc"
 	}
 
 	var sm backend.SMAdapter
@@ -632,9 +620,6 @@ func (b *EmbeddedServerBinding) startLocalNode(cfg *EmbeddedConfig, hub *watch.H
 	case "kv":
 		opts := []engine.KVOption{
 			engine.WithKVWatchHub(hub),
-		}
-		if pebbleDB != nil {
-			opts = append(opts, engine.WithKVPebbleDB(pebbleDB))
 		}
 		sm = engine.NewKVEngine(stg, opts...)
 

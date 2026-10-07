@@ -250,6 +250,12 @@ type Server struct {
 	webUI         http.Handler      // optional embedded web UI file server
 	auditLogger   audit.AuditLogger // optional compliance-grade audit logger
 
+	// replicatedAudit is the cluster-wide, per-tenant-opt-in replicated audit
+	// sink (docs/audit/architecture.md#cluster-wide-replicated-trail). Nil
+	// means this server exposes no replicated-chain capability at all; the
+	// node-local trail above is unaffected either way.
+	replicatedAudit *service.OptInAuditLogger
+
 	// soPINVerifier handles SO PIN verification for dual-factor auth.
 	soPINVerifier soPINVerifier
 
@@ -868,6 +874,14 @@ func WithWebUI(h http.Handler) ServerOption {
 // When set, GET /v1/audit/events is registered and delegates to the logger.
 func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
+}
+
+// WithReplicatedAuditLogger configures the cluster-wide, per-tenant-opt-in
+// replicated audit sink (lifecycle.Node.ReplicatedAudit in production). It
+// registers a SEPARATE capability from WithAuditLogger's node-local trail:
+// GET /v1/audit/events?replicated=true and GET /v1/audit/replicated/verify.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) ServerOption {
+	return func(s *Server) { s.replicatedAudit = l }
 }
 
 // WithServiceRegistry attaches a ServiceRegistry for per-(tenant, database)
@@ -2339,6 +2353,10 @@ func (s *Server) registerRoutes() {
 	// Audit event retrieval route.
 	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/events", permission.AuditQuery, s.handleAuditQuery)
 	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/verify", permission.AuditVerify, s.handleAuditVerify)
+	// The replicated chain shares handleAuditQuery (?replicated=true) but
+	// gets its own verify route: VerifyTenantChain answers a different
+	// report shape than the node-local file chain's VerifyChain.
+	s.routeIf(s.replicatedAudit != nil, http.MethodGet, "/v1/audit/replicated/verify", permission.AuditVerifyReplicated, s.handleAuditVerifyReplicated)
 }
 
 // dispatch serves a request through the chi router. It is retained as the

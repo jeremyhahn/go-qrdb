@@ -738,7 +738,7 @@ func TestTenantDatabases_ReturnsOnlyTheTenantsOwn(t *testing.T) {
 	} {
 		if _, err := m.Create(DatabaseConfig{
 			Name: tc.name, TenantID: tc.owner,
-			Engine: EngineKV, Backend: BackendMemory,
+			Backend: BackendMemory,
 		}); err != nil {
 			t.Fatalf("Create %s: %v", tc.name, err)
 		}
@@ -786,12 +786,12 @@ func TestTenantDatabases_SystemTenantSeesUnownedDatabases(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	if _, err := m.Create(DatabaseConfig{
-		Name: "bootstrap", Engine: EngineKV, Backend: BackendMemory,
+		Name: "bootstrap", Backend: BackendMemory,
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if _, err := m.Create(DatabaseConfig{
-		Name: "owned", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory,
+		Name: "owned", TenantID: "acme", Backend: BackendMemory,
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestTenantDatabases_ReflectsADrop(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	if _, err := m.Create(DatabaseConfig{
-		Name: "ledger", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory,
+		Name: "ledger", TenantID: "acme", Backend: BackendMemory,
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

@@ -29,7 +29,7 @@ func TestGRPC_DatabaseCompaction_UpdateAndClear(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	if _, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{Name: "events", Engine: "kv", Backend: "memory"}); err != nil {
+	if _, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{Name: "events", Backend: "memory"}); err != nil {
 		t.Fatalf("DatabaseCreate: %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestGRPC_DatabaseCompaction_Refusals(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	if _, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{Name: "events", Engine: "kv", Backend: "memory"}); err != nil {
+	if _, err := client.DatabaseCreate(ctx, &pb.DatabaseCreateRequest{Name: "events", Backend: "memory"}); err != nil {
 		t.Fatalf("DatabaseCreate: %v", err)
 	}
 	cases := []struct {

@@ -16,48 +16,16 @@ limitations under the License.
 
 # Release — User guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## One-time setup (repository owner)
 
-The Release workflow is only the **sole** release path once the forge enforces
-it. Two settings do that, and both belong to the repository owner. The
-repository cannot apply them to itself.
+**None, beyond ordinary write access.** There is no release bot, no dedicated
+signing key and no secret to provision: the project agent cuts a release with
+its own existing git identity, the one that already signs every other commit
+on `main`. The one thing worth protecting deliberately:
 
-### 1. Tag protection
-
-Protect these tag patterns so that **only the release bot** may create them:
-
-| Pattern | Covers |
-|---|---|
-| `v*` | the root module |
-| `sdk/go/v*` | the Go SDK |
-| `sdk/go/gorm/conformance/v*` | the GORM conformance module |
-
-On Gitea this is *Settings → Tags → Protected tags*, with the release bot as
-the only allowed user for each pattern. Protected tags also cannot be deleted
-or moved, which matches the rule that a published tag is immutable.
-
-Check it: a direct `git push <remote> vX.Y.Z-alpha` from a workstation must be
-**rejected by the server**. With the three patterns protected, the release
-bot's `git push --atomic` of all three tags succeeds.
-
-### 2. The release bot's credentials
-
-Create a dedicated account for the release bot. Give it write access to this
-repository, and register its SSH signing public key on the account. Then add:
-
-| Name | Kind | Value |
-|---|---|---|
-| `RELEASE_BOT_TOKEN` | Actions secret | an access token for the bot with repository write scope. The workflow never persists it in the checkout; only the step that pushes receives it |
-| `RELEASE_BOT_SIGNING_KEY` | Actions secret | the bot's private SSH signing key (OpenSSH format) |
-| `RELEASE_BOT_NAME` | Actions variable | the tagger name |
-| `RELEASE_BOT_EMAIL` | Actions variable | the tagger email |
-
-If any of them is missing, the workflow stops at its first check and names the
-missing item.
-
-### 3. The public-releasability rules
+### The public-releasability rules
 
 `make check-public-releasable` keeps the private development fleet's values
 out of every tracked file. Those values are the rules themselves, so they are
@@ -99,18 +67,21 @@ like any other file.
    notes in `CHANGELOG.md` into a `## [0.22.0-alpha] - YYYY-MM-DD` section.
    Pre-1.0, breaking changes bump MINOR. Land the commit on `main` through
    review; it must be signed.
-2. **Dispatch the Release workflow** on `main`. It reads `VERSION` and runs
-   `make release-alpha`. That creates the three signed tags on the `VERSION`
-   commit and pushes them together.
-3. **Read the last step.** *Lockstep audit of the published tags* re-reads
-   the tags the server holds. If it fails, the tags are already published and
-   immutable. Repair the skew and release the next PATCH version; never move or
+2. **Once CI is green on that commit, run `make release-alpha
+   VERSION=v0.22.0-alpha`** from a clone whose `HEAD` is exactly that commit.
+   It creates the three signed tags and pushes them together in one atomic
+   push. This is the whole release action — nothing else to dispatch.
+3. **Watch the Release workflow.** The tag push just started it. It
+   re-validates the tag, VERSION and CHANGELOG, re-runs the build/lint/test
+   gate against the tagged tree, and publishes the release notes. If it
+   fails, the tags are already published and immutable: diagnose from its
+   logs, repair the cause, and release the next PATCH version. Never move or
    delete a tag.
 
-## When it refuses
+## When `release-alpha` refuses
 
 Every refusal before the push leaves nothing behind, so fixing the cause and
-dispatching again is the whole recovery. The most common refusals:
+re-running the command is the whole recovery. The most common refusals:
 
 | Message mentions | Cause |
 |---|---|
@@ -121,3 +92,15 @@ dispatching again is the whole recovery. The most common refusals:
 | `carries no SSH signature` | the `VERSION` commit on `main` is unsigned |
 | `VERSION on HEAD names X, not Y` | the VERSION/CHANGELOG bump is not merged; merge it, then release |
 | `is not what ... main holds` | the commit being released is not exactly the remote's `main` |
+
+## When the Release workflow refuses
+
+Every refusal here runs after the tags are already published and immutable —
+it cannot roll anything back. Diagnose from the failing job's log and release
+the next PATCH version rather than trying to retarget the tag:
+
+| Job | Typical cause |
+|---|---|
+| `validate` | the tag, VERSION or CHANGELOG drifted from what `release-alpha` checked locally (should not happen if it ran to completion), or a lockstep tag genuinely never arrived after ten retries |
+| `gate` | the tagged tree fails a build/lint/test check that passed on `main` moments earlier — investigate the runner and the checkout before assuming the code regressed |
+| `publish` | the forge's releases API rejected the request (for example, a release for this tag already exists) |

@@ -90,6 +90,9 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 	if f.Cursor != "" {
 		args["cursor"] = f.Cursor
 	}
+	if f.Replicated {
+		args["replicated"] = true
+	}
 
 	text, err := t.callTool(ctx, "qrdb_audit_query", args)
 	if err != nil {
@@ -135,6 +138,38 @@ func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResu
 	var result transport.AuditVerifyResult
 	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "VerifyChain", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &result, nil
+}
+
+// VerifyReplicatedChain verifies the cluster-wide replicated audit chain's
+// hash continuity for tenantID via the "qrdb_audit_verify_replicated" MCP
+// tool. A non-nil error means verification could not be PERFORMED,
+// including a tenant not entitled to the replicated chain; a successful
+// response with Verified=false is a TAMPER VERDICT, not an error.
+// Authorization: requires "audit:verify_replicated" permission.
+func (t *Transport) VerifyReplicatedChain(ctx context.Context, tenantID string) (*transport.ChainContinuityResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{}
+	if tenantID != "" {
+		args["tenant_id"] = tenantID
+	}
+
+	text, err := t.callTool(ctx, "qrdb_audit_verify_replicated", args)
+	if err != nil {
+		var unsupported *transport.CapabilityUnsupportedError
+		if errors.As(err, &unsupported) {
+			return nil, &transport.NotImplementedError{Method: "VerifyReplicatedChain"}
+		}
+		return nil, err
+	}
+
+	var result transport.ChainContinuityResult
+	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "VerifyReplicatedChain", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 	return &result, nil
 }

@@ -22,13 +22,16 @@ grant and is authorized as such.
 
 ## Request
 
-`WatchOptions`, on every transport:
+`WatchOptions`:
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `start_revision` | int64 | 0 | replay from this revision, then continue live |
-| `prev_kv` | bool | false | include the previous value in each event |
-| `progress_notify` | bool | false | emit one progress response after the replay completes, carrying a cursor safe to resume from |
+| `start_revision` | int64 | 0 | replay from this revision, then continue live (REST query parameter `start-revision`) |
+| `prev_kv` | bool | false | include the previous value in each event (REST query parameter `prev-kv`) |
+| `progress_notify` | bool | false | emit one progress response after the replay completes, carrying a cursor safe to resume from; not accepted on REST |
+
+REST selects the key with the `key` or `prefix` query parameter on `GET /watch`
+and answers with Server-Sent Events.
 
 ## Response
 
@@ -49,7 +52,9 @@ grant and is authorized as such.
 }
 ```
 
-`type`: `0` put · `1` delete.
+`type`: `0` put · `1` delete on gRPC, QUIC and MCP; on REST it is the string
+`"PUT"` or `"DELETE"`. A REST response also carries `compact_revision` when the
+watch was canceled by compaction.
 
 A terminal response sets `"canceled": true` and carries `cancel_reason`. SDK
 callers should not parse that string: `WatchResponse.Err()` classifies it into

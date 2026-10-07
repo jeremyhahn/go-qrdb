@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Firstboot is the **admin bootstrap**: system tenant, built-in roles, the
 platform admin user and the admin client certificate. It runs *after* the
@@ -179,11 +179,20 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
    this node IS the Raft leader (the common case — a single-node deployment,
    or `qrdb init` pointed at the leader of a multi-node cluster). On a
    genuine follower it currently has no way to forward the proposal to the
-   leader (go-qrdb ships no non-HTTP inter-node forwarding primitive today),
-   so it surfaces the write failure rather than silently succeeding; the
-   documented remedy is the SAME retry path as step 4 — re-run `qrdb init`
-   against the current leader (`qrdb status`). Building genuine any-node
-   forwarding for this write is tracked separately.
+   leader, so it surfaces the write failure rather than silently succeeding.
+   The retry remedy is the SAME path as step 4, and that retry no longer
+   requires the operator to find the leader first: `CeremonyServiceWithLeaderGate`
+   (the gate step 4's retry runs through on every call after the first) now
+   forwards a non-leader's `CeremonyInitialize` to the leader over REST —
+   the SAME `forwardToLeader`/`tryForwardWrite` path every other
+   system-shard write already uses — instead of refusing it with
+   `*service.AdminCredentialNotLeaderError`. Re-running `qrdb init` against
+   ANY node now reaches the leader in one hop. Giving THIS step's own first
+   write (the pending-admin-cert record above, reached before any Raft host
+   or REST server exists for this node's own boot) the same any-node reach
+   is tracked separately — it is a different call site (an in-process
+   proposal issued from `cmd/qrdbd`'s own boot sequence, not an incoming
+   REST request) with no existing forwarding primitive to reuse.
 3. **First boot waits (bounded) for that record**, or for the admin to
    already hold a binding (nothing to do), builds a pool from the cluster's
    own CA bundle, and passes the certificate to `firstboot.Dependencies` as

@@ -37,7 +37,6 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 	t.Cleanup(func() { _ = mgr.Close() })
 	db, err := mgr.Create(database.DatabaseConfig{
 		Name:    "files",
-		Engine:  database.EngineKV,
 		Backend: database.BackendFile,
 		DataDir: filepath.Join(t.TempDir(), "files"),
 	})
@@ -75,7 +74,7 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 func TestDatabaseManager_ObjstoreDatabaseRefused(t *testing.T) {
 	mgr := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Engine: database.EngineKV, Backend: database.BackendObjstore})
+	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
 	var invalid *database.InvalidBackendError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("Create(objstore) = %v, want *database.InvalidBackendError", err)

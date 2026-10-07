@@ -34,7 +34,7 @@ func TestEmbeddedDatabase_SQLConfig_RealService(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := tr.CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name: "shop", Engine: "kv", Backend: "memory",
+		Name: "shop", Backend: "memory",
 		SQL: &transport.DatabaseSQLConfig{Concurrency: "pessimistic"},
 	})
 	if err != nil {

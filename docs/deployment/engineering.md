@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported and package surface
 
@@ -139,3 +139,7 @@ a failed tracer lookup and FIPS mode through seams, and
 `harden_tracer_linux_test.go` parses every shape of the status line. `cmd/qrdb/harden_test.go` pins the same seam, that a refusal makes `run`
 exit 1, and that the opt-out warning goes to the writer it is given rather than
 standard output.
+
+## Integration Target
+
+Run `make integration-test-deployment` for this feature. The target intentionally selects zero Go integration tests today because locked-memory enforcement is a host/kernel property; the gap is recorded in `test/integration/COVERAGE.md` under `deployment`.

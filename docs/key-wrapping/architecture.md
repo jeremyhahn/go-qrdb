@@ -1,14 +1,13 @@
 # Key Wrapping — Architecture
 
 > **Status: NORMATIVE; lands incrementally — see each section's own note.**
-> Scope: go-qrdb · Last verified: 2026-10-04
+> Scope: go-qrdb · Last verified: 2026-10-06
 
 Envelope encryption for every data-encrypting key (DEK) go-qrdb mints, through
 **one** key-encrypting-key (KEK) seam that go-xkms and quicbaas compose
 hardware and cloud KMS backends into. Backup is the first consumer; the
 per-tenant DEK keyring ([tenant-dek](../tenant-dek/architecture.md)) is the
-second, planned, and explicitly **not** touched by this lane — see
-[Planned: the tenant DEK keyring](#planned-the-tenant-dek-keyring) below.
+second — see [The tenant DEK keyring](#the-tenant-dek-keyring) below.
 
 ## Problem
 
@@ -24,10 +23,11 @@ hardware backend could plug into:
   including a wrong one, because there was no ciphertext whose authentication
   could fail.
 - **The tenant DEK keyring** ([tenant-dek](../tenant-dek/architecture.md))
-  wraps its DEKs with the per-tenant barrier today — correct for an
-  operator with no hardware KMS, and a dead end for one who has a TPM, an
-  HSM, or a cloud KMS and wants the tenant keyring's *key-encrypting* key to
-  live there instead of in a software-sealed barrier.
+  wrapped its per-version keys with the per-tenant barrier before this
+  feature — correct for an operator with no hardware KMS, and a dead end
+  for one who has a TPM, an HSM, or a cloud KMS and wants the tenant
+  keyring's *key-encrypting* key to live there instead of in a
+  software-sealed barrier.
 - **Neither surface agreed on a seam go-xkms could compose a hardware backend
   into.** A TPM2, PKCS#11 or cloud-KMS-backed KEK has exactly one shape that
   matters here — wrap and unwrap a short byte string under a reference the
@@ -55,7 +55,7 @@ package keywrap
 //
 // Thread-safe: implementations must support concurrent Wrap/Unwrap calls
 // from every caller that holds this provider (backup today; the tenant
-// DEK keyring is the planned second caller).
+// DEK keyring is the second caller).
 type Provider interface {
 	// ProviderID identifies this provider's kind -- "software", "tpm2",
 	// "pkcs11", "aws-kms", and so on. Stored verbatim in every envelope
@@ -221,7 +221,7 @@ current working directory.
 | `keywrap.SoftwareProvider` (AES-256-GCM, key-file backed) | `pkg/keywrap` | go-qrdb |
 | Backup's envelope: DEK generation, per-shard/artifact AES-256-GCM, wrapped-DEK storage in backup metadata | `pkg/service` (backup) — see [backup-restore](../backup-restore/architecture.md) | go-qrdb |
 | Hardware/cloud-KMS providers (TPM2, PKCS#11, AWS/GCP/Azure KMS, Vault) | — | **go-xkms**, registered via `WithKeyWrapProvider` / a `Registry.Register` call at composition time |
-| The planned tenant DEK keyring integration | `pkg/tenant` — see [tenant-dek](../tenant-dek/architecture.md) | go-qrdb (not this lane) |
+| The tenant DEK keyring's own KEK integration | `pkg/dek` — see [tenant-dek](../tenant-dek/architecture.md) | go-qrdb |
 
 go-qrdb never imports go-xkms. The fit for a hardware or cloud-KMS provider
 is verified in `pkg/keywrap`'s own tests against a same-shaped local double
@@ -489,23 +489,40 @@ test overriding it proves an injected provider is honored on both paths
 identically, which a prior version of `restore.go` had no way to receive at
 all (it built a bare `NewBackupService` with no injection point).
 
-**Two options, not one role-parameterized option**, for the same reason
-`certificate-authority`'s Key A / Key B split rejected a role parameter:
-backup's registry and the tenant DEK keyring's (future) registry are
-independently composed, so an embedder that wants hardware backing for one
-but not the other is not forced to choose for both at once by a single
-shared argument.
+**Two options** (`WithKeyWrapRegistry`/`WithKeyWrapProvider`), not one
+role-parameterized option, for the same reason `certificate-authority`'s
+Key A / Key B split rejected a role parameter: a single shared argument
+would force a caller supplying ad hoc values (rather than composing a
+registry up front) to pick one shape and live with it everywhere. Backup
+and the tenant DEK keyring now consume the SAME `lifecycle.Infra.
+KeyWrapRegistry`/`KeyWrapProvider` — one KEK seam, two consumers, exactly
+as [The tenant DEK keyring](#the-tenant-dek-keyring) below describes —
+while each resolves its own independent "software" instance, confined to
+its own key directory (`KeyDir` for backup, `DEKKeyDir` for the keyring),
+when neither field is supplied.
 
-## Planned: the tenant DEK keyring
+## The tenant DEK keyring
 
-**Not touched by this lane.** [tenant-dek](../tenant-dek/architecture.md)
-wraps its per-tenant DEKs with the tenant's own `seal.EncryptionBarrier`
-today. The owner has approved a `DEKProvider` seam for it that will wrap
-those same DEKs through **this same `keywrap.Provider`/`Registry`**
-instead — one KEK seam, two consumers, rather than a second one invented for
-the keyring. That integration is out of scope here; this document records
-the target so the keyring's own future design does not reinvent `Provider`'s
-shape.
+[tenant-dek](../tenant-dek/architecture.md) wraps every version's key
+through **this same `keywrap.Provider`/`Registry`** — one KEK seam, two
+consumers, rather than a second one invented for the keyring.
+`dek.NewKeyring`'s `WithKeyWrapRegistry`/`WithKeyWrapProvider` are the
+identical option shapes `NewBackupService` uses; `lifecycle.BuildServices`
+passes it the SAME `Infra.KeyWrapRegistry`/`KeyWrapProvider` values it
+passes to Backup, so a hardware or cloud-KMS provider registered once is
+available to both. The keyring's own confinement directory for the
+built-in "software" provider is separate from backup's (`Infra.DEKKeyDir`,
+`dek.WithKeyDir`, `qrdbd --dek-key-dir`), because the two naming domains
+differ: the keyring's key reference defaults to the tenant ID itself
+(`dek.WithKeyRef`, tenant-scoped and configurable), while backup's is an
+operator-chosen name per backup. Each version's wrapped key, provider ID
+and key reference are recorded in the keyring's own stored record (never
+the plaintext key); `dek.Status` surfaces the provider ID and key
+reference that wrapped each version, for audit. A record written before
+this integration existed — a plaintext key per version — is refused with a
+typed error (`*dek.LegacyKeyringFormatError`) rather than migrated
+silently. See [tenant-dek/architecture.md](../tenant-dek/architecture.md)
+for the full design.
 
 ## Trust boundaries
 

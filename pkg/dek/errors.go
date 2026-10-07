@@ -42,6 +42,18 @@ var (
 	ErrConcurrentUpdate = errors.New("dek: keyring update lost to concurrent writers")
 	// ErrCrypto: a cryptographic primitive failed (entropy, cipher setup).
 	ErrCrypto = errors.New("dek: cryptographic failure")
+	// ErrLegacyKeyringFormat: the stored record predates key-wrap
+	// integration (a plaintext key per version, no provider ID or key
+	// reference) and is refused outright, never migrated.
+	ErrLegacyKeyringFormat = errors.New("dek: legacy keyring record format refused")
+	// ErrKeyDirNotConfigured: the built-in "software" key-wrap provider
+	// was resolved but no key directory was ever configured for it.
+	ErrKeyDirNotConfigured = errors.New("dek: no key directory configured for the \"software\" key-wrap provider")
+	// ErrKeyWrapFailed: the keyring's KEK provider could not wrap or
+	// unwrap a version's key -- an unregistered provider ID, a bad key
+	// reference, or a KEK authentication failure. The cause is
+	// deliberately not distinguished further; see KeyWrapFailedError.
+	ErrKeyWrapFailed = errors.New("dek: key-wrap provider failed")
 )
 
 // InvalidInputError reports a missing or malformed argument.
@@ -220,6 +232,64 @@ func (e *StoreError) Error() string {
 
 // Unwrap returns the store error.
 func (e *StoreError) Unwrap() error { return e.Err }
+
+// LegacyKeyringFormatError reports a stored record in the pre-key-wrap
+// format: a plaintext key per version, not a wrapped one with a provider ID
+// and key reference. Refused outright -- see this package's own doc
+// comment, "Old-format records are refused, not migrated".
+type LegacyKeyringFormatError struct {
+	TenantID string
+	Format   int
+}
+
+func (e *LegacyKeyringFormatError) Error() string {
+	return "dek: keyring record for tenant " + strconv.Quote(e.TenantID) +
+		" is in the pre-key-wrap format (format " + strconv.Itoa(e.Format) + ") and is refused, not migrated"
+}
+
+// Is matches ErrLegacyKeyringFormat.
+func (e *LegacyKeyringFormatError) Is(target error) bool { return target == ErrLegacyKeyringFormat }
+
+// KeyDirNotConfiguredError reports that the built-in "software" key-wrap
+// provider was resolved but no key directory was ever configured for it
+// (KeyringOption WithKeyDir, or lifecycle.Infra.DEKKeyDir).
+type KeyDirNotConfiguredError struct{}
+
+func (e *KeyDirNotConfiguredError) Error() string {
+	return "dek: no key directory configured for the \"software\" key-wrap provider " +
+		"(set KeyringOption WithKeyDir, or lifecycle.Infra.DEKKeyDir)"
+}
+
+// Is matches ErrKeyDirNotConfigured.
+func (e *KeyDirNotConfiguredError) Is(target error) bool { return target == ErrKeyDirNotConfigured }
+
+// KeyWrapFailedError reports that the keyring's KEK provider could not wrap
+// or unwrap a version's key for tenantID. Covers an unregistered provider
+// ID, a bad key reference, and a KEK authentication failure alike --
+// deliberately one answer, the same discipline AuthenticationFailedError
+// holds at the ciphertext layer one level up.
+type KeyWrapFailedError struct {
+	TenantID string
+	Version  uint64
+	Err      error
+}
+
+func (e *KeyWrapFailedError) Error() string {
+	msg := "dek: key-wrap provider failed for tenant " + strconv.Quote(e.TenantID)
+	if e.Version != 0 {
+		msg += " version " + strconv.FormatUint(e.Version, 10)
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Is matches ErrKeyWrapFailed.
+func (e *KeyWrapFailedError) Is(target error) bool { return target == ErrKeyWrapFailed }
+
+// Unwrap returns the provider's error.
+func (e *KeyWrapFailedError) Unwrap() error { return e.Err }
 
 // CryptoError reports a failed cryptographic primitive.
 type CryptoError struct {

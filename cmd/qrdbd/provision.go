@@ -127,7 +127,6 @@ func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 	for _, dbCfg := range f.databases {
 		cfg := database.DatabaseConfig{
 			Name:    dbCfg.Name,
-			Engine:  database.EngineType(dbCfg.Engine),
 			Backend: database.BackendType(dbCfg.Backend),
 			Protocol: database.ProtocolConfig{
 				MySQL:      dbCfg.MySQL,
@@ -157,7 +156,6 @@ func sqlDatabaseConfig(f *startFlags) database.DatabaseConfig {
 	}
 	return database.DatabaseConfig{
 		Name:    f.sqlDatabase,
-		Engine:  database.EngineKV,
 		Backend: backend,
 		Protocol: database.ProtocolConfig{
 			MySQL:      f.enableMySQL,

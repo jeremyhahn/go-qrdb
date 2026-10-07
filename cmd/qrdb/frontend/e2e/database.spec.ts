@@ -64,14 +64,14 @@ test.describe("Database Navigation", () => {
       mockState: {
         ...secondLaunchEmbeddedState,
         databases: [
-          { name: "orders", engine: "kv", backend: "pebble", status: "open" },
-          { name: "metrics", engine: "timeseries", backend: "pebble", status: "open" },
-          { name: "embeddings", engine: "vector", backend: "pebble", status: "open" },
+          { name: "orders", backend: "pebble", status: "open" },
+          { name: "metrics", backend: "pebble", status: "open" },
+          { name: "embeddings", backend: "pebble", status: "open" },
         ],
       },
     });
 
-    test("sidebar lists databases with engine badges", async ({ page }) => {
+    test("sidebar lists databases", async ({ page }) => {
       await page.goto("/");
 
       // Wait for databases to appear in sidebar
@@ -79,11 +79,6 @@ test.describe("Database Navigation", () => {
       await expect(sidebar.getByText("orders")).toBeVisible({ timeout: LOAD_TIMEOUT });
       await expect(sidebar.getByText("metrics")).toBeVisible();
       await expect(sidebar.getByText("embeddings")).toBeVisible();
-
-      // Verify engine badges (short labels: kv, ts, vec)
-      await expect(sidebar.getByText("kv", { exact: true })).toBeVisible();
-      await expect(sidebar.getByText("ts", { exact: true })).toBeVisible();
-      await expect(sidebar.getByText("vec", { exact: true })).toBeVisible();
     });
   });
 
@@ -92,7 +87,7 @@ test.describe("Database Navigation", () => {
       mockState: {
         ...secondLaunchEmbeddedState,
         databases: [
-          { name: "mydb", engine: "kv", backend: "pebble", status: "open" },
+          { name: "mydb", backend: "pebble", status: "open" },
         ],
       },
     });
@@ -106,8 +101,6 @@ test.describe("Database Navigation", () => {
 
       // Verify workspace header shows database name
       await expect(page.locator(".breadcrumbs").getByText("mydb", { exact: false })).toBeVisible();
-      // Engine badge is shown in the sidebar database list (not in main workspace)
-      await expect(page.locator("aside").getByText("kv", { exact: true })).toBeVisible();
 
       // Verify KV tab bar with all 6 tabs
       // DbNavRail: use page.locator("main nav") for tool navigation
@@ -181,17 +174,17 @@ test.describe("Database Navigation", () => {
     });
   });
 
-  test.describe("with TimeSeries database", () => {
+  test.describe("with a database opened on the Time Series tab", () => {
     test.use({
       mockState: {
         ...secondLaunchEmbeddedState,
         databases: [
-          { name: "metrics", engine: "timeseries", backend: "pebble", status: "open" },
+          { name: "metrics", backend: "pebble", status: "open" },
         ],
       },
     });
 
-    test("clicking a TimeSeries database renders TimeSeriesView", async ({ page }) => {
+    test("the Time Series tab renders TimeSeriesView", async ({ page }) => {
       await page.goto("/");
 
       const sidebar = page.locator("aside");
@@ -199,27 +192,26 @@ test.describe("Database Navigation", () => {
 
       // Verify workspace header
       await expect(page.locator(".breadcrumbs").getByText("metrics", { exact: false })).toBeVisible();
-      // Engine badge is shown in the sidebar database list
-      await expect(page.locator("aside").getByText("ts", { exact: true })).toBeVisible();
 
-      // TimeSeries engine has Data + Batch tabs
-      // DbNavRail: use page.locator("main nav") for tool navigation
-      await expect(page.locator("main nav").getByText("Data", { exact: true })).toBeVisible();
-      await expect(page.locator("main nav").getByText("Batch", { exact: true })).toBeVisible();
+      // Every database exposes every engine as a tab.
+      const tab = page.getByRole("tab", { name: "Time Series", exact: true });
+      await expect(tab).toBeVisible();
+      await tab.click();
+      await expect(tab).toHaveAttribute("aria-selected", "true");
     });
   });
 
-  test.describe("with Vector database", () => {
+  test.describe("with a database opened on the Vectors tab", () => {
     test.use({
       mockState: {
         ...secondLaunchEmbeddedState,
         databases: [
-          { name: "embeddings", engine: "vector", backend: "pebble", status: "open" },
+          { name: "embeddings", backend: "pebble", status: "open" },
         ],
       },
     });
 
-    test("clicking a Vector database renders VectorView", async ({ page }) => {
+    test("the Vectors tab renders VectorView", async ({ page }) => {
       await page.goto("/");
 
       const sidebar = page.locator("aside");
@@ -227,8 +219,12 @@ test.describe("Database Navigation", () => {
 
       // Verify workspace header
       await expect(page.locator(".breadcrumbs").getByText("embeddings", { exact: false })).toBeVisible();
-      // Engine badge is shown in the sidebar database list
-      await expect(page.locator("aside").getByText("vec", { exact: true })).toBeVisible();
+
+      // Every database exposes every engine as a tab.
+      const tab = page.getByRole("tab", { name: "Vectors", exact: true });
+      await expect(tab).toBeVisible();
+      await tab.click();
+      await expect(tab).toHaveAttribute("aria-selected", "true");
     });
   });
 });
@@ -364,7 +360,7 @@ test.describe("Transaction View", () => {
     mockState: {
       ...secondLaunchEmbeddedState,
       databases: [
-        { name: "txn-db", engine: "kv", backend: "pebble", status: "open" },
+        { name: "txn-db", backend: "pebble", status: "open" },
       ],
     },
   });
@@ -426,7 +422,7 @@ test.describe("Watch View", () => {
     mockState: {
       ...secondLaunchEmbeddedState,
       databases: [
-        { name: "watch-db", engine: "kv", backend: "pebble", status: "open" },
+        { name: "watch-db", backend: "pebble", status: "open" },
       ],
     },
   });

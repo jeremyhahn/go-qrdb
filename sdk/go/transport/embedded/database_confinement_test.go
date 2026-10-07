@@ -117,7 +117,7 @@ func TestDatabaseConfinement(t *testing.T) {
 			}
 			// A tenant named in a create request is discarded: the database is
 			// the caller's, never acme's.
-			if _, err := tr.CreateDatabase(ctx, transport.CreateDatabaseRequest{TenantID: "acme", Name: "smuggled", Engine: "kv", Backend: "memory"}); err == nil {
+			if _, err := tr.CreateDatabase(ctx, transport.CreateDatabaseRequest{TenantID: "acme", Name: "smuggled", Backend: "memory"}); err == nil {
 				info, err := fx.Service.Get("smuggled")
 				if err != nil || !database.OwnedBy(info.TenantID, tenantid.System) {
 					t.Errorf("create naming tenant acme made %+v (%v), want a database the system tenant owns", info, err)

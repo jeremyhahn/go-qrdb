@@ -86,7 +86,7 @@ func newDBHolderServer(t *testing.T) *Server {
 	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
 	mgr.SetBarrierManager(bm)
 	cfg := database.DatabaseConfig{
-		Name: "vault", Engine: database.EngineKV, Backend: database.BackendMemory, DataDir: t.TempDir(),
+		Name: "vault", Backend: database.BackendMemory, DataDir: t.TempDir(),
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModeShamir, SharesRequired: 2, SharesTotal: 2},
 	}
 	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.Credentials{}); err != nil {

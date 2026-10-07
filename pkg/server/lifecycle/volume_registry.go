@@ -75,27 +75,47 @@ func OpenConfiguredVolumes(ctx context.Context, nodeID string, pools []qrdbconfi
 		}
 		provider, err := registry.Lookup(providerName)
 		if err != nil {
-			logger.Warn("volume pool: provider not registered; pool will not be served on this node",
+			logger.Error("volume pool: provider not registered; pool will not be served on this node",
 				slog.String("pool", p.Name), slog.String("provider", providerName), slog.Any("error", err))
+			volume.RecordPoolHealth(p.Name, volume.Health{State: volume.StateUnavailable})
 			rows = append(rows, OpenedVolumePool{Name: p.Name, Provider: providerName, Err: err})
 			continue
 		}
 		vol, err := provider.Open(ctx, volume.Spec{Pool: p.Name, NodeID: nodeID, Path: p.Path, Options: p.Options})
 		if err != nil {
-			logger.Warn("volume pool: failed to open volume; pool will not be served on this node",
+			logger.Error("volume pool: failed to open volume; pool will not be served on this node",
 				slog.String("pool", p.Name), slog.Any("error", err))
+			volume.RecordPoolHealth(p.Name, volume.Health{State: volume.StateUnavailable})
 			rows = append(rows, OpenedVolumePool{Name: p.Name, Provider: providerName, Err: err})
 			continue
 		}
 		if err := open.Add(p.Name, vol); err != nil {
-			logger.Warn("volume pool: failed to register opened volume",
+			logger.Error("volume pool: failed to register opened volume",
 				slog.String("pool", p.Name), slog.Any("error", err))
+			volume.RecordPoolHealth(p.Name, volume.Health{State: volume.StateUnavailable})
 			rows = append(rows, OpenedVolumePool{Name: p.Name, Provider: providerName, Err: err})
 			continue
 		}
+		volume.RecordPoolHealth(p.Name, vol.Health(ctx))
 		rows = append(rows, OpenedVolumePool{Name: p.Name, Provider: providerName, Vol: vol})
 	}
 	return open, rows
+}
+
+// FailedOpens returns the subset of rows that failed to open, as
+// volume.OpenFailure, naming the pool, the provider this node's own
+// configuration selected for it, and the reason. Callers use it to build
+// a *volume.OpenAtBootError for the default, fail-loud boot path, or to
+// decide whether a degraded boot (--allow-degraded-volume-boot) has
+// anything to report.
+func FailedOpens(rows []OpenedVolumePool) []volume.OpenFailure {
+	var fails []volume.OpenFailure
+	for _, r := range rows {
+		if r.Err != nil {
+			fails = append(fails, volume.OpenFailure{Pool: r.Name, Provider: r.Provider, Err: r.Err})
+		}
+	}
+	return fails
 }
 
 // CheckProviderConsistency compares each successfully opened row's local
@@ -169,16 +189,15 @@ func BuildNodeReport(ctx context.Context, nodeID string, rows []OpenedVolumePool
 	pools := make(map[string]volume.PoolOnNode, len(rows))
 	for _, row := range rows {
 		if row.Vol == nil {
-			logger.Warn("volume pool: open failed; full detail is local to this node",
+			logger.Error("volume pool: open failed; full detail is local to this node",
 				slog.String("pool", row.Name), slog.Any("error", row.Err))
-			pools[row.Name] = volume.PoolOnNode{
-				Mapped: true,
-				Health: volume.Health{
-					State:     volume.StateUnavailable,
-					Detail:    "open failed; see this node's log",
-					CheckedAt: time.Now(),
-				},
+			health := volume.Health{
+				State:     volume.StateUnavailable,
+				Detail:    "open failed; see this node's log",
+				CheckedAt: time.Now(),
 			}
+			volume.RecordPoolHealth(row.Name, health)
+			pools[row.Name] = volume.PoolOnNode{Mapped: true, Health: health}
 			continue
 		}
 		usage, uerr := row.Vol.Usage(ctx)
@@ -190,6 +209,7 @@ func BuildNodeReport(ctx context.Context, nodeID string, rows []OpenedVolumePool
 				health.Detail = "usage query failed; see this node's log"
 			}
 		}
+		volume.RecordPoolHealth(row.Name, health)
 		pools[row.Name] = volume.PoolOnNode{Mapped: true, Usage: usage, Health: health}
 	}
 	return volume.NodeReport{NodeID: nodeID, Pools: pools}

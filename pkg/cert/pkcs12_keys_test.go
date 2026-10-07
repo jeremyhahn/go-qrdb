@@ -19,6 +19,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -90,6 +91,17 @@ func TestEncodePKCS12_AcceptsEveryClientKeyEncoding(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p12, err := EncodePKCS12(selfSignedFor(t, tc.signer), tc.keyPEM, nil, "pass")
+			if fips140.Enforced() {
+				// PKCS#12 export is refused outright under strict FIPS
+				// enforcement (the format's localKeyId attribute is a
+				// SHA-1 fingerprint); see the exemption register in
+				// docs/seal/fips140-mode.md.
+				var fipsErr *PKCS12FIPSUnavailableError
+				if !errors.As(err, &fipsErr) {
+					t.Fatalf("EncodePKCS12 under fips140=only = %v, want *PKCS12FIPSUnavailableError", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("EncodePKCS12: %v", err)
 			}
@@ -110,6 +122,16 @@ func TestEncodePKCS12_RefusesAKeyThatIsNotTheCertificates(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = EncodePKCS12(selfSignedFor(t, a), pkcs8PEM(t, b), nil, "pass")
+	if fips140.Enforced() {
+		// The FIPS-unavailable refusal is unconditional and runs before
+		// the key/certificate match check, so that is what surfaces here
+		// too; see the exemption register in docs/seal/fips140-mode.md.
+		var fipsErr *PKCS12FIPSUnavailableError
+		if !errors.As(err, &fipsErr) {
+			t.Fatalf("err = %v; want *PKCS12FIPSUnavailableError", err)
+		}
+		return
+	}
 	var ve *ValidationError
 	if !errors.As(err, &ve) || ve.Field != "keyPEM" {
 		t.Fatalf("err = %v; want a keyPEM ValidationError", err)
@@ -126,7 +148,11 @@ func TestParsePrivateKeyBlock_RefusesUnknownTypesAndWeakKeys(t *testing.T) {
 	// #nosec G403 -- deliberately weak: the test proves the export refuses a key below the 2048-bit floor.
 	weak, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
-		t.Fatal(err)
+		// crypto/rsa itself refuses to generate a sub-2048-bit key under
+		// GODEBUG=fips140=only, which makes this refusal case
+		// unreachable there; see docs/seal/fips140-mode.md "Skipped
+		// tests under fips140=only".
+		t.Skipf("cannot generate RSA-1024 in this toolchain: %v", err)
 	}
 	if _, err := parsePrivateKeyBlock(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(weak)}); err == nil {
 		t.Fatal("a 1024-bit RSA key was accepted")

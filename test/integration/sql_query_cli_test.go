@@ -45,7 +45,7 @@ func TestCLI_SqlQuery_KVRoundTrip(t *testing.T) {
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
 	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "database", "create", "sqltestdb",
-		"--engine", "kv", "--backend", "memory"); err != nil {
+		"--backend", "memory"); err != nil {
 		t.Fatalf("database create: %v\noutput: %s", err, out)
 	}
 
@@ -106,7 +106,7 @@ func TestCLI_SqlQuery_EmptyDatabase(t *testing.T) {
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
 	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "database", "create", "emptysqldb",
-		"--engine", "kv", "--backend", "memory"); err != nil {
+		"--backend", "memory"); err != nil {
 		t.Fatalf("database create: %v\noutput: %s", err, out)
 	}
 
@@ -300,7 +300,7 @@ func testSQLQueryOverProtocol(t *testing.T, node *multiProtoNode, proto multiPro
 
 	// --- --database targeting an explicitly created named database --------
 	dbName := "sqlclidb" + proto.name
-	out, err = runCLIProto(t, node, proto, "database", "create", dbName, "--engine", "kv", "--backend", "memory")
+	out, err = runCLIProto(t, node, proto, "database", "create", dbName, "--backend", "memory")
 	if err != nil {
 		t.Fatalf("[%s] database create %s: %v\noutput: %s", proto.name, dbName, err, out)
 	}

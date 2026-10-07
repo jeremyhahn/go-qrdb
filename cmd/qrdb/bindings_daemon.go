@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // daemonConfigDir is the directory under the user config path where
@@ -44,7 +44,7 @@ type DaemonStatus struct {
 // pointer for lock-free access and persists a PID file for recovery
 // across restarts.
 type DaemonBinding struct {
-	logger    *logger.Logger
+	logger    *sdk.ConcreteLogger
 	process   atomic.Pointer[os.Process]
 	ctx       context.Context
 	configDir string // override for testing; empty uses os.UserConfigDir
@@ -54,7 +54,7 @@ type DaemonBinding struct {
 // NewDaemonBinding creates a new DaemonBinding. The logFile parameter
 // is the path to the application log file (from --log-file). When
 // empty, the daemon log viewer falls back to ~/.config/qrdb/qrdbd.log.
-func NewDaemonBinding(log *logger.Logger, logFile string) *DaemonBinding {
+func NewDaemonBinding(log *sdk.ConcreteLogger, logFile string) *DaemonBinding {
 	return &DaemonBinding{logger: log, logFile: logFile}
 }
 

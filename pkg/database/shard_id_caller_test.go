@@ -34,7 +34,7 @@ func TestShardIDs_CallerChosenIDIsRefused(t *testing.T) {
 	a := clusterNode(t, replicated)
 	b := clusterNode(t, replicated)
 
-	x, err := a.Create(DatabaseConfig{Name: "x", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+	x, err := a.Create(DatabaseConfig{Name: "x", Backend: BackendMemory, Raft: validRaftConfig(0)})
 	if err != nil {
 		t.Fatalf("create x: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestShardIDs_CallerChosenIDIsRefused(t *testing.T) {
 		name string
 		id   uint64
 	}{{"y", x.ShardID()}, {"z", shard.ShardKV}} {
-		_, err := b.Create(DatabaseConfig{Name: tc.name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(tc.id)})
+		_, err := b.Create(DatabaseConfig{Name: tc.name, Backend: BackendMemory, Raft: validRaftConfig(tc.id)})
 		var refused *CallerShardIDError
 		if !errors.As(err, &refused) {
 			t.Fatalf("create %s naming shard %d = %v, want *CallerShardIDError", tc.name, tc.id, err)
@@ -62,7 +62,7 @@ func TestShardIDs_CallerChosenIDIsRefused(t *testing.T) {
 func TestShardIDs_NoIssuerRefusesARaftCreate(t *testing.T) {
 	m := NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
-	_, err := m.Create(DatabaseConfig{Name: "orphan", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+	_, err := m.Create(DatabaseConfig{Name: "orphan", Backend: BackendMemory, Raft: validRaftConfig(0)})
 	var refused *ShardIssuerRequiredError
 	if !errors.As(err, &refused) || refused.Error() == "" {
 		t.Fatalf("raft create with no issuer = %v, want *ShardIssuerRequiredError", err)
@@ -71,7 +71,7 @@ func TestShardIDs_NoIssuerRefusesARaftCreate(t *testing.T) {
 		t.Fatal("a refused create left a catalog entry")
 	}
 	// A database with no Raft config needs no shard ID and is unaffected.
-	if _, err := m.Create(DatabaseConfig{Name: "plain", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "plain", Backend: BackendMemory}); err != nil {
 		t.Fatalf("non-raft create: %v", err)
 	}
 }
@@ -82,7 +82,7 @@ func TestShardIDs_NoIssuerRefusesARaftCreate(t *testing.T) {
 func TestShardIDs_ProvisionRefusesARaftDatabase(t *testing.T) {
 	m := clusterNode(t, kvstore.NewMemoryKVStore())
 	_, err := m.Provision(context.Background(),
-		DatabaseConfig{Name: "configured", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+		DatabaseConfig{Name: "configured", Backend: BackendMemory, Raft: validRaftConfig(0)})
 	var refused *ProvisionRaftError
 	if !errors.As(err, &refused) || refused.Name != "configured" || refused.Error() == "" {
 		t.Fatalf("Provision with a Raft config = %v, want *ProvisionRaftError", err)
@@ -93,7 +93,7 @@ func TestShardIDs_ProvisionRefusesARaftDatabase(t *testing.T) {
 
 	// A database with no Raft config still provisions.
 	if _, err := m.Provision(context.Background(),
-		DatabaseConfig{Name: "plain", Engine: EngineKV, Backend: BackendMemory}); err != nil {
+		DatabaseConfig{Name: "plain", Backend: BackendMemory}); err != nil {
 		t.Fatalf("Provision without a Raft config: %v", err)
 	}
 }
@@ -103,7 +103,7 @@ func TestShardIDs_ProvisionRefusesARaftDatabase(t *testing.T) {
 // The shard a database was issued is its identity and never changes.
 func TestShardIDs_UpdateRaftCannotChangeTheShard(t *testing.T) {
 	m := clusterNode(t, kvstore.NewMemoryKVStore())
-	db, err := m.Create(DatabaseConfig{Name: "fixed", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+	db, err := m.Create(DatabaseConfig{Name: "fixed", Backend: BackendMemory, Raft: validRaftConfig(0)})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

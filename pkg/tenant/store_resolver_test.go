@@ -677,6 +677,29 @@ func TestIdentityNamespace_ResolverAndDirectCallersAgree(t *testing.T) {
 	}
 }
 
+func TestIAMBehindTenantBarrier(t *testing.T) {
+	tests := []struct {
+		name      string
+		isolation IsolationType
+		want      bool
+	}{
+		{name: "legacy default", want: false},
+		{name: "prefix", isolation: IsolationPrefix, want: false},
+		{name: "barrier", isolation: IsolationBarrier, want: true},
+		{name: "volume", isolation: IsolationVolume, want: true},
+		{name: "raft", isolation: IsolationRaft, want: true},
+		{name: "unknown", isolation: IsolationType("unknown"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IAMBehindTenantBarrier(tt.isolation); got != tt.want {
+				t.Fatalf("IAMBehindTenantBarrier(%q) = %v, want %v", tt.isolation, got, tt.want)
+			}
+		})
+	}
+}
+
 // A resolver built WITHOUT a barrier registry still confines prefix tenants,
 // and still fails closed for tenants that asked for cryptographic isolation.
 //

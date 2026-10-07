@@ -156,8 +156,8 @@ func TestParseEmbeddedDSN_Exported(t *testing.T) {
 	if err := ParseEmbeddedDSN(u, &cfg); err != nil {
 		t.Fatalf("ParseEmbeddedDSN: %v", err)
 	}
-	if cfg.Database != "direct" || cfg.Backend != "memory" || cfg.Engine != "kv" {
-		t.Errorf("cfg = %+v, want database=direct backend=memory engine=kv", cfg)
+	if cfg.Database != "direct" || cfg.Backend != "memory" {
+		t.Errorf("cfg = %+v, want database=direct backend=memory", cfg)
 	}
 	if cfg.Tenant != "acme" || cfg.User != "bob" || cfg.Location != "UTC" {
 		t.Errorf("cfg = %+v, want tenant=acme user=bob loc=UTC", cfg)

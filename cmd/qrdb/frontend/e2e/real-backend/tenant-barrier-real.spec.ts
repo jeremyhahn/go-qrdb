@@ -223,7 +223,6 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
     // The create the web UI's wizard sends for a Shamir barrier.
     const create = await https("POST", `${daemon.adminUrl}/v1/databases`, {
       name: database,
-      engine: "kv",
       backend: "file",
       dataDir: join(daemon.dataDir, "databases-e2e", database),
       barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
@@ -234,7 +233,6 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
     // A Shamir barrier takes no secret.
     const withSecret = await https("POST", `${daemon.adminUrl}/v1/databases`, {
       name: "vault-secret",
-      engine: "kv",
       backend: "file",
       dataDir: join(daemon.dataDir, "databases-e2e", "vault-secret"),
       barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2, secret: "x" },

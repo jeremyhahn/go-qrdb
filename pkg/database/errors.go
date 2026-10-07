@@ -45,16 +45,6 @@ func (e *ReservedNameError) Error() string {
 	return "database: database name is reserved: " + strconv.Quote(e.Name)
 }
 
-// InvalidEngineError is returned when an unrecognized engine type is specified.
-type InvalidEngineError struct {
-	Engine string
-}
-
-// Error returns a human-readable description of the invalid engine type.
-func (e *InvalidEngineError) Error() string {
-	return "database: invalid engine type: " + strconv.Quote(e.Engine)
-}
-
 // InvalidBackendError is returned when an unrecognized backend type is specified.
 type InvalidBackendError struct {
 	Backend string
@@ -150,6 +140,27 @@ func (e *MetaReadError) Error() string {
 
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *MetaReadError) Unwrap() error {
+	return e.Err
+}
+
+// LegacyMetadataError is returned when a database's on-disk meta.json still
+// carries a field this version no longer understands -- today, only the
+// "engine" field removed in v0.45 (OD-13). The no-backward-compat ruling of
+// 2026-10-02 supersedes the alternative of silently stripping the field and
+// rewriting the file: the format is refused outright, fail-closed, and the
+// database must be recreated.
+type LegacyMetadataError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description of the unsupported format.
+func (e *LegacyMetadataError) Error() string {
+	return "database: unsupported metadata format " + strconv.Quote(e.Path) + ": " + e.Err.Error() + "; recreate the database"
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *LegacyMetadataError) Unwrap() error {
 	return e.Err
 }
 
@@ -836,16 +847,134 @@ func (e *BarrierEncryptorUnavailableError) Error() string {
 	return "database: barrier encryptor unavailable for database " + strconv.Quote(e.Name) + " immediately after registration"
 }
 
-// EtcdEngineUnsupportedError is returned when the etcd wire protocol is
-// enabled on a database whose engine is not kv. etcd serves a key-value
-// keyspace; on a timeseries or vector database it would serve that engine's
-// internal keys as etcd keys.
-type EtcdEngineUnsupportedError struct {
-	Name   string
-	Engine EngineType
+// InvalidTenantIsolationError is returned by ResolveBinding for a tenant whose
+// isolation mode is not one the binding table knows. Resolution fails closed
+// rather than guessing where the tenant's data lives.
+type InvalidTenantIsolationError struct {
+	TenantID  string
+	Isolation string
 }
 
-// Error returns a human-readable description.
-func (e *EtcdEngineUnsupportedError) Error() string {
-	return "database: etcd is served only by an engine: kv database; " + e.Name + " is engine: " + string(e.Engine)
+// Error returns a human-readable description of the unknown isolation mode.
+func (e *InvalidTenantIsolationError) Error() string {
+	return "database: tenant " + strconv.Quote(e.TenantID) + " has unknown isolation mode " +
+		strconv.Quote(e.Isolation)
+}
+
+// RaftBackendUnavailableError is returned by ResolveBinding for a backend:
+// raft database on a standalone node, which has no Raft host to place the
+// database's group on.
+type RaftBackendUnavailableError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refused binding.
+func (e *RaftBackendUnavailableError) Error() string {
+	return "database: backend \"raft\" for database " + strconv.Quote(e.Name) +
+		" requires a node in raft mode; this node runs standalone"
+}
+
+// RaftOptionsRequireRaftBackendError is returned by ResolveBinding for a
+// database that sets a raft-only option -- replicas, a dedicated WAL or any
+// raft setting -- on a backend other than raft. Replication is a property of
+// the raft binding only, so the option would be meaningless.
+type RaftOptionsRequireRaftBackendError struct {
+	Name    string
+	Backend BackendType
+	// Option names the first raft-only option the record sets.
+	Option string
+}
+
+// Error returns a human-readable description of the refused option.
+func (e *RaftOptionsRequireRaftBackendError) Error() string {
+	return "database: option " + strconv.Quote(e.Option) + " of database " + strconv.Quote(e.Name) +
+		" requires backend \"raft\", not " + strconv.Quote(string(e.Backend))
+}
+
+// BarrierRequiresPersistentBackendError is returned by ResolveBinding for a
+// per-database barrier on backend: memory. Nothing of a memory store is at
+// rest, so the barrier would be decorative.
+type BarrierRequiresPersistentBackendError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refused barrier.
+func (e *BarrierRequiresPersistentBackendError) Error() string {
+	return "database: a per-database barrier on database " + strconv.Quote(e.Name) +
+		" requires a persistent backend, not \"memory\""
+}
+
+// EtcdRequiresRaftBackendError is returned by ResolveBinding for a database
+// that enables the etcd protocol on a backend other than raft: etcd's
+// revision counter needs a replicated log.
+type EtcdRequiresRaftBackendError struct {
+	Name    string
+	Backend BackendType
+}
+
+// Error returns a human-readable description of the refused protocol.
+func (e *EtcdRequiresRaftBackendError) Error() string {
+	return "database: the etcd protocol on database " + strconv.Quote(e.Name) +
+		" requires backend \"raft\", not " + strconv.Quote(string(e.Backend))
+}
+
+// DataDirOutsideTenantRootError is returned by ResolveBinding for an explicit
+// data_dir that does not lie under a volume- or raft-isolated tenant's data
+// root: that tenant's contract is that its data lives under its root.
+type DataDirOutsideTenantRootError struct {
+	Name       string
+	DataDir    string
+	TenantRoot string
+}
+
+// Error returns a human-readable description of the refused directory.
+func (e *DataDirOutsideTenantRootError) Error() string {
+	return "database: data_dir " + strconv.Quote(e.DataDir) + " of database " + strconv.Quote(e.Name) +
+		" is outside the tenant's data root " + strconv.Quote(e.TenantRoot)
+}
+
+// BackendIsolationConflictError is returned by ResolveBinding for a file or
+// objstore store -- as the database's backend or as its raft group's state
+// storage -- under a volume- or raft-isolated tenant (OD-7, ruled B). Those
+// stores expose key names as file or object names, outside the tenant's
+// encryption.
+type BackendIsolationConflictError struct {
+	Name      string
+	Backend   BackendType
+	Isolation string
+}
+
+// Error returns a human-readable description of the refused backend.
+func (e *BackendIsolationConflictError) Error() string {
+	return "database: backend " + strconv.Quote(string(e.Backend)) + " of database " + strconv.Quote(e.Name) +
+		" exposes key names outside the encryption of a " + strconv.Quote(e.Isolation) + "-isolated tenant"
+}
+
+// BindingRootUnresolvedError is returned by ResolveBinding when the directory
+// a database's store belongs in cannot be determined: a volume- or
+// raft-isolated tenant with no data root on this node, or a node with no data
+// directory. Resolution fails closed rather than placing the store elsewhere.
+type BindingRootUnresolvedError struct {
+	TenantID  string
+	Name      string
+	Isolation string
+}
+
+// Error returns a human-readable description of the unresolved root.
+func (e *BindingRootUnresolvedError) Error() string {
+	return "database: no data root for database " + strconv.Quote(e.Name) + " of " +
+		strconv.Quote(e.Isolation) + "-isolated tenant " + strconv.Quote(e.TenantID)
+}
+
+// InvalidRaftStateStorageError is returned by ResolveBinding for a raft
+// group's state storage that is not pebble, file or memory (OD-8, ruled A).
+type InvalidRaftStateStorageError struct {
+	Name         string
+	StateStorage BackendType
+}
+
+// Error returns a human-readable description of the refused state storage.
+func (e *InvalidRaftStateStorageError) Error() string {
+	return "database: raft state storage " + strconv.Quote(string(e.StateStorage)) + " of database " +
+		strconv.Quote(e.Name) + " is not one of pebble, file, memory"
 }

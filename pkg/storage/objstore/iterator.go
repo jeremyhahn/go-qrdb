@@ -45,26 +45,17 @@ type kvIterator struct {
 // loadEntries lists keys within the iterator bounds, optionally reading values,
 // and returns them sorted ascending. The caller applies Reverse.
 func loadEntries(e *Engine, opts *storage.IteratorOptions) ([]kvEntry, error) {
-	names, err := e.store.List("")
+	all, err := e.scan(nil, !opts.OnlyKeys)
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]kvEntry, 0, len(names))
-	for _, name := range names {
-		key := []byte(name)
-		if len(opts.LowerBound) > 0 && bytes.Compare(key, opts.LowerBound) < 0 {
+	entries := all[:0]
+	for _, entry := range all {
+		if len(opts.LowerBound) > 0 && bytes.Compare(entry.key, opts.LowerBound) < 0 {
 			continue
 		}
-		if len(opts.UpperBound) > 0 && bytes.Compare(key, opts.UpperBound) >= 0 {
+		if len(opts.UpperBound) > 0 && bytes.Compare(entry.key, opts.UpperBound) >= 0 {
 			continue
-		}
-		entry := kvEntry{key: key}
-		if !opts.OnlyKeys {
-			val, getErr := e.Get(key)
-			if getErr != nil {
-				return nil, getErr
-			}
-			entry.value = val
 		}
 		entries = append(entries, entry)
 	}

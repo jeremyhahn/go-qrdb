@@ -33,7 +33,7 @@ func TestNewDatabaseService_InstallsThePort(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := NewDatabaseService(t, mgr)
 	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
-	if _, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "events", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 	info, err := svc.UpdateCompactionForTenant(ctx, "events", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 2})

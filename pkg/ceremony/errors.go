@@ -114,9 +114,6 @@ var (
 	// ErrInitFailed is returned when the ceremony initialization fails.
 	ErrInitFailed = errors.New("ceremony: initialization failed")
 
-	// ErrNotImplemented is returned when an operation is not yet implemented.
-	ErrNotImplemented = errors.New("ceremony: operation not implemented")
-
 	// ErrEnrollmentClosed is returned when an unauthenticated caller (a
 	// request the boot-time sealed-window listener admitted, see
 	// sealedwindow.Anonymous) registers an officer after enrollment has

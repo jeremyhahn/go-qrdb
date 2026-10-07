@@ -61,7 +61,10 @@ func WithRateLimitPolicies(policies *ratelimit.Registry) Option {
 // characters elsewhere in the stack), so it cannot be forged by a crafted
 // subject name colliding two distinct triples into the same bucket.
 func rateLimitKey(identity *auth.Identity, perm permission.Permission) string {
-	return identity.TenantID + "\x00" + identity.Subject + "\x00" + perm.String()
+	// The tenant is normalized: an empty TenantID IS the system tenant, and
+	// keying on the raw value would give one system-tenant caller two
+	// buckets -- "" and tenantid.System -- to alternate between.
+	return tenantid.Normalize(identity.TenantID) + "\x00" + identity.Subject + "\x00" + perm.String()
 }
 
 // checkRateLimit enforces the Policy declared for perm, if any, against

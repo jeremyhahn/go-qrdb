@@ -1,6 +1,6 @@
 # Rate Limiting — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 This feature has two audiences: the **embedder** who wires qrdb into a
 process and decides which operations need a capacity bound, and the **API
@@ -84,6 +84,12 @@ to be.** Rate limiting is scoped per **(tenant, subject, permission)**
 triple — check whether the caller is issuing requests as several distinct
 identities you did not expect to share one budget, or as one identity you
 expected to have a higher `Burst` than it was given.
+
+**An identity with no tenant set shares a budget with one naming the
+system tenant explicitly.** An empty `TenantID` IS the system tenant for
+rate-limiting purposes (the same rule `tenant.FromContext` uses elsewhere):
+the two are folded onto one bucket before it is keyed, so they cannot be
+two separate budgets to alternate between.
 
 **Throttling behaves differently right after a restart than it did before.**
 Buckets are in-memory only; a restart resets every caller's bucket to full

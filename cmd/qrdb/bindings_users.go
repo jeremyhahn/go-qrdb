@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // UserBinding exposes user management operations to the Wails frontend.
 type UserBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewUserBinding creates a new UserBinding backed by the given connection.
-func NewUserBinding(log *logger.Logger, conn *ConnectionBinding) *UserBinding {
+func NewUserBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *UserBinding {
 	return &UserBinding{logger: log, conn: conn}
 }
 

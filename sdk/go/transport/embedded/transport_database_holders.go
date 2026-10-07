@@ -124,6 +124,9 @@ func (t *Transport) DatabaseBarrierShareClaimBegin(ctx context.Context, req *tra
 	if err != nil {
 		return nil, delayed("DatabaseBarrierShareClaimBegin", err)
 	}
+	if err := t.limitHolderAct(ctx, "DatabaseBarrierShareClaimBegin", databaseScopeKey(ctx, req.Database)); err != nil {
+		return nil, err
+	}
 	ctx, thumbprint := claimContext(ctx)
 	challenge, err := hs.DatabaseBarrierShareClaimBegin(ctx, req.Database, req.Username, thumbprint)
 	if err != nil {
@@ -147,6 +150,9 @@ func (t *Transport) DatabaseBarrierShareClaimComplete(ctx context.Context, req *
 	hs, err := t.databaseHolders("DatabaseBarrierShareClaimComplete", req.Database)
 	if err != nil {
 		return nil, delayed("DatabaseBarrierShareClaimComplete", err)
+	}
+	if err := t.limitHolderAct(ctx, "DatabaseBarrierShareClaimComplete", databaseScopeKey(ctx, req.Database)); err != nil {
+		return nil, err
 	}
 	ctx, thumbprint := claimContext(ctx)
 	result, err := hs.DatabaseBarrierShareClaimComplete(ctx, req.Database, req.Username, req.NonceHex, req.Signature, thumbprint)

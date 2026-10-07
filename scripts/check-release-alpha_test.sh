@@ -232,6 +232,8 @@ fixture() {
 	git -C "${DIR}" config commit.gpgsign false
 	git -C "${DIR}" config tag.gpgsign false
 	cp "${MAKEFILE}" "${DIR}/Makefile"
+	mkdir -p "${DIR}/test/integration"
+	cp "$(dirname "${MAKEFILE}")/test/integration/features.mk" "${DIR}/test/integration/"
 	cp "${SCRIPT_DIR}/check-tag-lockstep.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/check-version-reconciled.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/lockstep-modules.sh" "${DIR}/scripts/"

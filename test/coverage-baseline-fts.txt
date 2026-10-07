@@ -1,0 +1,30 @@
+# Per-package coverage baseline for pkg/fts's REAL implementation
+# (go-qrdb, #610), checked by the coverage ratchet (test/tools/coverratchet)
+# exactly as test/coverage-baseline.txt is -- but through its OWN gate, not
+# through `make coverage`.
+#
+# WHY A SEPARATE FILE: WITH_QRDB_FTS defaults to 0, so `make coverage`'s
+# profile compiles pkg/fts's STUB (pkg/fts/stub.go), and the pkg/fts row in
+# test/coverage-baseline.txt is that stub's number, not this package's. The
+# ratchet checks exactly one "-tags" assertion against one baseline file
+# (ReadBaseline refuses a baseline whose recorded tags disagree with the
+# profile's), so a package whose real implementation needs a tag the repo-wide
+# run does not carry needs its own baseline, measured under its own tags.
+#
+# Each line is "<import path> <percent>": the coverage that package is held
+# to. `make coverage-fts` fails when it drops below this number, or when the
+# package stops being measured.
+#
+# The number holds only under the build-tag set recorded below: coverage
+# depends on which files the tags compile. `make coverage-fts` measures under
+# the Makefile's FTS_TAGS (BUILD_TAGS plus qrdb_fts), and the gate refuses a
+# profile measured under any other set. A figure taken by hand is comparable
+# only under the same tags -- `make print-build-tags` prints BUILD_TAGS; add
+# qrdb_fts to it.
+#
+# Regenerate with `make coverage-fts-baseline`, never by hand. A regenerated
+# baseline may RAISE the number freely. A LOWERED number in review is the one
+# thing to question: it means pkg/fts's real coverage fell, being written down
+# as the new normal.
+# build-tags: codec_bson codec_json codec_msgpack codec_protobuf codec_yaml qrdb_embedded qrdb_etcd qrdb_fts qrdb_mysql qrdb_pgsql qrdb_sql qrdb_ts qrdb_vector raft
+github.com/jeremyhahn/go-qrdb/pkg/fts 97.70

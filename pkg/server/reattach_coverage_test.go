@@ -52,7 +52,6 @@ func TestReattachRaftTenants_SkipsNonRaftDatabase(t *testing.T) {
 	tenantCtx := tenant.WithTenantID(ctx, "rnoskip")
 	_, err := mgr.CreateForTenant(tenantCtx, database.DatabaseConfig{
 		Name:    "memdb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 	})
 	require.NoError(t, err, "CreateForTenant(memdb): unexpected error")

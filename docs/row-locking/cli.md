@@ -48,7 +48,6 @@ setting under its own `sql` section, and takes it at every start:
 ```yaml
 databases:
   - name: shop
-    engine: kv
     backend: pebble
     sql:
       concurrency: pessimistic
@@ -79,6 +78,10 @@ inside a transaction, over a wire protocol or the in-process driver.
 ## Parity
 
 `qrdb database update-sql` and `--sql-concurrency` are exercised on every
-protocol by the multi-protocol CLI integration suite
+qrdb transport by the multi-protocol CLI suite in `test/integration/api`
 (`TestCLIMultiProtocolDatabaseUpdateSQL`), alongside the other `qrdb database`
-verbs.
+verbs. That suite needs Docker, so it is not part of
+`make integration-test-row-locking`, which runs `sql_row_lock_test.go` over the
+MySQL wire protocol only. The `row-locking` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md) records
+the resulting gap on the qrdb-transport axis.

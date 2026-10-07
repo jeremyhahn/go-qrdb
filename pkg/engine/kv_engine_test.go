@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
@@ -1283,71 +1281,6 @@ func TestKVEngine_BatchWithMixedOps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WithKVPebbleDB
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_WithPebbleDB(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
-	if err != nil {
-		t.Fatalf("pebble.Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	eng := NewKVEngine(stg, WithKVPebbleDB(db))
-
-	// Create index -- should use PebbleIndex.
-	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("index create with pebble: %v", err)
-	}
-
-	if err := eng.Close(context.Background()); err != nil {
-		t.Errorf("eng.Close: %v", err)
-	}
-}
-
-func TestKVEngine_WithPebbleDB_IndexQuery(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
-	if err != nil {
-		t.Fatalf("pebble.Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	eng := NewKVEngine(stg, WithKVPebbleDB(db))
-	defer func() { _ = eng.Close(context.Background()) }()
-
-	// Put data then create index (backfill).
-	applyKVEntries(t, eng, []sm.Entry{
-		kvPutEntry(1, "u:1", `{"name":"alice"}`),
-	})
-
-	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("index create: %v", err)
-	}
-
-	got, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
-		IndexName: "by_name",
-		Value:     []byte("alice"),
-	})
-	if err != nil {
-		t.Fatalf("index query: %v", err)
-	}
-	ids := got.([][]byte)
-	if len(ids) != 1 {
-		t.Errorf("expected 1 ID, got %d", len(ids))
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Engine interface compliance
@@ -2162,6 +2095,17 @@ func (f *failingIndex) DeleteBatch(_ storage.Batch, _ []byte, _ []byte) error {
 		return &injectedError{msg: "injected index delete batch error"}
 	}
 	return nil
+}
+
+// GetInBatch forwards to the wrapped real index's GetInBatch, falling back to
+// Get if it is not itself batch-aware. failingIndex embeds index.Index (the
+// interface, not the concrete type), so the embedding alone does not promote
+// a method -- GetInBatch -- that is only declared on index.BatchableIndex.
+func (f *failingIndex) GetInBatch(batch storage.Batch, fieldValue []byte) ([][]byte, error) {
+	if bidx, ok := f.Index.(index.BatchableIndex); ok {
+		return bidx.GetInBatch(batch, fieldValue)
+	}
+	return f.Index.Get(fieldValue)
 }
 
 // newEngineWithFailingStorage creates a KVEngine backed by a failingStorage

@@ -102,6 +102,7 @@ type Server struct {
 	userAuthFactorSvc service.UserAuthFactorServicer
 	tenantBarrierSvc  tenant.TenantServicer
 	auditLogger       audit.AuditLogger
+	replicatedAudit   *service.OptInAuditLogger
 
 	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
 	soGate   *authmw.SOGate
@@ -761,6 +762,14 @@ func (s *Server) Start() error {
 	if s.ceremonySvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCeremonyService(s.ceremonySvc))
 	}
+	// The SAME forwarder the interceptor chain above installs for the
+	// generic per-database NotAReplicaError path: a handler refused with a
+	// leader-only error (CeremonyInitialize's admin-credential step) uses it
+	// to forward to the system shard's leader directly, exactly as the TCP
+	// gRPC server wires its own forwarder into qrdbServiceServer.
+	if s.forwarder != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterReplicaForwarding(s.forwarder))
+	}
 	if s.ceremonyCA != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCeremonyCA(s.ceremonyCA))
 	}
@@ -842,8 +851,8 @@ func (s *Server) Start() error {
 	// Register AuditService alongside QRDBService when an audit logger is set.
 	// Authorization: requires "audit:query" permission.
 	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
-	if s.auditLogger != nil {
-		grpcpkg.RegisterAuditService(s.server, s.auditLogger)
+	if s.auditLogger != nil || s.replicatedAudit != nil {
+		grpcpkg.RegisterAuditService(s.server, s.auditLogger, s.replicatedAudit)
 	}
 
 	// Register AuthFactorService alongside QRDBService when configured.

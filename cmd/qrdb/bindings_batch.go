@@ -19,8 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -119,13 +118,13 @@ type WailsImportOptions struct {
 
 // BatchBinding exposes atomic batch operations to the Wails frontend.
 type BatchBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewBatchBinding creates a new BatchBinding backed by the given
 // connection.
-func NewBatchBinding(log *logger.Logger, conn *ConnectionBinding) *BatchBinding {
+func NewBatchBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *BatchBinding {
 	return &BatchBinding{logger: log, conn: conn}
 }
 
@@ -196,7 +195,7 @@ func (b *BatchBinding) ImportFile(filePath string, opts WailsImportOptions) (*tr
 
 // AvailableCodecs returns the names of all compiled-in codecs.
 func (b *BatchBinding) AvailableCodecs() []string {
-	return codec.AvailableCodecs()
+	return sdk.AvailableCodecs()
 }
 
 // AvailableImportFormats returns the supported import file formats.

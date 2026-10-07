@@ -77,6 +77,49 @@ func TestTenantFromContextMissing(t *testing.T) {
 	}
 }
 
+// TestEffectiveTenantAlias verifies the SDK re-export is pkg/tenant.EffectiveTenant
+// itself (same function value), so a module host sees the identical behaviour
+// qrdb's own IAM routing relies on: a system identity gets no lift into
+// another tenant.
+func TestEffectiveTenantAlias(t *testing.T) {
+	ctx := ContextWithTenant(context.Background(), "acme")
+	got, err := EffectiveTenant(ctx, "", "op")
+	if err != nil {
+		t.Fatalf("EffectiveTenant unexpected error: %v", err)
+	}
+	if got != "acme" {
+		t.Errorf("EffectiveTenant = %q, want %q (the caller's own tenant)", got, "acme")
+	}
+
+	sysCtx := ContextWithTenant(context.Background(), SystemTenantID)
+	var xt *CrossTenantDeniedError
+	if _, err := EffectiveTenant(sysCtx, "acme", "op"); !errors.As(err, &xt) {
+		t.Fatalf("EffectiveTenant for a system identity targeting acme: err = %v, want *CrossTenantDeniedError", err)
+	}
+}
+
+// TestOwnTenantAlias verifies OwnTenant refuses even a system identity's
+// cross-tenant request, unlike EffectiveTenant, through the SDK boundary.
+func TestOwnTenantAlias(t *testing.T) {
+	ctx := ContextWithTenant(context.Background(), SystemTenantID)
+	_, err := OwnTenant(ctx, "acme", "op")
+	var xt *CrossTenantDeniedError
+	if !errors.As(err, &xt) {
+		t.Fatalf("OwnTenant err = %v, want *CrossTenantDeniedError", err)
+	}
+}
+
+// TestCrossTenantDeniedErrorAlias verifies CrossTenantDeniedError aliases
+// pkg/tenant.CrossTenantDeniedError, so a composing service can type-assert
+// through the SDK boundary without importing pkg/tenant directly.
+func TestCrossTenantDeniedErrorAlias(t *testing.T) {
+	var sdkErr error = &CrossTenantDeniedError{IdentityTenantID: "a", RequestedTenantID: "b", Op: "op"}
+	var pkgErr *tenant.CrossTenantDeniedError
+	if !errors.As(sdkErr, &pkgErr) {
+		t.Fatal("CrossTenantDeniedError does not alias pkg/tenant.CrossTenantDeniedError")
+	}
+}
+
 // TestErrTenantBarrierNotEnabledAlias verifies the SDK re-export is the same
 // sentinel value as pkg/tenant.ErrBarrierNotEnabled so composing services can
 // classify the error through the SDK boundary with errors.Is.

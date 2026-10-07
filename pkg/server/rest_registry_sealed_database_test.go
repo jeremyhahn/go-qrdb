@@ -59,7 +59,6 @@ func newSealedDatabaseRegistry(t *testing.T, owner, name string) (*restServiceRe
 	db, err := mgr.Create(database.DatabaseConfig{
 		TenantID: owner,
 		Name:     name,
-		Engine:   database.EngineKV,
 		Backend:  database.BackendMemory,
 	})
 	if err != nil {

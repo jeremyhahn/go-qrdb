@@ -43,15 +43,16 @@ func newAuditCmd() *cobra.Command {
 // newAuditQueryCmd creates the "audit query" subcommand.
 func newAuditQueryCmd() *cobra.Command {
 	var (
-		from     string
-		to       string
-		actor    string
-		resource string
-		action   string
-		outcome  string
-		tenantID string
-		limit    int
-		cursor   string
+		from       string
+		to         string
+		actor      string
+		resource   string
+		action     string
+		outcome    string
+		tenantID   string
+		limit      int
+		cursor     string
+		replicated bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,13 +61,14 @@ func newAuditQueryCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			filter := transport.AuditFilter{
-				Actor:    actor,
-				Resource: resource,
-				Action:   action,
-				Outcome:  outcome,
-				TenantID: tenantID,
-				Limit:    limit,
-				Cursor:   cursor,
+				Actor:      actor,
+				Resource:   resource,
+				Action:     action,
+				Outcome:    outcome,
+				TenantID:   tenantID,
+				Limit:      limit,
+				Cursor:     cursor,
+				Replicated: replicated,
 			}
 
 			if from != "" {
@@ -124,23 +126,37 @@ func newAuditQueryCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Filter by tenant ID")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of events to return (server default 100, max 1000)")
 	cmd.Flags().StringVar(&cursor, "cursor", "", "Pagination cursor from a previous response")
+	cmd.Flags().BoolVar(&replicated, "replicated", false,
+		"Read the cluster-wide replicated audit chain instead of the node-local trail; "+
+			"a tenant not entitled to it sees an empty result, not an error")
 
 	return cmd
 }
 
 // newAuditVerifyCmd creates the "audit verify" subcommand.
 func newAuditVerifyCmd() *cobra.Command {
+	var (
+		replicated bool
+		tenantID   string
+	)
+
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Verify the audit log's tamper-evidence hash chain",
 		Long: "Verify the audit log's tamper-evidence hash chain across the active file and every " +
-			"rotation archive. Requires the audit:verify permission. Exits non-zero when the chain " +
-			"does not verify -- that is a tamper finding, distinct from a request failure.",
+			"rotation archive, or (with --replicated) the hash-chain continuity of the cluster-wide " +
+			"replicated audit chain for one tenant. Requires the audit:verify permission. Exits " +
+			"non-zero when the chain does not verify -- that is a tamper finding, distinct from a " +
+			"request failure.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ac := client.Audit()
 			if ac == nil {
 				return &AuditClientUnavailableError{}
+			}
+
+			if replicated {
+				return runAuditVerifyReplicated(cmd, ac, tenantID)
 			}
 
 			result, err := ac.VerifyChain(cmd.Context())
@@ -168,7 +184,37 @@ func newAuditVerifyCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().BoolVar(&replicated, "replicated", false,
+		"Verify the cluster-wide replicated audit chain instead of the node-local trail")
+	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant to verify (--replicated only); defaults to the caller's own")
+
 	return cmd
+}
+
+// runAuditVerifyReplicated handles "qrdb audit verify --replicated".
+func runAuditVerifyReplicated(cmd *cobra.Command, ac transport.AuditClient, tenantID string) error {
+	result, err := ac.VerifyReplicatedChain(cmd.Context(), tenantID)
+	if err != nil {
+		return err
+	}
+
+	switch outputFormat {
+	case "json":
+		if err := printJSON(result); err != nil {
+			return err
+		}
+	case "yaml":
+		if err := printYAML(result); err != nil {
+			return err
+		}
+	default:
+		printChainContinuityResult(result)
+	}
+
+	if !result.Verified {
+		return &AuditChainTamperedError{Reason: result.Reason}
+	}
+	return nil
 }
 
 // printAuditVerifyResult renders an AuditVerifyResult as human-readable text.
@@ -189,6 +235,20 @@ func printAuditVerifyResult(result *transport.AuditVerifyResult) {
 	if result.Handoff != "" {
 		_, _ = fmt.Fprintf(outputWriter, "Handoff: %s\n", result.Handoff)
 	}
+}
+
+// printChainContinuityResult renders a ChainContinuityResult (the
+// cluster-wide replicated audit chain's verification outcome) as
+// human-readable text.
+func printChainContinuityResult(result *transport.ChainContinuityResult) {
+	_, _ = fmt.Fprintf(outputWriter, "Verified: %t\n", result.Verified)
+	if result.Reason != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Reason: %s\n", result.Reason)
+	}
+	_, _ = fmt.Fprintf(outputWriter, "Records: %s\n", strconv.FormatInt(result.Records, 10))
+	_, _ = fmt.Fprintf(outputWriter, "Head: %s\n", strconv.FormatUint(result.Head, 10))
+	_, _ = fmt.Fprintf(outputWriter, "Low: %s\n", strconv.FormatUint(result.Low, 10))
+	_, _ = fmt.Fprintf(outputWriter, "Genesis: %t\n", result.Genesis)
 }
 
 // AuditChainTamperedError is returned by "qrdb audit verify" when the audit

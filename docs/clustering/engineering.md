@@ -670,6 +670,14 @@ type ImbalanceReport struct {
   load the CA from cache, and it comes back on the same persisted Noise static
   key so a peer that pinned that key still enrolls — see
   [Enrollment role](#enrollment-role).
+- **Every other admitted, unsealed member serves it too, from the moment it
+  starts.** `cmd/qrdbd`'s `servesAnchor`/`startMemberAnchorAdvertiser`
+  (`bootstrap.go`, `start.go`) register `/v1/ca/bootstrap` and start an
+  anchor-only Noise listener for any member `clusterenroll.Resolve`'s
+  first-node path did not already start one for, from the same cached
+  certificate — see [architecture.md](architecture.md#every-admitted-unsealed-member-serves-the-anchor).
+  The node that generated Key A being gone for good no longer strands the
+  rest of the cluster's enrollment surface.
 - **In FIPS 140-3 mode a first node still advertises, over the approved methods
   only.** The Noise NK listener is excluded — its X25519 handshake is not
   approved — and the node comes up serving `/v1/ca/bootstrap` for SPKI, DANE and
@@ -755,6 +763,7 @@ database's owning tenant.
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | Admin `StartShard` naming a member no committed membership names (founder) | `*service.MemberIdentityError`, coded as for member add; the shard does not start. A joiner leaves the member out and keeps the anchors it can resolve | **yes** |
 | Rebalance move of the system shard | `*service.RebalanceSystemShardMoveError`, logged; the move counts as failed | **yes** |
+| Rebalance MOVE submitted (or forwarded) to a node holding no replica of the dedicated group at all | `resolveMoveLeader` (`pkg/service/rebalance_service.go`) picks any OTHER replica, never the MOVE's own source, as the forwarding target — so the chain is bounded at 3 hops, deterministically: guessed member (never the source) → the group's actual current leader, if different → the post-transfer new leader, only if that leader was also the source. `forwardToLeader`'s `maxForwardHops` (`pkg/api/rest/server.go`) is sized for exactly this chain. Previously, guessing the source outright could need a hop `forwardToLeader`'s guard rejected as a false `*rest.LeaderForwardLoopError`, observed in practice | **yes** |
 | Rebalance move to a host the shard's committed membership already names (voter, observer or witness) | `*service.RebalanceTargetHostsReplicaError`, logged; the move counts as failed. The new replica ID is past every ID the membership has used, removed ones included | **yes** |
 | Rebalance move to a host with no committed identity | `*service.MemberIdentityError`, logged; the move counts as failed | **yes** |
 | Founding a dedicated database whose placement names a host the system shard never committed | `*service.MemberIdentityError` from the factory; the shard does not start | **yes** |
@@ -841,8 +850,10 @@ and neither opens a listener there — see
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,
   `cluster_enable_encryption_test.go` — live in `make integration-test-cluster`.
-  **That stage is not currently wired into CI**, so cluster behaviour is not
-  exercised by CI today. This is a known and tracked gap.
+  **That stage runs in CI** as the `integration-cluster` and
+  `integration-cluster-tenancy` jobs (`.github/workflows/ci.yml`), both
+  required by the `ci-gate` job, so cluster behaviour is exercised on every
+  push and pull request.
 
 ## Observability
 
@@ -851,3 +862,7 @@ and neither opens a listener there — see
 - `rebalance report` gives per-node load and names hotspots;
   `ImbalanceScore` is the single number to alert on.
 - Membership changes are audited through [../audit/](../audit/).
+
+## Integration Target
+
+Run `make integration-test-clustering` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `clustering`.

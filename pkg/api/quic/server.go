@@ -100,6 +100,7 @@ type Server struct {
 	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
+	replicatedAudit   *service.OptInAuditLogger
 
 	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
 	soGate            *authmw.SOGate
@@ -566,6 +567,15 @@ func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption 
 // When set, the "audit.Query" frame method is registered.
 func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
+}
+
+// WithReplicatedAuditLogger configures the QUIC server with the
+// cluster-wide, per-tenant-opt-in replicated audit sink
+// (docs/audit/architecture.md#cluster-wide-replicated-trail). When set, the
+// "audit.Query" frame method's replicated payload field and the
+// "audit.VerifyReplicatedChain" frame method are registered.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) ServerOption {
+	return func(s *Server) { s.replicatedAudit = l }
 }
 
 // WithAuthMiddleware configures the QUIC server with authentication and
@@ -1124,6 +1134,19 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		if s.forwarder != nil && onBehalf == nil {
 			if refusal, ok := errors.AsType[*placement.NotAReplicaError](handlerErr); ok {
 				if st, body, forwarded := s.forwarder.Forward(ctx, auth.IdentityFromContext(ctx), method, database, payload, refusal); forwarded {
+					_ = s.writeResponse(stream, requestID, st, body)
+					s.logRequest(method, requestID, st, start)
+					return
+				}
+			}
+			// The admin-credential step of CeremonyInitialize must commit on
+			// the system shard's leader (service.CeremonyServiceWithLeaderGate);
+			// a follower forwards the identical request to the leader through
+			// the SAME FrameForwarder the per-database path above uses, rather
+			// than answering its own refusal (node parity, owner ruling
+			// 2026-10-06).
+			if notLeader, ok := errors.AsType[*service.AdminCredentialNotLeaderError](handlerErr); ok {
+				if st, body, forwarded := s.forwarder.ForwardToLeader(ctx, auth.IdentityFromContext(ctx), method, database, payload, notLeader.LeaderAddress); forwarded {
 					_ = s.writeResponse(stream, requestID, st, body)
 					s.logRequest(method, requestID, st, start)
 					return

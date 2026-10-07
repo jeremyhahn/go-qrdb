@@ -14,13 +14,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package timeseries provides time-series data storage and aggregation built
-// on PebbleDB. Data points are stored using composite keys that enable
-// efficient time-range queries.
+// Package timeseries provides time-series data storage and aggregation over
+// the storage.Storage abstraction. Data points are stored using composite
+// keys that enable efficient time-range queries. Every write stages into a
+// caller-supplied storage.Batch rather than committing one of its own, so a
+// time-series write is atomic with whatever else the caller's apply batch
+// contains; every read goes through the storage.Reader half of the same
+// storage.Storage, which is what makes this package work identically over
+// memory, file, pebble or objstore.
 package timeseries
 
 import (
-	"context"
 	"encoding/binary"
 	"hash/fnv"
 	"math"
@@ -28,75 +32,28 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// Storage provides time-series data storage and aggregation over PebbleDB.
-// All methods are safe for concurrent use.
+// Storage provides time-series data storage and aggregation over a
+// storage.Storage. All methods are safe for concurrent use.
 type Storage struct {
-	db     *pebble.DB
-	ownsDB bool
+	stg    storage.Storage
 	closed atomic.Bool
 }
 
-// New creates a new time-series Storage backed by the given PebbleDB instance.
-// Returns a NilDBError if db is nil.
-func New(db *pebble.DB) (*Storage, error) {
-	if db == nil {
+// New creates a new time-series Storage over the given storage.Storage. The
+// Storage does not own stg: the caller opens and closes it, exactly as the
+// caller owns the storage.Batch passed to every write method.
+func New(stg storage.Storage) (*Storage, error) {
+	if stg == nil {
 		return nil, &NilDBError{}
 	}
-	return &Storage{db: db}, nil
+	return &Storage{stg: stg}, nil
 }
 
-// StorageOption configures a new Storage instance created by NewWithDir.
-// Options are applied to the pebble.Options before the
-// database is opened.
-type StorageOption func(*pebble.Options)
-
-// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
-// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
-// barrier is nil is a no-op, so plaintext deployments and tests are
-// unaffected.
-func WithEncryptor(enc *atrest.Encryptor) StorageOption {
-	return func(o *pebble.Options) {
-		enc.Apply(o)
-	}
-}
-
-// NewWithDir creates a new time-series Storage that owns its own PebbleDB
-// instance rooted at dataDir. Optional StorageOption values configure the
-// underlying PebbleDB instance before it is opened. The caller must call
-// Close to release all resources including the underlying PebbleDB.
-func NewWithDir(dataDir string, opts ...StorageOption) (*Storage, error) {
-	if dataDir == "" {
-		return nil, &EmptyDirError{}
-	}
-	pOpts := &pebble.Options{}
-	for _, opt := range opts {
-		opt(pOpts)
-	}
-	// Route Pebble's internal WAL/compaction chatter to slog DEBUG unless an
-	// option already supplied a logger.
-	if pOpts.Logger == nil {
-		pOpts.Logger = pebblestore.NewLogger(nil)
-	}
-	db, err := pebble.Open(dataDir, pOpts)
-	if err != nil {
-		return nil, &OpenDirError{Dir: dataDir, Err: err}
-	}
-	return &Storage{db: db, ownsDB: true}, nil
-}
-
-// DB returns the underlying PebbleDB instance.
-func (s *Storage) DB() *pebble.DB {
-	return s.db
-}
-
-// Write stores a single data point in PebbleDB.
-func (s *Storage) Write(metric string, value float64, timestamp time.Time, tags map[string]string) error {
+// Write stages a single data point into batch.
+func (s *Storage) Write(batch storage.Batch, metric string, value float64, timestamp time.Time, tags map[string]string) error {
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
@@ -106,56 +63,45 @@ func (s *Storage) Write(metric string, value float64, timestamp time.Time, tags 
 	if timestamp.IsZero() {
 		return &InvalidTimestampError{}
 	}
-
-	dp := &DataPoint{
+	return s.writePointInBatch(batch, &DataPoint{
 		Metric:    metric,
 		Value:     value,
 		Timestamp: timestamp,
 		Tags:      tags,
-	}
-
-	key := buildDataPointKey(metric, timestamp, tags)
-	encoded, err := encodeDataPoint(dp)
-	if err != nil {
-		return err
-	}
-
-	if err := s.db.Set(key, encoded, pebble.Sync); err != nil {
-		return &WriteError{Err: err}
-	}
-	if err := s.updateMetricIndex(metric); err != nil {
-		return err
-	}
-	if err := s.updateTagIndexes(metric, tags); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
-// WritePoint writes a single DataPoint to storage after validation.
-func (s *Storage) WritePoint(_ context.Context, point *DataPoint) error {
+// WritePoint stages a single validated DataPoint into batch.
+func (s *Storage) WritePoint(batch storage.Batch, point *DataPoint) error {
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
 	if err := point.Validate(); err != nil {
 		return err
 	}
+	return s.writePointInBatch(batch, point)
+}
+
+// writePointInBatch stages a point's record and its metric/tag index entries
+// into batch. The caller has already validated point.
+func (s *Storage) writePointInBatch(batch storage.Batch, point *DataPoint) error {
 	key := buildDataPointKey(point.Metric, point.Timestamp, point.Tags)
 	encoded, err := encodeDataPoint(point)
 	if err != nil {
 		return err
 	}
-	if err := s.db.Set(key, encoded, pebble.Sync); err != nil {
+	if err := batch.Set(key, encoded); err != nil {
 		return &WriteError{Err: err}
 	}
-	if err := s.updateMetricIndex(point.Metric); err != nil {
+	if err := s.updateMetricIndexInBatch(batch, point.Metric); err != nil {
 		return err
 	}
-	return s.updateTagIndexes(point.Metric, point.Tags)
+	return s.updateTagIndexesInBatch(batch, point.Tags)
 }
 
-// WriteBatch atomically stores multiple data points using a PebbleDB batch.
-func (s *Storage) WriteBatch(points []DataPoint) error {
+// WriteBatch stages multiple data points into batch, along with the metric
+// and tag index entries their metrics and tags require.
+func (s *Storage) WriteBatch(batch storage.Batch, points []DataPoint) error {
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
@@ -169,9 +115,6 @@ func (s *Storage) WriteBatch(points []DataPoint) error {
 		}
 	}
 
-	batch := s.db.NewBatch()
-	defer func() { _ = batch.Close() }()
-
 	uniqueMetrics := make(map[string]bool)
 	uniqueTags := make(map[string]bool)
 
@@ -181,7 +124,7 @@ func (s *Storage) WriteBatch(points []DataPoint) error {
 		if err != nil {
 			return err
 		}
-		if err := batch.Set(key, encoded, pebble.Sync); err != nil {
+		if err := batch.Set(key, encoded); err != nil {
 			return &WriteError{Err: err}
 		}
 
@@ -191,30 +134,27 @@ func (s *Storage) WriteBatch(points []DataPoint) error {
 		}
 	}
 
-	// Add metric index entries to the batch.
 	for metric := range uniqueMetrics {
 		idxKey := []byte(KeyPrefixMetricIndex + metric)
-		if err := batch.Set(idxKey, []byte{1}, nil); err != nil {
+		if err := batch.Set(idxKey, []byte{1}); err != nil {
 			return &WriteError{Err: err}
 		}
 	}
 
-	// Add tag index entries to the batch.
 	for tagKV := range uniqueTags {
 		idxKey := []byte(KeyPrefixTagIndex + tagKV)
-		if err := batch.Set(idxKey, []byte{1}, nil); err != nil {
+		if err := batch.Set(idxKey, []byte{1}); err != nil {
 			return &WriteError{Err: err}
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return &WriteError{Err: err}
-	}
 	return nil
 }
 
 // Query retrieves data points for a metric within the given time range.
 // Optional TSQueryOption values configure tag filtering, limits, and ordering.
+// Reads go through the Storage's own storage.Reader: a query is never part of
+// an in-flight apply batch, so it always sees committed state.
 func (s *Storage) Query(metric string, start, end time.Time, opts ...TSQueryOption) ([]DataPoint, error) {
 	if s.closed.Load() {
 		return nil, &ClosedError{}
@@ -235,26 +175,16 @@ func (s *Storage) Query(metric string, start, end time.Time, opts ...TSQueryOpti
 	// Upper bound is exclusive; use end+1ns to include data points at exactly end.
 	upperBound := buildRangeStartKey(metric, end.Add(time.Nanosecond))
 
-	iterOpts := &pebble.IterOptions{
+	iter := s.stg.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
-	}
-
-	iter, err := s.db.NewIter(iterOpts)
-	if err != nil {
-		return nil, &ReadError{Err: err}
-	}
+	})
 	defer func() { _ = iter.Close() }()
 
 	var results []DataPoint
 
-	for iter.First(); iter.Valid(); iter.Next() {
-		val, err := iter.ValueAndErr()
-		if err != nil {
-			return nil, &ReadError{Err: err}
-		}
-
-		dp, err := decodeDataPoint(val)
+	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
+		dp, err := decodeDataPoint(iter.Value())
 		if err != nil {
 			return nil, err
 		}
@@ -289,7 +219,7 @@ func (s *Storage) Query(metric string, start, end time.Time, opts ...TSQueryOpti
 
 // QueryRich performs a rich query with aggregation, downsampling, and groupBy
 // support. It returns a QueryResult containing raw or aggregated data.
-func (s *Storage) QueryRich(_ context.Context, req *QueryRequest) (*QueryResult, error) {
+func (s *Storage) QueryRich(req *QueryRequest) (*QueryResult, error) {
 	if s.closed.Load() {
 		return nil, &ClosedError{}
 	}
@@ -300,22 +230,15 @@ func (s *Storage) QueryRich(_ context.Context, req *QueryRequest) (*QueryResult,
 	lowerBound := buildRangeStartKey(req.Metric, req.StartTime)
 	upperBound := buildRangeStartKey(req.Metric, req.EndTime.Add(time.Nanosecond))
 
-	iter, err := s.db.NewIter(&pebble.IterOptions{
+	iter := s.stg.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
-	if err != nil {
-		return nil, &ReadError{Err: err}
-	}
 	defer func() { _ = iter.Close() }()
 
 	points := make([]*DataPoint, 0)
-	for iter.First(); iter.Valid(); iter.Next() {
-		val, err := iter.ValueAndErr()
-		if err != nil {
-			return nil, &ReadError{Err: err}
-		}
-		dp, err := decodeDataPoint(val)
+	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
+		dp, err := decodeDataPoint(iter.Value())
 		if err != nil {
 			return nil, err
 		}
@@ -352,8 +275,11 @@ func (s *Storage) QueryRich(_ context.Context, req *QueryRequest) (*QueryResult,
 	return result, nil
 }
 
-// DeleteSeries deletes data points matching the given DeleteRequest criteria.
-func (s *Storage) DeleteSeries(_ context.Context, req *DeleteRequest) error {
+// DeleteSeries stages the deletion of data points matching req into batch.
+// The matching scan reads through batch itself (not the Storage's own
+// storage.Reader), so a delete sees points an earlier entry of the same apply
+// batch already wrote.
+func (s *Storage) DeleteSeries(batch storage.Batch, req *DeleteRequest) error {
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
@@ -373,25 +299,16 @@ func (s *Storage) DeleteSeries(_ context.Context, req *DeleteRequest) error {
 	lowerBound := buildRangeStartKey(req.Metric, startTime)
 	upperBound := buildRangeStartKey(req.Metric, endTime.Add(time.Nanosecond))
 
-	batch := s.db.NewBatch()
-	defer func() { _ = batch.Close() }()
-
-	iter, err := s.db.NewIter(&pebble.IterOptions{
+	iter := batch.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
-	if err != nil {
-		return &ReadError{Err: err}
-	}
 	defer func() { _ = iter.Close() }()
 
-	for iter.First(); iter.Valid(); iter.Next() {
+	var toDelete [][]byte
+	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
 		if len(req.Tags) > 0 {
-			val, err := iter.ValueAndErr()
-			if err != nil {
-				return &ReadError{Err: err}
-			}
-			dp, err := decodeDataPoint(val)
+			dp, err := decodeDataPoint(iter.Value())
 			if err != nil {
 				return err
 			}
@@ -399,26 +316,27 @@ func (s *Storage) DeleteSeries(_ context.Context, req *DeleteRequest) error {
 				continue
 			}
 		}
-		if err := batch.Delete(iter.Key(), nil); err != nil {
-			return &WriteError{Err: err}
-		}
+		toDelete = append(toDelete, cloneKey(iter.Key()))
 	}
 	if err := iter.Error(); err != nil {
 		return &ReadError{Err: err}
+	}
+
+	for _, key := range toDelete {
+		if err := batch.Delete(key); err != nil {
+			return &WriteError{Err: err}
+		}
 	}
 
 	// If deleting all points for metric (no tag filter, full time range),
 	// remove metric index too.
 	if len(req.Tags) == 0 && req.StartTime.IsZero() && req.EndTime.IsZero() {
 		metricKey := []byte(KeyPrefixMetricIndex + req.Metric)
-		if err := batch.Delete(metricKey, nil); err != nil {
+		if err := batch.Delete(metricKey); err != nil {
 			return &WriteError{Err: err}
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return &WriteError{Err: err}
-	}
 	return nil
 }
 
@@ -429,23 +347,23 @@ func (s *Storage) GetRetentionPolicy(metric string) (*RetentionPolicy, error) {
 		return nil, &ClosedError{}
 	}
 
-	key := []byte(KeyPrefixRetention + metric)
-	data, closer, err := s.db.Get(key)
+	data, err := s.stg.Get([]byte(KeyPrefixRetention + metric))
 	if err != nil {
-		// Return default policy if not found.
+		return nil, &ReadError{Err: err}
+	}
+	if data == nil {
 		return &RetentionPolicy{}, nil
 	}
-	defer func() { _ = closer.Close() }()
 
-	dp, err := decodeRetentionPolicy(data)
+	policy, err := decodeRetentionPolicy(data)
 	if err != nil {
 		return nil, &DecodeError{Reason: "retention policy: " + err.Error()}
 	}
-	return dp, nil
+	return policy, nil
 }
 
-// SetRetentionPolicy stores the retention policy for the given metric.
-func (s *Storage) SetRetentionPolicy(metric string, policy *RetentionPolicy) error {
+// SetRetentionPolicy stages the retention policy for the given metric into batch.
+func (s *Storage) SetRetentionPolicy(batch storage.Batch, metric string, policy *RetentionPolicy) error {
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
@@ -454,8 +372,57 @@ func (s *Storage) SetRetentionPolicy(metric string, policy *RetentionPolicy) err
 	if err != nil {
 		return &WriteError{Err: err}
 	}
-	if err := s.db.Set(key, data, pebble.Sync); err != nil {
+	if err := batch.Set(key, data); err != nil {
 		return &WriteError{Err: err}
+	}
+	return nil
+}
+
+// MaxRetentionDeletesPerApply bounds how many expired points a single
+// ApplyRetention call deletes. A metric with a backlog larger than the
+// bound is swept across several ApplyRetention commands (subsequent
+// retention-scheduler ticks) rather than in one unbounded Raft entry.
+const MaxRetentionDeletesPerApply = 10000
+
+// ApplyRetention stages the deletion, into batch, of points for metric with a
+// timestamp strictly before cutoff. cutoff is supplied by the caller -- the
+// retention scheduler's leader, from its own clock at propose time -- and is
+// applied exactly as given; this method never consults the wall clock, so
+// every replica that applies the same (metric, cutoff) command deletes the
+// identical set of points. Deletion is bounded by MaxRetentionDeletesPerApply:
+// a metric with more expired points than the bound deletes only the oldest
+// MaxRetentionDeletesPerApply of them, and the remainder is left for a later
+// call. The scan reads through batch, so it sees points an earlier entry of
+// the same apply batch already wrote.
+func (s *Storage) ApplyRetention(batch storage.Batch, metric string, cutoff time.Time) error {
+	if s.closed.Load() {
+		return &ClosedError{}
+	}
+	if metric == "" {
+		return &InvalidMetricError{}
+	}
+
+	lowerBound := buildRangeStartKey(metric, time.Unix(0, 0))
+	upperBound := buildRangeStartKey(metric, cutoff)
+
+	iter := batch.NewIterator(&storage.IteratorOptions{
+		LowerBound: lowerBound,
+		UpperBound: upperBound,
+	})
+	defer func() { _ = iter.Close() }()
+
+	var toDelete [][]byte
+	for ok := iter.SeekToFirst(); ok && iter.Valid() && len(toDelete) < MaxRetentionDeletesPerApply; ok = iter.Next() {
+		toDelete = append(toDelete, cloneKey(iter.Key()))
+	}
+	if err := iter.Error(); err != nil {
+		return &ReadError{Err: err}
+	}
+
+	for _, key := range toDelete {
+		if err := batch.Delete(key); err != nil {
+			return &WriteError{Err: err}
+		}
 	}
 	return nil
 }
@@ -475,17 +442,15 @@ func (s *Storage) ListMetrics(prefix string, limit int) ([]string, error) {
 		upperBound = []byte(KeyPrefixMetricIndex + prefix + "\xff")
 	}
 
-	iter, err := s.db.NewIter(&pebble.IterOptions{
+	iter := s.stg.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
+		OnlyKeys:   true,
 	})
-	if err != nil {
-		return nil, &ReadError{Err: err}
-	}
 	defer func() { _ = iter.Close() }()
 
 	metrics := make([]string, 0)
-	for iter.First(); iter.Valid(); iter.Next() {
+	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
 		key := string(iter.Key())
 		if len(key) > len(KeyPrefixMetricIndex) {
 			metric := key[len(KeyPrefixMetricIndex):]
@@ -520,15 +485,10 @@ func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, int
 	lowerBound := buildRangeStartKey(metric, start)
 	upperBound := buildRangeStartKey(metric, end.Add(time.Nanosecond))
 
-	iterOpts := &pebble.IterOptions{
+	iter := s.stg.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
-	}
-
-	iter, err := s.db.NewIter(iterOpts)
-	if err != nil {
-		return nil, &ReadError{Err: err}
-	}
+	})
 	defer func() { _ = iter.Close() }()
 
 	// Collect points into time buckets keyed by bucket index.
@@ -541,13 +501,8 @@ func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, int
 
 	intervalNanos := int64(interval)
 
-	for iter.First(); iter.Valid(); iter.Next() {
-		val, err := iter.ValueAndErr()
-		if err != nil {
-			return nil, &ReadError{Err: err}
-		}
-
-		dp, err := decodeDataPoint(val)
+	for ok := iter.SeekToFirst(); ok && iter.Valid(); ok = iter.Next() {
+		dp, err := decodeDataPoint(iter.Value())
 		if err != nil {
 			return nil, err
 		}
@@ -591,14 +546,11 @@ func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, int
 }
 
 // Close marks the storage as closed. Subsequent operations will return
-// a ClosedError. If the Storage owns its PebbleDB (created via NewWithDir),
-// the underlying database is closed as well.
+// a ClosedError. The underlying storage.Storage is not owned by Storage and
+// is closed by whoever opened it.
 func (s *Storage) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return &ClosedError{}
-	}
-	if s.ownsDB {
-		return s.db.Close()
 	}
 	return nil
 }
@@ -607,17 +559,25 @@ func (s *Storage) Close() error {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// updateMetricIndex writes a metric name into the metric index.
-func (s *Storage) updateMetricIndex(metric string) error {
+// cloneKey copies an iterator key, which is only valid until the next
+// iterator operation, so it survives past the loop that collected it.
+func cloneKey(k []byte) []byte {
+	out := make([]byte, len(k))
+	copy(out, k)
+	return out
+}
+
+// updateMetricIndexInBatch stages a metric name into the metric index.
+func (s *Storage) updateMetricIndexInBatch(batch storage.Batch, metric string) error {
 	key := []byte(KeyPrefixMetricIndex + metric)
-	if err := s.db.Set(key, []byte{1}, pebble.Sync); err != nil {
+	if err := batch.Set(key, []byte{1}); err != nil {
 		return &WriteError{Err: err}
 	}
 	return nil
 }
 
-// updateTagIndexes writes each tag key:value pair into the tag index.
-func (s *Storage) updateTagIndexes(metric string, tags map[string]string) error {
+// updateTagIndexesInBatch stages each tag key:value pair into the tag index.
+func (s *Storage) updateTagIndexesInBatch(batch storage.Batch, tags map[string]string) error {
 	if len(tags) == 0 {
 		return nil
 	}
@@ -629,7 +589,7 @@ func (s *Storage) updateTagIndexes(metric string, tags map[string]string) error 
 
 	for _, k := range tagKeys {
 		key := []byte(KeyPrefixTagIndex + k + ":" + tags[k])
-		if err := s.db.Set(key, []byte{1}, pebble.Sync); err != nil {
+		if err := batch.Set(key, []byte{1}); err != nil {
 			return &WriteError{Err: err}
 		}
 	}

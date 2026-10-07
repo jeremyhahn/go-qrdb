@@ -207,8 +207,13 @@ reach for each one.
 
 ## Parity
 
-Every verb above has a `CommandDefinition` in the integration parity suite. A
-verb here without one, or the reverse, is a defect in whichever is behind.
+Every verb above is driven, on every network transport, by a row of the
+table-driven `_PerProtocol` CLI tests in `test/integration`
+(`kv_cli_test.go`, `kv_restore_cli_test.go`, and the batch tests for
+[../transactions/cli.md](../transactions/cli.md)). A verb here without a row,
+or the reverse, is a defect in whichever is behind. Run them with
+`make integration-test-key-value`; the per-transport accounting is the
+`key-value` row of [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).
 The guarded verbs are outside that correspondence by the section above: they
-have no command, so they have no definition, and adding one to satisfy the
-suite would be inventing a command to make a document true.
+have no command, so they have no row, and adding one to satisfy the suite would
+be inventing a command to make a document true.

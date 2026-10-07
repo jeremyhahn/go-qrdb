@@ -134,6 +134,33 @@ func TestAllocateRowID_FillsEmptySlot(t *testing.T) {
 	assert.Equal(t, uint64(2), second[2])
 }
 
+// TestRelationalTable_Truncate_DoesNotResetHiddenRowID pins the ruling
+// recorded in docs/sql/engineering.md#tables-with-no-primary-key: unlike
+// AUTO_INCREMENT, a keyless table's hidden row id counter is never reset by
+// TRUNCATE TABLE, on either SQL dialect. MySQL has no row id to document
+// compatible behaviour for, so the ruling keeps it strictly monotonic --
+// the same never-reused treatment this package already gives index
+// incarnations -- rather than let a post-TRUNCATE row alias an id an
+// earlier, already-reclaimed generation's row once held.
+func TestRelationalTable_Truncate_DoesNotResetHiddenRowID(t *testing.T) {
+	h := newDDLHarness()
+	tbl := newRowIDTable(t, h, "rowidtrunc")
+	ctx := newTestContext()
+
+	for i := 0; i < 3; i++ {
+		row, err := tbl.allocateRowID(ctx, sqle.Row{"a", uint64(7), nil})
+		require.NoError(t, err)
+		assert.Equal(t, uint64(i+1), row[2])
+	}
+
+	_, err := tbl.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := tbl.allocateRowID(ctx, sqle.Row{"b", uint64(7), nil})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), next[2], "TRUNCATE must not reset the hidden row id counter")
+}
+
 // TestAllocateRowID_KeepsExistingRowID verifies a row that already carries a
 // row id is returned untouched, which is what keeps a REPLACE retry or a
 // compare-and-swap retry from burning a row id per attempt.
@@ -203,6 +230,47 @@ func TestAllocateRowID_RequiresSequenceService(t *testing.T) {
 	_, err = tbl.allocateRowID(newTestContext(), sqle.Row{"a", nil})
 	var unavailable *SequenceServiceUnavailableError
 	assert.ErrorAs(t, err, &unavailable)
+}
+
+// TestAllocateRowID_RestartIdentityDoesNotResetHiddenRowID pins that
+// PostgreSQL's RESTART IDENTITY, unlike MySQL's TRUNCATE, never resets the
+// hidden row id a keyless table's rows are addressed by: TruncateTable only
+// ever resets TableAutoIncrementSequenceName, and RelationalTable.Truncate's
+// resetSequence decision (see QRDBSession.SetStatementRestartIdentity) feeds
+// exactly that parameter, never service.TableRowIDSequenceName.
+func TestAllocateRowID_RestartIdentityDoesNotResetHiddenRowID(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "shop",
+		Name:     "pg_rowid",
+		Columns:  []service.ColumnDef{{Name: "name", Type: "VARCHAR(64)", Nullable: true}},
+	})
+	require.NoError(t, err)
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc,
+		WithTableService(h.tableSvc),
+		WithTransactionService(h.txnSvc),
+		WithSequenceService(h.seqSvc),
+		WithPostgreSQLDialect(),
+	)
+	require.NoError(t, err)
+
+	sess := NewSession(sqle.NewBaseSession(), nil)
+	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
+	sess.SetStatementRestartIdentity(true)
+
+	first, err := tbl.allocateRowID(ctx, sqle.Row{"a", nil})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), first[1])
+	second, err := tbl.allocateRowID(ctx, sqle.Row{"b", nil})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), second[1])
+
+	_, err = tbl.Truncate(ctx)
+	require.NoError(t, err)
+
+	third, err := tbl.allocateRowID(ctx, sqle.Row{"c", nil})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(3), third[1], "TRUNCATE ... RESTART IDENTITY must not reset the hidden row id")
 }
 
 // ---------------------------------------------------------------------------

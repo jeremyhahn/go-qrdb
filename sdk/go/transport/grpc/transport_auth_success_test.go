@@ -106,7 +106,11 @@ func (f *fakeRoleServicer) CreateRole(_ context.Context, req *role.CreateRoleReq
 }
 
 func (f *fakeRoleServicer) GetRole(_ context.Context, id string) (*role.Role, error) {
-	return &role.Role{ID: id, Name: "admin", TenantID: "t1", CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	tenantID := "t1"
+	if id == "r-system" {
+		tenantID = "system"
+	}
+	return &role.Role{ID: id, Name: "admin", TenantID: tenantID, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeRoleServicer) GetRoleByName(_ context.Context, _, name string) (*role.Role, error) {
@@ -241,7 +245,7 @@ func TestGRPCUser_AllMethods_Success(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CreateUser", func(t *testing.T) {
-		u, err := tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "t1", RoleIDs: []string{"r1"}})
+		u, err := tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "system", RoleIDs: []string{"r-system"}})
 		if err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}

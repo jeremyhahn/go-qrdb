@@ -92,7 +92,6 @@ func TestDatabaseBinding_CreateWithAnUnservedBarrierIsRefused(t *testing.T) {
 				embedded.WithDatabaseService(svc)))
 			_, err := b.Create(&transport.CreateDatabaseRequest{
 				Name:    "refused-db",
-				Engine:  "kv",
 				Backend: "pebble",
 				DataDir: t.TempDir(),
 				Barrier: tc.barrier,
@@ -127,7 +126,6 @@ func TestBindings_WizardShamirSequence(t *testing.T) {
 
 	info, err := dbs.Create(&transport.CreateDatabaseRequest{
 		Name:    "wizard-vault",
-		Engine:  "kv",
 		Backend: "memory",
 		DataDir: t.TempDir(),
 		Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},

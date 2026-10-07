@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -115,6 +116,13 @@ func TestStartClusterJoin_NotEnabledStartsNoListener(t *testing.T) {
 // Enabled with a cluster CA key, the listener runs, its HTTPS twin route is a
 // server option, and the join-token verb mints into the listener's store.
 func TestStartClusterJoin_EnabledRunsAndBindsTheVerb(t *testing.T) {
+	if !clusterenroll.NoiseAvailable() {
+		// The member-side CSR join listener needs a real Noise NK
+		// handshake (an X25519 static key), which GODEBUG=fips140=only
+		// refuses to generate at all; permanently unreachable under
+		// FIPS -- see docs/seal/fips140-mode.md.
+		t.Skip("Noise NK is unavailable under FIPS 140 mode; the join listener cannot start")
+	}
 	n := joinNode(t)
 	n.ClusterCAProv = staticClusterCA(t)
 	j, err := lifecycle.StartClusterJoin(context.Background(), n, joinConfig(t, true))

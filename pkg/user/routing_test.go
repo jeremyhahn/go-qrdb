@@ -218,7 +218,7 @@ func TestRoutingUserService_BarrierTenantUsesOwnStore(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "secure")
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "secure"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -272,7 +272,7 @@ func TestRoutingUserService_PrefixTenantUsesSharedStore(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	if _, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "bob", TenantID: "acme"}); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestRoutingUserService_TwoBarrierTenantsIsolated(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "a")
 	ua, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "carol", TenantID: "a"})
 	if err != nil {
 		t.Fatalf("CreateUser(a): %v", err)
@@ -330,7 +330,7 @@ func TestRoutingUserService_SealedTenantFailsClosed(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "vault")
 
 	if _, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "dan", TenantID: "vault"}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("CreateUser(sealed) = %v, want ErrTenantSealed", err)
@@ -463,27 +463,28 @@ func TestRoutingUserService_GetUserByEmail(t *testing.T) {
 
 // A system-tenant caller MAY target another tenant: the request tenant is
 // honored and the record lands in that tenant's store.
+// A system-tenant caller may NOT target another tenant: the system-tenant
+// lift was removed (owner ruling, 2026-10-01). This is now symmetric with the
+// non-system case TestRoutingUserService_AllRequestTenantMethodsReconciled
+// already covers.
 func TestRoutingUserService_SystemCallerMayTargetTenant(t *testing.T) {
 	svc, _, storeB := crossTenantSetup(t)
 	sctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
-	created, err := svc.CreateUser(sctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "provisioned", TenantID: "b"})
-	if err != nil {
-		t.Fatalf("CreateUser(system→b): %v", err)
+	_, err := svc.CreateUser(sctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "provisioned", TenantID: "b"})
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("CreateUser(system->b) = %v, want *tenant.CrossTenantDeniedError", err)
 	}
-	if created.TenantID != "b" {
-		t.Fatalf("stored TenantID = %q, want b", created.TenantID)
-	}
-	if len(storeB.m) == 0 {
-		t.Fatal("system-caller user was not routed to tenant B's store")
+	if len(storeB.m) != 0 {
+		t.Fatal("a refused system-caller create must not reach tenant B's store")
 	}
 
-	// System caller can also read/enumerate tenant B.
-	if _, err := svc.GetUserByUsername(sctx, "b", "provisioned"); err != nil {
-		t.Fatalf("GetUserByUsername(system→b): %v", err)
+	if _, err := svc.GetUserByUsername(sctx, "b", "provisioned"); !errors.As(err, &denied) {
+		t.Fatalf("GetUserByUsername(system->b) = %v, want *tenant.CrossTenantDeniedError", err)
 	}
-	if _, err := svc.ListUsers(sctx, &ListUsersRequest{TenantID: "b"}); err != nil {
-		t.Fatalf("ListUsers(system→b): %v", err)
+	if _, err := svc.ListUsers(sctx, &ListUsersRequest{TenantID: "b"}); !errors.As(err, &denied) {
+		t.Fatalf("ListUsers(system->b) = %v, want *tenant.CrossTenantDeniedError", err)
 	}
 }
 
@@ -551,9 +552,13 @@ func TestRoutingUserService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	// The admin: no tenant bound to the context, so FromContext is "" and
-	// the caller is the system tenant.
-	ctx := context.Background()
+	// The identity is acme's own (the admin CLI's by-id calls below carry no
+	// explicit tenant, but the AUTHENTICATED caller is still acme's own
+	// admin, exactly as mTLS binds it in production); this is what the #41
+	// fix guards -- by-id routing via the identity index, not a
+	// system-tenant reach into another tenant (removed, owner ruling
+	// 2026-10-01).
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "dana", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -630,7 +635,7 @@ func TestRoutingUserService_ByIDFailsClosedWhenOwnerSealed(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "vault")
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "erin", TenantID: "vault"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -682,7 +687,7 @@ func TestRoutingUserService_ByIDTellsAForeignCallerNothing(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "frank", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -750,13 +755,14 @@ func TestRoutingUserService_ARefusedClaimWritesNothing(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
-	if _, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "first", TenantID: "acme"}); err != nil {
+	acmeCtx := tenant.WithTenantID(context.Background(), "acme")
+	if _, err := svc.CreateUser(acmeCtx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "first", TenantID: "acme"}); err != nil {
 		t.Fatalf("CreateUser(acme): %v", err)
 	}
 
 	// The same id, generated again, for a different tenant.
-	_, err = svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "second", TenantID: "globex"})
+	globexCtx := tenant.WithTenantID(context.Background(), "globex")
+	_, err = svc.CreateUser(globexCtx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "second", TenantID: "globex"})
 	var conflict *tenant.IdentityClaimConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("colliding id across tenants = %v, want *tenant.IdentityClaimConflictError", err)
@@ -767,7 +773,7 @@ func TestRoutingUserService_ARefusedClaimWritesNothing(t *testing.T) {
 	}
 
 	// acme's record is untouched and still routes by id.
-	got, gerr := svc.GetUser(ctx, 4242)
+	got, gerr := svc.GetUser(acmeCtx, 4242)
 	if gerr != nil {
 		t.Fatalf("GetUser after the refused claim: %v", gerr)
 	}
@@ -881,7 +887,7 @@ func TestRoutingUserService_AFailedCreateRollsBackCompletely(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewRoutingService: %v", err)
 			}
-			ctx := context.Background()
+			ctx := tenant.WithTenantID(context.Background(), "acme")
 
 			key := tc.key
 			if key != "__sys:user_idx/username/acme/gwen" {
@@ -932,7 +938,7 @@ func TestRoutingUserService_AnInterruptedDeleteIsCompletedByRetry(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "hank", TenantID: "acme"})
 	if err != nil {
@@ -1124,7 +1130,7 @@ func TestRoutingUserService_NonSystemTenantStaysSequential(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "alice",
 		TenantID:             "acme",

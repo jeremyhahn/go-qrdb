@@ -50,7 +50,7 @@ const LOAD_TIMEOUT = 10_000;
 const bulkKvState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "bulk-kv", engine: "kv", backend: "pebble", status: "open" },
+    { name: "bulk-kv", backend: "pebble", status: "open" },
   ],
 };
 
@@ -181,7 +181,7 @@ test.describe("KV Explorer bulk delete", () => {
 const bulkCollectionState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "bulk-col-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "bulk-col-db", backend: "pebble", status: "open" },
   ],
 };
 
@@ -320,7 +320,7 @@ test.describe("Collection documents bulk delete", () => {
 const bulkVectorState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "bulk-vec-db", engine: "vector", backend: "pebble", status: "open" },
+    { name: "bulk-vec-db", backend: "pebble", status: "open" },
   ],
 };
 
@@ -438,6 +438,7 @@ async function navigateToSeededNamespace(page: Page): Promise<void> {
   await expect(
     page.locator(".breadcrumbs").getByText("bulk-vec-db", { exact: false }),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await page.getByRole("tab", { name: "Vectors", exact: true }).click();
 
   // Select the namespace from the shared namespace dropdown; this triggers
   // the vector list load ($effect on selectedNamespace).

@@ -105,6 +105,14 @@ type BatchableIndex interface {
 	// DeleteBatch queues an index entry removal into the provided batch.
 	// The caller is responsible for committing the batch.
 	DeleteBatch(batch storage.Batch, entityKey []byte, fieldValue []byte) error
+
+	// GetInBatch retrieves all entity keys associated with the given field
+	// value, reading through batch rather than through committed storage.
+	// An apply loop packs a variable number of committed entries into one
+	// storage batch; a uniqueness check for entry N+1 that read committed
+	// storage would not see entry N's index write when the two land in the
+	// same batch; see storage.Reader.
+	GetInBatch(batch storage.Batch, fieldValue []byte) ([][]byte, error)
 }
 
 // IndexMetadata contains information about an indexed field.

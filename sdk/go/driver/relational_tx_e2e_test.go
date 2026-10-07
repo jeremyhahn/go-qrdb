@@ -461,7 +461,7 @@ func newRelationalRegistry() *memRegistry {
 func openRelationalTestDB(t *testing.T, name string) (*sql.DB, *memRegistry) {
 	t.Helper()
 	reg := newRelationalRegistry()
-	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: name, Backend: "memory", Engine: "kv"}
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: name, Backend: "memory"}
 	connector := NewEmbeddedConnector(cfg, WithRegistry(reg))
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { _ = db.Close() })
@@ -473,7 +473,7 @@ func openRelationalTestDB(t *testing.T, name string) (*sql.DB, *memRegistry) {
 // simulating a second concurrent client connection.
 func openRelationalTestDBWithRegistry(t *testing.T, name string, reg *memRegistry) *sql.DB {
 	t.Helper()
-	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: name, Backend: "memory", Engine: "kv"}
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: name, Backend: "memory"}
 	connector := NewEmbeddedConnector(cfg, WithRegistry(reg))
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { _ = db.Close() })

@@ -151,7 +151,7 @@ func newReclaimManager(t *testing.T, name string) (*Manager, *spyReclaimer) {
 	mgr := NewManager(nil, t.TempDir())
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
-	_, err := mgr.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: name, Backend: BackendMemory})
 	require.NoError(t, err)
 	return mgr, spy
 }
@@ -196,7 +196,7 @@ func TestManager_Drop_ReclaimsUnderTheDatabasesOwnTenant(t *testing.T) {
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{
-		Name: "reports", Engine: EngineKV, Backend: BackendMemory, TenantID: "acme",
+		Name: "reports", Backend: BackendMemory, TenantID: "acme",
 	})
 	require.NoError(t, err)
 
@@ -346,7 +346,7 @@ func TestManager_Drop_ConcurrentDropsProduceExactlyOneSuccess(t *testing.T) {
 func TestManager_Drop_WithoutAReclaimerStillRemovesTheDirectory(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir())
 	require.Nil(t, mgr.KeyspaceReclaimer())
-	_, err := mgr.Create(DatabaseConfig{Name: "solo", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "solo", Backend: BackendMemory})
 	require.NoError(t, err)
 
 	require.NoError(t, mgr.Drop(context.Background(), "solo"))
@@ -377,7 +377,7 @@ func TestManager_WithKeyspaceReclaimer(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(spy))
 	require.Same(t, spy, mgr.KeyspaceReclaimer())
 
-	_, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "reports"))
 
@@ -394,7 +394,7 @@ func TestManager_DropForTenant_ReclaimsTheKeyspace(t *testing.T) {
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{
-		Name: "reports", Engine: EngineKV, Backend: BackendMemory, TenantID: "acme",
+		Name: "reports", Backend: BackendMemory, TenantID: "acme",
 	})
 	require.NoError(t, err)
 
@@ -462,7 +462,7 @@ func TestManager_Drop_ConcurrentWriteIsRefusedNotOrphaned(t *testing.T) {
 // (m.databases) still holds it and Status is untouched.
 func TestManager_Get_RefusesDroppingDatabase(t *testing.T) {
 	mgr := newTestManager(t)
-	db, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 
 	db.SetDropping(true)
@@ -486,7 +486,7 @@ func TestManager_Drop_PersistsFenceAcrossRestart(t *testing.T) {
 	mgr := NewManager(nil, dir)
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
-	_, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 
 	var restartErr error
@@ -536,7 +536,7 @@ func TestManager_Drop_ReclaimFailureClearsThePersistedFence(t *testing.T) {
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	spy.err = errors.New("store unreachable")
-	_, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	_, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 
 	require.Error(t, mgr.Drop(context.Background(), "reports"))
@@ -562,7 +562,7 @@ func TestManager_Drop_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 	mgr := NewManager(nil, dir)
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
-	db, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 
 	// Simulate the crash directly, rather than through a failing
@@ -602,7 +602,7 @@ func TestManager_DropForTenant_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	db, err := mgr.Create(DatabaseConfig{
-		Name: "reports", Engine: EngineKV, Backend: BackendMemory, TenantID: "acme",
+		Name: "reports", Backend: BackendMemory, TenantID: "acme",
 	})
 	require.NoError(t, err)
 	require.NoError(t, mgr.setDroppingFlag("reports", db, true))
@@ -677,7 +677,7 @@ func TestManager_UpdateMethods_RefuseWhileDropping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mgr := newTestManager(t)
-			db, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+			db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 			require.NoError(t, err)
 			db.SetDropping(true)
 
@@ -696,7 +696,7 @@ func TestManager_UpdateMethods_RefuseWhileDropping(t *testing.T) {
 func TestManager_RewriteMeta_PreservesTheDropFence(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewManager(nil, dir)
-	db, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 	db.SetDropping(true)
 
@@ -731,7 +731,7 @@ func TestManager_RewriteMeta_PreservesTheDropFence(t *testing.T) {
 // Drop's own durable write moments later.
 func TestManager_Drop_InMemoryFenceAloneAlreadyRefusesUpdates(t *testing.T) {
 	mgr := newTestManager(t)
-	db, err := mgr.Create(DatabaseConfig{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
 
 	// Simulate the instant immediately after Drop's step 0 flips the
@@ -760,7 +760,7 @@ func TestManager_WriteMeta_ConcurrentWritesProduceValidJSON(t *testing.T) {
 	for i := 0; i < writers; i++ {
 		go func(i int) {
 			defer wg.Done()
-			meta := DatabaseMeta{Name: "reports", Engine: EngineKV, Backend: BackendMemory, Dropping: i%2 == 0}
+			meta := DatabaseMeta{Name: "reports", Backend: BackendMemory, Dropping: i%2 == 0}
 			_ = mgr.writeMeta(dbDir, meta)
 		}(i)
 	}
@@ -785,7 +785,7 @@ func TestManager_WriteMeta_CreateTempFailsWhenDirMissing(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir())
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
-	err := mgr.writeMeta(missing, DatabaseMeta{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	err := mgr.writeMeta(missing, DatabaseMeta{Name: "reports", Backend: BackendMemory})
 	var mwe *MetaWriteError
 	require.ErrorAs(t, err, &mwe)
 }
@@ -801,7 +801,7 @@ func TestManager_WriteMeta_RenameFailsWhenTargetIsANonEmptyDirectory(t *testing.
 	metaAsDir := filepath.Join(dbDir, metaFile)
 	require.NoError(t, os.MkdirAll(filepath.Join(metaAsDir, "occupied"), 0o750))
 
-	err := mgr.writeMeta(dbDir, DatabaseMeta{Name: "reports", Engine: EngineKV, Backend: BackendMemory})
+	err := mgr.writeMeta(dbDir, DatabaseMeta{Name: "reports", Backend: BackendMemory})
 	var mwe *MetaWriteError
 	require.ErrorAs(t, err, &mwe)
 

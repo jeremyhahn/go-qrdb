@@ -231,7 +231,7 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
-	if err := t.authorizeTenantTarget(ctx, tenantID, permission.TenantsRead); err != nil {
+	if err := t.authorizeTenantRecord(ctx, tenantID, permission.TenantsRead); err != nil {
 		return nil, err
 	}
 
@@ -516,7 +516,7 @@ func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 	if t.tenantSvc == nil {
 		return &NilServiceError{Service: "TenantServicer"}
 	}
-	if err := t.authorizeTenantTarget(ctx, tenantID, permission.TenantsDelete); err != nil {
+	if err := t.authorizeTenantRecord(ctx, tenantID, permission.TenantsDelete); err != nil {
 		return err
 	}
 
@@ -654,6 +654,9 @@ func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *trans
 	if err != nil {
 		return nil, err
 	}
+	if err := t.limitHolderAct(ctx, "TenantBarrierShareClaimBegin", tenantScopeKey(req.TenantID)); err != nil {
+		return nil, err
+	}
 	ctx, thumbprint := claimContext(ctx)
 	challenge, err := svc.TenantBarrierShareClaimBegin(ctx, req.TenantID, req.Username, thumbprint)
 	if err != nil {
@@ -673,6 +676,9 @@ func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *tr
 	}
 	svc, err := t.tenantService()
 	if err != nil {
+		return nil, err
+	}
+	if err := t.limitHolderAct(ctx, "TenantBarrierShareClaimComplete", tenantScopeKey(req.TenantID)); err != nil {
 		return nil, err
 	}
 	ctx, thumbprint := claimContext(ctx)

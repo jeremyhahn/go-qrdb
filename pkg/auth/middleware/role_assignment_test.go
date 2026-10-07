@@ -172,17 +172,21 @@ func TestAuthorizeRoleAssignmentWrite_UnauthenticatedIsRefused(t *testing.T) {
 // validated, against tenant A — not "system".
 func TestAuthorizeRoleAssignmentWrite_TargetTenantComesFromTheRecord(t *testing.T) {
 	mw := mwWithPerms(permission.RolesAssign)
-	// The caller's AMBIENT tenant is "system"; the record being updated
-	// belongs to "acme". A role that belongs to "acme" must be admitted
-	// even though the ambient tenant names neither role's tenant.
-	ctx := roleAssignmentCtx(tenantid.System)
+	// The identity is acme's own admin, but the incoming ctx was already
+	// bound to an unrelated tenant (as if inherited from an earlier hop in
+	// the same request chain). The record being updated belongs to "acme".
+	// The permission check must be decided against the RECORD's tenant
+	// ("acme") -- which matches the identity -- never whatever tenant the
+	// incoming ctx happened to carry.
+	id := &auth.Identity{Subject: "acme-admin", TenantID: "acme", Roles: []string{"admin"}}
+	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), id), "stale-unrelated-tenant")
 	userSvc := &userTenantFixture{u: &user.User{ID: 42, TenantID: "acme"}}
 	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
 		"r-acme": {ID: "r-acme", TenantID: "acme"},
 	}}
 
 	if err := mw.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, 42, []string{"r-acme"}, nil); err != nil {
-		t.Fatalf("a role belonging to the RECORD's tenant must be admitted regardless of the caller's ambient tenant: %v", err)
+		t.Fatalf("a role belonging to the RECORD's tenant must be admitted even though the incoming ctx named a different tenant: %v", err)
 	}
 }
 
@@ -277,12 +281,18 @@ func TestAuthorizeRoleAssignmentWrite_ForeignTenantBindingRefused(t *testing.T) 
 		"r-acme":   {ID: "r-acme", TenantID: "acme"},
 		"r-globex": {ID: "r-globex", TenantID: "globex"},
 	}}
+	// A system caller is not in this table: the system-tenant lift was
+	// removed (owner ruling, 2026-10-01), so a system caller now fails
+	// roles:assign authorization against "acme" before reaching the binding
+	// check at all, which is a *different*, already-covered scope denial
+	// (see TestAuthorizeRoleAssignmentWrite_TargetTenantComesFromTheRecord's
+	// sibling tests in rbac_test.go). This table covers callers that DO
+	// reach the binding check.
 	callers := []struct {
 		name string
 		mw   *AuthMiddleware
 		ctx  context.Context
 	}{
-		{"system caller", mwWithPerms(permission.RolesAssign), roleAssignmentCtx(tenantid.System)},
 		{"tenant caller", mwWithPerms(permission.RolesAssign), roleAssignmentCtx("acme")},
 		{"no RBAC", nil, context.Background()},
 	}
@@ -379,9 +389,15 @@ func TestAuthorizeRoleAssignmentWriteOnCreate_NilMiddlewareStillValidates(t *tes
 		{name: "foreign role refused", roleSvc: roleSvc, roleIDs: []string{"r-globex"}, check: wantErrorAs[*role.NotAssignableError]},
 		{name: "no role service refused", roleIDs: []string{"r-acme"}, check: wantErrorAs[*role.ServiceRequiredError]},
 	}
+	// Bound to the same tenant CreateUser is creating in: EffectiveTenant's
+	// cross-tenant refusal applies to every identity, nil-middleware
+	// composition included (owner ruling, 2026-10-01), so the ctx must
+	// already name the target tenant for this test to reach the validation
+	// it actually means to exercise.
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.check(t, mw.AuthorizeRoleAssignmentWriteOnCreate(context.Background(), tt.roleSvc, "acme", tt.roleIDs))
+			tt.check(t, mw.AuthorizeRoleAssignmentWriteOnCreate(ctx, tt.roleSvc, "acme", tt.roleIDs))
 		})
 	}
 }
@@ -425,6 +441,12 @@ func TestAuthorizeRoleAssignmentWriteOnCreate_NilRoleSvcRefusesWhenRoleIDsPresen
 // (tenant.EffectiveTenant), not the caller's ambient tenant taken at face
 // value: a system-tenant caller creating a user explicitly in tenant "acme"
 // must have its RoleIDs validated against "acme".
+// TestAuthorizeRoleAssignmentWriteOnCreate_UsesEffectiveTenant asserts a
+// system-tenant caller naming a DIFFERENT tenant than its own is refused by
+// tenant.EffectiveTenant before role validation ever runs -- the
+// system-tenant lift was removed (owner ruling, 2026-10-01), so this is now
+// symmetric with TestAuthorizeRoleAssignmentWriteOnCreate_CrossTenantRequestDenied's
+// non-system case rather than its opposite.
 func TestAuthorizeRoleAssignmentWriteOnCreate_UsesEffectiveTenant(t *testing.T) {
 	mw := mwWithPerms(permission.RolesAssign)
 	ctx := roleAssignmentCtx(tenantid.System)
@@ -432,8 +454,10 @@ func TestAuthorizeRoleAssignmentWriteOnCreate_UsesEffectiveTenant(t *testing.T) 
 		"r-acme": {ID: "r-acme", TenantID: "acme"},
 	}}
 
-	if err := mw.AuthorizeRoleAssignmentWriteOnCreate(ctx, roleSvc, "acme", []string{"r-acme"}); err != nil {
-		t.Fatalf("a role belonging to the REQUESTED tenant must be admitted for a system-tenant caller: %v", err)
+	err := mw.AuthorizeRoleAssignmentWriteOnCreate(ctx, roleSvc, "acme", []string{"r-acme"})
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("a system-tenant caller naming a different tenant must be refused: err = %v, want *tenant.CrossTenantDeniedError", err)
 	}
 }
 

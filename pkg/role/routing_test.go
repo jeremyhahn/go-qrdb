@@ -192,7 +192,7 @@ func TestRoutingRoleService_BarrierTenantUsesOwnStore(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "secure")
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "editor", TenantID: "secure"})
 	if err != nil {
 		t.Fatalf("CreateRole: %v", err)
@@ -242,7 +242,7 @@ func TestRoutingRoleService_PrefixTenantUsesSharedStore(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	if _, err := svc.CreateRole(context.Background(), &CreateRoleRequest{Name: "viewer", TenantID: "acme"}); err != nil {
+	if _, err := svc.CreateRole(tenant.WithTenantID(context.Background(), "acme"), &CreateRoleRequest{Name: "viewer", TenantID: "acme"}); err != nil {
 		t.Fatalf("CreateRole: %v", err)
 	}
 	if len(shared.m) == 0 {
@@ -263,7 +263,7 @@ func TestRoutingRoleService_TwoBarrierTenantsIsolated(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "a")
 	// A non-reserved name: this test is about cross-tenant routing, and a
 	// canonical system role name would now be refused unless created with its
 	// canonical id and permission set.
@@ -293,7 +293,7 @@ func TestRoutingRoleService_SealedTenantFailsClosed(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "vault")
 	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "x", TenantID: "vault"}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("CreateRole(sealed) = %v, want ErrTenantSealed", err)
 	}
@@ -322,7 +322,7 @@ func TestRoutingRoleService_DelegatesFullLifecycle(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	tctx := tenant.WithTenantID(ctx, "acme")
 
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
@@ -477,25 +477,26 @@ func TestRoutingRoleService_SameTenantRoutesToSelf(t *testing.T) {
 }
 
 // A system-tenant caller MAY target another tenant.
+// A system-tenant caller may NOT target another tenant by name: the
+// system-tenant lift was removed (owner ruling, 2026-10-01). This is now
+// symmetric with TestRoutingRoleService_CrossTenantDenied's non-system case.
 func TestRoutingRoleService_SystemCallerMayTargetTenant(t *testing.T) {
 	svc, _, storeB := crossTenantSetup(t)
 	sctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
-	created, err := svc.CreateRole(sctx, &CreateRoleRequest{Name: "provisioned", TenantID: "b"})
-	if err != nil {
-		t.Fatalf("CreateRole(system→b): %v", err)
+	_, err := svc.CreateRole(sctx, &CreateRoleRequest{Name: "provisioned", TenantID: "b"})
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("CreateRole(system->b) = %v, want *tenant.CrossTenantDeniedError", err)
 	}
-	if created.TenantID != "b" {
-		t.Fatalf("stored TenantID = %q, want b", created.TenantID)
+	if len(storeB.m) != 0 {
+		t.Fatal("a refused system-caller create must not reach tenant B's store")
 	}
-	if len(storeB.m) == 0 {
-		t.Fatal("system-caller role was not routed to tenant B's store")
+	if _, err := svc.GetRoleByName(sctx, "b", "provisioned"); !errors.As(err, &denied) {
+		t.Fatalf("GetRoleByName(system->b) = %v, want *tenant.CrossTenantDeniedError", err)
 	}
-	if _, err := svc.GetRoleByName(sctx, "b", "provisioned"); err != nil {
-		t.Fatalf("GetRoleByName(system→b): %v", err)
-	}
-	if _, err := svc.ListRoles(sctx, &ListRolesRequest{TenantID: "b"}); err != nil {
-		t.Fatalf("ListRoles(system→b): %v", err)
+	if _, err := svc.ListRoles(sctx, &ListRolesRequest{TenantID: "b"}); !errors.As(err, &denied) {
+		t.Fatalf("ListRoles(system->b) = %v, want *tenant.CrossTenantDeniedError", err)
 	}
 }
 
@@ -551,7 +552,13 @@ func TestRoutingRoleService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	// The identity is acme's own (the admin CLI's request carries no
+	// explicit --tenant-id on the by-id calls below, but the AUTHENTICATED
+	// caller is still acme's own admin, exactly as mTLS binds it in
+	// production); this is what #41's fix guards -- by-id routing via the
+	// identity index, not a system-tenant reach into another tenant (removed,
+	// owner ruling 2026-10-01).
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "db-admin", TenantID: "acme",
 		Permissions: []permission.Permission{permission.KVGet},
@@ -598,7 +605,7 @@ func TestRoutingRoleService_ByIDFailsClosedWhenOwnerSealed(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "vault")
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "keeper", TenantID: "vault",
 		Permissions: []permission.Permission{permission.KVGet},
@@ -632,7 +639,7 @@ func TestRoutingRoleService_ByIDTellsAForeignCallerNothing(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "secret", TenantID: "acme",
 		Permissions: []permission.Permission{permission.KVGet},
@@ -671,7 +678,7 @@ func TestRoutingRoleService_ResolvePermissionsStaysInTheCallersTenant(t *testing
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	privileged, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "root", TenantID: "acme",
 		Permissions: []permission.Permission{permission.KVGet, permission.KVPut},
@@ -712,7 +719,7 @@ func TestRoutingRoleService_ForeignTenantCannotCaptureARoleID(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	victim, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "acme-admin", TenantID: "acme",
 		Permissions: []permission.Permission{permission.KVGet},
@@ -721,8 +728,9 @@ func TestRoutingRoleService_ForeignTenantCannotCaptureARoleID(t *testing.T) {
 		t.Fatalf("CreateRole(acme): %v", err)
 	}
 
-	// globex names acme's id explicitly.
-	_, err = svc.CreateRole(ctx, &CreateRoleRequest{
+	// globex names acme's id explicitly, as its own caller.
+	globexCtx := tenant.WithTenantID(context.Background(), "globex")
+	_, err = svc.CreateRole(globexCtx, &CreateRoleRequest{
 		ID: victim.ID, Name: "impostor", TenantID: "globex",
 		Permissions: []permission.Permission{permission.KVPut},
 	})
@@ -764,7 +772,7 @@ func TestRoutingRoleService_DuplicateIDInTheSameTenantIsRefused(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	first, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "one", TenantID: "acme",
 		Permissions: []permission.Permission{permission.KVGet},
@@ -876,7 +884,7 @@ func TestRoutingRoleService_AFailedCreateReleasesItsClaim(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewRoutingService: %v", err)
 			}
-			ctx := context.Background()
+			ctx := tenant.WithTenantID(context.Background(), "acme")
 			tenantStore.failPut[tc.key(chosenID)] = 1
 
 			req := &CreateRoleRequest{
@@ -927,7 +935,7 @@ func TestRoutingRoleService_AnInterruptedDeleteIsCompletedByRetry(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "doomed", TenantID: "acme",
@@ -1064,7 +1072,7 @@ func TestRoutingRoleService_AnInterruptedDeleteLeaksNoIndexEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		Name: "reusable", TenantID: "acme",
@@ -1117,7 +1125,7 @@ func TestRoutingRoleService_RollbackDeletesOnlyWhatThisCallWrote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	const nameKey = "__sys:role_idx/name/acme/shared-name"
 	const winnerID = "winner-id"
@@ -1173,7 +1181,7 @@ func TestRoutingRoleService_RollbackKeepsTheClaimWhenCleanupFails(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	// Fail the NAME-index write, so the primary and tenant index are written
 	// and must be rolled back — then fail the primary's cleanup delete.
@@ -1296,7 +1304,7 @@ func TestRoutingRoleService_NonSystemTenantStaysSequential(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
 	created, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "editor", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("CreateRole: expected the sequential path to succeed untouched by the atomic-only fault, got: %v", err)

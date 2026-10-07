@@ -16,11 +16,13 @@ package grpc
 
 import (
 	"context"
+	"errors"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,25 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 
 	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, opts)
 	if err != nil {
+		// The admin-credential step must commit on the system shard's
+		// leader (service.CeremonyServiceWithLeaderGate); a follower
+		// forwards the identical request through the SAME
+		// ReplicaForwarder the generic per-database path uses, rather
+		// than answering its own refusal (node parity, owner ruling
+		// 2026-10-06). Unix shares this handler and gains the fix the
+		// same way: it registers its own ReplicaForwarder via
+		// WithRegisterReplicaForwarding.
+		var notLeader *service.AdminCredentialNotLeaderError
+		if errors.As(err, &notLeader) && s.replicaForwarder != nil {
+			if reply, ferr, forwarded := s.replicaForwarder.forwardAdminWrite(ctx, pb.QRDBService_CeremonyInitialize_FullMethodName, req, notLeader.LeaderAddress); forwarded {
+				if ferr != nil {
+					return nil, ferr
+				}
+				if resp, ok := reply.(*pb.CeremonyInitializeResponse); ok {
+					return resp, nil
+				}
+			}
+		}
 		return nil, mapServiceError(err)
 	}
 	// resp owns an independent bytes.Clone of result.AdminKeyPEM

@@ -22,7 +22,7 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -102,7 +102,7 @@ type activeWatch struct {
 // Watches run in background goroutines and emit events to the frontend
 // via the Wails runtime event bus (event name: "qrdb:watch:{id}").
 type WatchBinding struct {
-	logger  *logger.Logger
+	logger  *sdk.ConcreteLogger
 	conn    *ConnectionBinding
 	emitFn  EventEmitter
 	nextID  atomic.Int64
@@ -112,7 +112,7 @@ type WatchBinding struct {
 
 // NewWatchBinding creates a new WatchBinding backed by the given connection.
 // Event emission uses wailsruntime.EventsEmit by default.
-func NewWatchBinding(log *logger.Logger, conn *ConnectionBinding) *WatchBinding {
+func NewWatchBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *WatchBinding {
 	return &WatchBinding{
 		logger:  log,
 		conn:    conn,
@@ -123,7 +123,7 @@ func NewWatchBinding(log *logger.Logger, conn *ConnectionBinding) *WatchBinding 
 
 // NewWatchBindingWithEmitter creates a WatchBinding with a custom event
 // emitter. Use this in tests to avoid depending on the Wails runtime.
-func NewWatchBindingWithEmitter(log *logger.Logger, conn *ConnectionBinding, emit EventEmitter) *WatchBinding {
+func NewWatchBindingWithEmitter(log *sdk.ConcreteLogger, conn *ConnectionBinding, emit EventEmitter) *WatchBinding {
 	return &WatchBinding{
 		logger:  log,
 		conn:    conn,

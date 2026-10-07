@@ -119,6 +119,23 @@ type ModuleMCPToolPermissioner = apimodule.MCPToolPermissioner
 // HTTPRegistrar.HandlePublic admits unauthenticated REST routes.
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 
+// TenantTargetAuthorizer is the minimal capability a module needs to
+// authorize its own handler against a request-supplied target tenant,
+// under the host's RBAC ScopeCross/ScopeSelf rules (go-qrdb#587). Satisfied
+// by the AuthMiddleware every network transport already authorizes
+// against; a module never builds one itself.
+type TenantTargetAuthorizer = apimodule.TenantTargetAuthorizer
+
+// ModuleTenantTargetAware is the optional ServiceModule extension through
+// which a module receives its TenantTargetAuthorizer, once, before any of
+// its Register* hooks run. A module implementing it can authorize a
+// handler registered on ANY transport (REST, gRPC, unix, QUIC, MCP)
+// against a caller-named target tenant, instead of being confined to the
+// request's own identity tenant. The authorizer handed over is nil when
+// the host's auth system is disabled -- treat that exactly as every
+// built-in tenant route does: admit unconditionally, never refuse.
+type ModuleTenantTargetAware = apimodule.ModuleTenantTargetAware
+
 // ModuleConnObserver is the optional ServiceModule extension through which a
 // module observes the connection lifecycle on every listener of the unified
 // server: each accepted connection is reported once to ConnOpened and, when

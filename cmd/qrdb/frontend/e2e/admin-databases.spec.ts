@@ -83,20 +83,19 @@ test.describe("Admin - Databases", () => {
     const stateWithDbs: MockState = {
       ...secondLaunchEmbeddedState,
       databases: [
-        { name: "mykvdb", engine: "kv", backend: "pebble", status: "open" },
+        { name: "mykvdb", backend: "pebble", status: "open" },
         {
           name: "mytsdb",
-          engine: "timeseries",
           backend: "pebble",
           status: "open",
         },
-        { name: "myvdb", engine: "vector", backend: "memory", status: "open" },
+        { name: "myvdb", backend: "memory", status: "open" },
       ],
     };
 
     test.use({ mockState: stateWithDbs });
 
-    test("shows database list table with Name, Engine, Backend, Status columns", async ({
+    test("shows database list table with Name, Backend, Status columns", async ({
       page,
     }) => {
       await navigateToDatabases(page);
@@ -107,7 +106,7 @@ test.describe("Admin - Databases", () => {
       await expect(main.locator("th", { hasText: "Name" })).toBeVisible({
         timeout: LOAD_TIMEOUT,
       });
-      await expect(main.locator("th", { hasText: "Engine" })).toBeVisible();
+      await expect(main.locator("th", { hasText: "Engine" })).toHaveCount(0);
       await expect(main.locator("th", { hasText: "Backend" })).toBeVisible();
       await expect(main.locator("th", { hasText: "Status" })).toBeVisible();
     });
@@ -124,22 +123,12 @@ test.describe("Admin - Databases", () => {
       await expect(main.getByText("myvdb")).toBeVisible();
     });
 
-    test("shows correct engine and backend values", async ({ page }) => {
+    test("shows correct backend values", async ({ page }) => {
       await navigateToDatabases(page);
 
       const main = page.locator("main");
 
-      // The kv engine.
-      await expect(main.getByText("kv", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      // The timeseries engine.
-      await expect(main.getByText("timeseries", { exact: true })).toBeVisible();
-
-      // The vector engine.
-      await expect(main.getByText("vector", { exact: true })).toBeVisible();
-
-      // Backends.
-      await expect(main.getByText("pebble").first()).toBeVisible();
+      await expect(main.getByText("pebble").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
       await expect(main.getByText("memory")).toBeVisible();
     });
 
@@ -217,7 +206,7 @@ test.describe("Admin - Databases", () => {
 
       await main.getByPlaceholder("e.g. my-database").fill("newdb");
 
-      // Engine defaults to kv, backend defaults to pebble — submit directly.
+      // Backend defaults to pebble — submit directly.
       await main.getByRole("button", { name: "Create Database" }).click();
 
       // Success toast should appear.
@@ -228,44 +217,17 @@ test.describe("Admin - Databases", () => {
       );
     });
 
-    test("create database with TimeSeries engine shows correct badges", async ({
-      page,
-    }) => {
+    test("create form has no engine selector", async ({ page }) => {
       await openCreateForm(page);
 
       const main = page.locator("main");
 
-      // The Time Series engine card button contains "Time Series" in its label.
-      const timeSeriesCard = main.getByRole("button", { name: /Time Series/ });
-      await expect(timeSeriesCard.first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      // Click the Time Series engine card.
-      await timeSeriesCard.first().click();
-
-      // The Time Series badges should be visible as badge elements on the selected card.
-      await expect(main.locator(".badge-outline", { hasText: "Retention" })).toBeVisible();
-      await expect(main.locator(".badge-outline", { hasText: "Aggregation" })).toBeVisible();
-      await expect(main.locator(".badge-outline", { hasText: "High-Throughput" })).toBeVisible();
-    });
-
-    test("create database with Vector engine shows correct badges", async ({
-      page,
-    }) => {
-      await openCreateForm(page);
-
-      const main = page.locator("main");
-
-      // The Vector engine card button contains "Vector" in its label.
-      const vectorCard = main.getByRole("button", { name: /^Vector/ });
-      await expect(vectorCard.first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      // Click the Vector engine card.
-      await vectorCard.first().click();
-
-      // The Vector badges should be visible as badge elements on the selected card.
-      await expect(main.locator(".badge-outline", { hasText: "HNSW" })).toBeVisible();
-      await expect(main.locator(".badge-outline", { hasText: "KNN" })).toBeVisible();
-      await expect(main.locator(".badge-outline", { hasText: "Hybrid Search" })).toBeVisible();
+      await expect(
+        main.getByPlaceholder("e.g. my-database"),
+      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(main.getByRole("heading", { name: "Engine" })).toHaveCount(0);
+      await expect(main.getByRole("button", { name: /Time Series/ })).toHaveCount(0);
+      await expect(main.getByRole("button", { name: /^Vector/ })).toHaveCount(0);
     });
 
     test("create database name validation rejects invalid characters", async ({
@@ -356,7 +318,7 @@ test.describe("Admin - Databases", () => {
     const stateWithDb: MockState = {
       ...secondLaunchEmbeddedState,
       databases: [
-        { name: "dropme", engine: "kv", backend: "pebble", status: "open" },
+        { name: "dropme", backend: "pebble", status: "open" },
       ],
     };
 

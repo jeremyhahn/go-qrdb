@@ -1,6 +1,6 @@
 # etcd Compatibility — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 > **Build-tag gated.** `qrdb_etcd` (`WITH_QRDB_ETCD=1`, on by default in the
 > Makefile). `qrdb admin capabilities` reports `etcd`.
@@ -224,10 +224,14 @@ graph, and not affected by `WITH_QRDB_ETCD`.
 - **No global etcd cluster view.** `MemberList` and `Status` report the qrdb
   cluster, per database.
 - **No etcd v2 API.**
-- **No support outside `engine: kv`, or on a standalone node.** Enabling etcd
-  on another engine is refused at create and on update
-  (`database.EtcdEngineUnsupportedError`), and a standalone node's listener
-  refuses to start, because the etcd listener is a raft-only surface. *(The
-  reason given here was that MVCC, leases and watches are raft-only; a
-  standalone node serves those since 2026-10-01, and the listener stays
-  raft-only by its own capability flag.)* Any backend serves it. *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
+- **No support on a standalone node.** A standalone node's listener refuses
+  to start, because the etcd listener is a raft-only surface. *(The reason
+  given here was that MVCC, leases and watches are raft-only; a standalone
+  node serves those since 2026-10-01, and the listener stays raft-only by its
+  own capability flag.)* Any backend serves it. *(Corrected twice:
+  `backend: raft` was documented as required and was neither required nor
+  checked; and this section previously also read "No support outside
+  `engine: kv`", refusing any other engine at create and on update with
+  `database.EtcdEngineUnsupportedError` -- Lane 1C deleted the `engine`
+  concept and that error entirely, OD-12/OD-13, so etcd now serves any
+  database regardless of what it stores.)*

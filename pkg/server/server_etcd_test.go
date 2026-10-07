@@ -227,7 +227,7 @@ func TestEtcdListener_RefusesOtherTenant(t *testing.T) {
 // while acme is refused there. The owner of each database reads its own key.
 func TestEtcdListener_OwnerAdmittedEveryoneElseRefused(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "sysapp", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "sysapp", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("create the untagged system database: %v", err)
 	}
 	f.shared.put("system/sysapp/visible", []byte("v"))

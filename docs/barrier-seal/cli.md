@@ -1,6 +1,6 @@
 # Barrier and Seal — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
@@ -38,8 +38,8 @@ Initialize the cryptographic barrier.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--barrier-strategy` | string | `passphrase` | `none \| passphrase \| shamir` |
-| `--passphrase` | string | — | **required** for `passphrase` and `shamir`; **rejected** for `none` |
+| `--barrier-strategy` | string | `passphrase` | `none \| passphrase` (`shamir` is refused — use `init-shamir`) |
+| `--passphrase` | string | — | **required** for `passphrase`; **rejected** for `none` |
 | `--so-pin` | string | — | Security Officer PIN; **requires `--user-pin`** |
 | `--user-pin` | string | — | User PIN; **requires `--so-pin`** |
 
@@ -47,7 +47,9 @@ Strategies:
 
 - `none` — identity passthrough; data stored in cleartext. Development only.
 - `passphrase` — single passphrase-derived master key. The default.
-- `shamir` — single-secret Shamir seed. For M-of-N use `init-shamir`.
+- `shamir` is not an `init` strategy: the CLI refuses it with an
+  `InvalidArgError`. A Shamir barrier is initialized over its enrolled share
+  holders with `init-shamir`.
 
 PINs are optional but follow the **dual-control rule**: supplying one requires
 the other, so the pair satisfies FIPS 140-3 and PCI-DSS v4. Any PIN with
@@ -205,5 +207,6 @@ activated; only the tenant that owns the database may seal or unseal it.
 ## Parity
 
 Every verb here has a `CommandDefinition` in the integration parity suite. Note
-that the cluster-scope encryption migration test lives in the cluster stage,
-which is not currently wired into CI.
+that the cluster-scope encryption migration test lives in the cluster stage
+(`make integration-test-cluster`), which runs in CI as the
+`integration-cluster` job (`.github/workflows/ci.yml`), required by `ci-gate`.

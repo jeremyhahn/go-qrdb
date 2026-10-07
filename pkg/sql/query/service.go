@@ -197,16 +197,14 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 		provOpts = append(provOpts, provider.WithRegistry(s.registry))
 	}
 
-	// Resolve the database engine for table scoping. The resolver's typed
-	// error (e.g. *database.NotFoundError) is returned unwrapped so that
-	// transports can map it to their not-found status.
-	var engineType database.EngineType
+	// Confirm the database exists and is this tenant's before building a
+	// provider over it. The resolver's typed error (e.g. *database.NotFoundError)
+	// is returned unwrapped so that transports can map it to their not-found
+	// status.
 	if s.dbSvc != nil {
-		info, err := s.databaseInfo(ctx, dbName)
-		if err != nil {
+		if _, err := s.databaseInfo(ctx, dbName); err != nil {
 			return nil, err
 		}
-		engineType = info.Engine
 	}
 
 	// Reuse the cached engine for this (tenant, database) scope when one
@@ -216,7 +214,7 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 	// the cache key must match the provider it fronts -- but the expensive
 	// part, the analyzer catalog inside sqle.Engine, is built at most once
 	// per scope.
-	prov := provider.NewProviderWithEngine(dbName, kvSvc, engineType, provOpts...)
+	prov := provider.NewProvider(dbName, kvSvc, provOpts...)
 	eng := s.engineFor(engineKey{tenant: tenantID, db: dbName}, prov)
 
 	start := time.Now()

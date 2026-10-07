@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,13 +76,52 @@ func TestRunStart_SealConfig_ShamirInvalidParams_ReturnsError(t *testing.T) {
 // runStart: volume pool wired into startup
 //
 // Exercises openConfiguredVolumes in runStart by setting
-// storageConfig.VolumePools. A pool that fails to open never aborts boot
-// (invariant 6: a pool that does not open on a node refuses only that
-// pool's tenants on that node) -- the SM fails at initializeNode (unknown
-// type) regardless of whether the configured pool opened.
+// storageConfig.VolumePools. Owner ruling 2026-10-06 flipped the DEFAULT:
+// a pool that fails to open now fails qrdbd start outright (see
+// TestRunStart_VolumePoolConfigured_DefaultFailsLoud below); the behavior
+// this test exercises -- a pool that fails to open never aborts boot,
+// invariant 6's old default -- is now opt-in via
+// storageConfig.AllowDegradedVolumeBoot (--allow-degraded-volume-boot). With
+// it set, the SM still fails at initializeNode (unknown type) regardless of
+// whether the configured pool opened.
 // ---------------------------------------------------------------------------
 
-func TestRunStart_VolumePoolConfigured_FailsAtSM(t *testing.T) {
+func TestRunStart_VolumePoolConfigured_DegradedBootFailsAtSM(t *testing.T) {
+	dir := t.TempDir()
+	volDir := filepath.Join(dir, "vol1")
+
+	f := &startFlags{
+		dataDir:         dir,
+		smType:          "nonexistent-sm-vp",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:0",
+		raftAddress:     "127.0.0.1:0",
+		shardID:         1,
+		replicaID:       1,
+		storageConfig: qrdbconfig.StorageConfig{
+			VolumePools: []qrdbconfig.VolumePoolConfig{
+				{Name: "default", Path: volDir},
+			},
+			AllowDegradedVolumeBoot: true,
+		},
+		host: testBindHost,
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+	// Must fail at SM resolution, not at volume-pool setup: the degraded
+	// boot opt-in let startup proceed past the pool that failed to open.
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr),
+		"should fail with UnknownSMError, got %T: %v", err, err)
+}
+
+// TestRunStart_VolumePoolConfigured_DefaultFailsLoud proves the owner's
+// 2026-10-06 ruling's default: the SAME unopenable pool as above, but
+// WITHOUT --allow-degraded-volume-boot, fails qrdbd start outright with a
+// typed *volume.OpenAtBootError naming the pool and the reason -- startup
+// never reaches SM resolution, so UnknownSMError must NOT be the error.
+func TestRunStart_VolumePoolConfigured_DefaultFailsLoud(t *testing.T) {
 	dir := t.TempDir()
 	volDir := filepath.Join(dir, "vol1")
 
@@ -103,10 +143,17 @@ func TestRunStart_VolumePoolConfigured_FailsAtSM(t *testing.T) {
 
 	err := runStart(f)
 	require.Error(t, err)
-	// Must fail at SM resolution, not at volume-pool setup.
+	var bootErr *volume.OpenAtBootError
+	require.True(t, errors.As(err, &bootErr),
+		"should fail with *volume.OpenAtBootError, got %T: %v", err, err)
+	require.Len(t, bootErr.Failures, 1)
+	assert.Equal(t, "default", bootErr.Failures[0].Pool)
+	assert.Contains(t, err.Error(), "default")
+	assert.Contains(t, err.Error(), "allow-degraded-volume-boot")
+
 	var smErr *UnknownSMError
-	require.True(t, errors.As(err, &smErr),
-		"should fail with UnknownSMError, got %T: %v", err, err)
+	require.False(t, errors.As(err, &smErr),
+		"must fail before SM resolution, not reach it: got %T: %v", err, err)
 }
 
 // ---------------------------------------------------------------------------

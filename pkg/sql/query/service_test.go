@@ -142,7 +142,6 @@ func ownedKV(owner string) func(string) (*database.DatabaseInfo, error) {
 func kvDB(name string) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{
 		Name:    name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 		Status:  database.StatusOpen,
 	}, nil
@@ -356,26 +355,6 @@ func TestExecute_UnknownTable(t *testing.T) {
 	var ee *service.SQLExecutionError
 	if !errors.As(err, &ee) {
 		t.Fatalf("expected SQLExecutionError, got %T: %v", err, err)
-	}
-}
-
-func TestExecute_EngineScoping(t *testing.T) {
-	// A timeseries-engine database must not expose the kv table.
-	svc := NewService(newMockKV(), &mockDB{
-		getFn: func(name string) (*database.DatabaseInfo, error) {
-			return &database.DatabaseInfo{
-				Name:    name,
-				Engine:  database.EngineTimeSeries,
-				Backend: database.BackendMemory,
-				Status:  database.StatusOpen,
-			}, nil
-		},
-	})
-
-	_, err := svc.Execute(context.Background(), "tsdb", "SELECT * FROM kv")
-	var ee *service.SQLExecutionError
-	if !errors.As(err, &ee) {
-		t.Fatalf("expected SQLExecutionError for out-of-engine table, got %T: %v", err, err)
 	}
 }
 

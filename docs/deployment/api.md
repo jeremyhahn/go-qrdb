@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 No transport surface: the secure-memory budget is installed by the `qrdbd
 start` process before any listener opens, and is not readable or settable

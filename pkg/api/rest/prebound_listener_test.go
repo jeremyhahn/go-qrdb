@@ -33,6 +33,29 @@ func listenLoopbackTCP(t *testing.T) net.Listener {
 	return ln
 }
 
+// bindUDPOnDifferentPort binds a loopback UDP socket on an ephemeral port
+// and retries until that port is not avoidPort. TCP and UDP have separate
+// kernel port spaces, so the ephemeral allocator can hand UDP the same
+// number already held by a TCP listener -- that happened under full-suite
+// load and made this collision case un-exercisable (go-qrdb#610). Retrying
+// is deterministic: the ephemeral range has thousands of other ports, so a
+// repeat collision within a few attempts would itself indicate a bug.
+func bindUDPOnDifferentPort(t *testing.T, avoidPort string) net.PacketConn {
+	t.Helper()
+	for attempt := 0; attempt < 20; attempt++ {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("bind udp: %v", err)
+		}
+		if portOfAddr(pc.LocalAddr()) != avoidPort {
+			return pc
+		}
+		_ = pc.Close()
+	}
+	t.Fatalf("could not obtain a udp port different from %s after 20 attempts", avoidPort)
+	return nil
+}
+
 // assertClosed reports whether a socket was closed by trying to use it.
 func assertListenerClosed(t *testing.T, ln net.Listener) {
 	t.Helper()
@@ -113,16 +136,10 @@ func TestWithPacketConn_Refusals(t *testing.T) {
 	})
 	t.Run("on another port", func(t *testing.T) {
 		ln := listenLoopbackTCP(t)
-		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("bind udp: %v", err)
-		}
-		if portOfAddr(pc.LocalAddr()) == portOfAddr(ln.Addr()) {
-			t.Fatal("the kernel assigned the same port to both sockets; the refusal cannot be exercised")
-		}
+		pc := bindUDPOnDifferentPort(t, portOfAddr(ln.Addr()))
 		tlsCfg, _ := generateTestTLSConfig(t)
 		srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", WithTLS(tlsCfg), WithListener(ln), WithPacketConn(pc))
-		err = srv.Start()
+		err := srv.Start()
 		var want *ListenerPortMismatchError
 		if !errors.As(err, &want) {
 			t.Fatalf("Start = %v, want *ListenerPortMismatchError", err)

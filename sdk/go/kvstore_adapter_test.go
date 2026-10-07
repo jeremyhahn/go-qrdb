@@ -17,6 +17,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -252,6 +253,50 @@ func TestKVStoreAdapter_Scan(t *testing.T) {
 	}
 }
 
+// TestKVStoreAdapter_Scan_DeliversKeysInSortedOrder pins that Scan's
+// delivery order is deterministic and lexicographic by key, not the
+// randomized order Go's map iteration would otherwise produce.
+//
+// pkg/dao.GenericDAO.Page's default (no SortField) path issues one Scan
+// call per page and relies on every call enumerating the SAME prefix in
+// the SAME relative order for its offset/limit arithmetic to mean
+// anything. Before this fix, Scan iterated the transport's map response
+// directly: two Scan calls over identical data could (and, caught by a
+// real multi-page pagination test over the real REST transport, did)
+// deliver entries in two different orders, so an entity was skipped on
+// one page and repeated on another.
+func TestKVStoreAdapter_Scan_DeliversKeysInSortedOrder(t *testing.T) {
+	ctx := context.Background()
+
+	unordered := map[string][]byte{
+		"prefix/zebra": []byte("z"),
+		"prefix/apple": []byte("a"),
+		"prefix/mango": []byte("m"),
+		"prefix/kiwi":  []byte("k"),
+	}
+	kv := &mockTransportKV{
+		scanFn: func(_ context.Context, _ string, _ ...transport.ReadOption) (map[string][]byte, error) {
+			return unordered, nil
+		},
+	}
+	adapter := newTestAdapter(kv, &mockTransportIndex{})
+
+	var gotKeys []string
+	for i := 0; i < 20; i++ {
+		gotKeys = nil
+		if err := adapter.Scan(ctx, "prefix/", func(key string, _ []byte) error {
+			gotKeys = append(gotKeys, key)
+			return nil
+		}); err != nil {
+			t.Fatalf("Scan (iteration %d): %v", i, err)
+		}
+		want := []string{"prefix/apple", "prefix/kiwi", "prefix/mango", "prefix/zebra"}
+		if !reflect.DeepEqual(gotKeys, want) {
+			t.Fatalf("Scan delivery order (iteration %d) = %v, want %v", i, gotKeys, want)
+		}
+	}
+}
+
 func TestKVStoreAdapter_Scan_TransportError(t *testing.T) {
 	ctx := context.Background()
 	sentinel := errors.New("scan transport error")
@@ -421,6 +466,83 @@ func TestKVStoreAdapter_RegisterEntityIndexes_Error(t *testing.T) {
 
 	if err := adapter.RegisterEntityIndexes("entity", indexes); !errors.Is(err, sentinel) {
 		t.Fatalf("RegisterEntityIndexes: expected sentinel error, got %v", err)
+	}
+}
+
+// TestKVStoreAdapter_RegisterEntityIndexes_TranslatesCapabilityRefusal pins
+// that a server-side "this statemachine has no index subsystem at all"
+// refusal -- decoded into *transport.CapabilityUnsupportedError, wrapped in
+// *transport.RequestError exactly as the REST transport's decodeErrorResponse
+// produces it for an HTTP 501 -- surfaces as kvstore.ErrIndexUnsupported.
+// Before this translation, dao.New's errors.Is(err, kvstore.ErrIndexUnsupported)
+// check never matched, so DAO construction against such a store failed
+// outright instead of degrading to full scans.
+func TestKVStoreAdapter_RegisterEntityIndexes_TranslatesCapabilityRefusal(t *testing.T) {
+	wireErr := &transport.RequestError{
+		Method:     "IndexCreate",
+		StatusCode: 501,
+		Err:        &transport.CapabilityUnsupportedError{Message: "statemachine: index not configured"},
+	}
+
+	idx := &mockTransportIndex{
+		createFn: func(_ context.Context, _, _ string, _ transport.IndexConfig) error {
+			return wireErr
+		},
+	}
+	adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+	indexes := []kvstore.EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", CaseSensitive: true},
+	}
+
+	err := adapter.RegisterEntityIndexes("entity", indexes)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes: expected kvstore.ErrIndexUnsupported, got %v", err)
+	}
+}
+
+// TestKVStoreAdapter_QueryIndex_TranslatesCapabilityRefusal mirrors the
+// RegisterEntityIndexes case for the direct QueryByIndex path, which must
+// fail closed with the same sentinel rather than an opaque transport error.
+func TestKVStoreAdapter_QueryIndex_TranslatesCapabilityRefusal(t *testing.T) {
+	wireErr := &transport.RequestError{
+		Method:     "IndexQuery",
+		StatusCode: 501,
+		Err:        &transport.CapabilityUnsupportedError{Message: "statemachine: index not configured"},
+	}
+
+	idx := &mockTransportIndex{
+		queryFn: func(_ context.Context, _, _ string) (*transport.IndexQueryResponse, error) {
+			return nil, wireErr
+		},
+	}
+	adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+	_, err := adapter.QueryIndex(context.Background(), "idx", []byte("v"))
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("QueryIndex: expected kvstore.ErrIndexUnsupported, got %v", err)
+	}
+}
+
+// TestKVStoreAdapter_ScanIndex_TranslatesCapabilityRefusal mirrors the same
+// translation for ScanByIndex.
+func TestKVStoreAdapter_ScanIndex_TranslatesCapabilityRefusal(t *testing.T) {
+	wireErr := &transport.RequestError{
+		Method:     "IndexScan",
+		StatusCode: 501,
+		Err:        &transport.CapabilityUnsupportedError{Message: "statemachine: index not configured"},
+	}
+
+	idx := &mockTransportIndex{
+		scanFn: func(_ context.Context, _ string, _, _ *string) (*transport.IndexScanResponse, error) {
+			return nil, wireErr
+		},
+	}
+	adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+	_, err := adapter.ScanIndex(context.Background(), "idx", []byte("a"), []byte("b"))
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("ScanIndex: expected kvstore.ErrIndexUnsupported, got %v", err)
 	}
 }
 

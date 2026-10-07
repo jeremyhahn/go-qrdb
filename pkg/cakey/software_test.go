@@ -29,12 +29,14 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // mockBarrier implements seal.EncryptionBarrier with real AES-GCM
@@ -1640,5 +1642,313 @@ func TestSoftwareProvider_PublicReturnsIndependentCopy(t *testing.T) {
 	}
 	if !ecdsa.VerifyASN1(pub3, digest[:], sig) {
 		t.Fatal("signature from the (allegedly uncorrupted) key does not verify against the current public key")
+	}
+}
+
+// TestSoftwareProvider_NoPlainPrivateKeyFieldAnywhere is the structural
+// proof for the go-enclave protection gap (docs/barrier-seal/architecture.md):
+// neither SoftwareProvider nor the crypto.Signer it hands out may declare a
+// field whose type is *ecdsa.PrivateKey (or ecdsa.PrivateKey) -- the only
+// place a private scalar may live between calls is inside a *secure.Secret,
+// go-enclave protected memory. This is checked with reflection rather than
+// by reading the source, so a future field addition trips it rather than
+// silently reintroducing a bare key the test suite's functional tests would
+// not otherwise notice.
+func TestSoftwareProvider_NoPlainPrivateKeyFieldAnywhere(t *testing.T) {
+	assertNoBareECDSAField := func(t *testing.T, v any) {
+		t.Helper()
+		typ := reflect.TypeOf(v)
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft == reflect.TypeOf(ecdsa.PrivateKey{}) {
+				t.Fatalf("%s.%s is (or points to) ecdsa.PrivateKey; the private key must live only inside a *secure.Secret", typ.Name(), f.Name)
+			}
+		}
+	}
+	assertNoBareECDSAField(t, SoftwareProvider{})
+	assertNoBareECDSAField(t, barrierCheckedSigner{})
+}
+
+// TestSoftwareProvider_KeySecretIsProtectedMemory proves SoftwareProvider's
+// private-key cache is a *secure.Secret (go-enclave protected memory) once
+// material is established -- not merely "not an *ecdsa.PrivateKey", but
+// specifically the project's own protected-memory type.
+func TestSoftwareProvider_KeySecretIsProtectedMemory(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+
+	if p.keySecret != nil {
+		t.Fatal("keySecret must be nil before any material is established")
+	}
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if p.keySecret == nil {
+		t.Fatal("keySecret must be populated after Initialize")
+	}
+	if reflect.TypeOf(p.keySecret) != reflect.TypeOf((*secure.Secret)(nil)) {
+		t.Fatalf("keySecret has type %T, want *secure.Secret", p.keySecret)
+	}
+}
+
+// TestSoftwareProvider_SigningOpensTheSecretOnEveryCall proves Sign does not
+// cache an opened/decrypted key between calls: the provider's keySecret
+// pointer is identical before and after several Sign calls (nothing
+// replaced it), and every call still produces a verifiable signature,
+// consistent with "open only for the duration of the operation, then wipe"
+// rather than "decrypt once and hold".
+func TestSoftwareProvider_SigningOpensTheSecretOnEveryCall(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	secretBefore := p.keySecret
+
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("Public() = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+
+	for i := 0; i < 5; i++ {
+		digest := sha256.Sum256([]byte{byte(i)})
+		sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+		if err != nil {
+			t.Fatalf("Sign call %d: %v", i, err)
+		}
+		if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+			t.Fatalf("Sign call %d produced a signature that does not verify", i)
+		}
+	}
+
+	if p.keySecret != secretBefore {
+		t.Fatal("keySecret pointer changed across Sign calls; signing must not replace the cached secret")
+	}
+}
+
+// TestSoftwareProvider_ConcurrentSigningIsSafe proves many goroutines can
+// Sign through the same crypto.Signer at once: secure.Secret.Open documents
+// that concurrent opens are independent, and this is the proof that holds
+// for cakey's own usage of it, not just for pkg/secure in isolation.
+func TestSoftwareProvider_ConcurrentSigningIsSafe(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("Public() = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			digest := sha256.Sum256([]byte{byte(i)})
+			sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+				errs[i] = errors.New("signature does not verify")
+			}
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: %v", i, err)
+		}
+	}
+}
+
+// TestSoftwareProvider_RotationDestroysThePriorSecret is the owner-required
+// "rotation" proof: sealing and re-establishing (the same sequence a reseal
+// or an HSM failover drives) must not merely swap which pointer p.keySecret
+// holds -- the superseded secure.Secret must actually be destroyed, so a
+// caller that somehow retained it finds it unopenable, rather than left
+// alive as a second, forgotten copy of the key.
+func TestSoftwareProvider_RotationDestroysThePriorSecret(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	oldSecret := p.keySecret
+	if oldSecret == nil {
+		t.Fatal("keySecret must be populated after Initialize")
+	}
+
+	// A sanity open before rotation: the secret is live.
+	if buf, err := oldSecret.Open(context.Background()); err != nil {
+		t.Fatalf("Open before rotation: %v", err)
+	} else {
+		buf.Destroy()
+	}
+
+	p.Seal()
+	if _, err := p.Signer(context.Background()); err != nil {
+		t.Fatalf("Signer after Seal (rotation): %v", err)
+	}
+
+	if p.keySecret == oldSecret {
+		t.Fatal("rotation did not replace keySecret with a new *secure.Secret")
+	}
+
+	// The superseded secret must be destroyed, not merely dereferenced.
+	if _, err := oldSecret.Open(context.Background()); err == nil {
+		t.Fatal("the pre-rotation secret is still openable after rotation; it must have been Destroy'd")
+	}
+}
+
+// TestSoftwareProvider_RestartReloadsIntoProtectedMemory extends
+// TestSoftwareProvider_UnsealAfterRestartReloadsFromStore with the
+// protected-memory assertion: a brand-new provider instance, standing in
+// for a fresh process after a restart, caches the reloaded key as a
+// *secure.Secret, exactly as the originating provider did -- the
+// protection is not a property of the specific process that first
+// generated the key.
+func TestSoftwareProvider_RestartReloadsIntoProtectedMemory(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p1 := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p1.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	p2 := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p2.Unseal(context.Background()); err != nil {
+		t.Fatalf("Unseal (restart): %v", err)
+	}
+	if p2.keySecret == nil {
+		t.Fatal("restarted provider's keySecret must be populated after Unseal")
+	}
+	if reflect.TypeOf(p2.keySecret) != reflect.TypeOf((*secure.Secret)(nil)) {
+		t.Fatalf("restarted provider keySecret has type %T, want *secure.Secret", p2.keySecret)
+	}
+	if p2.keySecret == p1.keySecret {
+		t.Fatal("two independent provider instances must not share the same *secure.Secret object")
+	}
+
+	signer, err := p2.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer after restart: %v", err)
+	}
+	digest := sha256.Sum256([]byte("after restart"))
+	sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		t.Fatalf("Sign after restart: %v", err)
+	}
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("Public() = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+	if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+		t.Fatal("signature after restart does not verify")
+	}
+}
+
+// TestProvider_InterfaceExposesNoKeyAccessor proves the cakey.Provider
+// interface itself -- the surface every embedder (xkms HSM/TPM/KMS, or
+// qrdb's own built-in SoftwareProvider) is bound by -- has exactly two
+// methods, Signer and Certificate, neither of which can return key
+// material: Signer's result type is crypto.Signer (an interface with no
+// key accessor of its own), never *ecdsa.PrivateKey or []byte. This is the
+// CA signer ruling (never return a CA key; sign only through the Signer)
+// enforced at the interface's own shape, independent of which Provider
+// implementation is behind it.
+func TestProvider_InterfaceExposesNoKeyAccessor(t *testing.T) {
+	typ := reflect.TypeOf((*Provider)(nil)).Elem()
+	if typ.NumMethod() != 2 {
+		t.Fatalf("cakey.Provider has %d methods, want exactly 2 (Signer, Certificate)", typ.NumMethod())
+	}
+	signerMethod, ok := typ.MethodByName("Signer")
+	if !ok {
+		t.Fatal("cakey.Provider has no Signer method")
+	}
+	signerOut := signerMethod.Type.Out(0)
+	if signerOut != reflect.TypeOf((*crypto.Signer)(nil)).Elem() {
+		t.Fatalf("Provider.Signer returns %v, want crypto.Signer", signerOut)
+	}
+	if signerOut.NumMethod() != 2 {
+		t.Fatalf("crypto.Signer has %d methods, want exactly 2 (Public, Sign) -- no key accessor", signerOut.NumMethod())
+	}
+}
+
+// TestSoftwareProvider_LoadKeySecretTailDetectsCorruptMaterial is the
+// corrupt-record sibling of TestSoftwareProvider_SigningKeyTailDetectsMismatch:
+// a stored key record that does not even parse as an EC private key, found
+// through AdoptIfAbsent's "lost the race, but it is ours" tail (which
+// caches only the certificate, leaving loadKeySecret to read the key record
+// directly on the next Signer call) rather than through load's combined
+// read.
+func TestSoftwareProvider_LoadKeySecretTailDetectsCorruptMaterial(t *testing.T) {
+	backing := newGuardedMemoryStore()
+	seedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	seedCert := selfSignedTestCert(t, seedKey)
+	if err := backing.Put(context.Background(), "__sys:cluster_ca/material", []byte("not a real DER-encoded key")); err != nil {
+		t.Fatalf("Put (material): %v", err)
+	}
+	if err := backing.Put(context.Background(), "__sys:cluster_ca/certificate", seedCert.Raw); err != nil {
+		t.Fatalf("Put (certificate): %v", err)
+	}
+
+	seedKeyDER, err := x509.MarshalECPrivateKey(seedKey)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey: %v", err)
+	}
+	seedKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: seedKeyDER})
+	seedCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: seedCert.Raw})
+
+	p := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour,
+		WithAdoptMaterial(seedKeyPEM, seedCertPEM))
+
+	var corruptErr *MaterialCorruptError
+	if _, err := p.Signer(context.Background()); !errors.As(err, &corruptErr) {
+		t.Fatalf("Signer with a corrupt stored key record (reached via the adopt-cached-cert tail) = %v, want *MaterialCorruptError", err)
+	}
+}
+
+// TestSoftwareProvider_CertificateGetFailureSurfaces proves Certificate
+// propagates a genuine store failure (not merely "no record yet") on the
+// certificate record, distinct from TestSoftwareProvider_CertificateNeverReadsKeyMaterial
+// (which proves Certificate does NOT read the key record at all).
+func TestSoftwareProvider_CertificateGetFailureSurfaces(t *testing.T) {
+	boom := errors.New("boom")
+	backing := newGuardedMemoryStore()
+	seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := seed.Initialize(context.Background()); err != nil {
+		t.Fatalf("seed Initialize: %v", err)
+	}
+	faulty := &faultyKVStore{MultiGuardedBatchKVStore: backing, failGetOn: "__sys:cluster_ca/certificate", failErr: boom}
+	p := NewSoftwareProvider(faulty, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+
+	var storeErr *StoreError
+	if _, err := p.Certificate(context.Background()); !errors.As(err, &storeErr) {
+		t.Fatalf("Certificate = %v, want *StoreError", err)
 	}
 }

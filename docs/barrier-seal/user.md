@@ -1,6 +1,6 @@
 # Barrier and Seal — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 The barrier is what encrypts your data at rest. Sealed, the database refuses
 every read and write. Unsealed, everything works and the encryption is

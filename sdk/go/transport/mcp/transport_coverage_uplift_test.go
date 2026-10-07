@@ -492,7 +492,6 @@ func TestCreateDatabase_WithRaftAndProtocol(t *testing.T) {
 
 	info, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "db-raft",
-		Engine:  "kv",
 		Backend: "pebble",
 		DataDir: "/tmp/db-raft",
 		Mode:    "regional",

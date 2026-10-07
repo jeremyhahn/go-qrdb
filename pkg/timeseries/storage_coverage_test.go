@@ -17,7 +17,6 @@
 package timeseries
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -25,183 +24,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// NewWithDir
-// ---------------------------------------------------------------------------
-
-func TestNewWithDir_WritesAndReadsDataPoint(t *testing.T) {
-	dir := t.TempDir()
-	s, err := NewWithDir(dir)
-	if err != nil {
-		t.Fatalf("NewWithDir(%q): unexpected error: %v", dir, err)
-	}
-	defer func() {
-		if err := s.Close(); err != nil {
-			t.Errorf("Close: unexpected error: %v", err)
-		}
-	}()
-
-	timestamp := ts(2026, 3, 1, 12, 0, 0)
-	if err := s.Write("cpu.usage", 42.5, timestamp, map[string]string{"host": "node-1"}); err != nil {
-		t.Fatalf("Write: unexpected error: %v", err)
-	}
-
-	points, err := s.Query("cpu.usage", timestamp, timestamp)
-	if err != nil {
-		t.Fatalf("Query: unexpected error: %v", err)
-	}
-	if len(points) != 1 {
-		t.Fatalf("Query: expected 1 point, got %d", len(points))
-	}
-	if points[0].Value != 42.5 {
-		t.Errorf("Query: expected value 42.5, got %f", points[0].Value)
-	}
-	if points[0].Metric != "cpu.usage" {
-		t.Errorf("Query: expected metric 'cpu.usage', got %q", points[0].Metric)
-	}
-}
-
-func TestNewWithDir_EmptyDir(t *testing.T) {
-	_, err := NewWithDir("")
-	if err == nil {
-		t.Fatal("NewWithDir(''): expected EmptyDirError, got nil")
-	}
-	var ede *EmptyDirError
-	if !errors.As(err, &ede) {
-		t.Fatalf("NewWithDir(''): expected *EmptyDirError, got %T: %v", err, err)
-	}
-}
-
-func TestNewWithDir_InvalidDir(t *testing.T) {
-	_, err := NewWithDir("/dev/null/not-a-directory")
-	if err == nil {
-		t.Fatal("NewWithDir(invalid): expected OpenDirError, got nil")
-	}
-	var ode *OpenDirError
-	if !errors.As(err, &ode) {
-		t.Fatalf("NewWithDir(invalid): expected *OpenDirError, got %T: %v", err, err)
-	}
-	if ode.Dir != "/dev/null/not-a-directory" {
-		t.Errorf("OpenDirError.Dir: got %q, want %q", ode.Dir, "/dev/null/not-a-directory")
-	}
-	if ode.Unwrap() == nil {
-		t.Error("OpenDirError.Unwrap: expected non-nil underlying error")
-	}
-}
-
-func TestNewWithDir_Close_ClosesPebbleDB(t *testing.T) {
-	dir := t.TempDir()
-	s, err := NewWithDir(dir)
-	if err != nil {
-		t.Fatalf("NewWithDir(%q): unexpected error: %v", dir, err)
-	}
-
-	// Write a data point to confirm the DB is functional.
-	timestamp := ts(2026, 3, 1, 12, 0, 0)
-	if err := s.Write("test.metric", 1.0, timestamp, nil); err != nil {
-		t.Fatalf("Write: unexpected error: %v", err)
-	}
-
-	// Close should close the underlying PebbleDB.
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: unexpected error: %v", err)
-	}
-
-	// After Close, attempting to re-open the same directory should succeed,
-	// proving the lock was released (PebbleDB was closed).
-	s2, err := NewWithDir(dir)
-	if err != nil {
-		t.Fatalf("NewWithDir (after close): expected success, got %v", err)
-	}
-	defer func() {
-		if err := s2.Close(); err != nil {
-			t.Errorf("Close(s2): unexpected error: %v", err)
-		}
-	}()
-
-	// Verify the data persisted.
-	points, err := s2.Query("test.metric", timestamp, timestamp)
-	if err != nil {
-		t.Fatalf("Query(s2): unexpected error: %v", err)
-	}
-	if len(points) != 1 {
-		t.Fatalf("Query(s2): expected 1 point, got %d", len(points))
-	}
-}
-
-func TestNewWithDir_DoubleClose_ReturnsClosedError(t *testing.T) {
-	dir := t.TempDir()
-	s, err := NewWithDir(dir)
-	if err != nil {
-		t.Fatalf("NewWithDir(%q): unexpected error: %v", dir, err)
-	}
-
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close (first): unexpected error: %v", err)
-	}
-
-	err = s.Close()
-	if err == nil {
-		t.Fatal("Close (second): expected ClosedError, got nil")
-	}
-	var ce *ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("Close (second): expected *ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestNewWithDir_OwnsDB_True(t *testing.T) {
-	dir := t.TempDir()
-	s, err := NewWithDir(dir)
-	if err != nil {
-		t.Fatalf("NewWithDir(%q): unexpected error: %v", dir, err)
-	}
-	defer func() { _ = s.Close() }()
-
-	if !s.ownsDB {
-		t.Error("NewWithDir: expected ownsDB to be true")
-	}
-}
-
-func TestNew_OwnsDB_False(t *testing.T) {
-	db := openPebble(t)
-	s, err := New(db)
-	if err != nil {
-		t.Fatalf("New: unexpected error: %v", err)
-	}
-	if s.ownsDB {
-		t.Error("New: expected ownsDB to be false")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Storage.DB accessor
-// ---------------------------------------------------------------------------
-
-func TestStorage_DB_ReturnsUnderlyingPebbleDB(t *testing.T) {
-	db := openPebble(t)
-	s, err := New(db)
-	if err != nil {
-		t.Fatalf("New: unexpected error: %v", err)
-	}
-	if s.DB() != db {
-		t.Error("DB: returned a different *pebble.DB than was provided to New")
-	}
-}
-
-func TestStorage_DB_NotNil(t *testing.T) {
-	s := newStorage(t)
-	if s.DB() == nil {
-		t.Error("DB: returned nil for a valid Storage")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // WritePoint
 // ---------------------------------------------------------------------------
 
 func TestStorage_WritePoint_ValidPoint(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	timestamp := ts(2026, 3, 1, 12, 0, 0)
 
 	point := &DataPoint{
@@ -211,7 +38,7 @@ func TestStorage_WritePoint_ValidPoint(t *testing.T) {
 		Tags:      map[string]string{"host": "node1"},
 	}
 
-	if err := s.WritePoint(ctx, point); err != nil {
+	if err := writePoint(t, s, point); err != nil {
 		t.Fatalf("WritePoint: unexpected error: %v", err)
 	}
 
@@ -232,7 +59,6 @@ func TestStorage_WritePoint_ValidPoint(t *testing.T) {
 
 func TestStorage_WritePoint_EmptyMetric(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	point := &DataPoint{
 		Metric:    "",
@@ -240,7 +66,7 @@ func TestStorage_WritePoint_EmptyMetric(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	err := s.WritePoint(ctx, point)
+	err := writePoint(t, s, point)
 	if err == nil {
 		t.Fatal("WritePoint(empty metric): expected error, got nil")
 	}
@@ -252,7 +78,6 @@ func TestStorage_WritePoint_EmptyMetric(t *testing.T) {
 
 func TestStorage_WritePoint_ZeroTimestamp(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	point := &DataPoint{
 		Metric:    "cpu.load",
@@ -260,7 +85,7 @@ func TestStorage_WritePoint_ZeroTimestamp(t *testing.T) {
 		Timestamp: time.Time{},
 	}
 
-	err := s.WritePoint(ctx, point)
+	err := writePoint(t, s, point)
 	if err == nil {
 		t.Fatal("WritePoint(zero timestamp): expected error, got nil")
 	}
@@ -273,7 +98,6 @@ func TestStorage_WritePoint_ZeroTimestamp(t *testing.T) {
 func TestStorage_WritePoint_AfterClose(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
-	ctx := context.Background()
 
 	point := &DataPoint{
 		Metric:    "cpu.load",
@@ -281,7 +105,7 @@ func TestStorage_WritePoint_AfterClose(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	err := s.WritePoint(ctx, point)
+	err := writePoint(t, s, point)
 	if err == nil {
 		t.Fatal("WritePoint(after close): expected ClosedError, got nil")
 	}
@@ -293,7 +117,6 @@ func TestStorage_WritePoint_AfterClose(t *testing.T) {
 
 func TestStorage_WritePoint_WithoutTags(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	timestamp := ts(2026, 3, 1, 12, 0, 0)
 
 	point := &DataPoint{
@@ -302,7 +125,7 @@ func TestStorage_WritePoint_WithoutTags(t *testing.T) {
 		Timestamp: timestamp,
 	}
 
-	if err := s.WritePoint(ctx, point); err != nil {
+	if err := writePoint(t, s, point); err != nil {
 		t.Fatalf("WritePoint(no tags): unexpected error: %v", err)
 	}
 
@@ -321,11 +144,10 @@ func TestStorage_WritePoint_WithoutTags(t *testing.T) {
 
 func TestStorage_QueryRich_RawPoints(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
 	for i := 0; i < 5; i++ {
-		_ = s.Write("req.latency", float64(i+1)*10.0, base.Add(time.Duration(i)*time.Minute), map[string]string{"host": "web1"})
+		_ = write(t, s, "req.latency", float64(i+1)*10.0, base.Add(time.Duration(i)*time.Minute), map[string]string{"host": "web1"})
 	}
 
 	req := &QueryRequest{
@@ -334,7 +156,7 @@ func TestStorage_QueryRich_RawPoints(t *testing.T) {
 		EndTime:   base.Add(4 * time.Minute),
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich: unexpected error: %v", err)
 	}
@@ -351,12 +173,11 @@ func TestStorage_QueryRich_RawPoints(t *testing.T) {
 
 func TestStorage_QueryRich_WithTagFilter(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
 
 	req := &QueryRequest{
 		Metric:    "cpu.usage",
@@ -365,7 +186,7 @@ func TestStorage_QueryRich_WithTagFilter(t *testing.T) {
 		Tags:      map[string]string{"host": "srv1"},
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(tags): unexpected error: %v", err)
 	}
@@ -381,12 +202,11 @@ func TestStorage_QueryRich_WithTagFilter(t *testing.T) {
 
 func TestStorage_QueryRich_WithAggregation(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	req := &QueryRequest{
 		Metric:      "cpu.usage",
@@ -395,7 +215,7 @@ func TestStorage_QueryRich_WithAggregation(t *testing.T) {
 		Aggregation: AggAvg,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(agg): unexpected error: %v", err)
 	}
@@ -409,12 +229,11 @@ func TestStorage_QueryRich_WithAggregation(t *testing.T) {
 
 func TestStorage_QueryRich_WithDownsampling(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
 	// Write 6 points across 2 hours.
 	for i := 0; i < 6; i++ {
-		_ = s.Write("cpu.usage", float64(i+1)*10.0, base.Add(time.Duration(i)*20*time.Minute), nil)
+		_ = write(t, s, "cpu.usage", float64(i+1)*10.0, base.Add(time.Duration(i)*20*time.Minute), nil)
 	}
 
 	req := &QueryRequest{
@@ -425,7 +244,7 @@ func TestStorage_QueryRich_WithDownsampling(t *testing.T) {
 		Interval:    time.Hour,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(downsample): unexpected error: %v", err)
 	}
@@ -441,13 +260,12 @@ func TestStorage_QueryRich_WithDownsampling(t *testing.T) {
 
 func TestStorage_QueryRich_WithGroupBy(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, map[string]string{"host": "srv1", "region": "us"})
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2", "region": "us"})
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1", "region": "eu"})
-	_ = s.Write("cpu.usage", 40.0, base.Add(3*time.Minute), map[string]string{"host": "srv2", "region": "eu"})
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1", "region": "us"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2", "region": "us"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1", "region": "eu"})
+	_ = write(t, s, "cpu.usage", 40.0, base.Add(3*time.Minute), map[string]string{"host": "srv2", "region": "eu"})
 
 	req := &QueryRequest{
 		Metric:      "cpu.usage",
@@ -457,7 +275,7 @@ func TestStorage_QueryRich_WithGroupBy(t *testing.T) {
 		GroupBy:     []string{"region"},
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(groupBy): unexpected error: %v", err)
 	}
@@ -481,13 +299,12 @@ func TestStorage_QueryRich_WithGroupBy(t *testing.T) {
 
 func TestStorage_QueryRich_WithGroupByAndInterval(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
-	_ = s.Write("cpu.usage", 20.0, base.Add(30*time.Minute), map[string]string{"host": "srv1"})
-	_ = s.Write("cpu.usage", 30.0, base.Add(time.Hour), map[string]string{"host": "srv1"})
-	_ = s.Write("cpu.usage", 40.0, base, map[string]string{"host": "srv2"})
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(30*time.Minute), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(time.Hour), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 40.0, base, map[string]string{"host": "srv2"})
 
 	req := &QueryRequest{
 		Metric:      "cpu.usage",
@@ -498,7 +315,7 @@ func TestStorage_QueryRich_WithGroupByAndInterval(t *testing.T) {
 		Interval:    time.Hour,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(groupBy+interval): unexpected error: %v", err)
 	}
@@ -515,11 +332,10 @@ func TestStorage_QueryRich_WithGroupByAndInterval(t *testing.T) {
 
 func TestStorage_QueryRich_WithLimit(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
 	for i := 0; i < 10; i++ {
-		_ = s.Write("cpu.usage", float64(i), base.Add(time.Duration(i)*time.Minute), nil)
+		_ = write(t, s, "cpu.usage", float64(i), base.Add(time.Duration(i)*time.Minute), nil)
 	}
 
 	req := &QueryRequest{
@@ -529,7 +345,7 @@ func TestStorage_QueryRich_WithLimit(t *testing.T) {
 		Limit:     3,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(limit): unexpected error: %v", err)
 	}
@@ -540,7 +356,6 @@ func TestStorage_QueryRich_WithLimit(t *testing.T) {
 
 func TestStorage_QueryRich_EmptyResult(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
 	req := &QueryRequest{
@@ -549,7 +364,7 @@ func TestStorage_QueryRich_EmptyResult(t *testing.T) {
 		EndTime:   base.Add(time.Hour),
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(empty): unexpected error: %v", err)
 	}
@@ -560,7 +375,6 @@ func TestStorage_QueryRich_EmptyResult(t *testing.T) {
 
 func TestStorage_QueryRich_InvalidMetric(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &QueryRequest{
 		Metric:    "",
@@ -568,7 +382,7 @@ func TestStorage_QueryRich_InvalidMetric(t *testing.T) {
 		EndTime:   time.Now().Add(time.Hour),
 	}
 
-	_, err := s.QueryRich(ctx, req)
+	_, err := s.QueryRich(req)
 	if err == nil {
 		t.Fatal("QueryRich(empty metric): expected error, got nil")
 	}
@@ -580,7 +394,6 @@ func TestStorage_QueryRich_InvalidMetric(t *testing.T) {
 
 func TestStorage_QueryRich_EndBeforeStart(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &QueryRequest{
 		Metric:    "cpu.usage",
@@ -588,7 +401,7 @@ func TestStorage_QueryRich_EndBeforeStart(t *testing.T) {
 		EndTime:   ts(2026, 3, 1, 10, 0, 0),
 	}
 
-	_, err := s.QueryRich(ctx, req)
+	_, err := s.QueryRich(req)
 	if err == nil {
 		t.Fatal("QueryRich(end before start): expected error, got nil")
 	}
@@ -601,7 +414,6 @@ func TestStorage_QueryRich_EndBeforeStart(t *testing.T) {
 func TestStorage_QueryRich_AfterClose(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
-	ctx := context.Background()
 
 	req := &QueryRequest{
 		Metric:    "cpu.usage",
@@ -609,7 +421,7 @@ func TestStorage_QueryRich_AfterClose(t *testing.T) {
 		EndTime:   time.Now().Add(time.Hour),
 	}
 
-	_, err := s.QueryRich(ctx, req)
+	_, err := s.QueryRich(req)
 	if err == nil {
 		t.Fatal("QueryRich(after close): expected ClosedError, got nil")
 	}
@@ -621,7 +433,6 @@ func TestStorage_QueryRich_AfterClose(t *testing.T) {
 
 func TestStorage_QueryRich_InvalidAggFunc(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &QueryRequest{
 		Metric:      "cpu.usage",
@@ -630,7 +441,7 @@ func TestStorage_QueryRich_InvalidAggFunc(t *testing.T) {
 		Aggregation: AggFunc(99),
 	}
 
-	_, err := s.QueryRich(ctx, req)
+	_, err := s.QueryRich(req)
 	if err == nil {
 		t.Fatal("QueryRich(invalid agg): expected error, got nil")
 	}
@@ -642,11 +453,10 @@ func TestStorage_QueryRich_InvalidAggFunc(t *testing.T) {
 
 func TestStorage_QueryRich_PercentileAggregation(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
 	for i := 1; i <= 100; i++ {
-		_ = s.Write("latency", float64(i), base.Add(time.Duration(i)*time.Second), nil)
+		_ = write(t, s, "latency", float64(i), base.Add(time.Duration(i)*time.Second), nil)
 	}
 
 	req := &QueryRequest{
@@ -657,7 +467,7 @@ func TestStorage_QueryRich_PercentileAggregation(t *testing.T) {
 		Percentile:  95.0,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(percentile): unexpected error: %v", err)
 	}
@@ -671,7 +481,6 @@ func TestStorage_QueryRich_PercentileAggregation(t *testing.T) {
 
 func TestStorage_QueryRich_PercentileInvalidRange(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &QueryRequest{
 		Metric:      "latency",
@@ -681,7 +490,7 @@ func TestStorage_QueryRich_PercentileInvalidRange(t *testing.T) {
 		Percentile:  150.0,
 	}
 
-	_, err := s.QueryRich(ctx, req)
+	_, err := s.QueryRich(req)
 	if err == nil {
 		t.Fatal("QueryRich(percentile>100): expected error, got nil")
 	}
@@ -697,15 +506,14 @@ func TestStorage_QueryRich_PercentileInvalidRange(t *testing.T) {
 
 func TestStorage_DeleteSeries_AllPoints(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	req := &DeleteRequest{Metric: "cpu.usage"}
-	if err := s.DeleteSeries(ctx, req); err != nil {
+	if err := deleteSeries(t, s, req); err != nil {
 		t.Fatalf("DeleteSeries: unexpected error: %v", err)
 	}
 
@@ -731,12 +539,11 @@ func TestStorage_DeleteSeries_AllPoints(t *testing.T) {
 
 func TestStorage_DeleteSeries_TimeRange(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
 
 	// Delete only middle point.
 	req := &DeleteRequest{
@@ -744,7 +551,7 @@ func TestStorage_DeleteSeries_TimeRange(t *testing.T) {
 		StartTime: base.Add(30 * time.Second),
 		EndTime:   base.Add(90 * time.Second),
 	}
-	if err := s.DeleteSeries(ctx, req); err != nil {
+	if err := deleteSeries(t, s, req); err != nil {
 		t.Fatalf("DeleteSeries(range): unexpected error: %v", err)
 	}
 
@@ -759,18 +566,17 @@ func TestStorage_DeleteSeries_TimeRange(t *testing.T) {
 
 func TestStorage_DeleteSeries_WithTagFilter(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
-	_ = s.Write("cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
-	_ = s.Write("cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
 
 	req := &DeleteRequest{
 		Metric: "cpu.usage",
 		Tags:   map[string]string{"host": "srv1"},
 	}
-	if err := s.DeleteSeries(ctx, req); err != nil {
+	if err := deleteSeries(t, s, req); err != nil {
 		t.Fatalf("DeleteSeries(tags): unexpected error: %v", err)
 	}
 
@@ -789,10 +595,9 @@ func TestStorage_DeleteSeries_WithTagFilter(t *testing.T) {
 
 func TestStorage_DeleteSeries_InvalidMetric(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &DeleteRequest{Metric: ""}
-	err := s.DeleteSeries(ctx, req)
+	err := deleteSeries(t, s, req)
 	if err == nil {
 		t.Fatal("DeleteSeries(empty metric): expected error, got nil")
 	}
@@ -804,7 +609,6 @@ func TestStorage_DeleteSeries_InvalidMetric(t *testing.T) {
 
 func TestStorage_DeleteSeries_EndBeforeStart(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &DeleteRequest{
 		Metric:    "cpu.usage",
@@ -812,7 +616,7 @@ func TestStorage_DeleteSeries_EndBeforeStart(t *testing.T) {
 		EndTime:   ts(2026, 3, 1, 10, 0, 0),
 	}
 
-	err := s.DeleteSeries(ctx, req)
+	err := deleteSeries(t, s, req)
 	if err == nil {
 		t.Fatal("DeleteSeries(end before start): expected error, got nil")
 	}
@@ -825,10 +629,9 @@ func TestStorage_DeleteSeries_EndBeforeStart(t *testing.T) {
 func TestStorage_DeleteSeries_AfterClose(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
-	ctx := context.Background()
 
 	req := &DeleteRequest{Metric: "cpu.usage"}
-	err := s.DeleteSeries(ctx, req)
+	err := deleteSeries(t, s, req)
 	if err == nil {
 		t.Fatal("DeleteSeries(after close): expected ClosedError, got nil")
 	}
@@ -840,11 +643,10 @@ func TestStorage_DeleteSeries_AfterClose(t *testing.T) {
 
 func TestStorage_DeleteSeries_NonExistentMetric(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 
 	req := &DeleteRequest{Metric: "nonexistent"}
 	// Deleting a metric with no data should not error.
-	if err := s.DeleteSeries(ctx, req); err != nil {
+	if err := deleteSeries(t, s, req); err != nil {
 		t.Fatalf("DeleteSeries(nonexistent): unexpected error: %v", err)
 	}
 }
@@ -862,7 +664,7 @@ func TestStorage_RetentionPolicy_SetAndGet(t *testing.T) {
 		Aggregation: AggAvg,
 	}
 
-	if err := s.SetRetentionPolicy("cpu.usage", policy); err != nil {
+	if err := setRetentionPolicy(t, s, "cpu.usage", policy); err != nil {
 		t.Fatalf("SetRetentionPolicy: unexpected error: %v", err)
 	}
 
@@ -903,12 +705,12 @@ func TestStorage_SetRetentionPolicy_Overwrite(t *testing.T) {
 	s := newStorage(t)
 
 	policy1 := &RetentionPolicy{Duration: 24 * time.Hour, Aggregation: AggAvg}
-	if err := s.SetRetentionPolicy("cpu.usage", policy1); err != nil {
+	if err := setRetentionPolicy(t, s, "cpu.usage", policy1); err != nil {
 		t.Fatalf("SetRetentionPolicy(1): unexpected error: %v", err)
 	}
 
 	policy2 := &RetentionPolicy{Duration: 48 * time.Hour, Aggregation: AggMax}
-	if err := s.SetRetentionPolicy("cpu.usage", policy2); err != nil {
+	if err := setRetentionPolicy(t, s, "cpu.usage", policy2); err != nil {
 		t.Fatalf("SetRetentionPolicy(2): unexpected error: %v", err)
 	}
 
@@ -942,13 +744,165 @@ func TestStorage_SetRetentionPolicy_AfterClose(t *testing.T) {
 	s := newStorage(t)
 	_ = s.Close()
 
-	err := s.SetRetentionPolicy("cpu.usage", &RetentionPolicy{Duration: time.Hour})
+	err := setRetentionPolicy(t, s, "cpu.usage", &RetentionPolicy{Duration: time.Hour})
 	if err == nil {
 		t.Fatal("SetRetentionPolicy(after close): expected ClosedError, got nil")
 	}
 	var ce *ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("SetRetentionPolicy(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_ApplyRetention_DeletesPointsOlderThanCutoff(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+
+	// cutoff sits strictly between the first and second point: the first
+	// is older than cutoff and expired, the other two are not.
+	cutoff := base.Add(30 * time.Second)
+	if err := applyRetention(t, s, "cpu.usage", cutoff); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base, base.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("Query after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Query after ApplyRetention: got %d results, want 2", len(results))
+	}
+	for _, p := range results {
+		if p.Timestamp.Before(cutoff) {
+			t.Errorf("surviving point at %v is before cutoff %v", p.Timestamp, cutoff)
+		}
+	}
+}
+
+func TestStorage_ApplyRetention_CutoffIsExclusive(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+
+	// A point exactly at cutoff is NOT older than cutoff and must survive.
+	if err := applyRetention(t, s, "cpu.usage", base); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query after ApplyRetention: got %d results, want 1 (point at cutoff must survive)", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_NoExpiredPoints(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+
+	if err := applyRetention(t, s, "cpu.usage", base.Add(-time.Hour)); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query after ApplyRetention: got %d results, want 1", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_NonExistentMetric(t *testing.T) {
+	s := newStorage(t)
+
+	if err := applyRetention(t, s, "does.not.exist", time.Now()); err != nil {
+		t.Fatalf("ApplyRetention(nonexistent metric): unexpected error: %v", err)
+	}
+}
+
+func TestStorage_ApplyRetention_LeavesOtherMetricsAlone(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.usage", 20.0, base, nil)
+
+	if err := applyRetention(t, s, "cpu.usage", base.Add(time.Hour)); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("mem.usage", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query mem.usage after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query mem.usage after ApplyRetention: got %d results, want 1 (untouched metric)", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_BoundsDeletesPerCall(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	// One more point than the bound, all expired by the cutoff. WriteBatch
+	// commits all of them in one fsync so setup stays fast.
+	total := MaxRetentionDeletesPerApply + 1
+	points := make([]DataPoint, total)
+	for i := 0; i < total; i++ {
+		points[i] = DataPoint{Metric: "cpu.usage", Value: float64(i), Timestamp: base.Add(time.Duration(i) * time.Millisecond)}
+	}
+	if err := writeBatch(t, s, points); err != nil {
+		t.Fatalf("WriteBatch: unexpected error: %v", err)
+	}
+
+	cutoff := base.Add(time.Duration(total) * time.Millisecond)
+	if err := applyRetention(t, s, "cpu.usage", cutoff); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base.Add(-time.Minute), base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Query after bounded ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query after bounded ApplyRetention: got %d results, want 1 (only the bound's overflow survives this call)", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_InvalidMetric(t *testing.T) {
+	s := newStorage(t)
+
+	err := applyRetention(t, s, "", time.Now())
+	if err == nil {
+		t.Fatal("ApplyRetention(empty metric): expected error, got nil")
+	}
+	var ime *InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("ApplyRetention(empty metric): expected InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_ApplyRetention_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	err := applyRetention(t, s, "cpu.usage", time.Now())
+	if err == nil {
+		t.Fatal("ApplyRetention(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("ApplyRetention(after close): expected ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -960,9 +914,9 @@ func TestStorage_ListMetrics_ReturnsAllMetrics(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("mem.free", 1024.0, base, nil)
-	_ = s.Write("disk.io", 50.0, base, nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "disk.io", 50.0, base, nil)
 
 	metrics, err := s.ListMetrics("", 0)
 	if err != nil {
@@ -987,9 +941,9 @@ func TestStorage_ListMetrics_WithPrefix(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("cpu.load", 5.0, base, nil)
-	_ = s.Write("mem.free", 1024.0, base, nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.load", 5.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
 
 	metrics, err := s.ListMetrics("cpu", 0)
 	if err != nil {
@@ -1009,9 +963,9 @@ func TestStorage_ListMetrics_WithLimit(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("cpu.usage", 10.0, base, nil)
-	_ = s.Write("mem.free", 1024.0, base, nil)
-	_ = s.Write("disk.io", 50.0, base, nil)
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "disk.io", 50.0, base, nil)
 
 	metrics, err := s.ListMetrics("", 2)
 	if err != nil {
@@ -1717,7 +1671,6 @@ func TestBuildGroupKey_EmptyGroupBy(t *testing.T) {
 
 func TestStorage_FullLifecycle(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
 	// Phase 1: Write data points via WritePoint.
@@ -1728,7 +1681,7 @@ func TestStorage_FullLifecycle(t *testing.T) {
 			Timestamp: base.Add(time.Duration(i) * time.Minute),
 			Tags:      map[string]string{"env": "prod"},
 		}
-		if err := s.WritePoint(ctx, point); err != nil {
+		if err := writePoint(t, s, point); err != nil {
 			t.Fatalf("WritePoint[%d]: unexpected error: %v", i, err)
 		}
 	}
@@ -1750,7 +1703,7 @@ func TestStorage_FullLifecycle(t *testing.T) {
 		Aggregation: AggSum,
 		Tags:        map[string]string{"env": "prod"},
 	}
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich: unexpected error: %v", err)
 	}
@@ -1764,7 +1717,7 @@ func TestStorage_FullLifecycle(t *testing.T) {
 
 	// Phase 4: Set retention policy.
 	policy := &RetentionPolicy{Duration: 7 * 24 * time.Hour, Aggregation: AggAvg}
-	if err := s.SetRetentionPolicy("app.requests", policy); err != nil {
+	if err := setRetentionPolicy(t, s, "app.requests", policy); err != nil {
 		t.Fatalf("SetRetentionPolicy: unexpected error: %v", err)
 	}
 
@@ -1779,7 +1732,7 @@ func TestStorage_FullLifecycle(t *testing.T) {
 
 	// Phase 6: Delete series.
 	delReq := &DeleteRequest{Metric: "app.requests"}
-	if err := s.DeleteSeries(ctx, delReq); err != nil {
+	if err := deleteSeries(t, s, delReq); err != nil {
 		t.Fatalf("DeleteSeries: unexpected error: %v", err)
 	}
 
@@ -1800,12 +1753,11 @@ func TestStorage_FullLifecycle(t *testing.T) {
 
 func TestStorage_QueryRich_FirstAggregation(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("metric", 10.0, base, nil)
-	_ = s.Write("metric", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("metric", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "metric", 10.0, base, nil)
+	_ = write(t, s, "metric", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "metric", 30.0, base.Add(2*time.Minute), nil)
 
 	req := &QueryRequest{
 		Metric:      "metric",
@@ -1814,7 +1766,7 @@ func TestStorage_QueryRich_FirstAggregation(t *testing.T) {
 		Aggregation: AggFirst,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(first): unexpected error: %v", err)
 	}
@@ -1828,12 +1780,11 @@ func TestStorage_QueryRich_FirstAggregation(t *testing.T) {
 
 func TestStorage_QueryRich_LastAggregation(t *testing.T) {
 	s := newStorage(t)
-	ctx := context.Background()
 	base := ts(2026, 3, 1, 10, 0, 0)
 
-	_ = s.Write("metric", 10.0, base, nil)
-	_ = s.Write("metric", 20.0, base.Add(time.Minute), nil)
-	_ = s.Write("metric", 30.0, base.Add(2*time.Minute), nil)
+	_ = write(t, s, "metric", 10.0, base, nil)
+	_ = write(t, s, "metric", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "metric", 30.0, base.Add(2*time.Minute), nil)
 
 	req := &QueryRequest{
 		Metric:      "metric",
@@ -1842,7 +1793,7 @@ func TestStorage_QueryRich_LastAggregation(t *testing.T) {
 		Aggregation: AggLast,
 	}
 
-	result, err := s.QueryRich(ctx, req)
+	result, err := s.QueryRich(req)
 	if err != nil {
 		t.Fatalf("QueryRich(last): unexpected error: %v", err)
 	}

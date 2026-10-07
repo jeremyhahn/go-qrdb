@@ -1,7 +1,7 @@
 # Databases — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > This document has two layers, and each section says which layer it is in.
 >
@@ -11,9 +11,11 @@
 > - **Target design** sections are the requirements contract for the
 >   multi-model database program: every database supports every engine on the
 >   storage backend it chose, for every tenant isolation mode. They were
->   approved by the owner on 2026-09-30. Nothing in them is implemented yet.
->   Every design question the rulings did not settle is listed, with its
->   options and the ruling, in "Decisions ruled by the owner" at the end.
+>   approved by the owner on 2026-09-30. Of the design, only ruling 3 below
+>   (the `engine` field's removal, OD-12/OD-13) has shipped so far, as Lane 1C;
+>   the rest of the program is not implemented yet. Every design question the
+>   rulings did not settle is listed, with its options and the ruling, in
+>   "Decisions ruled by the owner" at the end.
 
 ## Problem
 
@@ -39,7 +41,7 @@ These are owner rulings. They are not reopened here.
    honoured by every engine. No node flag, no SQL statement and no boot path
    substitutes its own backend for the one the database recorded.
 3. **The `engine` field is removed** from the database configuration, the
-   persisted metadata and every API.
+   persisted metadata and every API. **Shipped (Lane 1C).**
 4. **Vector and time series work the same way as every other engine** and are
    tenant scoped: they live in the database's storage binding, under the
    tenant's encryptor and data root.
@@ -100,9 +102,9 @@ Supporting facts, each located in the code by reading it:
   backend is taken from **`databases[0].backend`** in the configuration file —
   the first database's setting is applied to every database on the node
   (`cmd/qrdbd` start path, `sdk/go/node.resolveBackend`).
-- SQL `CREATE DATABASE` hardcodes `engine: kv, backend: pebble`
-  (`pkg/sql/provider`), and the daemon's `--sql-database` auto-provisioning
-  derives the backend from `--sm`.
+- SQL `CREATE DATABASE` hardcodes `backend: pebble` (`pkg/sql/provider`; its
+  `engine: kv` half is gone along with the `engine` concept, Lane 1C), and the
+  daemon's `--sql-database` auto-provisioning derives the backend from `--sm`.
 - **Vector** is one node-local Pebble store at `{DataDir}/vector`, shared by
   every tenant and every database on the node, encrypted under the system
   encryptor, and isolated only by a key prefix on the namespace name
@@ -111,17 +113,20 @@ Supporting facts, each located in the code by reading it:
   production path gives the vector service a Raft node. The per-tenant volume
   host, the dedicated-raft bundles and the dedicated-store bundle carry no
   vector service at all.
-- **Time series** requires a raw `*pebble.DB` (`pkg/timeseries`). It is
-  therefore available only on the Pebble-native state machines or a pebble
-  standalone node, and its apply handlers write straight to Pebble, outside the state
-  machine's apply batch (`pkg/engine/mvcc_engine.go`, `handleTSWrite` and
-  siblings). Per-database separation is a prefix on the metric name.
-- **Secondary indexes** on the MVCC engine likewise write through a
-  `*pebble.DB` handle directly when one is present, outside the apply batch;
-  without one they fall back to an in-memory index.
-- The **file and objstore** backends compose the plain KV engine, which has no
-  MVCC, no transactions, no leases and no time series. The objstore batch is
-  best effort: a failure mid-commit can leave a partial result.
+- **Time series** is storage-backed (`pkg/timeseries.Storage` wraps
+  `storage.Storage`, not a raw `*pebble.DB`) and available on every backend.
+  Every write (`pkg/engine/mvcc_engine.go`, `handleTSWrite` and siblings)
+  stages into the caller's apply batch instead of committing one of its own,
+  so it is atomic with the rest of the entry that produced it. Per-database
+  separation is a prefix on the metric name.
+- **Secondary indexes** on the MVCC engine are likewise storage-backed
+  (`index.StoragePebbleIndex`, used unconditionally) and stage into the
+  apply batch; there is no separate in-memory fallback.
+- Every backend — memory, file, pebble and objstore — composes the
+  MVCC-capable engine (`pkg/server/lifecycle.NewLocalEngine`). The plain KV
+  engine (`pkg/engine/kv_engine.go`) is no longer composed by any production
+  composition root. The objstore batch is atomic (all-or-nothing after
+  recovery, via a commit journal), matching the file backend.
 - **Remote-mode databases** (`mode: remote` with a `connection`) are validated
   and persisted, and the factory never constructs the remote proxy: such a
   database is opened on a local store like any other.
@@ -137,13 +142,22 @@ Earlier revisions of this folder were wrong, or silent, on these points:
 - they listed the engines as `kv`, `timeseries` — `vector` is also accepted;
 - they said nothing about where vector data lives, which is the node-local store above
   rather than any database's store;
+- *(Lane 1A, 2026-10)* they said time series needed a raw `*pebble.DB` and wrote
+  outside the apply batch, secondary indexes fell back to an in-memory
+  implementation without one, file and objstore composed the plain KV engine,
+  and the objstore batch was best effort — all five are now storage-generic
+  and batch-atomic on every backend (see "Target: phased implementation
+  plan", Lane 1A, in engineering.md).
 - they said enabling etcd on a database that is not `kv` on `raft` is rejected at
   configuration time — no such check existed in the database, configuration or
-  etcd server code. The engine half is now enforced: etcd on a non-`kv`
-  database is refused at create and on update with
-  `database.EtcdEngineUnsupportedError`. The backend half is not, and the
-  listener serves any backend; the target design adds that check (see
-  "Combinations that are refused").
+  etcd server code. The engine half was then enforced: etcd on a non-`kv`
+  database was refused at create and on update with
+  `database.EtcdEngineUnsupportedError`. The backend half was not, and the
+  listener served any backend; the target design adds that check (see
+  "Combinations that are refused"). **Superseded by Lane 1C:** the `engine`
+  concept and `EtcdEngineUnsupportedError` are deleted outright (OD-12,
+  OD-13), so there is no longer an engine half to enforce — etcd serves any
+  database on a raft-mode node regardless of what it stores.
 
 ## Target design — shape chosen
 
@@ -1065,3 +1079,10 @@ stored and returned, and nothing ever expires or downsamples a point.
 - B: a separate program; this program only corrects the documentation.
 - **RULED: A — the recommendation, accepted**, as its own lane after the time-series phase. The
   documentation is corrected now either way.
+- **Landed ahead of its lane:** the leader-driven, proposed,
+  deterministic deletion half of A shipped against the CURRENT (pre-migration)
+  time-series architecture — a `pkg/server` scheduler proposes a feature-gated
+  `TSApplyRetention` command per metric per tick; see
+  [../time-series/architecture.md#retention-enforcement-od-16-a](../time-series/architecture.md#retention-enforcement-od-16-a).
+  Downsampling and the "applied in the apply batch" half still wait on this
+  program's storage-interface migration.

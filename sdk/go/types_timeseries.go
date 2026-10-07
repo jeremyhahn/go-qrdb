@@ -16,6 +16,8 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -23,30 +25,42 @@ import (
 // Time series storage types
 // ---------------------------------------------------------------------------
 
-// TimeSeriesStorage is a PebbleDB-backed time series storage engine.
+// TimeSeriesStorage is a storage-backed time series storage engine.
 type TimeSeriesStorage = timeseries.Storage
 
-// TimeSeriesStorageOption configures a PebbleDB-backed time series storage instance.
-type TimeSeriesStorageOption = timeseries.StorageOption
-
-// NewTimeSeriesStorage creates a new time series storage from an existing PebbleDB.
+// NewTimeSeriesStorage creates a new time series storage over an existing
+// storage.Storage.
 var NewTimeSeriesStorage = timeseries.New
 
-// NewTimeSeriesStorageWithDir creates a new time series storage at the given directory.
-// Optional TimeSeriesStorageOption values configure the underlying PebbleDB instance.
-var NewTimeSeriesStorageWithDir = timeseries.NewWithDir
-
-// NewTimeSeriesStorageWithEncryptor opens a time series store at dataDir
-// with at-rest encryption driven by enc. A nil enc or a no-op enc opens
-// the store in plaintext mode, preserving backward compatibility.
-func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*timeseries.Storage, error) {
-	return timeseries.NewWithDir(dataDir, timeseries.WithEncryptor(enc))
+// NewTimeSeriesStorageWithDir opens a dedicated PebbleDB-backed time series
+// store rooted at dataDir, for a standalone embedder that wants time-series
+// storage without the rest of the qrdb node/engine stack. The qrdb server
+// itself never calls this: its time-series storage rides the same
+// storage.Storage the database's own engine is built over (see
+// pkg/server/lifecycle.NewLocalEngine), so a time-series write lands in the
+// same apply batch as everything else the entry does. This is equivalent to
+// NewTimeSeriesStorageWithEncryptor(dataDir, nil).
+func NewTimeSeriesStorageWithDir(dataDir string) (*timeseries.Storage, error) {
+	return NewTimeSeriesStorageWithEncryptor(dataDir, nil)
 }
 
-// TimeSeriesWithEncryptor returns a TimeSeriesStorageOption that wraps the
-// Pebble vfs.FS using the shared atrest.Encryptor. A nil or no-op Encryptor
-// leaves the FS untouched.
-var TimeSeriesWithEncryptor = timeseries.WithEncryptor
+// NewTimeSeriesStorageWithEncryptor opens a dedicated PebbleDB-backed time
+// series store at dataDir with at-rest encryption driven by enc. A nil enc
+// or a no-op enc opens the store in plaintext mode.
+func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*timeseries.Storage, error) {
+	if dataDir == "" {
+		return nil, &timeseries.EmptyDirError{}
+	}
+	cfg := pebblestore.DefaultConfig(dataDir)
+	if enc != nil {
+		cfg.FS = enc.FS()
+	}
+	pstg, err := pebblestore.New(cfg)
+	if err != nil {
+		return nil, &timeseries.OpenDirError{Dir: dataDir, Err: err}
+	}
+	return timeseries.New(pstg)
+}
 
 // TimeSeriesDataPoint holds a single time series data point.
 type TimeSeriesDataPoint = timeseries.DataPoint
@@ -68,3 +82,7 @@ type TimeSeriesRetentionPolicy = timeseries.RetentionPolicy
 
 // TimeSeriesAggFunc identifies an aggregation function.
 type TimeSeriesAggFunc = timeseries.AggFunc
+
+// TimeSeriesBatch is the atomic write handle every time-series write method
+// stages into; the caller commits it.
+type TimeSeriesBatch = storage.Batch

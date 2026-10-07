@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // WithReplicaForwarding makes this listener forward a tool call it refuses
@@ -106,12 +107,22 @@ func (f *replicaForwarder) middleware() mcpserver.ToolHandlerMiddleware {
 			if err == nil || authmw.IsOnBehalf(auth.IdentityFromContext(ctx)) {
 				return res, err
 			}
-			refusal, ok := errors.AsType[*placement.NotAReplicaError](err)
-			if !ok {
+			if refusal, ok := errors.AsType[*placement.NotAReplicaError](err); ok {
+				if fwd, ferr, forwarded := f.forward(ctx, req, refusal); forwarded {
+					return fwd, ferr
+				}
 				return res, err
 			}
-			if fwd, ferr, forwarded := f.forward(ctx, req, refusal); forwarded {
-				return fwd, ferr
+			// The admin-credential step of qrdb_ceremony_initialize must
+			// commit on the system shard's leader
+			// (service.CeremonyServiceWithLeaderGate); a follower forwards
+			// the identical call to the leader through the SAME session
+			// machinery forward uses above, rather than answering its own
+			// refusal (node parity, owner ruling 2026-10-06).
+			if notLeader, ok := errors.AsType[*service.AdminCredentialNotLeaderError](err); ok {
+				if fwd, ferr, forwarded := f.forwardToLeader(ctx, req, notLeader.LeaderAddress); forwarded {
+					return fwd, ferr
+				}
 			}
 			return res, err
 		}
@@ -178,6 +189,66 @@ func (f *replicaForwarder) forward(ctx context.Context, req mcpgo.CallToolReques
 	}
 	result.Meta.AdditionalFields[replicaforward.MetadataForwardedTo] = strconv.FormatUint(target.ReplicaID, 10)
 	return result, nil, true
+}
+
+// forwardToLeader sends req, unchanged, to the system shard's leader at
+// leaderAddr. Unlike forward it is not a placement-based retry across a
+// replica set -- the shared system shard has none to retry across -- it is
+// the single hop a leader-only write's own refusal
+// (service.AdminCredentialNotLeaderError and its siblings) already names by
+// address. It resolves that address through the SAME member records
+// forward's Locator reads, opens an MCP session to the leader's MCP
+// endpoint exactly as forward does, and relays its result. forwarded is
+// false whenever the call was not sent (no resolvable leader, or a
+// transport failure before any request reached it), and the caller falls
+// back to its own refusal.
+func (f *replicaForwarder) forwardToLeader(ctx context.Context, req mcpgo.CallToolRequest, leaderAddr string) (*mcpgo.CallToolResult, error, bool) {
+	if leaderAddr == "" {
+		slog.Warn("admin forwarding: refusal names no leader")
+		return nil, nil, false
+	}
+	caller := auth.IdentityFromContext(ctx)
+	if _, _, err := forward.SignCaller(caller, forward.HTTPBinding(http.MethodPost, "/mcp", nil), f.key, f.nodeID, time.Now()); err != nil {
+		slog.Warn("admin forwarding: not forwarded", "protocol", cluster.APIProtocolMCP, "leader_raft_addr", leaderAddr, "error", err)
+		return nil, nil, false
+	}
+	member, found, merr := f.cfg.Locator.MemberByAddress(ctx, leaderAddr)
+	if merr != nil || !found {
+		slog.Warn("admin forwarding: leader not found in member records", "leader_raft_addr", leaderAddr, "error", merr)
+		return nil, nil, false
+	}
+	endpoint, ok := member.APIEndpoint(cluster.APIProtocolMCP)
+	if !ok || endpoint == "" {
+		slog.Warn("admin forwarding: leader advertises no MCP endpoint", "leader_raft_addr", leaderAddr)
+		return nil, nil, false
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
+	defer cancel()
+	rt := &onBehalfTransport{base: f.base, caller: caller, key: f.key, nodeID: f.nodeID}
+	cli, err := mcpclient.NewStreamableHttpClient("https://"+endpoint+"/mcp", mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
+	if err != nil {
+		slog.Warn("admin forwarding: could not build a client for the leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
+		return nil, nil, false
+	}
+	defer func() { _ = cli.Close() }()
+	if err := cli.Start(ctx); err != nil {
+		slog.Warn("admin forwarding: could not connect to the leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
+		return nil, nil, false
+	}
+	if _, err := cli.Initialize(ctx, mcpgo.InitializeRequest{Params: mcpgo.InitializeParams{
+		ProtocolVersion: mcpgo.LATEST_PROTOCOL_VERSION,
+		ClientInfo:      mcpgo.Implementation{Name: mcpForwardClientName, Version: "1"},
+	}}); err != nil {
+		slog.Warn("admin forwarding: could not open a session with the leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
+		return nil, nil, false
+	}
+	res, err := cli.CallTool(ctx, mcpgo.CallToolRequest{Params: req.Params})
+	if err != nil {
+		slog.Warn("admin forwarding: the leader's tool call failed", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
+		return nil, nil, false
+	}
+	return res, nil, true
 }
 
 // classifyMCPAnswer reports whether a replica's tool result is a replica

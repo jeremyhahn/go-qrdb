@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package placement implements the replicated placement table and the
-// load-aware placement scheduler for dedicated tenant Raft groups (Phase
-// 4c-1b).
+// Package placement implements the replicated placement table -- the one
+// catalog authority for where every database's data lives, on every backend
+// (go-qrdb Lane 2B, OD-4 A) -- and the load-aware placement scheduler for
+// dedicated tenant Raft groups (Phase 4c-1b).
 //
-// A Placement records, for one dedicated-raft database, which cluster nodes
-// host its Raft replicas, which replica is the leader, and where each replica
-// keeps its on-disk state-machine data. Placements live in the replicated
+// A Placement records, for one database, which cluster node(s) host it: a
+// dedicated Raft group's replicas, which replica is the leader, and where
+// each replica keeps its on-disk state-machine data (BackendRaft); or, for
+// every other Backend, the single node the database is bound to, carried in
+// the same Replicas/LeaderReplicaID shape as a one-replica Raft group so a
+// non-owner node's refusal and the forward to the owner reuse the Raft path
+// unchanged (Placement.IsLocalBinding). Placements live in the replicated
 // system KV under PlacementPrefix so every node converges on the same view; a
 // per-node reconciler (Phase 4c-1d) watches the table and self-starts/stops the
 // replicas assigned to it.
@@ -69,6 +74,33 @@ const (
 	// for the ObserverReady → Active transition; the reconciler on the
 	// replica's own host is only responsible for Observer → ObserverReady.
 	ReplicaStateObserverReady
+)
+
+// Backend identifies the storage backend a placement's database is bound to.
+// A dedicated Raft group (BackendRaft, the zero value) is the only kind this
+// table carried before Lane 2B; the others name a single-node local binding
+// -- one owning node, no Raft group -- extended into this same table so every
+// backend has one catalog authority (go-qrdb Lane 2B, OD-4 A).
+type Backend string
+
+const (
+	// BackendRaft is a dedicated, multi-replica Raft group. It is the zero
+	// value so every placement entry persisted before Backend existed --
+	// every placement this table held was a dedicated Raft group --
+	// decodes unchanged.
+	BackendRaft Backend = "raft"
+
+	// BackendMemory is a single-node, in-memory local binding.
+	BackendMemory Backend = "memory"
+
+	// BackendFile is a single-node, file-backed local binding.
+	BackendFile Backend = "file"
+
+	// BackendPebble is a single-node, Pebble-backed local binding.
+	BackendPebble Backend = "pebble"
+
+	// BackendObjstore is a single-node, object-storage-backed local binding.
+	BackendObjstore Backend = "objstore"
 )
 
 // Replica is a single voting member of a dedicated database's Raft group. It
@@ -167,6 +199,23 @@ type Placement struct {
 	// released the tenant's quota. It is removed together with the whole
 	// entry at the end of a successful drop, exactly like Dropping.
 	DropCommitted bool `json:"drop_committed,omitempty"`
+
+	// Backend is the storage backend the database is bound to. The zero
+	// value ("") decodes as BackendRaft: every placement entry persisted
+	// before this field existed was a dedicated Raft group, so an absent
+	// key must not be read as "unbound".
+	Backend Backend `json:"backend,omitempty"`
+}
+
+// IsLocalBinding reports whether p binds its database to a single owning
+// node rather than a dedicated Raft group. A local binding's "replica set"
+// is the degenerate case of one: Replicas holds exactly the owning node, RF
+// is 1 and LeaderReplicaID names that one replica, so the existing
+// Raft-shaped forwarding machinery (NotAReplicaError, the leader cache)
+// serves it unchanged -- a non-owner node refuses exactly as it would for a
+// one-replica Raft group, and the request is forwarded to the owner.
+func (p *Placement) IsLocalBinding() bool {
+	return p.Backend != "" && p.Backend != BackendRaft
 }
 
 // Leader returns the leader replica and true, or a zero Replica and false when
@@ -190,6 +239,23 @@ func (p *Placement) ReplicaForNode(nodeID string) (Replica, bool) {
 		}
 	}
 	return Replica{}, false
+}
+
+// RefusalForNode returns the refusal a node not assigned a replica of p must
+// answer with, and true; or a nil error and false when nodeID IS assigned
+// one. It is the one place that constructs *NotAReplicaError from a
+// Placement, so a dedicated Raft group and a local binding (RF 1, one
+// Replica, IsLocalBinding true) are refused identically -- the existing
+// forwarding machinery (the leader cache, replicaforward.Locator) resolves
+// either the same way, keyed only on ShardID and Replicas.
+func (p *Placement) RefusalForNode(nodeID string) (*NotAReplicaError, bool) {
+	if _, assigned := p.ReplicaForNode(nodeID); assigned {
+		return nil, false
+	}
+	return &NotAReplicaError{
+		TenantID: p.TenantID, Database: p.Database, ShardID: p.ShardID,
+		NodeID: nodeID, Replicas: p.Replicas, LeaderReplicaID: p.LeaderReplicaID,
+	}, true
 }
 
 // Members returns the replica-ID -> Raft-address map for the placement, in the

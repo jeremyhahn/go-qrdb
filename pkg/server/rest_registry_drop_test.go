@@ -43,7 +43,7 @@ import (
 func TestRESTServiceRegistry_RefusesPreRegisteredDatabaseWhileDropping(t *testing.T) {
 	dbMgr := database.NewManager(nil, t.TempDir())
 	db, err := dbMgr.Create(database.DatabaseConfig{
-		Name: "mydb", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "mydb", Backend: database.BackendMemory,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -65,7 +65,7 @@ func TestRESTServiceRegistry_RefusesPreRegisteredDatabaseWhileDropping(t *testin
 func TestRESTServiceRegistry_PreRegisteredDatabaseResolvesWhenNotDropping(t *testing.T) {
 	dbMgr := database.NewManager(nil, t.TempDir())
 	if _, err := dbMgr.Create(database.DatabaseConfig{
-		Name: "mydb", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "mydb", Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestRESTServiceRegistry_PreRegisteredDatabaseResolvesWhenNotDropping(t *tes
 func TestRESTServiceRegistry_CrossTenantDroppingDatabaseIndistinguishableFromMissing(t *testing.T) {
 	dbMgr := database.NewManager(nil, t.TempDir())
 	db, err := dbMgr.Create(database.DatabaseConfig{
-		Name: "acme-ledger", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "acme-ledger", TenantID: "acme", Backend: database.BackendMemory,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -163,7 +163,7 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterDropAndRecreate(t *testi
 	if err := f.mgr.Drop(context.Background(), "orders"); err != nil {
 		t.Fatalf("Drop() error = %v", err)
 	}
-	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("re-Create() error = %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop(t *testing
 // database needs the same protection a reclaimer-tracked one does.
 func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncarnation(t *testing.T) {
 	dbMgr := database.NewManager(nil, t.TempDir())
-	if _, err := dbMgr.Create(database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := dbMgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 

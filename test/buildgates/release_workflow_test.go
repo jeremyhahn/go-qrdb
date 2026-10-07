@@ -14,14 +14,17 @@
 
 package buildgates
 
-// The Release workflow is the only path that creates a release tag (#13, owner
-// ruling 2026-09-30: "workflow wraps release-alpha"). Tag protection makes it
-// the only path on the server; this gate keeps the workflow itself the path
-// the ruling describes, because every property below is one edit away from
-// silently not holding -- a `push: tags` trigger added "for convenience", a
-// hand-written `git push`, a VERSION typed into a dispatch input.
+// release.yml validates a release tag AFTER the project agent has already
+// pushed it with `make release-alpha` (owner ruling 2026-10-06: "all our
+// projects should follow the same standards" as go-quicraft, go-xkms and
+// go-quicbaas). There is no release bot and no workflow that creates a tag
+// anymore -- this gate keeps it that way, because every property below is
+// one edit away from silently not holding: a `push: tags` trigger widened
+// "for convenience" so it also fires on a lockstep module's own tag, a
+// hand-written `git push --tags`, a RELEASE_BOT secret creeping back in.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,31 +44,23 @@ type releaseStep struct {
 	ContinueOnError string            `yaml:"continue-on-error"`
 }
 
-// botToken is the expression that names the release bot's token. It may
-// appear in exactly one place: the env of the step that pushes.
-const botToken = "secrets.RELEASE_BOT_TOKEN"
-
-// mentions reports whether any value of m contains needle.
-func mentions(m map[string]string, needle string) bool {
-	for _, v := range m {
-		if strings.Contains(v, needle) {
-			return true
-		}
-	}
-	return false
+// releaseJob is the part of a job this gate rules on.
+type releaseJob struct {
+	Needs       []string          `yaml:"needs"`
+	Permissions map[string]string `yaml:"permissions"`
+	Steps       []releaseStep     `yaml:"steps"`
 }
 
 // releaseWorkflow is the part of the workflow this gate rules on.
 type releaseWorkflow struct {
-	On          map[string]yaml.Node `yaml:"on"`
-	Concurrency struct {
-		CancelInProgress *bool `yaml:"cancel-in-progress"`
-	} `yaml:"concurrency"`
-	Jobs map[string]struct {
-		If    string        `yaml:"if"`
-		Steps []releaseStep `yaml:"steps"`
-	} `yaml:"jobs"`
+	On   map[string]yaml.Node  `yaml:"on"`
+	Jobs map[string]releaseJob `yaml:"jobs"`
 }
+
+// releaseAlphaMention matches a literal invocation of the release recipe.
+// It is something an operator's own shell runs now, never a workflow step --
+// release.yml included, since it only runs AFTER the tag already exists.
+const releaseAlphaMention = "make release-alpha"
 
 // tagWrite matches a shell line that creates or publishes tags by hand: a
 // "git tag" command, or a "git push" that targets tags specifically (the
@@ -75,8 +70,9 @@ type releaseWorkflow struct {
 // a release.
 var tagWrite = regexp.MustCompile(`(^|[;&|\s])git\s+(-C\s+\S+\s+)?(tag(\s|$)|push\b[^;&|\n]*(--tags\b|refs/tags/))`)
 
-// releaseWorkflowDefects returns every way src fails to be the release path
-// the ruling describes. An empty result is the workflow #13 asks for.
+// releaseWorkflowDefects returns every way src fails to be the validation-only
+// path the 2026-10-06 ruling describes. An empty result is what the workflow
+// is supposed to be.
 func releaseWorkflowDefects(src []byte) []string {
 	var wf releaseWorkflow
 	if err := yaml.Unmarshal(src, &wf); err != nil {
@@ -84,81 +80,106 @@ func releaseWorkflowDefects(src []byte) []string {
 	}
 	var defects []string
 
-	if _, ok := wf.On["workflow_dispatch"]; !ok || len(wf.On) != 1 {
-		defects = append(defects, "the only trigger must be workflow_dispatch; a push or schedule trigger cuts releases nobody asked for")
-	}
-	if wf.Concurrency.CancelInProgress == nil || *wf.Concurrency.CancelInProgress {
-		defects = append(defects, "concurrency must set cancel-in-progress: false; a cancelled run can stop between tagging and pushing")
-	}
-	job, ok := wf.Jobs["release"]
-	if !ok {
-		return append(defects, "no `release` job")
-	}
-	if !strings.Contains(job.If, "github.server_url != 'https://github.com'") {
-		defects = append(defects, "the release job must not run on github.com; publication there is a separate, approved step")
+	if strings.Contains(string(src), "RELEASE_BOT") {
+		defects = append(defects, "RELEASE_BOT still appears; there is no release bot in this path (release-versioning.md §1a)")
 	}
 
-	idx := map[string]int{}
-	tokenSteps := 0
-	for i, s := range job.Steps {
-		if mentions(s.With, botToken) || mentions(s.Env, botToken) || strings.Contains(s.Run, botToken) {
-			tokenSteps++
-			if !strings.Contains(s.Run, "make release-alpha") || !mentions(s.Env, botToken) {
-				defects = append(defects, "step "+s.Name+" receives the release bot's token; only the make release-alpha step may, and only through its env")
-			}
+	if len(wf.On) != 1 {
+		defects = append(defects, "the only trigger must be the tag push; an extra trigger key fires a release run nobody asked for")
+	}
+	if pushNode, ok := wf.On["push"]; !ok {
+		defects = append(defects, "the trigger must be push: tags: [\"v*\"]")
+	} else {
+		var push struct {
+			Tags []string `yaml:"tags"`
 		}
-		if s.ContinueOnError != "" && s.ContinueOnError != "false" {
-			defects = append(defects, "step "+s.Name+" has continue-on-error; a release step's failure must fail the release")
+		if err := pushNode.Decode(&push); err != nil {
+			defects = append(defects, "on.push is not parseable: "+err.Error())
+		} else if len(push.Tags) != 1 || push.Tags[0] != "v*" {
+			defects = append(defects, fmt.Sprintf("on.push.tags must be exactly [\"v*\"], got %v; a wider pattern also fires on a lockstep module's own tag", push.Tags))
 		}
-		for _, line := range strings.Split(s.Run, "\n") {
-			if tagWrite.MatchString(line) {
-				defects = append(defects, "step "+s.Name+" creates or pushes tags by hand ("+strings.TrimSpace(line)+"); release-alpha is the only tag writer")
+	}
+
+	for name, job := range wf.Jobs {
+		for _, s := range job.Steps {
+			if s.ContinueOnError != "" && s.ContinueOnError != "false" {
+				defects = append(defects, "job "+name+" step "+s.Name+" has continue-on-error; a release gate's failure must fail the run")
 			}
-		}
-		switch {
-		case strings.HasPrefix(s.Uses, "actions/checkout@"):
-			idx["checkout"] = i + 1
-			if s.With["persist-credentials"] != "false" {
-				defects = append(defects, "checkout must set persist-credentials: false; a persisted token in .git/config is readable by every later step")
+			if strings.Contains(s.Run, releaseAlphaMention) {
+				defects = append(defects, "job "+name+" step "+s.Name+" runs "+releaseAlphaMention+"; no workflow may create a release tag")
 			}
-			if s.With["ref"] != "main" || s.With["fetch-depth"] != "0" {
-				defects = append(defects, "checkout must take main with full history; the lockstep audit needs every tag")
-			}
-		case strings.Contains(s.Run, "< VERSION"):
-			idx["version"] = i + 1
-		case strings.Contains(s.Run, "make release-alpha"):
-			idx["release"] = i + 1
-			if !strings.Contains(s.Run, `VERSION="$VERSION_TAG"`) {
-				defects = append(defects, "make release-alpha must be given the version read from VERSION, which is authoritative")
-			}
-			if !strings.Contains(s.Run, "scripts/release-bot-git.sh") {
-				defects = append(defects, "make release-alpha must sign through scripts/release-bot-git.sh")
-			}
-			if !mentions(s.Env, botToken) || !strings.Contains(s.Run, ". ./scripts/git-extraheader.sh") {
-				defects = append(defects, "make release-alpha must receive the release bot's token in its env and turn it into a per-step header with scripts/git-extraheader.sh; tag protection admits only that principal")
-			}
-		case strings.Contains(s.Run, "make check-tag-lockstep"):
-			idx["audit"] = i + 1
-			if !strings.Contains(s.Run, "git fetch --quiet --tags origin") {
-				defects = append(defects, "the post-push lockstep audit must fetch the remote's tags first, or it audits only what this clone sent")
+			for _, line := range strings.Split(s.Run, "\n") {
+				if tagWrite.MatchString(line) {
+					defects = append(defects, "job "+name+" step "+s.Name+" writes a tag by hand ("+strings.TrimSpace(line)+"); release-alpha, run by the operator, is the only tag writer")
+				}
 			}
 		}
 	}
-	if tokenSteps > 1 {
-		defects = append(defects, "the release bot's token reaches more than one step")
-	}
-	for _, want := range []string{"checkout", "version", "release", "audit"} {
-		if idx[want] == 0 {
-			defects = append(defects, "missing the "+want+" step")
+
+	if validate, ok := wf.Jobs["validate"]; !ok {
+		defects = append(defects, "no `validate` job")
+	} else {
+		all := concatRuns(validate.Steps)
+		if !strings.Contains(all, "check-version-reconciled.sh") {
+			defects = append(defects, "validate must check VERSION and CHANGELOG.md against the tag with check-version-reconciled.sh")
+		}
+		if !strings.Contains(all, "check-tag-lockstep.sh") {
+			defects = append(defects, "validate must audit the lockstep tags with check-tag-lockstep.sh")
+		}
+		if !strings.Contains(all, "sleep") {
+			defects = append(defects, "validate's lockstep audit must retry; an atomic push does not bound how soon a fetch on another connection sees every sibling tag")
+		}
+		if !strings.Contains(all, "-alpha") {
+			defects = append(defects, "validate must accept the -alpha pre-release suffix this repository's tags use")
 		}
 	}
-	if idx["version"] != 0 && idx["release"] != 0 && idx["version"] > idx["release"] {
-		defects = append(defects, "VERSION must be read before release-alpha runs")
+
+	if gate, ok := wf.Jobs["gate"]; !ok {
+		defects = append(defects, "no `gate` job")
+	} else {
+		all := concatRuns(gate.Steps)
+		for _, want := range []string{"make fmt", "make vet", "make vet-tags", "make secure-analyzer", "make lint", "go build ./...", "make build-server", "make coverage", "make test-tags"} {
+			if !strings.Contains(all, want) {
+				defects = append(defects, "gate must run `"+want+"`, the matching ci.yml command")
+			}
+		}
 	}
-	if idx["release"] != 0 && idx["audit"] != 0 && idx["audit"] < idx["release"] {
-		defects = append(defects, "the lockstep audit of the published tags must run after the push")
+
+	if publish, ok := wf.Jobs["publish"]; !ok {
+		defects = append(defects, "no `publish` job")
+	} else {
+		if publish.Permissions["contents"] != "write" {
+			defects = append(defects, "publish must set permissions: contents: write to create the release")
+		}
+		var needsValidate, needsGate bool
+		for _, n := range publish.Needs {
+			needsValidate = needsValidate || n == "validate"
+			needsGate = needsGate || n == "gate"
+		}
+		if !needsValidate || !needsGate {
+			defects = append(defects, "publish must need both validate and gate; it must not publish notes for a tag that failed either")
+		}
+		all := concatRuns(publish.Steps)
+		if !strings.Contains(all, "github.api_url") {
+			defects = append(defects, "publish must address the forge's own API through github.api_url, not a hardcoded host")
+		}
+		if !strings.Contains(all, "CHANGELOG.md") {
+			defects = append(defects, "publish must extract the release notes from CHANGELOG.md")
+		}
 	}
+
 	return defects
+}
+
+// concatRuns joins every step's run script, so a substring check does not
+// have to care which single step a command landed in.
+func concatRuns(steps []releaseStep) string {
+	var b strings.Builder
+	for _, s := range steps {
+		b.WriteString(s.Run)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func readReleaseWorkflow(t *testing.T) []byte {
@@ -183,18 +204,71 @@ func TestTheReleaseWorkflowIsTheRulingsReleasePath(t *testing.T) {
 func TestTheReleaseGateSeesEachWayTheWorkflowCanDrift(t *testing.T) {
 	real := string(readReleaseWorkflow(t))
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"a tag-push trigger":      {"on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n  push:\n    tags: [\"v*\"]\n", "only trigger"},
-		"cancellable":             {"cancel-in-progress: false", "cancel-in-progress: true", "cancel-in-progress"},
-		"runs on github.com":      {"if: github.server_url != 'https://github.com'", "if: always()", "github.com"},
-		"a persisted credential":  {"persist-credentials: false", "persist-credentials: true", "persist-credentials"},
-		"no persist setting":      {"          persist-credentials: false\n", "", "persist-credentials"},
-		"the token at checkout":   {"          persist-credentials: false\n", "          persist-credentials: false\n          token: ${{ secrets.RELEASE_BOT_TOKEN }}\n", "only the make release-alpha step"},
-		"the runner's own token":  {"FORGE_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}", "FORGE_TOKEN: ${{ github.token }}", "release bot's token in its env"},
-		"no per-step header":      {"          . ./scripts/git-extraheader.sh\n          export RELEASE_BOT_SIGNING_KEY_FILE", "          export RELEASE_BOT_SIGNING_KEY_FILE", "per-step header"},
-		"a hand-written tag push": {"make check-tag-lockstep", "git push origin --tags && make check-tag-lockstep", "by hand"},
-		"a typed version":         {`VERSION="$VERSION_TAG"`, `VERSION="v9.9.9-alpha"`, "authoritative"},
-		"no post-push audit":      {"make check-tag-lockstep", "echo skipped", "audit step"},
-		"an audit of local tags":  {"git fetch --quiet --tags origin", "true", "fetch the remote"},
+		"a second trigger": {
+			"on:\n  push:\n    tags: [\"v*\"]\n",
+			"on:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n",
+			"trigger",
+		},
+		"a widened tag pattern": {
+			"tags: [\"v*\"]",
+			"tags: [\"v*\", \"sdk/go/v*\"]",
+			"tags",
+		},
+		"a hand-written tag push": {
+			"        run: |\n          set -eu\n          jq -n \\",
+			"        run: |\n          set -eu\n          git push origin --tags\n          jq -n \\",
+			"by hand",
+		},
+		"a workflow that cuts its own release": {
+			"- name: gofmt\n        run: make fmt",
+			"- name: gofmt\n        run: make fmt && make release-alpha",
+			"release-alpha",
+		},
+		"no bounded retry on the lockstep audit": {
+			"            sleep 3\n          done",
+			"          done",
+			"retry",
+		},
+		"no lockstep audit at all": {
+			"./scripts/check-tag-lockstep.sh",
+			"true",
+			"lockstep",
+		},
+		"no VERSION/CHANGELOG reconciliation": {
+			"./scripts/check-version-reconciled.sh . \"${GITHUB_REF_NAME}\"",
+			"true",
+			"VERSION",
+		},
+		"gate drops a command": {
+			"run: make coverage",
+			"run: echo skip",
+			"coverage",
+		},
+		"publish loses its write permission": {
+			"    permissions:\n      contents: write",
+			"    permissions:\n      contents: read",
+			"contents: write",
+		},
+		"publish stops needing gate": {
+			"needs: [validate, gate]",
+			"needs: [validate]",
+			"must need",
+		},
+		"publish hardcodes github.com": {
+			"\"${{ github.api_url }}/repos/${{ github.repository }}/releases\"",
+			"\"https://api.github.com/repos/${{ github.repository }}/releases\"",
+			"github.api_url",
+		},
+		"the release bot reappears": {
+			"FORGE_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+			"FORGE_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}",
+			"RELEASE_BOT",
+		},
+		"a release step tolerates failure": {
+			"- name: gofmt\n        run: make fmt",
+			"- name: gofmt\n        continue-on-error: true\n        run: make fmt",
+			"continue-on-error",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(real, tc.from) {
@@ -208,11 +282,12 @@ func TestTheReleaseGateSeesEachWayTheWorkflowCanDrift(t *testing.T) {
 	}
 }
 
-// tagWriteViolations scans every non-release workflow file under root's
-// workflowDirs and returns one message per step whose shell `run` writes a
-// tag, plus the count of files scanned. Factored out of
-// TestNoOtherWorkflowCreatesTags so a fixture tree, not just the real one,
-// can drive it: a gate that has only ever run against the tree it already
+// tagWriteViolations scans every workflow file under root's workflowDirs,
+// release.yml included now that it creates no tag either, and returns one
+// message per step whose shell `run` writes a tag or calls release-alpha,
+// plus the count of files scanned. Factored out of
+// TestNoWorkflowCreatesTags so a fixture tree, not just the real one, can
+// drive it: a gate that has only ever run against the tree it already
 // passes has never been shown that it can fail.
 func tagWriteViolations(t *testing.T, root string) (violations []string, seen int) {
 	t.Helper()
@@ -225,7 +300,7 @@ func tagWriteViolations(t *testing.T, root string) (violations []string, seen in
 			t.Fatalf("read %s: %v", dir, err)
 		}
 		for _, e := range entries {
-			if e.IsDir() || e.Name() == "release.yml" || !(strings.HasSuffix(e.Name(), ".yml") || strings.HasSuffix(e.Name(), ".yaml")) {
+			if e.IsDir() || !(strings.HasSuffix(e.Name(), ".yml") || strings.HasSuffix(e.Name(), ".yaml")) {
 				continue
 			}
 			seen++
@@ -243,8 +318,8 @@ func tagWriteViolations(t *testing.T, root string) (violations []string, seen in
 			}
 			for job, j := range doc.Jobs {
 				for _, s := range j.Steps {
-					if strings.Contains(s.Run, "make release-alpha") {
-						violations = append(violations, e.Name()+" job "+job+" runs make release-alpha; the Release workflow is the only release path")
+					if strings.Contains(s.Run, releaseAlphaMention) {
+						violations = append(violations, e.Name()+" job "+job+" runs "+releaseAlphaMention+"; only the operator's own shell may")
 					}
 					for _, line := range strings.Split(s.Run, "\n") {
 						if tagWrite.MatchString(line) {
@@ -258,17 +333,17 @@ func tagWriteViolations(t *testing.T, root string) (violations []string, seen in
 	return violations, seen
 }
 
-// TestNoOtherWorkflowCreatesTags: the Release workflow being correct is only
-// half of "the only path"; a second workflow that tags would be a second path.
-func TestNoOtherWorkflowCreatesTags(t *testing.T) {
+// TestNoWorkflowCreatesTags: release-alpha, run by hand, is the only tag
+// writer. No workflow -- release.yml included -- may create one or call it.
+func TestNoWorkflowCreatesTags(t *testing.T) {
 	violations, seen := tagWriteViolations(t, repoRoot(t))
 	for _, v := range violations {
 		t.Error(v)
 	}
-	// Discovery floor: ci, nightly and release-lockstep at least. An empty
-	// directory walk would pass this test vacuously.
-	if seen < 3 {
-		t.Fatalf("scanned %d other workflow files; expected at least 3", seen)
+	// Discovery floor: ci, nightly, release-lockstep, automerge and release
+	// itself. An empty directory walk would pass this test vacuously.
+	if seen < 4 {
+		t.Fatalf("scanned %d workflow files; expected at least 4", seen)
 	}
 }
 

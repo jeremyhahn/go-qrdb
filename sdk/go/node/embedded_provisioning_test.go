@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -62,25 +61,28 @@ func TestEmbedded_CreateDatabaseChecksProvisioning(t *testing.T) {
 	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "acme", tenant.IsolationPrefix)
 	require.NoError(t, err)
 
-	// A system-tenant identity holding ONLY the generic databases:create
-	// grant: enough to pass the embedded transport's own entry check for
-	// EVERY tenant (ScopeSelf's system-tenant lift), but not the
-	// provisioning-specific databases:create_volume the wrapper below
-	// additionally requires for a volume-isolated tenant.
-	createRole, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{
-		Name:        "db-create-only",
-		TenantID:    tenantid.System,
-		Permissions: []permission.Permission{permission.DatabasesCreate},
-	})
-	require.NoError(t, err)
-	callerCtx := auth.WithIdentity(ctx, &auth.Identity{
-		Subject:  "db-creator",
-		TenantID: tenantid.System,
-		Roles:    []string{createRole.ID},
-	})
+	// An identity in each target tenant holding ONLY the generic
+	// databases:create grant: enough to pass the embedded transport's own entry
+	// check for its own tenant, but not the provisioning-specific
+	// databases:create_volume the wrapper below additionally requires for a
+	// volume-isolated tenant.
+	callerFor := func(tenantID string) context.Context {
+		tctx := tenant.WithTenantID(ctx, tenantID)
+		createRole, err := n.Services().Role.CreateRole(tctx, &role.CreateRoleRequest{
+			Name:        "db-create-only",
+			TenantID:    tenantID,
+			Permissions: []permission.Permission{permission.DatabasesCreate},
+		})
+		require.NoError(t, err)
+		return auth.WithIdentity(tctx, &auth.Identity{
+			Subject:  "db-creator",
+			TenantID: tenantID,
+			Roles:    []string{createRole.ID},
+		})
+	}
 
-	req := transport.CreateDatabaseRequest{Name: "vault", Engine: string(database.EngineKV), Backend: string(database.BackendPebble)}
-	_, err = n.Client().Database().CreateDatabase(tenant.WithTenantID(callerCtx, "vol"), req)
+	req := transport.CreateDatabaseRequest{Name: "vault", Backend: string(database.BackendPebble)}
+	_, err = n.Client().Database().CreateDatabase(callerFor("vol"), req)
 	var denied *service.ProvisioningDeniedError
 	require.Truef(t, errors.As(err, &denied), "create for a volume tenant holding only databases:create = %v, want *service.ProvisioningDeniedError", err)
 	require.Equal(t, "databases:create_volume", string(denied.Permission))
@@ -89,8 +91,8 @@ func TestEmbedded_CreateDatabaseChecksProvisioning(t *testing.T) {
 
 	// An ordinary database of a shared tenant needs no provisioning
 	// permission, and is owned by the caller's tenant.
-	_, err = n.Client().Database().CreateDatabase(tenant.WithTenantID(callerCtx, "acme"),
-		transport.CreateDatabaseRequest{Name: "ledger", Engine: string(database.EngineKV), Backend: string(database.BackendMemory)})
+	_, err = n.Client().Database().CreateDatabase(callerFor("acme"),
+		transport.CreateDatabaseRequest{Name: "ledger", Backend: string(database.BackendMemory)})
 	require.NoError(t, err)
 	db, err := n.dbManager.Get("ledger")
 	require.NoError(t, err)

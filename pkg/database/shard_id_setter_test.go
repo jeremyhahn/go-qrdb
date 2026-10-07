@@ -28,7 +28,7 @@ func TestSetShardIDClaimer_NilClears(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	m.SetShardIDClaimer(testShardClaimer(t))
 	m.SetShardIDClaimer(nil)
-	_, err := m.Create(DatabaseConfig{Name: "unissued", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+	_, err := m.Create(DatabaseConfig{Name: "unissued", Backend: BackendMemory, Raft: validRaftConfig(0)})
 	var required *ShardIssuerRequiredError
 	if !errors.As(err, &required) {
 		t.Fatalf("raft create after clearing the claimer = %v, want *ShardIssuerRequiredError", err)
@@ -49,7 +49,7 @@ func TestSetShardIDClaimer_ConcurrentWithCreates(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, err := m.Create(DatabaseConfig{
-				Name: "racing-" + strconv.Itoa(i), Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0),
+				Name: "racing-" + strconv.Itoa(i), Backend: BackendMemory, Raft: validRaftConfig(0),
 			})
 			var required *ShardIssuerRequiredError
 			if err != nil && !errors.As(err, &required) {

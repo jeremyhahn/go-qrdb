@@ -308,7 +308,6 @@ func nodeConfig(dsn *qrdbdriver.DSNConfig, dataDir string) *qrdbconfig.Config {
 	cfg.Raft.DataDir = dataDir
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{
 		Name:    dsn.Database,
-		Engine:  dsn.Engine,
 		Backend: dsn.Backend,
 	}}
 	cfg.Protocols = qrdbconfig.ProtocolsConfig{}

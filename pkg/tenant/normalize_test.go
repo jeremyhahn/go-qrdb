@@ -82,19 +82,17 @@ func TestEffectiveTenant_AbsentTenantNeverArrivesUnnormalized(t *testing.T) {
 			if caller := FromContext(tc.ctx); caller != tenantid.System {
 				t.Fatalf("caller tenant reached EffectiveTenant as %q, want it folded to %q", caller, tenantid.System)
 			}
-			got, err := EffectiveTenant(tc.ctx, "acme", "create user")
-			if err != nil {
-				t.Fatalf("EffectiveTenant returned %v", err)
-			}
-			if got != "acme" {
-				t.Fatalf("EffectiveTenant = %q, want %q", got, "acme")
+			// The system tenant has no lift (owner ruling, 2026-10-01): an
+			// absent tenant folds to it, but folding to a tenant is not the
+			// same as that tenant reaching another one. Both rows are
+			// refused by the same route FromContext's fold feeds into.
+			if _, err := EffectiveTenant(tc.ctx, "acme", "create user"); err == nil {
+				t.Fatal("EffectiveTenant granted cross-tenant access to a caller folded to the system tenant; want CrossTenantDeniedError")
 			}
 		})
 	}
 
-	// The contrast the issue drew: a caller WITH a tenant is refused the same
-	// request an absent tenant is granted. Asserted here so the asymmetry is
-	// recorded in a test rather than only in an issue body.
+	// The same refusal holds for a caller explicitly bound to a real tenant.
 	if _, err := EffectiveTenant(WithTenantID(context.Background(), "acme"), "other", "create user"); err == nil {
 		t.Fatal("EffectiveTenant granted cross-tenant access to a caller bound to acme; want CrossTenantDeniedError")
 	}

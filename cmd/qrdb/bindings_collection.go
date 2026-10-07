@@ -18,19 +18,19 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // CollectionBinding provides Wails IPC bindings for collection and
 // document management operations.
 type CollectionBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewCollectionBinding creates a new CollectionBinding.
-func NewCollectionBinding(log *logger.Logger, conn *ConnectionBinding) *CollectionBinding {
+func NewCollectionBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *CollectionBinding {
 	return &CollectionBinding{logger: log, conn: conn}
 }
 

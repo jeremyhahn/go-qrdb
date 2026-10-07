@@ -16,8 +16,10 @@
 
 package integration_test
 
-// TestIsolationRaft_Rebalance_Move stands up a real 3-node cluster (same
-// harness as TestIsolationRaft_EndToEnd / TestIsolationRaft_Scale_Foundation),
+// runIsolationRaftRebalanceMove, shared by TestIsolationRaft_Rebalance_Move
+// and TestIsolationRaft_Rebalance_Move_SubmittedFromNonMember below, stands
+// up a real 3-node cluster (same harness as TestIsolationRaft_EndToEnd /
+// TestIsolationRaft_Scale_Foundation),
 // creates a dedicated-raft ("IsolationRaft") database at RF=2 (two of the
 // three nodes host a replica), writes data through it, then drives a
 // dedicated-tenant shard MOVE end to end through the real qrdbd REST surface
@@ -71,9 +73,17 @@ package integration_test
 //
 // Because MOVE's observer-first admission is the exact quorum-break fix
 // class the elastic-scaling work introduced (and the flakiness class this
-// change ports over to MOVE), this test is run standalone at least 3 times
-// by the test runner/CI job to confirm it is storm-free on every run, not
-// just once.
+// change ports over to MOVE), TestIsolationRaft_Rebalance_Move is run
+// standalone at least 3 times by the test runner/CI job to confirm it is
+// storm-free on every run, not just once.
+//
+// TestIsolationRaft_Rebalance_Move_SubmittedFromNonMember runs the identical
+// scenario but submits the rebalance-execute request through the one node
+// that holds NO replica of the dedicated shard at all, rather than through a
+// known shard member -- the previously unreachable path that used to risk a
+// false "forwarding loop" error; see runIsolationRaftRebalanceMove's
+// submitPort comment and resolveMoveLeader's doc comment (case 2) in
+// rebalance_service.go.
 
 import (
 	"bytes"
@@ -234,9 +244,12 @@ type rebalanceExecuteResponse struct {
 	FinalImbalance float64 `json:"final_imbalance"`
 }
 
-// TestIsolationRaft_Rebalance_Move is documented in the package-level doc
-// comment above.
-func TestIsolationRaft_Rebalance_Move(t *testing.T) {
+// runIsolationRaftRebalanceMove is documented in the package-level doc
+// comment above. When submitFromNonMember is true, the rebalance-execute
+// request is submitted through the one node that holds NO replica of the
+// dedicated shard at all, instead of through a known shard member -- see
+// the submitPort comment below.
+func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
 
@@ -338,12 +351,19 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 	// ---------------------------------------------------------------------
 	// Tenant + role + user, mirroring TestIsolationRaft_Scale_Foundation.
 	// ---------------------------------------------------------------------
-	tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, rebalMoveTenantID, "Rebalance Move Test Tenant")
+	adminKeyPEM, tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, rebalMoveTenantID, "Rebalance Move Test Tenant")
 	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tenantStatus, tenantBody)
 	}
 
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so this authenticates
+	// as the tenant's own onboarded admin; its built-in Admin role cannot
+	// create a NEW role (RolesCreate is SO-exclusive), so it self-assigns
+	// its own pre-seeded SO role first.
+	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody)
+	selfAssignTenantSO(t, leaderPort, rebalMoveTenantID, raftAdminClient)
+	roleBody, roleStatus := iraftAPIPost(t, raftAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name":      "db-admin",
@@ -369,7 +389,7 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 	}
 
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, rebalMoveTenantID)
-	createBoundUser(t, sysClient, leaderPort,
+	createBoundUser(t, raftAdminClient, leaderPort,
 		map[string]interface{}{
 			"username":  "admin",
 			"email":     "admin@" + rebalMoveTenantID + ".example.com",
@@ -387,7 +407,6 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
 		map[string]interface{}{
 			"name":     rebalMoveDBName,
-			"engine":   "kv",
 			"backend":  "pebble",
 			"replicas": 2,
 		},
@@ -517,25 +536,33 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 
 	srcAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[srcIdx])
 	dstAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[dstIdx])
-	t.Logf("executing rebalance MOVE: shard=%d from=%s to=%s", shardID, srcAddr, dstAddr)
 
-	// Target a node that already hosts the dedicated shard (src), NOT the
-	// arbitrary SYSTEM-shard leaderPort: the REST layer's leader-forwarding
-	// guard (forwardToLeader) only tolerates a single hop, and a request
-	// starting from a node that is not even a member of shard 1000 would
-	// need an extra "guess a member" hop BEFORE resolveMoveLeader's own
-	// (at-most-one-hop) self-source leadership transfer could run, risking
-	// exactly two hops in the worst case (guessed member happens to be both
-	// the current leader AND the MOVE's source, as observed directly while
-	// writing this test). Starting from a known shard member bounds this
-	// request to resolveMoveLeader's own worst case: at most one hop.
+	// submitPort is the node the client's rebalance-execute request lands
+	// on first. Historically this test always targeted a known shard
+	// member (src), specifically to avoid resolveGroupLeader's "guess any
+	// member" fallback: that fallback used to risk a false "forwarding
+	// loop" error whenever the guessed member happened to be both the
+	// group's current leader AND the MOVE's own source (observed directly
+	// while writing this test) -- see rebalance_service.go's
+	// resolveMoveLeader doc comment, case 2. resolveMoveLeader no longer
+	// guesses the MOVE's source, so submitting from dst -- which, before
+	// the MOVE, is genuinely NOT a member of shard 1000 at all -- is
+	// exactly that previously unreachable path, exercised here when
+	// submitFromNonMember is true.
+	submitPort := adminPorts[srcIdx]
+	if submitFromNonMember {
+		submitPort = adminPorts[dstIdx]
+	}
+	t.Logf("executing rebalance MOVE: shard=%d from=%s to=%s submitted-via-port=%d (non-member=%v)",
+		shardID, srcAddr, dstAddr, submitPort, submitFromNonMember)
+
 	execReq := rebalanceExecuteRequest{
 		Moves: []rebalanceExecuteMove{
 			{ShardID: shardID, FromNode: srcAddr, ToNode: dstAddr},
 		},
 	}
 	execBody, execStatus := iraftAPIPost(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/rebalance/execute", adminPorts[srcIdx]), execReq)
+		fmt.Sprintf("https://127.0.0.1:%d/v1/rebalance/execute", submitPort), execReq)
 	if execStatus != http.StatusOK {
 		t.Fatalf("POST /v1/rebalance/execute: status %d, body: %s", execStatus, execBody)
 	}
@@ -690,5 +717,27 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 		}
 	}
 
-	t.Log("TestIsolationRaft_Rebalance_Move PASS")
+	t.Logf("isolation-raft rebalance MOVE PASS (submitFromNonMember=%v)", submitFromNonMember)
+}
+
+// TestIsolationRaft_Rebalance_Move submits the MOVE through a node that
+// already hosts the dedicated shard (a group member) -- see the
+// package-level doc comment above.
+func TestIsolationRaft_Rebalance_Move(t *testing.T) {
+	runIsolationRaftRebalanceMove(t, false)
+}
+
+// TestIsolationRaft_Rebalance_Move_SubmittedFromNonMember is the direct
+// end-to-end regression test for the false "forwarding loop" bug fixed in
+// RebalanceService.resolveMoveLeader (pkg/service/rebalance_service.go): it
+// submits the IDENTICAL MOVE through the one node that holds NO replica of
+// the dedicated shard at all -- the previously unreachable path that used
+// to risk forwardToLeader rejecting a second, legitimate hop as a loop (see
+// resolveMoveLeader's doc comment, case 2, and this file's submitPort
+// comment above). TestMoveTenantGroupShard_LeaderRouting_NonMemberAvoidsGuessingTheSource
+// (pkg/service/rebalance_move_test.go) is the equivalent, faster
+// service-layer regression test for the same fix; this test is the
+// end-to-end proof over the real qrdbd REST surface across 3 real nodes.
+func TestIsolationRaft_Rebalance_Move_SubmittedFromNonMember(t *testing.T) {
+	runIsolationRaftRebalanceMove(t, true)
 }

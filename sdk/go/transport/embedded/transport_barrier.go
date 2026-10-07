@@ -535,6 +535,9 @@ func (t *Transport) claimBegin(ctx context.Context, domain seal.QuorumDomain, re
 	if err != nil {
 		return nil, delayed("claimBegin", err)
 	}
+	if err := t.limitHolderAct(ctx, "claimBegin", barrierScopeKey(string(domain))); err != nil {
+		return nil, err
+	}
 	ctx, thumbprint := claimContext(ctx)
 	challenge, err := svc.BarrierShareClaimBegin(ctx, domain, req.Username, thumbprint)
 	if err != nil {
@@ -548,6 +551,9 @@ func (t *Transport) claimComplete(ctx context.Context, domain seal.QuorumDomain,
 	svc, err := t.barrierService()
 	if err != nil {
 		return nil, delayed("claimComplete", err)
+	}
+	if err := t.limitHolderAct(ctx, "claimComplete", barrierScopeKey(string(domain))); err != nil {
+		return nil, err
 	}
 	ctx, thumbprint := claimContext(ctx)
 	result, err := svc.BarrierShareClaimComplete(ctx, domain, req.Username, req.NonceHex, req.Signature, thumbprint)

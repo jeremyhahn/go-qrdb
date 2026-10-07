@@ -44,10 +44,11 @@ import (
 // accepts, plus one it does not.
 //
 // The pebble arm additionally checks that the *pebble.DB handle comes back
-// non-nil while the others come back nil. That handle is not decoration:
-// NewLocalEngine passes it to WithMVCCPebbleDB and to timeseries.New, so a
-// pebble node that returned a nil handle would compose an engine with no
-// time-series storage and no direct DB access, and would do it silently.
+// non-nil while the others come back nil: it is still handed to callers that
+// need direct Pebble access for backend-specific concerns outside the engine
+// (compaction scheduling, metrics), even though NewLocalEngine itself no
+// longer needs it -- the engine and its time-series storage are both built
+// from stg alone, which every backend provides.
 func TestNewLocalStorage_EveryBackend(t *testing.T) {
 	for _, tc := range []struct {
 		backend    database.BackendType
@@ -235,53 +236,45 @@ func TestNewLocalStorage_DoesNotMutateTheCallerSettings(t *testing.T) {
 	}
 }
 
-// TestNewLocalEngine_EngineBoundary pins the documented split: file and
-// objstore compose the plain KV engine, while memory and pebble compose the
-// MVCC-capable one because timeseries, vector, collections and the SQL catalog
-// all depend on it.
+// TestNewLocalEngine_EngineBoundary pins the documented behaviour: every
+// backend -- memory, file, pebble and objstore alike -- composes the
+// MVCC-capable engine, because timeseries, secondary indexes, vector,
+// collections and the SQL catalog all depend on it. The plain KV engine
+// (pkg/engine/kv_engine.go) is no longer composed here.
 //
 // This is a behavioural boundary rather than an implementation detail, which
 // is why it is asserted rather than left to the composition: a node whose
 // backend quietly moved to the KV engine keeps serving KV traffic and starts
 // failing every MVCC-dependent surface.
 func TestNewLocalEngine_EngineBoundary(t *testing.T) {
-	for _, tc := range []struct {
-		backend  database.BackendType
-		wantMVCC bool
-	}{
-		{database.BackendMemory, true},
-		{database.BackendPebble, true},
-		{database.BackendFile, false},
-		{database.BackendObjstore, false},
+	for _, tc := range []database.BackendType{
+		database.BackendMemory,
+		database.BackendPebble,
+		database.BackendFile,
+		database.BackendObjstore,
 	} {
-		t.Run(string(tc.backend), func(t *testing.T) {
+		t.Run(string(tc), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
-				tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+				tc, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
-				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
+				t.Fatalf("NewLocalStorage(%s): %v", tc, err)
 			}
 			t.Cleanup(func() { _ = stg.Close() })
 
-			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, watch.NewHub(), lease.NewLessor())
+			eng, err := lifecycle.NewLocalEngine(tc, stg, pdb, watch.NewHub(), lease.NewLessor())
 			if err != nil {
-				t.Fatalf("NewLocalEngine(%s): %v", tc.backend, err)
+				t.Fatalf("NewLocalEngine(%s): %v", tc, err)
 			}
 			if eng == nil {
-				t.Fatalf("NewLocalEngine(%s) returned a nil engine and no error", tc.backend)
+				t.Fatalf("NewLocalEngine(%s) returned a nil engine and no error", tc)
 			}
 
 			// The CONCRETE type, not merely non-nil. Asserting non-nil here
 			// would pass whichever engine were composed, which is the one
 			// thing this test exists to tell apart.
-			_, isMVCC := eng.(*engine.MVCCEngine)
-			_, isKV := eng.(*engine.KVEngine)
-			switch {
-			case tc.wantMVCC && !isMVCC:
+			if _, isMVCC := eng.(*engine.MVCCEngine); !isMVCC {
 				t.Errorf("%s composed %T, want *engine.MVCCEngine: timeseries, vector, "+
-					"collections and the SQL catalog all depend on MVCC", tc.backend, eng)
-			case !tc.wantMVCC && !isKV:
-				t.Errorf("%s composed %T, want *engine.KVEngine (the documented engine "+
-					"boundary, pkg/engine/kv_engine.go)", tc.backend, eng)
+					"collections and the SQL catalog all depend on MVCC", tc, eng)
 			}
 		})
 	}
@@ -290,9 +283,8 @@ func TestNewLocalEngine_EngineBoundary(t *testing.T) {
 // TestLocalEngineKeepsLeases_MatchesTheComposedEngine pins the predicate to
 // what the engine NewLocalEngine composes actually does with a lease grant:
 // a composer that trusted it while it disagreed would either start the
-// lease-backed volume-pool Reporter on an engine that refuses every grant
-// (the file backend's boot logged exactly that refusal) or skip it on one
-// that would have served it.
+// lease-backed volume-pool Reporter on an engine that refuses every grant or
+// skip it on one that would have served it.
 func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
 	for _, tc := range []struct {
 		backend database.BackendType
@@ -300,8 +292,8 @@ func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
 	}{
 		{database.BackendMemory, true},
 		{database.BackendPebble, true},
-		{database.BackendFile, false},
-		{database.BackendObjstore, false},
+		{database.BackendFile, true},
+		{database.BackendObjstore, true},
 	} {
 		t.Run(string(tc.backend), func(t *testing.T) {
 			if got := lifecycle.LocalEngineKeepsLeases(tc.backend); got != tc.want {
@@ -356,46 +348,36 @@ func TestNewLocalEngine_NilHubIsAccepted(t *testing.T) {
 
 // TestNewLocalEngine_AttachesAuditChainUnconditionally is audit-replicated
 // review finding N4 at the standalone/raft-free composition root: every MVCC
-// engine this seam builds (memory and pebble backends) must carry a non-nil
-// audit.Chain regardless of caller input, because the opcode handler has no
-// notion of "standalone" and would otherwise refuse every
-// protocol.OpAuditAppend this node receives. The file/objstore (KV) engine
-// does not support the chain at all and is asserted nil here on purpose.
+// engine this seam builds, on every backend, must carry a non-nil audit.Chain
+// regardless of caller input, because the opcode handler has no notion of
+// "standalone" and would otherwise refuse every protocol.OpAuditAppend this
+// node receives.
 func TestNewLocalEngine_AttachesAuditChainUnconditionally(t *testing.T) {
-	for _, tc := range []struct {
-		backend   database.BackendType
-		wantChain bool
-	}{
-		{database.BackendMemory, true},
-		{database.BackendPebble, true},
-		{database.BackendFile, false},
-		{database.BackendObjstore, false},
+	for _, tc := range []database.BackendType{
+		database.BackendMemory,
+		database.BackendPebble,
+		database.BackendFile,
+		database.BackendObjstore,
 	} {
-		t.Run(string(tc.backend), func(t *testing.T) {
+		t.Run(string(tc), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
-				tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+				tc, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
-				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
+				t.Fatalf("NewLocalStorage(%s): %v", tc, err)
 			}
 			t.Cleanup(func() { _ = stg.Close() })
 
-			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, nil, nil)
+			eng, err := lifecycle.NewLocalEngine(tc, stg, pdb, nil, nil)
 			if err != nil {
-				t.Fatalf("NewLocalEngine(%s): %v", tc.backend, err)
+				t.Fatalf("NewLocalEngine(%s): %v", tc, err)
 			}
 
 			mvcc, isMVCC := eng.(*engine.MVCCEngine)
-			if !tc.wantChain {
-				if isMVCC {
-					t.Fatalf("%s composed *engine.MVCCEngine, want the KV engine", tc.backend)
-				}
-				return
-			}
 			if !isMVCC {
-				t.Fatalf("%s composed %T, want *engine.MVCCEngine", tc.backend, eng)
+				t.Fatalf("%s composed %T, want *engine.MVCCEngine", tc, eng)
 			}
 			if mvcc.AuditChain() == nil {
-				t.Errorf("%s: MVCCEngine built with a nil audit.Chain attached", tc.backend)
+				t.Errorf("%s: MVCCEngine built with a nil audit.Chain attached", tc)
 			}
 		})
 	}

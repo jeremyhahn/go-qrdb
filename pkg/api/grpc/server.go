@@ -134,6 +134,7 @@ type Server struct {
 	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
+	replicatedAudit   *service.OptInAuditLogger
 
 	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
 	soGate   *authmw.SOGate
@@ -420,6 +421,14 @@ func WithDEKService(svc service.DEKServicer) ServerOption {
 // the audit gRPC service is not registered.
 func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
+}
+
+// WithReplicatedAuditLogger configures the gRPC server with the
+// cluster-wide, per-tenant-opt-in replicated audit sink
+// (docs/audit/architecture.md#cluster-wide-replicated-trail), enabling
+// AuditService.Query's replicated=true branch and VerifyReplicatedChain.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) ServerOption {
+	return func(s *Server) { s.replicatedAudit = l }
 }
 
 // WithUserService configures the gRPC server with a user management service.
@@ -806,6 +815,7 @@ func (s *Server) Start() error {
 		sqlSvc:            s.sqlSvc,
 		registry:          s.registry,
 		authMW:            s.authMW,
+		replicaForwarder:  s.forwarder,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
 
@@ -819,8 +829,8 @@ func (s *Server) Start() error {
 	RegisterTenantBarrierService(s.server, s.tenantSvc, s.authMW)
 
 	// Register the audit query service when an audit logger is configured.
-	if s.auditLogger != nil {
-		RegisterAuditService(s.server, s.auditLogger)
+	if s.auditLogger != nil || s.replicatedAudit != nil {
+		RegisterAuditService(s.server, s.auditLogger, s.replicatedAudit)
 	}
 
 	// Register capability modules' gRPC services onto the same *grpc.Server.

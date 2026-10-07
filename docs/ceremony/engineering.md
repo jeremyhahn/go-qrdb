@@ -1,6 +1,6 @@
 # Initialization Ceremony — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -403,6 +403,8 @@ Holder permissions are listed in
 - Envelopes: memory only.
 
 ## Test strategy
+
+**Integration target:** `make integration-test-ceremony` (no Docker; selection in `test/integration/features.mk`). It runs the officer ceremony, forwarding and follower-forward suites, with the sign-csr and sealed-window flows per protocol. Per-transport accounting is the `ceremony` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: state transitions for both modes; holder enrolment through
   `Initialize` and its refusals; that `Initialize` splits the barrier's unseal

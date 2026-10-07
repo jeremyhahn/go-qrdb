@@ -113,7 +113,7 @@ func servedTestDatabase(t *testing.T) *database.Database {
 	t.Helper()
 	m := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
-	db, err := m.Create(database.DatabaseConfig{Name: "app", Engine: database.EngineKV, Backend: database.BackendMemory})
+	db, err := m.Create(database.DatabaseConfig{Name: "app", Backend: database.BackendMemory})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

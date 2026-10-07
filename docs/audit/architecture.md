@@ -418,17 +418,25 @@ that refuses one is counted on
 
 The sink described above is node-local: `ChainFileLogger`'s chain lives on one
 node's disk, and the ring buffer is one node's memory. A SECOND, independent
-mechanism -- the cluster-wide replicated trail below -- now also exists,
+mechanism -- the cluster-wide replicated trail below -- also exists,
 apply-time-assigned and Raft-replicated rather than written by one process.
 The two are not alternatives to each other and neither is a phased-out
-version of the other: the node-local sink keeps recording exactly as it does
-today, unconditionally, and the replicated chain is additional, opt-in
-infrastructure that nothing in this binary proposes writes to yet (see
-[Status](#status-of-the-replicated-chain) below). When the sealed window
-needs to carry records into the replicated chain (phase 2), it cannot take
-them directly -- the store the chain appends through is behind the barrier
-that window is opening -- so that remains a buffer-then-append problem for
-the proposing side to solve, not something `Chain.Append` itself does.
+version of the other: the node-local sink keeps recording exactly as it does,
+unconditionally, and the replicated chain is additional, **opt-in**
+infrastructure layered on top of it (see
+[Status](#status-of-the-replicated-chain) below) -- `lifecycle.BuildServices`
+composes the two into one `audit.AggregateLogger`, so every ordinary `Emit`
+call reaches both, and the replicated child is a no-op for a tenant whose
+entitlement is off.
+
+**The sealed window still does not carry records into the replicated chain.**
+It cannot take them directly -- the store the chain appends through is behind
+the barrier that window is opening, and before `BuildServices` runs there is
+no `Host` to resolve a shard against at all -- so holder/ceremony events made
+during the sealed window remain node-local only. This is a deliberate,
+disclosed limitation of this phase, not an oversight: closing it is a
+buffer-then-append problem for the proposing side to solve once the data
+plane exists, not something `Chain.Append` itself does.
 
 ## Cluster-wide replicated trail
 
@@ -456,16 +464,78 @@ agree on one hash-chained audit trail per tenant exists end to end:
   sibling that has one applies the write: state divergence within one Raft
   group, not a degraded feature.
 
-**Phase 2 (not in this revision): parked.** Nothing in this binary ever
-PROPOSES `OpAuditAppend`. The entitlement that would decide which tenants
-opt in, the service-layer logger that would encode and propose the command
-from an ordinary `Emit` call, and the read API/CLI surface over `Chain.Query`
-do not exist yet. Concretely: `qrdb audit query` / `audit:query` read the
-node-local sink only; there is no command or endpoint that reads the
-replicated chain. The mechanism above is real and tested, but until phase 2
-lands, no record is ever written to it in production — the gate exists
-precisely so that when phase 2 does land, every replica of every group can
-already apply the opcode it enables.
+**Phase 2 (this revision): shipped.** Something now proposes
+`OpAuditAppend`, and a caller can read back what it proposed:
+
+- `quota.Entitlements.AllowReplicatedAudit` — the per-tenant opt-in. False
+  (the secure default) for every tenant unless an explicit
+  `tenants:set_entitlements` grant or the operator's configured default
+  entitlements turn it on; see [Opt-in, not default-on](#opt-in-not-default-on)
+  below for why this is the decided answer, not an open question.
+- `tenant.TenantService.ReplicatedAuditEnabled` — resolves that entitlement,
+  with the system tenant handled separately (see "Platform events" below).
+- `service.SystemShardAuditResolver` — names the `(Host, shardID)` that
+  serves a tenant's chain. Every prefix/barrier/unregistered tenant resolves
+  to the system shard; a dedicated-isolation tenant (volume/raft) is refused
+  with `*service.DedicatedTenantAuditNotSupportedError` rather than silently
+  guessing, because that tenant's chain belongs on its own dedicated host,
+  which this resolver does not reach yet.
+- `service.ReplicatedLogger` — the `audit.AuditLogger` that actually encodes
+  and proposes `protocol.OpAuditAppend` from an ordinary `Emit` call (and
+  answers `Query`/`VerifyTenantChain` by reading back through
+  `audit.QueryRequest`/`audit.VerifyRequest`). It refuses with
+  `*service.AuditFeatureNotActiveError` before proposing when
+  `featuregate.AuditAppend` has not activated on the target shard.
+- `service.OptInAuditLogger` — wraps `ReplicatedLogger` behind the
+  entitlement check above, so an unentitled tenant's `Emit` is a complete
+  no-op (never reaches Raft) and its `Query`/`VerifyTenantChain` answer
+  "not answerable here" (`Total: -1` / `*service.ReplicatedAuditNotEntitledError`)
+  rather than a misleading empty-but-real page or a trivially-true report.
+- `lifecycle.BuildServices` wires `OptInAuditLogger(ReplicatedLogger(...))`
+  into every composition's `audit.AggregateLogger` alongside the node-local
+  sink, and exposes it separately as `Node.ReplicatedAudit` for the read API
+  below. The isolation and entitlement lookups it binds `SystemShardAuditResolver`
+  and `OptInAuditLogger` to are resolved LAZILY against `Node.Tenant`, because
+  the resolver is constructed before `Node.Tenant` is populated later in the
+  same call -- see `pkg/server/lifecycle/audit_replicated.go`.
+- A read API and CLI surface over `Chain.Query` and the new `Chain.Verify`
+  hash-continuity check, on every transport -- REST, gRPC, Unix, QUIC, MCP,
+  the embedded transport and the Go SDK. See
+  [api.md](api.md#the-replicated-chain-read-surface) and
+  [cli.md](cli.md#--replicated).
+
+### Opt-in, not default-on
+
+The entitlement defaults to **false**, exactly as the parked design decided
+before the phase-1 review paused this feature: `quota.DefaultEntitlements()`
+leaves `AllowReplicatedAudit` at its zero value, and nothing in this phase
+changes that default. This folder's own compliance framing (FedRAMP, PCI DSS,
+HIPAA all require a trail) argues for default-ON; the decision here is
+narrower than that argument, and is recorded rather than re-derived:
+
+- The node-local trail is unconditional and already satisfies the compliance
+  requirement by itself (see "Persistence" in [engineering.md](engineering.md)).
+  The replicated chain is additional evidence -- cluster-wide, Raft-replicated,
+  independently queryable from any node -- not the thing that makes a
+  deployment compliant in the first place.
+- Every tenant's replicated writes ride the SAME Raft group's log and
+  snapshot, permanently, with no retention-driven deletion (unlike the
+  node-local file's 90-day default): turning it on for every tenant by
+  default would grow that cost for deployments that never asked for it.
+- A hardened compliance reference configuration sets the operator's default
+  entitlements so every tenant is covered without a per-tenant grant, which
+  is the intended path to "on by default" for a deployment that wants it,
+  without changing the built-in software default for everyone else.
+
+**Known limitation of this phase**, disclosed rather than silently
+sidestepped: `OptInAuditLogger.platformEnabled` (the system tenant's own
+switch, since the system tenant is never provisioned through the per-tenant
+entitlements path) has no operator-facing configuration key yet --
+`lifecycle.Infra.ReplicatedAuditPlatformEnabled` defaults to `false` and
+nothing in `cmd/qrdbd` currently sets it from a YAML value. Wiring a
+`audit.platform_replicated_enabled`-shaped setting through is follow-on work;
+until then the system tenant's platform events reach the replicated chain
+only for a composer that sets the `Infra` field directly.
 
 ### Record layout: a reserved raw-keyspace table, not a `__sys:` key
 
@@ -559,6 +629,47 @@ system tenant's segment with no `TenantID` of its own matches only an
 and `Query` alike refuse a tenant ID containing `/` (`*InvalidTenantIDError`)
 — such an id could otherwise carve a second segment inside another tenant's
 range in the raw table's concatenated keys.
+
+### Chain hash-continuity verification
+
+`Chain.Verify(r, tenantID)` answers the replicated chain's own version of
+"has this tenant's trail been tampered with" — the cluster-wide counterpart
+to `pkg/audit.Verify`'s node-local file-chain walk, but a different shape
+entirely: one tenant has one Raft-replicated chain, not a rotation set of
+NDJSON archives, so there are no files, no order and no handoff digest here.
+
+The check: fold every surviving event for the tenant, in sequence, starting
+from the digest the lowest surviving event's own `PrevHash` claims (its
+preimage may have been deleted by retention pruning, exactly as a
+node-local trail's pruned prefix is unprovable — see below), and compare the
+result to the chain's own **authoritative** head digest — the one every
+replica derived identically at apply time, which no caller could have
+forged. A mismatch, a missing sequence, or a malformed seed is reported as
+`Verified: false` with a `Reason`; it is never returned as a Go error,
+mirroring `pkg/audit.VerificationReport`'s own "a tamper verdict is a
+result, not a failure" rule.
+
+`ChainContinuityReport` is deliberately a different type from
+`ChainVerification` (the file chain's result): `Records`, `Head`, `Low` and
+`Genesis` describe one tenant's linear sequence, and there is no `Files`,
+`Order`, `Seed` or `Handoff` to carry, because there is nothing here shaped
+like a rotation set.
+
+**A pruned tenant verifies clean with `Genesis: false`**, exactly as a
+retention-pruned node-local trail does: `Chain.Prune` deletes a prefix of
+events and leaves the head's digest untouched, so the surviving tail's own
+first event's `PrevHash` names a digest whose preimage is gone. That claim
+is taken as the fold's starting point, not independently checked — the
+terminal comparison against the replicated head digest is what makes this
+check meaningful at all, not a claim about the deleted prefix.
+
+The read surface is `service.ReplicatedLogger.VerifyTenantChain`, gated by
+the same per-tenant entitlement as `Emit`/`Query`
+(`service.OptInAuditLogger.VerifyTenantChain`, refusing with
+`*service.ReplicatedAuditNotEntitledError` when the tenant's entitlement is
+off), reachable from every transport — see
+[api.md](api.md#the-replicated-chain-read-surface) and
+[cli.md](cli.md#qrdb-audit-verify---replicated).
 
 ## Trust boundaries
 

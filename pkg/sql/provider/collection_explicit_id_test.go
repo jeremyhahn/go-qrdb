@@ -88,7 +88,7 @@ func newCollectionHarness(t *testing.T, db, collection, strategy string) *collec
 			return service.NewTableService(store, store, txn, seq), nil
 		},
 	}
-	h.prov = NewProviderWithEngine(db, store, "", WithRegistry(reg))
+	h.prov = NewProvider(db, store, WithRegistry(reg))
 	return h
 }
 

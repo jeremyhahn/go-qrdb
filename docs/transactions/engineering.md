@@ -402,3 +402,7 @@ protocol and is stated once, in
 
 It is not restated here on purpose: four copies of a bound is how the four drift
 apart.
+
+## Integration testing
+
+`make integration-test-transactions` runs this feature's self-spawned integration tests: `tx_cli_test.go` and `sql_transaction_test.go`. The per-transport accounting, including every gap, is the `transactions` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

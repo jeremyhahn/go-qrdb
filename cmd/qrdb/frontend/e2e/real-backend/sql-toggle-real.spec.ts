@@ -18,7 +18,6 @@ interface ProtocolConfig {
 
 interface DatabaseInfoResponse {
   name: string;
-  engine: string;
   backend: string;
   protocol: ProtocolConfig;
 }
@@ -37,7 +36,6 @@ test.describe("SQL wire toggle (real backend — bug #13)", () => {
       const createResp = await request.post(`${daemon.adminUrl}/v1/databases`, {
         data: {
           name,
-          engine: "kv",
           backend: "pebble",
           protocol: { mysql: false, postgresql: false },
         },
@@ -86,7 +84,6 @@ test.describe("SQL wire toggle (real backend — bug #13)", () => {
       const createResp = await request.post(`${daemon.adminUrl}/v1/databases`, {
         data: {
           name,
-          engine: "kv",
           backend: "pebble",
           protocol: { mysql: false, postgresql: false },
         },
@@ -124,7 +121,6 @@ test.describe("SQL wire toggle (real backend — bug #13)", () => {
       const createResp = await request.post(`${daemon.adminUrl}/v1/databases`, {
         data: {
           name,
-          engine: "kv",
           backend: "pebble",
           protocol: { mysql: true, postgresql: true },
         },

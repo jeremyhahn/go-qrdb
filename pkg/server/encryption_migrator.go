@@ -179,9 +179,16 @@ func (m *scopedEncryptionMigrator) EnableEncryption(ctx context.Context, scope s
 		}
 		// Governance: the tenant must be entitled to migrate to the requested
 		// target strategy (same gate as barrier-init), so enable-encryption
-		// cannot side-step AllowedBarrierModes.
+		// cannot side-step AllowedBarrierModes. Retried through
+		// whenReadIndexReady for the same reason as isRaftTenant below: a
+		// tenant-scope migration landing right after a system-scope recycle
+		// (nodeMigrationProvider.Reopen) must not be refused just because the
+		// entitlement read hit the freshly elected leader's ReadIndex warm-up
+		// window.
 		if m.tenantSvc != nil {
-			if err := m.tenantSvc.CheckBarrierMode(ctx, scope.TenantID, opts.TargetStrategy); err != nil {
+			if _, err := whenReadIndexReady(ctx, func() (struct{}, error) {
+				return struct{}{}, m.tenantSvc.CheckBarrierMode(ctx, scope.TenantID, opts.TargetStrategy)
+			}); err != nil {
 				return err
 			}
 		}
@@ -209,11 +216,24 @@ func (m *scopedEncryptionMigrator) EnableEncryption(ctx context.Context, scope s
 // IsolationRaft (data in dedicated raft shards). It fails closed to false (the
 // volume path) when no isolation resolver is wired or the lookup errors, so a
 // missing resolver never misroutes a volume tenant to the raft mechanism.
+// isRaftTenant reports whether the tenant's effective isolation mode is
+// IsolationRaft (data in dedicated raft shards). It fails closed to false (the
+// volume path) when no isolation resolver is wired or the lookup errors, so a
+// missing resolver never misroutes a volume tenant to the raft mechanism.
+//
+// The lookup is retried through whenReadIndexReady: right after a system-scope
+// migration's recycle (nodeMigrationProvider.Reopen), the tenant service's
+// backing host has a freshly elected leader whose ReadIndex warm-up window has
+// not yet closed, and a tenant-scope migration landing in that window must not
+// be misrouted to the volume path just because the isolation read answered
+// quicraft.ErrReadIndexNotReady.
 func (m *scopedEncryptionMigrator) isRaftTenant(ctx context.Context, tenantID string) bool {
 	if m.isolation == nil {
 		return false
 	}
-	info, err := m.isolation.GetTenant(ctx, tenantID)
+	info, err := whenReadIndexReady(ctx, func() (*tenant.TenantInfo, error) {
+		return m.isolation.GetTenant(ctx, tenantID)
+	})
 	if err != nil || info == nil {
 		return false
 	}

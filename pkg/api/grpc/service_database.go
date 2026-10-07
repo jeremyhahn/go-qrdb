@@ -297,7 +297,6 @@ func databaseBarrierStatusToProto(st *service.DatabaseBarrierStatusInfo) *pb.Dat
 func protoDatabaseCreateToConfig(req *pb.DatabaseCreateRequest) database.DatabaseConfig {
 	cfg := database.DatabaseConfig{
 		Name:     req.GetName(),
-		Engine:   database.EngineType(req.GetEngine()),
 		Backend:  database.BackendType(req.GetBackend()),
 		DataDir:  req.GetDataDir(),
 		Replicas: int(req.GetReplicas()),

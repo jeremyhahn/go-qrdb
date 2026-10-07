@@ -627,6 +627,19 @@ func (t *RelationalTable) Truncate(ctx *sqle.Context) (int, error) {
 		return 0, err
 	}
 
+	// MySQL's TRUNCATE always resets AUTO_INCREMENT. PostgreSQL's plain
+	// TRUNCATE never resets its sequence (matching real PostgreSQL), but
+	// RESTART IDENTITY asks for exactly that reset -- the PostgreSQL wire
+	// front end strips the clause before the statement reaches here (the
+	// embedded grammar does not parse it) and records the choice on the
+	// session instead (see QRDBSession.SetStatementRestartIdentity).
+	resetSequence := !t.postgres
+	if t.postgres {
+		if session, ok := ctx.Session.(*QRDBSession); ok {
+			resetSequence = session.StatementRestartIdentity()
+		}
+	}
+
 	// The tenant is bound onto the context here, not added as a parameter
 	// to TruncateTable: TableService.TruncateTable derives it via
 	// tenant.FromContext, the same way the rest of the SQL layer derives
@@ -635,7 +648,7 @@ func (t *RelationalTable) Truncate(ctx *sqle.Context) (int, error) {
 	// design) travel through without widening TableServicer's public
 	// signature.
 	tenantCtx := tenant.WithTenantID(ctx, sessionTenantIDOf(ctx))
-	newDef, err := t.tableSvc.TruncateTable(tenantCtx, t.def.Database, t.def.Name, !t.postgres)
+	newDef, err := t.tableSvc.TruncateTable(tenantCtx, t.def.Database, t.def.Name, resetSequence)
 	if err != nil {
 		return 0, err
 	}

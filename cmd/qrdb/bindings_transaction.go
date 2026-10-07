@@ -17,20 +17,20 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TransactionBinding exposes atomic compare-and-swap transaction
 // operations to the Wails frontend.
 type TransactionBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewTransactionBinding creates a new TransactionBinding backed by the
 // given connection.
-func NewTransactionBinding(log *logger.Logger, conn *ConnectionBinding) *TransactionBinding {
+func NewTransactionBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *TransactionBinding {
 	return &TransactionBinding{logger: log, conn: conn}
 }
 

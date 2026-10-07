@@ -158,7 +158,7 @@ func TestCeremonySignCSRCmd_WithValidCSRFile(t *testing.T) {
 
 // dbInfoFixture returns a non-nil DatabaseInfo for mock database services.
 func dbInfoFixture(name string) *database.DatabaseInfo {
-	return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open"}
+	return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}
 }
 
 func TestDatabaseUpdateEtcdCmd_Success(t *testing.T) {

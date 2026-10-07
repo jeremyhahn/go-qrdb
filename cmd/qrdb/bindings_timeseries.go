@@ -19,19 +19,19 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TimeSeriesBinding exposes time-series operations to the Wails frontend.
 type TimeSeriesBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewTimeSeriesBinding creates a new TimeSeriesBinding backed by the
 // given connection.
-func NewTimeSeriesBinding(log *logger.Logger, conn *ConnectionBinding) *TimeSeriesBinding {
+func NewTimeSeriesBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *TimeSeriesBinding {
 	return &TimeSeriesBinding{logger: log, conn: conn}
 }
 

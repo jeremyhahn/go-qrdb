@@ -44,7 +44,6 @@ func newSQLTestServer(kvSvc *mockKVService, dbSvc *mockDatabaseService) *Server 
 func kvEngineGet(name string) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{
 		Name:    name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendMemory,
 		Status:  database.StatusOpen,
 	}, nil

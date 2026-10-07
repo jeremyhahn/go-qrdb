@@ -39,7 +39,6 @@ func TestDatabaseUpdateEtcd_EnabledWithListenAddr(t *testing.T) {
 	svc.updateEtcdFn = func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    name,
-			Engine:  "kv",
 			Backend: "pebble",
 			Status:  "open",
 			Protocol: database.ProtocolConfig{
@@ -67,7 +66,7 @@ func TestDatabaseUpdateEtcd_JSONFormat(t *testing.T) {
 
 	svc := newFullFnDatabaseService()
 	svc.updateEtcdFn = func(name string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open"}, nil
+		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
 	}
 
 	output, err := executeDatabaseCmd(t, svc, "update-etcd", "mydb", "--enabled")

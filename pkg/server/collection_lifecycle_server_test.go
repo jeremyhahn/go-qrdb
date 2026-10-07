@@ -222,8 +222,8 @@ func TestServer_CollectionSweepTargets_TenantsAndDatabases(t *testing.T) {
 	mgr := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, cfg := range []database.DatabaseConfig{
-		{Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory},
-		{Name: "ledger", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory},
+		{Name: "reports", Backend: database.BackendMemory},
+		{Name: "ledger", TenantID: "acme", Backend: database.BackendMemory},
 	} {
 		if _, err := mgr.Create(cfg); err != nil {
 			t.Fatalf("create %s: %v", cfg.Name, err)

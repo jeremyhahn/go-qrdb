@@ -35,6 +35,12 @@ type TenantDEKVersion struct {
 	CreatedAt time.Time `json:"created_at"`
 	// RetiredAt is set once the version's key has been destroyed.
 	RetiredAt *time.Time `json:"retired_at,omitempty"`
+	// ProviderID is the keywrap.Provider ID that wrapped this version's
+	// key -- never the key itself. Empty for a retired version.
+	ProviderID string `json:"provider_id,omitempty"`
+	// KeyRef is the tenant-scoped key reference the provider wrapped it
+	// under. Empty for a retired version.
+	KeyRef string `json:"key_ref,omitempty"`
 }
 
 // TenantDEKStatusResponse describes a tenant's keyring. It never carries key

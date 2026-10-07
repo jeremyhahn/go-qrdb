@@ -17,7 +17,7 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -32,12 +32,12 @@ type IndexCreateParams struct {
 
 // IndexBinding exposes secondary index management to the Wails frontend.
 type IndexBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewIndexBinding creates a new IndexBinding backed by the given connection.
-func NewIndexBinding(log *logger.Logger, conn *ConnectionBinding) *IndexBinding {
+func NewIndexBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *IndexBinding {
 	return &IndexBinding{logger: log, conn: conn}
 }
 

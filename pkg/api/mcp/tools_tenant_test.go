@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -349,6 +350,51 @@ func TestHandleTenantGet_Success(t *testing.T) {
 	}
 	if info.Name != "ACME Corp" {
 		t.Errorf("expected name 'ACME Corp', got %q", info.Name)
+	}
+}
+
+// TestHandleTenantGet_CarriesRefusal proves qrdb_tenant_get's wire output
+// carries a tenant's refusal. tenant.TenantInfo.Refusal is tagged
+// json:"-" (an error has no fixed marshal shape), so json.Marshal(info)
+// alone drops it -- tenantInfoToJSON rebuilds it from tenant.RefusalOf,
+// the same way pkg/api/rest/handlers_tenants.go's tenantToResponse does
+// for REST.
+func TestHandleTenantGet_CarriesRefusal(t *testing.T) {
+	svc := newMockTenantService()
+	svc.getFn = func(_ context.Context, id string) (*tenant.TenantInfo, error) {
+		return &tenant.TenantInfo{
+			ID:         id,
+			Name:       "bad",
+			VolumePool: "broken",
+			Refusal:    &volume.PoolUnavailableError{Pool: "broken", NodeID: "1"},
+		}, nil
+	}
+	handler := handleTenantGet(svc, nil)
+
+	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{"id": "bad"})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result")
+	}
+
+	text := resultText(t, result)
+	var wire struct {
+		Refusal *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"refusal"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if wire.Refusal == nil {
+		t.Fatalf("wire output dropped the refusal: %s", text)
+	}
+	if wire.Refusal.Code != "pool_unavailable" {
+		t.Errorf("refusal.code = %q, want %q", wire.Refusal.Code, "pool_unavailable")
 	}
 }
 

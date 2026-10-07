@@ -50,7 +50,7 @@ func newLockHarness(t *testing.T, opts ...func(*Provider)) *lockHarness {
 	t.Cleanup(closeFn)
 
 	all := append([]func(*Provider){WithRegistry(h.Registry)}, opts...)
-	prov := NewProviderWithEngine("shop", h.KVSvc, "", all...)
+	prov := NewProvider("shop", h.KVSvc, all...)
 	eng := sqlengine.New(sqlengine.Config{Provider: prov})
 	t.Cleanup(func() { _ = eng.Close() })
 	return &lockHarness{prov: prov, mvcc: h.MVCCSvc, eng: eng}

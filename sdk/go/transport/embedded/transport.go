@@ -89,41 +89,47 @@ var (
 // performed, making this the fastest possible transport for embedded
 // usage.
 type Transport struct {
-	kvSvc         service.KVServicer
-	adminSvc      service.AdminServicer
-	mvccSvc       service.MVCCKVServicer
-	txSvc         service.TransactionServicer
-	batchSvc      service.BatchServicer
-	watchSvc      service.WatchServicer
-	leaseSvc      service.LeaseServicer
-	indexSvc      service.IndexServicer
-	tsSvc         service.TimeSeriesServicer
-	vectorSvc     service.VectorServicer
-	userSvc       user.UserServicer
-	roleSvc       role.RoleServicer
-	certProv      cert.CertProvider
-	certEnroll    service.CertEnrollmentServicer
-	invitations   service.InvitationServicer
-	onboarding    service.TenantOnboardingServicer
-	dbSvc         service.DatabaseServicer
-	barrierSvc    service.BarrierServicer
-	pinBackend    pin.PINBackend
-	dekSvc        service.DEKServicer
-	ceremonySvc   service.CeremonyServicer
-	ceremonyCA    ceremony.CeremonyCA
-	credentialSvc service.CredentialServicer
-	backupSvc     service.BackupServicer
-	rebalanceSvc  service.RebalanceServicer
-	embeddingSvc  service.EmbeddingServicer
-	ragSvc        service.RAGServicer
-	collectionSvc service.CollectionServicer
-	sealStoreSvc  *seal.SealStore
-	tenantSvc     tenant.TenantServicer
-	volumeSvc     volume.Service
-	lockSvc       service.LockServicer
-	authFactorSvc service.AuthFactorServicer
-	auditLogger   audit.AuditLogger
-	encMigrator   service.EncryptionMigrator
+	kvSvc       service.KVServicer
+	adminSvc    service.AdminServicer
+	mvccSvc     service.MVCCKVServicer
+	txSvc       service.TransactionServicer
+	batchSvc    service.BatchServicer
+	watchSvc    service.WatchServicer
+	leaseSvc    service.LeaseServicer
+	indexSvc    service.IndexServicer
+	tsSvc       service.TimeSeriesServicer
+	vectorSvc   service.VectorServicer
+	userSvc     user.UserServicer
+	roleSvc     role.RoleServicer
+	certProv    cert.CertProvider
+	certEnroll  service.CertEnrollmentServicer
+	invitations service.InvitationServicer
+	onboarding  service.TenantOnboardingServicer
+	dbSvc       service.DatabaseServicer
+	barrierSvc  service.BarrierServicer
+	pinBackend  pin.PINBackend
+
+	// holderActLimiter throttles a share holder's claim begin and complete
+	// made with no identity on the context; see WithHolderActLimiter.
+	holderActLimiter HolderActLimitFunc
+
+	dekSvc          service.DEKServicer
+	ceremonySvc     service.CeremonyServicer
+	ceremonyCA      ceremony.CeremonyCA
+	credentialSvc   service.CredentialServicer
+	backupSvc       service.BackupServicer
+	rebalanceSvc    service.RebalanceServicer
+	embeddingSvc    service.EmbeddingServicer
+	ragSvc          service.RAGServicer
+	collectionSvc   service.CollectionServicer
+	sealStoreSvc    *seal.SealStore
+	tenantSvc       tenant.TenantServicer
+	volumeSvc       volume.Service
+	lockSvc         service.LockServicer
+	authFactorSvc   service.AuthFactorServicer
+	auditLogger     audit.AuditLogger
+	replicatedAudit *service.OptInAuditLogger
+	encMigrator     service.EncryptionMigrator
 
 	// sealProbe gates every request outside the sealed-window allowlist; see
 	// WithSealProbe. Nil gates nothing.

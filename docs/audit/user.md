@@ -94,6 +94,29 @@ while :; do
 done
 ```
 
+**Read the cluster-wide replicated chain.** Every network node answers the
+SAME tenant's replicated trail identically, unlike the node-local file above
+-- useful when you want one tenant's trail without caring which node you
+happen to be talking to. Your tenant must be entitled to it
+(`AllowReplicatedAudit`, off by default; ask your operator) or the query
+answers empty rather than an error.
+
+```bash
+qrdb audit query --replicated --from 2026-08-01T00:00:00Z
+```
+
+**Verify the replicated chain's hash continuity for your tenant.**
+
+```bash
+qrdb audit verify --replicated
+```
+
+A `Genesis: false` result means the chain has been pruned (retention), not
+tampered with -- the same reading [Troubleshooting](#troubleshooting) below
+gives for the node-local verify's own `Genesis: false`. See
+[architecture.md](architecture.md#chain-hash-continuity-verification) for
+what this check does and does not prove.
+
 ## What is recorded
 
 Identity changes, role changes, certificate issuance and revocation, every

@@ -647,6 +647,7 @@ type mockTimeSeriesService struct {
 	deleteSeriesFn               func(ctx context.Context, req *timeseries.DeleteRequest) error
 	getRetentionFn               func(metric string) (*timeseries.RetentionPolicy, error)
 	setRetentionFn               func(metric string, policy *timeseries.RetentionPolicy) error
+	applyRetentionFn             func(ctx context.Context, metric string, cutoff time.Time) error
 	listMetricsFn                func(prefix string, limit int) ([]string, error)
 	listMetricsWithConsistencyFn func(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error)
 }
@@ -731,6 +732,13 @@ func (m *mockTimeSeriesService) GetRetentionPolicy(metric string) (*timeseries.R
 func (m *mockTimeSeriesService) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetentionFn != nil {
 		return m.setRetentionFn(metric, policy)
+	}
+	return nil
+}
+
+func (m *mockTimeSeriesService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	if m.applyRetentionFn != nil {
+		return m.applyRetentionFn(ctx, metric, cutoff)
 	}
 	return nil
 }

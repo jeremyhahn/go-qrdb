@@ -1,7 +1,7 @@
 # Volume Pools — API
 
-> **Status: APPROVED — ruled 2026-10-04; Phase 1 build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-04
+> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
+> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Names follow the existing tenant and database surfaces; they are the
 > contract the implementation builds to. The tenant-move rows (`TenantMove`,
@@ -115,7 +115,7 @@ paginated, because a cluster has a handful of pools.
 | Tenant not entitled to the pool | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` | `PERMISSION_DENIED` |
 | Move or delete during a move *(Phase 2, D5)* | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `FAILED_PRECONDITION` |
 | Reservation conflict after bounded retries | 409 | `ABORTED` | `StatusAborted` | `ABORTED` |
-| Pool unavailable on the answering node (includes a `Lockable` volume that failed to unlock, decision D6) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `UNAVAILABLE` |
+| Pool unavailable on the answering node (includes a `Lockable` volume that failed to unlock, decision D6, or a pool this node skipped at boot under `--allow-degraded-volume-boot`, decision D10) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `UNAVAILABLE` |
 | A move step failed *(Phase 2, D5)* | 500 | `INTERNAL` | `StatusError` | `INTERNAL` |
 
 The typed errors behind each row are listed in

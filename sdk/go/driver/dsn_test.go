@@ -30,7 +30,6 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 		wantHost    string
 		wantDB      string
 		wantBackend string
-		wantEngine  string
 		wantDataDir string
 	}{
 		{
@@ -40,7 +39,6 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 			wantHost:    "memory",
 			wantDB:      "mydb",
 			wantBackend: "memory",
-			wantEngine:  "kv",
 			wantDataDir: "",
 		},
 		{
@@ -50,7 +48,6 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 			wantHost:    "",
 			wantDB:      "testdb",
 			wantBackend: "pebble",
-			wantEngine:  "kv",
 			wantDataDir: "/var/data/qrdb",
 		},
 		{
@@ -60,18 +57,7 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 			wantHost:    "",
 			wantDB:      "filedb",
 			wantBackend: "file",
-			wantEngine:  "kv",
 			wantDataDir: "/tmp/qrdb",
-		},
-		{
-			name:        "with explicit engine param",
-			dsn:         "embedded://memory?database=tsdb&engine=timeseries",
-			wantScheme:  "embedded",
-			wantHost:    "memory",
-			wantDB:      "tsdb",
-			wantBackend: "memory",
-			wantEngine:  "timeseries",
-			wantDataDir: "",
 		},
 		{
 			name:        "backend param overrides host",
@@ -80,7 +66,6 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 			wantHost:    "memory",
 			wantDB:      "mydb",
 			wantBackend: "pebble",
-			wantEngine:  "kv",
 		},
 		{
 			name:        "no host defaults to memory",
@@ -89,7 +74,6 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 			wantHost:    "",
 			wantDB:      "defdb",
 			wantBackend: "memory",
-			wantEngine:  "kv",
 		},
 	}
 
@@ -110,9 +94,6 @@ func TestParseDSN_EmbeddedValid(t *testing.T) {
 			}
 			if cfg.Backend != tt.wantBackend {
 				t.Errorf("Backend = %q, want %q", cfg.Backend, tt.wantBackend)
-			}
-			if cfg.Engine != tt.wantEngine {
-				t.Errorf("Engine = %q, want %q", cfg.Engine, tt.wantEngine)
 			}
 			if cfg.DataDir != tt.wantDataDir {
 				t.Errorf("DataDir = %q, want %q", cfg.DataDir, tt.wantDataDir)
@@ -265,7 +246,7 @@ func TestParseDSN_Invalid(t *testing.T) {
 	}
 }
 
-// TestParseDSN_Defaults verifies that backend and engine default correctly.
+// TestParseDSN_Defaults verifies that backend defaults correctly.
 func TestParseDSN_Defaults(t *testing.T) {
 	cfg, err := ParseDSN("embedded:///?database=defaults")
 	if err != nil {
@@ -273,9 +254,6 @@ func TestParseDSN_Defaults(t *testing.T) {
 	}
 	if cfg.Backend != "memory" {
 		t.Errorf("default Backend = %q, want %q", cfg.Backend, "memory")
-	}
-	if cfg.Engine != "kv" {
-		t.Errorf("default Engine = %q, want %q", cfg.Engine, "kv")
 	}
 }
 

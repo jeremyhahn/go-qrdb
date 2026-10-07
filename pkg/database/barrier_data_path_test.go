@@ -33,7 +33,6 @@ func TestManager_Create_BarrierOnRaftBackend_RefusedOffDataPath(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "raftvault",
-		Engine:  EngineKV,
 		Backend: BackendRaft,
 		Raft:    &DatabaseRaftConfig{ClusterMode: RaftLocal},
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModePassphrase},
@@ -60,7 +59,6 @@ func TestManager_Create_BarrierOnOwnStore_Accepted(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "ownstore",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 		DataDir: filepath.Join(root, "ownstore-data"),
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModePassphrase},
@@ -82,7 +80,6 @@ func TestManager_UpdateBarrier_RaftBackend_RefusedOffDataPath(t *testing.T) {
 
 	cfg := DatabaseConfig{
 		Name:    "raftupd",
-		Engine:  EngineKV,
 		Backend: BackendRaft,
 		Raft:    &DatabaseRaftConfig{ClusterMode: RaftLocal},
 	}
@@ -106,7 +103,6 @@ func TestManager_Open_LegacyRaftBarrier_OpensSealed(t *testing.T) {
 
 	meta := DatabaseMeta{
 		Name:    "legacyraft",
-		Engine:  EngineKV,
 		Backend: BackendRaft,
 		Raft:    &DatabaseRaftConfig{ClusterMode: RaftLocal},
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModePassphrase},

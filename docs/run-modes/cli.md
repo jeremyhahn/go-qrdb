@@ -1,6 +1,6 @@
 # Run Modes — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 The run mode is a **server** property, selected on `qrdbd`. The `qrdb` client
 has no verb that changes it — it only reports the result.

@@ -114,6 +114,15 @@ func TestSoftwareProvider_WrapProducesDistinctCiphertextEachCall(t *testing.T) {
 	if string(a) == string(b) {
 		t.Fatal("two Wrap calls over the same dek produced identical ciphertext -- nonce reuse")
 	}
+	for i, wrapped := range [][]byte{a, b} {
+		got, err := p.Unwrap(context.Background(), keyName, wrapped)
+		if err != nil {
+			t.Fatalf("Unwrap (%d): %v", i+1, err)
+		}
+		if string(got) != string(dek) {
+			t.Fatalf("Unwrap (%d) returned a different dek", i+1)
+		}
+	}
 }
 
 func TestSoftwareProvider_RefusesShortKeyFile(t *testing.T) {
@@ -250,28 +259,6 @@ func TestSoftwareProvider_RefusesDirectoryAsKeyRef(t *testing.T) {
 	var accessErr *KeyAccessError
 	if !errors.As(err, &accessErr) {
 		t.Fatalf("Wrap(subdir) err = %v, want *KeyAccessError", err)
-	}
-}
-
-// failingReader always fails Read -- used to force Wrap's nonce
-// generation branch, otherwise unreachable against the real entropy
-// source.
-type failingReader struct{}
-
-func (failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy source failed") }
-
-func TestSoftwareProvider_WrapNonceGenerationFailureIsWrapped(t *testing.T) {
-	p, dir := newTestProvider(t)
-	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x91)
-
-	prev := randReader
-	randReader = failingReader{}
-	t.Cleanup(func() { randReader = prev })
-
-	_, err := p.Wrap(context.Background(), keyName, make([]byte, 32))
-	var wrapErr *WrapFailedError
-	if !errors.As(err, &wrapErr) {
-		t.Fatalf("Wrap err = %v, want *WrapFailedError", err)
 	}
 }
 

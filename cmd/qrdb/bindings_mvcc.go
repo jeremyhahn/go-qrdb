@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // MVCCBinding exposes MVCC-aware key-value operations to the Wails frontend.
 type MVCCBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewMVCCBinding creates a new MVCCBinding backed by the given connection.
-func NewMVCCBinding(log *logger.Logger, conn *ConnectionBinding) *MVCCBinding {
+func NewMVCCBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *MVCCBinding {
 	return &MVCCBinding{logger: log, conn: conn}
 }
 

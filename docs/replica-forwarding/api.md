@@ -1,7 +1,7 @@
 # Replica Forwarding — API
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-05
+> Scope: go-qrdb · Last verified: 2026-10-06
 
 Replica forwarding adds **no new routes, RPCs or tools**, and one QUIC method,
 `forward.OnBehalf`, that only a cluster node may call. It changes what every
@@ -38,7 +38,8 @@ the payload. An assertion bound to one request verifies for no other.
 | Unary call on a `raft`-isolated database | yes |
 | Server-streaming or bidirectional call (gRPC and Unix `Watch`, REST `GET /watch`, QUIC `watch.Watch` and `watch.WatchPrefix`) | **no**: refused with `NotAReplicaError` and the replica set |
 | MCP `qrdb_watch` (a bounded request, not a stream) | yes |
-| Call on the shared system shard | no: unchanged (REST's existing write forwarding to the system leader still applies) |
+| Call on the shared system shard | no: unchanged (each transport's own existing write forwarding to the system leader still applies) |
+| Ceremony-initialize's admin-credential step on a follower (every transport: REST, gRPC, Unix, QUIC, MCP, embedded) | each transport's own existing system-leader forwarding, not this feature's per-database path: REST's `tryForwardWrite`, gRPC's `forwardAdminWrite`, QUIC's `ForwardToLeader`, MCP's `forwardToLeader` each recognize `*service.AdminCredentialNotLeaderError` in addition to `*service.NotLeaderError` (node parity, owner ruling 2026-10-06) |
 | Call that arrived forwarded (carries an assertion) | no: hop limit 1 |
 
 ## Status mapping

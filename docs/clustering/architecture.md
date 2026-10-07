@@ -220,11 +220,16 @@ from **any** admitted, unsealed member, not only the first node.
 5. The joiner now holds a Key-A-chained leaf and can present it for Raft
    peer TLS like any other member.
 
-**The leaf carries the bound identity only.** `IssueLeafForKey` builds the
-leaf from `clustertls.IdentityLeafTemplate`, a single URI SAN for the bound
-identity, not `clustertls.NodeLeafTemplate`'s `LocalSANs()` — the signing
-member's own DNS/IP SANs never leak onto a joiner's certificate. Peers
-verify a joined member by SPIFFE ID, not by hostname SAN.
+**The leaf carries the bound identity's own address, never the signer's.**
+`IssueLeafForKey` builds the leaf from `clustertls.IdentityLeafTemplate`, not
+`clustertls.NodeLeafTemplate`'s `LocalSANs()` — the signing member's own
+DNS/IP SANs never leak onto a joiner's certificate. The template does carry
+one address SAN: the bound identity's own address, recovered from the SPIFFE
+URI SAN itself and classified as an IP or DNS SAN, alongside that URI SAN.
+This is not redundant with SPIFFE-identity verification — go-quicraft's Raft
+QUIC transport dials a peer by this exact address and runs the ordinary x509
+SAN check against it, with no SPIFFE-aware substitute, so a leaf without a
+matching SAN could never be dialed as a raft peer at all.
 
 **Admission attempts are rate-limited and locked out per source address**,
 on both transports, through one package-level guard shared by Noise\_NK and
@@ -252,10 +257,17 @@ An admin mints a token through `POST /v1/cluster/join-tokens` (REST) or the
 (`service.ClusterJoinTokenMinter`), not a method on the broader
 `AdminServicer`, so every existing `AdminServicer` test double in this repo
 continues to compile unchanged; a caller type-asserts for the capability.
-Permission `cluster:join_token` is `ScopeCross` and deliberately absent from
-every built-in role's default grant (mirroring `clusterAdminPermissions`'
-own platform-only precedent): minting a token admits a node to the whole
-cluster, not to one tenant, so only `Owner` may mint by default. The verb is
+Permission `cluster:join_token` is `ScopeCross`: minting a token admits a
+node to the whole cluster, not to one tenant, so it is granted only to the
+cluster **Admin** built-in role (owner ruling, 2026-10-06 — mirroring
+`clusterAdminPermissions`'s own platform-only precedent) and, through
+`permission.All()` rather than a role grant, `Owner`. Only the Admin grant
+survives strict separation of duties, which is always on in a FIPS build and
+strips the `Owner` role id outright — without it, no identity could mint a
+join token under a FIPS build at all; see
+[../seal/fips140-mode.md](../seal/fips140-mode.md#strict-separation-of-duties-and-clusterjoin_token-under-fips).
+A tenant's own Admin still cannot exercise the permission: `ScopeCross`
+admits only a system-tenant caller. The verb is
 wired on all six transports — REST (`POST /v1/cluster/join-tokens`), gRPC
 (`MintJoinToken`, permission carried as a method option on the proto RPC and
 enforced the same way every other gRPC verb's permission is), QUIC
@@ -464,11 +476,57 @@ never purely a function of CA key custody: `StartAdvertiser` has only ever
 served the CA **certificate** (never the key, even before this change — see
 `docs/clusterenroll-noise-gap.md`), so every member already caches `ca.pem`
 locally today regardless of where Key A's private half lives. The role file
-additionally encodes `RoleSingleNode` (no Raft peers at all, unrelated to
-key location) and today's one-canonical-advertiser topology choice. Whether
-*every* admitted member should also run the trust-anchor advertiser (as
-opposed to only the first node) is a smaller, separate topology decision
-this change does not make.
+still encodes `RoleSingleNode` (no Raft peers at all, unrelated to key
+location) and still decides whether `clusterenroll.Resolve`/`ResolveCA`
+start the Noise listener **for the node that generated or cached the CA via
+those paths**. What it no longer decides is whether any OTHER member may
+serve: that was the "smaller, separate topology decision" this document
+used to leave open, and the next section makes it.
+
+## Every admitted, unsealed member serves the anchor
+
+**Owner ruling (2026-10-06).** Pinning the anchor-serving role to the one
+node that happened to generate the cluster CA was a single point of
+failure: `cmd/qrdbd` registered `/v1/ca/bootstrap` and ran the Noise
+anchor advertiser only where `clusterenroll.Resolve`'s first-node path (or
+its resume) returned a non-nil `Advertiser` — every joined node, and every
+node that merely loaded cached material on a later boot without being that
+one node, served neither. Once that node was gone for good, `FetchAnchor`
+and `Join` had nowhere left to reach, permanently, no matter how many other
+members were alive and unsealed.
+
+The fix adds no second copy of Key A and no new key transport: every member
+already caches the identical certificate (`ca.pem`, `bundle.CACertPEM`)
+regardless of whether it generated or joined — the paragraph above has
+always been true. `cmd/qrdbd`'s `servesAnchor` (`bootstrap.go`) now gates
+both surfaces on holding that certificate at all, not on which Resolve path
+produced it: an explicit BYO-TLS node (`TLSBundle.ExplicitTLS`) is still
+excluded, since its CA is the operator's own, never qrdb's, but a
+single-real-peer deployment is not — a self-issued-CA cluster can only ever
+FOUND with one real member in the first place (every founder's identity has
+to be known to every other founder before any of them starts, which is only
+possible for an identity a node derives from a keypair it has already
+generated; the generating node's own keypair exists before anyone has
+joined, and nobody else's does), so excluding a literal single-peer
+deployment would make a cluster meant to grow by member-side CSR join
+permanently unable to serve the first node a second member ever needs to
+reach. `startMemberAnchorAdvertiser` starts the identical
+`clusterenroll.StartAnchorAdvertiser` the first node's own
+`Resolve`/`ResumeAdvertiser` path already calls, from the same certificate,
+for any member that path did not already start one for — so a process
+never runs two anchor listeners, and the enforcement that no private key is
+ever served (`ValidateAnchorBundle`) is the same single check either path
+goes through.
+
+**No change to verification.** A joiner's `FetchAnchor`/`Join` still
+validate exactly what they always did (`ValidateAnchorBundle`, the pinned
+SPKI hash or Noise static key, the single-use join token); what changes is
+only which members a joiner may point `--bootstrap-addr` /
+`--bootstrap-join-url` / `--bootstrap-noise-addr` at. A deployment that
+loses the node that generated Key A now continues enrolling new members
+through any admitted, unsealed survivor — see
+[cli.md](cli.md#trust-anchor-fetch) and
+[user.md](user.md#adding-a-node-member-side-csr-join).
 
 ## Dynamic membership (opt-in)
 
@@ -730,6 +788,21 @@ cadence is `DefaultMembershipPollInterval`.
   `add-observer` there was no way to create the observer `member promote`
   promotes. Both are served on every transport — see
   [api.md](api.md#capability-matrix--node-administration).
+- **A leader-only write forwards; it does not refuse by node identity.**
+  `qrdb init`'s admin-credential step (ceremony-initialize,
+  `service.CeremonyServiceWithLeaderGate`) must commit to the system shard,
+  so it runs on the leader -- but a follower forwards the identical request
+  rather than answering with its own refusal, the same node-parity contract
+  `member add`/`member remove`/`rebalance execute` already honor (owner
+  ruling 2026-10-06: "all the nodes are equal..."). Every transport that
+  serves ceremony-initialize forwards it through that transport's own
+  leader-forwarding path ([../replica-forwarding/](../replica-forwarding/)):
+  REST's existing system-leader forwarding (`tryForwardWrite`/
+  `forwardToLeader`), and gRPC's, QUIC's and MCP's own `ForwardToLeader`
+  methods on the same `FrameForwarder`/`ReplicaForwarder` each already
+  carries for the per-database `NotAReplicaError` path. The Unix socket
+  forwards as gRPC does -- it serves the gRPC services -- and the embedded
+  transport forwards as its QUIC client transport does.
 - **`GET /health` is a public route** so a load balancer can probe an
   unauthenticated node; nothing else in this feature is.
 - **Rebalance `execute` physically moves shards** and is gated apart from the

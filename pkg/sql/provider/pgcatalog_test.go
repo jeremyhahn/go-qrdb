@@ -51,7 +51,7 @@ const gormColumnTypesQuery = `SELECT c.column_name, c.is_nullable = 'YES', c.udt
 // newPGProvider returns a Provider serving dbName over the PostgreSQL
 // protocol filter, wired to h's registry.
 func (h *ddlHarness) newPGProvider(dbName string) *Provider {
-	return NewProviderWithEngine(dbName, h.kvSvc, "",
+	return NewProvider(dbName, h.kvSvc,
 		WithRegistry(h.registry), WithProtocol(ProtocolPostgreSQL))
 }
 
@@ -102,7 +102,7 @@ func TestProviderServesPGCatalogOnlyToPostgreSQL(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			prov := NewProviderWithEngine("gorm", h.kvSvc, "",
+			prov := NewProvider("gorm", h.kvSvc,
 				WithRegistry(h.registry), WithProtocol(tc.protocol))
 
 			db, err := prov.Database(ctx, pgcatalog.SchemaName)

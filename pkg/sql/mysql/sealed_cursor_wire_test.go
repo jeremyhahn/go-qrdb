@@ -146,18 +146,19 @@ const cursorRows = 1000
 
 // cursorFixture starts a MySQL listener over a locking harness with a table of
 // cursorRows rows, gated on probe and subscribed to streams.
-func cursorFixture(t *testing.T, probe sealedWindowProbe, streams *clusterseal.Streams) (*cursorClient, bool) {
+func cursorFixture(t *testing.T, probe sealedWindowProbe, streams *clusterseal.Streams, extra ...ServerOption) (*cursorClient, bool) {
 	t.Helper()
 	h, closeFn, err := sqltest.NewLockingHarness()
 	require.NoError(t, err)
 	t.Cleanup(closeFn)
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+	opts := append([]ServerOption{
 		WithDatabaseName("qrdb"),
 		WithServiceRegistry(h.Registry),
 		WithSealedWindowProbe(probe),
 		WithSealStreams(streams),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-	)
+	}, extra...)
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", opts...)
 	require.NoError(t, srv.Start())
 	t.Cleanup(srv.Stop)
 

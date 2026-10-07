@@ -268,7 +268,6 @@ func TestManager_Open_DataDir_RevalidatesReservedPath(t *testing.T) {
 
 	meta := DatabaseMeta{
 		Name:    "tampered-datadir-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		DataDir: filepath.Join(dataDir, databasesDir), // the reserved catalog dir
 	}

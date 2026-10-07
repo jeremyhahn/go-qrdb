@@ -17,7 +17,7 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -25,13 +25,13 @@ import (
 // versioned-rotation management to the Wails frontend, mirroring the SDK
 // CredentialClient.
 type CredentialBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewCredentialBinding creates a new CredentialBinding backed by the given
 // connection.
-func NewCredentialBinding(log *logger.Logger, conn *ConnectionBinding) *CredentialBinding {
+func NewCredentialBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *CredentialBinding {
 	return &CredentialBinding{logger: log, conn: conn}
 }
 

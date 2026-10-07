@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -94,7 +95,7 @@ func assertAccountRefused(t *testing.T, tk transportKind, verb string, err error
 // before a holder ever asks for a certificate.
 func seedCertAccount(t *testing.T, n *node.Node, tenantID, username string) {
 	t.Helper()
-	if _, err := n.Services().User.CreateUser(boundedCtx(t), &user.CreateUserRequest{
+	if _, err := n.Services().User.CreateUser(tenant.WithTenantID(boundedCtx(t), tenantID), &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             username,
 		TenantID:             tenantID,

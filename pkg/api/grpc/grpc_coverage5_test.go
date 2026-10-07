@@ -362,7 +362,6 @@ func TestDocumentMarshalError(t *testing.T) {
 func TestProtoDatabaseCreateToConfig_WithProtocol(t *testing.T) {
 	req := &pb.DatabaseCreateRequest{
 		Name:    "testdb",
-		Engine:  "mvcc",
 		Backend: "pebble",
 		Protocol: &pb.DatabaseProtocolConfig{
 			Mysql: true,
@@ -937,6 +936,9 @@ func (m *errorTSSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, 
 }
 func (m *errorTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return m.setRetErr
+}
+func (m *errorTSSvc) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
 }
 func (m *errorTSSvc) ListMetrics(_ string, _ int) ([]string, error) {
 	return nil, m.listMetErr

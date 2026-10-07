@@ -73,7 +73,6 @@ func TestBarrierBackend_EncryptsAtRest_FileBackend(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := DatabaseConfig{
 		Name:    "atrest-file-db",
-		Engine:  EngineKV,
 		Backend: BackendFile,
 		DataDir: dataDir,
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},
@@ -156,7 +155,6 @@ func TestBarrierBackend_EncryptsAtRest_PebbleBackend(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := DatabaseConfig{
 		Name:    "atrest-pebble-db",
-		Engine:  EngineKV,
 		Backend: BackendPebble,
 		DataDir: dataDir,
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},

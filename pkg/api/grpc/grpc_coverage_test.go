@@ -208,10 +208,10 @@ type mockDatabaseService struct {
 
 func newMockDatabaseService() *mockDatabaseService {
 	return &mockDatabaseService{
-		createResult: &database.DatabaseInfo{Name: "testdb", Engine: "mvcc", Backend: "pebble"},
-		getResult:    &database.DatabaseInfo{Name: "testdb", Engine: "mvcc", Backend: "pebble"},
+		createResult: &database.DatabaseInfo{Name: "testdb", Backend: "pebble"},
+		getResult:    &database.DatabaseInfo{Name: "testdb", Backend: "pebble"},
 		listResult:   []database.DatabaseInfo{{Name: "testdb"}},
-		updateResult: &database.DatabaseInfo{Name: "testdb", Engine: "mvcc", Backend: "pebble"},
+		updateResult: &database.DatabaseInfo{Name: "testdb", Backend: "pebble"},
 	}
 }
 
@@ -1586,7 +1586,6 @@ func TestGRPC_DatabaseCreate_Success(t *testing.T) {
 
 	resp, err := client.DatabaseCreate(context.Background(), &pb.DatabaseCreateRequest{
 		Name:    "testdb",
-		Engine:  "mvcc",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -1847,7 +1846,6 @@ func TestGRPC_DatabaseUpdateConnection_NilService(t *testing.T) {
 func TestProtoDatabaseCreateToConfig_WithProtocol(t *testing.T) {
 	req := &pb.DatabaseCreateRequest{
 		Name:    "db",
-		Engine:  "mvcc",
 		Backend: "pebble",
 		Protocol: &pb.DatabaseProtocolConfig{
 			Mysql:      true,
@@ -2001,7 +1999,6 @@ func TestProtoConnectionConfigToDomain_WithValues(t *testing.T) {
 func TestDatabaseInfoToProto_WithRaftAndBarrierAndConnection(t *testing.T) {
 	info := &database.DatabaseInfo{
 		Name:    "db",
-		Engine:  "mvcc",
 		Backend: "pebble",
 		Raft: &database.DatabaseRaftConfig{
 			ShardID:   1,
@@ -2542,6 +2539,9 @@ func (e *errorTSService) ListMetrics(prefix string, limit int) ([]string, error)
 		return nil, e.listMetErr
 	}
 	return e.inner.ListMetrics(prefix, limit)
+}
+func (e *errorTSService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	return e.inner.ApplyRetention(ctx, metric, cutoff)
 }
 
 func (e *errorTSService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, _ consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {

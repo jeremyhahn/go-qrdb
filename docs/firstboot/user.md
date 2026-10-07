@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Getting a brand-new server from nothing to something you can log into.
 
@@ -145,11 +145,15 @@ warning and starts anyway, coming up in the same "awaiting admin credential"
 state described below, rather than shutting down and leaving the operator
 with no running node to retry against. The admin-credential step is
 retriable: re-run `qrdb init` with `--admin-csr`, `--admin-cert`, or
-`--admin-generate`, against the node that is current Raft leader (`qrdb
-status`). The retry both issues a fresh credential AND binds it to the admin
-account, in the same call — it never hands back a credential that looks
-successful but is not actually bound. Nothing about this is destructive — it
-does not touch the barrier, the CA, or the SO/User PINs.
+`--admin-generate`, against ANY node over REST — a follower forwards the
+retry to the current Raft leader in one hop
+(`service.CeremonyServiceWithLeaderGate`, the same `forwardToLeader` path
+every other system-shard write already uses) instead of refusing it, so
+there is no need to find the leader by hand with `qrdb status` first. The
+retry both issues a fresh credential AND binds it to the admin account, in
+the same call — it never hands back a credential that looks successful but
+is not actually bound. Nothing about this is destructive — it does not
+touch the barrier, the CA, or the SO/User PINs.
 
 If the retry cannot complete the bind it refuses rather than returning an
 unbound credential: "admin-credential reissue has no CertBinder wired" means
@@ -176,14 +180,17 @@ required to reach either:
   without a credential.
 - `qrdb init` / `POST /v1/ceremony/initialize` — the SAME admin-credential
   retry described above. Run it with `--admin-csr`, `--admin-cert`, or
-  `--admin-generate` against the current Raft leader; the SO/User PINs in
-  the request are the only credential this call needs.
+  `--admin-generate` against ANY node; a follower forwards it to the
+  current Raft leader rather than refusing it, so there is no need to
+  target the leader directly. The SO/User PINs in the request are the only
+  credential this call needs.
 
 Every other endpoint answers `503` /
 `{"code":"AWAITING_ADMIN_CREDENTIAL"}` until that retry binds a
 certificate. The transition back to normal serving is event-driven, not a
-poll: the node that actually performs the retry (ordinarily the current
-Raft leader, since the retry is leader-gated) is told directly the moment
+poll: the node that actually performs the retry (the current Raft leader,
+which every OTHER node's own call now reaches directly) is told directly
+the moment
 the bind commits, and every OTHER node in the cluster learns of it through
 a watch on the admin's replicated record and leaves "awaiting" the same
 way — there is no flag to flip and nothing to restart, on any node. If you would rather not wait for a production binding right now,

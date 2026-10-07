@@ -1,6 +1,6 @@
 # Rate Limiting — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -130,9 +130,13 @@ the `Registry`.
   permission. All three are construction-time bugs: an accidentally-invalid
   or accidentally-overwritten `Policy` must fail loudly at startup, not
   silently change behavior for every caller of that permission from then on.
-- **The bucket key is `tenantID + "\x00" + subject + "\x00" + permission`.**
+- **The bucket key is `tenantid.Normalize(tenantID) + "\x00" + subject + "\x00" + permission`.**
   The NUL separator cannot appear in any of the three components, so it
-  cannot be forged into colliding two distinct triples into one bucket.
+  cannot be forged into colliding two distinct triples into one bucket. The
+  tenant is normalized because an empty `TenantID` IS the system tenant
+  (`tenantid.IsSystem`): keying on the raw value would give one system-tenant
+  caller two buckets -- `""` and `tenantid.System` -- to alternate between and
+  double its effective budget.
 - **`TokenBucketLimiter.Allow` is lock-free**: it never blocks on a mutex,
   only retries its own compare-and-swap. A `Policy` with a non-positive
   `RatePerSecond` or `Burst` is always refused (`allowed == false`,
@@ -153,10 +157,12 @@ the `Registry`.
 |---|---|
 | REST | `mapHTTPAuthError` returns **429** for `*RateLimitedError`; `RESTMiddleware` sets the `Retry-After` header (RFC 9110 §10.2.3, delay-seconds, rounded up to at least 1) before writing the response |
 | gRPC / unix | `mapGRPCAuthError` returns `codes.ResourceExhausted`. The unix-socket listener registers the same `UnaryInterceptor`, so a caller over its unix-transport quota sees the identical code a TCP gRPC caller would. |
-| QUIC | The `AuthorizationError` wrapping carries `RateLimitedError.Error()` verbatim; QUIC has no separate status-code plane for authorization outcomes today. |
+| QUIC | `authmw.AuthFailureRateLimited` maps to `wire.StatusResourceExhausted` (`pkg/api/quic/auth.go`); the frame carries `RateLimitedError.Error()` verbatim. *(Corrected 2026-10-06: this said QUIC had no status-code plane for authorization outcomes.)* |
 | MCP | The tool-authorization middleware returns `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the same error text it always returned. The code comes from `authmw.GRPCError`, the classifier REST and gRPC answer from, so the auth-failure classes keep their own codes instead of collapsing into "retryable or not" -- rate-limited is never confused with, say, a credential problem. (Two of the classes, `AuthFailureUnavailable` and `AuthFailureAuditUnavailable`, deliberately share `Unavailable` regardless: that pair exists for control flow inside `pkg/auth/middleware`, not for the wire, so every transport answers both alike.) |
 
 ## Test strategy
+
+**Integration target:** `make integration-test-rate-limit` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test yet, so the target runs zero tests and says so; this is a recorded gap (the `rate-limit` row marks it), not a pass. Enforcement is proved by the unit tests below. Per-transport accounting is the `rate-limit` row of `test/integration/COVERAGE.md`.
 
 - **Unit, `pkg/ratelimit`**: burst admission and refusal, refill over a
   simulated clock, retry-after computation, independent keys, invalid-policy
@@ -172,7 +178,9 @@ the `Registry`.
   on every run; only the two unreachable type-assertion panics are uncovered.
 - **Unit, `pkg/auth/middleware`**: `checkRateLimit` no-op paths (unconfigured
   limiter, unconfigured registry, unregistered permission), denial and its
-  error fields, per-caller independence, `authorize` running the rate-limit
+  error fields, per-caller independence, an identity with an empty `TenantID`
+  sharing the system tenant's bucket rather than a second one obtained by
+  alternating `""` and `tenantid.System`, `authorize` running the rate-limit
   check ahead of the RBAC authorizer (asserted by counting the authorizer's
   own calls), the `IdentityGated`-with-nil-identity path not panicking, the
   REST 429 status and `Retry-After` header, and the gRPC

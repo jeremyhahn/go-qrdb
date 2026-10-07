@@ -31,6 +31,8 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -86,8 +88,13 @@ var _ audit.Verifier = (*mockVerifyingAuditLogger)(nil)
 
 func startAuditTestServer(t *testing.T, logger audit.AuditLogger) (*grpc.ClientConn, func()) {
 	t.Helper()
+	return startAuditTestServerFull(t, logger, nil)
+}
+
+func startAuditTestServerFull(t *testing.T, logger audit.AuditLogger, replicatedAudit *service.OptInAuditLogger) (*grpc.ClientConn, func()) {
+	t.Helper()
 	srv := grpc.NewServer()
-	RegisterAuditService(srv, logger)
+	RegisterAuditService(srv, logger, replicatedAudit)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -526,5 +533,110 @@ func TestRegisterAuditService_VerifyChain_RoundTrip_RecordsAboveInt32Max(t *test
 	if got := resp.GetRecords(); got != wantRecords {
 		t.Fatalf("Records = %d after the wire round trip, want %d (wrapped to int32 this would read %d)",
 			got, wantRecords, int32(wantRecords))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// auditServer.Query — replicated=true
+// ---------------------------------------------------------------------------
+
+// stubOptInEntitlement answers ReplicatedAuditEnabled from a fixed map.
+type stubOptInEntitlement struct{ enabled map[string]bool }
+
+func (s *stubOptInEntitlement) ReplicatedAuditEnabled(_ context.Context, tenantID string) (bool, error) {
+	return s.enabled[tenantID], nil
+}
+
+// mockReplicatedInner implements audit.AuditLogger and
+// service.TenantChainVerifier, standing in for a *service.ReplicatedLogger.
+type mockReplicatedInner struct {
+	mockAuditLogger
+	verifyReport *audit.ChainContinuityReport
+	verifyErr    error
+}
+
+func (m *mockReplicatedInner) VerifyTenantChain(context.Context, string) (*audit.ChainContinuityReport, error) {
+	return m.verifyReport, m.verifyErr
+}
+
+func TestAuditQuery_Replicated_NilNotConfigured(t *testing.T) {
+	srv := &auditServer{auditLogger: &mockAuditLogger{}}
+	_, err := srv.Query(context.Background(), &pb.AuditQueryRequest{Replicated: true})
+	if err == nil {
+		t.Fatal("expected error with no replicated audit configured")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestAuditQuery_Replicated_ReadsReplicatedLoggerNotNodeLocal(t *testing.T) {
+	nodeLocal := &mockAuditLogger{queryFn: func(context.Context, audit.Filter) (*audit.Page, error) {
+		t.Fatal("node-local logger must not be queried when replicated=true")
+		return nil, nil
+	}}
+	inner := &mockReplicatedInner{mockAuditLogger: mockAuditLogger{
+		queryFn: func(_ context.Context, f audit.Filter) (*audit.Page, error) {
+			return &audit.Page{Events: []audit.AuditEvent{{Actor: "op"}}, Total: -1}, nil
+		},
+	}}
+	replicated := service.NewOptInAuditLogger(inner, &stubOptInEntitlement{enabled: map[string]bool{"acme": true}}, false)
+	srv := &auditServer{auditLogger: nodeLocal, replicatedAudit: replicated}
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
+	resp, err := srv.Query(ctx, &pb.AuditQueryRequest{Replicated: true, TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Events) != 1 || resp.Events[0].Actor != "op" {
+		t.Fatalf("got %+v, want the replicated logger's event", resp.Events)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// auditServer.VerifyReplicatedChain
+// ---------------------------------------------------------------------------
+
+func TestAuditVerifyReplicatedChain_NilNotConfigured(t *testing.T) {
+	srv := &auditServer{}
+	_, err := srv.VerifyReplicatedChain(context.Background(), &pb.AuditVerifyReplicatedChainRequest{})
+	if err == nil {
+		t.Fatal("expected error with no replicated audit configured")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyReplicatedChain_Verified(t *testing.T) {
+	inner := &mockReplicatedInner{verifyReport: &audit.ChainContinuityReport{Verified: true, Records: 3, Head: 3, Low: 1, Genesis: true}}
+	replicated := service.NewOptInAuditLogger(inner, &stubOptInEntitlement{enabled: map[string]bool{"acme": true}}, false)
+	srv := &auditServer{replicatedAudit: replicated}
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
+	resp, err := srv.VerifyReplicatedChain(ctx, &pb.AuditVerifyReplicatedChainRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetVerified() || resp.GetRecords() != 3 || resp.GetHeadSeq() != 3 || resp.GetLowSeq() != 1 || !resp.GetGenesis() {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestAuditVerifyReplicatedChain_NotEntitled(t *testing.T) {
+	inner := &mockReplicatedInner{}
+	replicated := service.NewOptInAuditLogger(inner, &stubOptInEntitlement{enabled: map[string]bool{}}, false)
+	srv := &auditServer{replicatedAudit: replicated}
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
+	_, err := srv.VerifyReplicatedChain(ctx, &pb.AuditVerifyReplicatedChainRequest{TenantId: "acme"})
+	if err == nil {
+		t.Fatal("expected error for a tenant not entitled to the replicated chain")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %s", st.Code())
 	}
 }

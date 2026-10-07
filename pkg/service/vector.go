@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,7 +62,84 @@ type vectorService struct {
 	rebuildJobs    map[string]*RebuildJobState
 	compactionJobs map[string]*CompactionJobState
 	jobMu          sync.RWMutex
-	strictTenant   bool // reject create when no tenant in context
+
+	// policyReader resolves the cluster-wide isolation floor for
+	// validateTenantCreate (reject create when no tenant is in context).
+	// Held atomically so it can be wired after construction -- the tenant
+	// service this normally points at is not always built yet when the
+	// vector service is (see SetClusterIsolationPolicyReader) -- without
+	// racing a create in flight. Nil means no requirement, matching this
+	// service's behavior before the cluster isolation policy existed.
+	policyReader atomic.Pointer[clusterIsolationPolicyReaderBox]
+
+	// nsLocksMu guards nsLocks, the per-composite-namespace lock registry
+	// backing LockVectorNamespaceWrite/LockVectorNamespaceReclaim. Vector
+	// writes are not Raft proposals (see pkg/server/drop_fence.go), so
+	// nothing makes a drop's reclamation of a namespace atomic with a write
+	// already in flight against it except this lock: a write holds its
+	// namespace's lock, shared, across its drop-fence check and the storage
+	// call that follows, and reclamation holds the same lock, exclusive,
+	// across the delete -- so a write the check let through always finishes
+	// before reclamation can start, and a write arriving after reclamation
+	// has started waits for it and then sees the check refuse it.
+	nsLocksMu sync.Mutex
+	nsLocks   map[string]*sync.RWMutex
+}
+
+// clusterIsolationPolicyReaderBox boxes a tenant.ClusterIsolationPolicyReader
+// for atomic storage (an interface value is two words and is not itself safe
+// to store in an atomic.Pointer).
+type clusterIsolationPolicyReaderBox struct {
+	reader tenant.ClusterIsolationPolicyReader
+}
+
+// VectorNamespaceLocker serializes a vector namespace's writes against
+// reclamation of that namespace. pkg/server's namespaced vector view holds
+// the write lock across its drop-fence check and the write that follows;
+// KeyspaceReclaimService holds the reclaim lock, exclusive, across deleting
+// the namespace. See the nsLocks field comment on vectorService.
+type VectorNamespaceLocker interface {
+	// LockVectorNamespaceWrite acquires namespace's lock for a write and
+	// returns the function that releases it.
+	LockVectorNamespaceWrite(namespace string) (unlock func())
+
+	// LockVectorNamespaceReclaim acquires namespace's lock exclusively for
+	// reclamation and returns the function that releases it.
+	LockVectorNamespaceReclaim(namespace string) (unlock func())
+}
+
+// Compile-time interface check.
+var _ VectorNamespaceLocker = (*vectorService)(nil)
+
+// namespaceLock returns the lock registered for namespace, creating one if
+// none exists yet.
+func (v *vectorService) namespaceLock(namespace string) *sync.RWMutex {
+	v.nsLocksMu.Lock()
+	defer v.nsLocksMu.Unlock()
+	if v.nsLocks == nil {
+		v.nsLocks = make(map[string]*sync.RWMutex)
+	}
+	lock, ok := v.nsLocks[namespace]
+	if !ok {
+		lock = &sync.RWMutex{}
+		v.nsLocks[namespace] = lock
+	}
+	return lock
+}
+
+// LockVectorNamespaceWrite acquires namespace's lock for a write.
+func (v *vectorService) LockVectorNamespaceWrite(namespace string) (unlock func()) {
+	lock := v.namespaceLock(namespace)
+	lock.RLock()
+	return lock.RUnlock
+}
+
+// LockVectorNamespaceReclaim acquires namespace's lock exclusively for
+// reclamation.
+func (v *vectorService) LockVectorNamespaceReclaim(namespace string) (unlock func()) {
+	lock := v.namespaceLock(namespace)
+	lock.Lock()
+	return lock.Unlock
 }
 
 // namespaceSep is the single-byte separator used to join a tenant ID and a
@@ -140,16 +218,27 @@ func WithHNSWIndexFactory(factory interfaces.HNSWIndexFactory) VectorServiceOpti
 	}
 }
 
-// WithStrictTenantIsolation enables strict tenant isolation mode. When true,
-// CreateNamespace rejects requests that carry no tenant ID in the context
-// (i.e. the caller is operating as the system tenant). This mirrors the
-// RBAC WithStrictSeparation pattern and is automatically engaged when the
-// process runs under FIPS-140 or when the operator sets
-// config.Tenant.StrictIsolation.
-func WithStrictTenantIsolation(strict bool) VectorServiceOption {
+// WithClusterIsolationPolicyReader wires the reader validateTenantCreate
+// consults to decide whether CreateNamespace must refuse a request that
+// carries no tenant ID in the context (i.e. the caller is operating as the
+// system tenant): refused when the reader answers
+// tenant.ClusterIsolationPolicyStrict, allowed otherwise, including when r is
+// nil. See docs/multi-tenancy/architecture.md "The isolation policy".
+func WithClusterIsolationPolicyReader(r tenant.ClusterIsolationPolicyReader) VectorServiceOption {
 	return func(v *vectorService) {
-		v.strictTenant = strict
+		v.SetClusterIsolationPolicyReader(r)
 	}
+}
+
+// SetClusterIsolationPolicyReader wires (or re-wires) the reader
+// validateTenantCreate consults, safe to call while the service is serving
+// requests. A nil reader unwires it, restoring "no requirement".
+func (v *vectorService) SetClusterIsolationPolicyReader(r tenant.ClusterIsolationPolicyReader) {
+	if r == nil {
+		v.policyReader.Store(nil)
+		return
+	}
+	v.policyReader.Store(&clusterIsolationPolicyReaderBox{reader: r})
 }
 
 // =============================================================================
@@ -209,6 +298,24 @@ func namespaceMetricLabels(physical string) prometheus.Labels {
 	return prometheus.Labels{
 		"namespace": logical,
 		"tenant":    tenantID,
+	}
+}
+
+// distanceMetricFromString maps a namespace's stored or requested distance
+// metric string to the hnsw.DistanceMetric it selects. It is the single
+// place every HNSW index in this file -- created, reloaded at construction,
+// or lazily rebuilt -- derives its metric from, so a namespace's configured
+// metric cannot drift between those three paths. An unrecognized or empty
+// value defaults to L2, matching a namespace created before this field
+// existed.
+func distanceMetricFromString(metric string) hnsw.DistanceMetric {
+	switch metric {
+	case "COSINE", "cosine":
+		return hnsw.CosineDistance
+	case "DOT_PRODUCT", "dot_product":
+		return hnsw.DotProductDistance
+	default:
+		return hnsw.L2Distance
 	}
 }
 
@@ -339,28 +446,20 @@ func (v *vectorService) loadNamespaces() error {
 	v.logger.WithField("count", len(namespaces)).Debug("loading namespaces")
 
 	for _, ns := range namespaces {
-		// Initialize HNSW index for namespace. The map key is the physical
-		// (scoped) namespace name that the storage layer already holds.
-		config := &hnsw.Config{
-			M:              16,
-			MMax:           32,
-			EfConstruction: 200,
-			EfSearch:       50,
-			DistanceMetric: hnsw.L2Distance,
-		}
-
-		index, err := hnsw.NewHNSWIndex(config)
-		if err != nil {
+		// Build the real index for this namespace -- its configured distance
+		// metric and every vector already committed under it -- through the
+		// same path a lazy rebuild uses. Pre-registering a blank placeholder
+		// here would satisfy ensureHNSWIndex's "already exists" check
+		// forever, so a restart would come up with an empty index under the
+		// wrong metric and nothing would ever rebuild it (go-qrdb vector
+		// restart blocker).
+		if _, err := v.ensureHNSWIndex(ctx, ns.Name); err != nil {
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": ns.Name,
 				"error":     err,
-			}).Warn("failed to create HNSW index for namespace")
+			}).Warn("failed to build HNSW index for namespace")
 			continue
 		}
-
-		v.indexMu.Lock()
-		v.hnswIndexes[ns.Name] = hnsw.NewIndexAdapter(index)
-		v.indexMu.Unlock()
 
 		// Update metrics with logical namespace name and tenant label so
 		// that no scoped key (containing \x1f) appears in emitted label values.
@@ -389,16 +488,8 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 		return nil, err
 	}
 
-	// Parse distance metric from storage
-	var distanceMetric hnsw.DistanceMetric
-	switch info.DistanceMetric {
-	case "COSINE", "cosine":
-		distanceMetric = hnsw.CosineDistance
-	case "DOT_PRODUCT", "dot_product":
-		distanceMetric = hnsw.DotProductDistance
-	default:
-		distanceMetric = hnsw.L2Distance
-	}
+	// Parse distance metric from storage.
+	distanceMetric := distanceMetricFromString(info.DistanceMetric)
 
 	// Create HNSW index
 	config := &hnsw.Config{
@@ -458,10 +549,18 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 // When strictTenant is enabled and the context carries the system tenant
 // (meaning no explicit tenant was bound), the create is rejected.
 func (v *vectorService) validateTenantCreate(ctx context.Context) error {
-	if !v.strictTenant {
+	if !tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return nil
 	}
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+	box := v.policyReader.Load()
+	if box == nil {
+		return nil
+	}
+	policy, err := box.reader.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if policy == tenant.ClusterIsolationPolicyStrict {
 		return &TenantRequiredError{Op: "CreateNamespace"}
 	}
 	return nil
@@ -748,13 +847,16 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		return nil, vectorStorageError("create namespace", req.Namespace, 0, err)
 	}
 
-	// Initialize HNSW index for namespace keyed by the scoped name.
+	// Initialize HNSW index for namespace keyed by the scoped name, under
+	// the metric this namespace was actually created with -- not a
+	// hardcoded one, which would make every non-L2 namespace searchable
+	// only under the wrong metric from the moment it was created.
 	config := &hnsw.Config{
 		M:              16,
 		MMax:           32,
 		EfConstruction: 200,
 		EfSearch:       50,
-		DistanceMetric: hnsw.L2Distance,
+		DistanceMetric: distanceMetricFromString(distanceMetric),
 	}
 
 	if req.IndexConfig != nil {

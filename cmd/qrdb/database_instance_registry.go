@@ -23,9 +23,9 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	vectorstore "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // embeddedDatabaseInstance holds the resources for a single embedded database.
@@ -63,13 +63,13 @@ func (i *embeddedDatabaseInstance) Close() error {
 // DatabaseInstanceRegistry manages per-database embedded instances using
 // a lock-free sync.Map for concurrent access.
 type DatabaseInstanceRegistry struct {
-	logger    *logger.Logger
+	logger    *sdk.ConcreteLogger
 	instances sync.Map // name (string) -> *embeddedDatabaseInstance
 	count     atomic.Int64
 }
 
 // NewDatabaseInstanceRegistry creates a new empty registry.
-func NewDatabaseInstanceRegistry(log *logger.Logger) *DatabaseInstanceRegistry {
+func NewDatabaseInstanceRegistry(log *sdk.ConcreteLogger) *DatabaseInstanceRegistry {
 	return &DatabaseInstanceRegistry{logger: log}
 }
 

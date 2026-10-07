@@ -1,6 +1,6 @@
 # Embedding Service — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Turn text into vectors. The server does not run models — it proxies to an
 OpenAI-compatible endpoint you configure, caches the results, and applies the
@@ -118,3 +118,5 @@ locally — rather than a hosted API.
 
 **The `embedding` commands do not exist / return not-found.** No providers are
 configured on the daemon, so the service was never wired in.
+
+Test reference: `make integration-test-embeddings`; coverage row: `test/integration/COVERAGE.md` `[embeddings](../../docs/embeddings/)`.

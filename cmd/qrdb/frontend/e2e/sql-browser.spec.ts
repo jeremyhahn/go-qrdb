@@ -26,21 +26,7 @@ const LOAD_TIMEOUT = 10_000;
 const sqlKvState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "sql-kv", engine: "kv", backend: "pebble", status: "open", protocol: { mysql: true, postgresql: false } },
-  ],
-};
-
-const sqlTsState = {
-  ...secondLaunchEmbeddedState,
-  databases: [
-    { name: "sql-ts", engine: "timeseries", backend: "pebble", status: "open", protocol: { mysql: true, postgresql: false } },
-  ],
-};
-
-const sqlVecState = {
-  ...secondLaunchEmbeddedState,
-  databases: [
-    { name: "sql-vec", engine: "vector", backend: "pebble", status: "open", protocol: { mysql: true, postgresql: false } },
+    { name: "sql-kv", backend: "pebble", status: "open", protocol: { mysql: true, postgresql: false } },
   ],
 };
 
@@ -64,10 +50,10 @@ async function clickExecute(page: import("@playwright/test").Page): Promise<void
 }
 
 // ---------------------------------------------------------------------------
-// SQL Browser - KV engine
+// SQL Browser - default query
 // ---------------------------------------------------------------------------
 
-test.describe("SQL Browser - KV engine", () => {
+test.describe("SQL Browser - default query", () => {
   test.use({ mockState: sqlKvState });
 
   test("shows SQL Browser heading with database name badge", async ({ page }) => {
@@ -77,7 +63,7 @@ test.describe("SQL Browser - KV engine", () => {
     await expect(page.locator(".badge.font-mono", { hasText: "sql-kv" })).toBeVisible();
   });
 
-  test("shows default query text for kv engine", async ({ page }) => {
+  test("shows the default query text", async ({ page }) => {
     await navigateToSQL(page, "sql-kv");
 
     const textarea = page.locator("textarea[placeholder='Enter SQL query...']");
@@ -255,35 +241,5 @@ test.describe("SQL Browser - KV engine", () => {
     await page.locator(".collapse").getByText(/Query History \(1\)/).click({ force: true });
     const historyItems = page.getByRole("button", { name: "SELECT 1", exact: true });
     await expect(historyItems).toHaveCount(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SQL Browser - timeseries engine default query
-// ---------------------------------------------------------------------------
-
-test.describe("SQL Browser - timeseries engine", () => {
-  test.use({ mockState: sqlTsState });
-
-  test("shows default query for timeseries engine", async ({ page }) => {
-    await navigateToSQL(page, "sql-ts");
-
-    const textarea = page.locator("textarea[placeholder='Enter SQL query...']");
-    await expect(textarea).toHaveValue("SELECT * FROM datapoints");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SQL Browser - vector engine default query
-// ---------------------------------------------------------------------------
-
-test.describe("SQL Browser - vector engine", () => {
-  test.use({ mockState: sqlVecState });
-
-  test("shows default query for vector engine", async ({ page }) => {
-    await navigateToSQL(page, "sql-vec");
-
-    const textarea = page.locator("textarea[placeholder='Enter SQL query...']");
-    await expect(textarea).toHaveValue("SELECT * FROM namespaces");
   });
 });

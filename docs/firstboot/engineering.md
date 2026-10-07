@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -239,9 +239,13 @@ that probe instance; a later expiry of the binding never re-arms it.
 
 `service.CeremonyServiceWithAdminRebind`'s admin-credential retry calls
 `AdminBound()` directly, but only on the node that actually performed the
-reissue — ordinarily the Raft leader, since that retry is leader-gated.
-Every other node in the cluster learns the admin bound only once the write
-replicates. `firstboot.WatchForAdminBound(ctx, lookup, watcher, notifier)`
+reissue — the Raft leader, since that retry is leader-gated
+(`service.CeremonyServiceWithLeaderGate`). A retry issued against a
+follower over REST reaches the leader in one forwarded hop rather than
+being refused, but the reissue itself still runs, and `AdminBound()` still
+fires, on the leader alone. Every other node in the cluster — including
+the follower the retry was issued against — learns the admin bound only
+once the write replicates. `firstboot.WatchForAdminBound(ctx, lookup, watcher, notifier)`
 is how a follower learns that without re-reading the store on every
 request: it resolves the admin's user ID once, then opens an event-driven
 watch on `user.PrimaryRecordKey(id)` (`firstboot.AdminRecordWatcher`,
@@ -342,3 +346,7 @@ contract. Changing the derivation would orphan every existing role assignment.
 system has been initialized — that is the check a client makes before it has
 any credentials. Bootstrap operations are audited through
 [../audit/](../audit/).
+
+## Integration Target
+
+Run `make integration-test-firstboot` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `firstboot`.

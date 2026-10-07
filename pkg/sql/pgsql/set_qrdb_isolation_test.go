@@ -35,7 +35,7 @@ func TestPGWire_SetQrdbIsolation_TakesEffect(t *testing.T) {
 	hs, closeFn, err := sqltest.NewLockingHarness()
 	require.NoError(t, err)
 	t.Cleanup(closeFn)
-	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	prov := provider.NewProvider("qrdb", hs.KVSvc, provider.WithRegistry(hs.Registry))
 	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
 	t.Cleanup(func() { _ = eng.Close() })
 	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")

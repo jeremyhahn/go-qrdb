@@ -30,8 +30,8 @@ func TestDatabaseUnsealGate_VetoesASealedRecordOrAnUnknownDatabase(t *testing.T)
 	mgr := database.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, cfg := range []database.DatabaseConfig{
-		{TenantID: "acme", Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory},
-		{Name: "platform", Engine: database.EngineKV, Backend: database.BackendMemory},
+		{TenantID: "acme", Name: "orders", Backend: database.BackendMemory},
+		{Name: "platform", Backend: database.BackendMemory},
 	} {
 		if _, err := mgr.Create(cfg); err != nil {
 			t.Fatalf("create %s: %v", cfg.Name, err)

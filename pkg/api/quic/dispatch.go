@@ -486,8 +486,9 @@ func (s *Server) buildHandlers() {
 	s.handleIf(userFactorOn, "userauthfactor.Login", permission.UserAuthFactorsLogin, s.handleUserAuthFactorLogin)
 
 	// Audit
-	s.handleIf(s.auditLogger != nil, "audit.Query", permission.AuditQuery, s.handleAuditQuery)
+	s.handleIf(s.auditLogger != nil || s.replicatedAudit != nil, "audit.Query", permission.AuditQuery, s.handleAuditQuery)
 	s.handleIf(s.auditLogger != nil, "audit.VerifyChain", permission.AuditVerify, s.handleAuditVerifyChain)
+	s.handleIf(s.replicatedAudit != nil, "audit.VerifyReplicatedChain", permission.AuditVerifyReplicated, s.handleAuditVerifyReplicatedChain)
 
 	// Capability modules (pkg/apimodule.ServiceModule). Registered last so a
 	// module's full-gRPC-method frame key can never shadow a built-in's

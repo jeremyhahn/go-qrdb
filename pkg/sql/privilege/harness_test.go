@@ -32,7 +32,6 @@ import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
@@ -84,8 +83,8 @@ func newBenchHarness(t fatalf, identity *auth.Identity) *benchHarness {
 	t.Helper()
 
 	h := sqltest.NewHarness()
-	prov := provider.NewProviderWithEngine(
-		benchDatabase, h.KVSvc, database.EngineKV, provider.WithRegistry(h.Registry))
+	prov := provider.NewProvider(
+		benchDatabase, h.KVSvc, provider.WithRegistry(h.Registry))
 
 	base := sqle.NewBaseSessionWithClientServer("bench",
 		sqle.Client{User: identity.Subject, Address: "bench"}, benchConnID.Add(1))

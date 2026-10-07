@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/auditconv"
@@ -91,14 +92,24 @@ func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	if c.transport.auditLogger == nil {
+
+	var logger audit.AuditLogger
+	switch {
+	case f.Replicated && c.transport.replicatedAudit == nil:
 		return nil, &MissingAuditLoggerError{}
+	case f.Replicated:
+		logger = c.transport.replicatedAudit
+	case c.transport.auditLogger == nil:
+		return nil, &MissingAuditLoggerError{}
+	default:
+		logger = c.transport.auditLogger
 	}
+
 	confined, err := tenant.ConfineAuditFilter(ctx, auditconv.FilterToDomain(f))
 	if err != nil {
 		return nil, err
 	}
-	page, err := c.transport.auditLogger.Query(ctx, confined)
+	page, err := logger.Query(ctx, confined)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -144,6 +155,44 @@ func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyRe
 	return auditVerificationReportToTransport(report), nil
 }
 
+// VerifyReplicatedChain verifies the cluster-wide, per-tenant-opt-in
+// replicated audit chain's hash continuity for tenantID
+// (docs/audit/architecture.md#cluster-wide-replicated-trail), confined to
+// the caller's own tenant (tenant.Confine). A tenant whose replicated-audit
+// entitlement is off is refused rather than answering a trivially-true
+// report for a chain that was never written to.
+func (c *auditClient) VerifyReplicatedChain(ctx context.Context, tenantID string) (*transport.ChainContinuityResult, error) {
+	if err := c.transport.gate("AuditClient.VerifyReplicatedChain"); err != nil {
+		return nil, err
+	}
+	if err := c.transport.authorize(ctx, "AuditClient.VerifyReplicatedChain"); err != nil {
+		return nil, err
+	}
+	if c.transport.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if c.transport.replicatedAudit == nil {
+		return nil, &MissingAuditLoggerError{}
+	}
+
+	confined, err := tenant.Confine(ctx, tenantID, "verify replicated audit chain")
+	if err != nil {
+		return nil, err
+	}
+	report, err := c.transport.replicatedAudit.VerifyTenantChain(ctx, confined)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.ChainContinuityResult{
+		Verified: report.Verified,
+		Reason:   report.Reason,
+		Records:  report.Records,
+		Head:     report.Head,
+		Low:      report.Low,
+		Genesis:  report.Genesis,
+	}, nil
+}
+
 // AuditClient returns the embedded audit client projection. Implements
 // transport.AuditProvider. Returns nil when no AuditLogger has been injected
 // so the SDK accessor degrades to nil rather than surfacing a logger-less
@@ -160,5 +209,15 @@ func (t *Transport) AuditClient() transport.AuditClient {
 func WithAuditLogger(logger audit.AuditLogger) Option {
 	return func(t *Transport) {
 		t.auditLogger = logger
+	}
+}
+
+// WithReplicatedAuditLogger injects the cluster-wide, per-tenant-opt-in
+// replicated audit sink (docs/audit/architecture.md#cluster-wide-replicated-trail)
+// into the embedded transport. It backs AuditClient's replicated=true
+// QueryAudit branch and VerifyReplicatedChain.
+func WithReplicatedAuditLogger(l *service.OptInAuditLogger) Option {
+	return func(t *Transport) {
+		t.replicatedAudit = l
 	}
 }

@@ -112,7 +112,6 @@ func createDatabaseWithEtcd(t *testing.T, ca *testCA, adminPort int, dbName stri
 	// Step 1: Create the database.
 	createBody := map[string]interface{}{
 		"name":    dbName,
-		"engine":  "kv",
 		"backend": "pebble",
 	}
 	createJSON, err := json.Marshal(createBody)

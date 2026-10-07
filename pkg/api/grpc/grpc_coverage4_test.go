@@ -158,8 +158,8 @@ type databaseSvcMini struct {
 
 func newDatabaseSvcMini() *databaseSvcMini {
 	return &databaseSvcMini{
-		createResult: &database.DatabaseInfo{Name: "testdb", Engine: "mvcc", Backend: "pebble"},
-		getResult:    &database.DatabaseInfo{Name: "testdb", Engine: "mvcc", Backend: "pebble"},
+		createResult: &database.DatabaseInfo{Name: "testdb", Backend: "pebble"},
+		getResult:    &database.DatabaseInfo{Name: "testdb", Backend: "pebble"},
 		listResult:   []database.DatabaseInfo{{Name: "testdb"}},
 		updateResult: &database.DatabaseInfo{Name: "testdb"},
 	}
@@ -931,7 +931,7 @@ func TestDatabase_Create_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := client.DatabaseCreate(context.Background(), &pb.DatabaseCreateRequest{
-		Name: "testdb", Engine: "mvcc", Backend: "pebble",
+		Name: "testdb", Backend: "pebble",
 	})
 	if err != nil {
 		t.Fatalf("DatabaseCreate failed: %v", err)

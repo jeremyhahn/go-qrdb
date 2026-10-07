@@ -68,7 +68,7 @@ func TestDatabaseRoutes_SystemTenantGetsNotFoundForAnotherTenantsDatabase(t *tes
 					t.Errorf("%s %s = %d %s; want 404, as for a missing database", r.method, r.path, rec.Code, rec.Body.String())
 				}
 			}
-			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Backend: database.BackendMemory}); err != nil {
 				t.Fatalf("create the system tenant's own database: %v", err)
 			}
 			// The list names the caller's own databases and only those.
@@ -77,10 +77,12 @@ func TestDatabaseRoutes_SystemTenantGetsNotFoundForAnotherTenantsDatabase(t *tes
 			if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"vault"`) || !strings.Contains(rec.Body.String(), `"sysdb"`) {
 				t.Errorf("GET /v1/databases/list = %d %s; want the caller's sysdb and not acme's vault", rec.Code, rec.Body.String())
 			}
-			// A tenant named in a create body never makes the database acme's.
+			// A create carries no tenant field at all (the caller's tenant comes
+			// from the authenticated context, never the body), so naming one
+			// here never makes the database acme's.
 			rec = httptest.NewRecorder()
 			srv.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/databases",
-				strings.NewReader(`{"name":"smuggled","engine":"kv","backend":"memory","tenantId":"acme","tenant_id":"acme"}`)))
+				strings.NewReader(`{"name":"smuggled","backend":"memory"}`)))
 			if info, err := fx.Service.Get("smuggled"); err == nil && !database.OwnedBy(info.TenantID, tenantid.System) {
 				t.Errorf("create naming tenant acme made %+v, want a database the system tenant owns", info)
 			}

@@ -284,14 +284,8 @@
           </p>
           <div class="flex flex-wrap gap-2 pt-2">
             {#each accessibleDatabases as db (db.name)}
-              <span
-                class="badge badge-lg gap-1"
-                class:badge-primary={db.engine === "kv"}
-                class:badge-secondary={db.engine === "timeseries"}
-                class:badge-accent={db.engine === "vector"}
-              >
+              <span class="badge badge-lg badge-primary gap-1">
                 {db.name}
-                <span class="text-xs opacity-70">({db.engine})</span>
               </span>
             {/each}
             {#if accessibleDatabases.length === 0}

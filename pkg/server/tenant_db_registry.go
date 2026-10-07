@@ -154,6 +154,21 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 
 	tb, err := r.barrierReg.GetTenant(tenantID)
 	if err != nil {
+		// A tenant absent from the in-process registry is not necessarily a
+		// tenant that doesn't exist: under a degraded boot
+		// (--allow-degraded-volume-boot, decision D10) a tenant assigned to
+		// a pool this node could not open was never registered at all
+		// (reattachVolumeTenants/reattachRaftTenants skip it). Resolve
+		// through the volume allocator directly -- independent of whether
+		// the barrier was ever registered -- so a caller sees the real
+		// cause (*volume.PoolUnavailableError, classified Unavailable) in
+		// place of the uninformative "tenant not found" the in-memory
+		// lookup alone would give.
+		if errors.Is(err, seal.ErrTenantNotFound) {
+			if _, derr := r.tenants.dataRootOf(ctx, tenantID); derr != nil {
+				return nil, &TenantHostError{TenantID: tenantID, Op: "data-root", Err: derr}
+			}
+		}
 		return nil, &TenantHostError{TenantID: tenantID, Op: "barrier-lookup", Err: err}
 	}
 	if tb.IsSealed() {

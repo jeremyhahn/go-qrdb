@@ -52,7 +52,7 @@ const webState: WebMockState = {
     initialized_at: "2026-01-01T00:00:00Z",
   },
   databases: [
-    { name: "default", engine: "kv", backend: "pebble", status: "open" },
+    { name: "default", backend: "pebble", status: "open" },
   ],
 };
 

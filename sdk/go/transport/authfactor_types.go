@@ -160,8 +160,6 @@ type RevokeFactorRequest struct {
 // AuthFactorClient provides operations for custodian auth factor enrollment,
 // challenge issuance, verification, listing, and revocation across all QRDB
 // transports. It supports PKCS#11, PIV, and FIDO2 factor types.
-//
-// TODO: apply permission.AuthFactor* constants once Phase 2 ships.
 type AuthFactorClient interface {
 	// EnrollFactor enrolls a custodian in the given auth factor type.
 	// The factor_name must match one of the factors registered on the server

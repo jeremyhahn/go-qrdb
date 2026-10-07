@@ -1,6 +1,6 @@
-# Desktop GUI and TypeScript SDK — Architecture
+# Desktop GUI — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 > **Build-tag gated.** The GUI exists only in builds carrying `desktop`
 > (which requires CGO for native window integration). Without it,

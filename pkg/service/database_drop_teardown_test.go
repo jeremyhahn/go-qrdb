@@ -192,7 +192,7 @@ func (s *dropTeardownStack) coll(name string) *CollectionService {
 func (s *dropTeardownStack) populate(t *testing.T, ctx context.Context, name string) {
 	t.Helper()
 	_, err := s.db.Create(database.DatabaseConfig{
-		Name: name, Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: name, Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
 	require.NoError(t, s.kv(ctx, tenantid.System, name, "greeting", []byte("hello")))
@@ -227,7 +227,7 @@ func TestDatabaseService_Drop_RecreatedNameInheritsNothing(t *testing.T) {
 
 	// Recreate under the same name and ask it what it holds.
 	_, err := s.db.Create(database.DatabaseConfig{
-		Name: "mydb", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "mydb", Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
 

@@ -136,9 +136,6 @@ func TestMigrateIfNeeded_MigratePebble(t *testing.T) {
 	if meta.Name != "default" {
 		t.Errorf("meta.Name = %q, want %q", meta.Name, "default")
 	}
-	if meta.Engine != EngineKV {
-		t.Errorf("meta.Engine = %q, want %q", meta.Engine, EngineKV)
-	}
 	if meta.Backend != BackendPebble {
 		t.Errorf("meta.Backend = %q, want %q", meta.Backend, BackendPebble)
 	}
@@ -203,9 +200,6 @@ func TestMigrateIfNeeded_MigratePebbleAndVectors(t *testing.T) {
 	if defaultMeta.Name != "default" {
 		t.Errorf("default meta.Name = %q, want %q", defaultMeta.Name, "default")
 	}
-	if defaultMeta.Engine != EngineKV {
-		t.Errorf("default meta.Engine = %q, want %q", defaultMeta.Engine, EngineKV)
-	}
 	if defaultMeta.Backend != BackendPebble {
 		t.Errorf("default meta.Backend = %q, want %q", defaultMeta.Backend, BackendPebble)
 	}
@@ -237,9 +231,6 @@ func TestMigrateIfNeeded_MigratePebbleAndVectors(t *testing.T) {
 	}
 	if vectorsMeta.Name != "vectors" {
 		t.Errorf("vectors meta.Name = %q, want %q", vectorsMeta.Name, "vectors")
-	}
-	if vectorsMeta.Engine != EngineVector {
-		t.Errorf("vectors meta.Engine = %q, want %q", vectorsMeta.Engine, EngineVector)
 	}
 	if vectorsMeta.Backend != BackendPebble {
 		t.Errorf("vectors meta.Backend = %q, want %q", vectorsMeta.Backend, BackendPebble)
@@ -307,9 +298,6 @@ func TestMigrateIfNeeded_VectorsOnly(t *testing.T) {
 	}
 	if meta.Name != "vectors" {
 		t.Errorf("meta.Name = %q, want %q", meta.Name, "vectors")
-	}
-	if meta.Engine != EngineVector {
-		t.Errorf("meta.Engine = %q, want %q", meta.Engine, EngineVector)
 	}
 }
 
@@ -402,7 +390,6 @@ func TestWriteMetaFile(t *testing.T) {
 
 	meta := DatabaseMeta{
 		Name:    "testdb",
-		Engine:  EngineTimeSeries,
 		Backend: BackendPebble,
 	}
 
@@ -422,9 +409,6 @@ func TestWriteMetaFile(t *testing.T) {
 	if got.Name != "testdb" {
 		t.Errorf("Name = %q, want %q", got.Name, "testdb")
 	}
-	if got.Engine != EngineTimeSeries {
-		t.Errorf("Engine = %q, want %q", got.Engine, EngineTimeSeries)
-	}
 	if got.Backend != BackendPebble {
 		t.Errorf("Backend = %q, want %q", got.Backend, BackendPebble)
 	}
@@ -436,7 +420,6 @@ func TestWriteMetaFile_InvalidPath(t *testing.T) {
 
 	meta := DatabaseMeta{
 		Name:    "testdb",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 

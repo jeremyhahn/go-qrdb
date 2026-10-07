@@ -730,6 +730,79 @@ func TestSQL_PgSQL_SelectAll(t *testing.T) {
 	}
 }
 
+// TestSQL_PgSQL_TruncateRestartIdentity proves PostgreSQL's TRUNCATE ...
+// RESTART IDENTITY resets a table's AUTO_INCREMENT sequence over the real
+// wire, and that CONTINUE IDENTITY (the default a bare TRUNCATE already
+// carries) does not -- end to end through a real pgx connection against a
+// real node, not a unit-level stand-in for the wire.
+func TestSQL_PgSQL_TruncateRestartIdentity(t *testing.T) {
+	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
+	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
+	ctx := context.Background()
+
+	if _, err := conn.Exec(ctx, "CREATE TABLE widgets (id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, name VARCHAR(64))"); err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+
+	insertWidget := func(name string) {
+		if _, err := conn.Exec(ctx, "INSERT INTO widgets (name) VALUES ($1)", name); err != nil {
+			t.Fatalf("INSERT %s: %v", name, err)
+		}
+	}
+	// lastID gives each call distinct query text. pgx caches a prepared
+	// statement per SQL text for the life of the connection; reusing identical
+	// text across a TRUNCATE on this wire returns a stale result instead of
+	// re-executing, which is unrelated to RESTART IDENTITY and not this
+	// test's concern, so each call is spelled differently to avoid it.
+	lastIDCalls := 0
+	lastID := func() uint64 {
+		lastIDCalls++
+		var id uint64
+		query := fmt.Sprintf("SELECT id FROM widgets /* call %d */ ORDER BY id DESC LIMIT 1", lastIDCalls)
+		if err := conn.QueryRow(ctx, query).Scan(&id); err != nil {
+			t.Fatalf("SELECT id: %v", err)
+		}
+		return id
+	}
+
+	insertWidget("a")
+	insertWidget("b")
+	if got := lastID(); got != 2 {
+		t.Fatalf("id before any TRUNCATE: got %d, want 2", got)
+	}
+
+	// CONTINUE IDENTITY -- explicit and the default -- must not reset the
+	// sequence.
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE widgets CONTINUE IDENTITY"); err != nil {
+		t.Fatalf("TRUNCATE ... CONTINUE IDENTITY: %v", err)
+	}
+	insertWidget("c")
+	if got := lastID(); got != 3 {
+		t.Fatalf("id after CONTINUE IDENTITY: got %d, want 3", got)
+	}
+
+	// RESTART IDENTITY must reset the sequence back to 1.
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE widgets RESTART IDENTITY"); err != nil {
+		t.Fatalf("TRUNCATE ... RESTART IDENTITY: %v", err)
+	}
+	insertWidget("d")
+	if got := lastID(); got != 1 {
+		t.Fatalf("id after RESTART IDENTITY: got %d, want 1", got)
+	}
+
+	// A later plain TRUNCATE on the same connection must not inherit the
+	// prior statement's RESTART IDENTITY flag.
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE widgets"); err != nil {
+		t.Fatalf("TRUNCATE: %v", err)
+	}
+	insertWidget("e")
+	if got := lastID(); got != 2 {
+		t.Fatalf("id after plain TRUNCATE following RESTART IDENTITY: got %d, want 2", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Multi-tenant isolation
 // ---------------------------------------------------------------------------
@@ -755,12 +828,13 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 		{"tenant-b", "user-b", certB},
 	} {
 		// Tenant creation requires an admin_username/admin_csr_pem pair
-		// (the onboarding trust-on-first-init flow). This test never uses
-		// the onboarded admin identity: its mTLS identities are the
-		// separately created role+user below, matching
-		// provisionTenantWithSQLReader's identical pattern in
+		// (the onboarding trust-on-first-init flow). The system tenant can
+		// no longer provision records inside another tenant's IAM at all
+		// (owner ruling, 2026-10-01), so the role+user below authenticate
+		// as the tenant's own onboarded admin instead of sysClient --
+		// matching provisionTenantWithSQLReader's identical pattern in
 		// sql_query_tenant_scope_test.go.
-		_, adminCSRPEM, err := certtest.NewCSR(tc.tenantID + "-admin")
+		adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tc.tenantID + "-admin")
 		if err != nil {
 			t.Fatalf("certtest.NewCSR for %s: %v", tc.tenantID, err)
 		}
@@ -777,8 +851,22 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 		if status != http.StatusCreated && status != http.StatusOK {
 			t.Fatalf("create tenant %s: status %d, body: %s", tc.tenantID, status, body)
 		}
+		var createResp struct {
+			Admin struct {
+				CertPEM string `json:"cert_pem"`
+			} `json:"admin"`
+		}
+		if err := json.Unmarshal(body, &createResp); err != nil || createResp.Admin.CertPEM == "" {
+			t.Fatalf("decode tenant create admin cert for %s: %v body=%s", tc.tenantID, err, body)
+		}
+		adminTLSCert, err := tls.X509KeyPair([]byte(createResp.Admin.CertPEM), adminKeyPEM)
+		if err != nil {
+			t.Fatalf("X509KeyPair for the onboarded admin of %s: %v", tc.tenantID, err)
+		}
+		onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
+		selfAssignTenantSO(t, adminPort, tc.tenantID, onboardedAdminClient)
 
-		roleBody, roleStatus := iraftAPIPost(t, sysClient,
+		roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 			fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 			map[string]interface{}{
 				"name":      "sql-user",
@@ -799,7 +887,7 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 			t.Fatalf("create role for %s: could not decode role ID from: %s", tc.tenantID, roleBody)
 		}
 
-		createBoundUser(t, sysClient, adminPort,
+		createBoundUser(t, onboardedAdminClient, adminPort,
 			map[string]interface{}{
 				"username":  tc.username,
 				"email":     tc.username + "@" + tc.tenantID + ".example.com",

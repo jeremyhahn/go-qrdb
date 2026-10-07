@@ -188,7 +188,7 @@ func newEtcdScopeFixture(t *testing.T, withAuth bool, extra ...ServerOption) *et
 	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, owner := range []string{"acme"} {
-		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: "app", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: "app", Backend: database.BackendMemory}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 	}

@@ -293,7 +293,6 @@ const shamirDbState: MockState = {
   databases: [
     {
       name: "vault",
-      engine: "kv",
       backend: "file",
       status: "open",
       data_dir: "/var/lib/qrdb/vault",
@@ -352,7 +351,6 @@ const overLimitState: MockState = {
   databases: [
     {
       name: "vault-over",
-      engine: "kv",
       backend: "file",
       status: "sealed",
       data_dir: "/var/lib/qrdb/vault-over",
@@ -478,7 +476,7 @@ test.describe("Wails mock — a Shamir database, as the server answers", () => {
     await page.goto("/");
     await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
     const create = (barrier: Record<string, unknown>) =>
-      call(page, "DatabaseBinding", "Create", { name: "v", engine: "kv", backend: "file", barrier });
+      call(page, "DatabaseBinding", "Create", { name: "v", backend: "file", barrier });
     // The secret is refused first, even on a node with no custody.
     expect(await create({ enabled: true, mode: "shamir", secret: "s", sharesRequired: 2, sharesTotal: 2 })).toBe(
       'database: the shamir barrier of database "v" takes no secret: its key is split to its share holders',
@@ -501,7 +499,7 @@ test.describe("Wails mock — a Shamir database, as the server answers", () => {
       (window as unknown as { __QRDB_MOCK_STATE__: { databaseShamirCustody?: boolean } }).__QRDB_MOCK_STATE__.databaseShamirCustody = true;
     });
     expect(await call(page, "DatabaseBinding", "Create", {
-      name: "v", engine: "kv", backend: "file", barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
+      name: "v", backend: "file", barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
     })).toBe("ok");
     for (const username of ["alice", "bob"]) {
       expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username, csr_pem: "CSR" })).toBe("ok");

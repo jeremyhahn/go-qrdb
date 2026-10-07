@@ -59,7 +59,6 @@ func (m *mockDatabaseService) Create(cfg database.DatabaseConfig) (*database.Dat
 	}
 	return &database.DatabaseInfo{
 		Name:     cfg.Name,
-		Engine:   cfg.Engine,
 		Backend:  cfg.Backend,
 		Status:   database.StatusOpen,
 		Protocol: cfg.Protocol,
@@ -72,7 +71,6 @@ func (m *mockDatabaseService) Get(name string) (*database.DatabaseInfo, error) {
 	}
 	return &database.DatabaseInfo{
 		Name:    name,
-		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 		Status:  database.StatusOpen,
 	}, nil
@@ -85,7 +83,6 @@ func (m *mockDatabaseService) List() ([]database.DatabaseInfo, error) {
 	return []database.DatabaseInfo{
 		{
 			Name:    "testdb",
-			Engine:  database.EngineKV,
 			Backend: database.BackendPebble,
 			Status:  database.StatusOpen,
 		},
@@ -105,7 +102,6 @@ func (m *mockDatabaseService) UpdateProtocol(name string, proto database.Protoco
 	}
 	return &database.DatabaseInfo{
 		Name:     name,
-		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
 		Status:   database.StatusOpen,
 		Protocol: proto,
@@ -217,7 +213,7 @@ func TestHandleCreateDatabase_Success(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"mydb","engine":"kv","backend":"pebble"}`
+	body := `{"name":"mydb","backend":"pebble"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -230,15 +226,27 @@ func TestHandleCreateDatabase_Success(t *testing.T) {
 	if resp.Name != "mydb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "mydb")
 	}
-	if resp.Engine != "kv" {
-		t.Fatalf("engine = %q, want %q", resp.Engine, "kv")
-	}
 	if resp.Backend != "pebble" {
 		t.Fatalf("backend = %q, want %q", resp.Backend, "pebble")
 	}
-	if resp.Status != "open" {
-		t.Fatalf("status = %q, want %q", resp.Status, "open")
-	}
+}
+
+// TestHandleCreateDatabase_StaleEngineFieldRefused pins OD-13: a create
+// request carrying the removed "engine" field is refused as an unknown
+// field (400), not silently ignored -- the same generic strict-decoding rule
+// decodeGuardedRequest applies to every state-changing endpoint.
+func TestHandleCreateDatabase_StaleEngineFieldRefused(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"mydb","engine":"kv","backend":"pebble"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +277,7 @@ func (m *credentialedMockDatabaseService) CreateWithCredentials(_ context.Contex
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &database.DatabaseInfo{Name: cfg.Name, Engine: cfg.Engine, Backend: cfg.Backend, Status: database.StatusOpen, Barrier: cfg.Barrier}, nil
+	return &database.DatabaseInfo{Name: cfg.Name, Backend: cfg.Backend, Status: database.StatusOpen, Barrier: cfg.Barrier}, nil
 }
 
 func (m *credentialedMockDatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
@@ -287,7 +295,7 @@ func TestHandleCreateDatabase_BarrierSecretReachesCredentialedCreator(t *testing
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"secure-db","engine":"kv","backend":"pebble","dataDir":"/data/secure-db",` +
+	body := `{"name":"secure-db","backend":"pebble","dataDir":"/data/secure-db",` +
 		`"barrier":{"enabled":true,"mode":"passphrase","secret":"correct-horse-battery-staple"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -326,7 +334,7 @@ func TestHandleCreateDatabase_NoBarrier_EmptyCredentials(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"plain-db","engine":"kv","backend":"pebble"}`
+	body := `{"name":"plain-db","backend":"pebble"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -353,7 +361,7 @@ func TestHandleCreateDatabase_NoBarrier_PlainServiceFallback(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"legacy-mock-db","engine":"kv","backend":"pebble"}`
+	body := `{"name":"legacy-mock-db","backend":"pebble"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -371,7 +379,7 @@ func TestHandleCreateDatabase_BarrierEnabled_SharedStoreRejected(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"shared-db","engine":"kv","backend":"pebble","barrier":{"enabled":true,"secret":"whatever"}}`
+	body := `{"name":"shared-db","backend":"pebble","barrier":{"enabled":true,"secret":"whatever"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -387,7 +395,7 @@ func TestHandleCreateDatabase_WithSQL(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"sqldb","engine":"kv","backend":"pebble","protocol":{"mysql":true,"postgresql":false}}`
+	body := `{"name":"sqldb","backend":"pebble","protocol":{"mysql":true,"postgresql":false}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -419,7 +427,7 @@ func TestHandleCreateDatabase_WithEtcd(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"etcddb","engine":"kv","backend":"pebble","protocol":{"etcd":{"enabled":true,"listenAddr":"127.0.0.1:2379"}}}`
+	body := `{"name":"etcddb","backend":"pebble","protocol":{"etcd":{"enabled":true,"listenAddr":"127.0.0.1:2379"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -464,7 +472,7 @@ func TestHandleCreateDatabase_ServiceError(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithDatabaseService(dbSvc))
 
-	body := `{"name":"existing","engine":"kv","backend":"pebble"}`
+	body := `{"name":"existing","backend":"pebble"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -476,7 +484,7 @@ func TestHandleCreateDatabase_ServiceError(t *testing.T) {
 func TestHandleCreateDatabase_NilService(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
-	body := `{"name":"mydb","engine":"kv","backend":"pebble"}`
+	body := `{"name":"mydb","backend":"pebble"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -514,7 +522,6 @@ func TestHandleGetDatabase_IncludesSQL(t *testing.T) {
 	dbSvc.getFn = func(name string) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:    name,
-			Engine:  database.EngineKV,
 			Backend: database.BackendPebble,
 			Status:  database.StatusOpen,
 			Protocol: database.ProtocolConfig{
@@ -770,16 +777,13 @@ func TestHandleDatabaseByName_EmptyName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateDatabaseRequest_JSON(t *testing.T) {
-	input := `{"name":"testdb","engine":"kv","backend":"memory","protocol":{"mysql":true,"postgresql":false}}`
+	input := `{"name":"testdb","backend":"memory","protocol":{"mysql":true,"postgresql":false}}`
 	var req createDatabaseRequest
 	if err := json.Unmarshal([]byte(input), &req); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if req.Name != "testdb" {
 		t.Fatalf("name = %q, want %q", req.Name, "testdb")
-	}
-	if req.Engine != "kv" {
-		t.Fatalf("engine = %q, want %q", req.Engine, "kv")
 	}
 	if req.Backend != "memory" {
 		t.Fatalf("backend = %q, want %q", req.Backend, "memory")
@@ -815,7 +819,6 @@ func TestHandleCreateDatabase_WithRaftStatic(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:     cfg.Name,
-			Engine:   cfg.Engine,
 			Backend:  cfg.Backend,
 			Status:   database.StatusOpen,
 			Protocol: cfg.Protocol,
@@ -827,10 +830,10 @@ func TestHandleCreateDatabase_WithRaftStatic(t *testing.T) {
 		WithDatabaseService(dbSvc))
 
 	body := `{
-		"name":"staticdb","engine":"kv","backend":"raft",
+		"name":"staticdb","backend":"raft",
 		"raft":{
 			"clusterMode":"distributed",
-			"shardId":1,"replicaId":1,
+			"replicaId":1,
 			"raftAddress":"10.0.0.1:63001",
 			"discovery":"static",
 			"static":{"peers":["10.0.0.2:63001","10.0.0.3:63001"],"sharedSecret":"s3cret"}
@@ -877,7 +880,6 @@ func TestHandleCreateDatabase_WithRaftMulticast(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:     cfg.Name,
-			Engine:   cfg.Engine,
 			Backend:  cfg.Backend,
 			Status:   database.StatusOpen,
 			Protocol: cfg.Protocol,
@@ -889,7 +891,7 @@ func TestHandleCreateDatabase_WithRaftMulticast(t *testing.T) {
 		WithDatabaseService(dbSvc))
 
 	body := `{
-		"name":"mcastdb","engine":"kv","backend":"raft",
+		"name":"mcastdb","backend":"raft",
 		"raft":{
 			"clusterMode":"distributed",
 			"discovery":"multicast",
@@ -946,7 +948,6 @@ func TestHandleCreateDatabase_WithRaftDNS(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:     cfg.Name,
-			Engine:   cfg.Engine,
 			Backend:  cfg.Backend,
 			Status:   database.StatusOpen,
 			Protocol: cfg.Protocol,
@@ -958,7 +959,7 @@ func TestHandleCreateDatabase_WithRaftDNS(t *testing.T) {
 		WithDatabaseService(dbSvc))
 
 	body := `{
-		"name":"dnsdb","engine":"kv","backend":"raft",
+		"name":"dnsdb","backend":"raft",
 		"raft":{
 			"clusterMode":"distributed",
 			"discovery":"dns",
@@ -1005,7 +1006,6 @@ func TestHandleCreateDatabase_WithRaftToken(t *testing.T) {
 	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 		return &database.DatabaseInfo{
 			Name:     cfg.Name,
-			Engine:   cfg.Engine,
 			Backend:  cfg.Backend,
 			Status:   database.StatusOpen,
 			Protocol: cfg.Protocol,
@@ -1017,7 +1017,7 @@ func TestHandleCreateDatabase_WithRaftToken(t *testing.T) {
 		WithDatabaseService(dbSvc))
 
 	body := `{
-		"name":"tokendb","engine":"kv","backend":"raft",
+		"name":"tokendb","backend":"raft",
 		"raft":{
 			"clusterMode":"distributed",
 			"discovery":"token",
@@ -1225,7 +1225,7 @@ func TestRaftConfigFromRequest_NilSubConfigs(t *testing.T) {
 func TestRaftConfigRequest_JSON(t *testing.T) {
 	input := `{
 		"clusterMode":"distributed",
-		"shardId":1,"replicaId":2,
+		"replicaId":2,
 		"raftAddress":"10.0.0.1:63001",
 		"peers":["10.0.0.2:63001"],
 		"localNodeCount":3,

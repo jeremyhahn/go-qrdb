@@ -18,19 +18,18 @@ import (
 	"context"
 	"encoding/base64"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // CertBinding exposes certificate management operations to the Wails frontend.
 type CertBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewCertBinding creates a new CertBinding backed by the given connection.
-func NewCertBinding(log *logger.Logger, conn *ConnectionBinding) *CertBinding {
+func NewCertBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *CertBinding {
 	return &CertBinding{logger: log, conn: conn}
 }
 
@@ -128,7 +127,7 @@ func (b *CertBinding) Export(req *ExportCertInput) (*ExportCertOutput, error) {
 		b.logger.Error("Export failed", "error", err)
 		return nil, err
 	}
-	p12, err := cert.EncodePKCS12([]byte(req.CertPEM), []byte(req.KeyPEM), []byte(req.CAPEM), req.Passphrase)
+	p12, err := sdk.EncodePKCS12([]byte(req.CertPEM), []byte(req.KeyPEM), []byte(req.CAPEM), req.Passphrase)
 	if err != nil {
 		b.logger.Error("Export failed", "error", err)
 		return nil, err

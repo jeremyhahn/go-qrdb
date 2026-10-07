@@ -54,7 +54,7 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 
 	for _, name := range []string{"reports", "ledger"} {
 		if _, err := mgr.Create(database.DatabaseConfig{
-			Name: name, Engine: database.EngineKV, Backend: database.BackendMemory,
+			Name: name, Backend: database.BackendMemory,
 		}); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
@@ -114,7 +114,7 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 
 	// And the recreated name inherits nothing.
 	if _, err := mgr.Create(database.DatabaseConfig{
-		Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "reports", Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatalf("recreate: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 		WithDatabaseCatalog(newManagerCatalog(mgr)))
 
 	if _, err := mgr.Create(database.DatabaseConfig{
-		Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory,
+		Name: "reports", Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -1668,6 +1668,102 @@ func TestRewriteEndAsCommit(t *testing.T) {
 	}
 }
 
+// TestStripTruncateIdentityClause pins the parsing of PostgreSQL's TRUNCATE
+// ... RESTART IDENTITY / CONTINUE IDENTITY clause, which the embedded
+// MySQL-dialect grammar cannot parse and which must be stripped before the
+// statement reaches it.
+func TestStripTruncateIdentityClause(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		wantQuery   string
+		wantRestart bool
+		wantMatched bool
+	}{
+		{
+			name:        "RESTART IDENTITY",
+			query:       "TRUNCATE widgets RESTART IDENTITY",
+			wantQuery:   "TRUNCATE widgets",
+			wantRestart: true,
+			wantMatched: true,
+		},
+		{
+			name:        "CONTINUE IDENTITY",
+			query:       "TRUNCATE widgets CONTINUE IDENTITY",
+			wantQuery:   "TRUNCATE widgets",
+			wantRestart: false,
+			wantMatched: true,
+		},
+		{
+			name:        "TABLE keyword and trailing semicolon",
+			query:       "TRUNCATE TABLE widgets RESTART IDENTITY;",
+			wantQuery:   "TRUNCATE TABLE widgets;",
+			wantRestart: true,
+			wantMatched: true,
+		},
+		{
+			name:        "case insensitive",
+			query:       "truncate widgets restart identity",
+			wantQuery:   "truncate widgets",
+			wantRestart: true,
+			wantMatched: true,
+		},
+		{
+			name:        "plain TRUNCATE has no clause to strip",
+			query:       "TRUNCATE widgets",
+			wantQuery:   "TRUNCATE widgets",
+			wantRestart: false,
+			wantMatched: false,
+		},
+		{
+			name:        "non-TRUNCATE statement is left alone",
+			query:       "SELECT 1",
+			wantQuery:   "SELECT 1",
+			wantRestart: false,
+			wantMatched: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stripped, restart, matched := stripTruncateIdentityClause(tt.query)
+			assert.Equal(t, tt.wantQuery, stripped)
+			assert.Equal(t, tt.wantRestart, restart)
+			assert.Equal(t, tt.wantMatched, matched)
+		})
+	}
+}
+
+// TestHandleParse_TruncateRestartIdentity_SetsSessionFlag proves HandleParse
+// records RESTART IDENTITY on the connection session so the provider can act
+// on it, and clears the flag again once the statement finishes.
+func TestHandleParse_TruncateRestartIdentity_ClausedStrippedBeforeTranslation(t *testing.T) {
+	h := newTestParseHandler(t)
+
+	connCtx := context.WithValue(context.Background(), identityContextKey{},
+		&auth.Identity{Subject: "test", TenantID: "acme"})
+	connCtx, err := newConnectionSessionHandler()(connCtx)
+	require.NoError(t, err)
+
+	sess := connectionSessionFromContext(connCtx)
+	require.NotNil(t, sess)
+	require.False(t, sess.StatementRestartIdentity())
+
+	// RESTART IDENTITY is not grammar the embedded MySQL-dialect parser
+	// accepts, so if HandleParse failed to strip it, this statement would
+	// fail with a *TranslationError before ever reaching the engine. It
+	// must instead fail with a *QueryError from the engine rejecting the
+	// (real) missing table, proving the clause was stripped first.
+	_, err = h.HandleParse(connCtx, "TRUNCATE missing_table RESTART IDENTITY")
+	require.Error(t, err)
+	var queryErr *QueryError
+	assert.ErrorAs(t, err, &queryErr)
+	var translationErr *TranslationError
+	assert.False(t, errors.As(err, &translationErr))
+
+	assert.False(t, sess.StatementRestartIdentity(),
+		"the flag must be cleared again once the statement finishes")
+}
+
 // TestHandleParse_EndCommitsRealTransaction verifies PostgreSQL's END alias
 // reaches go-mysql-server as a real COMMIT rather than being swallowed as a
 // no-op (the pre-Phase-8 behavior) or rejected as invalid MySQL syntax.

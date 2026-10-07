@@ -17,19 +17,19 @@
 package main
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // VectorBinding is a stub that returns FeatureDisabledError for all
 // methods when the vector feature is not compiled in.
 type VectorBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewVectorBinding creates a new VectorBinding backed by the given connection.
-func NewVectorBinding(log *logger.Logger, conn *ConnectionBinding) *VectorBinding {
+func NewVectorBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *VectorBinding {
 	return &VectorBinding{logger: log, conn: conn}
 }
 

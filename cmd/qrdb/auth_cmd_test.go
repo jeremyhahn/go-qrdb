@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/fips140"
 	"errors"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -1420,6 +1422,19 @@ func TestCertsExportCmd_Success(t *testing.T) {
 		"--passphrase", "test-pass",
 		"--out", outFile,
 	)
+	if fips140.Enforced() {
+		// PKCS#12 export is refused outright under strict FIPS
+		// enforcement; see the exemption register in
+		// docs/seal/fips140-mode.md.
+		var unavailable *cert.PKCS12FIPSUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("expected *cert.PKCS12FIPSUnavailableError, got %T: %v (out=%q)", err, err, out)
+		}
+		if _, statErr := os.Stat(outFile); !os.IsNotExist(statErr) {
+			t.Fatalf("no PKCS#12 file should be written when the export is refused (stat err = %v)", statErr)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}

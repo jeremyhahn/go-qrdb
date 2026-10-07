@@ -837,6 +837,25 @@ func httpMembershipAdd(t *testing.T, ca *testCA, port int, shardID, replicaID ui
 	return resp.StatusCode, string(respBody)
 }
 
+// httpCeremonyInitialize POSTs body to POST /v1/ceremony/initialize on port
+// and returns the response status and body, exactly as httpMembershipAdd
+// does for /membership/add.
+func httpCeremonyInitialize(t *testing.T, ca *testCA, port int, body string) (int, string) {
+	t.Helper()
+	url := fmt.Sprintf("https://127.0.0.1:%d/v1/ceremony/initialize", port)
+	client := mtlsHTTPClient(t, ca, 15*time.Second)
+	resp, err := client.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("httpCeremonyInitialize: %v", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("httpCeremonyInitialize: read body: %v", err)
+	}
+	return resp.StatusCode, string(respBody)
+}
+
 // httpMembershipRemove issues a POST /membership/remove request to the given
 // admin port and returns the HTTP status code and raw response body. Like
 // httpMembershipAdd, it does not assert on the outcome -- callers exercising
@@ -2498,14 +2517,23 @@ func iraftAPIPost(t *testing.T, client *http.Client, rawURL string, body interfa
 // provision their own "db-admin" role and bound user for the mTLS identity
 // they actually authenticate with, exactly as provisionTenantWithSQLReader
 // does for the same requirement in sql_query_tenant_scope_test.go.
-func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantID, name string) ([]byte, int) {
+// createRaftTenant creates an IsolationRaft tenant with barrier_auto_unseal
+// through the real tenant-onboarding API (POST /v1/tenants), which now
+// requires every tenant's first admin -- admin_username plus admin_csr_pem
+// or admin_cert_pem -- at creation time, not as a follow-up call. It returns
+// the onboarded admin's private key alongside the response body: the system
+// tenant can no longer provision records inside another tenant's IAM at all
+// (owner ruling, 2026-10-01), so a caller that needs a "db-admin" role and
+// bound user in the new tenant must authenticate AS this admin (see
+// raftTenantAdminClient) to create them, not as the system admin.
+func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantID, name string) (adminKeyPEM, body []byte, status int) {
 	t.Helper()
 
-	_, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
 	if err != nil {
 		t.Fatalf("createRaftTenant: certtest.NewCSR: %v", err)
 	}
-	return iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+	body, status = iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
 		map[string]interface{}{
 			"id":                  tenantID,
 			"name":                name,
@@ -2514,6 +2542,29 @@ func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantI
 			"admin_username":      tenantID + "-admin",
 			"admin_csr_pem":       string(adminCSRPEM),
 		})
+	return adminKeyPEM, body, status
+}
+
+// raftTenantAdminClient builds an mTLS client for the admin createRaftTenant
+// onboarded, by pairing the private key it returned with the signed
+// certificate the tenant-create response carries in its "admin.cert_pem"
+// field (populated once BUG 3's immediate pending-admin completion runs for
+// an auto-unseal tenant -- createRaftTenant always requests one).
+func raftTenantAdminClient(t *testing.T, ca *testCA, adminKeyPEM, tenantCreateBody []byte) *http.Client {
+	t.Helper()
+	var resp struct {
+		Admin struct {
+			CertPEM string `json:"cert_pem"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(tenantCreateBody, &resp); err != nil || resp.Admin.CertPEM == "" {
+		t.Fatalf("raftTenantAdminClient: decode tenant create admin cert: %v body=%s", err, tenantCreateBody)
+	}
+	cert, err := tls.X509KeyPair([]byte(resp.Admin.CertPEM), adminKeyPEM)
+	if err != nil {
+		t.Fatalf("raftTenantAdminClient: X509KeyPair: %v", err)
+	}
+	return qrdbdharness.HTTPSClient(ca.Pool, &cert, 15*time.Second)
 }
 
 // iraftAPIGet performs a GET request using the provided client and returns the

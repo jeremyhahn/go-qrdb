@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,29 @@ func TestCheckRateLimit_CallersAreIndependent(t *testing.T) {
 	aliceOtherTenant := &auth.Identity{Subject: "alice", TenantID: "t2"}
 	if err := m.checkRateLimit(aliceOtherTenant, permission.KVPut); err != nil {
 		t.Fatalf("want alice-in-t2's first request allowed despite alice-in-t1 being exhausted, got %v", err)
+	}
+}
+
+// TestCheckRateLimit_EmptyTenantIsTheSystemTenantsBucket: an identity with an
+// empty TenantID IS a system-tenant identity (tenantid.Normalize), so it
+// spends the system tenant's bucket rather than a second, fresh one. Keyed
+// on the raw TenantID, one subject could double its budget by alternating
+// "" and tenantid.System.
+func TestCheckRateLimit_EmptyTenantIsTheSystemTenantsBucket(t *testing.T) {
+	limiter := ratelimit.NewTokenBucketLimiter()
+	t.Cleanup(func() { _ = limiter.Close() })
+	policies := ratelimit.NewRegistry()
+	policies.Register(permission.KVPut, ratelimit.Policy{RatePerSecond: 1, Burst: 1})
+
+	m := New(&mockAuthorizer{}, WithRateLimiter(limiter), WithRateLimitPolicies(policies))
+
+	if err := m.checkRateLimit(&auth.Identity{Subject: "op", TenantID: ""}, permission.KVPut); err != nil {
+		t.Fatalf("want the first request within burst allowed, got %v", err)
+	}
+	err := m.checkRateLimit(&auth.Identity{Subject: "op", TenantID: tenantid.System}, permission.KVPut)
+	var rl *RateLimitedError
+	if !asRateLimited(err, &rl) {
+		t.Fatalf("second call as the same system subject = %v (%T), want *RateLimitedError (one shared bucket)", err, err)
 	}
 }
 

@@ -1,7 +1,7 @@
 # Time Series — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
@@ -152,11 +152,18 @@ number and the numbering is part of the contract:
 - **`TSWrite` and `TSWritePoint` are both single-point writes** with distinct
   permissions (`timeseries:write`, `timeseries:write_point`). They are separate
   RPCs on every transport; treat `TSWritePoint` as the narrower grant.
-- **Retention is per metric and is a downsampling policy**, not just a delete
-  horizon: `duration_ns` bounds age, `resolution_ns` sets downsampled
-  resolution, and `aggregation` chooses the function that produces the
-  downsampled value. **Measured: the policy is stored and returned and nothing
-  applies it** — no point is ever expired or downsampled (OD-16).
+- **Retention is per metric and is intended as a downsampling policy**, not
+  just a delete horizon: `duration_ns` bounds age, `resolution_ns` sets
+  downsampled resolution, and `aggregation` chooses the function that would
+  produce the downsampled value. **Measured: `duration_ns` is enforced,
+  `resolution_ns`/`aggregation` are not.** A leader-driven scheduler
+  (`pkg/server`'s `retentionScheduler`) proposes a Raft command
+  (`protocol.OpTSApplyRetention`, gated behind
+  `featuregate.TimeSeriesRetention`) once a minute per metric with a policy,
+  deleting points older than `duration_ns` deterministically on every
+  replica, bounded to `timeseries.MaxRetentionDeletesPerApply` points per
+  command. No point is ever downsampled (OD-16's downsampling half remains
+  target work; see docs/time-series/architecture.md#retention-enforcement-od-16-a).
 - **`TSDeleteSeries` is bounded by its request**: metric, optionally tags,
   optionally a time range. With no range it deletes the whole series.
 - **Time-series keys live under reserved prefixes** (`ts:`, `idx:metric:`,
@@ -194,51 +201,84 @@ Build flag: `WITH_QRDB_TS=1`.
 - **Compatibility**: the composite key encoding and the `AggFunc` numbering are
   both on-disk/on-wire format. Changing either is a breaking change.
 
-## Target: the time-series engine over the storage interface
+## The time-series engine over the storage interface (shipped: Lane 1A, 2026-10-06)
 
 ### Contract
 
 ```go
-// Storage is the time-series engine over one database's store. It holds no
-// handle to a storage engine.
-type Storage struct{ /* codec, clock seam for tests only */ }
+// Storage is the time-series engine over a storage.Storage. It holds the
+// storage.Storage itself (not a *pebble.DB), and does not own it: the
+// caller opens and closes it, exactly as the caller owns the storage.Batch
+// passed to every write method.
+type Storage struct{ /* stg storage.Storage; codec, clock seam for tests only */ }
 
-func (s *Storage) Write(b storage.Batch, r storage.Reader, p DataPoint) error
-func (s *Storage) WriteBatch(b storage.Batch, r storage.Reader, ps []DataPoint) error
-func (s *Storage) DeleteSeries(b storage.Batch, r storage.Reader, req DeleteRequest) error
-func (s *Storage) SetRetentionPolicy(b storage.Batch, metric string, p RetentionPolicy) error
-func (s *Storage) ApplyRetention(b storage.Batch, r storage.Reader, metric string, cutoff time.Time) error
+func New(stg storage.Storage) (*Storage, error)
 
-func (s *Storage) Query(r storage.Reader, metric string, start, end time.Time, opts ...TSQueryOption) ([]DataPoint, error)
-func (s *Storage) QueryRich(r storage.Reader, req *QueryRequest) (*QueryResult, error)
-func (s *Storage) Aggregate(r storage.Reader, metric string, start, end time.Time, fn AggFunc, interval time.Duration) ([]AggResult, error)
-func (s *Storage) GetRetentionPolicy(r storage.Reader, metric string) (*RetentionPolicy, error)
-func (s *Storage) ListMetrics(r storage.Reader, prefix string, limit int) ([]string, error)
+func (s *Storage) Write(batch storage.Batch, metric string, value float64, timestamp time.Time, tags map[string]string) error
+func (s *Storage) WritePoint(batch storage.Batch, point *DataPoint) error
+func (s *Storage) WriteBatch(batch storage.Batch, points []DataPoint) error
+func (s *Storage) DeleteSeries(batch storage.Batch, req *DeleteRequest) error
+func (s *Storage) SetRetentionPolicy(batch storage.Batch, metric string, policy *RetentionPolicy) error
+func (s *Storage) ApplyRetention(batch storage.Batch, metric string, cutoff time.Time) error
+
+func (s *Storage) Query(metric string, start, end time.Time, opts ...TSQueryOption) ([]DataPoint, error)
+func (s *Storage) QueryRich(req *QueryRequest) (*QueryResult, error)
+func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, interval time.Duration) ([]AggResult, error)
+func (s *Storage) GetRetentionPolicy(metric string) (*RetentionPolicy, error)
+func (s *Storage) ListMetrics(prefix string, limit int) ([]string, error)
 ```
 
-- Write methods take the apply batch and a reader that sees the batch's own
-  pending writes, so a point written earlier in the same apply is visible to a
-  later one (the metric index is written once, not once per point).
-- `timeseries.New(*pebble.DB)`, `NewWithDir`, `WithBarrier`, `WithEncryptor` and
-  `Storage.DB()` are deleted. Encryption is the binding's, applied by the store.
+Shipped shape differs from an earlier revision of this plan in two ways,
+both simplifications made while implementing it:
+
+- **Write methods take only `batch`, not a separate reader.** `storage.Batch`
+  already implements `storage.Reader` (it reads its own pending writes
+  layered over committed storage — see `pkg/storage`'s `Reader` doc comment),
+  so passing a second reader parameter would only ever name the same value a
+  second way. A point written earlier in the same apply batch is visible to
+  a later write in it because every read inside `Write`/`WriteBatch`/
+  `DeleteSeries`/`ApplyRetention` goes through `batch`, not through `s.stg`.
+- **Read methods (`Query`, `QueryRich`, `Aggregate`, `GetRetentionPolicy`,
+  `ListMetrics`) take no reader argument at all.** They read through the
+  `Storage`'s own `stg` (set once at construction by `New`), because a query
+  is never part of an in-flight apply batch — it always runs after a batch
+  has committed, so there is only ever one reader a query could be given:
+  `s.stg` itself.
+
+Other facts:
+
+- `timeseries.New(*pebble.DB)`, `NewWithDir`, `StorageOption`, `WithEncryptor`
+  and `Storage.DB()` are deleted from `pkg/timeseries`. The equivalent
+  directory-opening convenience for a standalone embedder now lives in the
+  SDK (`sdk.NewTimeSeriesStorageWithDir` / `sdk.NewTimeSeriesStorageWithEncryptor`,
+  `sdk/go/types_timeseries.go`), which owns Pebble directly for that one
+  use case; `pkg/timeseries` itself imports no storage engine.
 - The engine's time-series handlers pass the batch they are given; the
   engine's `WithMVCCTimeSeries` option takes no Pebble handle.
-- `TSApplyRetention` is a new extended-protocol command (OD-16 A); its opcode is
-  assigned in the implementing change.
+  `WithMVCCPebbleDB` is deleted along with the field it set.
+- `TSApplyRetention` is an extended-protocol command, landed ahead of this
+  lane and adapted to it: `handleTSApplyRetention` now stages into the
+  caller's batch like every other time-series handler.
 
-### Target: acceptance tests
+### Acceptance tests
 
 Lane 1A (storage-generic engine):
 
-1. **In the batch.** A time-series write and a KV write in one entry whose batch
-   commit is forced to fail leave neither the point, nor the metric index entry,
-   nor the tag index entry.
-2. **Every backend.** The time-series conformance suite — write, batch write,
-   `[start, end)` boundaries, tag filters, every `AggFunc`, interval bucketing,
-   `group_by`, percentile, delete with and without a range, retention round
-   trip — passes on memory, file, pebble, objstore and raft bindings.
-3. **No engine import.** A build-gate test that `pkg/timeseries` imports no
-   storage engine package.
+1. **Shipped: in the batch.** A time-series write and a KV write in one entry
+   whose batch commit is forced to fail leave neither
+   (`pkg/engine.TestMVCCEngine_TSAndKVWriteInOneApplyBatch_CommitFailureLeavesNeither`).
+2. **Shipped (basic read/write): every backend.** `pkg/engine.TestEngineConformance`
+   proves a time-series write and a range query round-trip identically on
+   memory, file, pebble and local-provider objstore. **Not yet shipped: the
+   exhaustive per-feature matrix** — tag filters, every `AggFunc`, interval
+   bucketing, `group_by`, percentile, delete with and without a range, and
+   the retention round trip are each tested in `pkg/timeseries`, but that
+   suite runs over one in-memory `storage.Storage`, not parametrized across
+   all four backends. A raft *binding* (a database's own dedicated shard, as
+   opposed to the shared system store a raft-mode node already runs this
+   code against today) is Phase 2 work.
+3. **Shipped: no engine import.** `test/buildgates.TestEngineAndTimeSeriesDoNotImportPebble`
+   gates both `pkg/engine` and `pkg/timeseries`.
 4. **Placement.** On a barrier, volume or raft tenant's database the `ts:` keys
    are found by exact key in that database's own store and not in any other,
    and cannot be read with the node's encryptor.

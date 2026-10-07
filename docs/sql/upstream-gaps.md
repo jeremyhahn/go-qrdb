@@ -81,7 +81,18 @@ surfaces as an error instead of as data. See
 
 ## 2. `INSERT … ON DUPLICATE KEY UPDATE … RETURNING` emits a row wider than its schema
 
-**Severity: medium — protocol-level failure, not silent.**
+**Severity: medium on the PostgreSQL wire, where it is a protocol-level
+failure, not silent; high on the MySQL wire, where it is silent wrong data —
+see "Proof" below for how that second half was measured.**
+
+**Worked around in QRDB, so this one is no longer a live gap here.** The same
+`dmlReturningBuilder` that repairs item 1 (`pkg/sql/engine/dml_returning.go`)
+also intercepts this shape: any `InsertInto` carrying `RETURNING` together
+with `OnDupExprs`. Its `dmlReturningIter.Next` recognises the duplicate-update
+path's old+new concatenation by width (exactly `2×` the destination schema's
+column count) and re-projects the `RETURNING` expressions against the **new**
+tuple, so the emitted row matches `returnSchema` on every wire. Upstream
+remains the better home for the fix; nothing here is blocked on it.
 
 The same probe:
 
@@ -95,10 +106,41 @@ reports a one-column schema (`[id]`) and then produces a **four-value row**
 the declared schema is wrong about the row.
 
 On the PostgreSQL wire this is fatal rather than silent: psql-wire refuses to
-write a row whose width disagrees with the RowDescription it already sent.
+write a row whose width disagrees with the RowDescription it already sent. The
+MySQL wire fails differently, and worse: measured by deliberately reverting
+the repair while writing `dml_returning_wire_test.go`, go-mysql-server's wire
+writer encodes only the first `len(returnSchema)` values of whatever row the
+iterator yields rather than rejecting the mismatch, so a client silently gets
+the **old** tuple's values back — the pre-update row — under a RETURNING
+clause that asked for the new one. That is the same class of defect as item 1
+(silent wrong data), not a clean failure; the "protocol-level failure" framing
+above held only for the PostgreSQL wire, which this repair also serves since
+`pkg/sql/engine` is shared by both.
 
-**Fix.** The RETURNING projection has to be applied to the correct tuple in the
-on-duplicate path, so that the emitted row matches `returnSchema`.
+**Fix (upstream).** The RETURNING projection has to be applied to the correct
+tuple in the on-duplicate path, so that the emitted row matches `returnSchema`.
+
+**Proof.** Three tests pin the repaired behaviour, each at a different layer
+so a regression anywhere in the chain is caught where it happens:
+
+- `pkg/sql/engine/dml_returning_test.go`'s
+  `TestOnDuplicateKeyReturning_RowMatchesDeclaredSchema` — against the engine
+  directly, no transport in the path.
+- `pkg/sql/mysql/dml_returning_wire_test.go`'s
+  `TestMySQLWire_OnDuplicateKeyReturning_RowMatchesDeclaredSchema` — over a
+  real MySQL wire connection (`go-sql-driver/mysql`), asserting the
+  post-update value comes back rather than the pre-update one a naive
+  width-truncation would leak.
+- `sdk/go/driver/dml_returning_e2e_test.go`'s
+  `TestEmbeddedRelational_OnDuplicateKeyReturning_RowMatchesDeclaredSchema` —
+  through `database/sql` itself, the conformance surface a GORM application
+  actually uses: an unrepaired row would surface here as the embedded
+  driver's own `*driver.RowWidthError` (`sdk/go/driver/rows_embedded.go`),
+  since `database/sql` sizes its scan destination from `Columns()`.
+
+Each file also covers the companion shape, `...InsertPathUnaffected`: the
+same statement when no conflict occurs, which upstream already projects
+correctly and which the repair must leave alone rather than re-project.
 
 ---
 
@@ -160,10 +202,11 @@ blocked on it.
 
 ---
 
-## 5. Server-side cursors race on `Conn.StatusFlags` and are not bounded
+## 5. Server-side cursors race on `Conn.StatusFlags`; the idle-bound half is fixed in QRDB
 
-**Severity: medium — a known limitation of the MySQL wire. Present only in
-builds with the `qrdb_mysql` tag (`WITH_QRDB_MYSQL`).**
+**Severity: medium — a known limitation of the MySQL wire, the `StatusFlags`
+race half of it. Present only in builds with the `qrdb_mysql` tag
+(`WITH_QRDB_MYSQL`).**
 
 A MySQL client opens a server-side cursor by sending `COM_STMT_EXECUTE` with a
 cursor flag, then reads the rows with `COM_STMT_FETCH`. That path is served
@@ -177,21 +220,40 @@ connection goroutine, and the connection goroutine answers each
   cursor-exists check) on the goroutine running the cursor's statement, while
   vitess sets and clears `SERVER_STATUS_CURSOR_EXISTS` and
   `SERVER_STATUS_LAST_ROW_SENT` on the same field from the connection
-  goroutine. Nothing synchronizes the two; the race detector reports it.
-- **An idle cursor is not bounded.** `sql.query_timeout` bounds a cursor while
-  it produces rows, not while it waits: a cursor the client stops fetching
-  from holds its statement, and what that statement holds, until the client
-  fetches to the end, closes the statement or disconnects, or a seal closes
-  the session.
+  goroutine. Nothing synchronizes the two; the race detector reports it. **This
+  half remains an upstream gap** — QRDB does not fork vitess or go-mysql-server
+  to work around it, and tracks it for filing upstream if it is still present
+  at release-candidate time.
+- **An idle cursor is not bounded by `sql.query_timeout`.** It bounds a cursor
+  while it produces rows, not while it waits: a cursor the client stops
+  fetching from holds its statement, and what that statement holds, until the
+  client fetches to the end, closes the statement or disconnects, or a seal
+  closes the session. **Worked around in QRDB, so this half is no longer a
+  live gap here.** `sql.wait_timeout` / `sql.write_timeout`
+  (`pkg/config.SQLConfig`) are wired to vitess's `ListenerConfig.ConnReadTimeout`
+  / `ConnWriteTimeout` in `pkg/sql/mysql/server.go`'s `(*Server).Start`, the
+  single site that constructs the listener. Vitess re-arms a read deadline
+  before every `Read` on the connection, so a connection issuing no command
+  for `wait_timeout` — opening a cursor and never fetching again is exactly
+  that — fails its next read and is closed, which discards the cursor and
+  releases its statement's resources through the listener's existing
+  per-connection cleanup (`Conn.discardCursor`, called from its deferred
+  `ConnectionClosed`). This bounds the connection, not just the statement, so
+  it reaches the gap `sql.query_timeout` cannot: a cursor is idle between
+  fetches by construction, and the fix does not touch the handler/connection
+  boundary the `StatusFlags` race lives on, so it does not mask or interact
+  with that race.
 
-**What clients should do.** A client that needs bounded resource use should
-not request server-side cursors. MySQL Connector/J requests one only with
-`useCursorFetch=true` and a positive fetch size: leave `useCursorFetch=false`
-(its default). With libmysqlclient, do not set `STMT_ATTR_CURSOR_TYPE` to
-`CURSOR_TYPE_READ_ONLY` through `mysql_stmt_attr_set`. go-sql-driver/mysql
-never requests one. Without a cursor flag, an execute returns its whole
-result set and is bounded by `sql.query_timeout` like any other statement.
+**What clients should do.** A client that needs bounded resource use before
+`sql.wait_timeout` closes the connection should still not request server-side
+cursors. MySQL Connector/J requests one only with `useCursorFetch=true` and a
+positive fetch size: leave `useCursorFetch=false` (its default). With
+libmysqlclient, do not set `STMT_ATTR_CURSOR_TYPE` to `CURSOR_TYPE_READ_ONLY`
+through `mysql_stmt_attr_set`. go-sql-driver/mysql never requests one. Without
+a cursor flag, an execute returns its whole result set and is bounded by
+`sql.query_timeout` like any other statement.
 
 **Fix.** Synchronize `Conn.StatusFlags` between the handler and the
-connection goroutine in vitess and go-mysql-server, and give an open cursor an
-idle bound upstream. QRDB does not fork either dependency to work around it.
+connection goroutine in vitess and go-mysql-server. QRDB does not fork either
+dependency to work around it; this remains the one upstream-only piece of this
+item.

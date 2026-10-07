@@ -1,7 +1,7 @@
 # Databases — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-01
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Sections headed **Target** are the requirements contract for the multi-model
 > database program described in [architecture.md](architecture.md). They are
@@ -366,12 +366,16 @@ must hold, at the entry's own log position, for it to apply:
 - **`ScaleDatabase` requires `TargetReplicas >= 1`** and works on
   dedicated-raft databases only. It adds or removes voting replicas in place —
   the database is not recreated.
-- **etcd requires `engine: kv`**, a node in mode `raft`, and TLS and auth
-  enabled. Another engine is refused at create and on update
-  (`database.EtcdEngineUnsupportedError`); a standalone node's listener refuses
-  to start (the etcd listener is raft-only, `server.WithStandaloneMode`). Any
-  backend serves it.
-  *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
+- **etcd requires a node in mode `raft`, and TLS and auth enabled.** A
+  standalone node's listener refuses to start (the etcd listener is raft-only,
+  `server.WithStandaloneMode`). Any backend serves it.
+  *(Corrected twice: `backend: raft` was documented as required and was
+  neither required nor checked -- the listener serves any backend through the
+  service registry; and this section previously also required `engine: kv`,
+  refusing any other engine at create and on update with
+  `database.EtcdEngineUnsupportedError` -- Lane 1C deleted the `engine`
+  concept entirely (OD-12, OD-13), so that constraint and its typed error no
+  longer exist. etcd now serves every database regardless of what it stores.)*
 - **`DatabaseScoped` returns a new client** with its own immutable scope, so
   scopes never leak between clients; scoping to `system` or `""` yields the
   receiver. A caller that names a database is never handed the default one: a transport
@@ -674,8 +678,15 @@ must hold, at the entry's own log position, for it to apply:
   same backend**, unguarded ones included. The read and the write are one
   critical section, and `Put`, `Delete` and `Batch` enter the same one, so no
   write can land between a guarded operation's observation and its decision.
-- **`Batch` is all-or-nothing** on memory, file and pebble. It is best effort on
-  objstore, where a mid-commit failure may leave a partial result.
+- **`Batch` is all-or-nothing after recovery on every backend** — memory,
+  file, pebble and objstore alike. Objstore's commit journal
+  (`pkg/storage/objstore/journal.go`, Lane 1A) gives it the same
+  all-or-nothing-after-recovery guarantee the file backend already had: a
+  commit publishes a single journal object before touching any key, applies
+  the batch, then clears the journal, so an interrupted commit is replayed
+  in full at the next `New` and one interrupted before the journal became
+  durable leaves no trace. *(Corrected: objstore's batch was previously
+  best effort, where a mid-commit failure could leave a partial result.)*
 
 ### Target
 
@@ -695,7 +706,9 @@ must hold, at the entry's own log position, for it to apply:
   batch.** No engine writes to its store outside the batch: time-series points,
   metric and tag indexes, secondary index entries, vector records and vector
   metadata indexes are all batch writes, committed atomically with the entry
-  that produced them, on every backend.
+  that produced them, on every backend. *(Lane 1A, shipped: time-series
+  points, metric and tag indexes, and secondary index entries. Still target:
+  vector records and vector metadata indexes, Lane 1B.)*
 - **New Raft commands are cluster-feature-gated.** The drop fence, the vector
   commands and the retention command are proposed only when the cluster feature
   gate reports every member of the group supports them; otherwise the
@@ -708,8 +721,9 @@ must hold, at the entry's own log position, for it to apply:
 - **Every engine uses the binding's encryptor and data root.** An engine that
   obtains an encryptor or a directory from anywhere else — the node's
   `Encryptor`, the node's `DataDir` — is a tenant-isolation defect.
-- **Every storage backend's `Batch` is all-or-nothing after recovery**,
-  objstore included (commit journal), because the apply batch depends on it.
+- ~~Every storage backend's `Batch` is all-or-nothing after recovery,
+  objstore included (commit journal), because the apply batch depends on
+  it.~~ **Shipped (Lane 1A)** — see "Shipped" above.
 - **The composite `<tenant>/<db>/` prefix is not applied** to a database with
   its own store; its keys are at the root of that store. The prefix remains only
   on the control-plane store.
@@ -862,7 +876,6 @@ How a claim works:
 | Barrier enabled where the data is served from another store (raft backend, volume/raft-isolated tenant) (shipped) | `database.BarrierOffDataPathError` | **yes** |
 | `--cluster-mode` / `--replicas` on a non-raft backend (shipped: `replicas` is silently zeroed) | target: `database.RaftOptionsRequireRaftBackendError` | **yes** |
 | `TargetReplicas < 1` | invalid-argument | **yes** |
-| etcd enabled on a non-`kv` database | `database.EtcdEngineUnsupportedError` at create and on update *(corrected: documented as non-`kv`/non-`raft`, "at configuration time"; nothing checked it, and any backend serves etcd)* | **yes** |
 | Unseal with a wrong secret | refused; the database stays sealed | **yes** |
 | Operating on a sealed database | `service.BarrierSealedError` naming the database, on every engine | **yes** |
 | The store holding a database's keys is unresolvable | `service.ReclaimStoreUnavailableError`; the drop fails and nothing is removed | **yes** |
@@ -882,7 +895,10 @@ How a claim works:
 | Target: barrier on `backend: memory` | `database.BarrierRequiresPersistentBackendError` | **yes** |
 | Target: etcd on a non-raft backend | `database.EtcdRequiresRaftBackendError` | **yes** |
 | Target: `data_dir` outside a volume/raft tenant's root | `database.DataDirOutsideTenantRootError` | **yes** |
-| Target: `file`/`objstore` for a volume/raft tenant (OD-7, ruled B) | `database.BackendIsolationConflictError` | **yes** |
+| Target: `file`/`objstore` for a volume/raft tenant (OD-7, ruled B), as backend or raft state storage | `database.BackendIsolationConflictError` | **yes** |
+| Target: a tenant isolation mode the binding table does not know | `database.InvalidTenantIsolationError` | **yes** |
+| Target: the store's directory cannot be placed (volume/raft tenant without a data root on this node, node without a data directory) | `database.BindingRootUnresolvedError` | **yes** |
+| Target: a raft state storage other than `pebble`, `file`, `memory` (OD-8) | `database.InvalidRaftStateStorageError` | **yes** |
 | Target: the owning node of a local-binding database is unreachable (OD-2, ruled A) | `database.BindingOwnerUnavailableError` naming the owner; 503 / `UNAVAILABLE` | **yes** |
 | Target: a binding cannot be materialized (store will not open, shard will not start) | `database.BindingUnavailableError` wrapping the cause; 503 / `UNAVAILABLE` | **yes** |
 | Target: a write lands after the drop fence | the guard refusal, surfaced to the writer as the drop-fence contract defines it | **yes** |
@@ -916,8 +932,10 @@ databases:                 # provisioned at boot; each entry is a full create
     replicas: 3
 ```
 
-`databases[].engine` is removed (OD-13 decides whether a stale key is refused
-or ignored). The node's control-plane store is configured where it is today —
+`databases[].engine` is removed; a config file still carrying it is refused by
+`pkg/config`'s existing strict-decode pass over the whole file (OD-13 ruled A:
+a generic unknown-field rule, not an engine-specific check). The node's
+control-plane store is configured where it is today —
 `raft.sm_type` / `raft.sm_storage` in raft mode, `storage.backend` in
 standalone mode — and holds no database other than the system tenant's
 `system` database.
@@ -987,21 +1005,75 @@ the resolved state storage, replicas, data directory, barrier settings,
 protocols, the owning node for a local binding, and the generation. `meta.json`
 becomes a node-local cache rebuilt from it at boot.
 
-### Target: removing `engine` from persisted metadata
+**A local binding is a degenerate, one-replica placement (shipped, Lane
+2B).** Rather than a second record shape, a local binding is `Placement{RF:
+1, Replicas: []Replica{owner}, LeaderReplicaID: owner.ReplicaID, Backend:
+<non-raft>}`, carrying a real `ShardID` claimed from the same cluster-wide
+space (`shard.Claimer`) dedicated Raft groups draw from. `Placement.Backend`
+(zero value `BackendRaft`, decoding every pre-Lane-2B entry unchanged) and
+`Placement.IsLocalBinding()` (`Backend != "" && Backend != BackendRaft`) are
+the only new surface a caller needs: everything that resolves or forwards a
+placement — the leader cache, `replicaforward.Locator`, the non-owner
+refusal — is keyed on `ShardID`/`Replicas`/`LeaderReplicaID` alone and so
+serves a local binding identically to a one-replica Raft group, unmodified.
+`Placement.RefusalForNode` is the one place that builds the non-owner
+refusal from either shape; `RaftBackendFactory`'s resolution path and the
+reconciler both use it rather than each constructing `*NotAReplicaError`
+themselves.
+
+`Store.ClaimPlacement(ctx, p)` is the cluster-wide, race-free "first write
+wins" create for a new entry (dedicated Raft group or local binding alike):
+built on `kvstore.AtomicKVStore.PutIfAbsent`, it returns `(claimed, existing,
+err)` and, on a lost race, returns the winner's own committed entry rather
+than overwriting it — this is what makes a database created on one node
+resolve to the same binding everywhere (the first of Lane 2B's acceptance
+criteria). It is unsupported (`*StoreError` wrapping
+`*AtomicWriteUnsupportedError`) against a KV that does not implement
+`PutIfAbsent`.
+
+The per-node reconciler (`TenantShardReconciler`) skips every placement
+`IsLocalBinding()` reports true for, in both its poll (`ReconcileOnce`) and
+watch (`handleEvent`) paths: a local binding has no Raft group for it to
+attach, start or tear down — the owning node materializes it through
+database resolution instead (Lane 2A), the same way `meta.json` does today.
+
+### Removing `engine` from persisted metadata (shipped, Lane 1C)
 
 - `DatabaseMeta` and `DatabaseConfig` lose `Engine`; `database.EngineType`,
   its constants and `database.InvalidEngineError` are deleted.
-- A `meta.json` written by an earlier version still carries `"engine"`. JSON
-  decoding ignores it; the manager rewrites the file without it on the first
-  open that finds it (atomic write-and-rename, as `writeMeta` does today), and
-  logs the rewrite once per database. The rewrite is idempotent and needs no
-  version marker: a file without the key is already migrated.
+- **Corrected against the original plan above: no migrate-on-open.** The
+  no-backward-compat ruling of 2026-10-02 superseded OD-11's "rewrite in
+  place" premise for metadata the same way it superseded OD-11 itself (below):
+  old systems are obsolete and ship no migration code. `readMeta` decodes
+  `meta.json` strictly (`json.Decoder.DisallowUnknownFields`); a file still
+  carrying `"engine"` (or any other field this version no longer understands)
+  is refused with `*database.LegacyMetadataError` naming the path and the
+  decode failure, fail-closed, rather than silently stripped and the file
+  rewritten. The database must be recreated — the same remedy OD-11 settled on
+  for the node-local vector stores. There is no version marker and no rewrite
+  path: a meta.json this version wrote never carries the key, so the check
+  costs nothing on the common path.
 - A database created with `engine: timeseries` or `engine: vector` becomes an
   ordinary multi-model database. Its time-series or vector data is where the
   data migration below finds it; nothing about it depended on the engine field
   except which SQL virtual tables it exposed (OD-12).
 - The protobuf fields numbered 2 in `DatabaseCreateRequest` and
   `DatabaseInfoResponse` become `reserved 2; reserved "engine";`.
+- OD-13's strict-decoding rule is generic, not an engine-specific shim: REST,
+  QUIC and MCP already refuse any request-body field they do not declare
+  (`json.Decoder.DisallowUnknownFields` on REST and QUIC's whole-body decode;
+  the MCP create tool's own declared-argument set, `wire.RejectUnknownArgs`,
+  for its untyped argument map). A stale `engine` key is one instance this
+  catches, not a dedicated check. gRPC and the Unix socket (which serves the
+  same protobuf messages) need no runtime check at all: the field is reserved
+  in the `.proto`, so the generated Go request type has no `Engine` member to
+  set. The embedded transport and `sdk/go` likewise have no `Engine` field on
+  `transport.CreateDatabaseRequest`/`DatabaseInfo` — removed at compile time.
+  The CLI's `--engine` flag is deleted outright, so cobra reports it as an
+  unknown flag rather than accepting and discarding it. The `databases:`
+  configuration section is covered by `pkg/config`'s existing
+  `validateKnownFields` strict-decode pass over the whole file, unchanged by
+  this lane.
 
 ## Target: migrating existing data
 
@@ -1059,9 +1131,9 @@ before the decisions it depends on are ruled; as of 2026-09-30 all are.
 
 ### Phase 1 — foundation (parallel)
 
-**Lane 1A — storage-generic engine.** Seam: `storage.Storage` and the apply
-`storage.Batch`. Owns `pkg/engine`, `pkg/timeseries`, `pkg/index`,
-`pkg/storage/objstore`.
+**Lane 1A — storage-generic engine (shipped 2026-10-06).** Seam:
+`storage.Storage` and the apply `storage.Batch`. Owns `pkg/engine`,
+`pkg/timeseries`, `pkg/index`, `pkg/storage/objstore`.
 - Remove `*pebble.DB` from `MVCCEngine`: secondary indexes become the
   storage-backed index writing through the apply batch; time series reads
   through `storage.Reader` and writes through the apply batch.
@@ -1090,9 +1162,12 @@ database handler. Owns the proto, `pkg/api/{rest,grpc,quic,mcp}`, `cmd/qrdb`
 database verbs, `pkg/config` database section, `sdk/go` types and transports,
 the SQL driver DSN, `pkg/sql/provider` engine tables (OD-12, OD-13).
 - Acceptance: a create carrying `engine` behaves per OD-13 on all six
-  transports; an old `meta.json` with `engine` opens and is rewritten without
-  it; the database parity suite passes with no `engine` in any fixture; the
-  proto field is reserved.
+  transports; an old `meta.json` with `engine` is refused as
+  `*database.LegacyMetadataError` and the database must be recreated — the
+  no-backward-compat ruling of 2026-10-02 supersedes OD-11's rewrite-on-open
+  premise, so this replaces the "opens and is rewritten" criterion originally
+  written here; the database parity suite passes with no `engine` in any
+  fixture; the proto field is reserved.
 
 ### Phase 2 — bindings (after 1A; 2A, 2B and 2C in parallel)
 
@@ -1102,6 +1177,36 @@ per-binding bundle cache. Owns `pkg/database` (binding, defaults, new errors),
 node-local vector store and `NewLocalStorage`'s node-wide use are deleted).
 - One bundle builder for every backend and isolation mode; the vector service
   in every bundle; a lease driver and watch hub per binding.
+- **Part 1, the resolver, shipped** (`pkg/database/binding.go`).
+  `database.ResolveBinding(cfg, BindingTenant, BindingNode)` is the pure
+  function of "Resolution model" in [architecture.md](architecture.md): no
+  I/O, a `*database.Binding` (kind, backend, data root, encryptor scope,
+  per-database barrier, and for `raft` the host, dedicated WAL, replicas,
+  cluster mode and state storage) or one of the typed refusals of "Combinations
+  that are refused". The isolation table and the backend-to-kind table are
+  maps (`isolationPlacements`, `bindingKinds`), so a new mode or backend has
+  exactly one row to add. `database.Defaults` (in `BindingNode`) fills only a
+  field the record left empty: backend from the node default, else `raft` in
+  raft mode and `pebble` standalone (OD-3); replicas (else 1), cluster mode and
+  state storage (else `pebble`, OD-8) for a raft binding. Three refusals the
+  table did not list follow from its rules and fail closed the same way: an
+  unknown isolation mode (`InvalidTenantIsolationError`), a store directory
+  that cannot be placed — a volume/raft tenant with no data root on this
+  node, or a node with no data directory (`BindingRootUnresolvedError`) — and
+  a raft state storage other than pebble, file or memory
+  (`InvalidRaftStateStorageError`). OD-7's refusal of `file` covers a raft
+  group's state storage as well as the backend, for the same reason. An
+  explicit `data_dir` of a volume/raft tenant must lie strictly beneath the
+  tenant root (the root itself holds the tenant's other state). Acceptance
+  (1) is `TestResolveBinding_IsolationByBackend`. **Not yet called** by
+  create or by request resolution: that is part 2 below.
+- **Part 2, materialization (target).** Create resolves the binding and
+  records it (defaults applied once); `pkg/server` materializes a binding once
+  per node — store at the binding's data root under the binding's encryptor,
+  host, watch hub, lease driver — and builds the one bundle over it, cached per
+  (tenant, database, generation); `restServiceRegistry.resolve` serves every
+  database from its binding; the node-local vector store and
+  `NewLocalStorage`'s node-wide use are deleted. Acceptance (2)–(5) land here.
 - Acceptance: (1) a table test over every isolation mode × backend cell,
   asserting the binding or the typed refusal; (2) for every allowed cell, a
   round trip of every engine whose written bytes are found **by exact key in
@@ -1365,13 +1470,11 @@ compaction".
 ```yaml
 databases:
   - name: events
-    engine: kv
     backend: pebble
     compaction:
       mode: revision        # off | revision | period
       retain_revisions: 100000
   - name: audit
-    engine: kv
     backend: pebble
     compaction:
       mode: period

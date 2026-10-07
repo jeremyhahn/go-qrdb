@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -62,17 +63,34 @@ type forwardCall struct {
 	refusal          *placement.NotAReplicaError
 }
 
+// leaderForwardCall records one ForwardToLeader call.
+type leaderForwardCall struct {
+	caller           *auth.Identity
+	method, database string
+	payload          []byte
+	leaderAddr       string
+}
+
 // recordingForwarder answers every frame with status and body, or forwards
 // nothing when refuse is set, and records what it was handed.
 type recordingForwarder struct {
-	status uint16
-	body   []byte
-	refuse bool
-	calls  []forwardCall
+	status      uint16
+	body        []byte
+	refuse      bool
+	calls       []forwardCall
+	leaderCalls []leaderForwardCall
 }
 
 func (f *recordingForwarder) Forward(_ context.Context, caller *auth.Identity, method, database string, payload []byte, refusal *placement.NotAReplicaError) (uint16, []byte, bool) {
 	f.calls = append(f.calls, forwardCall{caller, method, database, payload, refusal})
+	if f.refuse {
+		return 0, nil, false
+	}
+	return f.status, f.body, true
+}
+
+func (f *recordingForwarder) ForwardToLeader(_ context.Context, caller *auth.Identity, method, database string, payload []byte, leaderAddr string) (uint16, []byte, bool) {
+	f.leaderCalls = append(f.leaderCalls, leaderForwardCall{caller, method, database, payload, leaderAddr})
 	if f.refuse {
 		return 0, nil, false
 	}
@@ -271,5 +289,62 @@ func TestForwardingScope_ReScopingKeepsForwarding(t *testing.T) {
 	}
 	if len(fwd.calls) != 1 || fwd.calls[0].database != "billing" {
 		t.Fatalf("forwarded %+v; want one frame on billing", fwd.calls)
+	}
+}
+
+// TestTransport_CeremonyInitialize_ForwardsOnAdminCredentialNotLeaderError is
+// the node-parity regression guard (owner ruling 2026-10-06): the admin-
+// credential step of CeremonyInitialize must run on the system shard's
+// leader (service.CeremonyServiceWithLeaderGate); when this embedding is
+// configured with a caller and forwarder (WithReplicaForwarding), it
+// forwards the identical request to the leader over QUIC -- the same way a
+// database-scoped embedded call forwards a per-database refusal -- rather
+// than returning the node's own refusal to the embedder.
+func TestTransport_CeremonyInitialize_ForwardsOnAdminCredentialNotLeaderError(t *testing.T) {
+	body, err := proto.Marshal(&pb.CeremonyInitializeResponse{SpkiPin: "leader-answered"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fwd := &recordingForwarder{status: wire.StatusOK, body: body}
+	ceremonySvc := &mockCeremonyService{initFn: func(context.Context, ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+		return nil, &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}
+	}}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithCeremonyService(ceremonySvc), WithReplicaForwarding(fwd, fixedCaller{id: alice}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	resp, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{})
+	if err != nil {
+		t.Fatalf("CeremonyInitialize = %v; want the leader's answer", err)
+	}
+	if resp.SPKIPin != "leader-answered" {
+		t.Fatalf("SPKIPin = %q; want the leader's", resp.SPKIPin)
+	}
+	if len(fwd.leaderCalls) != 1 {
+		t.Fatalf("leaderCalls = %+v; want exactly one", fwd.leaderCalls)
+	}
+	if c := fwd.leaderCalls[0]; c.leaderAddr != "raft-leader" || c.caller != alice {
+		t.Fatalf("leaderCalls[0] = %+v; want raft-leader as alice", c)
+	}
+}
+
+// TestTransport_CeremonyInitialize_NoForwardingConfiguredAnswersTheRefusal
+// proves a node with no caller/forwarder configured (WithReplicaForwarding
+// never called, the default) answers its own refusal rather than panicking
+// or silently swallowing the leader-only error.
+func TestTransport_CeremonyInitialize_NoForwardingConfiguredAnswersTheRefusal(t *testing.T) {
+	ceremonySvc := &mockCeremonyService{initFn: func(context.Context, ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+		return nil, &service.AdminCredentialNotLeaderError{LeaderAddress: "raft-leader"}
+	}}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithCeremonyService(ceremonySvc))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{})
+	var notLeader *service.AdminCredentialNotLeaderError
+	if !errors.As(err, &notLeader) {
+		t.Fatalf("CeremonyInitialize = %v; want the node's own AdminCredentialNotLeaderError", err)
 	}
 }

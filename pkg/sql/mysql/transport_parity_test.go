@@ -109,7 +109,6 @@ func newParitySuite(t *testing.T) *paritySuite {
 			Scheme:   qrdbdriver.SchemeEmbedded,
 			Database: "qrdb",
 			Backend:  "memory",
-			Engine:   "kv",
 		},
 		qrdbdriver.WithRegistry(h.Registry),
 	))

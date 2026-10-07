@@ -142,7 +142,7 @@ func TestPessimisticAutocommit_ReleaseIsFoldedIntoTheCommit(t *testing.T) {
 	require.NoError(t, err)
 	counter := &proposalCounter{TransactionServicer: inner}
 	reg.TransactionServiceFn = func(string, string) (service.TransactionServicer, error) { return counter, nil }
-	prov := NewProviderWithEngine("shop", hs.KVSvc, "", WithRegistry(hs.Registry))
+	prov := NewProvider("shop", hs.KVSvc, WithRegistry(hs.Registry))
 	eng := sqlengine.New(sqlengine.Config{Provider: prov})
 	t.Cleanup(func() { _ = eng.Close() })
 	lh := &lockHarness{prov: prov, mvcc: hs.MVCCSvc, eng: eng}
@@ -172,7 +172,7 @@ func TestPessimisticAutocommit_LostCommitStillReleasesTheLocks(t *testing.T) {
 	reg.TransactionServiceFn = func(string, string) (service.TransactionServicer, error) {
 		return &losingTxn{TransactionServicer: inner}, nil
 	}
-	lh.prov = NewProviderWithEngine("shop", hs.KVSvc, "", WithRegistry(hs.Registry))
+	lh.prov = NewProvider("shop", hs.KVSvc, WithRegistry(hs.Registry))
 	lh.eng = sqlengine.New(sqlengine.Config{Provider: lh.prov})
 	t.Cleanup(func() { _ = lh.eng.Close() })
 	setupAccounts(t, lh)

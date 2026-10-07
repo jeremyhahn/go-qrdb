@@ -508,7 +508,6 @@ client := sdk.NewDatabaseClient(conn)
 // Create
 err := client.CreateDatabase(ctx, &CreateDatabaseRequest{
     Name:    "analytics",
-    Engine:  "kv",
     Backend: "raft",
 })
 
@@ -540,7 +539,6 @@ tenantClient := sdk.NewTenantDatabaseClient(conn, "acme")
 // Operations are scoped to tenant "acme"
 err := tenantClient.CreateDatabase(ctx, &CreateDatabaseRequest{
     Name:    "analytics",   // stored as "acme_analytics"
-    Engine:  "kv",
     Backend: "raft",
 })
 ```

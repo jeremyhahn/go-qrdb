@@ -72,7 +72,8 @@ func TestEmbeddedTenant_RealAdminRole_CannotDeleteAnotherTenant(t *testing.T) {
 
 // TestEmbeddedTenant_RealAdminRole_SystemCanActOnAnyTenant is the mirror
 // check: the platform operator -- Admin in the system tenant -- retains
-// cross-tenant reach for the ScopeSelf tenant-record operations.
+// cross-tenant reach for the tenant-record operations through the named
+// tenants:*:cross permissions.
 func TestEmbeddedTenant_RealAdminRole_SystemCanActOnAnyTenant(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "acme", tenantid.System)
 	mw := authmw.New(rbac.New(roles))

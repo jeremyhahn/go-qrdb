@@ -59,7 +59,11 @@ func TestBootstrapUserRoleStores_SealDisabled_StillRoutesByTenant(t *testing.T) 
 		t.Fatalf("bootstrapUserRoleStores: %v", err)
 	}
 
-	ctx := context.Background()
+	// The identity is acme's own (the system-tenant lift was removed, owner
+	// ruling 2026-10-01), so the by-id reach proven below is acme reaching
+	// its OWN record through the identity index, not a system-tenant reach
+	// into another tenant.
+	ctx := tenantpkg.WithTenantID(context.Background(), "acme")
 	acme, err := mgmt.servedUserSvc.CreateUser(ctx, &userpkg.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice", TenantID: "acme",
 	})

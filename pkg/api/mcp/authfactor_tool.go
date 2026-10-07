@@ -119,8 +119,6 @@ func toolAuthFactorRevoke() mcp.Tool {
 // ---------------------------------------------------------------------------
 
 // handleAuthFactorEnroll returns a tool handler that delegates to svc.EnrollFactor.
-//
-// TODO: apply permission.AuthFactorEnroll once Phase 2 ships.
 func handleAuthFactorEnroll(svc service.AuthFactorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		factorName := mcp.ParseString(req, "factor_name", "")
@@ -164,8 +162,6 @@ func handleAuthFactorEnroll(svc service.AuthFactorServicer) mcpserver.ToolHandle
 }
 
 // handleAuthFactorChallenge returns a tool handler that delegates to svc.ChallengeFactor.
-//
-// TODO: apply permission.AuthFactorChallenge once Phase 2 ships.
 func handleAuthFactorChallenge(svc service.AuthFactorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		enrollmentID := mcp.ParseString(req, "enrollment_id", "")
@@ -190,8 +186,6 @@ func handleAuthFactorChallenge(svc service.AuthFactorServicer) mcpserver.ToolHan
 }
 
 // handleAuthFactorVerify returns a tool handler that delegates to svc.VerifyFactor.
-//
-// TODO: apply permission.AuthFactorVerify once Phase 2 ships.
 func handleAuthFactorVerify(svc service.AuthFactorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		challengeID := mcp.ParseString(req, "challenge_id", "")
@@ -219,8 +213,6 @@ func handleAuthFactorVerify(svc service.AuthFactorServicer) mcpserver.ToolHandle
 }
 
 // handleAuthFactorList returns a tool handler that delegates to svc.ListFactors.
-//
-// TODO: apply permission.AuthFactorList once Phase 2 ships.
 func handleAuthFactorList(svc service.AuthFactorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		subject := mcp.ParseString(req, "subject", "")
@@ -255,8 +247,6 @@ func handleAuthFactorList(svc service.AuthFactorServicer) mcpserver.ToolHandlerF
 }
 
 // handleAuthFactorRevoke returns a tool handler that delegates to svc.RevokeFactor.
-//
-// TODO: apply permission.AuthFactorRevoke once Phase 2 ships.
 func handleAuthFactorRevoke(svc service.AuthFactorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		enrollmentID := mcp.ParseString(req, "enrollment_id", "")

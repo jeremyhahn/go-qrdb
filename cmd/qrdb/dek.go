@@ -225,9 +225,13 @@ func printDEKStatus(resp *transport.TenantDEKStatusResponse) error {
 		if v.RetiredAt != nil {
 			state, retired = "retired", v.RetiredAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
-		rows[i] = []string{strconv.FormatUint(v.Version, 10), state, v.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"), retired}
+		rows[i] = []string{
+			strconv.FormatUint(v.Version, 10), state,
+			v.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"), retired,
+			v.ProviderID, v.KeyRef,
+		}
 	}
-	printTable([]string{"VERSION", "STATE", "CREATED", "RETIRED"}, rows)
+	printTable([]string{"VERSION", "STATE", "CREATED", "RETIRED", "PROVIDER", "KEY REF"}, rows)
 	return nil
 }
 

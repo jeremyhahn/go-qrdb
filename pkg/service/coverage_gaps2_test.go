@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -243,19 +244,31 @@ func TestWithHNSWIndexFactory_Option(t *testing.T) {
 	}
 }
 
-func TestWithStrictTenantIsolation_True(t *testing.T) {
+// fixedClusterIsolationPolicyReader is a tenant.ClusterIsolationPolicyReader
+// test double that always answers the given policy.
+type fixedClusterIsolationPolicyReader struct {
+	policy tenant.ClusterIsolationPolicy
+	err    error
+}
+
+func (r fixedClusterIsolationPolicyReader) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return r.policy, r.err
+}
+
+func TestWithClusterIsolationPolicyReader_Strict(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
-	svc, err := NewVectorService(storage, logger, WithStrictTenantIsolation(true))
+	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
+		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyStrict}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if svc == nil {
 		t.Fatal("expected non-nil service")
 	}
-	// Verify strict isolation is set: CreateNamespace without tenant context
-	// must return TenantRequiredError.
+	// Under a strict floor, CreateNamespace without tenant context must
+	// return TenantRequiredError.
 	ctx := context.Background() // no tenant
 	_, createErr := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
 		Namespace: "test-ns",
@@ -270,17 +283,26 @@ func TestWithStrictTenantIsolation_True(t *testing.T) {
 	}
 }
 
-func TestWithStrictTenantIsolation_False(t *testing.T) {
+func TestWithClusterIsolationPolicyReader_OperatorAccess(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
-	// Strict isolation off (default) — system tenant context should work.
-	svc, err := NewVectorService(storage, logger, WithStrictTenantIsolation(false))
+	// operator-access (and no reader at all, the default) — system tenant
+	// context should work.
+	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
+		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyOperatorAccess}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if svc == nil {
 		t.Fatal("expected non-nil service")
+	}
+	ctx := context.Background() // no tenant
+	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace: "test-ns",
+		Dimension: 128,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

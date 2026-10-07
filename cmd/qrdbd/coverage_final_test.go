@@ -613,8 +613,8 @@ func TestRunStart_DuplicateDatabaseName_AlreadyExistsPath(t *testing.T) {
 		shardID:         1,
 		replicaID:       1,
 		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "testdb", Engine: "kv", Backend: "pebble"},
-			{Name: "testdb", Engine: "kv", Backend: "pebble"}, // duplicate
+			{Name: "testdb", Backend: "pebble"},
+			{Name: "testdb", Backend: "pebble"}, // duplicate
 		},
 		host: testBindHost,
 	}

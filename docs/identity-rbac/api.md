@@ -18,7 +18,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Withdraw cert binding | `DELETE /users/{id}/cert-bindings/{thumbprint}` | `RemoveCertBinding` | `user.RemoveCertBinding` | `qrdb_user_remove_cert_binding` | `RemoveCertBinding` | `users:remove_cert_binding` |
 | Update | `PUT /users/{id}` | `UpdateUser` | `user.Update` | `qrdb_user_update` | `UpdateUser` | `users:update` |
 | Delete | `DELETE /users/{id}` | `DeleteUser` | `user.Delete` | `qrdb_user_delete` | `DeleteUser` | `users:delete` |
-| List | `GET /users` | `ListUsers` | `user.List` | `qrdb_user_list` | `ListUsers` | `users:list` |
+| List | `GET /users/list` | `ListUsers` | `user.List` | `qrdb_user_list` | `ListUsers` | `users:list` |
 | Enable | `POST /users/{id}/enable` | `EnableUser` | `user.Enable` | `qrdb_user_enable` | `EnableUser` | `users:enable` |
 | Disable | `POST /users/{id}/disable` | `DisableUser` | `user.Disable` | `qrdb_user_disable` | `DisableUser` | `users:disable` |
 

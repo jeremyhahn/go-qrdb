@@ -188,7 +188,7 @@ test.describe("Scenario B - duplicate database name rejected", () => {
       const go = w.go as {
         main: {
           DatabaseBinding: {
-            Create: (req: { name: string; engine: string; backend: string }) => Promise<unknown>;
+            Create: (req: { name: string; backend: string }) => Promise<unknown>;
           };
         };
       };
@@ -319,7 +319,6 @@ test.describe("Scenario C - SQL protocol toggles persist", () => {
       };
       s.databases.push({
         name: "persist-proto-db",
-        engine: "kv",
         backend: "pebble",
         status: "open",
         protocol: { mysql: true, postgresql: true },
@@ -356,7 +355,6 @@ test.describe("Scenario C - SQL protocol toggles persist", () => {
       };
       s.databases.push({
         name: "disable-proto-db",
-        engine: "kv",
         backend: "pebble",
         status: "open",
         protocol: { mysql: true, postgresql: true },

@@ -276,8 +276,16 @@ const gcPageSize = 256
 // trusting the field would hand the token out a second time.
 func (s *DAOStore) checkUsable(ctx context.Context, entity *Entity, now time.Time) error {
 	marker := &redemption{TokenHash: entity.TokenHash}
-	if _, err := s.redemptions.Get(ctx, s.claimIDs.NextID(marker)); err == nil {
+	_, err := s.redemptions.Get(ctx, s.claimIDs.NextID(marker))
+	switch {
+	case err == nil:
 		return ErrAlreadyRedeemed
+	case !dao.IsNotFound(err):
+		// The marker's absence could not be confirmed, so this is NOT "not
+		// yet redeemed": treating a storage fault as absence here would let
+		// an outage make a spent token look usable again. Fail closed and
+		// report the fault itself.
+		return &StoreError{Op: "check invite redemption", Cause: err}
 	}
 	if entity.Redeemed() {
 		return ErrAlreadyRedeemed
@@ -297,14 +305,18 @@ func (s *DAOStore) find(ctx context.Context, token string) (*Entity, error) {
 	probe := &Entity{TokenHash: TokenDigest(token)}
 	entity, err := s.invites.Get(ctx, s.inviteIDs.NextID(probe))
 	if err != nil {
-		// Every failure collapses to ErrNotFound, including a storage
-		// outage. That is lossy and cannot be fixed at this layer:
-		// KVStore.Get returns (nil, nil) for a missing key, so a miss
-		// reaches the DAO as a deserialize-empty error rather than a
-		// distinguishable not-found -- indistinguishable, in turn, from a
-		// genuine read failure. Separating them needs a not-found signal in
-		// the KVStore contract. See docs/invite-notfound-ambiguity.md.
-		return nil, ErrNotFound
+		// dao.Get already distinguishes a genuine miss (dao.NotFoundError,
+		// an empty read) from every other failure (go-qrdb#58/#65): only the
+		// former means "no such invitation". Reporting anything else as
+		// ErrNotFound would tell a caller presenting a VALID token during a
+		// storage outage that it was forged, and tell an operator reading
+		// the logs the same thing. Everything else is the backing store
+		// failing to answer, so it is returned as its own typed error
+		// instead of folded into the absence it is not.
+		if dao.IsNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, &StoreError{Op: "lookup invite", Cause: err}
 	}
 
 	// The entity ID is a 64-bit hash of the digest, so a collision is possible

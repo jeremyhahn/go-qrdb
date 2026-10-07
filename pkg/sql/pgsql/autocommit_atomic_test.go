@@ -38,7 +38,7 @@ func TestPGWire_AutocommitStatementIsAtomic(t *testing.T) {
 	hs, closeFn, err := sqltest.NewLockingHarness()
 	require.NoError(t, err)
 	t.Cleanup(closeFn)
-	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	prov := provider.NewProvider("qrdb", hs.KVSvc, provider.WithRegistry(hs.Registry))
 	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
 	t.Cleanup(func() { _ = eng.Close() })
 	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")
@@ -97,7 +97,7 @@ func TestPGWire_CommitFailureIsReported(t *testing.T) {
 	reg.TransactionServiceFn = func(string, string) (service.TransactionServicer, error) {
 		return &racingTxn{TransactionServicer: inner, prefix: service.TableDataPrefix("qrdb", def.TableID, 0)}, nil
 	}
-	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	prov := provider.NewProvider("qrdb", hs.KVSvc, provider.WithRegistry(hs.Registry))
 	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
 	t.Cleanup(func() { _ = eng.Close() })
 	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")

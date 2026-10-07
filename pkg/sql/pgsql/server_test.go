@@ -207,7 +207,6 @@ func TestServer_StartStop_WithDatabaseManager(t *testing.T) {
 	// Create a database so the manager-backed provider has something to serve.
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "testdb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 	})
 	require.NoError(t, err)
@@ -715,7 +714,6 @@ func TestServer_StartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing
 	_, err := mgr.Create(database.DatabaseConfig{
 		TenantID: "acme",
 		Name:     "testdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
 		Protocol: database.ProtocolConfig{PostgreSQL: true},
 	})
@@ -779,6 +777,155 @@ func TestServer_StartStop_WithServiceRegistry_NoManager_KeepsSequenceOnTruncate(
 	assert.Equal(t, uint64(3), rows[0][0], "PostgreSQL's plain TRUNCATE must not restart the sequence")
 }
 
+// TestServer_StartStop_WithServiceRegistry_NoManager_RestartIdentityResetsSequence
+// proves the PostgreSQL wire's TRUNCATE ... RESTART IDENTITY support end to
+// end: HandleParse must strip the clause the embedded grammar cannot parse,
+// record it on the connection's session, and have RelationalTable.Truncate
+// apply the same epoch-fenced sequence reset the MySQL wire always applies --
+// unlike plain TRUNCATE on this same wire, which the sibling test above
+// proves leaves the sequence alone.
+func TestServer_StartStop_WithServiceRegistry_NoManager_RestartIdentityResetsSequence(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	h := sqltest.NewHarness()
+	_, err := h.TableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "testdb",
+		Name:     "widgets",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED", Nullable: false, AutoIncrement: true},
+			{Name: "name", Type: "VARCHAR(64)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseName("testdb"),
+		WithServiceRegistry(h.Registry),
+	)
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	parseHandler := NewParseHandler(s.sqlEngine, engine.NewTranslator(), "testdb")
+	connCtx := context.WithValue(context.Background(), identityContextKey{},
+		&auth.Identity{Subject: "test", TenantID: "acme"})
+	connCtx, err = newConnectionSessionHandler()(connCtx)
+	require.NoError(t, err)
+
+	for _, q := range []string{
+		"INSERT INTO widgets (name) VALUES ('a')",
+		"INSERT INTO widgets (name) VALUES ('b')",
+		"TRUNCATE TABLE widgets RESTART IDENTITY",
+		"INSERT INTO widgets (name) VALUES ('c')",
+	} {
+		_, err := parseHandler.HandleParse(connCtx, q)
+		require.NoError(t, err, "query %q", q)
+	}
+
+	_, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SELECT id FROM widgets")
+	require.Len(t, rows, 1)
+	assert.Equal(t, uint64(1), rows[0][0], "RESTART IDENTITY must restart the sequence")
+}
+
+// TestServer_StartStop_WithServiceRegistry_NoManager_ContinueIdentityKeepsSequence
+// proves CONTINUE IDENTITY -- the default a bare TRUNCATE already carries --
+// still parses as the explicit clause and does not reset the sequence.
+func TestServer_StartStop_WithServiceRegistry_NoManager_ContinueIdentityKeepsSequence(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	h := sqltest.NewHarness()
+	_, err := h.TableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "testdb",
+		Name:     "widgets",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED", Nullable: false, AutoIncrement: true},
+			{Name: "name", Type: "VARCHAR(64)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseName("testdb"),
+		WithServiceRegistry(h.Registry),
+	)
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	parseHandler := NewParseHandler(s.sqlEngine, engine.NewTranslator(), "testdb")
+	connCtx := context.WithValue(context.Background(), identityContextKey{},
+		&auth.Identity{Subject: "test", TenantID: "acme"})
+	connCtx, err = newConnectionSessionHandler()(connCtx)
+	require.NoError(t, err)
+
+	for _, q := range []string{
+		"INSERT INTO widgets (name) VALUES ('a')",
+		"INSERT INTO widgets (name) VALUES ('b')",
+		"TRUNCATE TABLE widgets CONTINUE IDENTITY",
+		"INSERT INTO widgets (name) VALUES ('c')",
+	} {
+		_, err := parseHandler.HandleParse(connCtx, q)
+		require.NoError(t, err, "query %q", q)
+	}
+
+	_, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SELECT id FROM widgets")
+	require.Len(t, rows, 1)
+	assert.Equal(t, uint64(3), rows[0][0], "CONTINUE IDENTITY must not restart the sequence")
+}
+
+// TestServer_StartStop_WithServiceRegistry_NoManager_RestartIdentityClearsAfterStatement
+// proves the per-statement flag HandleParse sets for RESTART IDENTITY does
+// not leak onto a later, plain TRUNCATE on the same connection -- the defer
+// in HandleParse must clear it once the statement finishes.
+func TestServer_StartStop_WithServiceRegistry_NoManager_RestartIdentityClearsAfterStatement(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	h := sqltest.NewHarness()
+	_, err := h.TableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "testdb",
+		Name:     "widgets",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED", Nullable: false, AutoIncrement: true},
+			{Name: "name", Type: "VARCHAR(64)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseName("testdb"),
+		WithServiceRegistry(h.Registry),
+	)
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	parseHandler := NewParseHandler(s.sqlEngine, engine.NewTranslator(), "testdb")
+	connCtx := context.WithValue(context.Background(), identityContextKey{},
+		&auth.Identity{Subject: "test", TenantID: "acme"})
+	connCtx, err = newConnectionSessionHandler()(connCtx)
+	require.NoError(t, err)
+
+	for _, q := range []string{
+		"INSERT INTO widgets (name) VALUES ('a')",
+		"INSERT INTO widgets (name) VALUES ('b')",
+		"TRUNCATE TABLE widgets RESTART IDENTITY",
+		"INSERT INTO widgets (name) VALUES ('c')",
+		"TRUNCATE TABLE widgets",
+		"INSERT INTO widgets (name) VALUES ('d')",
+	} {
+		_, err := parseHandler.HandleParse(connCtx, q)
+		require.NoError(t, err, "query %q", q)
+	}
+
+	_, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SELECT id FROM widgets")
+	require.Len(t, rows, 1)
+	assert.Equal(t, uint64(2), rows[0][0],
+		"the plain TRUNCATE after RESTART IDENTITY must not inherit its session flag")
+}
+
 // TestServer_StartStop_WithServiceRegistry_NoManager_ServesPGCatalog is the
 // other half of the same wiring: without a database manager the listener is
 // still PostgreSQL's, so unqualified pg_catalog relations resolve.
@@ -814,7 +961,6 @@ func TestServer_StartStop_WithCollectionService_ListsCollection(t *testing.T) {
 	_, err := mgr.Create(database.DatabaseConfig{
 		TenantID: "acme",
 		Name:     "testdb",
-		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
 		Protocol: database.ProtocolConfig{PostgreSQL: true},
 	})

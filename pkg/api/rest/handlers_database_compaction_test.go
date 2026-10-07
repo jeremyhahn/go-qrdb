@@ -28,7 +28,7 @@ func TestDatabaseCompaction_UpdateReadAndClear(t *testing.T) {
 	s := newSQLConfigServer(t)
 
 	create := httptest.NewRequest(http.MethodPost, "/v1/databases",
-		strings.NewReader(`{"name":"events","engine":"kv","backend":"memory","compaction":{"mode":"revision","retainRevisions":5}}`))
+		strings.NewReader(`{"name":"events","backend":"memory"}`))
 	rec := httptest.NewRecorder()
 	s.dispatch(rec, create)
 	assertStatus(t, rec, http.StatusCreated)

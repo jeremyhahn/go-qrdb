@@ -1,7 +1,7 @@
 # Volume Pools — Engineering
 
-> **Status: APPROVED — ruled 2026-10-04; Phase 1 build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-04
+> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
+> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Identifiers marked *(new)* did not exist in the tree when this was last
 > verified; this document is the contract they are built to. The design
@@ -250,9 +250,20 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
    isolation tier (`AllowVolumeStorage` / `AllowDedicatedRaft`), then
    `AllowsVolumePool`, then reserves. A denial changes nothing.
 6. **A pool that does not open on a node refuses its tenants on that node
-   only.** Boot never fails because of a pool. Every tenant assigned to an
-   unavailable pool is listed with a typed refusal, and its data is never
-   opened.
+   only -- under `--allow-degraded-volume-boot` (decision D10, ruled
+   2026-10-06).** Without that flag (or its config-file equivalent,
+   `storage.allow_degraded_volume_boot`), which is the default, a pool that
+   fails to open fails `qrdbd start` outright with `*volume.OpenAtBootError`,
+   naming every inaccessible pool and the reason, before any tenant
+   restores: boot never *partially* serves. With the flag set, every tenant
+   assigned to an unavailable pool is listed with a typed refusal
+   (`*volume.PoolUnavailableError`, classified `Unavailable` on every
+   transport), its data is never opened, and the rest of the node's pools
+   and tenants are served -- the degraded-boot behavior this invariant
+   originally described unconditionally. Each skipped pool is logged at
+   ERROR (not the ordinary open-failure WARN), reported in this node's
+   health (`qrdb volume-pool get`) and exported as
+   `qrdb_volume_pool_ready{pool}` = 0, so the degradation is never silent.
 7. **Removal stays inside the pool root.** Every directory removal — tenant
    delete, deleted-tenant reconcile, shard purge, move cleanup — passes
    `RequireInsideLocalPool` against the pool's `Volume.Root()`, with links
@@ -324,7 +335,15 @@ storage:
       path: /mnt/nvme-a       # dir: the directory; luks2: the mount point
       provider: dir           # default dir; must equal the catalog's provider
       options: {}             # provider-specific, e.g. luks2: { device: /dev/nvme1n1 }
+  allow_degraded_volume_boot: false  # decision D10 (2026-10-06); see below
 ```
+
+`storage.allow_degraded_volume_boot` (default `false`) and its CLI
+equivalent, `qrdbd start --allow-degraded-volume-boot`, are the opt-in to a
+degraded boot (invariant 6): an explicit `--allow-degraded-volume-boot` on
+the command line wins over the config file, the same precedence as
+`--replica-forwarding`. With neither set, any configured pool that fails to
+open fails `qrdbd start` outright.
 
 Validation (`config.Load`, strict) rejects:
 
@@ -439,22 +458,28 @@ Log events (structured, `slog`):
 | Event | Level |
 |---|---|
 | `volume: pool opened` (`pool`, `provider`, `root`) | INFO |
-| `volume: pool unavailable on this node` (`pool`, `error`) | ERROR |
+| `volume pool: failed to open volume; pool will not be served on this node` (`pool`, `error`) -- `lifecycle.OpenConfiguredVolumes`, both boot modes; the default (D10) turns this into a fatal `*volume.OpenAtBootError` immediately after, the degraded-boot opt-in does not | ERROR |
 | `volume: tenant refused, pool unavailable` (`tenant`, `pool`) | ERROR |
 | `volume: reservation` (`tenant`, `pool`, `bytes`) | INFO |
 | `volume: move state` (`tenant`, `from`, `to`, `state`) | INFO; failures at ERROR; **Phase 2** |
 | `volume: unlocked` / `volume: unlock failed` (`pool`[, `error`]) | INFO / ERROR |
 | `volume: locked` / `volume: lock failed` (`pool`[, `error`]) | INFO / ERROR |
 
-Metrics *(new)*:
+Metrics:
 
-- `qrdb_volume_pool_size_bytes{pool}`
-- `qrdb_volume_pool_free_bytes{pool}`
-- `qrdb_volume_pool_reserved_bytes{pool}`
-- `qrdb_volume_pool_used_bytes{pool}`
-- `qrdb_volume_pool_tenants{pool}`
-- `qrdb_volume_pool_ready{pool}` (0/1, per node)
-- `qrdb_volume_pool_locked{pool}` (0/1, per node; always 0 for a non-`Lockable` volume)
+- `qrdb_volume_pool_size_bytes{pool}` *(new, not yet implemented)*
+- `qrdb_volume_pool_free_bytes{pool}` *(new, not yet implemented)*
+- `qrdb_volume_pool_reserved_bytes{pool}` *(new, not yet implemented)*
+- `qrdb_volume_pool_used_bytes{pool}` *(new, not yet implemented)*
+- `qrdb_volume_pool_tenants{pool}` *(new, not yet implemented)*
+- `qrdb_volume_pool_ready{pool}` (0/1, per node; `pkg/volume.RecordPoolHealth`) --
+  **shipped**: 1 only for `StateReady`; set at boot (once per configured
+  pool, by `OpenConfiguredVolumes`) and refreshed on every later health
+  check (`BuildNodeReport`), so a degraded boot's skipped pools, and any
+  pool that later becomes unavailable or locks on re-seal, read 0 for as
+  long as the condition lasts. Local to this node -- it needs no lease,
+  unlike `NodeReport` (invariant 9).
+- `qrdb_volume_pool_locked{pool}` (0/1, per node; always 0 for a non-`Lockable` volume) *(new, not yet implemented)*
 
 Audit: every catalog change, assignment change and move transition (**Phase
 2** for moves) is an audit record naming the operator identity; every

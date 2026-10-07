@@ -1139,6 +1139,37 @@ func TestTableService_TruncateTable_FirstTruncateEver(t *testing.T) {
 	assert.Equal(t, uint64(1), state.epoch, "the reset must advance the epoch, fencing blocks reserved before it")
 }
 
+// TestTableService_TruncateTable_RowIDSequenceUntouched pins the other half
+// of the ruling in docs/sql/engineering.md#tables-with-no-primary-key:
+// TruncateTable's resetSequence parameter names only
+// TableAutoIncrementSequenceName. The hidden row id sequence a keyless
+// table draws from (TableRowIDSequenceName) is a distinct counter that
+// TRUNCATE's compare-and-swap never mentions, reset or not -- proven here
+// by the key's ModRevision being unchanged, not merely its decoded value.
+func TestTableService_TruncateTable_RowIDSequenceUntouched(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	rowIDSeq := TableRowIDSequenceName(def.TableID)
+	_, _, err = svc.seq.Allocate(ctx, "db", rowIDSeq, 3)
+	require.NoError(t, err)
+
+	before, err := store.GetRevision(ctx, tableSequenceKey("db", rowIDSeq))
+	require.NoError(t, err)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+
+	after, err := store.GetRevision(ctx, tableSequenceKey("db", rowIDSeq))
+	require.NoError(t, err)
+	assert.Equal(t, before.ModRevision, after.ModRevision, "TRUNCATE must not write the row id sequence key at all")
+	state := decodeSequenceState(after.Value)
+	assert.Equal(t, uint64(3), state.counter, "the row id counter must survive TRUNCATE unreset")
+	assert.Equal(t, uint64(0), state.epoch, "TRUNCATE must never fence row id blocks -- it never resets them")
+}
+
 // TestTableService_TruncateTable_PostgreSQLKeepsSequence verifies
 // resetSequence=false (PostgreSQL's plain TRUNCATE, without RESTART
 // IDENTITY) leaves an already-nonzero sequence untouched.

@@ -14,21 +14,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package timeseries provides time-series data storage and aggregation built
-// on PebbleDB. This stub version is compiled when time-series support is
-// disabled: the pure data and wire types remain real definitions so untagged
-// consumers keep compiling and marshaling identically, while every storage
-// operation returns ErrNotCompiled.
+// Package timeseries provides time-series data storage and aggregation over
+// the storage.Storage abstraction. This stub version is compiled when
+// time-series support is disabled: the pure data and wire types remain real
+// definitions so untagged consumers keep compiling and marshaling
+// identically, while every storage operation returns ErrNotCompiled.
 package timeseries
 
 import (
 	"context"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // ErrNotCompiled is returned by every storage operation when time-series
@@ -367,6 +365,12 @@ type TimeSeriesServicer interface {
 	// SetRetentionPolicy sets the retention policy for a metric.
 	SetRetentionPolicy(ctx context.Context, metric string, policy *RetentionPolicy) error
 
+	// ApplyRetention deletes points for metric older than cutoff. cutoff is
+	// fixed by the caller (the retention scheduler's leader, from its own
+	// clock) and applied identically on every replica -- the proposal
+	// never lets a replica consult its own clock.
+	ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error
+
 	// ListMetrics returns metric names matching the optional prefix.
 	ListMetrics(prefix string, limit int) ([]string, error)
 
@@ -379,55 +383,33 @@ type TimeSeriesServicer interface {
 // Storage stub
 // ---------------------------------------------------------------------------
 
-// Storage provides time-series data storage and aggregation over PebbleDB.
-// In this stub build the constructor succeeds so that shared-PebbleDB store
-// wiring keeps working, but every storage operation returns ErrNotCompiled.
+// Storage provides time-series data storage and aggregation over a
+// storage.Storage. In this stub build the constructor succeeds so that
+// shared-storage wiring keeps working, but every storage operation returns
+// ErrNotCompiled.
 type Storage struct{}
 
-// New creates a new time-series Storage backed by the given PebbleDB instance.
-// Returns a NilDBError if db is nil.
-func New(db *pebble.DB) (*Storage, error) {
-	if db == nil {
+// New creates a new time-series Storage over the given storage.Storage.
+// Returns a NilDBError if stg is nil.
+func New(stg storage.Storage) (*Storage, error) {
+	if stg == nil {
 		return nil, &NilDBError{}
 	}
 	return &Storage{}, nil
 }
 
-// StorageOption configures a new Storage instance created by NewWithDir.
-// Options are applied to the pebble.Options before the
-// database is opened.
-type StorageOption func(*pebble.Options)
-
-// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
-// with barrier-driven AES-256-GCM encryption. In this stub build the option
-// is a no-op.
-func WithEncryptor(enc *atrest.Encryptor) StorageOption {
-	return func(o *pebble.Options) {}
-}
-
-// NewWithDir creates a new time-series Storage that owns its own PebbleDB
-// instance rooted at dataDir.
-func NewWithDir(dataDir string, opts ...StorageOption) (*Storage, error) {
-	return nil, ErrNotCompiled
-}
-
-// DB returns the underlying PebbleDB instance.
-func (s *Storage) DB() *pebble.DB {
-	return nil
-}
-
-// Write stores a single data point in PebbleDB.
-func (s *Storage) Write(metric string, value float64, timestamp time.Time, tags map[string]string) error {
+// Write stages a single data point. In this stub build it always refuses.
+func (s *Storage) Write(batch storage.Batch, metric string, value float64, timestamp time.Time, tags map[string]string) error {
 	return ErrNotCompiled
 }
 
-// WritePoint writes a single DataPoint to storage after validation.
-func (s *Storage) WritePoint(_ context.Context, point *DataPoint) error {
+// WritePoint stages a single validated DataPoint after validation.
+func (s *Storage) WritePoint(batch storage.Batch, point *DataPoint) error {
 	return ErrNotCompiled
 }
 
-// WriteBatch atomically stores multiple data points using a PebbleDB batch.
-func (s *Storage) WriteBatch(points []DataPoint) error {
+// WriteBatch stages multiple data points.
+func (s *Storage) WriteBatch(batch storage.Batch, points []DataPoint) error {
 	return ErrNotCompiled
 }
 
@@ -438,12 +420,13 @@ func (s *Storage) Query(metric string, start, end time.Time, opts ...TSQueryOpti
 
 // QueryRich performs a rich query with aggregation, downsampling, and groupBy
 // support.
-func (s *Storage) QueryRich(_ context.Context, req *QueryRequest) (*QueryResult, error) {
+func (s *Storage) QueryRich(req *QueryRequest) (*QueryResult, error) {
 	return nil, ErrNotCompiled
 }
 
-// DeleteSeries deletes data points matching the given DeleteRequest criteria.
-func (s *Storage) DeleteSeries(_ context.Context, req *DeleteRequest) error {
+// DeleteSeries stages the deletion of data points matching the given
+// DeleteRequest criteria.
+func (s *Storage) DeleteSeries(batch storage.Batch, req *DeleteRequest) error {
 	return ErrNotCompiled
 }
 
@@ -452,8 +435,18 @@ func (s *Storage) GetRetentionPolicy(metric string) (*RetentionPolicy, error) {
 	return nil, ErrNotCompiled
 }
 
-// SetRetentionPolicy stores the retention policy for the given metric.
-func (s *Storage) SetRetentionPolicy(metric string, policy *RetentionPolicy) error {
+// SetRetentionPolicy stages the retention policy for the given metric.
+func (s *Storage) SetRetentionPolicy(batch storage.Batch, metric string, policy *RetentionPolicy) error {
+	return ErrNotCompiled
+}
+
+// MaxRetentionDeletesPerApply bounds how many expired points a single
+// ApplyRetention call deletes in the qrdb_ts build. Kept here too so
+// callers that reference it compile identically under both builds.
+const MaxRetentionDeletesPerApply = 10000
+
+// ApplyRetention stages the deletion of points for metric older than cutoff.
+func (s *Storage) ApplyRetention(batch storage.Batch, metric string, cutoff time.Time) error {
 	return ErrNotCompiled
 }
 

@@ -250,6 +250,9 @@ func TestDefaultConfig_TenantDefaults(t *testing.T) {
 	if de.AllowVolumeStorage {
 		t.Error("DefaultEntitlements.AllowVolumeStorage: got true, want false")
 	}
+	if de.AllowReplicatedAudit {
+		t.Error("DefaultEntitlements.AllowReplicatedAudit: got true, want false")
+	}
 
 	// Conversion helpers produce the corresponding quota types.
 	q := dq.ToQuotas()
@@ -257,7 +260,7 @@ func TestDefaultConfig_TenantDefaults(t *testing.T) {
 		t.Errorf("ToQuotas() = %+v", q)
 	}
 	ents := de.ToEntitlements()
-	if !ents.AllowsIsolation("prefix") || ents.AllowDedicatedRaft || ents.AllowVolumeStorage {
+	if !ents.AllowsIsolation("prefix") || ents.AllowDedicatedRaft || ents.AllowVolumeStorage || ents.AllowReplicatedAudit {
 		t.Errorf("ToEntitlements() = %+v", ents)
 	}
 }

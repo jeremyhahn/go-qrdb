@@ -3039,6 +3039,90 @@ func TestDecodeTSSetRetention_MissingFields(t *testing.T) {
 	}
 }
 
+func TestEncodeTSApplyRetention_RoundTrip(t *testing.T) {
+	encoded := mustEncode(EncodeTSApplyRetention("cpu.usage", 1700000000000000000))
+
+	if encoded[0] != OpTSApplyRetention {
+		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSApplyRetention)
+	}
+
+	decoded, err := DecodeTSApplyRetention(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSApplyRetention: %v", err)
+	}
+	if decoded.Metric != "cpu.usage" {
+		t.Errorf("Metric = %q, want %q", decoded.Metric, "cpu.usage")
+	}
+	if decoded.CutoffNs != 1700000000000000000 {
+		t.Errorf("CutoffNs = %d, want 1700000000000000000", decoded.CutoffNs)
+	}
+}
+
+func TestEncodeTSApplyRetention_EmptyMetric(t *testing.T) {
+	encoded := mustEncode(EncodeTSApplyRetention("", 1000))
+	decoded, err := DecodeTSApplyRetention(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSApplyRetention: %v", err)
+	}
+	if decoded.Metric != "" {
+		t.Errorf("Metric = %q, want empty", decoded.Metric)
+	}
+}
+
+func TestEncodeTSApplyRetention_NegativeCutoff(t *testing.T) {
+	// A cutoff before the Unix epoch is representable: nothing in this
+	// codec treats CutoffNs as unsigned.
+	encoded := mustEncode(EncodeTSApplyRetention("cpu", -1000))
+	decoded, err := DecodeTSApplyRetention(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSApplyRetention: %v", err)
+	}
+	if decoded.CutoffNs != -1000 {
+		t.Errorf("CutoffNs = %d, want -1000", decoded.CutoffNs)
+	}
+}
+
+func TestDecodeTSApplyRetention_PayloadTooShort(t *testing.T) {
+	_, err := DecodeTSApplyRetention([]byte{0x01})
+	if err == nil {
+		t.Fatal("expected error for short payload")
+	}
+	var cmdErr *InvalidCommandError
+	if !errors.As(err, &cmdErr) {
+		t.Errorf("expected InvalidCommandError, got %T", err)
+	}
+}
+
+func TestDecodeTSApplyRetention_MetricExceedsPayload(t *testing.T) {
+	payload := make([]byte, 5)
+	payload[0] = 0x64 // metric len = 100 LE
+	_, err := DecodeTSApplyRetention(payload)
+	if err == nil {
+		t.Fatal("expected error for metric exceeding payload")
+	}
+}
+
+func TestDecodeTSApplyRetention_MissingCutoff(t *testing.T) {
+	// Valid metric but missing cutoffNs field.
+	metric := "cpu"
+	payload := make([]byte, 2+len(metric))
+	payload[0] = byte(len(metric))
+	payload[1] = 0
+	copy(payload[2:], metric)
+	_, err := DecodeTSApplyRetention(payload)
+	if err == nil {
+		t.Fatal("expected error for missing cutoffNs")
+	}
+}
+
+func TestEncodeTSApplyRetention_MetricTooLong(t *testing.T) {
+	longMetric := string(make([]byte, 70000))
+	_, err := EncodeTSApplyRetention(longMetric, 1000)
+	if err == nil {
+		t.Fatal("expected error for metric exceeding uint16 length")
+	}
+}
+
 func TestEncodeTSWriteBatch_MultipleTags(t *testing.T) {
 	tags := map[string]string{"host": "a", "dc": "us1", "env": "prod"}
 	points := []TSWriteParams{

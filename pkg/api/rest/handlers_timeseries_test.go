@@ -48,6 +48,7 @@ type tsMock struct {
 	deleteSeriesFn               func(ctx context.Context, req *timeseries.DeleteRequest) error
 	getRetentionFn               func(metric string) (*timeseries.RetentionPolicy, error)
 	setRetentionFn               func(metric string, policy *timeseries.RetentionPolicy) error
+	applyRetentionFn             func(ctx context.Context, metric string, cutoff time.Time) error
 	listMetricsFn                func(prefix string, limit int) ([]string, error)
 	listMetricsWithConsistencyFn func(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error)
 }
@@ -132,6 +133,13 @@ func (m *tsMock) GetRetentionPolicy(metric string) (*timeseries.RetentionPolicy,
 func (m *tsMock) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetentionFn != nil {
 		return m.setRetentionFn(metric, policy)
+	}
+	return nil
+}
+
+func (m *tsMock) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	if m.applyRetentionFn != nil {
+		return m.applyRetentionFn(ctx, metric, cutoff)
 	}
 	return nil
 }

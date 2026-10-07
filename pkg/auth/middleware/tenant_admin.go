@@ -45,11 +45,21 @@ import (
 // behind the transport's tenants:update entry check (AuthorizeTenantTarget)
 // and charge no further rate-limit token.
 func (m *AuthMiddleware) AuthorizeTenantUpdate(ctx context.Context, tenantID string, patch tenant.TenantPatch) error {
-	if err := m.AuthorizeTenantTarget(ctx, tenantID, permission.TenantsUpdate); err != nil {
-		return err
+	// tenants:update gates the display name (and a no-op/empty patch, as a
+	// baseline). A pure isolation-type change needs tenants:set_isolation
+	// ONLY: the system-tenant lift tenants:update relied on for this case was
+	// removed (owner ruling, 2026-10-01), and tenants:set_isolation -- a
+	// platform-operator, ScopeCross permission -- already decides it on its
+	// own without needing the self-scope permission alongside it.
+	if patch.Name != "" || patch.IsolationType == "" {
+		if err := m.AuthorizeTenantTarget(ctx, tenantID, permission.TenantsUpdate); err != nil {
+			return err
+		}
 	}
 	if patch.IsolationType != "" {
-		return m.AuthorizeTenantTarget(ctx, tenantID, permission.TenantsSetIsolation)
+		if err := m.AuthorizeTenantTarget(ctx, tenantID, permission.TenantsSetIsolation); err != nil {
+			return err
+		}
 	}
 	return nil
 }

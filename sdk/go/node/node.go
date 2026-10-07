@@ -81,8 +81,10 @@ package node
 import (
 	"context"
 	"crypto/fips140"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -91,6 +93,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"log/slog"
 
@@ -661,6 +664,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.KeyWrapRegistry = crypto.KeyWrapRegistry
 	infra.KeyWrapProvider = crypto.KeyWrapProvider
 	infra.KeyDir = crypto.KeyDir
+	infra.DEKKeyDir = crypto.DEKKeyDir
 	// The holder events (and the backup plaintext-override audit) recorded
 	// before they take effect follow the node's one audit failure posture.
 	// The sealed window's graph is built before the authorization
@@ -766,7 +770,8 @@ type pendingClusteredBoot struct {
 // What is guaranteed. Every no-argument exported accessor — Client, Server,
 // Services, KVService, AdminService, RebalanceService, UserService,
 // AuthFactorService, UserAuthFactorService, ABACPolicyReloader,
-// BarrierRegistry, IsSealed — performs a RACE-FREE READ from any goroutine at
+// BarrierRegistry, IsSealed, AuthMiddleware, Authorizer — performs a
+// RACE-FREE READ from any goroutine at
 // any point. It returns a fully constructed value or nil, never a torn or
 // unsynchronised one. That is what the atomic.Pointer fields below buy.
 //
@@ -1016,6 +1021,20 @@ type Node struct {
 	// ABAC policy Reload on it reaches every transport identically.
 	authorizer auth.Authorizer
 
+	// authMiddleware is the *middleware.AuthMiddleware wireClientAndServer
+	// builds via wiring.BuildAuthMiddleware and hands to server.New
+	// (server.WithAuthMiddleware) and the embedded transport
+	// (embedded.WithAuthMiddleware) alike -- the SAME instance every
+	// transport authorizes against. It is published here, race-free, so an
+	// embedding host can reach it directly (AuthMiddleware,
+	// Authorizer) instead of capturing it indirectly through
+	// WithAuthorizerWrapper, e.g. to call AuthorizeTenantTarget for its own
+	// operations against a requested tenant under the RBAC
+	// ScopeCross/ScopeSelf rules (go-qrdb#587). Nil when auth is disabled
+	// (cfg.Auth.IsEnabled() == false), exactly like the local authMW
+	// variable it mirrors.
+	authMiddleware atomic.Pointer[middleware.AuthMiddleware]
+
 	// abacDecorator is the Reload seam for the node's live ABAC policy set,
 	// set by decorateABAC when the composed authorizer supports it
 	// (abac.PolicyReloader). Nil when ABAC was not configured with
@@ -1184,6 +1203,29 @@ func (n *Node) Services() *lifecycle.Node { return n.svcNode.Load() }
 // Returns nil when cfg.Seal.Enabled is false (no seal subsystem) or when
 // the node is in the sealed state before Unseal has been called.
 func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry.Load() }
+
+// AuthMiddleware returns the node's *middleware.AuthMiddleware -- the SAME
+// instance every network transport (REST, gRPC, unix, QUIC, MCP) and the
+// embedded transport authorize requests against -- or nil while auth is
+// disabled (cfg.Auth.IsEnabled() == false) or before boot completes.
+//
+// An embedding host (e.g. go-quicbaas) uses this to call
+// AuthorizeTenantTarget for its OWN operations against a caller-supplied
+// target tenant, under the identical RBAC ScopeCross/ScopeSelf rules
+// qrdb's own tenant routes enforce, in place of capturing the authorizer
+// indirectly through WithAuthorizerWrapper (go-qrdb#587).
+func (n *Node) AuthMiddleware() *middleware.AuthMiddleware { return n.authMiddleware.Load() }
+
+// Authorizer returns the node's composed RBAC[+ABAC] auth.Authorizer -- the
+// SAME instance AuthMiddleware() authorizes every transport's requests
+// against -- or nil while auth is disabled or before boot completes.
+func (n *Node) Authorizer() auth.Authorizer {
+	mw := n.authMiddleware.Load()
+	if mw == nil {
+		return nil
+	}
+	return mw.Authorizer()
+}
 
 // IsSealed reports whether the node is in the sealed state, meaning the data
 // plane has not yet been started because the seal barrier requires operator
@@ -2225,6 +2267,7 @@ func (n *Node) retractDataPlaneServices() {
 	n.authFactorSvc.Store(nil)
 	n.loginFactorSvc.Store(nil)
 	n.abacDecorator.Store(nil)
+	n.authMiddleware.Store(nil)
 }
 
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
@@ -3515,6 +3558,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// methods (built-ins plus WithAuthenticators' names). A nil middleware
 	// (auth disabled) leaves the built-in tokens.
 	n.authMethods.Bind(authMW)
+	n.authMiddleware.Store(authMW)
 
 	// featureClient (built below) is node machinery, not a caller surface --
 	// its own field doc says as much, and it is already exempted from the
@@ -3552,6 +3596,16 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if pinBackend := n.pinBackend(callerOpts); pinBackend != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithPINBackend(pinBackend))
 	}
+	// A share holder's claim made in-process with no identity is admitted
+	// without RBAC (its signed nonce is the authorization), so it is
+	// throttled by the same engine and anonymous policy the ceremony applies
+	// to quorum challenges. The key names this node, so nodes in one process
+	// never share a bucket.
+	holderLimit, err := newHolderActLimit()
+	if err != nil {
+		return &ClientCreateError{Err: err}
+	}
+	embeddedOpts = append(embeddedOpts, embedded.WithHolderActLimiter(holderLimit))
 
 	featureClient, err := newConnectedEmbeddedClient(ctx, svcNode, featureClientOpts)
 	if err != nil {
@@ -3879,6 +3933,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	}
 	if n.auditLogger != nil {
 		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))
+	}
+	if svcNode.ReplicatedAudit != nil {
+		opts = append(opts, embedded.WithReplicatedAuditLogger(svcNode.ReplicatedAudit))
 	}
 	if p := n.authFactorSvc.Load(); p != nil {
 		opts = append(opts, embedded.WithAuthFactorService(*p))
@@ -4545,4 +4602,20 @@ func (n *Node) UserService() user.UserServicer {
 		return nil
 	}
 	return svcNode.User
+}
+
+// newHolderActLimit returns the embedded transport's throttle for anonymous
+// share-holder claims: lifecycle.QuorumLimit, the same engine and anonymous
+// policy the ceremony applies to quorum challenges, under keys prefixed with
+// a random identifier for this node, so nodes in one process never share a
+// bucket.
+func newHolderActLimit() (embedded.HolderActLimitFunc, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return nil, err
+	}
+	prefix := hex.EncodeToString(id[:]) + "\x00"
+	return func(key string, anonymous bool) (bool, time.Duration) {
+		return lifecycle.QuorumLimit(prefix+key, anonymous)
+	}, nil
 }

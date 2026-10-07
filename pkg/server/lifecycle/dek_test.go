@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -36,6 +37,44 @@ const keyringRecordKey = "__sys:dek/keyring"
 // in that tenant's own namespace of the replicated shared store. With no
 // barrier the record is stored without at-rest encryption, which is the
 // documented "none" behaviour.
+// fakeSoftwareKeyWrapProvider is a same-shaped test double claiming the
+// built-in "software" provider ID with a WORKING identity Wrap/Unwrap --
+// unlike softwareIDKeyWrapProvider (lifecycle_test.go), whose Wrap/Unwrap
+// are never meant to be reached. It lets a test exercise the tenant DEK
+// keyring's real Encrypt/Decrypt round trip with no filesystem key
+// directory, exactly as pkg/dek's own tests do.
+type fakeSoftwareKeyWrapProvider struct{}
+
+func (fakeSoftwareKeyWrapProvider) ProviderID() string { return keywrap.SoftwareProviderID }
+
+func (fakeSoftwareKeyWrapProvider) Wrap(_ context.Context, _ string, dek []byte) ([]byte, error) {
+	out := make([]byte, len(dek))
+	copy(out, dek)
+	return out, nil
+}
+
+func (fakeSoftwareKeyWrapProvider) Unwrap(_ context.Context, _ string, wrapped []byte) ([]byte, error) {
+	out := make([]byte, len(wrapped))
+	copy(out, wrapped)
+	return out, nil
+}
+
+// fakeSoftwareKeyWrapRegistry returns a Registry pre-populated with
+// fakeSoftwareKeyWrapProvider under the built-in "software" ID. Passed as
+// Infra.KeyWrapRegistry (never Infra.KeyWrapProvider, whose own ID would
+// collide with the Backup service's own lazily-registered default
+// "software" factory -- see TestBuildServices_KeyWrapProviderCollidingWithTheDefaultIsRefused),
+// it lets BuildServices' tests exercise a real Encrypt/Decrypt round trip
+// -- for the DEK keyring and for Backup alike -- with no filesystem key
+// directory.
+func fakeSoftwareKeyWrapRegistry() keywrap.Registry {
+	r := keywrap.NewRegistry()
+	_ = r.Register(keywrap.SoftwareProviderID, func() (keywrap.Provider, error) {
+		return fakeSoftwareKeyWrapProvider{}, nil
+	})
+	return r
+}
+
 func TestBuildServices_DEKRidesThePrefixTenantsNamespace(t *testing.T) {
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()
@@ -43,9 +82,10 @@ func TestBuildServices_DEKRidesThePrefixTenantsNamespace(t *testing.T) {
 	defer hub.Close()
 
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		KeyWrapRegistry: fakeSoftwareKeyWrapRegistry(),
 	})
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)

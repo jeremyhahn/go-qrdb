@@ -196,4 +196,7 @@ collection-targeted import; documents go in one at a time through
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+Every verb here is driven on every network transport by `collection_cli_test.go`
+(`make integration-test-collections`). Per-transport accounting: the
+`collections` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

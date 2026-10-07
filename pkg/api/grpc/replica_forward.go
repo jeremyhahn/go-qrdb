@@ -19,6 +19,7 @@ import (
 	"crypto"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -197,6 +198,82 @@ func (f *ReplicaForwarder) forward(ctx context.Context, fullMethod string, req a
 		return nil, answerErr
 	}
 	return reply, nil
+}
+
+// forwardAdminWrite sends fullMethod/req, unchanged, to the system shard's
+// leader at leaderAddr. Unlike forward it is not a placement-based retry
+// across a replica set -- the shared system shard has no replica set to
+// retry across -- it is the single hop a leader-only write's own refusal
+// (service.AdminCredentialNotLeaderError and its siblings) already names by
+// address. It resolves that address through the SAME member records
+// forward's Locator reads, signs the identical on-behalf assertion, and
+// relays the leader's answer. ok is false whenever the write was not
+// forwarded (no forwarder, unresolvable leader, or a transport failure
+// before any request reached it), and the caller falls back to its own
+// refusal, exactly as REST's tryForwardWrite does on the same conditions.
+func (f *ReplicaForwarder) forwardAdminWrite(ctx context.Context, fullMethod string, req any, leaderAddr string) (any, error, bool) {
+	if leaderAddr == "" {
+		slog.Warn("admin forwarding: refusal names no leader", "method", fullMethod)
+		return nil, nil, false
+	}
+	msg, ok := req.(proto.Message)
+	if !ok {
+		slog.Warn("admin forwarding: request is not a proto.Message", "method", fullMethod, "type", fmt.Sprintf("%T", req))
+		return nil, nil, false
+	}
+	member, found, err := f.cfg.Locator.MemberByAddress(ctx, leaderAddr)
+	if err != nil || !found {
+		slog.Warn("admin forwarding: leader not found in member records", "leader_raft_addr", leaderAddr, "error", err)
+		return nil, nil, false
+	}
+	endpoint, ok := member.APIEndpoint(cluster.APIProtocolGRPC)
+	if !ok || endpoint == "" {
+		slog.Warn("admin forwarding: leader advertises no gRPC endpoint", "leader_raft_addr", leaderAddr)
+		return nil, nil, false
+	}
+	newReply, ok := replyType(fullMethod)
+	if !ok {
+		slog.Warn("admin forwarding: method has no registered reply type", "method", fullMethod)
+		return nil, nil, false
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
+	if err != nil {
+		slog.Warn("admin forwarding: not forwarded", "leader_raft_addr", leaderAddr, "error", err)
+		return nil, nil, false
+	}
+	assertion, sig, err := forward.SignCaller(auth.IdentityFromContext(ctx), forward.RPCBinding("grpc", fullMethod, payload), f.key, f.nodeID, time.Now())
+	if err != nil {
+		slog.Warn("admin forwarding: not forwarded", "leader_raft_addr", leaderAddr, "error", err)
+		return nil, nil, false
+	}
+	out := forwardedMetadata(ctx)
+	out.Set(forward.MetadataAssertion, assertion)
+	out.Set(forward.MetadataSignature, sig)
+
+	fctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
+	defer cancel()
+	cc, ok := f.conn(fctx, endpoint)
+	if !ok {
+		slog.Warn("admin forwarding: could not connect to leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint)
+		return nil, nil, false
+	}
+	reply := newReply()
+	var header, trailer metadata.MD
+	ierr := cc.Invoke(metadata.NewOutgoingContext(fctx, out), fullMethod, req, reply, grpc.Header(&header), grpc.Trailer(&trailer))
+	if ierr == nil {
+		return reply, nil, true
+	}
+	// The served-by marker is set only once the leader's own handler ran:
+	// its absence means the request never reached it (a dial/transport
+	// failure), and the caller falls back to its own refusal, exactly as
+	// forward does above for the per-database case. Its presence means the
+	// leader answered -- with an error, here -- and that answer, not this
+	// node's stale refusal, is relayed as the final result.
+	if len(header.Get(replicaforward.MetadataServedBy))+len(trailer.Get(replicaforward.MetadataServedBy)) == 0 {
+		slog.Warn("admin forwarding: could not reach leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", ierr)
+		return nil, nil, false
+	}
+	return nil, ierr, true
 }
 
 // conn returns a connection to endpoint that is ready to carry a request, or

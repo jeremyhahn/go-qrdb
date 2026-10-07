@@ -39,7 +39,6 @@ func newDatabaseTestServer(t *testing.T) *httptest.Server {
 	databases := map[string]transport.DatabaseInfo{
 		"default": {
 			Name:    "default",
-			Engine:  "kv",
 			Backend: "pebble",
 			Status:  "active",
 			DataDir: "/data/default",
@@ -82,7 +81,6 @@ func newDatabaseTestServer(t *testing.T) *httptest.Server {
 		}
 		info := transport.DatabaseInfo{
 			Name:    req.Name,
-			Engine:  req.Engine,
 			Backend: req.Backend,
 			Status:  "active",
 			DataDir: "/data/" + req.Name,
@@ -162,7 +160,6 @@ func TestCreateDatabase_Success(t *testing.T) {
 
 	info, err := rt.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "analytics",
-		Engine:  "timeseries",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -171,9 +168,6 @@ func TestCreateDatabase_Success(t *testing.T) {
 
 	if info.Name != "analytics" {
 		t.Errorf("expected name 'analytics', got %q", info.Name)
-	}
-	if info.Engine != "timeseries" {
-		t.Errorf("expected engine 'timeseries', got %q", info.Engine)
 	}
 	if info.Backend != "pebble" {
 		t.Errorf("expected backend 'pebble', got %q", info.Backend)
@@ -192,7 +186,6 @@ func TestCreateDatabase_Conflict(t *testing.T) {
 
 	_, err := rt.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "default",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err == nil {
@@ -214,7 +207,6 @@ func TestCreateDatabase_ClosedTransport(t *testing.T) {
 
 	_, err := rt.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "test",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err == nil {
@@ -245,9 +237,6 @@ func TestGetDatabase_Success(t *testing.T) {
 
 	if info.Name != "default" {
 		t.Errorf("expected name 'default', got %q", info.Name)
-	}
-	if info.Engine != "kv" {
-		t.Errorf("expected engine 'kv', got %q", info.Engine)
 	}
 	if info.Backend != "pebble" {
 		t.Errorf("expected backend 'pebble', got %q", info.Backend)
@@ -335,7 +324,6 @@ func TestListDatabases_AfterCreate(t *testing.T) {
 	// Create a second database.
 	_, err := rt.CreateDatabase(ctx, transport.CreateDatabaseRequest{
 		Name:    "metrics",
-		Engine:  "timeseries",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -386,7 +374,6 @@ func TestDropDatabase_Success(t *testing.T) {
 	// Create a database to drop.
 	_, err := rt.CreateDatabase(ctx, transport.CreateDatabaseRequest{
 		Name:    "temporary",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -475,7 +462,6 @@ func TestDatabase_FullLifecycle(t *testing.T) {
 	// 2. Create a new database.
 	created, err := rt.CreateDatabase(ctx, transport.CreateDatabaseRequest{
 		Name:    "test_db",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err != nil {
@@ -492,9 +478,6 @@ func TestDatabase_FullLifecycle(t *testing.T) {
 	}
 	if fetched.Name != created.Name {
 		t.Errorf("expected name %q, got %q", created.Name, fetched.Name)
-	}
-	if fetched.Engine != created.Engine {
-		t.Errorf("expected engine %q, got %q", created.Engine, fetched.Engine)
 	}
 
 	// 4. List should show one more database.
@@ -548,7 +531,6 @@ func TestCreateDatabase_ServerError(t *testing.T) {
 
 	_, err := rt.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
 		Name:    "test",
-		Engine:  "kv",
 		Backend: "pebble",
 	})
 	if err == nil {

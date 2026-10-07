@@ -47,7 +47,7 @@ costs.
 | Index types, metadata, tag parsing, compound definitions | `pkg/index` | go-qrdb |
 | Cost-based planner, plan cache | `pkg/planner` | go-qrdb |
 | DAO fluent query API (`Find`, `Where`, `QueryBuilder`, `Condition`) | `pkg/dao` | go-qrdb |
-| Index storage (PebbleDB and memory backends) | `pkg/index`, `pkg/storage` | go-qrdb |
+| Index storage (`StoragePebbleIndex`, any `storage.Storage` backend) | `pkg/index`, `pkg/storage` | go-qrdb |
 | SDK surface | `sdk/go` (`Client.Index()`, `Client.KVStore()`) | go-qrdb |
 | Full-text search | `pkg/fts` — see [../full-text-search/](../full-text-search/) | go-qrdb |
 
@@ -112,7 +112,16 @@ collection's documents, and plain key-value keys, and under `prefix` tenant
 isolation (where tenants share one state machine) it indexed another tenant's
 keys, which `IndexQuery` then returned. The correctly scoped path existed and
 was wired only to the DAO helpers, which almost nothing takes. Both halves of
-the scope above, and the tests that pin them, exist to close that.
+the scope above, and the tests that pin them, exist to close that. That
+includes a DAO built `WithDatabase`: its qualified name
+`{database}.{entityType}.{FieldName}` carries no `{tenant}/{database}/`
+namespace of its own, so the namespace half is empty and the declared half —
+`{entityType}/`, read off the entity type the adapter was given, not the
+database string in the name — is the whole scope. `lifecycle.kvStoreAdapter`
+maintains it like any other single-field index; a dedicated test
+drives the write through a REAL `KVEngine`, not a mock, because a mock can
+only show the adapter's `CreateIndex` request was shaped correctly, not that
+the engine answers a query against it with the write.
 
 Two consequences worth stating:
 
@@ -187,7 +196,7 @@ full scans over a store that was only briefly unavailable.
 
 | Store | Indexes | Why |
 |---|---|---|
-| `lifecycle.kvStoreAdapter` (system tenant, via `StoreResolver`) | **yes**, when built with the node's `IndexServicer` | It routes to the same `KVEngine` that applies its writes, so index entries are maintained inside the Raft-applied batch, backfilled on registration, and replicated |
+| `lifecycle.kvStoreAdapter` (system tenant, via `StoreResolver`) | **yes**, when built with the node's `IndexServicer` | It routes to the same engine host that applies its writes (`engine.MVCCEngine` on every backend as of Lane 1A — see [../databases/](../databases/)), so index entries are maintained inside the Raft-applied batch, backfilled on registration, and replicated |
 | `kvstore.MemoryKVStore` | **yes** | Maintains entries on the write path from the value's JSON fields; single-process |
 | `seal.tenantSharedKVStore` (dedicated tenant, via `StoreResolver`) | no — refuses | Stores only ciphertext in the shared store, so nothing beneath it can read a field value to index. See below |
 | `seal.tenantBarrierKVStore` | no — refuses | Same reason |
@@ -218,7 +227,8 @@ ruling; so does threading order-preserving numeric encoding through
 **`index:"case_insensitive"` is honoured on every backend** (#34). The
 case-sensitivity flag is threaded end to end: `protocol.IndexFlagCaseInsensitive`
 carries it on the wire, and `KVEngine.handleIndexCreate`, `MVCCEngine`'s
-equivalent handler, the Pebble-backed `StoragePebbleIndex`, and
+equivalent handler, the storage-backed `StoragePebbleIndex` (any
+`storage.Storage`, not only Pebble), and
 `kvStoreAdapter.RegisterEntityIndexes` all derive `index.IndexConfig.CaseSensitive`
 from it rather than defaulting to case-sensitive. A case-insensitive
 definition now produces a real case-insensitive index everywhere, so a lookup

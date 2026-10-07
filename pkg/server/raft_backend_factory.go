@@ -1382,16 +1382,13 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 	if p == nil || p.ShardID == 0 {
 		return 0, "", nil, false, nil
 	}
-	r, assigned := p.ReplicaForNode(s.localNodeID)
-	if !assigned {
+	if refusal, refused := p.RefusalForNode(s.localNodeID); refused {
 		// The placement names other nodes. Never fall back to the local
 		// catalog here: that started a single-node shard on a node that is not
 		// a replica, which acknowledged writes the real replicas never saw.
-		return 0, "", nil, false, &placement.NotAReplicaError{
-			TenantID: tenantID, Database: db, ShardID: p.ShardID,
-			NodeID: s.localNodeID, Replicas: p.Replicas, LeaderReplicaID: p.LeaderReplicaID,
-		}
+		return 0, "", nil, false, refusal
 	}
+	r, _ := p.ReplicaForNode(s.localNodeID)
 	// A placement record names no path: one would name the disk of the node
 	// that wrote it. Refuse a record that carries one rather than open it.
 	if r.DataRoot != "" {

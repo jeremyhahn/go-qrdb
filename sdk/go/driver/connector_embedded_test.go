@@ -27,7 +27,6 @@ func TestNewEmbeddedConnector_Create(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "testdb",
 	}
 	c := NewEmbeddedConnector(cfg)
@@ -44,7 +43,6 @@ func TestEmbeddedConnector_Connect(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "connecttest",
 	}
 	c := NewEmbeddedConnector(cfg)
@@ -64,7 +62,6 @@ func TestEmbeddedConnector_ConnectOnClosed(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "closedtest",
 	}
 	c := NewEmbeddedConnector(cfg)
@@ -88,7 +85,6 @@ func TestEmbeddedConnector_CloseIsIdempotent(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "idempotenttest",
 	}
 	c := NewEmbeddedConnector(cfg)
@@ -106,7 +102,6 @@ func TestEmbeddedConnector_MultipleConnectsShareEngine(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "sharedtest",
 	}
 	c := NewEmbeddedConnector(cfg)
@@ -140,7 +135,6 @@ func TestEmbeddedConnector_Driver(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "drivertest",
 	}
 	c := NewEmbeddedConnector(cfg)
@@ -158,7 +152,6 @@ func TestEmbeddedConnector_CloseBeforeConnect(t *testing.T) {
 	cfg := &DSNConfig{
 		Scheme:   SchemeEmbedded,
 		Backend:  "memory",
-		Engine:   "kv",
 		Database: "freshclose",
 	}
 	c := NewEmbeddedConnector(cfg)

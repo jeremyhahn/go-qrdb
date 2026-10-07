@@ -186,7 +186,7 @@ func (idx *StoragePebbleIndex) Put(entityKey []byte, fieldValue []byte) error {
 	}
 
 	// Check unique constraint
-	if idx.config.Type == IndexTypeUnique {
+	if idx.config.Unique {
 		if err := idx.checkUniqueConstraint(entityKey, normalizedValue); err != nil {
 			idx.metrics.uniqueViolations.Inc()
 			idx.metrics.errors.Inc()
@@ -212,8 +212,25 @@ func (idx *StoragePebbleIndex) Put(entityKey []byte, fieldValue []byte) error {
 }
 
 // Get retrieves all entity keys for the given field value. For numeric
-// indexes, fieldValue is encoded before the lookup.
+// indexes, fieldValue is encoded before the lookup. The read is against
+// committed storage; use GetInBatch to also see an in-flight batch's own
+// pending writes.
 func (idx *StoragePebbleIndex) Get(fieldValue []byte) ([][]byte, error) {
+	return idx.getFrom(idx.storage, fieldValue, "index.StoragePebbleIndex.Get")
+}
+
+// GetInBatch retrieves all entity keys for the given field value, reading
+// through batch rather than through committed storage. An apply loop packs a
+// variable number of committed entries into one storage batch; a uniqueness
+// check for entry N+1 that read committed storage would not see entry N's
+// index write when the two land in the same batch (storage.Reader).
+func (idx *StoragePebbleIndex) GetInBatch(batch storage.Batch, fieldValue []byte) ([][]byte, error) {
+	return idx.getFrom(batch, fieldValue, "index.StoragePebbleIndex.GetInBatch")
+}
+
+// getFrom is Get and GetInBatch's shared body, reading through whichever
+// storage.Reader the caller supplies -- committed storage or a live batch.
+func (idx *StoragePebbleIndex) getFrom(reader storage.Reader, fieldValue []byte, op string) ([][]byte, error) {
 	start := time.Now()
 	defer func() {
 		idx.metrics.getLatency.Observe(time.Since(start).Seconds())
@@ -231,7 +248,7 @@ func (idx *StoragePebbleIndex) Get(fieldValue []byte) ([][]byte, error) {
 	prefix := idx.buildValuePrefix(normalizedValue)
 
 	// Scan all keys with this prefix
-	iter := idx.storage.NewIterator(&storage.IteratorOptions{
+	iter := reader.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
 		UpperBound: storageIncrementBytes(prefix),
 		OnlyKeys:   true, // We only need keys, not values
@@ -258,7 +275,7 @@ func (idx *StoragePebbleIndex) Get(fieldValue []byte) ([][]byte, error) {
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,
-			"index.StoragePebbleIndex.Get",
+			op,
 			"iterator error",
 		)
 	}
@@ -585,9 +602,22 @@ func (idx *StoragePebbleIndex) resolveScanBound(raw []byte, op string) ([]byte, 
 	return resolveNumericScanBound(raw, idx.config.Name, op)
 }
 
-// checkUniqueConstraint verifies that the field value is unique.
+// checkUniqueConstraint verifies that the field value is unique, against
+// committed storage.
 func (idx *StoragePebbleIndex) checkUniqueConstraint(entityKey []byte, fieldValue []byte) error {
-	existingKeys, err := idx.Get(fieldValue)
+	return idx.checkUniqueConstraintFrom(idx.storage, entityKey, fieldValue)
+}
+
+// checkUniqueConstraintInBatch is checkUniqueConstraint read through batch,
+// so it also sees an earlier entry of the same apply batch's pending write.
+func (idx *StoragePebbleIndex) checkUniqueConstraintInBatch(batch storage.Batch, entityKey []byte, fieldValue []byte) error {
+	return idx.checkUniqueConstraintFrom(batch, entityKey, fieldValue)
+}
+
+// checkUniqueConstraintFrom is the shared body of checkUniqueConstraint and
+// checkUniqueConstraintInBatch.
+func (idx *StoragePebbleIndex) checkUniqueConstraintFrom(reader storage.Reader, entityKey []byte, fieldValue []byte) error {
+	existingKeys, err := idx.getFrom(reader, fieldValue, "index.StoragePebbleIndex.checkUniqueConstraint")
 	if err != nil {
 		return err
 	}
@@ -782,6 +812,14 @@ func (idx *StoragePebbleIndex) Config() IndexConfig {
 	return idx.config
 }
 
+// IsUnique reports whether this index enforces a unique constraint. It lets
+// callers (CheckUniqueViolation, CheckUniqueViolationsBatch) pre-validate a
+// write against this index via the uniqueIndexChecker capability, without
+// depending on the concrete Index implementation.
+func (idx *StoragePebbleIndex) IsUnique() bool {
+	return idx.config.Unique
+}
+
 // StoragePebbleIndexName returns the index name.
 func (idx *StoragePebbleIndex) StoragePebbleIndexName() string {
 	return idx.config.Name
@@ -810,9 +848,10 @@ func (idx *StoragePebbleIndex) PutBatch(batch storage.Batch, entityKey []byte, f
 		return nil // non-numeric value; skip silently
 	}
 
-	// Check unique constraint (reads from storage directly)
-	if idx.config.Type == IndexTypeUnique {
-		if err := idx.checkUniqueConstraint(entityKey, normalizedValue); err != nil {
+	// Check unique constraint, reading through batch so an earlier entry of
+	// the same apply batch's pending write is seen too.
+	if idx.config.Unique {
+		if err := idx.checkUniqueConstraintInBatch(batch, entityKey, normalizedValue); err != nil {
 			idx.metrics.uniqueViolations.Inc()
 			idx.metrics.errors.Inc()
 			return err

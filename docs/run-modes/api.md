@@ -1,6 +1,6 @@
 # Run Modes — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Run mode is not itself an API capability — it is the property that determines
 which capabilities exist. Two things are observable over the wire: the reported
@@ -99,9 +99,10 @@ mode: raft`.
 `sdk/go/conformance`'s `TestCoordinationFamilies_SameOnStandaloneAndRaft` runs
 ONE suite — lease lifecycle, lease expiry deleting its keys, prefix watch,
 revision resume, cancellation, lock lifecycle — against a standalone memory
-node, a standalone pebble node and a raft node, on REST, gRPC, Unix, QUIC, MCP
-and the embedded transport. `TestCoordinationFamilies_FileBackendServesWatchOnly`
-pins the file-backend row of the table above on every transport.
+node, a standalone file node, a standalone pebble node and a raft node, on REST,
+gRPC, Unix, QUIC, MCP and the embedded transport, plus a standalone objstore
+node on the embedded transport. Every backend composes the MVCC engine, so
+every backend serves the same families.
 
 ## Versioning
 

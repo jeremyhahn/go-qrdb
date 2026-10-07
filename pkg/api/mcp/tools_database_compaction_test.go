@@ -28,7 +28,7 @@ func TestDatabaseCompactionTool_UpdateAndClear(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := handleDatabaseCreate(svc)(ctx, buildCallToolRequest(t, "qrdb_database_create", map[string]any{
-		"name": "events", "engine": "kv", "backend": "memory",
+		"name": "events", "backend": "memory",
 	})); err != nil {
 		t.Fatalf("create: %v", err)
 	}

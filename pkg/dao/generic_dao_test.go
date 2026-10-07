@@ -18,6 +18,7 @@ package dao
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -685,6 +686,55 @@ func TestPage(t *testing.T) {
 		assert.Equal(t, 5, len(result.Entities))
 		assert.False(t, result.HasMore)
 	})
+}
+
+// TestPage_SortFieldGlobalOrder pins that PageQuery.SortField sorts the whole
+// entity set before paging, not just the storage-key-ordered slice that
+// landed in one page. Entity keys are "{entityType}/{id}" with a decimal,
+// unpadded id, so storage-key order and Name order are deliberately made to
+// disagree here -- a page-local sort of the wrong candidates would still
+// produce a "sorted-looking" page while silently skipping and repeating
+// entities across the page boundary.
+func TestPage_SortFieldGlobalOrder(t *testing.T) {
+	store := newMemoryKVStore()
+	dao, err := New[*TestEntity](
+		store,
+		"users",
+		func() *TestEntity { return &TestEntity{} },
+	)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	names := []string{"Mia", "Alice", "Zara", "Kevin", "Omar", "Beth", "Yara", "Carl", "Nina", "Drew"}
+	for i, name := range names {
+		require.NoError(t, dao.Save(ctx, &TestEntity{
+			ID:    uint64(i + 1),
+			Name:  name,
+			Email: name + "@example.com",
+		}))
+	}
+
+	wantOrder := append([]string(nil), names...)
+	sort.Strings(wantOrder)
+
+	var gotOrder []string
+	seen := make(map[uint64]bool)
+	for page := 1; page <= 3; page++ {
+		result, err := dao.Page(ctx, PageQuery{Page: page, PageSize: 4, SortField: "Name"})
+		require.NoError(t, err)
+		for _, e := range result.Entities {
+			require.False(t, seen[e.ID], "entity %d returned more than once across pages", e.ID)
+			seen[e.ID] = true
+			gotOrder = append(gotOrder, e.Name)
+		}
+		if !result.HasMore {
+			break
+		}
+	}
+
+	assert.Equal(t, wantOrder, gotOrder, "paging through every page with SortField set must yield the entities in global sorted order")
+	assert.Len(t, gotOrder, len(names), "every entity must be returned exactly once across all pages")
 }
 
 // TestForEachPage validates the ForEachPage function.

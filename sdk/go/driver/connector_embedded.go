@@ -76,7 +76,6 @@ func (c *EmbeddedConnector) createServices() (engineServices, error) {
 	factory := database.NewEmbeddedBackendFactory()
 	backend, err := factory.Create(database.DatabaseConfig{
 		Name:    c.cfg.Database,
-		Engine:  database.EngineType(c.cfg.Engine),
 		Backend: database.BackendType(c.cfg.Backend),
 	}, c.cfg.DataDir)
 	if err != nil {

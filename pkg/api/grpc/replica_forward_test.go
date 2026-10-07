@@ -83,6 +83,16 @@ func (f *fakeTarget) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetRespon
 	return &pb.GetResponse{Value: []byte("value-of-" + req.GetKey())}, nil
 }
 
+func (f *fakeTarget) CeremonyInitialize(ctx context.Context, _ *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
+	f.calls.Add(1)
+	if f.answer != nil {
+		if err := f.answer(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return &pb.CeremonyInitializeResponse{SpkiPin: "leader-answered"}, nil
+}
+
 func (f *fakeTarget) record(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	f.calls.Add(1)
 	call := seenCall{}
@@ -428,5 +438,120 @@ func TestForwardedMetadata_DropsCredentialsAndTransportKeys(t *testing.T) {
 	got := forwardedMetadata(ctx)
 	if len(got) != 2 || got.Get(MetadataDatabase)[0] != "orders" || len(got.Get("x-custom")) != 2 {
 		t.Fatalf("forwarded metadata = %v; want the scope and the custom key only", got)
+	}
+}
+
+// TestForwardAdminWrite_ForwardsToLeaderAndRelaysTheAnswer is the node-parity
+// regression guard (owner ruling 2026-10-06): a handler refused with a
+// leader-only error (service.AdminCredentialNotLeaderError) resolves the
+// named leader through the SAME member records the per-database
+// NotAReplicaError path (forward) reads, signs the identical on-behalf
+// assertion, and relays the leader's answer -- a single hop by address, with
+// no placement or replica set involved.
+func TestForwardAdminWrite_ForwardsToLeaderAndRelaysTheAnswer(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	leader := startTarget(t, ca, "node-1", "raft-leader")
+
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: leader.addr}},
+	}
+	ingressTLS := ca.TLS(t, "node-a")
+	fwd := NewReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: 5 * time.Second,
+	}, ingressTLS)
+	t.Cleanup(fwd.Close)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	reply, ferr, ok := fwd.forwardAdminWrite(ctx, pb.QRDBService_CeremonyInitialize_FullMethodName, &pb.CeremonyInitializeRequest{}, "raft-leader")
+	if !ok {
+		t.Fatal("forwardAdminWrite: not forwarded; want the leader's answer")
+	}
+	if ferr != nil {
+		t.Fatalf("forwardAdminWrite: unexpected error %v; want the leader's success", ferr)
+	}
+	resp, ok := reply.(*pb.CeremonyInitializeResponse)
+	if !ok || resp.GetSpkiPin() != "leader-answered" {
+		t.Fatalf("reply = %+v; want the leader's CeremonyInitializeResponse", reply)
+	}
+	seen := leader.lastSeen(t)
+	if seen.verifyErr != nil || seen.subject != "alice" || seen.tenant != "acme" {
+		t.Fatalf("leader saw %+v; want a verified assertion for alice/acme", seen)
+	}
+}
+
+// TestForwardAdminWrite_UnresolvableLeaderDoesNotForward proves
+// forwardAdminWrite falls back (ok=false) rather than forwarding when the
+// named leader has no member record -- the caller then answers with its own
+// refusal, exactly as REST's tryForwardWrite does on the same condition.
+func TestForwardAdminWrite_UnresolvableLeaderDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	ingressTLS := ca.TLS(t, "node-a")
+	fwd := NewReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: time.Second,
+	}, ingressTLS)
+	t.Cleanup(fwd.Close)
+
+	if _, _, ok := fwd.forwardAdminWrite(context.Background(), pb.QRDBService_CeremonyInitialize_FullMethodName, &pb.CeremonyInitializeRequest{}, "raft-unknown"); ok {
+		t.Fatal("forwardAdminWrite forwarded to a leader with no member record")
+	}
+}
+
+// TestForwardAdminWrite_EmptyLeaderAddressDoesNotForward proves
+// forwardAdminWrite refuses to forward when the refusal names no leader at
+// all, the same condition REST's tryForwardWrite refuses on.
+func TestForwardAdminWrite_EmptyLeaderAddressDoesNotForward(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	ingressTLS := ca.TLS(t, "node-a")
+	fwd := NewReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: time.Second,
+	}, ingressTLS)
+	t.Cleanup(fwd.Close)
+
+	if _, _, ok := fwd.forwardAdminWrite(context.Background(), pb.QRDBService_CeremonyInitialize_FullMethodName, &pb.CeremonyInitializeRequest{}, ""); ok {
+		t.Fatal("forwardAdminWrite forwarded with an empty leader address")
+	}
+}
+
+// TestForwardAdminWrite_RelaysTheLeadersOwnError is the regression guard for
+// the bug this gate caught: a leader that actually answered -- with its own
+// application error, here the SO-PIN refusal CeremonyInitialize's admin-
+// credential step gives -- must have that answer relayed to the original
+// caller, not be treated as "not forwarded" and fall back to the follower's
+// stale AdminCredentialNotLeaderError. Only a request that never reached the
+// leader falls back.
+func TestForwardAdminWrite_RelaysTheLeadersOwnError(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	leader := startTarget(t, ca, "node-1", "raft-leader")
+	leader.answer = func(context.Context) error {
+		return status.Error(codes.Unauthenticated, "pin: invalid PIN")
+	}
+
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: leader.addr}},
+	}
+	ingressTLS := ca.TLS(t, "node-a")
+	fwd := NewReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: 5 * time.Second,
+	}, ingressTLS)
+	t.Cleanup(fwd.Close)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	reply, ferr, ok := fwd.forwardAdminWrite(ctx, pb.QRDBService_CeremonyInitialize_FullMethodName, &pb.CeremonyInitializeRequest{}, "raft-leader")
+	if !ok {
+		t.Fatal("forwardAdminWrite: not forwarded; want the leader's answer relayed")
+	}
+	if reply != nil {
+		t.Fatalf("reply = %+v; want nil alongside the leader's error", reply)
+	}
+	if status.Code(ferr) != codes.Unauthenticated {
+		t.Fatalf("error = %v; want the leader's Unauthenticated refusal relayed, not a forwarding failure", ferr)
 	}
 }

@@ -267,6 +267,94 @@ func TestResolveTLS_FirstNode(t *testing.T) {
 	}
 }
 
+// TestServesAnchor covers both remaining gates: a BYO-TLS node and a bundle
+// with no certificate at all must be refused, so only a legitimate holder
+// of qrdb's self-managed cluster CA is told to serve it as a trust anchor.
+// A single-real-peer deployment is deliberately NOT refused -- see
+// servesAnchor's doc comment for why excluding it would make a
+// self-issued-CA cluster permanently unable to grow past its founder.
+func TestServesAnchor(t *testing.T) {
+	tests := []struct {
+		name   string
+		bundle *TLSBundle
+		want   bool
+	}{
+		{"nil bundle", nil, false},
+		{"explicit TLS", &TLSBundle{CACertPEM: []byte("x"), ExplicitTLS: true}, false},
+		{"no certificate", &TLSBundle{}, false},
+		{"legitimate cluster-CA member", &TLSBundle{CACertPEM: []byte("x")}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := servesAnchor(tt.bundle); got != tt.want {
+				t.Errorf("servesAnchor() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStartMemberAnchorAdvertiser_ServesAnchorRoundTrip proves a member that
+// did NOT generate the cluster CA -- resolveTLS returned no bootstrapServers
+// for it -- can still serve the identical certificate it has cached locally
+// as a Noise anchor bundle, exactly as the first node's own listener does.
+// This is the mechanism that closes the cluster-CA anchor single point of
+// failure: once the generating node is gone for good, every other admitted
+// member already has this listener.
+func TestStartMemberAnchorAdvertiser_ServesAnchorRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := generateCATLS()
+	if err != nil {
+		t.Fatalf("generateCATLS: %v", err)
+	}
+
+	f := &startFlags{dataDir: dir, host: testBindHost}
+	reserveNoisePort(t, f)
+
+	adv, err := startMemberAnchorAdvertiser(f, bundle.CACertPEM, testLogger())
+	if err != nil {
+		t.Fatalf("startMemberAnchorAdvertiser: %v", err)
+	}
+	defer adv.Stop()
+
+	if !noiseServed() {
+		// FIPS 140-3: the node still advertises, over the approved methods
+		// only -- no Noise listener, no persisted key.
+		if adv.NoiseEnabled() {
+			t.Fatal("NoiseEnabled() = true, want false when the method is unavailable")
+		}
+		return
+	}
+	if adv.Addr() == "" {
+		t.Fatal("expected the Noise server to be running")
+	}
+	if len(adv.NoisePublicKey()) == 0 {
+		t.Fatal("expected a Noise public key to be populated")
+	}
+	if !fileExists(filepath.Join(dir, noiseKeyFile)) {
+		t.Error("expected noise-key.hex to be persisted")
+	}
+}
+
+// TestStartMemberAnchorAdvertiser_RejectsKeyBearingBundle pins that this
+// path enforces the same cert-only invariant the first node's own listener
+// does: a bundle that (erroneously) carries the CA private key must never
+// be advertised.
+func TestStartMemberAnchorAdvertiser_RejectsKeyBearingBundle(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := generateCATLS()
+	if err != nil {
+		t.Fatalf("generateCATLS: %v", err)
+	}
+
+	f := &startFlags{dataDir: dir, host: testBindHost}
+	reserveNoisePort(t, f)
+
+	keyBearing := append(append([]byte{}, bundle.CACertPEM...), bundle.CAKeyPEM...)
+	if _, err := startMemberAnchorAdvertiser(f, keyBearing, testLogger()); err == nil {
+		t.Fatal("expected startMemberAnchorAdvertiser to refuse a bundle carrying the CA private key")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // hasBootstrapFlags tests
 // ---------------------------------------------------------------------------

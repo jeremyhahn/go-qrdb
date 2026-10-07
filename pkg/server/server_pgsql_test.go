@@ -185,7 +185,6 @@ func TestStartPgSQL_WithDatabaseManager(t *testing.T) {
 	// Create a database so the manager-backed provider has something to serve.
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name:    "testdb",
-		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 	})
 	if err != nil {

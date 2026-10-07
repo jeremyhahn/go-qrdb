@@ -202,6 +202,69 @@ func (f *FrameForwarder) Forward(ctx context.Context, caller *auth.Identity, met
 	return status, body, true
 }
 
+// ForwardToLeader sends method/payload, unchanged, to the system shard's
+// leader at leaderAddr. Unlike Forward it is not a placement-based retry
+// across a replica set -- the shared system shard has none to retry across
+// -- it is the single hop a leader-only write's own refusal
+// (service.AdminCredentialNotLeaderError and its siblings) already names by
+// address. It resolves that address through the SAME member records Forward's
+// Locator reads, signs the identical on-behalf assertion, and relays the
+// leader's answer. forwarded is false whenever the write was not sent (no
+// forwarder, unresolvable leader, or a transport failure before any request
+// reached it), and the caller falls back to its own refusal.
+func (f *FrameForwarder) ForwardToLeader(ctx context.Context, caller *auth.Identity, method, database string, payload []byte, leaderAddr string) (uint16, []byte, bool) {
+	if leaderAddr == "" {
+		slog.Warn("admin forwarding: refusal names no leader", "method", method)
+		return 0, nil, false
+	}
+	member, found, err := f.cfg.Locator.MemberByAddress(ctx, leaderAddr)
+	if err != nil || !found {
+		slog.Warn("admin forwarding: leader not found in member records", "leader_raft_addr", leaderAddr, "error", err)
+		return 0, nil, false
+	}
+	endpoint, ok := member.APIEndpoint(cluster.APIProtocolQUIC)
+	if !ok || endpoint == "" {
+		slog.Warn("admin forwarding: leader advertises no QUIC endpoint", "leader_raft_addr", leaderAddr)
+		return 0, nil, false
+	}
+	assertion, sig, err := forward.SignCaller(caller, forward.RPCBinding("quic", method, payload), f.key, f.nodeID, time.Now())
+	if err != nil {
+		slog.Warn("admin forwarding: not forwarded", "protocol", cluster.APIProtocolQUIC, "leader_raft_addr", leaderAddr, "error", err)
+		return 0, nil, false
+	}
+	envelope, err := wire.EncodeOnBehalf(wire.OnBehalf{Method: method, Assertion: assertion, Signature: sig, Payload: payload})
+	if err != nil {
+		slog.Warn("admin forwarding: not forwarded", "leader_raft_addr", leaderAddr, "error", err)
+		return 0, nil, false
+	}
+
+	fctx, cancel := context.WithTimeout(ctx, f.cfg.ForwardTimeout())
+	defer cancel()
+	stream, ok := f.stream(fctx, endpoint)
+	if !ok {
+		slog.Warn("admin forwarding: could not connect to leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint)
+		return 0, nil, false
+	}
+	if dl, ok := fctx.Deadline(); ok {
+		_ = stream.SetDeadline(dl)
+	}
+	if err := wire.WriteRequest(stream, wire.MethodOnBehalf, database, 1, envelope); err != nil {
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
+		slog.Warn("admin forwarding: could not send to leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
+		return 0, nil, false
+	}
+	_, st, b, err := wire.ReadResponse(stream)
+	// Closing the write side after reading the whole frame is this
+	// protocol's acknowledgement that the answer arrived.
+	_ = stream.Close()
+	if err != nil {
+		slog.Warn("admin forwarding: could not read the leader's answer", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
+		return 0, nil, false
+	}
+	return st, b, true
+}
+
 // stream opens a request stream to endpoint, dialing when there is no live
 // connection. It returns false when none could be opened: the request then
 // never left this node.

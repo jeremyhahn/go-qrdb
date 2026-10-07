@@ -1,7 +1,7 @@
 # Vector Database — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Sections headed **Target** are the vector half of the multi-model database
 > program — see [architecture.md](architecture.md) and
@@ -446,9 +446,37 @@ input merely harmless.
 
 Shipped: vectors, their metadata and namespace records are stored in the
 node-local Pebble vector store, under the node's encryptor. ANN indexes are
-in memory only and are not reloaded at startup (see architecture.md "Current
-state"). Compaction reclaims space from deleted vectors; rebuild reconstructs
-the ANN index from the stored vectors.
+in memory only, and are rebuilt from the stored vectors -- under the
+namespace's own configured distance metric -- when the service opens: at
+process restart, and over whatever the store already holds when a new
+replica's vector directory is first opened (there is no Raft snapshot of
+this node-local store; see architecture.md "Current state"). Compaction
+reclaims space from deleted vectors; `RebuildIndex` reconstructs the ANN
+index from the stored vectors on demand, the same way the automatic
+construction-time rebuild does.
+
+**Correction (found and fixed by the lane 1B restart-blocker fix,
+2026-10-06).** An earlier revision of this document, and the shipped code it
+described, left ANN indexes unreloaded at startup: `loadNamespaces`
+pre-registered a blank index hardcoded to the L2 metric for every namespace
+the store already held, which permanently satisfied the lazy rebuild's
+"index already exists" check -- so the rebuild branch that reads a
+namespace's real configured metric from storage, and scans its vectors back
+in, never ran for a namespace that predated the current process. A restart
+therefore came up with an empty index silently ranking under the wrong
+metric for every namespace but a freshly-metric'd `L2` one. `CreateNamespace`
+carried the identical defect one level up: its non-Raft path also hardcoded
+the L2 metric onto the index it created, independent of restart, so a
+`COSINE` or `DOT_PRODUCT` namespace searched under the wrong metric from the
+moment it was created. Both call sites, and the lazy-rebuild path itself,
+now derive the index's metric from one function
+(`distanceMetricFromString`), and `loadNamespaces` builds each namespace's
+index through the same rebuild `ensureHNSWIndex` uses rather than a
+placeholder. `TestVectorService_RestartPreservesConfiguredMetric` and
+`TestVectorService_SnapshotInstallPreservesConfiguredMetric`
+(`pkg/service/vector_restart_test.go`) pin both call paths against a real
+PebbleDB-backed store, with a query vector chosen so that L2 and cosine
+ranking disagree; both were verified to fail against the pre-fix code.
 
 ## Target: the vector engine
 
@@ -474,6 +502,14 @@ section still describes work not yet wired to anything a caller can reach.
   `RebuildNamespace` recovery. Wired into `MVCCEngine` and `KVEngine` via
   `WithMVCCVectorIndex` / `WithKVVectorIndex`, exercised by the acceptance
   tests in `pkg/engine/vector_acceptance_test.go`.
+- **Restart blocker in the pre-Phase-4 service, independent of the above:
+  fixed 2026-10-06.** `pkg/service/vector.go` is what Phase 4 rewrites and is
+  unaffected by phases 1-2 above (nothing proposes their opcodes yet, per
+  "Phase 4" below) -- it is the node-local-Pebble-store service described in
+  "Persistence" above, and it is still what production traffic uses today.
+  Its restart path discarded both a namespace's stored vectors and its
+  configured distance metric; see "Persistence" above for the fix. This is
+  not Phase 3 or Phase 4 work and does not change either phase's status.
 - **Phase 3 — Raft snapshot + multi-node parity: not started.** The vector
   keyspace is ordinary state-machine state and travels in today's snapshot by
   construction, but multi-node parity (join, catch-up, recovery) for it is
@@ -683,14 +719,32 @@ storage schema package is kept only if the engine's record codec reuses it.
 ### Target: acceptance tests (lane 1B)
 
 1. **Restart keeps search working.** Upsert, restart, search returns the same
-   top-k. This fails against the shipped code, whose startup index is empty.
+   top-k. This failed against the shipped (pre-Phase-4) service, whose
+   startup index was empty; fixed 2026-10-06 and pinned by
+   `TestVectorService_RestartPreservesConfiguredMetric`
+   (`pkg/service/vector_restart_test.go`), run against a real PebbleDB
+   store. Still open for the Phase-3/4 engine once `pkg/service/vector.go`
+   is rewired to it -- `pkg/engine`'s own `Warm`/checkpoint recovery is a
+   separate, already-shipped mechanism this item has not yet been re-run
+   against end to end.
 2. **The namespace's metric survives restart.** A cosine namespace searched
-   after restart ranks by cosine.
+   after restart ranks by cosine. Same fix and test as item 1: the query
+   vector `TestVectorService_RestartPreservesConfiguredMetric` searches with
+   is chosen so L2 and cosine ranking disagree, so the test fails if the
+   metric is ever discarded again.
 3. **Replicas agree.** On a three-replica database, upsert through the leader
    and search with follower reads on each replica: identical top-k.
 4. **Snapshot install.** A replica added after 10,000 upserts serves searches
    without a rebuild when the snapshot carries a matching checkpoint, and after
-   one when it does not; both give the same results.
+   one when it does not; both give the same results. Still open: this item is
+   about the Phase-3/4 engine's Raft snapshot, which this lane has not wired
+   up. `TestVectorService_SnapshotInstallPreservesConfiguredMetric`
+   (`pkg/service/vector_restart_test.go`) pins the analogous case for the
+   pre-Phase-4 service -- which has no Raft snapshot of its node-local store
+   at all, so a "new replica" there is modeled as a fresh service opened
+   over a filesystem copy of an already-populated store -- and shares this
+   item's defect (and fix) at the `loadNamespaces` construction path, but it
+   is not a test of checkpoint-carrying Raft snapshots.
 5. **Crash between commit and index update.** Inject the crash; after reopen the
    vector is searchable.
 6. **The drop fence.** An upsert proposed before a database's drop fence and

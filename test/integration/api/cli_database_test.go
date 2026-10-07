@@ -59,8 +59,6 @@ func TestCLIMultiProtocolDatabaseLifecycle(t *testing.T) {
 			}
 			assertContains(t, stdout, "Name:",
 				fmt.Sprintf("[%s] database info should contain 'Name:'", proto))
-			assertContains(t, stdout, "Engine:",
-				fmt.Sprintf("[%s] database info should contain 'Engine:'", proto))
 			assertContains(t, stdout, "Backend:",
 				fmt.Sprintf("[%s] database info should contain 'Backend:'", proto))
 
@@ -79,9 +77,11 @@ func TestCLIMultiProtocolDatabaseLifecycle(t *testing.T) {
 	}
 }
 
-// TestCLIMultiProtocolDatabaseCreateEngines tests creating databases with
-// different engine types (kv, timeseries) across all protocols.
-func TestCLIMultiProtocolDatabaseCreateEngines(t *testing.T) {
+// TestCLIMultiProtocolDatabaseCreateEngineFlagRefused pins OD-13 (ruled A):
+// `--engine` is removed outright (Lane 1C), so every transport's CLI must
+// refuse it as an unknown flag rather than accept or silently ignore it.
+// This replaces a prior version of this test that asserted the flag worked.
+func TestCLIMultiProtocolDatabaseCreateEngineFlagRefused(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
 
@@ -91,59 +91,19 @@ func TestCLIMultiProtocolDatabaseCreateEngines(t *testing.T) {
 				t.Fatalf("server not available for protocol %s", proto)
 			}
 
-			ts := testTimestamp()
+			dbName := fmt.Sprintf("db-engine-refused-%s-%d", proto, testTimestamp())
 
-			// Test 1: Create a database with kv engine.
-			kvDBName := fmt.Sprintf("db-kv-%s-%d", proto, ts)
-
-			t.Cleanup(func() {
-				execCLIWithProtocol(t, cfg, proto, "database", "drop", kvDBName) //nolint:errcheck
-			})
-
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", kvDBName, "--engine", "kv")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database create --engine kv failed: %v", proto, err)
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName, "--engine", "kv")
+			if err == nil {
+				t.Cleanup(func() {
+					execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
+				})
+				t.Fatalf("[%s] database create --engine kv succeeded, want an unknown-flag refusal\nstdout: %s\nstderr: %s", proto, stdout, stderr)
 			}
-			assertContains(t, stdout, "Engine:",
-				fmt.Sprintf("[%s] database create --engine kv should contain 'Engine:'", proto))
-			assertContains(t, stdout, "kv",
-				fmt.Sprintf("[%s] database create --engine kv should contain 'kv'", proto))
+			assertContains(t, strings.ToLower(stdout+stderr+err.Error()), "engine",
+				fmt.Sprintf("[%s] unknown-flag refusal should name 'engine'", proto))
 
-			// Drop the kv database.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", kvDBName)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database drop %s failed: %v", proto, kvDBName, err)
-			}
-
-			// Test 2: Create a database with timeseries engine.
-			tsDBName := fmt.Sprintf("db-ts-%s-%d", proto, ts)
-
-			t.Cleanup(func() {
-				execCLIWithProtocol(t, cfg, proto, "database", "drop", tsDBName) //nolint:errcheck
-			})
-
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "create", tsDBName, "--engine", "timeseries")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database create --engine timeseries failed: %v", proto, err)
-			}
-			assertContains(t, stdout, "Engine:",
-				fmt.Sprintf("[%s] database create --engine timeseries should contain 'Engine:'", proto))
-
-			// Drop the timeseries database.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", tsDBName)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database drop %s failed: %v", proto, tsDBName, err)
-			}
-
-			t.Logf("[%s] database create engines passed", proto)
+			t.Logf("[%s] database create --engine refused as unknown flag", proto)
 		})
 	}
 }
@@ -885,64 +845,6 @@ func TestCLIMultiProtocolDatabaseUpdateConnectionTLS(t *testing.T) {
 				fmt.Sprintf("[%s] database drop should output 'OK'", proto))
 
 			t.Logf("[%s] database update-connection TLS lifecycle passed for: %s", proto, dbName)
-		})
-	}
-}
-
-// TestCLIMultiProtocolDatabaseCreateVectorEngine tests creating a database
-// with the vector engine type across all protocols.
-func TestCLIMultiProtocolDatabaseCreateVectorEngine(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			dbName := fmt.Sprintf("db-vec-%s-%d", proto, testTimestamp())
-
-			t.Cleanup(func() {
-				execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
-			})
-
-			// Step 1: Create a database with vector engine.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"database", "create", dbName, "--engine", "vector")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database create --engine vector failed: %v", proto, err)
-			}
-			assertContains(t, stdout, "Engine:",
-				fmt.Sprintf("[%s] database create --engine vector should contain 'Engine:'", proto))
-			assertContains(t, stdout, "vector",
-				fmt.Sprintf("[%s] database create --engine vector should contain 'vector'", proto))
-
-			// Step 2: Verify info shows vector engine.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database info for vector engine failed: %v", proto, err)
-			}
-			assertContains(t, stdout, "Engine:",
-				fmt.Sprintf("[%s] database info should contain 'Engine:'", proto))
-			assertContains(t, stdout, "vector",
-				fmt.Sprintf("[%s] database info should contain 'vector'", proto))
-
-			// Step 3: Drop the database.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database drop failed: %v", proto, err)
-			}
-			assertContains(t, stdout, "OK",
-				fmt.Sprintf("[%s] database drop should output 'OK'", proto))
-
-			t.Logf("[%s] database create --engine vector lifecycle passed for: %s", proto, dbName)
 		})
 	}
 }

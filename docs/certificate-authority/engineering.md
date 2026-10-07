@@ -1,6 +1,6 @@
 # Certificate Authority — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 ## Exported surface
 
@@ -302,10 +302,12 @@ type AuthMiddlewareConfig struct {
 - **`getCAMaterial()` resolves a `cakey.Provider` and returns its
   `crypto.Signer`**, never raw key bytes: it signs in place, inside the
   provider, so no caller holds CA key material to alias in the first place.
-  The built-in per-tenant `cakey.SoftwareProvider` wipes its own decrypted
-  key on seal; a provider resolved from an injected
-  `cakey.ProviderFactory` (`WithKeyProviderFactory`) manages its own key
-  custody entirely.
+  The built-in per-tenant `cakey.SoftwareProvider` holds its key in a
+  `secure.Secret` (go-enclave protected memory) whenever established,
+  opening it into an mlocked `secure.Buffer` only for the duration of one
+  `Sign` call, and destroys the `Secret` outright on seal; a provider
+  resolved from an injected `cakey.ProviderFactory`
+  (`WithKeyProviderFactory`) manages its own key custody entirely.
 - **Revocation is enforced from replicated state, not a CRL.** Nothing generates
   a CRL and nothing answers OCSP; that is deliberate — see
   [architecture.md](architecture.md).
@@ -381,7 +383,8 @@ type AuthMiddlewareConfig struct {
 
 | Key | Value | Purpose |
 |---|---|---|
-| `__sys:cert_ca/{tenantID}/material` | `{"key_der":...,"cert_der":...}` JSON, both DER, written together as one atomic `PutIfAbsent` | CA key + certificate, together (`cakey.SoftwareProvider`'s `storedMaterial` envelope — no per-record encryption of its own; see "Trust boundaries") |
+| `__sys:cert_ca/{tenantID}/material` | SEC1 DER-encoded EC private key, raw | the CA private key, written together with `certificate` below in one atomic `PutAllIfAllUnchanged` batch — no per-record encryption of its own; see "Trust boundaries" |
+| `__sys:cert_ca/{tenantID}/certificate` | DER-encoded X.509 certificate, raw | the CA's own self-signed certificate; public data, read without ever touching `material` |
 | `__sys:certs/{tenantID}/{serial}` | `CertRecord` JSON | issued certificate records |
 | `__sys:certs_revoked/{serial}` | revocation-entry JSON | revocation markers |
 
@@ -551,3 +554,7 @@ key patterns are the on-disk contract for this feature.
   metadata (DN, fingerprint, validity) and a standalone CA+chain bundle export
   are **not yet exposed through the SDK**. The CLI documents this in its own
   help text.
+
+## Integration Target
+
+Run `make integration-test-certificate-authority` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `certificate-authority`.

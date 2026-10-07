@@ -43,7 +43,7 @@ func TestRegister_RefusesRSAHolderKeys(t *testing.T) {
 
 	_, edKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	_, err = e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, newHolderWithKey(t, "bob", "", edKey).withEncryptionKey(t, keydelivery.KEMX25519).request("admin"))
+	_, err = e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, newHolderWithKey(t, "bob", "", edKey).withEncryptionKey(t, testEnvelopeKEM(keydelivery.KEMX25519)).request("admin"))
 	require.NoError(t, err, "Ed25519 is enrolled")
 	_, err = e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, newP384Holder(t, "carol", "").request("admin"))
 	require.NoError(t, err, "P-384 is enrolled")

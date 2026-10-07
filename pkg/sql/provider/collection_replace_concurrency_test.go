@@ -93,7 +93,7 @@ func newHookedCollectionHarness(t *testing.T) (*collectionHarness, *hookedDocSto
 			return service.NewTableService(store, store, txn, seq), nil
 		},
 	}
-	h.prov = NewProviderWithEngine("shop", store, "", WithRegistry(reg))
+	h.prov = NewProvider("shop", store, WithRegistry(reg))
 	return h, hooked
 }
 
@@ -275,7 +275,7 @@ func TestCollectionSQL_OnDuplicateKeyUpdateLosesLoudly(t *testing.T) {
 			})
 		}
 	}}
-	h.prov = NewProviderWithEngine("shop", h.store, "", WithRegistry(&fakeRelationalRegistry{
+	h.prov = NewProvider("shop", h.store, WithRegistry(&fakeRelationalRegistry{
 		collectionSvc: hookedSvc,
 		kvSvc:         h.store,
 		mvccSvc:       h.store,

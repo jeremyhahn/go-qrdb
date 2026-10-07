@@ -705,10 +705,10 @@ func testKVRestoreTenantIsolationOverProtocol(t *testing.T, node *multiProtoNode
 	connA := tenantCLIArgsForProto(node, proto, certA, keyA)
 	connB := tenantCLIArgsForProto(node, proto, certB, keyB)
 
-	if out, err := runQRDB(t, node.cli, connA, "database", "create", dbA, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runQRDB(t, node.cli, connA, "database", "create", dbA, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] tenant A database create: %v\noutput: %s", proto.name, err, out)
 	}
-	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbB, "--engine", "kv", "--backend", "pebble"); err != nil {
+	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbB, "--backend", "pebble"); err != nil {
 		t.Fatalf("[%s] tenant B database create: %v\noutput: %s", proto.name, err, out)
 	}
 

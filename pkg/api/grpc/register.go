@@ -150,6 +150,15 @@ func WithRegisterCeremonyService(svc service.CeremonyServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.ceremonySvc = svc }
 }
 
+// WithRegisterReplicaForwarding injects the node's ReplicaForwarder so a
+// handler refused with a leader-only error (service.AdminCredentialNotLeaderError)
+// can forward it to the system shard's leader through the SAME machinery
+// the generic per-database NotAReplicaError path already uses, rather than
+// answering with its own refusal.
+func WithRegisterReplicaForwarding(fwd *ReplicaForwarder) RegisterOption {
+	return func(s *qrdbServiceServer) { s.replicaForwarder = fwd }
+}
+
 // WithRegisterCeremonyCA attaches the node's CeremonyCA for the registered
 // gRPC service, so the shared CeremonyInitialize handler can issue the TLS
 // and SO certificates. This is how the Unix domain socket transport (which

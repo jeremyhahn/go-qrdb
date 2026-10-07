@@ -1,7 +1,7 @@
 # Replica Forwarding — CLI
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-05
+> Scope: go-qrdb · Last verified: 2026-10-06
 
 No CLI verbs. Forwarding is server behaviour: every `qrdb` verb that addresses
 a `raft`-isolated database works through any node, over every network

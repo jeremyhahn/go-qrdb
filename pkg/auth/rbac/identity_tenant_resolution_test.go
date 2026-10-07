@@ -44,9 +44,22 @@ func authorizeAgainst(t *testing.T, tenantIDs []string, callerTenant, target str
 // tenant failed.
 func TestAuthorize_ColdCacheResolvesRolesInTheIdentitysTenant(t *testing.T) {
 	tenants := []string{tenantid.System, "acme"}
-	if err := authorizeAgainst(t, tenants, tenantid.System, "acme", permission.TenantsRead); err != nil {
-		t.Fatalf("system admin reading acme on a cold cache = %v, want nil", err)
+	// TenantsRead is ScopeSelf, and the system-tenant lift was removed (owner
+	// ruling, 2026-10-01): the operator's roles must still resolve correctly
+	// under its OWN tenant (a *ResolveError here would mean the cold-cache
+	// resolution bug is back), but the final outcome is now a scope denial,
+	// not an admission.
+	err := authorizeAgainst(t, tenants, tenantid.System, "acme", permission.TenantsRead)
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("system admin reading acme on a cold cache = %v, want *PermissionDeniedError", err)
 	}
+	var resolve *ResolveError
+	if errors.As(err, &resolve) {
+		t.Fatalf("system admin's own roles failed to resolve: %v", err)
+	}
+	// TenantsSetQuotas is ScopeCross, unaffected by the lift removal: it
+	// never looks at the target tenant at all.
 	if err := authorizeAgainst(t, tenants, tenantid.System, "acme", permission.TenantsSetQuotas); err != nil {
 		t.Fatalf("system admin setting acme's quotas on a cold cache = %v, want nil", err)
 	}

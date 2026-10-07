@@ -167,7 +167,7 @@ func TestProvider_WithReadOnly_RelationalTable_HidesDDLInterfaces(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	p := NewProviderWithEngine("shop", h.kvSvc, "", WithRegistry(h.registry), WithReadOnly())
+	p := NewProvider("shop", h.kvSvc, WithRegistry(h.registry), WithReadOnly())
 	sqlDB, err := p.Database(newTestContext(), "shop")
 	require.NoError(t, err)
 
@@ -218,7 +218,7 @@ func TestReadOnlyDatabase_NilPassthrough(t *testing.T) {
 // implements.
 func TestProvider_WithReadOnly_HidesDatabaseDDL(t *testing.T) {
 	svc := &mockKVService{}
-	p := NewProviderWithEngine("qrdb", svc, "", WithReadOnly())
+	p := NewProvider("qrdb", svc, WithReadOnly())
 	ctx := newTestContext()
 
 	db, err := p.Database(ctx, "qrdb")
@@ -238,7 +238,7 @@ func TestProvider_WithReadOnly_HidesDatabaseDDL(t *testing.T) {
 // there, so an unwrapped entry would reopen the DDL path.
 func TestProvider_WithReadOnly_HidesDatabaseDDL_AllDatabases(t *testing.T) {
 	svc := &mockKVService{}
-	p := NewProviderWithEngine("qrdb", svc, "", WithReadOnly())
+	p := NewProvider("qrdb", svc, WithReadOnly())
 	ctx := newTestContext()
 
 	dbs := p.AllDatabases(ctx)
@@ -253,7 +253,7 @@ func TestProvider_WithReadOnly_HidesDatabaseDDL_AllDatabases(t *testing.T) {
 // DDL support will attach to.
 func TestProvider_WithoutReadOnly_ServesConcreteDatabase(t *testing.T) {
 	svc := &mockKVService{}
-	p := NewProviderWithEngine("qrdb", svc, "")
+	p := NewProvider("qrdb", svc)
 	ctx := newTestContext()
 
 	db, err := p.Database(ctx, "qrdb")

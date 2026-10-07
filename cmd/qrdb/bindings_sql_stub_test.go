@@ -55,16 +55,3 @@ func TestSQLStub_Execute(t *testing.T) {
 		t.Fatalf("expected feature %q, got %q", "sql", fde.Feature)
 	}
 }
-
-func TestSQLStub_SetServicesThenExecute(t *testing.T) {
-	b := newSQLStubBinding(t)
-
-	// SetServices and ClearServices are no-ops; Execute must still
-	// return FeatureDisabledError afterwards.
-	b.SetServices(nil, nil)
-	b.ClearServices()
-
-	if _, err := b.Execute("SELECT 1", "testdb"); err == nil {
-		t.Fatal("expected FeatureDisabledError after SetServices/ClearServices, got nil")
-	}
-}

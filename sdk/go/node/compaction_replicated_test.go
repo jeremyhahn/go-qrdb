@@ -128,7 +128,7 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	first, err := NewStandaloneNode(ctx, standaloneRestartConfig(dataDir), opts)
 	require.NoError(t, err)
 	_, err = first.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenantid.System),
-		database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendPebble})
+		database.DatabaseConfig{Name: "events", Backend: database.BackendPebble})
 	require.NoError(t, err)
 	period := 4 * time.Second
 	setPolicy(t, ctx, first, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
@@ -179,7 +179,7 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	key := tenant.ComposeNamespace(tenantid.System, "events") + "k"
 	require.NoError(t, putUntilCommitted(ctx, a.Client().KV(), key, []byte("first")))
 	_, err = a.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenantid.System),
-		database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendPebble})
+		database.DatabaseConfig{Name: "events", Backend: database.BackendPebble})
 	require.NoError(t, err)
 	period := 6 * time.Second
 	setPolicy(t, ctx, a, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})

@@ -1,10 +1,12 @@
 # Volume Pools — User Guide
 
-> **Status: APPROVED — ruled 2026-10-04; Phase 1 build in progress.** · Scope:
-> go-qrdb · Last verified: 2026-10-04
+> **Status: APPROVED — ruled 2026-10-04 (D1-D9), 2026-10-06 (D10); Phase 1
+> build in progress.** · Scope: go-qrdb · Last verified: 2026-10-06
 >
 > Moving a tenant between pools (`qrdb tenant move`) is **Phase 2** (decision
 > D5) and not available in this build; everything else below is Phase 1.
+
+Test reference: `make integration-test-volume-pools`; coverage row: `test/integration/COVERAGE.md` `[volume-pools](../../docs/volume-pools/)`.
 
 A volume pool is a named place on disk where dedicated tenants live. You give a
 pool a name once for the whole cluster. Each node then says, in its own
@@ -104,10 +106,36 @@ hardware key backend (TPM, HSM or cloud KMS) in go-xkms, that backend is for
 break-glass recovery, not routine unlock. Tenant data is still encrypted
 with the tenant's own key on top of this.
 
+## If a node's volume pool can't open
+
+By default, `qrdbd start` fails outright -- and the node does not start at
+all -- if any pool it maps in `storage.volume_pools` can't be opened (a
+missing directory, an absent device, an unregistered provider). The error
+names every pool it couldn't open and why, so you fix the mount and retry:
+
+```bash
+qrdbd start --config qrdbd.yaml
+# volume: 1 volume pool(s) failed to open at boot (pass
+# --allow-degraded-volume-boot to start anyway, serving every volume and
+# database this node can): "fast" (provider "dir"): stat /mnt/nvme-a: no
+# such file or directory;
+```
+
+If you'd rather bring the node up serving everything it CAN while that one
+mount is fixed -- for example, during a maintenance window on one disk --
+pass `--allow-degraded-volume-boot` (or set `storage.allow_degraded_volume_boot:
+true` in the node's config). The node starts, the failed pool's tenants are
+refused on this node only (other nodes may still serve them), and the skip
+is never silent: it's an ERROR in this node's log, visible in
+`qrdb volume-pool get <pool>`, and exported as the
+`qrdb_volume_pool_ready` metric. Once the mount is fixed, restart the node
+without the flag to go back to the stricter default.
+
 ## Troubleshooting
 
 | You see | Meaning | Do |
 |---|---|---|
+| `qrdbd start` fails immediately naming a pool | the default: a configured volume pool could not be opened | fix the mount/device, or pass `--allow-degraded-volume-boot` to start anyway (see above) |
 | `volume-pool get` shows a node `unmapped` | that node's configuration does not map the pool | add the mapping and restart the node |
 | a node `unavailable` | the node mapped the pool but could not open it: missing directory, not writable, device absent | fix the directory or device; the node reports again within seconds |
 | a node `locked` | an encrypted pool's device is locked because that node is sealed, or its unlock failed at the last unseal | unseal (or re-unseal) the node; if it stays locked after that, check the provider's detail text for the underlying device error |

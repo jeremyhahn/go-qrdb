@@ -17,18 +17,18 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // RoleBinding exposes role management operations to the Wails frontend.
 type RoleBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewRoleBinding creates a new RoleBinding backed by the given connection.
-func NewRoleBinding(log *logger.Logger, conn *ConnectionBinding) *RoleBinding {
+func NewRoleBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *RoleBinding {
 	return &RoleBinding{logger: log, conn: conn}
 }
 

@@ -17,20 +17,20 @@
 package main
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TimeSeriesBinding is a stub that returns FeatureDisabledError for all
 // methods when the time-series feature is not compiled in.
 type TimeSeriesBinding struct {
-	logger *logger.Logger
+	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
 }
 
 // NewTimeSeriesBinding creates a new TimeSeriesBinding backed by the
 // given connection.
-func NewTimeSeriesBinding(log *logger.Logger, conn *ConnectionBinding) *TimeSeriesBinding {
+func NewTimeSeriesBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *TimeSeriesBinding {
 	return &TimeSeriesBinding{logger: log, conn: conn}
 }
 

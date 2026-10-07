@@ -165,12 +165,19 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	// Tenant + role + user, mirroring TestIsolationRaft_EndToEnd.
 	// ---------------------------------------------------------------------
 	t.Logf("creating tenant %s with IsolationRaft + barrier_auto_unseal", scaleFoundationTenantID)
-	tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, scaleFoundationTenantID, "Scale Test Tenant")
+	adminKeyPEM, tenantBody, tenantStatus := createRaftTenant(t, sysClient, leaderPort, scaleFoundationTenantID, "Scale Test Tenant")
 	if tenantStatus != http.StatusCreated && tenantStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tenantStatus, tenantBody)
 	}
 
-	roleBody, roleStatus := iraftAPIPost(t, sysClient,
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so this authenticates
+	// as the tenant's own onboarded admin; its built-in Admin role cannot
+	// create a NEW role (RolesCreate is SO-exclusive), so it self-assigns
+	// its own pre-seeded SO role first.
+	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody)
+	selfAssignTenantSO(t, leaderPort, scaleFoundationTenantID, raftAdminClient)
+	roleBody, roleStatus := iraftAPIPost(t, raftAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name":      "db-admin",
@@ -197,7 +204,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 	}
 
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, scaleFoundationTenantID)
-	createBoundUser(t, sysClient, leaderPort,
+	createBoundUser(t, raftAdminClient, leaderPort,
 		map[string]interface{}{
 			"username":  "admin",
 			"email":     "admin@" + scaleFoundationTenantID + ".example.com",
@@ -215,7 +222,6 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
 		map[string]interface{}{
 			"name":     scaleFoundationDBName,
-			"engine":   "kv",
 			"backend":  "pebble",
 			"replicas": 1,
 		},
@@ -832,12 +838,19 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	// ---------------------------------------------------------------------
 	// Tenant + role + user.
 	// ---------------------------------------------------------------------
-	_, tStatus := createRaftTenant(t, sysClient, leaderPort, restartSurvivalTenantID, "Scale Restart Test Tenant")
+	adminKeyPEM, tBody, tStatus := createRaftTenant(t, sysClient, leaderPort, restartSurvivalTenantID, "Scale Restart Test Tenant")
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d", tStatus)
 	}
 
-	roleBody, rStatus := iraftAPIPost(t, sysClient,
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so this authenticates
+	// as the tenant's own onboarded admin; its built-in Admin role cannot
+	// create a NEW role (RolesCreate is SO-exclusive), so it self-assigns
+	// its own pre-seeded SO role first.
+	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tBody)
+	selfAssignTenantSO(t, leaderPort, restartSurvivalTenantID, raftAdminClient)
+	roleBody, rStatus := iraftAPIPost(t, raftAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
 			"name": "db-admin", "tenant_id": restartSurvivalTenantID,
@@ -857,7 +870,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 		t.Fatalf("decode role ID: %s", roleBody)
 	}
 	tenantCertPath, tenantKeyPath := ca.generateClientCertForTenant(t, restartSurvivalTenantID)
-	createBoundUser(t, sysClient, leaderPort,
+	createBoundUser(t, raftAdminClient, leaderPort,
 		map[string]interface{}{
 			"username": "admin", "email": "admin@" + restartSurvivalTenantID + ".example.com", "tenant_id": restartSurvivalTenantID,
 			"role_ids": []string{roleResp.ID},
@@ -871,7 +884,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	dbBody, dbStatus := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
 		map[string]interface{}{
-			"name": restartSurvivalDBName, "engine": "kv", "backend": "pebble", "replicas": 1,
+			"name": restartSurvivalDBName, "backend": "pebble", "replicas": 1,
 		})
 	if dbStatus != http.StatusCreated && dbStatus != http.StatusOK {
 		t.Fatalf("create database: status %d, body: %s", dbStatus, dbBody)

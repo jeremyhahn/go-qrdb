@@ -31,7 +31,7 @@ import (
 func TestProvider_SharedDefaultDatabaseVisibleToEveryTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	for _, name := range []string{"qrdb", "ops"} {
-		if _, err := mgr.Create(database.DatabaseConfig{Name: name, Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		if _, err := mgr.Create(database.DatabaseConfig{Name: name, Backend: database.BackendMemory}); err != nil {
 			t.Fatalf("Create(%s): %v", name, err)
 		}
 	}
@@ -64,7 +64,7 @@ func TestProvider_SharedDefaultDatabaseVisibleToEveryTenant(t *testing.T) {
 // Without the option no system-owned database is shared.
 func TestProvider_NoSharedDefaultDatabase(t *testing.T) {
 	mgr := newTestManager(t)
-	if _, err := mgr.Create(database.DatabaseConfig{Name: "qrdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+	if _, err := mgr.Create(database.DatabaseConfig{Name: "qrdb", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	p := NewManagerProvider(mgr, &mockKVService{})

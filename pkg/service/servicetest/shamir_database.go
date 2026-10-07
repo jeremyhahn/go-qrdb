@@ -81,7 +81,7 @@ func NewShamirDatabaseOwnedBy(t testing.TB, tenantID, name string, m, n int) *Sh
 	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
 	mgr.SetBarrierManager(bm)
 	cfg := database.DatabaseConfig{
-		TenantID: tenantID, Name: name, Engine: database.EngineKV, Backend: database.BackendMemory, DataDir: t.TempDir(),
+		TenantID: tenantID, Name: name, Backend: database.BackendMemory, DataDir: t.TempDir(),
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModeShamir, SharesRequired: m, SharesTotal: n},
 	}
 	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.Credentials{}); err != nil {

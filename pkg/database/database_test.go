@@ -23,25 +23,21 @@ import (
 )
 
 // newTestDatabase creates a Database backed by in-memory storage for testing.
-func newTestDatabase(name string, engine EngineType, backend BackendType) *Database {
+func newTestDatabase(name string, backend BackendType) *Database {
 	store := memory.NewStorage()
 	b := NewStandaloneBackend(store)
 	cfg := DatabaseConfig{
 		Name:    name,
-		Engine:  engine,
 		Backend: backend,
 	}
 	return NewDatabase(cfg, b, "/tmp/test/"+name)
 }
 
 func TestDatabase_NewDatabase(t *testing.T) {
-	db := newTestDatabase("mydb", EngineKV, BackendMemory)
+	db := newTestDatabase("mydb", BackendMemory)
 
 	if got := db.Name(); got != "mydb" {
 		t.Errorf("Name() = %q, want %q", got, "mydb")
-	}
-	if got := db.Engine(); got != EngineKV {
-		t.Errorf("Engine() = %q, want %q", got, EngineKV)
 	}
 	if got := db.BackendType(); got != BackendMemory {
 		t.Errorf("BackendType() = %q, want %q", got, BackendMemory)
@@ -51,35 +47,25 @@ func TestDatabase_NewDatabase(t *testing.T) {
 	}
 }
 
-func TestDatabase_NewDatabase_AllEngineTypes(t *testing.T) {
-	tests := []struct {
-		name   string
-		engine EngineType
-	}{
-		{"kv", EngineKV},
-		{"timeseries", EngineTimeSeries},
-		{"vector", EngineVector},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			db := newTestDatabase("db-"+tt.name, tt.engine, BackendMemory)
-			if got := db.Engine(); got != tt.engine {
-				t.Errorf("Engine() = %q, want %q", got, tt.engine)
+func TestDatabase_NewDatabase_AllBackendTypes(t *testing.T) {
+	tests := []BackendType{BackendMemory, BackendFile, BackendPebble}
+	for _, backend := range tests {
+		t.Run(string(backend), func(t *testing.T) {
+			db := newTestDatabase("db-"+string(backend), backend)
+			if got := db.BackendType(); got != backend {
+				t.Errorf("BackendType() = %q, want %q", got, backend)
 			}
 		})
 	}
 }
 
 func TestDatabase_Info(t *testing.T) {
-	db := newTestDatabase("info-db", EngineTimeSeries, BackendPebble)
+	db := newTestDatabase("info-db", BackendPebble)
 
 	info := db.Info()
 
 	if info.Name != "info-db" {
 		t.Errorf("Info().Name = %q, want %q", info.Name, "info-db")
-	}
-	if info.Engine != EngineTimeSeries {
-		t.Errorf("Info().Engine = %q, want %q", info.Engine, EngineTimeSeries)
 	}
 	if info.Backend != BackendPebble {
 		t.Errorf("Info().Backend = %q, want %q", info.Backend, BackendPebble)
@@ -93,7 +79,7 @@ func TestDatabase_Info(t *testing.T) {
 }
 
 func TestDatabase_Info_ReflectsStatusChange(t *testing.T) {
-	db := newTestDatabase("status-info-db", EngineKV, BackendMemory)
+	db := newTestDatabase("status-info-db", BackendMemory)
 
 	infoBefore := db.Info()
 	if infoBefore.Status != StatusOpen {
@@ -111,7 +97,7 @@ func TestDatabase_Info_ReflectsStatusChange(t *testing.T) {
 }
 
 func TestDatabase_Close(t *testing.T) {
-	db := newTestDatabase("close-db", EngineKV, BackendMemory)
+	db := newTestDatabase("close-db", BackendMemory)
 
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close() returned unexpected error: %v", err)
@@ -122,7 +108,7 @@ func TestDatabase_Close(t *testing.T) {
 }
 
 func TestDatabase_Close_NotOpen(t *testing.T) {
-	db := newTestDatabase("close-notopen-db", EngineKV, BackendMemory)
+	db := newTestDatabase("close-notopen-db", BackendMemory)
 
 	if err := db.Close(); err != nil {
 		t.Fatalf("first Close() returned unexpected error: %v", err)
@@ -142,15 +128,12 @@ func TestDatabase_Close_NotOpen(t *testing.T) {
 }
 
 func TestDatabase_Config(t *testing.T) {
-	db := newTestDatabase("config-db", EngineVector, BackendFile)
+	db := newTestDatabase("config-db", BackendFile)
 
 	cfg := db.Config()
 
 	if cfg.Name != "config-db" {
 		t.Errorf("Config().Name = %q, want %q", cfg.Name, "config-db")
-	}
-	if cfg.Engine != EngineVector {
-		t.Errorf("Config().Engine = %q, want %q", cfg.Engine, EngineVector)
 	}
 	if cfg.Backend != BackendFile {
 		t.Errorf("Config().Backend = %q, want %q", cfg.Backend, BackendFile)
@@ -158,7 +141,7 @@ func TestDatabase_Config(t *testing.T) {
 }
 
 func TestDatabase_Config_ReturnsCopy(t *testing.T) {
-	db := newTestDatabase("copy-db", EngineKV, BackendMemory)
+	db := newTestDatabase("copy-db", BackendMemory)
 
 	cfg1 := db.Config()
 	cfg2 := db.Config()
@@ -176,7 +159,6 @@ func TestDatabase_Backend(t *testing.T) {
 	b := NewStandaloneBackend(store)
 	cfg := DatabaseConfig{
 		Name:    "backend-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 	db := NewDatabase(cfg, b, "/tmp/test/backend-db")
@@ -188,7 +170,7 @@ func TestDatabase_Backend(t *testing.T) {
 }
 
 func TestDatabase_Backend_NotNil(t *testing.T) {
-	db := newTestDatabase("backend-notnull", EngineKV, BackendMemory)
+	db := newTestDatabase("backend-notnull", BackendMemory)
 
 	if db.Backend() == nil {
 		t.Error("Backend() returned nil, want non-nil Backend")
@@ -196,7 +178,7 @@ func TestDatabase_Backend_NotNil(t *testing.T) {
 }
 
 func TestDatabase_Status(t *testing.T) {
-	db := newTestDatabase("status-db", EngineKV, BackendMemory)
+	db := newTestDatabase("status-db", BackendMemory)
 
 	// Initial state is open.
 	if got := db.Status(); got != StatusOpen {
@@ -214,7 +196,7 @@ func TestDatabase_Status(t *testing.T) {
 
 func TestDatabase_Status_ErrorState(t *testing.T) {
 	// Manually store StatusError to verify the atomic value handles it.
-	db := newTestDatabase("error-db", EngineKV, BackendMemory)
+	db := newTestDatabase("error-db", BackendMemory)
 	db.status.Store(StatusError)
 
 	if got := db.Status(); got != StatusError {
@@ -247,7 +229,6 @@ func (b *failingBackend) Close() error {
 func TestDatabase_Close_BackendError(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:    "fail-close-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
 	db := NewDatabase(cfg, &failingBackend{}, "/tmp/test/fail-close-db")
@@ -278,7 +259,7 @@ func TestDatabase_Close_BackendError(t *testing.T) {
 }
 
 func TestDatabase_ProtocolConfig_Default(t *testing.T) {
-	db := newTestDatabase("sql-default-db", EngineKV, BackendMemory)
+	db := newTestDatabase("sql-default-db", BackendMemory)
 
 	sql := db.ProtocolConfig()
 	if sql.MySQL {
@@ -290,7 +271,7 @@ func TestDatabase_ProtocolConfig_Default(t *testing.T) {
 }
 
 func TestDatabase_UpdateProtocol(t *testing.T) {
-	db := newTestDatabase("sql-update-db", EngineKV, BackendMemory)
+	db := newTestDatabase("sql-update-db", BackendMemory)
 
 	// Verify initial zero value.
 	sql := db.ProtocolConfig()
@@ -330,7 +311,7 @@ func TestDatabase_UpdateProtocol(t *testing.T) {
 }
 
 func TestDatabase_UpdateProtocol_ConcurrencySafe(t *testing.T) {
-	db := newTestDatabase("sql-concurrent-db", EngineKV, BackendMemory)
+	db := newTestDatabase("sql-concurrent-db", BackendMemory)
 
 	const goroutines = 100
 	done := make(chan struct{})
@@ -365,8 +346,8 @@ func TestDatabase_UpdateProtocol_ConcurrencySafe(t *testing.T) {
 	if db.Name() != "sql-concurrent-db" {
 		t.Errorf("Name() = %q after concurrent UpdateProtocol, want %q", db.Name(), "sql-concurrent-db")
 	}
-	if db.Engine() != EngineKV {
-		t.Errorf("Engine() = %q after concurrent UpdateProtocol, want %q", db.Engine(), EngineKV)
+	if db.BackendType() != BackendMemory {
+		t.Errorf("BackendType() = %q after concurrent UpdateProtocol, want %q", db.BackendType(), BackendMemory)
 	}
 }
 
@@ -377,7 +358,6 @@ func TestDatabase_Info_WithRaftConfig(t *testing.T) {
 	b := NewStandaloneBackend(store)
 	cfg := DatabaseConfig{
 		Name:    "raft-info-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		Raft: &DatabaseRaftConfig{
 			ClusterMode: RaftNone,
@@ -400,7 +380,7 @@ func TestDatabase_Info_WithRaftConfig(t *testing.T) {
 }
 
 func TestDatabase_Info_IncludesSQL(t *testing.T) {
-	db := newTestDatabase("sql-info-db", EngineKV, BackendMemory)
+	db := newTestDatabase("sql-info-db", BackendMemory)
 
 	// Update Protocol config.
 	db.UpdateProtocol(ProtocolConfig{MySQL: true, PostgreSQL: true})
@@ -425,7 +405,7 @@ func TestDatabase_Info_IncludesSQL(t *testing.T) {
 }
 
 func TestDatabase_ShardID_NilRaft(t *testing.T) {
-	db := newTestDatabase("no-raft-db", EngineKV, BackendMemory)
+	db := newTestDatabase("no-raft-db", BackendMemory)
 	if got := db.ShardID(); got != 0 {
 		t.Errorf("ShardID() = %d, want 0 when Raft config is nil", got)
 	}
@@ -436,7 +416,6 @@ func TestDatabase_ShardID_WithRaft(t *testing.T) {
 	b := NewStandaloneBackend(store)
 	cfg := DatabaseConfig{
 		Name:    "raft-shard-db",
-		Engine:  EngineKV,
 		Backend: BackendMemory,
 		Raft: &DatabaseRaftConfig{
 			ClusterMode: RaftNone,
@@ -457,7 +436,7 @@ func TestDatabase_ShardID_WithRaft(t *testing.T) {
 // TestDatabase_Dropping_DefaultsFalse pins the zero value: a freshly created
 // database is never dropping.
 func TestDatabase_Dropping_DefaultsFalse(t *testing.T) {
-	db := newTestDatabase("fresh-db", EngineKV, BackendMemory)
+	db := newTestDatabase("fresh-db", BackendMemory)
 	if db.Dropping() {
 		t.Error("Dropping() = true for a freshly created database, want false")
 	}
@@ -472,7 +451,7 @@ func TestDatabase_Dropping_DefaultsFalse(t *testing.T) {
 // the window the fence exists to close. Dropping is now a field of its own
 // that Close never touches.
 func TestDatabase_Close_DoesNotClearTheDropFlag(t *testing.T) {
-	db := newTestDatabase("closing-drop-db", EngineKV, BackendMemory)
+	db := newTestDatabase("closing-drop-db", BackendMemory)
 	db.SetDropping(true)
 
 	if err := db.Close(); err != nil {
@@ -490,7 +469,7 @@ func TestDatabase_Close_DoesNotClearTheDropFlag(t *testing.T) {
 // TestDatabase_SetDropping_RoundTrips is the direct unit test for the
 // setter/getter pair Manager.Drop and Manager.Open depend on.
 func TestDatabase_SetDropping_RoundTrips(t *testing.T) {
-	db := newTestDatabase("dropping-roundtrip-db", EngineKV, BackendMemory)
+	db := newTestDatabase("dropping-roundtrip-db", BackendMemory)
 
 	db.SetDropping(true)
 	if !db.Dropping() {
@@ -507,7 +486,7 @@ func TestDatabase_SetDropping_RoundTrips(t *testing.T) {
 // therefore Manager.List/GetForTenant -- surfaces the fence honestly even
 // though the underlying Status field never itself becomes StatusDropping.
 func TestDatabase_Info_ReportsDroppingOverStatus(t *testing.T) {
-	db := newTestDatabase("info-dropping-db", EngineKV, BackendMemory)
+	db := newTestDatabase("info-dropping-db", BackendMemory)
 	db.SetDropping(true)
 
 	info := db.Info()

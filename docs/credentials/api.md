@@ -1,6 +1,6 @@
 # Credentials — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -9,18 +9,18 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Credentials()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Store | `POST /v1/credentials` | `CredentialStore` | `credential.Store` | `qrdb_credential_store` | `CredentialStore` | `credentials:store` |
+| Store | `POST /v1/credentials/store` | `CredentialStore` | `credential.Store` | `qrdb_credential_store` | `CredentialStore` | `credentials:store` |
 | Submit (manual) | `POST /v1/credentials/submit` | `CredentialSubmit` | `credential.Submit` | `qrdb_credential_submit` | `CredentialSubmit` | `credentials:submit` |
-| Retrieve current | `GET /v1/credentials/{name}` | `CredentialRetrieve` | `credential.Retrieve` | `qrdb_credential_retrieve` | `CredentialRetrieve` | `credentials:retrieve` |
-| Retrieve version | `GET /v1/credentials/{name}/versions/{version}` | `CredentialRetrieveVersion` | `credential.RetrieveVersion` | `qrdb_credential_retrieve_version` | `CredentialRetrieveVersion` | `credentials:retrieve` |
-| List versions | `GET /v1/credentials/{name}/versions` | `CredentialListVersions` | `credential.ListVersions` | `qrdb_credential_list_versions` | `CredentialListVersions` | `credentials:list` |
+| Retrieve current | `GET /v1/credentials/{name}/value` | `CredentialRetrieve` | `credential.Retrieve` | `qrdb_credential_retrieve` | `CredentialRetrieve` | `credentials:retrieve` |
+| Retrieve version | `GET /v1/credentials/{name}/versions/{version}` | `CredentialRetrieveVersion` | `credential.RetrieveVersion` | `qrdb_credential_retrieve_version` | `CredentialRetrieveVersion` | `credentials:retrieve_version` |
+| List versions | `GET /v1/credentials/{name}/versions` | `CredentialListVersions` | `credential.ListVersions` | `qrdb_credential_list_versions` | `CredentialListVersions` | `credentials:list_versions` |
 | Rotate | `POST /v1/credentials/{name}/rotate` | `CredentialRotate` | `credential.Rotate` | `qrdb_credential_rotate` | `CredentialRotate` | `credentials:rotate` |
-| GC expired versions | `POST /v1/credentials/{name}/gc` | `CredentialGCExpired` | `credential.GCExpired` | `qrdb_credential_gc_expired` | `CredentialGCExpired` | `credentials:rotate` |
+| GC expired versions | `POST /v1/credentials/{name}/gc` | `CredentialGCExpired` | `credential.GCExpired` | `qrdb_credential_gc_expired` | `CredentialGCExpired` | `credentials:gc_expired` |
 | Delete | `DELETE /v1/credentials/{name}` | `CredentialDelete` | `credential.Delete` | `qrdb_credential_delete` | `CredentialDelete` | `credentials:delete` |
 | List names | `GET /v1/credentials` | `CredentialList` | `credential.List` | `qrdb_credential_list` | `CredentialList` | `credentials:list` |
 | Active strategy | `GET /v1/credentials/strategy` | `CredentialStrategy` | `credential.Strategy` | `qrdb_credential_strategy` | `CredentialStrategy` | `credentials:strategy` |
 
-Ten capabilities on all six transports. **Every transport handler routes
+Ten capabilities on all six transports. *(Corrected 2026-10-06: the store and retrieve REST paths, and the retrieve-version, list-versions and GC permissions, were written to the wrong values.)* **Every transport handler routes
 through the same `service.CredentialServicer`**, so behaviour cannot diverge
 between them.
 

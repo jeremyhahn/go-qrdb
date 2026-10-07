@@ -76,8 +76,20 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 	// than forwarding a request those transports could already decode in
 	// full. All six now forward ca == nil into the service layer exactly as
 	// this handler does.
+	//
+	// The body is read into a []byte, rather than decoded straight off
+	// r.Body, so a follower that CeremonyInitialize refuses with
+	// *service.AdminCredentialNotLeaderError (the admin-credential step
+	// must run on the system shard's leader) can replay the identical
+	// request at the leader through the SAME tryForwardWrite/forwardToLeader
+	// machinery every other system-shard write already uses, instead of
+	// making the operator re-run `qrdb init` against another node by hand.
+	body, ok := readBoundedBody(w, r, resolveMaxBodyBytes(s.maxBodyBytes))
+	if !ok {
+		return
+	}
 	var req transport.CeremonyInitializeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -94,6 +106,9 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 
 	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA, opts)
 	if err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

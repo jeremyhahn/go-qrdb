@@ -48,4 +48,7 @@ host.
 
 ## Parity
 
-`qrdb watch` has a `CommandDefinition` in the integration parity suite.
+`qrdb watch` is driven on every network transport by `watch_cli_test.go`
+(`make integration-test-watch`), including the `--start-revision` replay case.
+Per-transport accounting: the `watch` row of
+[`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

@@ -206,6 +206,10 @@ func (s *namespacedTimeSeriesService) SetRetentionPolicy(ctx context.Context, me
 	return s.inner.SetRetentionPolicy(s.scope(ctx), s.prefix+metric, policy)
 }
 
+func (s *namespacedTimeSeriesService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	return s.inner.ApplyRetention(s.scope(ctx), s.prefix+metric, cutoff)
+}
+
 // ListMetrics returns metric names matching the prefixed search prefix, with
 // the namespace prefix stripped from the results.
 func (s *namespacedTimeSeriesService) ListMetrics(prefix string, limit int) ([]string, error) {

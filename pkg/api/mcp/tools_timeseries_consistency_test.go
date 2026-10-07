@@ -111,6 +111,10 @@ func (m *capturingTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *time
 	return nil
 }
 
+func (m *capturingTSSvc) ApplyRetention(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *capturingTSSvc) ListMetrics(_ string, _ int) ([]string, error) {
 	m.mu.Lock()
 	m.calledListMetrics = true

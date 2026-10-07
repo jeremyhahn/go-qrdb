@@ -181,8 +181,8 @@ func TestNodeConfig_ProjectsDSN(t *testing.T) {
 		t.Fatalf("Databases = %+v, want exactly one entry", got.Databases)
 	}
 	db := got.Databases[0]
-	if db.Name != "projected" || db.Backend != "pebble" || db.Engine != "kv" {
-		t.Errorf("Databases[0] = %+v, want {projected pebble kv}", db)
+	if db.Name != "projected" || db.Backend != "pebble" {
+		t.Errorf("Databases[0] = %+v, want {projected pebble}", db)
 	}
 }
 

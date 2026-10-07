@@ -34,9 +34,9 @@ func newCompactionManager(t *testing.T) (*Manager, string) {
 	m := NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
 	t.Cleanup(func() { _ = m.Close() })
 	for _, cfg := range []DatabaseConfig{
-		{Name: "acme-db", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory},
-		{Name: "beta-db", TenantID: "beta", Engine: EngineKV, Backend: BackendMemory},
-		{Name: "sys-db", Engine: EngineKV, Backend: BackendMemory},
+		{Name: "acme-db", TenantID: "acme", Backend: BackendMemory},
+		{Name: "beta-db", TenantID: "beta", Backend: BackendMemory},
+		{Name: "sys-db", Backend: BackendMemory},
 	} {
 		if _, err := m.Create(cfg); err != nil {
 			t.Fatalf("Create(%s): %v", cfg.Name, err)

@@ -271,6 +271,17 @@ type Infra struct {
 	// the zero value -- refused when the trail cannot record them.
 	AuditFailurePolicy audit.FailurePolicy
 
+	// ReplicatedAuditPlatformEnabled governs whether the system tenant's own
+	// platform events (those carrying no tenant at all) are additionally
+	// written to the cluster-wide replicated audit chain
+	// (docs/audit/architecture.md#cluster-wide-replicated-trail). An
+	// ordinary tenant's events are governed by its own
+	// quota.Entitlements.AllowReplicatedAudit instead -- the system tenant
+	// is never provisioned through that per-tenant path. Defaults to false:
+	// the replicated chain is opt-in, matching the per-tenant entitlement's
+	// own secure default.
+	ReplicatedAuditPlatformEnabled bool
+
 	// InvitationTTL is auth.invitation_ttl, the raw configured value: how
 	// long an invitation (users:invite) stays redeemable. Empty takes
 	// config.DefaultInvitationTTLString; parsed by buildEnrollmentServices
@@ -310,13 +321,6 @@ type Infra struct {
 	// user IDs, keeping IDs globally unique across cluster members. Defaults
 	// to 1 (standalone) when zero. Must be <= 1023 (the Snowflake node field).
 	ReplicaID uint64
-
-	// StrictTenantIsolation enables strict tenant isolation for vector
-	// namespace operations. When true, CreateNamespace rejects requests that
-	// carry no explicit tenant ID (i.e. the system tenant is used as the
-	// implicit owner). This should be set to true in multi-tenant production
-	// environments and is automatically engaged under FIPS-140.
-	StrictTenantIsolation bool
 
 	// DefaultTenantQuotas are the operator-configured default resource quotas
 	// applied to tenants whose own quotas are unset. When nil, nil-quota
@@ -370,6 +374,17 @@ type Infra struct {
 	// composer that supplies KeyWrapRegistry or KeyWrapProvider needs no
 	// KeyDir at all.
 	KeyDir string
+
+	// DEKKeyDir is KeyDir's counterpart for the tenant DEK keyring's own
+	// "software" provider instance (dek.WithKeyDir) -- a distinct
+	// directory from KeyDir because the keyring's key references default
+	// to tenant IDs, a different naming domain than backup's
+	// operator-chosen names. KeyWrapRegistry/KeyWrapProvider, when set,
+	// are shared with the DEK keyring too (one KEK seam, two consumers);
+	// only the key directory is DEK-specific. Empty leaves the keyring's
+	// default "software" provider unusable (dek.ErrKeyDirNotConfigured on
+	// first Encrypt/Rotate) without disabling the keyring service itself.
+	DEKKeyDir string
 
 	// ClusterSealer makes node, tenant and database seals reach every node
 	// once the cluster has activated cluster-seal, and lets an unseal clear
@@ -480,6 +495,20 @@ type Node struct {
 	Credential service.CredentialServicer
 	Tenant     tenant.TenantServicer
 	CertProv   cert.CertProvider
+
+	// ReplicatedAudit is the cluster-wide, per-tenant-opt-in replicated
+	// audit sink (docs/audit/architecture.md#cluster-wide-replicated-trail):
+	// Emit proposes protocol.OpAuditAppend, and Query/VerifyTenantChain read
+	// back from whichever shard serves the tenant. It is always non-nil --
+	// resolving a tenant's entitlement before every call, so toggling it
+	// takes effect on the tenant's very next request -- but Emit and Query
+	// are no-ops for a tenant whose entitlement is off, exactly as if no
+	// replicated sink existed at all. It is additional to, never a
+	// replacement for, the node-local trail every subsystem already writes
+	// through: this is exposed separately so a caller can read the
+	// cluster-wide chain specifically, which the node-local trail cannot
+	// answer for (it is one node's disk, not Raft-replicated).
+	ReplicatedAudit *service.OptInAuditLogger
 
 	// ClusterCAProv is the cluster CA (Key A) provider: the built-in
 	// cakey.SoftwareProvider over the replicated store, or
@@ -629,6 +658,32 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n := &Node{}
+
+	// Wire the cluster-wide replicated audit sink (phase 2,
+	// docs/audit/architecture.md#cluster-wide-replicated-trail). The
+	// isolation and entitlement lookups are bound to n itself rather than a
+	// snapshot: n.Tenant is populated later in this function (several
+	// branches below, depending on infra.SealBarrier / infra.BarrierRegistry),
+	// but every Emit/Query/VerifyTenantChain call happens long after
+	// BuildServices has returned, by which point n.Tenant -- if this
+	// composition has one at all -- is already set, so the lookups pick it
+	// up automatically with no restart.
+	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.ReplicatedAudit = service.NewOptInAuditLogger(
+		service.NewReplicatedLogger(auditResolver),
+		&nodeAuditEntitlementLookup{node: n},
+		infra.ReplicatedAuditPlatformEnabled,
+	)
+	// Every ordinary Emit call already made through infra.AuditLogger below
+	// (the node-local trail) now ALSO reaches the replicated chain when the
+	// event's tenant is entitled -- the fix for "nothing ever proposes
+	// OpAuditAppend" (architecture.md's Status section). A composition that
+	// passed no node-local logger at all (infra.AuditLogger nil) gets none
+	// here either: introducing a sink where the caller asked for none would
+	// change its behavior, not merely extend it.
+	if infra.AuditLogger != nil {
+		infra.AuditLogger = audit.NewAggregateLogger(infra.AuditLogger, n.ReplicatedAudit)
+	}
 
 	// Build core data-plane services.
 	n.KV = service.NewKVService(infra.Host, shard.ShardKV, infra.KVOptions...)
@@ -920,7 +975,6 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	vectorSvc, err := service.NewVectorService(
 		vectorStorage,
 		vectorLog,
-		service.WithStrictTenantIsolation(infra.StrictTenantIsolation),
 	)
 	if err != nil {
 		return nil, &VectorServiceError{Err: err}
@@ -1081,11 +1135,17 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// The tenant DEK keyring rides the StoreResolver both branches above
 	// build, so it is served whether or not the seal subsystem is enabled.
 	if n.StoreResolver != nil {
-		dekSvc, err := buildDEKService(n.StoreResolver)
+		dekSvc, err := buildDEKService(n.StoreResolver, infra.KeyWrapRegistry, infra.KeyWrapProvider, infra.DEKKeyDir)
 		if err != nil {
 			return nil, err
 		}
 		n.DEK = dekSvc
+		// Releases the cached "software" key-wrap provider's *os.Root, if
+		// the default registry ever resolved one (service.DEKService.Close),
+		// mirroring the identical cleanup for n.Backup just above.
+		if closer, ok := dekSvc.(*service.DEKService); ok {
+			n.addCloser(closer.Close)
+		}
 	}
 
 	// Wire tenant-driven quota and entitlement enforcement into the database
@@ -1106,6 +1166,20 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// alone; a volume- or raft-isolated tenant's needs the tenant
 		// service, which exists only now.
 		service.WarnBarriersOffDataPath(ctx, dbManager.List(), n.Tenant, log)
+	}
+
+	// The vector namespace create guard (validateTenantCreate) reads the
+	// cluster-wide isolation floor; n.Tenant is the reader, and it exists
+	// only now, after n.Vector was already built above. This replaces the
+	// old boot-time tenant.strict_isolation config bool: the guard now
+	// tracks the real, live setting rather than a snapshot taken before the
+	// tenant service existed.
+	if reader, ok := n.Tenant.(tenant.ClusterIsolationPolicyReader); ok {
+		if v, ok := n.Vector.(interface {
+			SetClusterIsolationPolicyReader(tenant.ClusterIsolationPolicyReader)
+		}); ok {
+			v.SetClusterIsolationPolicyReader(reader)
+		}
 	}
 
 	// infra.SealEnabled is the composer's own seal.enabled config decision,
@@ -1155,8 +1229,21 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 }
 
 // buildDEKService builds the tenant DEK keyring service over resolver.
-func buildDEKService(resolver tenant.StoreResolver) (service.DEKServicer, error) {
-	keyring, err := dek.NewKeyring(resolver)
+func buildDEKService(resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
+	opts := []dek.KeyringOption{}
+	if keyWrapRegistry != nil {
+		// A shared registry is already populated with whatever extras its
+		// composer (or the Backup service, built just above, which
+		// applies KeyWrapProvider to this SAME registry first) wants --
+		// registering KeyWrapProvider into it a second time here would
+		// collide. WithKeyWrapProvider's own doc comment reserves it for
+		// "no registry of its own"; a shared registry already covers it.
+		opts = append(opts, dek.WithKeyWrapRegistry(keyWrapRegistry))
+	} else if keyWrapProvider != nil {
+		opts = append(opts, dek.WithKeyWrapProvider(keyWrapProvider))
+	}
+	opts = append(opts, dek.WithKeyDir(keyDir))
+	keyring, err := dek.NewKeyring(resolver, opts...)
 	if err != nil {
 		return nil, &DEKServiceError{Err: err}
 	}

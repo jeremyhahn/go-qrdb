@@ -1,7 +1,7 @@
 # Replica Forwarding — Architecture
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-05
+> Scope: go-qrdb · Last verified: 2026-10-06
 >
 > The owner's rulings are recorded under [Rulings](#rulings).
 
@@ -248,8 +248,30 @@ holds no data for it.
 ## What this feature deliberately does not do
 
 - It does not forward streams.
-- It does not forward requests for the shared system shard. Those keep REST's
-  existing write forwarding to the system leader, unchanged.
+- It does not forward requests for the shared system shard through the
+  per-database path above. Those keep each transport's own single-hop
+  leader-forwarding instead: REST's existing write forwarding
+  (`tryForwardWrite`/`forwardToLeader`, keyed on `*service.NotLeaderError`)
+  now also recognizes `*service.AdminCredentialNotLeaderError` -- the
+  ceremony-initialize admin-credential step's own leader-only refusal
+  (`service.CeremonyServiceWithLeaderGate`, see
+  [../clustering/architecture.md](../clustering/architecture.md)) -- so a
+  follower forwards it to the leader instead of answering 503 for a request
+  the leader would have served (node parity, owner ruling 2026-10-06: "all
+  the nodes are equal..."). The same ruling extends this past REST: gRPC's
+  `qrdbServiceServer.CeremonyInitialize`, QUIC's `handleStream` and MCP's
+  tool middleware each recognize the identical error and relay it through a
+  new `ForwardToLeader` method on their existing per-transport forwarder
+  (`grpc.ReplicaForwarder.forwardAdminWrite`, `quic.FrameForwarder.
+  ForwardToLeader`, `mcp`'s `replicaForwarder.forwardToLeader`) --
+  `MemberByAddress` on the shared `replicaforward.Locator` resolves the
+  leader's address to its member record exactly as the per-database path
+  does, so no new resolution logic was added, only a single-hop send that
+  skips placement and the bounded retry (the system shard has no replica set
+  to retry across). The Unix socket forwards through the same gRPC
+  interceptor its per-database path uses. The embedded transport forwards
+  through its QUIC client transport exactly as it does for a per-database
+  refusal.
 - It does not change who may do what. Authorization happens at ingress and
   again at the target, as the caller both times.
 - It does not cache anything but the per-shard leader hint (ruling 7), and

@@ -34,7 +34,6 @@ const txnOpsState = {
   databases: [
     {
       name: "txn-ops-db",
-      engine: "kv",
       backend: "pebble",
       status: "open",
     },

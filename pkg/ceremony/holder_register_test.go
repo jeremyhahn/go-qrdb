@@ -175,7 +175,7 @@ func TestRegisterOfficer_Refusals(t *testing.T) {
 // already enrolled in the scope cannot be enrolled again under a new name.
 func TestRegisterOfficer_OnePersonOneRolePerScope(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
-	a := newHolder(t, "alice", seal.RoleSecurityOfficer).withEncryptionKey(t, keydelivery.KEMX25519)
+	a := newHolder(t, "alice", seal.RoleSecurityOfficer).withEncryptionKey(t, testEnvelopeKEM(keydelivery.KEMX25519))
 	e.register(seal.DomainUnseal, a)
 
 	b := newHolder(t, "bob", seal.RoleCustodian)
@@ -196,18 +196,35 @@ func TestRegisterOfficer_RequiresCA(t *testing.T) {
 func TestRegisterOfficer_EnvelopeKEMs(t *testing.T) {
 	e := newHolderEnv(t, 2, 4)
 	cases := []struct {
-		holder *testHolder
-		kem    string
+		holder   func() *testHolder
+		kem      string
+		fipsOnly bool // the holder construction itself needs a non-approved suite
 	}{
-		{newHolder(t, "p256", ""), keydelivery.KEMP256},
-		{newP384Holder(t, "p384", ""), keydelivery.KEMP384},
-		{newEd25519Holder(t, "x25519", "").withEncryptionKey(t, keydelivery.KEMX25519), keydelivery.KEMX25519},
-		{newHolder(t, "hybrid", "").withEncryptionKey(t, keydelivery.KEMMLKEM768X25519), keydelivery.KEMMLKEM768X25519},
+		{func() *testHolder { return newHolder(t, "p256", "") }, keydelivery.KEMP256, false},
+		{func() *testHolder { return newP384Holder(t, "p384", "") }, keydelivery.KEMP384, false},
+		{func() *testHolder {
+			return newEd25519Holder(t, "x25519", "").withEncryptionKey(t, keydelivery.KEMX25519)
+		}, keydelivery.KEMX25519, true},
+		{func() *testHolder {
+			return newHolder(t, "hybrid", "").withEncryptionKey(t, keydelivery.KEMMLKEM768X25519)
+		}, keydelivery.KEMMLKEM768X25519, true},
 	}
 	for _, tc := range cases {
-		res, err := e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, tc.holder.request("admin"))
-		require.NoError(t, err, tc.holder.username)
-		assert.Equal(t, tc.kem, res.EncryptionKEM, tc.holder.username)
+		t.Run(tc.kem, func(t *testing.T) {
+			if tc.fipsOnly && seal.FIPSEnabled() {
+				// X25519-based suites (plain and the ML-KEM-768 hybrid) are
+				// refused by keydelivery.LookupSuite under FIPS 140 mode, so
+				// the holder fixture itself cannot be constructed -- the
+				// refusal is covered directly by
+				// TestLookupSuite_FIPSModeRefusesX25519Suites in
+				// pkg/keydelivery; see docs/seal/fips140-mode.md.
+				t.Skip("dhkem-x25519 and the ML-KEM-768 hybrid are refused under FIPS 140 mode; see pkg/keydelivery's TestLookupSuite_FIPSModeRefusesX25519Suites")
+			}
+			holder := tc.holder()
+			res, err := e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, holder.request("admin"))
+			require.NoError(t, err, holder.username)
+			assert.Equal(t, tc.kem, res.EncryptionKEM, holder.username)
+		})
 	}
 }
 

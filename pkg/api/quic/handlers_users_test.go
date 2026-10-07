@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -74,7 +75,12 @@ func TestHandleCreateUser_Success(t *testing.T) {
 		RoleIDs:  []string{"role-a"},
 	})
 
-	resp, err := srv.handleCreateUser(context.Background(), payload)
+	// Bound to the request's own tenant: the system-tenant lift was removed
+	// (owner ruling, 2026-10-01), so an unbound (system-folding) caller
+	// naming a different tenant would now be refused before reaching the
+	// mock.
+	ctx := tenant.WithTenantID(context.Background(), "tenant-1")
+	resp, err := srv.handleCreateUser(ctx, payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

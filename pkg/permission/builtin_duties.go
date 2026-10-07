@@ -156,7 +156,7 @@ func registerGovernanceDuties() {
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
 		// Audit oversight.
-		AuditRead, AuditQuery, AuditVerify,
+		AuditRead, AuditQuery, AuditVerify, AuditVerifyReplicated,
 		// Cluster and node control.
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,

@@ -80,6 +80,7 @@ func (c *faultyConn) Write(p []byte) (int, error) {
 // valid, so none of them need a token actually minted into it.
 func newTestJoinServer(t *testing.T, provider cakey.Provider) *JoinServer {
 	t.Helper()
+	skipIfNoiseUnavailable(t)
 	key, err := noiseproto.GenerateStaticKey()
 	if err != nil {
 		t.Fatalf("GenerateStaticKey: %v", err)
@@ -407,6 +408,7 @@ func TestJoinClientExchange_ReadResponseFails(t *testing.T) {
 // joinClientExchange's handshake-incomplete branch: the counterpart is not a
 // real Noise_NK responder, so message 2 is garbage.
 func TestJoinClientExchange_HandshakeMessage2Invalid(t *testing.T) {
+	skipIfNoiseUnavailable(t)
 	clientConn, serverConn := net.Pipe()
 	serverDone := make(chan struct{})
 	go func() {

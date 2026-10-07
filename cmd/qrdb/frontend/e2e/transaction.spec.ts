@@ -14,7 +14,7 @@ const LOAD_TIMEOUT = 10_000;
 const txnState = {
   ...secondLaunchEmbeddedState,
   databases: [
-    { name: "txn-db", engine: "kv", backend: "pebble", status: "open" },
+    { name: "txn-db", backend: "pebble", status: "open" },
   ],
 };
 

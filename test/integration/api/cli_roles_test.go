@@ -263,20 +263,23 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 
 			ts := testTimestamp()
 			roleName := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
+			tenantID := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
+			admin.grantSecurityOfficer(t, cfg, proto)
 
 			var roleID string
 			t.Cleanup(func() {
 				if roleID != "" {
-					execCLIWithProtocol(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
+					admin.exec(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
 				}
 			})
 
 			// Create a role with --tenant-id.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+			stdout, stderr, err := admin.exec(t, cfg, proto,
 				"roles", "create",
 				"--name", roleName,
 				"--permissions", "kv:get",
-				"--tenant-id", "test-tenant")
+				"--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -299,7 +302,7 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 			}
 
 			// Cleanup: delete the role.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "roles", "delete", roleID)
+			stdout, stderr, err = admin.exec(t, cfg, proto, "roles", "delete", roleID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -327,17 +330,20 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 			}
 
 			ts := testTimestamp()
+			tenantID := fmt.Sprintf("role-page-%s-%d", proto, ts)
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
+			admin.grantSecurityOfficer(t, cfg, proto)
 
 			// Create 3 roles for pagination testing.
 			var roleIDs []string
 			for i := 1; i <= 3; i++ {
 				roleName := fmt.Sprintf("role-page-%d-%s-%d", i, proto, ts)
 
-				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+				stdout, stderr, err := admin.exec(t, cfg, proto,
 					"roles", "create",
 					"--name", roleName,
 					"--permissions", "kv:get",
-					"--tenant-id", "test-tenant")
+					"--tenant-id", tenantID)
 				if err != nil {
 					t.Logf("stdout: %s", stdout)
 					t.Logf("stderr: %s", stderr)
@@ -360,12 +366,12 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 			// Register cleanup to delete all created roles.
 			t.Cleanup(func() {
 				for _, rid := range roleIDs {
-					execCLIWithProtocol(t, cfg, proto, "roles", "delete", rid) //nolint:errcheck
+					admin.exec(t, cfg, proto, "roles", "delete", rid) //nolint:errcheck
 				}
 			})
 
 			// List roles with pagination.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+			stdout, stderr, err := admin.exec(t, cfg, proto,
 				"roles", "list", "--page", "1", "--page-size", "2")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -376,8 +382,8 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 				fmt.Sprintf("[%s] roles list with pagination should not be empty", proto))
 
 			// List roles with --tenant-id filter.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"roles", "list", "--tenant-id", "test-tenant")
+			stdout, stderr, err = admin.exec(t, cfg, proto,
+				"roles", "list", "--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -388,7 +394,7 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 
 			// Delete all created roles.
 			for _, rid := range roleIDs {
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "roles", "delete", rid)
+				stdout, stderr, err = admin.exec(t, cfg, proto, "roles", "delete", rid)
 				if err != nil {
 					t.Logf("stdout: %s", stdout)
 					t.Logf("stderr: %s", stderr)

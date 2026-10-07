@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	quicsdk "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 )
 
@@ -31,6 +32,15 @@ import (
 // node's *quic.FrameForwarder (pkg/api/quic) is one.
 type ReplicaForwarder interface {
 	Forward(ctx context.Context, caller *auth.Identity, method, database string, payload []byte, refusal *placement.NotAReplicaError) (status uint16, body []byte, forwarded bool)
+
+	// ForwardToLeader forwards a request frame this node refused with a
+	// leader-only error (service.AdminCredentialNotLeaderError and its
+	// siblings) to the leader at leaderAddr, as caller, and returns the
+	// status and payload of the frame the leader answered. forwarded is
+	// false when the leader could not be resolved or reached; the call is
+	// then answered the refusal. Unlike Forward it is a single hop by
+	// address, not a placement-based retry across a replica set.
+	ForwardToLeader(ctx context.Context, caller *auth.Identity, method, database string, payload []byte, leaderAddr string) (status uint16, body []byte, forwarded bool)
 }
 
 // replicaForwarding is what a database-scoped transport forwards with.
@@ -93,6 +103,33 @@ func (s *forwardingScope) forwardTo(ctx context.Context, err error) (*quicsdk.Tr
 		status, body, ok := s.fwd.forwarder.Forward(ctx, caller, method, database, payload, refusal)
 		if !ok {
 			return 0, nil, refusal
+		}
+		return status, body, nil
+	}), true
+}
+
+// forwardAdminTo returns the transport to make an admin/ceremony call again
+// with when t.forwarding is configured and the node's own call refused it
+// with a leader-only error (notLeader): one that sends the request frame to
+// the named leader through the forwarder, as the configured caller. It
+// returns false when forwarding is not configured, the leader address is
+// empty, or the caller does not authenticate, and the call is then answered
+// notLeader -- the node's own refusal -- exactly as forwardTo's caller is
+// answered its own refusal on the same conditions.
+func (t *Transport) forwardAdminTo(ctx context.Context, notLeader *service.AdminCredentialNotLeaderError) (*quicsdk.Transport, bool) {
+	if t.forwarding == nil || notLeader.LeaderAddress == "" {
+		return nil, false
+	}
+	caller, aerr := t.forwarding.caller.Authenticate(ctx)
+	if aerr != nil || caller == nil || caller.Subject == "" {
+		slog.Warn("admin forwarding: embedded call not forwarded: the configured caller did not authenticate",
+			"leader_raft_addr", notLeader.LeaderAddress, "error", aerr)
+		return nil, false
+	}
+	return quicsdk.NewFrameTransport("", func(ctx context.Context, method, database string, payload []byte) (uint16, []byte, error) {
+		status, body, ok := t.forwarding.forwarder.ForwardToLeader(ctx, caller, method, database, payload, notLeader.LeaderAddress)
+		if !ok {
+			return 0, nil, notLeader
 		}
 		return status, body, nil
 	}), true

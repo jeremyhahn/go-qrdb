@@ -22,6 +22,9 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -852,6 +855,114 @@ func TestTimeSeriesService_SetRetentionPolicy_ProposeError(t *testing.T) {
 	err := svc.SetRetentionPolicy(context.Background(), "cpu", &RetentionPolicy{Duration: time.Hour})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ApplyRetention
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_ApplyRetention(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			if cmd[0] != 80 { // OpTSApplyRetention
+				t.Errorf("opcode = 0x%02x, want 0x50", cmd[0])
+			}
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.ApplyRetention(context.Background(), "cpu.usage", time.Now())
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestTimeSeriesService_ApplyRetention_EncodesCommand(t *testing.T) {
+	cutoff := time.Unix(0, 1700000000000000000)
+	var captured []byte
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			captured = cmd
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	if err := svc.ApplyRetention(context.Background(), "cpu.usage", cutoff); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want, err := protocol.EncodeTSApplyRetention("cpu.usage", cutoff.UnixNano())
+	if err != nil {
+		t.Fatalf("EncodeTSApplyRetention: %v", err)
+	}
+	if string(captured) != string(want) {
+		t.Fatalf("proposed command = %x, want %x", captured, want)
+	}
+}
+
+func TestTimeSeriesService_ApplyRetention_ProposeError(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{}, errors.New("propose failed")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.ApplyRetention(context.Background(), "cpu", time.Now())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTimeSeriesService_ApplyRetention_NotLeader(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{}, &quicraft.NotLeaderError{}
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.ApplyRetention(context.Background(), "cpu", time.Now())
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected *NotLeaderError, got %T", err)
+	}
+}
+
+func TestTimeSeriesService_ApplyRetention_RefusedUntilFeatureActive(t *testing.T) {
+	inner := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			t.Fatal("ApplyRetention must not propose while the feature is not active for the group")
+			return sm.Result{}, nil
+		},
+	}
+	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: false}}
+	svc := NewTimeSeriesService(host, 1)
+
+	err := svc.ApplyRetention(context.Background(), "cpu", time.Now())
+	var notActive *featuregate.NotActiveError
+	if !errors.As(err, &notActive) {
+		t.Fatalf("expected *featuregate.NotActiveError, got %T: %v", err, err)
+	}
+	if notActive.Feature != featuregate.TimeSeriesRetention {
+		t.Errorf("Feature = %q, want %q", notActive.Feature, featuregate.TimeSeriesRetention)
+	}
+}
+
+func TestTimeSeriesService_ApplyRetention_ProposesOnceFeatureActive(t *testing.T) {
+	proposed := false
+	inner := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: true}}
+	svc := NewTimeSeriesService(host, 1)
+
+	if err := svc.ApplyRetention(context.Background(), "cpu", time.Now()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !proposed {
+		t.Fatal("expected ApplyRetention to propose once the feature is active for the group")
 	}
 }
 

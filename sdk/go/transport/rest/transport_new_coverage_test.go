@@ -301,6 +301,19 @@ func TestRESTBackupInfo_InvalidTimestamp(t *testing.T) {
 	}
 }
 
+func TestRESTBackupInfo_KeyProviderIDSurvivesWire(t *testing.T) {
+	var wire restBackupInfo
+	if err := json.Unmarshal([]byte(`{"id":"bk-kp","encryption":"aes256","key_provider_id":"software"}`), &wire); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := wire.toBackupInfo().KeyProviderID; got != "software" {
+		t.Errorf("KeyProviderID = %q, want software", got)
+	}
+	if got := (&restBackupInfo{ID: "bk-none"}).toBackupInfo().KeyProviderID; got != "" {
+		t.Errorf("KeyProviderID of a plaintext backup = %q, want empty", got)
+	}
+}
+
 // ===========================================================================
 // Rebalance: GetShardStats / CreateRebalancePlan / ExecuteRebalance /
 //            GetImbalanceReport / toRebalancePlan / planToWire

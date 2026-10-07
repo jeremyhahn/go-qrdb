@@ -46,6 +46,7 @@ import (
 	gomysql "github.com/go-sql-driver/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // sqlQueryResponse mirrors service.SQLQueryResult for decoding POST
@@ -123,30 +124,55 @@ func adminPostJSON(t *testing.T, client *http.Client, port int, path string, pay
 // to, see pkg/auth/middleware/mapping.go), and a user bound to that role
 // whose username matches the CN of the mTLS client certificate the caller
 // will authenticate with, and binds that certificate (certPath) to the user.
-// All calls are made as the SYSTEM tenant admin identity, whose cross-tenant
-// power (the system-tenant rule) is required to provision another tenant's
-// IAM records.
+// Tenant creation itself (POST /v1/tenants) is made as the SYSTEM tenant
+// admin identity (ScopeCross tenants:create); everything after that --
+// the "sql-reader" role and its bound user -- is created authenticating as
+// the tenant's own onboarded admin instead, since the system tenant can no
+// longer provision records inside another tenant's IAM at all (owner
+// ruling, 2026-10-01).
 //
 // Tenant creation now requires an admin_username/admin_csr_pem pair (the
-// onboarding trust-on-first-init flow), but this test never uses the
-// onboarded admin identity itself: the mTLS identity it authenticates the
-// SQL surfaces with is the separately created role+user below, matching
-// every other fixed-up caller of this breaking change in this package.
-func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminPort int, tenantID, username, certPath string) {
+// onboarding trust-on-first-init flow); this test does not authenticate the
+// SQL surfaces with the onboarded admin identity itself, only uses it to
+// provision the role+user below, whose mTLS identity is what the SQL
+// surfaces actually authenticate with.
+func provisionTenantWithSQLReader(t *testing.T, ca *testCA, adminClient *http.Client, adminPort int, tenantID, username, certPath string) {
 	t.Helper()
 
-	_, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
+	adminKeyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
 	if err != nil {
 		t.Fatalf("provisionTenantWithSQLReader: certtest.NewCSR: %v", err)
 	}
-	adminPostJSON(t, adminClient, adminPort, "/v1/tenants", map[string]string{
+	createBody := adminPostJSON(t, adminClient, adminPort, "/v1/tenants", map[string]string{
 		"id":             tenantID,
 		"name":           tenantID,
 		"admin_username": tenantID + "-admin",
 		"admin_csr_pem":  string(adminCSRPEM),
 	}, http.StatusCreated)
 
-	roleBody := adminPostJSON(t, adminClient, adminPort, "/roles", map[string]any{
+	// The system tenant can no longer provision records inside another
+	// tenant's IAM at all (owner ruling, 2026-10-01), so the "sql-reader"
+	// role below is created authenticating as the tenant's own onboarded
+	// admin (a prefix tenant's admin account and cert are bound
+	// synchronously in this same create call, not deferred); its built-in
+	// Admin role cannot create a NEW role (RolesCreate is SO-exclusive), so
+	// it self-assigns its own pre-seeded SO role first.
+	var createResp struct {
+		Admin struct {
+			CertPEM string `json:"cert_pem"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(createBody, &createResp); err != nil || createResp.Admin.CertPEM == "" {
+		t.Fatalf("provisionTenantWithSQLReader: decode tenant create admin cert: %v body=%s", err, createBody)
+	}
+	adminTLSCert, err := tls.X509KeyPair([]byte(createResp.Admin.CertPEM), adminKeyPEM)
+	if err != nil {
+		t.Fatalf("provisionTenantWithSQLReader: X509KeyPair for the onboarded admin: %v", err)
+	}
+	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
+	selfAssignTenantSO(t, adminPort, tenantID, onboardedAdminClient)
+
+	roleBody := adminPostJSON(t, onboardedAdminClient, adminPort, "/roles", map[string]any{
 		"name":        "sql-reader",
 		"tenant_id":   tenantID,
 		"permissions": []string{"kv:range"},
@@ -161,7 +187,7 @@ func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminP
 		t.Fatalf("provisionTenantWithSQLReader: role create returned empty id (body: %s)", roleBody)
 	}
 
-	createBoundUser(t, adminClient, adminPort, map[string]any{
+	createBoundUser(t, onboardedAdminClient, adminPort, map[string]any{
 		"username":  username,
 		"email":     username + "@" + tenantID + ".example.com",
 		"tenant_id": tenantID,
@@ -304,8 +330,8 @@ func TestSQL_REST_TenantScoping_MatchesWireProtocolNamespace(t *testing.T) {
 	// no statement-level authorization gate). Provision each tenant with a
 	// role granting exactly that read permission so the REST calls below
 	// are authorized.
-	provisionTenantWithSQLReader(t, adminClient, adminPort, "tenant-a", "user-a", certA)
-	provisionTenantWithSQLReader(t, adminClient, adminPort, "tenant-b", "user-b", certB)
+	provisionTenantWithSQLReader(t, ca, adminClient, adminPort, "tenant-a", "user-a", certA)
+	provisionTenantWithSQLReader(t, ca, adminClient, adminPort, "tenant-b", "user-b", certB)
 
 	// Seed each tenant's row through the MySQL wire protocol server, which
 	// scopes writes via the composite (tenant, database) namespace using
@@ -399,5 +425,121 @@ func TestSQL_REST_ReadOnly_RejectsWriteRegardlessOfCaller(t *testing.T) {
 	after := sqlQueryHTTPOK(t, adminClient, adminPort, "qrdb", "SELECT * FROM kv WHERE `key` = 'should-fail'")
 	if after.RowCount != 0 {
 		t.Fatalf("rowCount after rejected writes = %d, want 0 (write escalated past the read-only engine)", after.RowCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multi-protocol coverage
+// ---------------------------------------------------------------------------
+
+// startMultiProtocolNodeWithSQLDefaultDB boots the shared multiProtoNode
+// harness (REST, gRPC, QUIC, MCP, Unix) with the MySQL wire protocol server
+// additionally enabled and scoped to the well-known default database
+// ("system"), exactly as startSingleNodeWithSQLDefaultDB does for the
+// REST-only test above. It returns the node and the MySQL listener's port.
+func startMultiProtocolNodeWithSQLDefaultDB(t *testing.T) (*multiProtoNode, int) {
+	t.Helper()
+	mysqlPorts := allocateTCPPorts(t, 1)
+	node := startMultiProtocolNodeWithArgs(t, "mvcc",
+		"--enable-mysql", "--mysql-port", fmt.Sprintf("%d", mysqlPorts[0]),
+		"--sql-database", "system")
+	return node, mysqlPorts[0]
+}
+
+// cliArgsForIdentity returns the root-level qrdb CLI flags that select proto
+// against node, presenting certPath/keyPath as the client identity, instead
+// of node's own fixed admin identity (see multiProtoNode.cliArgsFor). It is
+// how the tenant-scoped suite below authenticates as tenant-a/tenant-b
+// rather than the admin, on every transport.
+func cliArgsForIdentity(node *multiProtoNode, proto multiProtocol, certPath, keyPath string) []string {
+	return []string{
+		"--server", node.serverURLFor(proto),
+		"--ca-file", node.ca.CertPath,
+		"--cert-file", certPath,
+		"--key-file", keyPath,
+		"--timeout", "20s",
+	}
+}
+
+// TestSQL_TenantScoping_CLI_PerProtocol extends
+// TestSQL_REST_TenantScoping_MatchesWireProtocolNamespace's REST-only proof
+// across gRPC, QUIC, MCP, and Unix (REST included for a uniform table): rows
+// seeded through the MySQL wire protocol server under each tenant's identity
+// are read back through `qrdb sql query`, under that SAME identity, over
+// every qrdb transport the daemon serves -- proving every transport's
+// SQLQuery RPC resolves the identical tenant-scoped namespace the wire
+// protocol used, not just the REST route.
+func TestSQL_TenantScoping_CLI_PerProtocol(t *testing.T) {
+	cli := buildCLIBinary(t)
+	node, mysqlPort := startMultiProtocolNodeWithSQLDefaultDB(t)
+
+	adminClient := mtlsHTTPClient(t, node.ca, 10*time.Second)
+
+	certA, keyA := generateClientCert(t, node.ca, "user-a", "tenant-a")
+	certB, keyB := generateClientCert(t, node.ca, "user-b", "tenant-b")
+
+	provisionTenantWithSQLReader(t, node.ca, adminClient, node.restPort, "tenant-a", "user-a", certA)
+	provisionTenantWithSQLReader(t, node.ca, adminClient, node.restPort, "tenant-b", "user-b", certB)
+
+	dbA := waitForMySQLDefaultDB(t, node.ca, certA, keyA, mysqlPort, "user-a")
+	if _, err := dbA.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", "shared-name", []byte("tenant-a-value")); err != nil {
+		t.Fatalf("tenant-a wire INSERT: %v", err)
+	}
+	dbB := waitForMySQLDefaultDB(t, node.ca, certB, keyB, mysqlPort, "user-b")
+	if _, err := dbB.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", "shared-name", []byte("tenant-b-value")); err != nil {
+		t.Fatalf("tenant-b wire INSERT: %v", err)
+	}
+
+	sqlQueryCLIJSON := func(t *testing.T, args []string, query string) sqlCLIQueryResult {
+		t.Helper()
+		full := append(append([]string{}, args...), "sql", "query", "--database", "system", "--output", "json", query)
+		out, err := runCLI(t, cli, full...)
+		if err != nil {
+			t.Fatalf("sql query %q: %v\noutput: %s", query, err, out)
+		}
+		var result sqlCLIQueryResult
+		if jerr := json.Unmarshal([]byte(out), &result); jerr != nil {
+			t.Fatalf("sql query %q: decode: %v (output: %s)", query, jerr, out)
+		}
+		return result
+	}
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			argsA := cliArgsForIdentity(node, proto, certA, keyA)
+			argsB := cliArgsForIdentity(node, proto, certB, keyB)
+
+			resultA := sqlQueryCLIJSON(t, argsA, "SELECT `value` FROM kv WHERE `key` = 'shared-name'")
+			if resultA.RowCount != 1 || fmt.Sprint(resultA.Rows[0]["value"]) != "tenant-a-value" {
+				t.Fatalf("[%s] tenant-a sql query = %+v, want the tenant-a-owned row", proto.name, resultA)
+			}
+
+			resultB := sqlQueryCLIJSON(t, argsB, "SELECT `value` FROM kv WHERE `key` = 'shared-name'")
+			if resultB.RowCount != 1 || fmt.Sprint(resultB.Rows[0]["value"]) != "tenant-b-value" {
+				t.Fatalf("[%s] tenant-b sql query = %+v, want the tenant-b-owned row", proto.name, resultB)
+			}
+
+			// A whole-table scan for each tenant must return exactly their
+			// own row -- proves the ad-hoc query does not leak into or
+			// merge with another tenant's namespace on this transport.
+			scanA := sqlQueryCLIJSON(t, argsA, "SELECT * FROM kv")
+			if scanA.RowCount != 1 {
+				t.Fatalf("[%s] tenant-a scan rowCount = %d, want 1 (no cross-tenant leak)", proto.name, scanA.RowCount)
+			}
+			scanB := sqlQueryCLIJSON(t, argsB, "SELECT * FROM kv")
+			if scanB.RowCount != 1 {
+				t.Fatalf("[%s] tenant-b scan rowCount = %d, want 1 (no cross-tenant leak)", proto.name, scanB.RowCount)
+			}
+
+			// The SYSTEM tenant never wrote to "system" in this test, so its
+			// own scan over this transport must see zero rows -- proving
+			// neither tenant's write landed in (or leaked from) the shared
+			// system keyspace.
+			scanSystem := sqlQueryCLIJSON(t, node.cliArgsFor(proto), "SELECT * FROM kv")
+			if scanSystem.RowCount != 0 {
+				t.Fatalf("[%s] system-tenant scan rowCount = %d, want 0 (SYSTEM-tenant escalation regression)", proto.name, scanSystem.RowCount)
+			}
+		})
 	}
 }

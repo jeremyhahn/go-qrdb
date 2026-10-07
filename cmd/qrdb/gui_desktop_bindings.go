@@ -16,7 +16,7 @@
 
 package main
 
-import "github.com/jeremyhahn/go-qrdb/pkg/logger"
+import sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 
 // guiBindings holds every Wails binding instance created for a single
 // GUI session. It is the single authoritative source of which bindings
@@ -67,7 +67,7 @@ type guiBindings struct {
 // createGUIBindings constructs and wires all Wails bindings for the desktop
 // application. The logFile parameter is the path supplied via --log-file;
 // pass an empty string when logging to stdout.
-func createGUIBindings(log *logger.Logger, logFile string) *guiBindings {
+func createGUIBindings(log *sdk.ConcreteLogger, logFile string) *guiBindings {
 	conn := NewConnectionBinding(log)
 	connManager := NewConnectionManagerBinding(log)
 	conn.SetManager(connManager)

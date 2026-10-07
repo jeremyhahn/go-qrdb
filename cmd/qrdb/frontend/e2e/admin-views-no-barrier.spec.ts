@@ -47,7 +47,7 @@ const noBarrierState: WebMockState = {
     hardware_backed: false,
   },
   databases: [
-    { name: "default", engine: "kv", backend: "pebble", status: "open" },
+    { name: "default", backend: "pebble", status: "open" },
   ],
 };
 

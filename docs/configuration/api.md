@@ -1,6 +1,6 @@
 # Configuration — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
 Configuration is read at boot and is **not** mutable over the wire. Two things
 are observable, and one of them is public.

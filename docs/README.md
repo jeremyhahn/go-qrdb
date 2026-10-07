@@ -74,11 +74,12 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
+| [capabilities](capabilities/) | the effective runtime feature profile: build tags, run mode and configuration |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
 | [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
-| [release](release/) | cutting a release: the Release workflow, VERSION as the release record, lockstep module tags, tag protection |
+| [release](release/) | cutting a release: `make release-alpha`, VERSION as the release record, lockstep module tags, the Release workflow's post-publish validation |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
-| [replica-forwarding](replica-forwarding/) | *(proposed)* a node that holds no replica of a database forwards the request to its replica leader, on the caller's behalf, on every transport |
+| [replica-forwarding](replica-forwarding/) | a node that holds no replica of a database forwards the request to its replica leader, on the caller's behalf, on REST, gRPC, QUIC, MCP and embedded; Unix is the documented coverage gap |
 
 ### Security and identity
 
@@ -105,16 +106,18 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 | Feature | What it covers |
 |---|---|
-| [desktop-gui](desktop-gui/) | the Wails desktop application and the TypeScript SDK *(build tag `desktop`)* |
+| [desktop-gui](desktop-gui/) | the Wails desktop application *(build tag `desktop`)* |
+| [typescript-sdk](typescript-sdk/) | the `@qrdb/sdk` TypeScript client package, REST/Wails transports, typed errors, and contract tests |
 
 ## Migration state
 
-**All 41 currently-implemented features have a `docs/<feature>/` folder with all
+**All 47 currently-implemented features have a `docs/<feature>/` folder with all
 five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
 [coordination](coordination/) added 2026-09-10;
 [attested-caller](attested-caller/) added 2026-09-25;
 [row-locking](row-locking/) added 2026-09-30; [tenant-dek](tenant-dek/) added
-2026-10-01). The portfolio view is derived,
+2026-10-01; [typescript-sdk](typescript-sdk/) and
+[capabilities](capabilities/) added 2026-10-06). The portfolio view is derived,
 not maintained — count `docs/*/architecture.md`.
 
 The count read 34 while the tree held 35 folders: [guarded-swap](guarded-swap/)
@@ -143,15 +146,25 @@ They are listed below and are linked from the feature folder that owns them.
 | [deployment-multi-node-raft.md](deployment-multi-node-raft.md) | [multi-tenancy](multi-tenancy/), [clustering](clustering/) |
 | [embedding.md](embedding.md) | [api-server](api-server/), [run-modes](run-modes/) — embedding qrdb in a Go program |
 | [databases/README.md](databases/README.md) | [databases](databases/) |
-| [capabilities/README.md](capabilities/README.md) | [run-modes](run-modes/) |
 | [auth/](auth/) — README, roles, abac, layering, custom-authorizers | [identity-rbac](identity-rbac/) |
 | [seal/](seal/) — README, sealed-window, compliance, multi-tenant, enabling-encryption, so-dual-factor, auth-factors, and the design records | [barrier-seal](barrier-seal/), [shamir-custody](shamir-custody/) |
 | [sql/gorm.md](sql/gorm.md), [sql/upstream-gaps.md](sql/upstream-gaps.md), [sql/constraint-column-usage-duplication.md](sql/constraint-column-usage-duplication.md) | [sql](sql/) |
 | [credentials/secret-resolution.md](credentials/secret-resolution.md) | [credentials](credentials/) |
-| [gui/README.md](gui/README.md), [typescript-sdk/README.md](typescript-sdk/README.md) | [desktop-gui](desktop-gui/) |
+| [gui/README.md](gui/README.md) | [desktop-gui](desktop-gui/) |
 | [design/](design/) | design records — read as history and intent, **not** as shipped behaviour |
-| [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md), [invite-notfound-ambiguity.md](invite-notfound-ambiguity.md) | open questions |
+| [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md) | open questions |
 | [future/sqlite-vfs.md](future/sqlite-vfs.md) | future enhancement — proposed, **not implemented**: qrdb as a drop-in SQLite storage backend via a custom VFS |
+
+## Testing
+
+`make integration-test-<feature>` runs one feature's integration tests in
+isolation — no Docker, one target per folder above. The selection lives in
+[test/integration/features.mk](../test/integration/features.mk); the
+per-feature, per-transport coverage it adds up to (and every known gap) is
+[test/integration/COVERAGE.md](../test/integration/COVERAGE.md). See
+`AGENTS.md`'s Testing section for the full set of test entry points, and
+[release/engineering.md](release/engineering.md#test-tooling-this-feature-folder-also-owns)
+for where each piece of this tooling lives.
 
 ## Module
 

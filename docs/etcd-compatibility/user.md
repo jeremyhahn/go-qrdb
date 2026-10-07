@@ -1,6 +1,8 @@
 # etcd Compatibility — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+
+Test reference: `make integration-test-etcd-compatibility`; coverage row: `test/integration/COVERAGE.md` `[etcd-compatibility](../../docs/etcd-compatibility/)`.
 
 Point `etcdctl`, a `clientv3` program, or `kube-apiserver` at a qrdb database
 and it works as an etcd v3 endpoint.
@@ -16,11 +18,11 @@ and it works as an etcd v3 endpoint.
 
 ## First run
 
-Create a database with etcd enabled. It must be a `kv` engine, on a node
-running in mode `raft`; any backend serves it.
+Create a database with etcd enabled, on a node running in mode `raft`; any
+backend serves it.
 
 ```bash
-qrdb database create --name k8s --engine kv \
+qrdb database create --name k8s \
      --etcd --etcd-listen-addr :2379
 ```
 

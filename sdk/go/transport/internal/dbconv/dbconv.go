@@ -31,7 +31,6 @@ func Info(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
 	info := &transport.DatabaseInfo{
 		TenantID:     resp.GetTenantId(),
 		Name:         resp.GetName(),
-		Engine:       resp.GetEngine(),
 		Backend:      resp.GetBackend(),
 		Status:       resp.GetStatus(),
 		DataDir:      resp.GetDataDir(),

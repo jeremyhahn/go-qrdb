@@ -66,8 +66,8 @@ func newCompactionDatabaseService(t *testing.T) (*DatabaseService, *policyRegist
 	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, cfg := range []database.DatabaseConfig{
-		{Name: "acme-db", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory},
-		{Name: "sys-db", Engine: database.EngineKV, Backend: database.BackendMemory},
+		{Name: "acme-db", TenantID: "acme", Backend: database.BackendMemory},
+		{Name: "sys-db", Backend: database.BackendMemory},
 	} {
 		if _, err := mgr.Create(cfg); err != nil {
 			t.Fatal(err)

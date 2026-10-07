@@ -439,6 +439,29 @@ func TestTenantShardReconciler_IgnoresUnassigned(t *testing.T) {
 	}
 }
 
+// TestTenantShardReconciler_SkipsLocalBinding confirms the reconciler never
+// attaches a Raft shard for a local binding (go-qrdb Lane 2B, OD-4 A): the
+// placement names this node as the sole replica, but Backend is not raft, so
+// there is no Raft group to start. A local binding is materialized through
+// database resolution (pkg/server), not this reconciler.
+func TestTenantShardReconciler_SkipsLocalBinding(t *testing.T) {
+	factory := newFakeShardLifecycle()
+
+	p := &placement.Placement{
+		TenantID: "acme", Database: "cache", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		Backend: placement.BackendMemory,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
+		},
+	}
+	r, _ := newTestReconciler(t, factory, nil, p)
+	r.ReconcileOnce(context.Background())
+
+	if factory.attachCount() != 0 {
+		t.Errorf("Attach called %d times for a local binding; want 0", factory.attachCount())
+	}
+}
+
 // TestTenantShardReconciler_MetaManagedShardSurvivesReconcile proves that a
 // locally started shard with NO placement entry is NOT torn down by
 // ReconcileOnce. Shards absent from the placement table are meta-managed
@@ -841,6 +864,38 @@ func TestTenantShardReconciler_HandleEvent_PutNoLocalReplica_NotRunning(t *testi
 	// Close is called (idempotent no-op since shard was never started).
 	if factory.closeCount() != 1 {
 		t.Errorf("Close called %d times; want 1 (idempotent demotion Close)", factory.closeCount())
+	}
+}
+
+// TestTenantShardReconciler_HandleEvent_PutLocalBinding_NeverAttached mirrors
+// TestTenantShardReconciler_SkipsLocalBinding for the watch-driven path: an
+// EventPut naming this node as a local binding's sole replica must not
+// attach a Raft shard (go-qrdb Lane 2B, OD-4 A), and must not run the
+// demotion Close either -- this node IS the binding's owner, not demoted.
+func TestTenantShardReconciler_HandleEvent_PutLocalBinding_NeverAttached(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+
+	p := &placement.Placement{
+		TenantID: "acme", Database: "cache", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		Backend: placement.BackendMemory,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
+		},
+	}
+	r.handleEvent(context.Background(), placement.Event{
+		Type:      placement.EventPut,
+		TenantID:  "acme",
+		Database:  "cache",
+		Placement: p,
+	})
+
+	if factory.attachCount() != 0 {
+		t.Errorf("Attach called %d times for a local binding EventPut; want 0", factory.attachCount())
+	}
+	if factory.closeCount() != 0 {
+		t.Errorf("Close called %d times for a local binding EventPut; want 0", factory.closeCount())
 	}
 }
 

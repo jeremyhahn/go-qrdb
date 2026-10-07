@@ -191,7 +191,7 @@ func newPassphraseDatabases(t *testing.T, system *seal.StorageBarrier) *database
 	mgr := database.NewManager(nil, t.TempDir(), database.WithBarrierManager(bm))
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err = mgr.CreateWithCredentials(context.Background(), database.DatabaseConfig{
-		TenantID: "acme", Name: "secure", Engine: database.EngineKV, Backend: database.BackendMemory,
+		TenantID: "acme", Name: "secure", Backend: database.BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
 	}, seal.MustCredentials(context.Background(), []byte("db-pass")))

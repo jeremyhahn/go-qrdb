@@ -71,7 +71,6 @@ func TestDatabaseBinding_CreateWithBarrierInitialisesIt(t *testing.T) {
 
 	info, err := b.Create(&transport.CreateDatabaseRequest{
 		Name:    "vaulted",
-		Engine:  "kv",
 		Backend: "pebble",
 		DataDir: t.TempDir(),
 		Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "passphrase", Secret: passphrase},
@@ -115,7 +114,6 @@ func TestDatabaseBinding_CreateWithBarrierNeedsTheSecret(t *testing.T) {
 
 	_, err := b.Create(&transport.CreateDatabaseRequest{
 		Name:    "unkeyed",
-		Engine:  "kv",
 		Backend: "pebble",
 		DataDir: t.TempDir(),
 		Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},

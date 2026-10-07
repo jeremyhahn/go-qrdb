@@ -202,6 +202,87 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *te
 	return adminPorts, grpcPorts, ca
 }
 
+// startThreeNodeClusterAllTransports is startThreeNodeClusterSPIFFE with
+// QUIC, MCP and the Unix socket also enabled (all three default off), so a
+// test can reach every network transport a node serves. It is kept separate
+// from startThreeNodeClusterSPIFFE, used by many other tests, so enabling
+// these here cannot change their behavior.
+func startThreeNodeClusterAllTransports(t *testing.T, smType string) (adminPorts, grpcPorts, quicPorts, mcpPorts []int, unixPaths []string, ca *testCA) {
+	t.Helper()
+	bin := buildBinary(t)
+	ca = generateTestCA(t)
+	ports := allocatePorts(t, 3)
+	adminPorts = allocateTCPPorts(t, 3)
+	grpcPorts = allocateTCPPorts(t, 3)
+	quicPorts = allocateTCPPorts(t, 3)
+	mcpPorts = allocateTCPPorts(t, 3)
+	peersFlag := buildPeersFlag(ports)
+	dataDirs := make([]string, 3)
+	unixPaths = make([]string, 3)
+
+	peerAdminURLs := make(map[string]string, 3)
+	for i := range 3 {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
+	}
+	cfgPath := writePeerAdminURLConfig(t, peerAdminURLs)
+
+	// Every certificate is issued before any node starts: each node needs
+	// every peer's member identity (#556).
+	nodeCertPaths := make([]string, 3)
+	nodeKeyPaths := make([]string, 3)
+	for i := range 3 {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+	}
+	memberIDs := memberIdentitiesFlag(t, nodeCertPaths)
+
+	for i := range 3 {
+		dataDir := t.TempDir()
+		dataDirs[i] = dataDir
+		unixPaths[i] = filepath.Join(t.TempDir(), "qrdbd.sock")
+
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		nodeCertPath, nodeKeyPath := nodeCertPaths[i], nodeKeyPaths[i]
+
+		args := []string{
+			"start",
+			"--config", cfgPath,
+			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
+			"--raft-address", raftAddr,
+			"--data-dir", dataDir,
+			"--sm", smType,
+			"--discovery", "static",
+			"--peers", peersFlag,
+			"--member-identities", memberIDs,
+			"--shard-id", "1",
+			"--replica-id", fmt.Sprintf("%d", i+1),
+			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPorts[i]),
+			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
+			"--enable-unix", "--unix-socket-path", unixPaths[i],
+			"--tls-ca-file", ca.CertPath,
+			"--tls-cert-file", nodeCertPath,
+			"--tls-key-file", nodeKeyPath,
+		}
+
+		prefix := fmt.Sprintf("[node%d] ", i+1)
+		startNode(t, bin, args, prefix)
+	}
+
+	bootstrapNodes(t, ca, adminPorts...)
+	for i, dir := range dataDirs {
+		waitForHealthy(t, dir, 60*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+	}
+
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	warmupWrite(t, ca, leaderPort, 15*time.Second)
+
+	return adminPorts, grpcPorts, quicPorts, mcpPorts, unixPaths, ca
+}
+
 // spareClusterReplica is a 4th genesis member of a startThreeNodeClusterWithSpareSPIFFE
 // cluster, removed from shard 1 immediately after boot (see that function's
 // doc comment) so its real Raft address and member identity are a valid --
@@ -533,6 +614,56 @@ func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
 	peersAfterRemove := httpPeers(t, ca, leaderPort)
 	if membershipPeersContainsReplica(peersAfterRemove, shardID, extraReplicaID) {
 		t.Fatalf("leader /peers still reports replica_id=%d after forwarded remove: %v", extraReplicaID, peersAfterRemove)
+	}
+}
+
+// TestCluster_CeremonyInitialize_ForwardsToLeader is the node-parity
+// regression guard (node-parity, owner ruling 2026-10-06): the admin-credential step of `qrdb init`
+// (POST /v1/ceremony/initialize) must run on the system shard's leader
+// (service.CeremonyServiceWithLeaderGate), and a follower refusing it with
+// *service.AdminCredentialNotLeaderError must forward the identical request
+// to the leader through the SAME tryForwardWrite/forwardToLeader machinery
+// TestCluster_MembershipAdd_ForwardsToLeader already proves for
+// /membership/add, rather than leaving the operator to retarget `qrdb init`
+// at another node by hand.
+//
+// The request body is intentionally incomplete (no SO PIN, no admin
+// credential path selected): what this test proves is not which ceremony
+// error comes back, only that the follower's answer is the SAME one the
+// leader gives directly, as every node-equal endpoint must be. Before the
+// fix, the follower answered 503 (Unavailable) unconditionally, without
+// ever reaching the ceremony core the leader actually runs.
+func TestCluster_CeremonyInitialize_ForwardsToLeader(t *testing.T) {
+	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+
+	var followerPort int
+	for _, p := range adminPorts {
+		if p != leaderPort {
+			followerPort = p
+			break
+		}
+	}
+	if followerPort == 0 {
+		t.Fatal("no follower admin port found in a 3-node cluster")
+	}
+	waitForSettledFollowerView(t, ca, followerPort, 30*time.Second)
+
+	const body = `{}`
+
+	leaderCode, leaderBody := httpCeremonyInitialize(t, ca, leaderPort, body)
+	if leaderCode == http.StatusServiceUnavailable {
+		t.Fatalf("leader itself answered 503 for /v1/ceremony/initialize: %s -- test fixture assumption broken", leaderBody)
+	}
+
+	// Issued against the FOLLOWER. Before the fix this was unconditionally
+	// 503 regardless of leaderCode; after it, the follower forwards and the
+	// leader's own answer -- whatever ceremony refusal an empty body earns
+	// -- comes back unchanged.
+	followerCode, followerBody := httpCeremonyInitialize(t, ca, followerPort, body)
+	if followerCode != leaderCode {
+		t.Fatalf("POST /v1/ceremony/initialize to follower (port %d) = %d %q, want %d (same as leader, port %d): %q",
+			followerPort, followerCode, followerBody, leaderCode, leaderPort, leaderBody)
 	}
 }
 

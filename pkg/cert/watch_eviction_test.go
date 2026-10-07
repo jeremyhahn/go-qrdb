@@ -440,6 +440,24 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishBackoffGrowsAndCaps(t 
 	watchReestablishBackoffCap = 60 * time.Millisecond
 	t.Cleanup(func() { watchReestablishBackoff, watchReestablishBackoffCap = oldBackoff, oldCap })
 
+	// Replace the real wall-clock wait with a recording stub that fires
+	// immediately: the sequence of requested backoffs is what this test
+	// asserts, not how long the scheduler actually took to wake the
+	// goroutine (go-qrdb#610 -- the wall-clock version measured actual
+	// gaps and flaked under full-suite -race load).
+	oldWait := watchReestablishWait
+	var mu sync.Mutex
+	var observed []time.Duration
+	watchReestablishWait = func(d time.Duration) <-chan time.Time {
+		mu.Lock()
+		observed = append(observed, d)
+		mu.Unlock()
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+	t.Cleanup(func() { watchReestablishWait = oldWait })
+
 	ws := newFakeWatchService()
 	// WatchForDeletions' own two initial calls (one per watcher) succeed;
 	// account for both before forcing the reestablish attempts to fail.
@@ -460,38 +478,28 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishBackoffGrowsAndCaps(t 
 	pollUntil(t, func() bool {
 		return len(ws.callTimes()) >= 6 // 2 initial + 3 failed + 1 successful retry
 	})
-	calls := ws.callTimes()
+
+	mu.Lock()
+	backoffs := append([]time.Duration(nil), observed...)
+	mu.Unlock()
 	// calls[0]/[1] are WatchForDeletions' own two initial WatchPrefix
-	// calls (cert_ca, then tombstone), both well before the close; the
-	// cert_ca retries start at calls[2].
-	retryGaps := make([]time.Duration, 0, 4)
-	for i := 2; i < len(calls)-1; i++ {
-		retryGaps = append(retryGaps, calls[i+1].Sub(calls[i]))
+	// calls, which don't go through reestablishWatch and so never touch
+	// watchReestablishWait; the cert_ca retries are the only source of
+	// entries in backoffs, one requested wait per retry attempt.
+	if len(backoffs) < 3 {
+		t.Fatalf("expected at least 3 observed backoffs, got %d (%v)", len(backoffs), backoffs)
 	}
-	if len(retryGaps) < 3 {
-		t.Fatalf("expected at least 3 retry gaps, got %d (%v)", len(retryGaps), retryGaps)
-	}
-	// A capped backoff plateaus (two consecutive gaps both near the cap),
-	// and real goroutine scheduling jitter can make a later plateaued gap
-	// measure a few milliseconds BELOW an earlier one despite both being
-	// the same nominal backoff -- so shrinkage is only a real violation
-	// past a small tolerance, not any decrease at all.
-	const jitterTolerance = 15 * time.Millisecond
-	for i := 1; i < len(retryGaps); i++ {
-		if retryGaps[i]+jitterTolerance < retryGaps[i-1] {
-			t.Errorf("retry gap %d (%v) is well below retry gap %d (%v): backoff shrank",
-				i, retryGaps[i], i-1, retryGaps[i-1])
+	for i := 1; i < len(backoffs); i++ {
+		if backoffs[i] < backoffs[i-1] {
+			t.Errorf("backoff %d (%v) is less than backoff %d (%v): backoff shrank", i, backoffs[i], i-1, backoffs[i-1])
 		}
 	}
-	// Growth actually happened at all (not merely "never shrank" from a
-	// flat sequence): the first retry gap must be meaningfully shorter
-	// than the last, which only reaching the cap explains.
-	if first, last := retryGaps[0], retryGaps[len(retryGaps)-1]; first+jitterTolerance >= last {
-		t.Errorf("no growth observed across retries: first gap %v, last gap %v", first, last)
+	if first, last := backoffs[0], backoffs[len(backoffs)-1]; first >= last {
+		t.Errorf("no growth observed across retries: first backoff %v, last backoff %v", first, last)
 	}
-	for i, g := range retryGaps {
-		if g > watchReestablishBackoffCap+jitterTolerance {
-			t.Errorf("retry gap %d = %v, exceeds the cap %v by more than scheduling slack", i, g, watchReestablishBackoffCap)
+	for i, b := range backoffs {
+		if b > watchReestablishBackoffCap {
+			t.Errorf("backoff %d = %v, exceeds the cap %v", i, b, watchReestablishBackoffCap)
 		}
 	}
 }

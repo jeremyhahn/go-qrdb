@@ -62,7 +62,7 @@ func openInotifyInstances(t *testing.T) int {
 // function.
 //
 // This drives a runStart that fails EARLY, well before the shutdown block, and
-// asserts the instance count is unchanged. An invalid database engine is the
+// asserts the instance count is unchanged. An invalid database backend is the
 // vehicle: it is refused after the reloader is wired and long before any
 // shutdown, which is precisely the shape that leaked.
 //
@@ -88,13 +88,13 @@ func TestRunStart_ReleasesTheCertWatcherOnEveryReturn(t *testing.T) {
 		deploymentID:    1,
 		// Refused after the reloader is wired and before any shutdown.
 		databases: []qrdbconfig.DatabaseConfig{
-			{Name: "testdb", Engine: "invalid-engine", Backend: "pebble"},
+			{Name: "testdb", Backend: "invalid-backend"},
 		},
 		host: testBindHost,
 	}
 
 	if runErr := runStart(f); runErr == nil {
-		t.Fatal("runStart accepted an invalid database engine, so this test no " +
+		t.Fatal("runStart accepted an invalid database backend, so this test no " +
 			"longer exercises an early return")
 	}
 

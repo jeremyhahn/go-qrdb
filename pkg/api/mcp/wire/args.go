@@ -14,7 +14,12 @@
 
 package wire
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
+)
 
 // Tool arguments are a flat JSON object. A request message maps onto one by
 // its JSON field names: scalars stay scalars, []byte fields are base64
@@ -50,6 +55,34 @@ func (e *ArgsError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *ArgsError) Unwrap() error { return e.Err }
+
+// UnknownArgumentError reports a tool-call argument name the tool does not
+// recognize -- a stale or misspelled key. It is tool arguments' counterpart
+// to encoding/json's DisallowUnknownFields: arguments are an untyped map, so
+// nothing else catches one (OD-13: a generic rule, not a per-field shim).
+type UnknownArgumentError struct {
+	Tool string
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *UnknownArgumentError) Error() string {
+	return "mcp: " + e.Tool + ": unknown argument " + strconv.Quote(e.Name)
+}
+
+// ErrorClass reports InvalidArgument: the caller's own request, nothing this
+// node can retry around.
+func (e *UnknownArgumentError) ErrorClass() errclass.Class { return errclass.InvalidArgument }
+
+// RejectUnknownArgs refuses the first key in args that is not in known.
+func RejectUnknownArgs(tool string, args map[string]any, known map[string]struct{}) error {
+	for name := range args {
+		if _, ok := known[name]; !ok {
+			return &UnknownArgumentError{Tool: tool, Name: name}
+		}
+	}
+	return nil
+}
 
 // EncodeArgs renders v, a request message, as tool arguments. Every field
 // named in jsonFields that is present is re-encoded as a JSON string.

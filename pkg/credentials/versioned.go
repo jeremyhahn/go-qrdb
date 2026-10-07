@@ -634,29 +634,71 @@ func (s *CredentialService) listVersionsBarrier(ctx context.Context, name string
 	return out, nil
 }
 
+// deleteBarrierVersionKeys deletes every historical version key named in
+// entries from the barrier store. It returns the number of keys removed
+// before any error, so a caller can report partial progress. Shared by
+// gcBarrier (which reaps only expired entries) and deleteBarrierAll (which
+// tears down the full history on an explicit delete).
+func (s *CredentialService) deleteBarrierVersionKeys(ctx context.Context, name string, entries []credentialMetaEntry) (int, error) {
+	removed := 0
+	for _, h := range entries {
+		if err := s.barrier.Delete(ctx, versionKey(name, h.Version)); err != nil {
+			return removed, &OperationError{Op: fmt.Sprintf("delete v%d", h.Version), Cause: err}
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, error) {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
 		return 0, err
 	}
 	now := time.Now().UTC()
+	expired := make([]credentialMetaEntry, 0, len(meta.History))
 	kept := make([]credentialMetaEntry, 0, len(meta.History))
-	reaped := 0
 	for _, h := range meta.History {
 		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
-			if delErr := s.barrier.Delete(ctx, versionKey(name, h.Version)); delErr != nil {
-				return reaped, &OperationError{Op: fmt.Sprintf("gc delete v%d", h.Version), Cause: delErr}
-			}
-			reaped++
+			expired = append(expired, h)
 			continue
 		}
 		kept = append(kept, h)
+	}
+	reaped, err := s.deleteBarrierVersionKeys(ctx, name, expired)
+	if err != nil {
+		return reaped, err
 	}
 	meta.History = kept
 	if err := s.writeBarrierMeta(ctx, name, meta); err != nil {
 		return reaped, err
 	}
 	return reaped, nil
+}
+
+// deleteBarrierAll removes a barrier-strategy credential's current value,
+// its metadata sidecar, and every historical version (grace-period or not)
+// so that a deleted credential's previous values are no longer retrievable
+// through RetrieveCredentialVersion. Versions are torn down before the
+// metadata that indexes them, and the current value last, so a failure
+// partway through never leaves a version reachable through the service
+// API: a dangling meta entry without its version key reads as expired, and
+// a dangling version key without a meta entry reads as not-found.
+func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) error {
+	meta, err := s.loadBarrierMeta(ctx, name)
+	if err != nil {
+		return err
+	}
+	if _, err := s.deleteBarrierVersionKeys(ctx, name, meta.History); err != nil {
+		return err
+	}
+	if err := s.barrier.Delete(ctx, metaKey(name)); err != nil {
+		return &OperationError{Op: "delete meta", Cause: err}
+	}
+	if err := s.barrier.Delete(ctx, credentialPrefix+name); err != nil {
+		return &OperationError{Op: "delete current", Cause: err}
+	}
+	return nil
 }
 
 // =============================================================================

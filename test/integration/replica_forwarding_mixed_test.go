@@ -53,8 +53,9 @@ func TestMixedCluster_EmbeddedNodeServesAndForwardsARaftTenant(t *testing.T) {
 	})
 	// auth.mtls_binding_policy defaults to "required": the configured
 	// caller authenticates, and so forwards, only once enrolled as the
-	// writer's binding.
-	bindUserCert(t, c.sys, c.nodes[c.creator].admin, c.writerID, callerCert)
+	// writer's binding. The writer lives in the tenant, which the system
+	// tenant's admin may not act on, so the tenant's own admin binds it.
+	bindUserCert(t, c.admin, c.nodes[c.creator].admin, c.writerID, callerCert)
 	emb := c.nodes[mixedEmbedded].embedded
 	ctx := c.writerContext()
 	rest := restFwdTransport{}

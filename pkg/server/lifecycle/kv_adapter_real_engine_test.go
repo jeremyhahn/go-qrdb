@@ -126,3 +126,65 @@ func TestKVStoreAdapter_OrdinaryIndexStaysCaseSensitiveOverARealEngine(t *testin
 			"want 0 -- the default must stay case-SENSITIVE", len(keys))
 	}
 }
+
+// TestKVStoreAdapter_WithDatabaseQualifiedIndexMaintainedOverARealEngine is
+// the verification go-qrdb#38 names: a DAO built WithDatabase resolves the
+// qualified name "{database}.{entityType}.{FieldName}"
+// (genericDAO.indexName in pkg/dao) and registers it as EntityIndex.IndexName
+// with no KeyPrefix. The adapter must turn that into a REAL index the engine
+// maintains on every write, not a refusal that silently downgrades every
+// WithDatabase DAO to a full scan.
+//
+// Driving this through a mockIndexServicer only shows the adapter's
+// CreateIndex request was shaped correctly -- see
+// TestKVStoreAdapter_EngineScopeIsTheDeclaredKeyPrefix's "DAO built
+// WithDatabase" case, which already pins the scope the adapter asks the
+// engine to maintain ("member/"). It cannot show the engine actually
+// maintains the index on a write that follows registration. This is the
+// same shape as pkg/dao.TestDAO_WithDatabaseRegistersTheNameItQueries, but
+// over the real KVEngine the production system tenant's StoreResolver
+// returns an adapter for -- which is the interaction that hid the defect.
+func TestKVStoreAdapter_WithDatabaseQualifiedIndexMaintainedOverARealEngine(t *testing.T) {
+	store := newAdapterOverRealEngine(t)
+	ctx := context.Background()
+
+	const qualifiedName = "tenantdb.member.Team"
+	err := store.RegisterEntityIndexes("member", []kvstore.EntityIndex{
+		{IndexName: qualifiedName, FieldName: "Team", JSONFieldName: "team", CaseSensitive: true},
+	})
+	if err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+
+	if err := store.Put(ctx, "member/1", []byte(`{"team":"alpha"}`)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	keys, err := store.QueryIndex(ctx, qualifiedName, []byte("alpha"))
+	if err != nil {
+		t.Fatalf("QueryIndex(%q): %v", qualifiedName, err)
+	}
+	if len(keys) == 0 {
+		t.Fatalf("QueryIndex(%q) returned EMPTY with a nil error -- the write never "+
+			"reached the index the DAO advertised, go-qrdb#38's silent-empty defect", qualifiedName)
+	}
+	found := false
+	for _, k := range keys {
+		if string(k) == "member/1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("QueryIndex(%q) did not contain %q among %d match(es)", qualifiedName, "member/1", len(keys))
+	}
+
+	// A value the index does not hold must still miss, or the assertion
+	// above would pass against an index that matches everything.
+	keys, err = store.QueryIndex(ctx, qualifiedName, []byte("beta"))
+	if err != nil {
+		t.Fatalf("QueryIndex(beta): %v", err)
+	}
+	if len(keys) != 0 {
+		t.Errorf("QueryIndex(beta) matched %d keys; want 0", len(keys))
+	}
+}

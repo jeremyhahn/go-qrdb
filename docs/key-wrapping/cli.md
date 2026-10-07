@@ -1,31 +1,48 @@
 # Key Wrapping — CLI
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-04
+> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
 
-Key wrapping has no command group of its own — it is reached entirely
-through `qrdb backup create` / `qrdb backup restore`'s existing flags. This
-document covers only the flags this feature adds or changes; every other
-`qrdb backup` flag is unchanged and documented in
+Key wrapping has no command group of its own — it is reached through
+`qrdb backup create` / `qrdb backup restore`'s flags, and through
+`qrdb dek *`'s existing flags (unchanged; see
+[tenant-dek/cli.md](../tenant-dek/cli.md)). This document covers only the
+flags this feature adds or changes; every other `qrdb backup` flag is
+unchanged and documented in
 [backup-restore/cli.md](../backup-restore/cli.md).
 
 ## `qrdbd` — the key directory config
 
 The built-in `"software"` provider resolves every key reference inside ONE
-directory the DAEMON (not the CLI) is configured with — `--backup-key-dir`
-(`qrdbd start --backup-key-dir <dir>`), kept OUTSIDE `--data-dir` and
-`--backup-dir` on purpose, same as every other key-custody directory in this
-repository: a backup made with a key from this directory must still be
-restorable after `--data-dir` is lost entirely. Resolving `"software"` with
-no directory configured refuses with a typed, server-side error
-(`*BackupKeyDirNotConfiguredError`) rather than falling back to an implicit
-location. `--restore-decryption-key-file` (below) resolves against this
-same directory during an offline, boot-time disaster-recovery restore.
+directory the DAEMON (not the CLI) is configured with, per consumer:
+`--backup-key-dir` (`qrdbd start --backup-key-dir <dir>`) for Backup, and
+`--dek-key-dir` (`qrdbd start --dek-key-dir <dir>`) for the tenant DEK
+keyring — two distinct directories, kept OUTSIDE `--data-dir` and
+`--backup-dir` on purpose, same as every other key-custody directory in
+this repository: a backup made with a key from its directory must still be
+restorable after `--data-dir` is lost entirely, and a tenant's DEK keyring
+must keep minting versions even if the backup key directory is
+reconfigured or lost. Resolving `"software"` with no directory configured
+refuses with a typed, server-side error (`*BackupKeyDirNotConfiguredError`
+for Backup, `*dek.KeyDirNotConfiguredError` for the keyring) rather than
+falling back to an implicit location. A hardware or cloud-KMS provider
+registered through `WithKeyWrapRegistry`/`WithKeyWrapProvider` is shared by
+BOTH consumers (see [architecture.md](architecture.md#the-tenant-dek-keyring));
+only the built-in `"software"` provider's key directory is per-consumer.
+`--restore-decryption-key-file` (below) resolves against
+`--backup-key-dir` during an offline, boot-time disaster-recovery restore.
 `--restore-backup-id`'s offline restore mirrors `qrdb backup restore`'s
 own `--allow-plaintext` opt-in as `--allow-plaintext-restore`: a
 plaintext-stored backup is refused (`*BackupPlaintextRestoreNotAllowedError`)
 unless the operator sets it, and the gate/settle audit record brackets the
 WHOLE offline sequence (decrypt, bootstrap, stop, import, restart), not
 merely the decrypt step.
+
+The tenant DEK keyring has no plaintext escape hatch: every version's key
+is always wrapped under a KEK, so `--dek-key-dir` (or an injected hardware
+provider) is REQUIRED before `qrdb dek encrypt`/`qrdb dek rotate` can mint
+a version with the built-in provider. The keyring's key reference defaults
+to the tenant ID itself — an operator provisions one key file per tenant,
+named after that tenant's ID, inside `--dek-key-dir`.
 
 ## `qrdb backup create` — new and changed flags
 

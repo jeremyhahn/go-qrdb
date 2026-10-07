@@ -1,6 +1,8 @@
 # Configuration — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+
+Test reference: `make integration-test-configuration`; coverage row: `test/integration/COVERAGE.md` `[configuration](../../docs/configuration/)`.
 
 Configuring `qrdbd`, and confirming that what you wrote is what is running.
 
