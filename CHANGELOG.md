@@ -11,6 +11,26 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.45.0-alpha] - 2026-10-07
+
+### Highlights
+
+- **Central tenant and target authorization layer exported from the SDK**
+  (#587), with node auth accessors for downstream modules.
+- **Storage-generic engine and per-database bindings, phase 1 and 2B/2C.**
+  The per-database `engine` field is removed (every database exposes every
+  compiled-in engine), the catalog authority and placement cover every
+  backend, and drop is fenced under a binding on every engine.
+- **Strict tenant isolation, phase 5.** The `strict-isolation` feature, the
+  isolation policy floor, and the `ScopeSelf` system lift removed: a system
+  admin acting in another tenant needs the explicit `:cross` permissions.
+- **FIPS 140-3.** The nightly FIPS regression fixed across four defect
+  classes, and `cluster:join_token` granted to Admin under FIPS.
+- **Security and reliability.** Replicated audit phase 2, tenant DEK seam,
+  first boot over every transport, cluster integration suite armed on every
+  push, per-feature `make integration-test-<feature>` targets, and the CI
+  gates (coverage, gosec, publication-bound, release-alpha fixtures) green.
+
 ### Removed
 
 - **The per-database `engine` field** (`kv`/`timeseries`/`vector`), across the
