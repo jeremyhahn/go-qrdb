@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.47.0-alpha] - 2026-10-08
+
 ### Changed
 
 - **go-enclave v0.8.0-alpha in every module.** Every protected-memory read is
