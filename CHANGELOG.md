@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.46.0-alpha] - 2026-10-08
+
 ### Added
 
 - **A node-sanctioned service principal for an embedder's own in-process
