@@ -566,6 +566,15 @@ permission check beyond that).
 
 - **The tenant comes from the certificate, never from the request.** This is the
   root of tenant isolation across every feature.
+- **No user record or credential can become the embedder's service
+  principal.** `node.WithServicePrincipal` gives an embedding host an
+  in-process identity, `qrdb-service:<name>` in the system tenant. Its grant
+  set is the permissions registered under its name, and the RBAC PDP decides
+  each of its calls as it decides any caller's. The subject namespace is
+  reserved: an identity in it, or one carrying the principal marker, is
+  refused as unauthenticated on every network transport, even when a user
+  record of that name exists. See
+  [../api-server/engineering.md](../api-server/engineering.md#service-principal).
 - **No caller mints another tenant's identities or reads another tenant's
   audit trail — the system tenant included.** `certs:issue`, `certs:enroll`,
   `certs:list`, `certs:revoke`, `certs:read`, `certs:export` and

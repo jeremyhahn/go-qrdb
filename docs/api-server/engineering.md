@@ -1,6 +1,6 @@
 # Unified API Server — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
 
 ## Exported surface
 
@@ -20,7 +20,50 @@ func (n *Node) Services()    *lifecycle.Node
 func (n *Node) KVService()    service.KVServicer
 func (n *Node) AdminService() service.AdminServicer
 func (n *Node) Close()       error   // tears down in reverse order
+
+// The embedder's own service principal (see "Service principal" below).
+func WithServicePrincipal(name string) NodeOption
+func (n *Node) ServiceContext(ctx context.Context) (context.Context, error)
+var ErrNoServicePrincipal error
 ```
+
+`sdk/go/types_auth.go` re-exports the principal's wire-side names:
+
+```go
+const ServicePrincipalSubjectPrefix = auth.ServicePrincipalSubjectPrefix // "qrdb-service:"
+var   IsServicePrincipal            = auth.IsServicePrincipal
+type  ServicePrincipalPresentedError = authmw.ServicePrincipalPresentedError
+```
+
+### Service principal
+
+An embedding host's own in-process work (loading its CA state, its stores, its
+signing keys) has no end user behind it. With authentication on, an embedded
+call carrying no identity is refused, so the node sanctions one principal for
+that work:
+
+```go
+sdk.RegisterPermissionRoleGrant("xkms", sdk.PermissionCredentialsStore, sdk.PermissionCredentialsRetrieve)
+n, err := node.NewStandaloneNode(ctx, cfg, serverOpts, node.WithServicePrincipal("xkms"))
+svcCtx, err := n.ServiceContext(ctx)
+secret, err := n.Client().Credentials().CredentialRetrieve(svcCtx, "ca-state")
+```
+
+- **Its authority is declared, not implied.** `ServiceContext` builds the
+  identity `qrdb-service:<name>` in the system tenant. That identity has no
+  roles, and its `ScopePermissions` are exactly the permissions registered
+  under `<name>` through the role-grant seam, read when `ServiceContext` is
+  called. The node's authorizer decides every call as it decides any
+  caller's: the scope rules, the SO deny-list and ABAC all apply. A
+  permission granted to no one is refused with `*sdk.PermissionDeniedError`.
+- **The name is validated at construction.** It must match `[a-z0-9][a-z0-9._-]*`,
+  be at most 64 bytes long and not be a built-in role name (`so`, `admin`,
+  `operator`, `user`, `auditor`). Anything else is a `*node.ConfigError`.
+- **It never comes from the network.** See
+  [architecture.md](architecture.md#trust-boundaries).
+- **It is audited by name.** Each authorization decision is recorded with
+  actor `qrdb-service:<name>`, action `auth.authorize` and the permission as
+  the resource.
 
 `sdk/go/types_server.go` — the Tier 2 alias file:
 
@@ -315,6 +358,10 @@ over the same services, not a seventh transport.
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |
+| A presented identity claiming a service principal (subject `qrdb-service:*` or the principal marker), from any authenticator, an on-behalf assertion or a module fallback, on any network transport | `*ServicePrincipalPresentedError`, which unwraps to `auth.ErrUnauthenticated`: REST 401, gRPC/Unix `Unauthenticated`, and the same class on QUIC, MCP, SQL and etcd. No identity is bound | **yes** |
+| `ServiceContext` on a node built without `WithServicePrincipal` | `node.ErrNoServicePrincipal` | **yes** |
+| `WithServicePrincipal` name that is empty, too long, outside `[a-z0-9][a-z0-9._-]*` or a built-in role name | `*node.ConfigError` from the constructor | **yes** |
+| A service-principal call for a permission not granted to its name | `*rbac.PermissionDeniedError` (`*sdk.PermissionDeniedError`), audited as denied under the principal | **yes** |
 | Raft-only capability in standalone mode | `requires mode: raft` — REST 501, gRPC/QUIC `Unimplemented` | **yes** |
 
 ### Error classification
@@ -366,6 +413,15 @@ follows the run mode ([../run-modes/](../run-modes/)).
 - **The `ModuleAuthFallback` boundary is a security test**: an identity returned
   by a module must still be enriched from the store and authorized by the host
   authorizer, and a token carrying role claims must not affect the decision.
+- **The service-principal boundary is a security test.** A claim is refused
+  through `Authenticate`, `AuthenticateQUIC`, the REST middleware, the unary
+  interceptor and both on-behalf paths
+  (`pkg/auth/middleware/service_principal_test.go`). An SDK-only test shows
+  four things with authentication on: an identity-less call is refused, the
+  principal is denied before the embedder grants it anything, it is admitted
+  within its grant and denied outside it, and every decision is audited under
+  its subject. That test imports `sdk/go` and `sdk/go/node` and nothing under
+  `pkg/` (`sdk/go/node/service_principal_sdk_test.go`).
 - **Transport parity** is the standing integration property: the same capability
   reaches the same decision on all six.
 

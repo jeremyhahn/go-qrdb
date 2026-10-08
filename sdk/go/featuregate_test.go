@@ -44,6 +44,10 @@ func (a activations) ListAll(_ context.Context, prefix string) ([]string, error)
 	return keys, nil
 }
 
+func (a activations) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return a.ListAll(ctx, prefix)
+}
+
 // members is a featuregate.MembershipSource over a fixed system shard.
 type members map[uint64]string
 

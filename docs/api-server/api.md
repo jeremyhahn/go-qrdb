@@ -47,6 +47,14 @@ credentials the host does not understand — a session-token plane, for instance
 **The identity it returns is then enriched and authorized by the host's single
 path: roles come from the store, never from the token.**
 
+**The `qrdb-service:` subject namespace is reserved.** It belongs to the
+embedder's in-process service principal (`node.WithServicePrincipal`), which
+no network transport accepts. A request whose credential resolves to a subject
+in that namespace, or to an identity carrying the principal marker, is refused
+as unauthenticated (REST 401, gRPC `Unauthenticated`) before any handler or
+authorization runs. See
+[engineering.md](engineering.md#service-principal).
+
 ## Authorization
 
 Every capability declares its required permission **once**:

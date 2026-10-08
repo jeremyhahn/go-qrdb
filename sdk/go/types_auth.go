@@ -178,6 +178,24 @@ var CheckAuthMethod = authmw.CheckAuthMethod
 // PermissionDenied: the credential is valid, the way in is not.
 type AuthMethodNotPermittedError = authmw.AuthMethodNotPermittedError
 
+// ServicePrincipalSubjectPrefix is the reserved Subject namespace of a
+// node-sanctioned service principal (node.WithServicePrincipal): the principal
+// named "xkms" is audited as "qrdb-service:xkms". No network transport accepts
+// a subject in this namespace. (Aliases pkg/auth.ServicePrincipalSubjectPrefix.)
+const ServicePrincipalSubjectPrefix = auth.ServicePrincipalSubjectPrefix
+
+// IsServicePrincipal reports whether an identity is, or claims to be, a
+// service principal. A host authenticator never has to call it: the
+// authentication middleware refuses such an identity on every network
+// transport. (Aliases pkg/auth.IsServicePrincipal.)
+var IsServicePrincipal = auth.IsServicePrincipal
+
+// ServicePrincipalPresentedError is the refusal every network transport gives
+// a presented identity that claims a service principal, whatever credential
+// produced it. It matches ErrUnauthenticated under errors.Is, so transports
+// answer 401 / Unauthenticated.
+type ServicePrincipalPresentedError = authmw.ServicePrincipalPresentedError
+
 // ---------------------------------------------------------------------------
 // Auth context helpers
 // ---------------------------------------------------------------------------

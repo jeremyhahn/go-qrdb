@@ -403,6 +403,17 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // a transient store failure returns StoreUnavailableError so clients retry
 // rather than being denied with stale/empty roles.
 func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
+	// A node-sanctioned service principal is granted to in-process callers
+	// only (auth.NewServicePrincipal, reached through sdk/go/node
+	// Node.ServiceContext) and never arrives through this function. Every
+	// identity that does -- every transport's authenticator chain, every
+	// forwarded on-behalf assertion, every capability module's fallback --
+	// came from a request, so one that claims the principal is refused here,
+	// before anything else reads it, whatever credential produced the claim.
+	if auth.IsServicePrincipal(identity) {
+		return ctx, nil, &ServicePrincipalPresentedError{Subject: identity.Subject}
+	}
+
 	// Fold an absent tenant onto the system tenant HERE, on the identity
 	// itself, before anything reads it. This function is the single funnel
 	// every authenticated identity passes through on every transport, and it

@@ -60,8 +60,13 @@ type Identity struct {
 	// FOR. The authorizer treats them as an additive grant set alongside
 	// role-resolved permissions; the SO deny-list still overrides.
 	//
+	// NewServicePrincipal is the one other writer: a node-sanctioned service
+	// principal carries exactly the permissions its embedder declared for it
+	// here, for the same reason (no user record).
+	//
 	// SECURITY: this field must only ever be populated in-process from a
-	// validated token by the middleware/fallback layer — never
+	// validated token by the middleware/fallback layer, or by
+	// NewServicePrincipal — never
 	// deserialized from a wire request and never trusted from a
 	// forwarded assertion (authenticateOnBehalf re-resolves identity and
 	// does not carry it).

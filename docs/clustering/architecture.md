@@ -675,6 +675,14 @@ the same list.
   only by a gate, with `PutIfAbsent`, once every member advertises the feature;
   anyone able to forge one can already rewrite any system record. Its
   `activated_by` field is kept for audit, not re-verified.
+- **Learning of an activation.** Every other node enables the feature as soon
+  as its own system-shard replica has applied the record, from local state,
+  with no leader and no quorum involved. Its startup check reads the records
+  linearizably, since a downgrade refusal must not miss one; after that a
+  record a local read finds is final -- activation is permanent -- so waiting
+  on a leader would only add delay. That delay is what matters across a
+  leader change: the node taking over a group must not refuse the feature's
+  writes the cluster activated long before.
 - **Before activation** a group that is not enabled keeps the path every binary
   understands: for guarded writes, the write is proposed unguarded and the drop
   fence is the check made when the database is resolved.

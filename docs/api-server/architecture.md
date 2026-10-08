@@ -383,6 +383,19 @@ kernel-assigned port.
   are not answered anonymously, and every request body is bounded.
 - **A module cannot grant itself authority.** Its fallback returns an identity;
   the host enriches and authorizes it.
+- **The embedder's service principal exists only in process.** A node built
+  with `node.WithServicePrincipal(name)` hands the principal
+  `qrdb-service:<name>` to its embedder through `Node.ServiceContext`, for
+  calls through the node's own embedded client. The principal's authority is
+  the set of permissions registered under its name, and the same authorizer
+  decides every call it makes. The authentication middleware refuses any
+  identity that claims the principal on every network transport. It checks
+  that in the one function every transport's authentication reaches, so it
+  makes no difference whether the claim came from a bearer token, a
+  certificate, a cluster peer's on-behalf assertion or a module fallback. A
+  call the embedded client forwards to another replica carries the
+  `WithEmbeddedCaller` identity, never the principal. See
+  [engineering.md](engineering.md#service-principal).
 - **A malformed public gRPC method name is rejected at registration**, so a typo
   fails startup loudly instead of silently leaving a method auth-gated.
 - **A REST route has exactly one owner.** Modules register before the

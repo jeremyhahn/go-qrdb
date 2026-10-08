@@ -297,6 +297,10 @@ type nodeOptions struct {
 	// as. See WithEmbeddedCaller.
 	embeddedCaller *tls.Certificate
 
+	// servicePrincipal names the principal the embedder's own in-process
+	// calls run as. See WithServicePrincipal.
+	servicePrincipal *string
+
 	// authorizerWrapper decorates the node's fully built RBAC[+ABAC]
 	// authorizer with embedder-supplied logic. See WithAuthorizerWrapper.
 	authorizerWrapper func(inner auth.Authorizer) auth.Authorizer
@@ -976,6 +980,10 @@ type Node struct {
 	// the embedded client forwards as (WithEmbeddedCaller); nil forwards
 	// nothing.
 	embeddedCaller []*x509.Certificate
+
+	// servicePrincipal is the name of the principal ServiceContext binds
+	// (WithServicePrincipal); "" configures none.
+	servicePrincipal string
 
 	// clusterJoin is the node's member-side CSR join (startClusterJoin); nil
 	// on a standalone node.
@@ -2525,6 +2533,9 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
 		return nil, err
 	}
+	if n.servicePrincipal, err = parseServicePrincipal(nOpts.servicePrincipal); err != nil {
+		return nil, err
+	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
 	if err != nil {
@@ -2740,6 +2751,9 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
 	}
 	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
+		return nil, err
+	}
+	if n.servicePrincipal, err = parseServicePrincipal(nOpts.servicePrincipal); err != nil {
 		return nil, err
 	}
 	n.clusterIdentity = nOpts.raftMTLS

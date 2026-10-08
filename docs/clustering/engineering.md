@@ -463,6 +463,22 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   is recorded with `PutIfAbsent` -- only the node whose claim created the record
   logs "activated", the others log "observed" -- and a failed write is retried
   on the next refresh, never assumed.
+- **Adopting applied activations.** `ActivationKV` has two reads: `ListAll`
+  (linearizable) and `ListStale` (the local replica's applied state); neither
+  may filter reserved keys, and `service.KVServicer` satisfies both for the
+  `__sys:` prefix. `Start` and `CheckActivated` use `ListAll`, so the
+  downgrade refusal never runs on a lagging replica. The background loop
+  first adopts what `ListStale` finds -- on every advertisement event, and at
+  the top of every refresh, before the refresh's linearizable reads -- and
+  only then reseeds, re-checks linearizably and activates. The linearizable
+  reads wait on a leader and can take seconds on a slow disk or across a
+  leader change; the local read does not, so a node that is about to lead a
+  group already enables what its replica has applied. A local read can lag
+  but never invents a record, and a record is permanent, so what it finds is
+  activated; it does not set `ActivationsLoaded`, because what it misses may
+  be activated too. A failed local read -- a witness applies no command --
+  falls back to the linearizable path. An applied record of a feature this
+  binary lacks is a refusal (`Gate.Refusal`) like a linearizable one.
 - **Joining a new node after activation.** A node is admitted only when it
   has a live advertisement. A member advertises through its own gate, once it
   is running; a joining node cannot do that before it is a member, so

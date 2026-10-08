@@ -15,9 +15,11 @@
 package middleware
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -353,6 +355,33 @@ func (e *HolderIdentityNotPermittedError) Error() string {
 	return "auth/middleware: a holder certificate may not reach " + e.Method + " " + e.Path +
 		": holder certificates are admitted only for their own ceremony verbs"
 }
+
+// ServicePrincipalPresentedError is returned when an identity authenticated
+// over a network transport is, or claims to be, a node-sanctioned service
+// principal (auth.IsServicePrincipal): its Subject is in the reserved
+// auth.ServicePrincipalSubjectPrefix namespace, or an authenticator marked it
+// with auth.ServicePrincipalMetadataKey. That principal is granted by the
+// node to calls made in its own process (sdk/go/node Node.ServiceContext) and
+// is never accepted from a request, whatever credential produced the claim --
+// a certificate's common name, a bearer token, a forwarded on-behalf
+// assertion, a user record.
+//
+// It matches auth.ErrUnauthenticated under errors.Is and errors.As, so every
+// transport answers its unauthenticated status (401, Unauthenticated): the
+// caller has not established an identity this node accepts.
+type ServicePrincipalPresentedError struct {
+	// Subject is the presented subject, for the operator-facing message.
+	Subject string
+}
+
+// Error names the refused subject.
+func (e *ServicePrincipalPresentedError) Error() string {
+	return "auth/middleware: identity " + strconv.Quote(e.Subject) +
+		" claims a service principal, which no network transport accepts"
+}
+
+// Unwrap exposes auth.ErrUnauthenticated.
+func (e *ServicePrincipalPresentedError) Unwrap() error { return auth.ErrUnauthenticated }
 
 // FirstInitCertificateMismatchError is returned when a tenant barrier's
 // trust-on-first-init window is reached with a certificate other than the one

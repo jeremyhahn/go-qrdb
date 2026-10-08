@@ -11,6 +11,26 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **A node-sanctioned service principal for an embedder's own in-process
+  calls** (#609). `node.WithServicePrincipal(name)` and
+  `Node.ServiceContext(ctx)` bind the identity `qrdb-service:<name>`, in the
+  system tenant, to calls made through the node's embedded client. Its
+  authority is only the permissions the embedder registers under that name
+  with `sdk.RegisterPermissionRoleGrant`. The node's authorizer decides each
+  call as it does any caller's: a call outside the grant is refused with
+  `*sdk.PermissionDeniedError`, and every decision is audited under the
+  principal's subject. `node.ErrNoServicePrincipal` is returned by a node
+  configured without one. The principal is refused on every network
+  transport: REST/HTTP/3, gRPC, the Unix socket, QUIC, MCP, SQL, etcd, both
+  on-behalf assertion paths and module fallbacks. The refusal applies to a
+  presented identity in the `qrdb-service:` namespace and to one that carries
+  the principal marker. It is `*sdk.ServicePrincipalPresentedError`, which
+  unwraps to `sdk.ErrUnauthenticated`, so the transport answers 401 /
+  `Unauthenticated`. `sdk.ServicePrincipalSubjectPrefix` and
+  `sdk.IsServicePrincipal` are re-exported.
+
 ### Changed
 
 - **CI tool pins moved to the upstream latest, in step with the runner image**
@@ -20,6 +40,19 @@ are not reconstructed here — their history is in the git log.
   gosec v2.29.0, so `GOLANGCI_GOSEC_VERSION` moves to v2.29.0 and the gosec
   exclusions in `.golangci.yml` were re-measured: G602 is now clean on both
   modules and its entry is removed; the G115 counts are 312 / 125.
+
+### Fixed
+
+- **A node that takes over a group no longer refuses a cluster feature that
+  was activated long before.** The feature gate learned of another node's
+  activation only on a refresh that waited on the system shard's leader, so
+  on a slow disk, or across a leader change, a new leader could refuse the
+  feature's writes with `*featuregate.NotActiveError` for tens of seconds.
+  One case was the scheduled-compaction samples and compactions. The gate
+  now adopts every activation record its own replica has applied, on each
+  advertisement event and at the start of each refresh. The startup
+  downgrade check stays linearizable. `featuregate.ActivationKV` gains
+  `ListStale`, which `service.KVServicer` already implements.
 
 ## [0.45.0-alpha] - 2026-10-07
 

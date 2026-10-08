@@ -155,12 +155,15 @@ func (s *leaseStore) advertise(t *testing.T, id uint64, addr string, features ..
 
 var _ cluster.MembershipStore = (*leaseStore)(nil)
 
-// memKV is the replicated system KV the activations live in.
+// memKV is the replicated system KV the activations live in. listErr fails
+// its linearizable reads and staleErr its local ones, so a test can model a
+// replica that holds a record but cannot reach a leader.
 type memKV struct {
-	mu      sync.Mutex
-	data    map[string][]byte
-	listErr error
-	putErr  error
+	mu       sync.Mutex
+	data     map[string][]byte
+	listErr  error
+	staleErr error
+	putErr   error
 }
 
 func newMemKV() *memKV { return &memKV{data: map[string][]byte{}} }
@@ -181,8 +184,20 @@ func (k *memKV) PutIfAbsent(_ context.Context, key string, value []byte) (bool, 
 func (k *memKV) ListAll(_ context.Context, prefix string) ([]string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.listErr != nil {
-		return nil, k.listErr
+	return k.listLocked(prefix, k.listErr)
+}
+
+func (k *memKV) ListStale(_ context.Context, prefix string) ([]string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.listLocked(prefix, k.staleErr)
+}
+
+// listLocked lists the keys under prefix, or fails with err when it is set.
+// The caller holds k.mu.
+func (k *memKV) listLocked(prefix string, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
 	}
 	var keys []string
 	for key := range k.data {
@@ -192,6 +207,14 @@ func (k *memKV) ListAll(_ context.Context, prefix string) ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+// fail sets the errors memKV's linearizable reads, local reads and writes
+// fail with; nil clears one.
+func (k *memKV) fail(list, stale, put error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.listErr, k.staleErr, k.putErr = list, stale, put
 }
 
 func (k *memKV) has(key string) bool {
@@ -624,6 +647,102 @@ func TestGate_RefreshAdoptsAnotherNodesActivation(t *testing.T) {
 	_, err = kv.PutIfAbsent(context.Background(), ActivationPrefix+string(GuardedWrites), []byte(`{}`))
 	require.NoError(t, err)
 	eventually(t, func() bool { return g.Enabled(systemShard, GuardedWrites) }, "another node's activation was not adopted")
+}
+
+// newFastGate is a gate over threeNodes that refreshes every 10ms.
+func newFastGate(t *testing.T) *Gate {
+	t.Helper()
+	g, err := New(Config{
+		Self:            Self{ReplicaID: 1},
+		SystemShardID:   systemShard,
+		Members:         threeNodes(),
+		RefreshInterval: 10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	return g
+}
+
+// A node adopts an activation its own replica has applied while no leader
+// can serve a linearizable read or take a proposal -- a follower's state
+// across a leader change, when it may be the next leader and must not refuse
+// the feature's writes once it is.
+func TestGate_RefreshAdoptsAnAppliedActivationWithoutALeader(t *testing.T) {
+	kv := newMemKV()
+	g := newFastGate(t)
+	require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))
+	require.False(t, g.Activated(PrefixCompaction))
+
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(PrefixCompaction), []byte(`{}`))
+	require.NoError(t, err)
+	noLeader := errors.New("not leader")
+	kv.fail(noLeader, nil, noLeader)
+	eventually(t, func() bool { return g.Enabled(systemShard, PrefixCompaction) },
+		"an applied activation was not adopted without a leader")
+}
+
+// An advertisement event adopts the applied activations too, without
+// waiting for the refresh.
+func TestGate_EventAdoptsAnAppliedActivation(t *testing.T) {
+	store, kv := newLeaseStore(), newMemKV()
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(PrefixCompaction), []byte(`{}`))
+	require.NoError(t, err)
+	noLeader := errors.New("not leader")
+	kv.fail(noLeader, nil, noLeader)
+	store.advertise(t, 2, "n2:7000", SupportedNames()...)
+	eventually(t, func() bool { return g.Activated(PrefixCompaction) },
+		"an advertisement event did not adopt the applied activation")
+}
+
+// An applied activation of a feature this binary lacks is a refusal, as it
+// is when read linearizably.
+func TestGate_RefreshRefusesAnAppliedUnknownActivation(t *testing.T) {
+	kv := newMemKV()
+	g := newFastGate(t)
+	require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))
+
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+"future-opcode", []byte(`{}`))
+	require.NoError(t, err)
+	kv.fail(errors.New("not leader"), nil, nil)
+	eventually(t, func() bool { return g.Refusal() != nil }, "an applied unknown activation was not refused")
+	var unsupported *UnsupportedFeatureError
+	require.ErrorAs(t, g.Refusal(), &unsupported)
+	assert.Equal(t, Feature("future-opcode"), unsupported.Feature)
+}
+
+// A replica whose applied state cannot be read -- a witness applies none --
+// still activates through the linearizable path.
+func TestGate_UnreadableAppliedStateStillActivates(t *testing.T) {
+	store, kv := newLeaseStore(), newMemKV()
+	kv.fail(nil, errors.New("witness"), nil)
+	store.advertise(t, 2, "n2:7000", SupportedNames()...)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+
+	store.advertise(t, 3, "n3:7000", SupportedNames()...)
+	eventually(t, func() bool { return g.Activated(GuardedWrites) }, "the feature was not activated")
+	assert.True(t, kv.has(ActivationPrefix+string(GuardedWrites)))
+}
+
+// adoptApplied enables what it finds but does not mark the activations
+// loaded: a local read can lag, so what it does not find may be activated.
+func TestGate_AdoptAppliedLeavesActivationsUnloaded(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(GuardedWrites), []byte(`{}`))
+	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+
+	g.adoptApplied(context.Background(), kv)
+	assert.True(t, g.Activated(GuardedWrites))
+	assert.False(t, g.ActivationsLoaded())
+
+	kv.fail(nil, errors.New("unavailable"), nil)
+	unread := newGate(t, threeNodes())
+	unread.adoptApplied(context.Background(), kv)
+	assert.False(t, unread.Activated(GuardedWrites), "a failed local read adopted something")
 }
 
 // failingListStore cannot list advertisements.

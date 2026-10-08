@@ -187,9 +187,12 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	stop := keepWriting(t, a, key)
 	time.Sleep(period * 5 / 8) // A samples for most of a period
 	stop()
-	revAtFailover, err := a.Services().MVCC.CurrentRevision(ctx)
-	require.NoError(t, err)
-	require.NoError(t, a.Close()) // A goes down; another node takes the shard
+	// A goes down; another node takes the shard. A keeps sampling until its
+	// scheduler stops inside Close, and its own shutdown writes move the
+	// revision, so what A's term sampled is read back from the record rather
+	// than from the store beforehand.
+	require.NoError(t, a.Close())
+	down := time.Now()
 
 	var survivor *Node
 	for i, n := range nodes {
@@ -198,11 +201,41 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 			break
 		}
 	}
+	sampledByA := newestSampleBefore(t, ctx, survivor, "events", down)
 	stop = keepWriting(t, survivor, key)
 	defer stop()
 
 	floor := awaitFloor(t, ctx, survivor, key, 3*period)
-	require.LessOrEqualf(t, floor, revAtFailover,
-		"the new leader compacted to %d, a revision after A went down (the store held %d then): it did not continue from A's samples",
-		floor, revAtFailover)
+	require.LessOrEqualf(t, floor, sampledByA,
+		"the new leader compacted to %d, a revision after A went down (A's term sampled up to %d): it did not continue from A's samples",
+		floor, sampledByA)
+}
+
+// newestSampleBefore returns the highest revision db's period policy sampled
+// at or before t, read linearizably through n -- waiting out a leader change
+// -- from the replicated compaction table. It fails the test when the table
+// holds no such sample: the samples did not survive.
+func newestSampleBefore(t *testing.T, ctx context.Context, n *Node, db string, before time.Time) int64 {
+	t.Helper()
+	store, ok := n.Services().MVCC.(service.CompactionStateStore)
+	require.True(t, ok, "the node's store keeps no compaction table")
+	states, err := store.CompactionStates(ctx)
+	for err != nil && ctx.Err() == nil {
+		time.Sleep(clusterPollInterval)
+		states, err = store.CompactionStates(ctx)
+	}
+	require.NoError(t, err)
+	var newest int64
+	for _, state := range states {
+		if state == nil || state.Database != db {
+			continue
+		}
+		for _, s := range state.Samples {
+			if s.At <= before.UnixNano() {
+				newest = max(newest, s.Revision)
+			}
+		}
+	}
+	require.Positivef(t, newest, "no sample of %s taken before %s survived the leader change", db, before)
+	return newest
 }

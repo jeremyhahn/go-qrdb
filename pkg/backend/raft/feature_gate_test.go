@@ -57,6 +57,12 @@ func (guardedWritesActivatedKV) ListAll(context.Context, string) ([]string, erro
 	return []string{featuregate.ActivationPrefix + string(featuregate.GuardedWrites)}, nil
 }
 
+func (k guardedWritesActivatedKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return k.ListAll(ctx, prefix)
+}
+
+var _ featuregate.ActivationKV = guardedWritesActivatedKV{}
+
 // With a gate, the adapter answers from it: Enabled is Activated and nothing
 // else (go-qrdb#482). Before anything is activated, neither group is
 // enabled, regardless of what either group's current members support --
@@ -116,6 +122,12 @@ func (activatedKV) PutIfAbsent(context.Context, string, []byte) (bool, error) { 
 func (activatedKV) ListAll(context.Context, string) ([]string, error) {
 	return []string{featuregate.ActivationPrefix + "future-opcode"}, nil
 }
+
+func (k activatedKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return k.ListAll(ctx, prefix)
+}
+
+var _ featuregate.ActivationKV = activatedKV{}
 
 // A node whose binary lacks a feature the cluster activated reports itself
 // degraded on its health check, the one surface every transport serves.

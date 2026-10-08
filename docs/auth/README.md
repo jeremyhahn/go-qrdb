@@ -178,3 +178,30 @@ that go-quicbaas drives — are documented in
 [custom-authorizers.md](custom-authorizers.md). qrdb defines the interfaces
 and transport plumbing only; token validation is always the embedder's
 implementation.
+
+## Embedder Service Principal
+
+An embedding host such as go-xkms, go-quicbaas or go-trusted-platform does
+work of its own through the node's embedded client: loading its CA state, its
+stores and its signing keys. No end user is behind those calls. With
+authentication on, a call that carries no identity is refused
+(`qrdb/auth: unauthenticated`). The node therefore sanctions one principal
+for that work:
+
+```go
+sdk.RegisterPermissionRoleGrant("xkms", sdk.PermissionCredentialsStore, sdk.PermissionCredentialsRetrieve)
+n, _ := node.NewStandaloneNode(ctx, cfg, serverOpts, node.WithServicePrincipal("xkms"))
+svcCtx, _ := n.ServiceContext(ctx) // identity "qrdb-service:xkms", system tenant
+_, err := n.Client().Credentials().CredentialRetrieve(svcCtx, "ca-state")
+```
+
+| Property | How |
+|---|---|
+| Authority | Exactly the permissions registered under the principal's name, carried as `ScopePermissions` with no roles. The RBAC authorizer applies every rule (scope, the SO deny-list, ABAC) unchanged. There is no superuser and no bypass. |
+| Denial | `*sdk.PermissionDeniedError`, like any other caller's |
+| Audit | Every `auth.authorize` decision names actor `qrdb-service:<name>` |
+| Network | Refused on every transport: `AuthMiddleware.finalizeIdentity` rejects an identity whose subject starts with `qrdb-service:`, or that carries the principal marker, with `*ServicePrincipalPresentedError` (unwraps to `ErrUnauthenticated`) |
+| Forwarding | A call forwarded to another replica carries the `WithEmbeddedCaller` identity, never the principal |
+
+The engineering contract is in
+[../api-server/engineering.md](../api-server/engineering.md#service-principal).

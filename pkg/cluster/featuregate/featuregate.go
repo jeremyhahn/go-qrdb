@@ -213,10 +213,13 @@ type MembershipSource interface {
 }
 
 // ActivationKV is the slice of the replicated system KV the gate records
-// and reads activations through. ListAll must not filter reserved keys.
+// and reads activations through. ListAll is a linearizable read; ListStale
+// reads what this node's replica has already applied, without a leader.
+// Neither may filter reserved keys.
 type ActivationKV interface {
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
 	ListAll(ctx context.Context, prefix string) ([]string, error)
+	ListStale(ctx context.Context, prefix string) ([]string, error)
 }
 
 // Config configures a Gate.
@@ -486,6 +489,36 @@ func (g *Gate) CheckActivated(ctx context.Context, kv ActivationKV) error {
 	if err != nil {
 		return err
 	}
+	if err := g.adopt(features); err != nil {
+		return err
+	}
+	g.loaded.Store(true)
+	return nil
+}
+
+// adoptApplied marks enabled every activated feature whose record this
+// node's replica has already applied. It needs no leader and no quorum, so a
+// node learns of an activation as soon as it applies the record -- in
+// particular before it takes over a shard's leadership -- rather than at the
+// next linearizable refresh that gets through. A local read can lag the
+// cluster but never run ahead of it, and activation is permanent, so what it
+// finds is activated. It leaves ActivationsLoaded alone: what it does not
+// find may yet be activated.
+func (g *Gate) adoptApplied(ctx context.Context, kv ActivationKV) {
+	keys, err := kv.ListStale(ctx, ActivationPrefix)
+	if err != nil {
+		g.logger.Debug("feature gate: applied activations unreadable; relying on refresh", "error", err)
+		return
+	}
+	if err := g.adopt(activationFeatures(keys)); err != nil {
+		g.logger.Error("feature gate: activation refresh failed", "error", err)
+	}
+}
+
+// adopt marks every feature in features enabled, and refuses with
+// *UnsupportedFeatureError -- kept for Refusal -- at one this binary does
+// not implement.
+func (g *Gate) adopt(features []Feature) error {
 	for _, f := range features {
 		flag, ok := g.activated[f]
 		if !ok {
@@ -495,7 +528,6 @@ func (g *Gate) CheckActivated(ctx context.Context, kv ActivationKV) error {
 		}
 		flag.Store(true)
 	}
-	g.loaded.Store(true)
 	return nil
 }
 
@@ -524,13 +556,18 @@ func ActivatedFeatures(ctx context.Context, kv ActivationKV) ([]Feature, error) 
 	if err != nil {
 		return nil, &StoreError{Op: "list activations", Err: err}
 	}
+	return activationFeatures(keys), nil
+}
+
+// activationFeatures returns the features named by activation record keys.
+func activationFeatures(keys []string) []Feature {
 	features := make([]Feature, 0, len(keys))
 	for _, k := range keys {
 		if name := strings.TrimPrefix(k, ActivationPrefix); name != "" && name != k {
 			features = append(features, Feature(name))
 		}
 	}
-	return features, nil
+	return features
 }
 
 // CheckActivated refuses with *UnsupportedFeatureError when the cluster
@@ -665,7 +702,10 @@ func (g *Gate) forward(ctx context.Context, source int, ch <-chan cluster.Member
 	}
 }
 
-// run applies advertisement events and refreshes on a timer.
+// run applies advertisement events and refreshes on a timer. Each pass first
+// adopts the activations this replica has applied (adoptApplied): the
+// linearizable reads after it wait on a leader, and can take many seconds on
+// a slow disk or across a leader change, while the local read does not.
 func (g *Gate) run(ctx context.Context, kv ActivationKV, adverts []cluster.MembershipStore, events <-chan sourcedEvent) {
 	defer g.wg.Done()
 	ticker := time.NewTicker(g.refresh)
@@ -676,8 +716,10 @@ func (g *Gate) run(ctx context.Context, kv ActivationKV, adverts []cluster.Membe
 			return
 		case ev := <-events:
 			g.apply(ev.source, ev.event)
+			g.adoptApplied(ctx, kv)
 			g.activate(ctx, kv)
 		case <-ticker.C:
+			g.adoptApplied(ctx, kv)
 			for i, store := range adverts {
 				if err := g.reseed(ctx, i, store); err != nil {
 					g.logger.Warn("feature gate: advertisement refresh failed", "error", err)
