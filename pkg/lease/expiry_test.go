@@ -105,11 +105,7 @@ func TestLessor_RunExpiry_LeavesAnUnexpiredLeaseAlone(t *testing.T) {
 	}
 
 	var revoked atomic.Bool
-	polled := make(chan struct{}, 16)
-	isLeader := func() bool {
-		polled <- struct{}{}
-		return true
-	}
+	isLeader, polled := recordLeaderPolls(true)
 	stop := startSweeper(t, lr, fake, time.Second, isLeader, func(context.Context, int64) error {
 		revoked.Store(true)
 		return nil
@@ -136,11 +132,7 @@ func TestLessor_RunExpiry_NoSweepOnFollower(t *testing.T) {
 	}
 
 	var called atomic.Bool
-	polled := make(chan struct{}, 16)
-	isLeader := func() bool {
-		polled <- struct{}{}
-		return false
-	}
+	isLeader, polled := recordLeaderPolls(false)
 	stop := startSweeper(t, lr, fake, 50*time.Millisecond, isLeader, func(context.Context, int64) error {
 		called.Store(true)
 		return nil
@@ -163,11 +155,7 @@ func TestLessor_RunExpiry_ZeroIntervalUsesTheDefault(t *testing.T) {
 	lr := NewLessor(WithClock(fake))
 	defer lr.Close()
 
-	polled := make(chan struct{}, 16)
-	isLeader := func() bool {
-		polled <- struct{}{}
-		return true
-	}
+	isLeader, polled := recordLeaderPolls(true)
 	stop := startSweeper(t, lr, fake, 0, isLeader, func(context.Context, int64) error { return nil })
 	defer stop()
 
@@ -180,6 +168,22 @@ func TestLessor_RunExpiry_ZeroIntervalUsesTheDefault(t *testing.T) {
 
 	fake.Advance(time.Millisecond)
 	waitForPoll(t, polled)
+}
+
+// recordLeaderPolls returns an isLeader callback that always answers leader and
+// a channel that receives a value when the sweeper has polled it. The send never
+// blocks: the sweeper may poll on every tick of an Advance while the test reads
+// only one, and a callback parked on a full channel would keep RunExpiry from
+// seeing its context canceled.
+func recordLeaderPolls(leader bool) (isLeader func() bool, polled <-chan struct{}) {
+	ch := make(chan struct{}, 1)
+	return func() bool {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		return leader
+	}, ch
 }
 
 func waitForPoll(t *testing.T, polled <-chan struct{}) {
