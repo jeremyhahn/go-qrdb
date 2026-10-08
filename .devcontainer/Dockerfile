@@ -17,7 +17,7 @@
 # GOTOOLCHAIN=local so an older base cannot satisfy that requirement (and
 # cannot auto-upgrade). This must stay >= the highest `go` directive across
 # the workspace modules.
-FROM golang:1.27.0-bookworm AS toolchain
+FROM golang:1.27.1-bookworm AS toolchain
 
 # Fleet dev-cache passthrough (handbook software/conventions/devops.md §2a).
 # Unset, empty or unreachable means no proxy -- identical to the behaviour
@@ -145,8 +145,8 @@ RUN set -eu; \
 # Measured 2026-09-05 in an image built from this file at dev/main 57d868b4:
 #
 #   gosec           Version: dev     ci.yml requires v2.29.0
-#   govulncheck     v1.7.0           ci.yml requires v1.7.0
-#   golangci-lint   2.7.2            ci.yml requires v2.13.2
+#   govulncheck     v1.7.0           ci.yml required v1.7.0 (now v1.8.0)
+#   golangci-lint   2.7.2            ci.yml required v2.13.2 (now v2.14.0)
 #
 # gosec is the sharp one: `@latest` produced a binary that cannot say what it
 # is, so a scan could not be attributed to a version AT ALL. govulncheck agreed
@@ -199,10 +199,10 @@ RUN set -eu; \
 # protoc-gen-go and protoc-gen-go-grpc stay at `@latest` and are NOT part of
 # this: they generate code, they are not analysers, and no gate compares their
 # output between here and CI. §9's tools bullet applies to them unmodified.
-ARG GOLANGCI_LINT_VERSION=v2.13.2
+ARG GOLANGCI_LINT_VERSION=v2.14.0
 ARG GOSEC_VERSION=v2.29.0
-ARG GOVULNCHECK_VERSION=v1.7.0
-ARG TRIVY_VERSION=v0.74.0
+ARG GOVULNCHECK_VERSION=v1.8.0
+ARG TRIVY_VERSION=v0.75.0
 
 # An EXPLICITLY EMPTY version is still an error, and the defaults above do not
 # make this dead code: `--build-arg GOSEC_VERSION=` overrides a default with
@@ -260,8 +260,8 @@ RUN for i in 1 2 3; do \
 # The three Go analysers are checked by scripts/require-tool.sh — the same
 # script, byte for byte, that ci.yml's jobs use — rather than by a grep written
 # here. It already knows each tool's documented version line; it already
-# refuses the near-misses a substring test accepts (a `v1.7.0` pin matching a
-# `v11.7.0` report, which its comments record as a defect that had to be fixed
+# refuses the near-misses a substring test accepts (a `v1.8.0` pin matching a
+# `v11.8.0` report, which its comments record as a defect that had to be fixed
 # once already); and it carries its own regression suite. Reusing it means the
 # image and CI cannot disagree about what "is the pinned version" MEANS, which
 # is the subject of #322 one level up.

@@ -120,13 +120,17 @@ linters:
       # changed the finding count. Measured 2026-09-10, with the build tags
       # `make lint` passes and with golangci-lint's default issue caps
       # disabled -- `--max-issues-per-linter=0 --max-same-issues=0`, without
-      # which gosec's output stops at 50 and this table would have been wrong:
+      # which gosec's output stops at 50 and this table would have been wrong.
+      # Re-measured 2026-10-07 on golangci-lint v2.14.0 (bundled gosec v2.29.0),
+      # the first release whose bundled gosec moved since the 2026-09-10 table:
       #
       #   rule   make lint   make lint-sdk
       #   ----   ---------   -------------
-      #   G115      324           142
-      #   G602       15             4
+      #   G115      312           125
       #   G704        2             0
+      #
+      # G602 (15 root / 4 sdk on the previous bundled gosec) now reports NOTHING
+      # on either module and is DELETED under the rule below.
       #
       # G117, G204 and G122 used to be here and report NOTHING on either module
       # at this version. They are DELETED rather than rescoped, because an
@@ -137,25 +141,27 @@ linters:
       # this file's G703 entry survived while suppressing nothing (#181).
       #
       # A COUNT IS ONLY MEANINGFUL AGAINST A SCANNER VERSION, and this leg's is
-      # pinned nowhere: golangci-lint v2.13.2 bundles gosec v2.28.0, chosen by
+      # pinned nowhere: golangci-lint v2.14.0 bundles gosec v2.29.0, chosen by
       # its own go.mod. GOLANGCI_GOSEC_VERSION in the Makefile records it, and
       # `make check-bundled-gosec` reads it back off the binary and fails when
       # it moves -- which is the signal to re-measure this block, not to widen
       # it.
       #
-      # THAT IS A DIFFERENT GOSEC FROM THE ONE `make gosec` RUNS (v2.29.0), and
-      # they differ in soundness rather than strictness, so these two exclusion
-      # lists are NOT copies of each other and must not be made into copies.
-      # GOSEC_EXCLUDE in the Makefile carries its own measurements and they do
-      # not agree with these.
+      # THAT IS A SEPARATE GOSEC FROM THE ONE `make gosec` RUNS (GOSEC_VERSION),
+      # and it is only the same release by coincidence of the two bumps: the
+      # earlier pair differed in soundness rather than strictness. The two
+      # exclusion lists are still NOT copies of each other and must not be made
+      # into copies. GOSEC_EXCLUDE in the Makefile carries its own measurements
+      # and they do not agree with these.
       #
-      # G602 IS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST. `make gosec`
-      # now runs with -tests at -severity=low (#408), so the standalone leg
-      # REACHES and PRINTS every G602 site, and each one carries an inline
-      # `#nosec G602 -- <guard>` naming the check that makes it safe. The
-      # entry here predates that audit and suppresses the same sites for this
-      # leg's older bundled gosec. Deleting it is the change that retires the
-      # duplication; re-measure this block when you do.
+      # G602 WAS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST. `make gosec`
+      # runs with -tests at -severity=low (#408), so the standalone leg REACHES
+      # and PRINTS every G602 site, and each one carries an inline
+      # `#nosec G602 -- <guard>` naming the check that makes it safe. This leg's
+      # entry predated that audit and suppressed the same sites for the older
+      # bundled gosec; with the bundled gosec at v2.29.0 the inline annotations
+      # alone clear every site on both modules (measured, table above), so the
+      # entry is gone and the duplication with it.
       #
       # G304 and G703 are NOT here. G304 is suppressed per-path under
       # `exclusions.rules` below, at the files an audit actually enumerated, so
@@ -164,8 +170,7 @@ linters:
       # that block for the predicate, the enumeration and what the narrowing is
       # protecting.
       excludes:
-        - G115  # 324 root / 142 sdk. Integer overflow in conversions: protocol-spec bounded IDs and length prefixes.
-        - G602  # 15 root / 4 sdk. Slice bounds, every site index-guarded on the line above; pkg/tenant/key.go:49 is the shape.
+        - G115  # 312 root / 125 sdk. Integer overflow in conversions: protocol-spec bounded IDs and length prefixes.
         - G704  # 2 root / 0 sdk. SSRF taint: the leader-forwarding client, whose URL comes from the internal peer registry.
     forbidigo:
       forbid:
@@ -225,7 +230,7 @@ linters:
       #
       # G703 IS NOT SUPPRESSED HERE AT ALL, and the reason is the second finding
       # of that audit. The entry this replaces was INERT: golangci-lint v2.13.2
-      # bundles gosec v2.28.0, whose G703 treats filepath.Clean as a sanitizer,
+      # bundled gosec v2.28.0, whose G703 treated filepath.Clean as a sanitizer,
       # so it reports nothing at pkg/system/openssl.go:126 -- while `make gosec`
       # on the pinned gosec v2.29.0 reports it HIGH/HIGH. Reproduced on a
       # two-file probe, not inferred from version numbers, and since confirmed

@@ -34,8 +34,8 @@
 #
 # (#195) An install step is ALSO a version substitution. `actions/setup-go`
 # prepends GOPATH/bin to PATH, so a freshly installed binary SHADOWS the baked
-# one in /usr/local/bin. This repository's ci.yml installed golangci-lint
-# v2.12.2 unconditionally over an image that bakes v2.13.2 — believing itself
+# one in /usr/local/bin. This repository's ci.yml installed one golangci-lint
+# release unconditionally over an image that bakes another — believing itself
 # pinned by the image while running something else entirely.
 #
 # (#195, gosec) Pinning alone was never sufficient for gosec: it takes its
@@ -124,7 +124,7 @@ fi
 
 # EXTRACT THE VERSION TOKEN FROM EACH TOOL'S DOCUMENTED FORMAT, then compare it
 # EXACTLY. A substring test (`case "$report" in *"$bare"*`) FAILS OPEN: a
-# `v1.7.0` pin accepts a report saying `v11.7.0`, and a `v2.29.0` pin accepts
+# `v1.8.0` pin accepts a report saying `v11.8.0`, and a `v2.29.0` pin accepts
 # `v12.29.0`. CI would then run an unintended scanner version and print `ok` —
 # defeating the exact reproducibility assertion this check exists to make. A
 # check looser than the property it claims is the same defect as no check, with
@@ -135,15 +135,15 @@ fi
 # govulncheck shows why: its output's FIRST version-shaped token is the Go
 # toolchain's.
 #
-#	Go: go1.26.7
-#	Scanner: govulncheck@v1.7.0
+#	Go: go1.27.1
+#	Scanner: govulncheck@v1.8.0
 #
 # A loose extractor pins the wrong number. So each tool is parsed by its own
 # documented line, anchored at the start of it:
 #
-#	golangci-lint   golangci-lint has version 2.13.2 built with go1.26.7 ...
+#	golangci-lint   golangci-lint has version 2.14.0 built with go1.27.1 ...
 #	gosec           Version: v2.29.0
-#	govulncheck     Scanner: govulncheck@v1.7.0
+#	govulncheck     Scanner: govulncheck@v1.8.0
 #
 # An UNRECOGNISED tool is a hard failure rather than a fallback to something
 # looser. A version format nobody has read is a version that cannot be
@@ -184,7 +184,7 @@ if [ -z "$got" ]; then
 fi
 
 # Compare exactly, with the `v` prefix optional on EITHER side: golangci-lint
-# reports bare (2.13.2) while gosec and govulncheck report prefixed (v2.29.0),
+# reports bare (2.14.0) while gosec and govulncheck report prefixed (v2.29.0),
 # and the pins are written prefixed. Nothing else is normalised away.
 if [ "${got#v}" != "${pin#v}" ]; then
 	echo "FAIL: ${bin} is version ${got}, not the pinned ${pin}." >&2

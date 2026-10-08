@@ -76,8 +76,8 @@ permissions:
 
 env:
   # Kept in lockstep with ci.yml, including the reason (#540).
-  GO_VERSION: "1.27.0"
-  GOLANGCI_LINT_VERSION: "v2.13.2"
+  GO_VERSION: "1.27.1"
+  GOLANGCI_LINT_VERSION: "v2.14.0"
   GOWORK: "off"
   GOFLAGS: "-buildvcs=false"
 

@@ -52,31 +52,31 @@ fixture() {
 	cat > "${DIR}/.github/workflows/ci.yml" <<-'EOF'
 		name: CI
 		env:
-		  GOLANGCI_LINT_VERSION: "v2.13.2"
+		  GOLANGCI_LINT_VERSION: "v2.14.0"
 		  GOSEC_VERSION: "v2.29.0"
-		  GOVULNCHECK_VERSION: "v1.7.0"
+		  GOVULNCHECK_VERSION: "v1.8.0"
 	EOF
 
 	cat > "${DIR}/Makefile" <<-'EOF'
-		GOLANGCI_LINT_VERSION := v2.13.2
+		GOLANGCI_LINT_VERSION := v2.14.0
 		GOSEC_VERSION         := v2.29.0
-		GOVULNCHECK_VERSION   := v1.7.0
-		TRIVY_VERSION         := v0.74.0
+		GOVULNCHECK_VERSION   := v1.8.0
+		TRIVY_VERSION         := v0.75.0
 	EOF
 
 	cat > "${DIR}/.devcontainer/Dockerfile" <<-'EOF'
 		FROM golang:1.26
-		ARG GOLANGCI_LINT_VERSION=v2.13.2
+		ARG GOLANGCI_LINT_VERSION=v2.14.0
 		ARG GOSEC_VERSION=v2.29.0
-		ARG GOVULNCHECK_VERSION=v1.7.0
-		ARG TRIVY_VERSION=v0.74.0
+		ARG GOVULNCHECK_VERSION=v1.8.0
+		ARG TRIVY_VERSION=v0.75.0
 	EOF
 
 	cat > "${DIR}/.devcontainer/Dockerfile.gpu" <<-'EOF'
 		FROM nvidia/cuda:12.4.0-devel-ubuntu24.04
-		ARG GOLANGCI_LINT_VERSION=v2.13.2
+		ARG GOLANGCI_LINT_VERSION=v2.14.0
 		ARG GOSEC_VERSION=v2.29.0
-		ARG GOVULNCHECK_VERSION=v1.7.0
+		ARG GOVULNCHECK_VERSION=v1.8.0
 	EOF
 
 	echo "${DIR}"
@@ -133,19 +133,19 @@ assert "a Makefile pin behind ci.yml is rejected" 1 \
 	"GOSEC_VERSION is v2.28.0 in Makefile but v2.29.0" "${DIR}"
 
 DIR=$(fixture dockerfile-drift)
-sed -i 's/ARG GOLANGCI_LINT_VERSION=v2.13.2/ARG GOLANGCI_LINT_VERSION=v2.7.2/' "${DIR}/.devcontainer/Dockerfile"
+sed -i 's/ARG GOLANGCI_LINT_VERSION=v2.14.0/ARG GOLANGCI_LINT_VERSION=v2.7.2/' "${DIR}/.devcontainer/Dockerfile"
 assert "a CPU Dockerfile default behind ci.yml is rejected" 1 \
 	"GOLANGCI_LINT_VERSION is v2.7.2 in .devcontainer/Dockerfile" "${DIR}"
 
 DIR=$(fixture gpu-drift)
-sed -i 's/ARG GOVULNCHECK_VERSION=v1.7.0/ARG GOVULNCHECK_VERSION=v1.6.0/' "${DIR}/.devcontainer/Dockerfile.gpu"
+sed -i 's/ARG GOVULNCHECK_VERSION=v1.8.0/ARG GOVULNCHECK_VERSION=v1.6.0/' "${DIR}/.devcontainer/Dockerfile.gpu"
 assert "a GPU Dockerfile default behind ci.yml is rejected" 1 \
 	"GOVULNCHECK_VERSION is v1.6.0 in .devcontainer/Dockerfile.gpu" "${DIR}"
 
 # The authority is named in the diagnostic, because "these disagree" does not
 # tell the next person which one to change.
 DIR=$(fixture names-authority)
-sed -i 's/ARG GOSEC_VERSION=v2.29.0/ARG GOSEC_VERSION=v2.30.0/' "${DIR}/.devcontainer/Dockerfile"
+sed -i 's/ARG GOSEC_VERSION=v2.29.0/ARG GOSEC_VERSION=v2.28.0/' "${DIR}/.devcontainer/Dockerfile"
 assert "the diagnostic names ci.yml as the authority" 1 \
 	"ci.yml is the authority" "${DIR}"
 
@@ -154,12 +154,12 @@ assert "the diagnostic names ci.yml as the authority" 1 \
 # ---------------------------------------------------------------------------
 
 DIR=$(fixture trivy-drift)
-sed -i 's/ARG TRIVY_VERSION=v0.74.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
+sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
 assert "a trivy pin that disagrees with the Makefile is rejected" 1 \
-	"TRIVY_VERSION is v0.60.0 in .devcontainer/Dockerfile but v0.74.0" "${DIR}"
+	"TRIVY_VERSION is v0.60.0 in .devcontainer/Dockerfile but v0.75.0" "${DIR}"
 
 DIR=$(fixture trivy-authority)
-sed -i 's/ARG TRIVY_VERSION=v0.74.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
+sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
 assert "and says the Makefile is trivy's authority, not ci.yml" 1 \
 	"ci.yml pins no trivy" "${DIR}"
 
@@ -170,7 +170,7 @@ DIR=$(fixture trivy-absent-from-ci)
 assert "trivy missing from ci.yml is not a finding" 0 "scanner pins agree" "${DIR}"
 
 DIR=$(fixture gpu-trivy)
-printf 'ARG TRIVY_VERSION=v0.74.0\n' >> "${DIR}/.devcontainer/Dockerfile.gpu"
+printf 'ARG TRIVY_VERSION=v0.75.0\n' >> "${DIR}/.devcontainer/Dockerfile.gpu"
 assert "an ARG TRIVY_VERSION in the GPU image is rejected" 1 \
 	"Dockerfile.gpu declares ARG TRIVY_VERSION" "${DIR}"
 
@@ -185,7 +185,7 @@ assert "a pin that vanished from the Makefile is a failure, not a pass" 1 \
 	"no GOSEC_VERSION pin found in Makefile" "${DIR}"
 
 DIR=$(fixture reformatted)
-sed -i 's/GOVULNCHECK_VERSION   := v1.7.0/GOVULNCHECK_VERSION ?= v1.7.0/' "${DIR}/Makefile"
+sed -i 's/GOVULNCHECK_VERSION   := v1.8.0/GOVULNCHECK_VERSION ?= v1.8.0/' "${DIR}/Makefile"
 assert "an assignment the pattern no longer matches is a failure" 1 \
 	"no GOVULNCHECK_VERSION pin found in Makefile" "${DIR}"
 

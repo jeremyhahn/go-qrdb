@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb
 
-go 1.27.0
+go 1.27.1
 
 // This module builds against upstream-published versions of its SIBLING
 // dependencies (go-quicraft, go-objstore, go-truststrap); local development

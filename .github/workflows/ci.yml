@@ -57,12 +57,12 @@ permissions:
   security-events: write
 
 env:
-  # Go 1.27.0, forced by a Layer 0 dependency rather than chosen (#540):
+  # Go 1.27.1, forced by a Layer 0 dependency rather than chosen (#540):
   # go-enclave v0.5.0-alpha's own `go` directive is 1.27.0, go-quicraft
   # v0.11.0-alpha consumes it and moved with it, and this module cannot
-  # consume either and stay behind. The `go` directive is 1.27.0 in the root
+  # consume either and stay behind. The `go` directive is 1.27.1 in the root
   # and every nested module (Go evaluates the language version from the MAIN
-  # module, so a nested one left behind fails with "requires go >= 1.27.0"
+  # module, so a nested one left behind fails with "requires go >= 1.27.1"
   # rather than upgrading). setup-go 'stable' is prohibited as a spec — it
   # flipped to 1.27.0 mid-campaign and broke every repo riding it; an exact
   # version is pinned here for the same reason it always was.
@@ -70,7 +70,7 @@ env:
   # The swiss blocker that used to be recorded here was gone before this
   # move (#177, 2026-09-02): cockroachdb/swiss widened its build tag to
   # `!go1.28`, and both modules had been measured clean under 1.27.0 since.
-  GO_VERSION: "1.27.0"
+  GO_VERSION: "1.27.1"
 
   # ANALYSIS TOOL PINS (#179, #195). These are the versions BAKED into the
   # self-hosted runner image; the steps below ASSERT the binary they got matches
@@ -91,17 +91,15 @@ env:
   #     workflow installed golangci-lint v2.12.2 unconditionally on top of an
   #     image baking v2.13.2 — pinned on paper, running something else in fact.
   #
-  # GOLANGCI_LINT_VERSION moved v2.12.2 -> v2.13.2 here, deliberately and on
-  # evidence rather than on a version number. v2.12.2 was pinned because
-  # @latest had reached v2.13.0, which panicked under Go 1.26 ("nilness:
-  # internal error: unhandled builtin recover") and took the gate down. v2.13.2
-  # was measured against THIS tree under Go 1.26.7 before the pin moved: it does
-  # not panic, reports `0 issues`, and enables the SAME fifteen linters as
-  # v2.12.2 under this repo's .golangci.yml — which is the check that matters,
-  # because the quiet way a linter bump goes wrong is silently dropping a
-  # security linter while still exiting 0. The binary measured self-reports mod
-  # sum h1:bCyq3E4vo9qwzifjpzJqYndEt7Ncva80qkk8G2B4TXU=, identical to the
-  # image's, so it is the same artifact and not merely the same version string.
+  # GOLANGCI_LINT_VERSION is the upstream latest (v2.14.0), moved here in step
+  # with the runner image (#613) — never pinned below the latest release. The
+  # earlier moves were deliberate and on evidence rather than on a version
+  # number: v2.13.0 panicked under Go 1.26 ("nilness: internal error: unhandled
+  # builtin recover") and took the gate down, and the pin held at v2.12.2 until
+  # v2.13.2 was measured against this tree. The same measurement is the check
+  # that matters for every bump, because the quiet way a linter bump goes wrong
+  # is silently dropping a security linter while still exiting 0. The v2.14.0
+  # binary self-reports mod sum h1:ot8QffRa4LzAAEgtvNYrVs9esxQ7xoTwoAv6uhp4ngA=.
   #
   # GOVULNCHECK_VERSION replaces an unpinned `@latest`. `@latest` means the same
   # commit is scanned by different analyser versions on different days, so a new
@@ -112,9 +110,9 @@ env:
   # company agent). Do NOT add a `go install` back to move a
   # version: a skew between this file and the image must fail the job, which is
   # what the require-tool.sh assertions below are for.
-  GOLANGCI_LINT_VERSION: "v2.13.2"
+  GOLANGCI_LINT_VERSION: "v2.14.0"
   GOSEC_VERSION: "v2.29.0"
-  GOVULNCHECK_VERSION: "v1.7.0"
+  GOVULNCHECK_VERSION: "v1.8.0"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
   # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
@@ -177,10 +175,12 @@ jobs:
       # steps below judge this tree with. It is chosen by golangci-lint's
       # go.mod, it moves when the linter moves, and until #295 it was written
       # down nowhere, while every gosec entry in .golangci.yml means whatever
-      # that version says it means. v2.13.2 bundles gosec v2.28.0, whose G703
-      # accepts filepath.Clean as a path-traversal sanitizer where the directly
-      # pinned v2.29.0 does not — the two legs differ in soundness, not
+      # that version says it means. v2.13.2 bundled gosec v2.28.0, whose G703
+      # accepted filepath.Clean as a path-traversal sanitizer where the directly
+      # pinned v2.29.0 does not — the two legs differed in soundness, not
       # strictness, and only one of them was pinned where anyone could see it.
+      # v2.14.0 bundles v2.29.0, the same as the direct pin; this step is what
+      # notices when that stops being true.
       #
       # It reads `go version -m` rather than a self-report, because a dependency
       # version comes from the module graph and cannot be handed in by ldflags —

@@ -43,7 +43,7 @@ fixture() {
 	rm -rf "$_d"; mkdir -p "$_d"
 	for _m in "$@"; do
 		mkdir -p "$_d/$_m"
-		printf 'module example.com/%s\n\ngo 1.26\n' "$(echo "$_m" | tr / _)" > "$_d/$_m/go.mod"
+		printf 'module example.com/%s\n\ngo 1.27.1\n' "$(echo "$_m" | tr / _)" > "$_d/$_m/go.mod"
 	done
 }
 
@@ -216,7 +216,7 @@ want_line "/conformance|vet -tags gt ./..." "the conformance module is vetted wi
 want_line "/kvcompare|vet ./..."            "kvcompare is vetted with no -tags"
 
 # The toolchain override must reach the sweep. Moving the logic out of the
-# Makefile dropped $(GOVET) once already: `make GO=go1.26.1 vet-tags` silently
+# Makefile dropped $(GOVET) once already: `make GO=go1.27.1 vet-tags` silently
 # vetted with the PATH `go` instead, so the sweep reported on a different
 # toolchain than the one the rest of the build uses.
 : > "$LOG"; mkdir -p "$TMP/bin3"

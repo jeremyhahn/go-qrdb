@@ -21,8 +21,8 @@
 # which is the entire reason the script exists — would otherwise ship untested.
 #
 # The comparison under test is the one place this can fail open. Written as a
-# substring test (`case "$report" in *"$bare"*`) it accepts `v11.7.0` for a
-# `v1.7.0` pin and `v12.29.0` for a `v2.29.0` pin: CI runs an unintended
+# substring test (`case "$report" in *"$bare"*`) it accepts `v11.8.0` for a
+# `v1.8.0` pin and `v12.29.0` for a `v2.29.0` pin: CI runs an unintended
 # scanner version and prints `ok`, which is a check looser than the property it
 # claims. So the near-misses are cases here, and `--mutate` re-loosens the
 # comparison in a COPY of the script to prove they still catch it.
@@ -30,9 +30,9 @@
 # The fakes print the REAL output formats, captured from the actual binaries
 # rather than written from memory:
 #
-#	golangci-lint has version 2.13.2 built with go1.26.7 from (unknown, ...
+#	golangci-lint has version 2.14.0 built with go1.27.1 from (unknown, ...
 #	Version: v2.29.0
-#	Go: go1.26.7 / Scanner: govulncheck@v1.7.0
+#	Go: go1.27.1 / Scanner: govulncheck@v1.8.0
 #
 # govulncheck's is the one that matters most: its output's FIRST version-shaped
 # token is the GO TOOLCHAIN's, so a generic "find something version-shaped"
@@ -115,39 +115,39 @@ GOSEC=github.com/securego/gosec/v2/cmd/gosec
 GOVULN=golang.org/x/vuln/cmd/govulncheck
 
 echo "== real output, matching pin: must ACCEPT =="
-fake golangci-lint 'golangci-lint has version 2.13.2 built with go1.26.7 from (unknown, modified: ?, mod sum: "h1:bCyq3E4vo9qwzifjpzJqYndEt7Ncva80qkk8G2B4TXU=") on (unknown)'
-expect accept "golangci-lint 2.13.2 vs pin v2.13.2" golangci-lint v2.13.2 "$GCL"
+fake golangci-lint 'golangci-lint has version 2.14.0 built with go1.27.1 from (unknown, modified: ?, mod sum: "h1:ot8QffRa4LzAAEgtvNYrVs9esxQ7xoTwoAv6uhp4ngA=") on (unknown)'
+expect accept "golangci-lint 2.14.0 vs pin v2.14.0" golangci-lint v2.14.0 "$GCL"
 fake gosec 'Version: v2.29.0' 'Git tag: ' 'Build date: '
 expect accept "gosec v2.29.0 vs pin v2.29.0" gosec v2.29.0 "$GOSEC"
-fake govulncheck 'Go: go1.26.7' 'Scanner: govulncheck@v1.7.0' 'DB: https://vuln.go.dev'
-expect accept "govulncheck v1.7.0 vs pin v1.7.0" govulncheck v1.7.0 "$GOVULN"
+fake govulncheck 'Go: go1.27.1' 'Scanner: govulncheck@v1.8.0' 'DB: https://vuln.go.dev'
+expect accept "govulncheck v1.8.0 vs pin v1.8.0" govulncheck v1.8.0 "$GOVULN"
 
 echo "== NEAR MISS: the substring hole. Must REJECT =="
-fake govulncheck 'Go: go1.26.7' 'Scanner: govulncheck@v11.7.0' 'DB: https://vuln.go.dev'
-expect reject "govulncheck v11.7.0 vs pin v1.7.0  (prefix digit)" govulncheck v1.7.0 "$GOVULN"
+fake govulncheck 'Go: go1.27.1' 'Scanner: govulncheck@v11.8.0' 'DB: https://vuln.go.dev'
+expect reject "govulncheck v11.8.0 vs pin v1.8.0  (prefix digit)" govulncheck v1.8.0 "$GOVULN"
 fake gosec 'Version: v12.29.0' 'Git tag: ' 'Build date: '
 expect reject "gosec v12.29.0 vs pin v2.29.0  (prefix digit)" gosec v2.29.0 "$GOSEC"
-fake golangci-lint 'golangci-lint has version 12.13.2 built with go1.26.7 from (unknown) on (unknown)'
-expect reject "golangci-lint 12.13.2 vs pin v2.13.2  (prefix digit)" golangci-lint v2.13.2 "$GCL"
+fake golangci-lint 'golangci-lint has version 12.14.0 built with go1.27.1 from (unknown) on (unknown)'
+expect reject "golangci-lint 12.14.0 vs pin v2.14.0  (prefix digit)" golangci-lint v2.14.0 "$GCL"
 fake gosec 'Version: v2.29.01' 'Git tag: ' 'Build date: '
 expect reject "gosec v2.29.01 vs pin v2.29.0  (suffix digit)" gosec v2.29.0 "$GOSEC"
 fake gosec 'Version: v2.29.0-rc1' 'Git tag: ' 'Build date: '
 expect reject "gosec v2.29.0-rc1 vs pin v2.29.0  (prerelease)" gosec v2.29.0 "$GOSEC"
 
 echo "== THE SKEW THIS REPO ACTUALLY HAD: must REJECT =="
-# ci.yml installed v2.12.2 unconditionally over an image baking v2.13.2, so the
-# job linted with the version the workflow named and believed it was the
-# image's. With the install gone, this is what a stale image now looks like:
-# named, loudly, instead of silently substituted.
-fake golangci-lint 'golangci-lint has version 2.12.2 built with go1.26.7 from (unknown, modified: ?, mod sum: "h1:7+d1uY0bq1MU2UV3R5pW5Q7QWdcoq4naMRXM+gsJKrs=") on (unknown)'
-expect reject "golangci-lint 2.12.2 vs pin v2.13.2  (the #195 substitution)" golangci-lint v2.13.2 "$GCL"
+# ci.yml installed one golangci-lint unconditionally over an image baking
+# another, so the job linted with the version the workflow named and believed it
+# was the image's. With the install gone, this is what a stale image now looks
+# like: named, loudly, instead of silently substituted.
+fake golangci-lint 'golangci-lint has version 2.13.2 built with go1.27.1 from (unknown, modified: ?, mod sum: "h1:bCyq3E4vo9qwzifjpzJqYndEt7Ncva80qkk8G2B4TXU=") on (unknown)'
+expect reject "golangci-lint 2.13.2 vs pin v2.14.0  (the #195 substitution)" golangci-lint v2.14.0 "$GCL"
 
 echo "== the WRONG-TOKEN trap: a generic extractor would take the Go version =="
 # If the pin were ever the same shape as the toolchain version in the output, a
-# loose extractor matches `go1.26.7` and reports a pass for a tool that is a
+# loose extractor matches `go1.27.1` and reports a pass for a tool that is a
 # completely different version.
-fake govulncheck 'Go: go1.26.7' 'Scanner: govulncheck@v1.7.0' 'DB: https://vuln.go.dev'
-expect reject "govulncheck vs pin v1.26.7  (must not match 'Go: go1.26.7')" govulncheck v1.26.7 "$GOVULN"
+fake govulncheck 'Go: go1.27.1' 'Scanner: govulncheck@v1.8.0' 'DB: https://vuln.go.dev'
+expect reject "govulncheck vs pin v1.27.1  (must not match 'Go: go1.27.1')" govulncheck v1.27.1 "$GOVULN"
 
 echo "== unparseable / unreadable: must REJECT, never fall back to looser =="
 fake gosec 'Version: dev' 'Git tag: ' 'Build date: '
@@ -160,8 +160,8 @@ expect reject "gosec output with no Version: line" gosec v2.29.0 "$GOSEC"
 } > "$work/bin/gosec"
 chmod +x "$work/bin/gosec"
 expect reject "gosec refuses to report a version at all" gosec v2.29.0 "$GOSEC"
-fake staticcheck 'staticcheck 2025.1.1'
-expect reject "a tool with NO documented format is not verified by guessing" staticcheck 2025.1.1 honnef.co/go/tools/cmd/staticcheck
+fake staticcheck 'staticcheck 2026.2.1'
+expect reject "a tool with NO documented format is not verified by guessing" staticcheck 2026.2.1 honnef.co/go/tools/cmd/staticcheck
 
 echo "== absent tool on a self-hosted runner: must REJECT, never install =="
 rm -f "$work/bin/gosec"

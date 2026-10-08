@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **CI tool pins moved to the upstream latest, in step with the runner image**
+  (#613): golangci-lint v2.13.2 → v2.14.0, govulncheck v1.7.0 → v1.8.0 (gosec
+  stays at v2.29.0, already the latest) and Go 1.27.0 → 1.27.1 in the
+  workflows, Dockerfiles and every `go.mod`. golangci-lint v2.14.0 bundles
+  gosec v2.29.0, so `GOLANGCI_GOSEC_VERSION` moves to v2.29.0 and the gosec
+  exclusions in `.golangci.yml` were re-measured: G602 is now clean on both
+  modules and its entry is removed; the G115 counts are 312 / 125.
+
 ## [0.45.0-alpha] - 2026-10-07
 
 ### Highlights

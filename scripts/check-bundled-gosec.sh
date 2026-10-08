@@ -30,13 +30,15 @@
 # it was written down nowhere. It moves when golangci-lint moves, silently, and
 # with it moves the meaning of every gosec entry in .golangci.yml.
 #
-# That is not hypothetical. golangci-lint v2.13.2 bundles gosec v2.28.0, whose
+# That is not hypothetical. golangci-lint v2.13.2 bundled gosec v2.28.0, whose
 # G703 accepts filepath.Clean as a path-traversal sanitizer; the directly
 # pinned v2.29.0 does not, having removed Clean from its sanitizer list with
 # the note that Clean "evaluates '..' elements instead of rejecting them, so
-# the traversal succeeds". The two legs therefore differ in SOUNDNESS, not just
-# in strictness, and the .golangci.yml entry written against the older one was
-# INERT while reading as a decision the gate had made (#181, #295).
+# the traversal succeeds". The two legs therefore differed in SOUNDNESS, not
+# just in strictness, and the .golangci.yml entry written against the older one
+# was INERT while reading as a decision the gate had made (#181, #295). From
+# golangci-lint v2.14.0 the bundled gosec is v2.29.0, the same as the direct
+# pin, but nothing keeps it so: the next golangci-lint release chooses its own.
 #
 # WHAT IT ASSERTS, AND WHY NOT THE OBVIOUS THING
 #
@@ -140,10 +142,10 @@ fi
 
 # `go version -m` writes tab-separated records:
 #
-#	<path>: go1.26.7
+#	<path>: go1.27.1
 #		path	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
-#		mod	github.com/golangci/golangci-lint/v2	v2.13.2	h1:...
-#		dep	github.com/securego/gosec/v2	v2.28.0	h1:...
+#		mod	github.com/golangci/golangci-lint/v2	v2.14.0	h1:...
+#		dep	github.com/securego/gosec/v2	v2.29.0	h1:...
 #
 # The `dep` record is matched on BOTH the field kind and the exact module path;
 # matching the path alone would also accept the `mod` record of a gosec built

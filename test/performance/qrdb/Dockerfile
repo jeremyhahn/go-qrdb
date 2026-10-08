@@ -20,7 +20,7 @@
 # module dependency (used by go-qrdb) and the perfresult module dependency
 # (used by the benchmark sub-module). Supply it via a named BuildKit context:
 #   docker build --build-context go-quicraft=/path/to/go-quicraft ...
-FROM golang:1.27.0-bookworm AS builder
+FROM golang:1.27.1-bookworm AS builder
 
 WORKDIR /src
 COPY . .

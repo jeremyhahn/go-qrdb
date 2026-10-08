@@ -2582,7 +2582,7 @@ print-build-tags:
 
 # print-trivy-version prints TRIVY_VERSION for the same reason: ci.yml's
 # blocking trivy job installs the scanner PINNED to it, and a workflow that
-# restated "v0.74.0" would be a second copy of the pin that drifts the first
+# restated "v0.75.0" would be a second copy of the pin that drifts the first
 # time someone bumps this one (#479). The workflow reads; this declares.
 .PHONY: print-trivy-version
 print-trivy-version:
@@ -2788,10 +2788,10 @@ endef
 # version INSTALLED. A pin says which analyser should be in the image, not which
 # one is; require-tool.sh answers that, inside both Dockerfiles at build time
 # and again in ci.yml. The two halves together are the guarantee.
-GOLANGCI_LINT_VERSION := v2.13.2
+GOLANGCI_LINT_VERSION := v2.14.0
 GOSEC_VERSION         := v2.29.0
-GOVULNCHECK_VERSION   := v1.7.0
-TRIVY_VERSION         := v0.74.0
+GOVULNCHECK_VERSION   := v1.8.0
+TRIVY_VERSION         := v0.75.0
 
 # A FIFTH VERSION, and it is NOT A PIN (#295). golangci-lint bundles a gosec of
 # its own, and that is the one `lint` and `lint-sdk` judge this tree with --
@@ -2807,17 +2807,18 @@ TRIVY_VERSION         := v0.74.0
 # dependency, so demanding they match would be a gate red by construction. The
 # divergence is made VISIBLE instead -- the check prints both, every run.
 #
-# The two are not interchangeable, and the difference is soundness rather than
-# strictness: v2.28.0's G703 accepts filepath.Clean as a path-traversal
-# sanitizer and v2.29.0 does not, upstream having removed it with the note that
-# Clean "evaluates '..' elements instead of rejecting them, so the traversal
-# succeeds" (securego/gosec#1721). The lint leg therefore CLEARS a cleaned path
-# that the gosec leg reports HIGH/HIGH.
+# The two are not interchangeable even when they happen to be equal, as they are
+# at golangci-lint v2.14.0 and gosec v2.29.0: the difference is soundness rather
+# than strictness. gosec v2.28.0's G703 accepted filepath.Clean as a
+# path-traversal sanitizer and v2.29.0 does not, upstream having removed it with
+# the note that Clean "evaluates '..' elements instead of rejecting them, so the
+# traversal succeeds" (securego/gosec#1721). A golangci-lint that bundled the
+# older gosec would CLEAR a cleaned path that the gosec leg reports HIGH/HIGH.
 #
 # Bumping GOLANGCI_LINT_VERSION means re-measuring the exclusions in
 # .golangci.yml and updating this line in the same change. Read it off the
 # binary: `go version -m $$(command -v golangci-lint)`.
-GOLANGCI_GOSEC_VERSION := v2.28.0
+GOLANGCI_GOSEC_VERSION := v2.29.0
 
 export GOLANGCI_LINT_VERSION
 export GOSEC_VERSION

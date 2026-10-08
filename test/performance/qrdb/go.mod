@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/test/performance/qrdb
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/jeremyhahn/go-qrdb v0.7.0-alpha

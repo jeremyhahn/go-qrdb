@@ -67,7 +67,7 @@ ROOT="${VET_MODULES_ROOT:-.}"
 
 # The vet command comes from Make, not from PATH. The inline recipe this
 # replaced used $(GOVET), so hardcoding `go vet` here would silently ignore a
-# toolchain override -- `make GO=go1.26.1 vet-tags`, or a CI wrapper setting
+# toolchain override -- `make GO=go1.27.1 vet-tags`, or a CI wrapper setting
 # GOVET -- and vet with a different Go than every other target in the build.
 # A sweep that runs the wrong toolchain is a check reporting on something other
 # than what ships, which is this script's whole subject.
