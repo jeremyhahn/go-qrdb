@@ -17,6 +17,8 @@ package grpc
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -109,6 +111,11 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
+		// OutOfRange is the server's class for a revision below the
+		// compaction floor and nothing else, as 416 is on REST.
+		if status.Code(err) == codes.OutOfRange {
+			return nil, &transport.RevisionCompactedError{Revision: revision}
+		}
 		return nil, mapGRPCError("GetAtRevision", err)
 	}
 

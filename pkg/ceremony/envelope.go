@@ -16,7 +16,6 @@ package ceremony
 
 import (
 	"crypto"
-	"crypto/hpke"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -140,16 +139,19 @@ func ParseShareEnvelope(raw []byte) (*ShareEnvelope, error) {
 	return &env, nil
 }
 
-// Open decrypts the envelope with the holder's private key, which must belong
-// to the envelope's KEM. It returns the base64 share value the holder submits
-// to a quorum; the caller owns and should wipe it. Opening needs no server:
-// holders open their envelopes offline.
-func (e *ShareEnvelope) Open(sk hpke.PrivateKey) ([]byte, error) {
+// Open decrypts the envelope with the holder's decrypter, which must belong
+// to the envelope's KEM. A device-held key opens through
+// keydelivery.NewDecrypter, which sends the key agreement (and, for the
+// hybrid KEM, the decapsulation) to the device, so the holder's private key
+// is never in this process. It returns the base64 share value the holder
+// submits to a quorum; the caller owns and should wipe it. Opening needs no
+// server: holders open their envelopes offline.
+func (e *ShareEnvelope) Open(dec keydelivery.Decrypter) ([]byte, error) {
 	suite, err := keydelivery.LookupSuite(e.KEM)
 	if err != nil {
 		return nil, &ShareEnvelopeError{Holder: e.Holder, Err: err}
 	}
-	pt, err := suite.Open(sk, e.info(), e.Ciphertext)
+	pt, err := suite.Open(dec, e.info(), e.Ciphertext)
 	if err != nil {
 		return nil, &ShareEnvelopeError{Holder: e.Holder, Err: err}
 	}

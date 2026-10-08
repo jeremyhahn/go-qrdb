@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 )
 
 // defaultIdleTTL is how long a per-key bucket may sit unused before the
@@ -95,10 +97,21 @@ func WithSweepInterval(interval time.Duration) TokenBucketOption {
 	}
 }
 
-// withClock overrides the limiter's notion of "now". Unexported: it exists
-// for this package's own deterministic tests, not for production callers --
-// a Limiter whose clock an embedder could desynchronize from wall time would
-// throttle against a rate that is no longer the one it reports.
+// WithClock sets the time source the buckets refill against, so a composer
+// that supplies the node's clock seam (node.WithClock) throttles on the same
+// time as the lessor and the key-delivery freshness checks. A nil clock is
+// ignored and the limiter keeps the wall clock. The background reaper still
+// runs on a wall-clock ticker: reclaiming idle memory is not a security gate.
+func WithClock(c clock.Clock) TokenBucketOption {
+	if c == nil {
+		return func(*TokenBucketLimiter) {}
+	}
+	return withClock(c.Now)
+}
+
+// withClock overrides the limiter's notion of "now" with a bare function. It
+// exists for this package's own deterministic tests; production callers go
+// through WithClock.
 func withClock(now func() time.Time) TokenBucketOption {
 	return func(l *TokenBucketLimiter) {
 		l.clock = now

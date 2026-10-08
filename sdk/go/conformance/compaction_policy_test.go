@@ -88,15 +88,19 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 				t.Fatalf("%s: the returned policy = %+v", tk, info.Compaction)
 			}
 
-			// The scheduler compacts tenant-a's database as specified ...
+			// The scheduler compacts tenant-a's database as specified ... Only
+			// the compaction refusal ends the wait: any other failed read says
+			// nothing about the policy, and taking it for compaction sends the
+			// test on to requireCompacted before the scheduler has run.
 			deadline := time.Now().Add(callTimeout)
 			for {
 				h := c.as(t, "tenant-a")
-				if _, err := h.mvcc.GetAtRevision(h.ctx, "k", revA); err != nil {
+				_, err := h.mvcc.GetAtRevision(h.ctx, "k", revA)
+				if isCompacted(err) {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("%s: the configured policy never compacted tenant-a's database", tk)
+					t.Fatalf("%s: the configured policy never compacted tenant-a's database (last read: %v)", tk, err)
 				}
 				time.Sleep(25 * time.Millisecond)
 			}

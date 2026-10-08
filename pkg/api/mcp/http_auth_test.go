@@ -15,6 +15,7 @@
 package mcp
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -23,9 +24,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // startAuthenticatedMCP starts an MCP server whose middleware accepts only
@@ -183,6 +186,73 @@ func TestAuthenticateHandler_NoChallenge401(t *testing.T) {
 	}
 	if reached {
 		t.Fatal("an unauthenticated request reached the MCP handler")
+	}
+}
+
+// slowUserStore is a user store whose tenant lookup overruns the middleware's
+// lookup budget -- a ReadIndex stalled under load -- reported at once rather
+// than waited out. Only GetUserByUsername is reachable from the
+// authentication path.
+type slowUserStore struct{ user.UserServicer }
+
+func (slowUserStore) GetUserByUsername(context.Context, string, string) (*user.User, error) {
+	return nil, context.DeadlineExceeded
+}
+
+// TestAuthenticateHandler_StoreUnavailable503: a valid credential whose
+// tenant user lookup times out is answered 503, not 401. The fallback store
+// covers only the system tenant, so for every other tenant the timeout stands
+// as a retryable StoreUnavailableError -- which REST answers 503 and MCP
+// answered 401, telling a correctly enrolled tenant caller its credential was
+// bad. The bearer challenge stays off a response that never judged it.
+func TestAuthenticateHandler_StoreUnavailable503(t *testing.T) {
+	s := &Server{}
+	WithAuthMiddleware(authmw.New(&auth.NoopAuthorizer{},
+		authmw.WithAuthenticator(&bearerStubAuthenticator{token: "Bearer good"}),
+		authmw.WithUserService(slowUserStore{})))(s)
+	WithBearerChallenge(`Bearer realm="mcp"`)(s)
+
+	for _, tc := range []struct {
+		name, bearer string
+		want         int
+	}{
+		{"valid credential, store unavailable", "Bearer good", http.StatusServiceUnavailable},
+		{"bad credential", "Bearer bad", http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reached := false
+			h := s.authenticateHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+			req.Header.Set("Authorization", tc.bearer)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body %q", rec.Code, tc.want, rec.Body.String())
+			}
+			challenged := rec.Header().Get("WWW-Authenticate") != ""
+			if challenged != (tc.want == http.StatusUnauthorized) {
+				t.Errorf("WWW-Authenticate present = %v on a %d", challenged, rec.Code)
+			}
+			if reached {
+				t.Fatal("a refused request reached the MCP handler")
+			}
+		})
+	}
+}
+
+// TestWriteAuthenticationRefusal_RateLimited: a throttled caller gets 429 and
+// the delay in Retry-After, as REST answers it.
+func TestWriteAuthenticationRefusal_RateLimited(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeAuthenticationRefusal(rec, &authmw.RateLimitedError{RetryAfter: 1500 * time.Millisecond}, `Bearer realm="mcp"`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Errorf("Retry-After = %q, want \"2\"", got)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+		t.Errorf("WWW-Authenticate = %q on a 429", got)
 	}
 }
 

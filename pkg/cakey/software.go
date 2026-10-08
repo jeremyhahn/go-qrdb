@@ -865,18 +865,25 @@ func (s *barrierCheckedSigner) Sign(rand io.Reader, digest []byte, opts crypto.S
 		return nil, &SignerRevokedError{}
 	}
 
-	s.provider.mu.RLock()
-	sec := s.provider.keySecret
-	s.provider.mu.RUnlock()
-	if sec == nil {
-		return nil, &NotInitializedError{}
-	}
-
+	// Open under the read lock: setMaterial and Seal destroy the secret
+	// they retire once they hold the write lock, so a Secret read here and
+	// opened after the lock was dropped could already be destroyed -- as it
+	// is when concurrent first uses each load the same persisted record and
+	// swap it in. Readers do not exclude each other, so signing still runs
+	// concurrently.
+	//
 	// crypto.Signer has no context parameter. The Secret opened here is
 	// sealed under go-enclave's process-local Sealer, which this package
 	// never backs with anything that performs I/O or blocks, so
 	// context.Background() is safe: there is nothing for it to cancel.
+	s.provider.mu.RLock()
+	sec := s.provider.keySecret
+	if sec == nil {
+		s.provider.mu.RUnlock()
+		return nil, &NotInitializedError{}
+	}
 	buf, err := sec.Open(context.Background())
+	s.provider.mu.RUnlock()
 	if err != nil {
 		return nil, &SealError{Op: "open", Err: err}
 	}

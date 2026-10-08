@@ -101,7 +101,6 @@ func (m *coverageCeremonyCA) CABundle() ([]byte, error) {
 func (m *coverageCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return &ceremony.IssuedCert{
 		CertPEM: []byte("cert-pem"),
-		KeyPEM:  []byte("key-pem"),
 	}, nil
 }
 

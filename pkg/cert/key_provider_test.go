@@ -749,12 +749,15 @@ func TestDefaultCertProvider_IsTenantIssuer_UnknownTenantNeverCreatesACA(t *test
 // getCAMaterial -> resolveKeyProvider (which caches one
 // *cakey.SoftwareProvider per tenant) -> Signer, which
 // auto-initializes the tenant's CA key via cakey.SoftwareProvider's own
-// material()/Initialize on first use. Without tenantInitLocked serializing
-// that auto-init per tenant, two goroutines could both observe "no CA
-// exists yet" and both generate and persist one, with whichever Put landed
-// last silently winning over the in-memory key the other goroutine already
-// cached and signed a leaf with -- producing a leaf whose issuer does not
-// match the CA this tenant's own CACertPEMs now serves.
+// Initialize on first use. Every goroutine may observe "no CA exists yet"
+// and generate a candidate: the guarded batch write admits exactly one, and
+// each loser loads the winner's record and swaps it in. Without that guard
+// the last write would silently win over the in-memory key another
+// goroutine already signed a leaf with -- a leaf whose issuer does not
+// match the CA this tenant's own CACertPEMs now serves. And each swap
+// destroys the secret it retires, so a Sign that had already read that
+// secret must open it under the provider's read lock or fail on a destroyed
+// enclave.
 //
 // Run with -race (as this package's test gate requires): a missing lock
 // here is a data race on cakey.SoftwareProvider's internal fields, not

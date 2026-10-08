@@ -16,7 +16,7 @@
 # INSIDE the devcontainer, so these four binaries are what judge a developer's
 # tree, and `.github/workflows/ci.yml`'s env block declares what judges CI's.
 # They were allowed to differ: gosec and govulncheck installed at `@latest` and
-# golangci-lint at v2.7.2 against ci.yml's v2.13.2, so one commit could be
+# golangci-lint at v2.7.2 against ci.yml's pin, so one commit could be
 # analysed by two different analysers with nothing in either result saying so.
 #
 # THE KEYS BELOW CARRY NO VALUE ON PURPOSE. That is compose's

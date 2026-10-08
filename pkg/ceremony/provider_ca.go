@@ -88,8 +88,8 @@ func (c *ProviderCA) CABundle() ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), nil
 }
 
-// IssueCertificate generates a new key pair and issues a leaf certificate
-// signed through the provider.
+// IssueCertificate issues a leaf certificate for req.PublicKey, signed
+// through the provider.
 func (c *ProviderCA) IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error) {
 	caCert, caKey, err := c.material(ctx)
 	if err != nil {

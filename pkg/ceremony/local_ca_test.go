@@ -16,6 +16,7 @@ package ceremony
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -318,8 +319,10 @@ func TestLocalCA_CABundle(t *testing.T) {
 
 func TestLocalCA_IssueCertificate(t *testing.T) {
 	ca := newTestLocalCA(t)
+	key := newDeviceSigner(t)
 
 	issued, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:    key.Public(),
 		CommonName:   "node-1",
 		SANs:         []string{"node1.example.test", "127.0.0.1"},
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -339,14 +342,11 @@ func TestLocalCA_IssueCertificate(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, issued.Certificate.CheckSignatureFrom(caCert))
 
-	// CertPEM and KeyPEM must round-trip into a usable key pair.
+	// The certificate binds the caller's key, and CertPEM is that certificate.
+	assert.True(t, key.Public().(interface{ Equal(crypto.PublicKey) bool }).Equal(issued.Certificate.PublicKey))
 	certBlock, _ := pem.Decode(issued.CertPEM)
 	require.NotNil(t, certBlock)
-	keyBlock, _ := pem.Decode(issued.KeyPEM)
-	require.NotNil(t, keyBlock)
-	assert.Equal(t, "PRIVATE KEY", keyBlock.Type)
-	_, err = x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
-	assert.NoError(t, err)
+	assert.Equal(t, issued.Certificate.Raw, certBlock.Bytes)
 }
 
 func TestLocalCA_IssueCertificate_NilRequest(t *testing.T) {
@@ -356,6 +356,17 @@ func TestLocalCA_IssueCertificate_NilRequest(t *testing.T) {
 	assert.Nil(t, issued)
 	var encErr *CertEncodeError
 	assert.True(t, errors.As(err, &encErr), "expected *CertEncodeError, got %T: %v", err, err)
+}
+
+// The CA never generates a key to stand in for a missing one.
+func TestLocalCA_IssueCertificate_NoPublicKey(t *testing.T) {
+	ca := newTestLocalCA(t)
+
+	issued, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{CommonName: "node-1", ValidityDays: 1})
+	assert.Nil(t, issued)
+	var keyErr *IssueCertKeyError
+	require.ErrorAs(t, err, &keyErr)
+	assert.Equal(t, "PublicKey", keyErr.Field)
 }
 
 // ---------------------------------------------------------------------------

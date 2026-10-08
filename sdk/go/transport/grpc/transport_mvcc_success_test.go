@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -343,6 +344,67 @@ type capturingMVCCServicer struct {
 func (c *capturingMVCCServicer) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
 	*c.captured = req
 	return c.fakeMVCCServicer.RestoreToRevision(ctx, req)
+}
+
+// failingAtRevisionMVCCServicer wraps fakeMVCCServicer and fails every
+// historical read with err.
+type failingAtRevisionMVCCServicer struct {
+	*fakeMVCCServicer
+	err error
+}
+
+func (f *failingAtRevisionMVCCServicer) GetAtRevision(context.Context, string, int64) (*kv.KeyValue, error) {
+	return nil, f.err
+}
+
+func (f *failingAtRevisionMVCCServicer) GetAtRevisionWithConsistency(context.Context, string, int64, consistency.ReadOptions) (*kv.KeyValue, error) {
+	return nil, f.err
+}
+
+// getAtRevisionFailingWith reads revision 3 through a server whose historical
+// reads fail with err.
+func getAtRevisionFailingWith(t *testing.T, err error) error {
+	t.Helper()
+	srv := googlegrpc.NewServer()
+	failing := &failingAtRevisionMVCCServicer{fakeMVCCServicer: &fakeMVCCServicer{mockKVService: newMockKVService()}, err: err}
+	grpcpkg.RegisterService(srv, newMockKVService(), newMockAdminService(), grpcpkg.WithRegisterMVCC(failing))
+	lis, lerr := net.Listen("tcp", "127.0.0.1:0")
+	if lerr != nil {
+		t.Fatalf("listen: %v", lerr)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	defer srv.Stop()
+
+	tr, cleanup := connectMVCCTransport(t, lis.Addr().String())
+	defer cleanup()
+	_, gerr := tr.GetAtRevision(context.Background(), "k", 3)
+	return gerr
+}
+
+// TestGRPCMVCC_GetAtRevision_Compacted: a revision below the compaction floor
+// comes back as the typed refusal carrying the revision asked for.
+func TestGRPCMVCC_GetAtRevision_Compacted(t *testing.T) {
+	err := getAtRevisionFailingWith(t, &service.RevisionCompactedError{Requested: 3, Compacted: 7})
+	var compacted *transport.RevisionCompactedError
+	if !errors.As(err, &compacted) {
+		t.Fatalf("got %T: %v, want *transport.RevisionCompactedError", err, err)
+	}
+	if compacted.Revision != 3 {
+		t.Errorf("Revision = %d, want 3", compacted.Revision)
+	}
+}
+
+// TestGRPCMVCC_GetAtRevision_OtherErrorIsNotCompacted: any other failure is
+// not reported as a compaction refusal.
+func TestGRPCMVCC_GetAtRevision_OtherErrorIsNotCompacted(t *testing.T) {
+	err := getAtRevisionFailingWith(t, errors.New("disk on fire"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var compacted *transport.RevisionCompactedError
+	if errors.As(err, &compacted) {
+		t.Fatalf("an internal failure was reported as a compaction refusal: %v", err)
+	}
 }
 
 // TestGRPCMVCC_RestoreToRevision_NilRequest proves the client fails fast on

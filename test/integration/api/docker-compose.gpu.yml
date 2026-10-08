@@ -3,7 +3,10 @@
 # Use together with the base compose file to enable NVIDIA GPU access in both
 # the server and test runner containers:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#   make integration-test-gpu
+#
+# which runs `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up`
+# with the per-run project and image names the two files require.
 #
 # The overlay switches both services to the GPU-capable devcontainer image
 # (Dockerfile.gpu), reserves one NVIDIA GPU via the Docker device plugin, and
@@ -42,13 +45,18 @@
 # and restate three of them here, which is the second copy this file's own
 # credential note argues against. Recorded so the warning is not read as a
 # defect and 'fixed' by one of those.
+#
+# IMAGE: per-run, for the reason the base file gives. QRDB_INT_GPU_IMAGE
+# (`go-qrdb-int-gpu:<INT_PROJECT>`) is named and removed by the Makefile, and
+# is required with no default: a default is a shared tag again.
+x-int-gpu-image: &int-gpu-image "${QRDB_INT_GPU_IMAGE:?QRDB_INT_GPU_IMAGE is unset, run this stack through make}"
 
 services:
   qrdbd:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile.gpu
-    image: go-qrdb-gpu-dev:latest
+    image: *int-gpu-image
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -78,7 +86,8 @@ services:
 
   # NOTE: Ollama is not part of this overlay. It lives in the opt-in
   # docker-compose.embedding.yml overlay (no integration test uses embeddings).
-  # For GPU-accelerated embedding e2e tests, stack the overlays:
+  # For GPU-accelerated embedding e2e tests, stack the overlays (with
+  # QRDB_INT_IMAGE and QRDB_INT_GPU_IMAGE set as the Makefile sets them):
   #   docker compose -f docker-compose.yml -f docker-compose.embedding.yml \
   #                  -f docker-compose.gpu.yml up
   # and add the NVIDIA device reservation to ollama in the embedding overlay.
@@ -87,7 +96,7 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile.gpu
-    image: go-qrdb-gpu-dev:latest
+    image: *int-gpu-image
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

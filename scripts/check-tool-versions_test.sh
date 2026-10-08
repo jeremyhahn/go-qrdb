@@ -65,7 +65,7 @@ fixture() {
 	EOF
 
 	cat > "${DIR}/.devcontainer/Dockerfile" <<-'EOF'
-		FROM golang:1.26
+		FROM golang:1.27.1
 		ARG GOLANGCI_LINT_VERSION=v2.14.0
 		ARG GOSEC_VERSION=v2.29.0
 		ARG GOVULNCHECK_VERSION=v1.8.0

@@ -100,7 +100,9 @@ node, err := node.NewStandaloneNode(ctx, cfg,
 Without `WithBearerChallenge`, an unauthenticated MCP request is still
 refused with `401` at the HTTP layer, before the MCP layer reads it, but
 without a `WWW-Authenticate` header. `initialize`, `ping` and `tools/list`
-are never answered to an anonymous caller.
+are never answered to an anonymous caller. The challenge rides only a `401`:
+a request the node could not finish checking (user store unavailable, rate
+limited) is answered `503` or `429` with `Retry-After`, as REST answers it.
 
 ## Composition with built-in semantics
 

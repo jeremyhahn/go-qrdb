@@ -18,6 +18,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 )
 
 func TestNewLessorReturnsNonNil(t *testing.T) {
@@ -504,9 +506,10 @@ func TestExpiredLeaseIDsWithNoExpired(t *testing.T) {
 }
 
 func TestExpiredLeaseIDsWithExpired(t *testing.T) {
-	lr := NewLessor()
+	fake := clocktest.New()
+	lr := NewLessor(WithClock(fake))
 	info, _ := lr.Grant(nopWriter{}, 1)
-	time.Sleep(1100 * time.Millisecond)
+	fake.Advance(1100 * time.Millisecond)
 	expired := lr.ExpiredLeaseIDs()
 	if len(expired) != 1 {
 		t.Fatalf("ExpiredLeaseIDs() returned %d IDs, want 1", len(expired))
@@ -517,10 +520,11 @@ func TestExpiredLeaseIDsWithExpired(t *testing.T) {
 }
 
 func TestExpiredLeaseIDsMixedExpiredAndActive(t *testing.T) {
-	lr := NewLessor()
+	fake := clocktest.New()
+	lr := NewLessor(WithClock(fake))
 	expiredInfo, _ := lr.Grant(nopWriter{}, 1)
 	_, _ = lr.Grant(nopWriter{}, 600)
-	time.Sleep(1100 * time.Millisecond)
+	fake.Advance(1100 * time.Millisecond)
 
 	expired := lr.ExpiredLeaseIDs()
 	if len(expired) != 1 {

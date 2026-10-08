@@ -126,10 +126,11 @@ func runCLIProto(t *testing.T, node *multiProtoNode, proto multiProtocol, args .
 // barrier with the passphrase strategy. A node booted with this config comes
 // up in the pre-host sealed window and must be initialized and unsealed
 // (see initAndUnsealBarrier) before the Raft host, and therefore every other
-// transport, starts serving.
-func writeMultiProtocolSealConfig(t *testing.T) string {
+// transport, starts serving. extraYAML, when non-empty, is appended as further
+// top-level sections (any but seal).
+func writeMultiProtocolSealConfig(t *testing.T, extraYAML string) string {
 	t.Helper()
-	yaml := "seal:\n  enabled: true\n  strategy: passphrase\n"
+	yaml := "seal:\n  enabled: true\n  strategy: passphrase\n" + extraYAML
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
@@ -183,12 +184,20 @@ func startMultiProtocolNodeWithSM(t *testing.T, smType string) *multiProtoNode {
 // provides does not need its own, mostly-duplicate node bootstrap.
 func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...string) *multiProtoNode {
 	t.Helper()
+	return startMultiProtocolNodeWithConfig(t, smType, "", extraArgs...)
+}
+
+// startMultiProtocolNodeWithConfig is startMultiProtocolNodeWithArgs with
+// extraYAML appended to the daemon's config file, for a setting that has no
+// daemon flag (see writeMultiProtocolSealConfig).
+func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, extraArgs ...string) *multiProtoNode {
+	t.Helper()
 
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
 	dataDir := t.TempDir()
-	cfgPath := writeMultiProtocolSealConfig(t)
+	cfgPath := writeMultiProtocolSealConfig(t, extraYAML)
 
 	// Unix socket paths are limited to ~108 bytes by the kernel and
 	// t.TempDir() can exceed that, so place the socket under a short,

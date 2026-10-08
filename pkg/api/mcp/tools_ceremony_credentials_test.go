@@ -99,7 +99,6 @@ func (m *mockCeremonyCA) CABundle() ([]byte, error) {
 func (m *mockCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return &ceremony.IssuedCert{
 		CertPEM: []byte("-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----"),
-		KeyPEM:  []byte("-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----"),
 	}, nil
 }
 

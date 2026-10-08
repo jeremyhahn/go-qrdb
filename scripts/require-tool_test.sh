@@ -135,10 +135,11 @@ fake gosec 'Version: v2.29.0-rc1' 'Git tag: ' 'Build date: '
 expect reject "gosec v2.29.0-rc1 vs pin v2.29.0  (prerelease)" gosec v2.29.0 "$GOSEC"
 
 echo "== THE SKEW THIS REPO ACTUALLY HAD: must REJECT =="
-# ci.yml installed one golangci-lint unconditionally over an image baking
-# another, so the job linted with the version the workflow named and believed it
-# was the image's. With the install gone, this is what a stale image now looks
-# like: named, loudly, instead of silently substituted.
+# ci.yml once installed an older golangci-lint unconditionally over an image
+# baking the pinned one, so the job linted with the version the workflow named
+# and believed it was the image's (#195). With the install gone, this is what a
+# stale image looks like after a pin bump: the previous release, named, loudly,
+# instead of silently substituted.
 fake golangci-lint 'golangci-lint has version 2.13.2 built with go1.27.1 from (unknown, modified: ?, mod sum: "h1:bCyq3E4vo9qwzifjpzJqYndEt7Ncva80qkk8G2B4TXU=") on (unknown)'
 expect reject "golangci-lint 2.13.2 vs pin v2.14.0  (the #195 substitution)" golangci-lint v2.14.0 "$GCL"
 

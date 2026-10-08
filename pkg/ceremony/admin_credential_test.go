@@ -82,6 +82,7 @@ func TestInitialize_AdminCredential_CSR(t *testing.T) {
 func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 	ca := newMockCA(t)
 	presented, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:          newDeviceSigner(t).Public(),
 		CommonName:         "admin",
 		OrganizationalUnit: []string{"system", "administrator"},
 		ValidityDays:       30,
@@ -114,6 +115,7 @@ func TestInitialize_AdminCredential_BYOC(t *testing.T) {
 func TestInitialize_AdminCredential_BYOC_DefaultsToClusterCA(t *testing.T) {
 	ca := newMockCA(t)
 	presented, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:          newDeviceSigner(t).Public(),
 		CommonName:         "admin",
 		OrganizationalUnit: []string{"system", "administrator"},
 		ValidityDays:       30,
@@ -139,6 +141,7 @@ func TestInitialize_AdminCredential_BYOC_DefaultsToClusterCA(t *testing.T) {
 func TestInitialize_AdminCredential_BYOC_Untrusted(t *testing.T) {
 	foreign := newMockCA(t)
 	presented, err := foreign.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:    newDeviceSigner(t).Public(),
 		CommonName:   "admin",
 		ValidityDays: 30,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -219,6 +222,7 @@ func TestInitialize_AdminCredential_BYOC_ProfileChecklist(t *testing.T) {
 	for name, req := range cases {
 		t.Run(name, func(t *testing.T) {
 			ca := newMockCA(t)
+			req.PublicKey = newDeviceSigner(t).Public()
 			presented, err := ca.IssueCertificate(context.Background(), req)
 			require.NoError(t, err)
 
@@ -323,12 +327,14 @@ func TestReissueAdminCredential_Succeeds(t *testing.T) {
 func TestReissueAdminCredential_BYOTLSBYOCBinds(t *testing.T) {
 	operatorCA := newMockCA(t)
 	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
 	})
 	require.NoError(t, err)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
 	firstAdminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,
@@ -352,6 +358,7 @@ func TestReissueAdminCredential_BYOTLSBYOCBinds(t *testing.T) {
 	// is presented to the SO-PIN-gated reissue path instead of re-running
 	// the whole ceremony.
 	secondAdminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,
@@ -459,11 +466,13 @@ func TestReissueAdminCredential_WrongPINRefusedBeforeAnyCredentialWork(t *testin
 	t.Run("BYO-TLS, CA nil (BYOC)", func(t *testing.T) {
 		operatorCA := newMockCA(t)
 		serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+			PublicKey:  newDeviceSigner(t).Public(),
 			CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
 		})
 		require.NoError(t, err)
 		clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 		adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+			PublicKey:  newDeviceSigner(t).Public(),
 			CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 			ValidityDays: 30,

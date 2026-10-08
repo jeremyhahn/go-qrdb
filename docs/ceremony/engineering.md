@@ -14,6 +14,7 @@ Composition-plane options (Tier 2):
 
 ```go
 func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption
+func WithServerTLSKey(key crypto.Signer) ServerOption
 func WithPINBackend(backend pin.PINBackend) ServerOption
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
 ```
@@ -45,7 +46,7 @@ The CA seam:
 ```go
 type CeremonyCA interface {
 	SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
-	CACertificate() (*x509.Certificate, error)
+	CACertificate(ctx context.Context) (*x509.Certificate, error)
 	CABundle() ([]byte, error)
 	IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error)
 }
@@ -54,6 +55,26 @@ type CeremonyCA interface {
 An implementation must issue exactly the `Subject` and `URIs` in
 `SignCSROptions`; the CSR contributes only its public key. `ceremony.LocalCA`
 is the reference implementation.
+
+`IssueCertificate` certifies `IssueCertRequest.PublicKey`, a key the caller
+already holds. The CA never generates, sees or returns a leaf private key —
+`IssuedCert` carries only `Certificate` and `CertPEM` — and a request without
+a `PublicKey` is a `*ceremony.IssueCertKeyError`. The caller pairs the
+certificate with its own key, which may be a `crypto.Signer` on a device.
+
+`ceremony.ServerTLSConfig(ctx, ca, key crypto.Signer, extraSANs...)` builds
+the transports' auto-provisioned TLS 1.3 leaf this way: it asks the CA to
+certify `key.Public()`, checks the returned certificate binds that key
+(`*CertEncodeError` otherwise), and sets `key` itself as the
+`tls.Certificate`'s `PrivateKey`, so every handshake signs through it. A nil
+`key` fails closed. The server chooses the key: `server.WithServerTLSKey`
+(re-exported from `sdk/go`) composes a device-held signer in, and without it
+each transport's leaf gets a fresh in-memory ECDSA P-256 key.
+
+> **Correction (2026-10-07):** this block showed `CACertificate()` without
+> its `ctx` argument; the interface has taken a context since the handshake
+> trust-path work. `IssueCertificate` used to generate the leaf key and
+> return it as `IssuedCert.KeyPEM`; that field is deleted.
 
 **The `SignCSR` contract is a MUST, and it is enforced.** The ceremony CA signs
 under the node's cluster CA, which the mTLS listener trusts for client logins,

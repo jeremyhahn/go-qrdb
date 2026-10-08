@@ -15,7 +15,8 @@
 package lifecycle
 
 import (
-	"crypto/ecdsa"
+	"bytes"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
@@ -159,15 +161,29 @@ type RaftTenantClusterConfig struct {
 	TrustDomain string
 	// CACertPool is the cluster CA pool peer certificates verify to.
 	CACertPool *x509.CertPool
-	// CertPEM and KeyPEM are this node's certificate and EC key: its mTLS
-	// client identity to peers and its HPKE recipient key.
-	CertPEM, KeyPEM []byte
+	// Identity is this node's mTLS identity: its certificate chain, leaf
+	// first, and the crypto.Signer for the leaf's key. It is the client
+	// identity the sender presents to peers, and the certificate the
+	// receiver publishes for peers to seal tenant keys to. A composer whose
+	// node key is held on a device sets PrivateKey to a signer that signs
+	// there; no key bytes are needed. Nil disables the key plane.
+	Identity *tls.Certificate
+	// Decrypter opens the tenant keys peers deliver, which are sealed to the
+	// public key of Identity's leaf (DHKEM-P-256). A composer whose node key
+	// is held on a device builds it with keydelivery.NewDecrypter, so the key
+	// agreement runs on the device; nil derives the software default from an
+	// *ecdsa.PrivateKey in Identity, and with any other key the key plane is
+	// off. A Decrypter for any other key disables the key plane.
+	Decrypter keydelivery.Decrypter
 	// Revocation is the authentication middleware's revocation checker, so
 	// the key plane honours revocation within the same cache window; nil
 	// without one.
 	Revocation auth.RevocationChecker
 	// Logger receives the key plane's warnings.
 	Logger *slog.Logger
+	// Clock is the time source of the key-delivery freshness window and
+	// replay guard; nil is the real clock.
+	Clock clock.Clock
 }
 
 // RaftTenantCluster is the composed multi-node half of raft tenant
@@ -253,21 +269,34 @@ func ComposeRaftTenantCluster(c RaftTenantClusterConfig) *RaftTenantCluster {
 	return out
 }
 
-// composeKeyReceiver builds the HPKE receiver from the node's EC key, or
-// returns nil -- the key plane is then off -- when the key does not parse or
-// a constructor refuses.
+// composeKeyReceiver builds the HPKE receiver from the node's identity and
+// decrypter, or returns nil -- the key plane is then off -- when either is
+// missing, the decrypter does not open what peers seal to the node's
+// certificate, or a constructor refuses.
 func composeKeyReceiver(c RaftTenantClusterConfig, logger *slog.Logger) *clusterkeys.Receiver {
-	nodePriv := nodeECKey(c.KeyPEM, logger)
-	if nodePriv == nil {
+	leaf, err := identityLeaf(c.Identity)
+	if err != nil {
+		logger.Warn("clusterkeys: no usable node identity, peer key transport disabled", slog.Any("error", err))
 		return nil
 	}
-	kd, err := keydelivery.NewReceiver(nodePriv, c.RaftAddr)
+	dec := c.Decrypter
+	if dec == nil {
+		dec = nodeDecrypter(c.Identity.PrivateKey, logger)
+		if dec == nil {
+			return nil
+		}
+	}
+	if err := checkNodeDecrypter(dec, leaf); err != nil {
+		logger.Warn("clusterkeys: node decrypter does not match the node certificate, peer key transport disabled", slog.Any("error", err))
+		return nil
+	}
+	kd, err := keydelivery.NewReceiver(dec, c.RaftAddr, keydelivery.WithClock(c.Clock))
 	if err != nil {
 		logger.Warn("clusterkeys: key delivery receiver init failed, peer key transport disabled", slog.Any("error", err))
 		return nil
 	}
 	rcv, err := clusterkeys.NewReceiver(kd, c.Barriers, c.Services.PlacementStore, c.TrustDomain, c.RaftAddr,
-		c.CACertPool, c.Revocation, c.CertPEM, logger)
+		c.CACertPool, c.Revocation, identityPEM(c.Identity), logger)
 	if err != nil {
 		logger.Warn("clusterkeys: cluster key receiver init failed, peer key transport disabled", slog.Any("error", err))
 		return nil
@@ -276,19 +305,18 @@ func composeKeyReceiver(c RaftTenantClusterConfig, logger *slog.Logger) *cluster
 }
 
 // composeKeySender builds the sender: an mTLS client presenting the node's
-// certificate and trusting the cluster CA, resolving peers through the peer
-// admin registry.
+// identity, signing its handshakes through the identity's signer, and
+// trusting the cluster CA, resolving peers through the peer admin registry.
 func composeKeySender(c RaftTenantClusterConfig, logger *slog.Logger) *clusterkeys.Sender {
-	nodeCert, err := tls.X509KeyPair(c.CertPEM, c.KeyPEM)
-	if err != nil {
-		logger.Warn("clusterkeys: failed to build mTLS client cert, sender disabled", slog.Any("error", err))
+	if _, ok := c.Identity.PrivateKey.(crypto.Signer); !ok {
+		logger.Warn("clusterkeys: node identity has no signer, sender disabled")
 		return nil
 	}
 	client := &http.Client{
 		Timeout: keySenderTimeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{nodeCert},
+				Certificates: []tls.Certificate{*c.Identity},
 				RootCAs:      c.CACertPool,
 				MinVersion:   tls.VersionTLS13,
 			},
@@ -307,19 +335,72 @@ func composeKeySender(c RaftTenantClusterConfig, logger *slog.Logger) *clusterke
 	return sender
 }
 
-// nodeECKey parses the node's ECDSA P-256 private key: the key its
-// certificate was issued for, and so its HPKE recipient key (DHKEM-P-256).
-// A key that does not parse disables the key plane, with a warning.
-func nodeECKey(keyPEM []byte, logger *slog.Logger) *ecdsa.PrivateKey {
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		logger.Warn("clusterkeys: no node private key, peer key transport disabled")
-		return nil
+// identityLeaf parses the leaf of the node's identity: the certificate it
+// presents to peers and the one they seal tenant keys to.
+func identityLeaf(id *tls.Certificate) (*x509.Certificate, error) {
+	if id == nil || len(id.Certificate) == 0 {
+		return nil, &NodeIdentityError{Reason: "no node certificate"}
 	}
-	key, err := x509.ParseECPrivateKey(block.Bytes)
+	leaf, err := x509.ParseCertificate(id.Certificate[0])
 	if err != nil {
-		logger.Warn("clusterkeys: failed to parse node private key, peer key transport disabled", slog.Any("error", err))
+		return nil, &NodeIdentityError{Reason: "node certificate does not parse", Err: err}
+	}
+	return leaf, nil
+}
+
+// identityPEM is the node's certificate chain, leaf first, as PEM: what the
+// receiver publishes for peers to seal to.
+func identityPEM(id *tls.Certificate) []byte {
+	var out []byte
+	for _, der := range id.Certificate {
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	return out
+}
+
+// nodeDecrypter is the software default node decrypter: the node's identity
+// key -- an ECDSA P-256 key, or one that agrees keys itself -- as a
+// DHKEM-P-256 HPKE key. A key held behind a signer that cannot agree keys has
+// no default; the key plane is off, with a warning, until the composer
+// supplies a Decrypter.
+func nodeDecrypter(key crypto.PrivateKey, logger *slog.Logger) keydelivery.Decrypter {
+	dec, err := keydelivery.PrivateKeyFor(keydelivery.KEMP256, key)
+	if err != nil {
+		logger.Warn("clusterkeys: node key cannot open key deliveries and no decrypter was supplied, peer key transport disabled", slog.Any("error", err))
 		return nil
 	}
-	return key
+	return dec
 }
+
+// checkNodeDecrypter verifies dec opens what peers seal to the node: they
+// seal to the public key of the certificate the node publishes, so a
+// decrypter for any other key would fail every delivery.
+func checkNodeDecrypter(dec keydelivery.Decrypter, leaf *x509.Certificate) error {
+	name, raw, err := keydelivery.RecipientFromPublicKey(leaf.PublicKey)
+	if err != nil {
+		return &NodeIdentityError{Reason: "node certificate key has no KEM", Err: err}
+	}
+	if name != keydelivery.KEMP256 || !bytes.Equal(raw, dec.PublicKey().Bytes()) {
+		return &NodeIdentityError{Reason: "decrypter is not for the node certificate's key"}
+	}
+	return nil
+}
+
+// NodeIdentityError reports that a node's mTLS identity or its key-delivery
+// decrypter cannot serve the key plane: there is no usable certificate, or
+// the decrypter cannot open what peers seal to it.
+type NodeIdentityError struct {
+	Reason string
+	Err    error
+}
+
+// Error returns a human-readable description.
+func (e *NodeIdentityError) Error() string {
+	if e.Err != nil {
+		return "lifecycle: node identity: " + e.Reason + ": " + e.Err.Error()
+	}
+	return "lifecycle: node identity: " + e.Reason
+}
+
+// Unwrap returns the cause.
+func (e *NodeIdentityError) Unwrap() error { return e.Err }

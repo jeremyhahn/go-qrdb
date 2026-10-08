@@ -53,6 +53,14 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
+# The integration compose files require the run's image names (the Makefile's
+# INT_IMAGE and INT_GPU_IMAGE, exported as these) and refuse to render without
+# them. `config` builds and runs nothing, so any name renders the same stage
+# graph; make supplies the real ones, and these cover a run by hand.
+: "${QRDB_INT_IMAGE:=go-qrdb-int:check-compose-targets}"
+: "${QRDB_INT_GPU_IMAGE:=go-qrdb-int-gpu:check-compose-targets}"
+export QRDB_INT_IMAGE QRDB_INT_GPU_IMAGE
+
 # Every compose file, and the overlays each one is legitimately combined with.
 # Overlays are checked in combination because the defect is IN the merge: each
 # file alone is consistent, and only the join produces the impossible pairing.

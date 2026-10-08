@@ -16,7 +16,9 @@ package node
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -54,10 +56,16 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 			Logger:        n.logger,
 		}),
 		TrustDomain: clusterTrustDomain(cfg),
+		Decrypter:   n.keyDecrypter,
 		Logger:      n.logger,
+		Clock:       n.clock,
 	}
 	if id := n.clusterIdentity; id != nil {
-		c.CertPEM, c.KeyPEM = id.Cert, id.Key
+		identity, err := clusterIdentityCert(id)
+		if err != nil {
+			n.logger.Warn("clusterkeys: cluster certificate and key do not form a pair", "error", err)
+		}
+		c.Identity = identity
 		if pool := x509.NewCertPool(); pool.AppendCertsFromPEM(id.CACert) {
 			c.CACertPool = pool
 		}
@@ -78,6 +86,35 @@ func (n *Node) byoTLS() bool {
 	return n.clusterIdentity != nil && n.clusterCAKeyProvider == nil && len(n.clusterCACertPEM) == 0
 }
 
+// clusterIdentityCert is the node's cluster mTLS identity as the key plane
+// presents it: RaftMTLSConfig.Certificate when the composer supplied one --
+// its PrivateKey may be a device-held crypto.Signer -- else the Cert/Key PEM
+// pair, the same precedence the Raft transport applies.
+func clusterIdentityCert(id *RaftMTLSConfig) (*tls.Certificate, error) {
+	if id.Certificate != nil {
+		return id.Certificate, nil
+	}
+	pair, err := tls.X509KeyPair(id.Cert, id.Key)
+	if err != nil {
+		return nil, err
+	}
+	return &pair, nil
+}
+
+// identityCertPEM is the PEM of the node's cluster leaf certificate: the
+// leaf of RaftMTLSConfig.Certificate when set, else Cert; nil without an
+// identity.
+func identityCertPEM(id *RaftMTLSConfig) []byte {
+	switch {
+	case id == nil:
+		return nil
+	case id.Certificate != nil && len(id.Certificate.Certificate) > 0:
+		return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id.Certificate.Certificate[0]})
+	default:
+		return id.Cert
+	}
+}
+
 // clusterTrustDomain is the configured cluster trust domain, or the default.
 func clusterTrustDomain(cfg *qrdbconfig.Config) string {
 	if cfg.Auth.ClusterTrustDomain != "" {
@@ -92,10 +129,7 @@ func (n *Node) startClusterJoin(ctx context.Context, svcNode *lifecycle.Node, cf
 	if standalone || cfg == nil || n.clusterJoin != nil {
 		return nil
 	}
-	var certPEM []byte
-	if n.clusterIdentity != nil {
-		certPEM = n.clusterIdentity.Cert
-	}
+	certPEM := identityCertPEM(n.clusterIdentity)
 	cj, err := lifecycle.StartClusterJoin(ctx, svcNode, lifecycle.ClusterJoinConfig{
 		Enabled:     cfg.ClusterJoin.Enabled,
 		ListenHost:  cfg.ClusterJoin.ListenHost,

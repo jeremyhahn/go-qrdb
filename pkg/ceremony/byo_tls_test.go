@@ -48,6 +48,7 @@ func byoTLSConfig(serverCertPEM, clientCACertPEM []byte) *CeremonyConfig {
 func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	operatorCA := newMockCA(t)
 	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:    newDeviceSigner(t).Public(),
 		CommonName:   "node1.example.com",
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
@@ -57,6 +58,7 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:          newDeviceSigner(t).Public(),
 		CommonName:         "admin",
 		OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage:           x509.KeyUsageDigitalSignature,
@@ -101,6 +103,7 @@ func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,
@@ -134,6 +137,7 @@ func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) 
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,
@@ -172,6 +176,7 @@ func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,
@@ -203,6 +208,7 @@ func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
 func TestInitialize_BYOTLS_CSRSignRefused(t *testing.T) {
 	operatorCA := newMockCA(t)
 	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
 	})
 	require.NoError(t, err)
@@ -228,6 +234,7 @@ func TestInitialize_BYOTLS_CSRSignRefused(t *testing.T) {
 func TestInitialize_BYOTLS_GenerateRefused(t *testing.T) {
 	operatorCA := newMockCA(t)
 	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
 	})
 	require.NoError(t, err)
@@ -253,12 +260,14 @@ func TestInitialize_BYOTLS_GenerateRefused(t *testing.T) {
 func TestInitialize_BYOTLS_BYOCDefaultsToClientCACertPEM(t *testing.T) {
 	operatorCA := newMockCA(t)
 	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
 	})
 	require.NoError(t, err)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
 
 	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,
@@ -284,6 +293,7 @@ func TestInitialize_BYOTLS_BYOCDefaultsToClientCACertPEM(t *testing.T) {
 func TestInitialize_BYOTLS_BYOCUntrustedRefused(t *testing.T) {
 	operatorCA := newMockCA(t)
 	serverLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "node1", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 365,
 	})
 	require.NoError(t, err)
@@ -291,6 +301,7 @@ func TestInitialize_BYOTLS_BYOCUntrustedRefused(t *testing.T) {
 
 	unrelatedCA := newMockCA(t)
 	rogueAdminLeaf, err := unrelatedCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
 	})
 	require.NoError(t, err)

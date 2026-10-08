@@ -52,6 +52,12 @@ var WithFactorRegistry = qrdbserver.WithFactorRegistry
 // type is the re-exported CeremonyCA (see types_ceremony.go).
 var WithCeremonyCA = qrdbserver.WithCeremonyCA
 
+// WithServerTLSKey sets the crypto.Signer behind the TLS serving leaf the
+// transports auto-provision from the CeremonyCA. Composers pass a device-held
+// signer so the leaf key never leaves the device; unset, each leaf gets a
+// fresh in-memory P-256 key.
+var WithServerTLSKey = qrdbserver.WithServerTLSKey
+
 // ---------------------------------------------------------------------------
 // Pre-auth resource bounds (go-qrdb#576)
 //

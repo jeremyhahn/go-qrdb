@@ -111,10 +111,10 @@ type MissingRoleError = clusterenroll.MissingRoleError
 // fails.
 type FetchError = clusterenroll.FetchError
 
-// EnrollmentUnavailableError is returned by Join, and by Resolve and
-// ResolveCA when bootstrap flags are set: joining an existing cluster is
-// unavailable because the cluster CA private key is no longer distributed and
-// member-side CSR issuance has not shipped.
+// EnrollmentUnavailableError is returned by Join when no member-side join
+// listener is configured, and by Resolve and ResolveCA when bootstrap flags are
+// set: the cluster CA private key is no longer distributed, so a node joins by
+// submitting a CSR to a member (JoinCSR), never by fetching the key.
 type EnrollmentUnavailableError = clusterenroll.EnrollmentUnavailableError
 
 // ServerError is returned when starting or operating a bootstrap server fails.
@@ -153,9 +153,82 @@ var Resolve = clusterenroll.Resolve
 // shutdown.
 var ResolveCA = clusterenroll.ResolveCA
 
-// Join enrolls this node into an existing cluster. It is refused with
-// *EnrollmentUnavailableError in this release, before any dial or write.
+// Join enrolls this node into an existing cluster: it fetches the trust anchor,
+// generates the node key in process, and submits a CSR to a member's join
+// listener. It is refused with *EnrollmentUnavailableError, before any dial or
+// write, when no join listener is configured. The node key it generates is
+// returned as PEM; a composer whose node key lives in a device builds its own
+// CSR and calls JoinCSR instead.
 var Join = clusterenroll.Join
+
+// The member-side CSR join: the device-held identity path. A joiner builds a
+// PKCS#10 request with any crypto.Signer -- a TPM, an HSM, a cloud KMS key --
+// and submits only the request; the cluster CA signs on the member that holds
+// it through a cakey.Provider. Neither the joiner's private key nor the CA's
+// crosses the wire or is ever required as bytes. Resolve, ResolveCA and Join
+// are the software-key conveniences: they generate the node key in process and
+// return it as PEM in their Material, which a device-held key cannot satisfy.
+
+// DefaultJoinPort is the default TCP port of the member-side CSR-sign listener.
+const DefaultJoinPort = clusterenroll.DefaultJoinPort
+
+// JoinKeyFile is the filename, inside the data directory, that persists the
+// member-side join listener's Noise static key.
+const JoinKeyFile = clusterenroll.JoinKeyFile
+
+// JoinServerOptions configures the member-side CSR-sign listener.
+type JoinServerOptions = clusterenroll.JoinServerOptions
+
+// JoinServer is the running member-side CSR-sign listener.
+type JoinServer = clusterenroll.JoinServer
+
+// FeatureAdvertiser publishes a joiner's pre-membership feature advertisement
+// once its leaf is issued.
+type FeatureAdvertiser = clusterenroll.FeatureAdvertiser
+
+// JoinClientOptions configures a joiner's CSR submission over the Noise_NK
+// join listener.
+type JoinClientOptions = clusterenroll.JoinClientOptions
+
+// JoinHTTPClientOptions configures a joiner's CSR submission over the HTTPS
+// join route.
+type JoinHTTPClientOptions = clusterenroll.JoinHTTPClientOptions
+
+// JoinRefusedError is returned when an admitted member refuses a join request.
+type JoinRefusedError = clusterenroll.JoinRefusedError
+
+// JoinPendingError is returned when a tokenless CSR was accepted into the
+// signing member's approval queue rather than signed or refused.
+type JoinPendingError = clusterenroll.JoinPendingError
+
+// MissingTrustDomainError is returned when a component that must pin a cluster
+// trust domain is configured with none.
+type MissingTrustDomainError = clusterenroll.MissingTrustDomainError
+
+// MissingJoinTokenStoreError is returned when a join listener is configured
+// with no token store to validate presented tokens against.
+type MissingJoinTokenStoreError = clusterenroll.MissingJoinTokenStoreError
+
+// NilProviderError is returned when a nil cakey.Provider is supplied to
+// StartJoinServer.
+type NilProviderError = clusterenroll.NilProviderError
+
+// StartJoinServer starts the member-side CSR-sign listener over provider, the
+// cluster CA (Key A) as a cakey.Provider -- any provider works, including a
+// device-backed one a composer injects.
+var StartJoinServer = clusterenroll.StartJoinServer
+
+// MintJoinToken mints a single-use join token bound to one node identity into
+// the replicated store the join listener consumes it from.
+var MintJoinToken = clusterenroll.MintJoinToken
+
+// JoinCSR submits a certificate request to an admitted member's join listener
+// and returns the issued leaf certificate PEM.
+var JoinCSR = clusterenroll.JoinCSR
+
+// JoinCSRHTTP submits a certificate request to an admitted member over the
+// HTTPS join route and returns the issued leaf certificate PEM.
+var JoinCSRHTTP = clusterenroll.JoinCSRHTTP
 
 // NodeURI builds the SPIFFE node identity URI
 // (spiffe://<trustDomain>/node/<nodeID>) stamped into cluster node

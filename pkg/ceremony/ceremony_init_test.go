@@ -221,6 +221,7 @@ func TestInitialize_ValidationRefusals(t *testing.T) {
 	// case is about (go-qrdb#548 review: B3 validates admin-credential
 	// inputs first).
 	adminLeaf, ierr := ca.IssueCertificate(ctx, &IssueCertRequest{
+		PublicKey:  newDeviceSigner(t).Public(),
 		CommonName: "admin", OrganizationalUnit: []string{"system", "administrator"},
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ValidityDays: 30,

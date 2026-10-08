@@ -215,6 +215,9 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 		if isToolNotFound(err) {
 			return nil, &transport.KeyNotFoundError{Key: key}
 		}
+		if isToolOutOfRange(err) {
+			return nil, &transport.RevisionCompactedError{Revision: revision}
+		}
 		return nil, err
 	}
 

@@ -105,7 +105,7 @@ redistributes.
 ```go
 type CeremonyCA interface {
     SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
-    CACertificate() (*x509.Certificate, error)
+    CACertificate(ctx context.Context) (*x509.Certificate, error)
     CABundle() ([]byte, error)
     IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error)
 }
@@ -115,6 +115,13 @@ type CeremonyCA interface {
 implementation must write those — and nothing from the CSR but its public key —
 into the certificate. `ceremony.LocalCA` does; qrdb's `cert.CertProvider` and
 go-xkms's CA satisfy the interface through adapters that must do the same.
+
+`IssueCertificate` certifies a public key the caller already holds
+(`IssueCertRequest.PublicKey`); no CA generates or returns a leaf private key.
+The server TLS leaf is built on this: its key is a `crypto.Signer` the server
+chooses — a device-held one composed in with `server.WithServerTLSKey`, or by
+default a fresh in-memory P-256 key per transport — and only its public half
+reaches the CA.
 
 **The `SignCSR` contract is a MUST, and it is enforced.** The ceremony CA signs
 under the node's cluster CA, which the mTLS listener trusts for client logins,

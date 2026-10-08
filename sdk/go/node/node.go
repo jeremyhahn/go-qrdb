@@ -117,13 +117,16 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -197,6 +200,70 @@ func WithRateLimiter(l ratelimit.Limiter) NodeOption {
 	return func(o *nodeOptions) { o.rateLimiter = l }
 }
 
+// WithClock sets the time source of the node's security time gates: the
+// lessor's lease time and its expiry sweeper, invitation expiry, and the token
+// buckets behind the invitation-redeem and holder-act limiters. The default is
+// the real clock; a nil clock leaves the default. A composer passes one to
+// anchor those gates to a trusted time source; a test shares one fake between
+// the node and its client so a lease's expiry follows the fake. Equivalent to
+// server.WithClock.
+func WithClock(c clock.Clock) NodeOption {
+	return func(o *nodeOptions) { o.clock = c }
+}
+
+// WithBackupSink sets the durable sink the node persists backup artifacts to.
+// Without one an embedded node's backups live only in process memory.
+// Equivalent to server.WithBackupSink; forwarded in both boot paths.
+func WithBackupSink(sink service.BackupSink) NodeOption {
+	return func(o *nodeOptions) { o.backupSink = sink }
+}
+
+// WithStorageFactory opens a standalone node's data-plane storage through f in
+// place of the configured backend. A clustered node's replica storage is chosen
+// by its state machine, not by this option. Equivalent to
+// server.WithStorageFactory.
+func WithStorageFactory(f server.StorageFactory) NodeOption {
+	return func(o *nodeOptions) { o.storageFactory = f }
+}
+
+// WithDEKProvider replaces the software tenant DEK keyring with a composer's
+// dek.Provider, typically one backed by a device that never exports the
+// tenant keys. Equivalent to server.WithDEKProvider; forwarded in both boot
+// paths.
+func WithDEKProvider(p dek.Provider) NodeOption {
+	return func(o *nodeOptions) { o.dekProvider = p }
+}
+
+// WithInvitationRedeemLimiter replaces the built-in token bucket that
+// throttles invitation redemption. Equivalent to
+// server.WithInvitationRedeemLimiter; the caller closes it.
+func WithInvitationRedeemLimiter(l ratelimit.Limiter) NodeOption {
+	return func(o *nodeOptions) { o.invitationRedeemLimiter = l }
+}
+
+// WithHolderActLimiter replaces the built-in token bucket that throttles
+// share-holder acts, on the ceremony and on the embedded transport.
+// Equivalent to server.WithHolderActLimiter; the caller closes it.
+func WithHolderActLimiter(l ratelimit.Limiter) NodeOption {
+	return func(o *nodeOptions) { o.holderActLimiter = l }
+}
+
+// mergeSeamOptions folds the node-level composition seams into the server
+// options, so the one funnel that reads them (server.ResolveCryptoOptions)
+// sees a single source of truth. Server options the caller passed explicitly
+// come last and win.
+func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.ServerOption {
+	merged := []server.ServerOption{
+		server.WithBackupSink(n.backupSink),
+		server.WithClock(n.clock),
+		server.WithStorageFactory(n.storageFactory),
+		server.WithDEKProvider(n.dekProvider),
+		server.WithInvitationRedeemLimiter(n.invitationRedeemLimiter),
+		server.WithHolderActLimiter(n.holderActLimiter),
+	}
+	return append(merged, serverOpts...)
+}
+
 // WithAuthorizerWrapper decorates the node's fully built RBAC[+ABAC]
 // authorizer with embedder-supplied authorization logic. The wrapper
 // receives the inner authorizer and returns the one every transport will
@@ -253,12 +320,22 @@ type nodeOptions struct {
 
 	// sealStrategy is a pre-built hardware/cloud sealing strategy injected by
 	// the caller (e.g. go-quicbaas XKMSCryptoOptions). When non-nil it is
-	// used by buildNodeSealSubsystem instead of the built-in deferred-software
-	// fallback, enabling cloud KMS and HSM strategies (awskms, vault, tpm2,
+	// registered under its ID in the system barrier's strategy registry and
+	// selected unless seal.strategy names shamir or none, enabling cloud KMS and HSM strategies (awskms, vault, tpm2,
 	// pkcs11) to seal and auto-unseal the barrier without operator interaction.
 	// The caller is responsible for constructing the strategy from its config
 	// before calling NewStandaloneNode / NewClusteredNode.
 	sealStrategy seal.SealingStrategy
+
+	// backupSink, storageFactory, dekProvider, invitationRedeemLimiter and
+	// holderActLimiter are composition seams; clock is the seventh. Each is
+	// nil unless a composer set it, and nil keeps the software default.
+	// mergeSeamOptions folds them into the server options.
+	backupSink              service.BackupSink
+	storageFactory          server.StorageFactory
+	dekProvider             dek.Provider
+	invitationRedeemLimiter ratelimit.Limiter
+	holderActLimiter        ratelimit.Limiter
 
 	// logger overrides the default slog.Default() logger.
 	logger *slog.Logger
@@ -269,6 +346,10 @@ type nodeOptions struct {
 	// connections use the caller-supplied CA and per-node certificate.
 	// Ignored for single-node clusters that use WithoutTransport.
 	raftMTLS *quicraftconfig.MTLSConfig
+
+	// keyDecrypter opens the tenant keys peers deliver to this node. See
+	// WithKeyDeliveryDecrypter.
+	keyDecrypter keydelivery.Decrypter
 
 	// noSyncWrites disables fsync on PebbleDB batch commits in the MVCC
 	// state machine. When true, Update() does not wait for OS-level write
@@ -363,6 +444,10 @@ type nodeOptions struct {
 	// abacPolicies nor abacPolicyDir is set, so an embedder can add its
 	// first policy after boot. See WithABACLiveReload.
 	abacLiveReload bool
+
+	// clock is the clock the node's lessor measures lease time on. Nil keeps
+	// the real clock. See WithClock.
+	clock clock.Clock
 }
 
 // NodeOption is a functional option for NewStandaloneNode / NewClusteredNode.
@@ -377,16 +462,16 @@ func WithSealPassphrase(passphrase []byte) NodeOption {
 }
 
 // WithSealStrategy injects a pre-built hardware or cloud sealing strategy
-// into the node builder so buildNodeSealSubsystem uses it instead of the
-// default deferred-software (passphrase) fallback. This is the injection
-// point for cloud KMS strategies (awskms, gcpkms, azurekv, vault) and
-// hardware strategies (tpm2, pkcs11) constructed by higher-level composers
-// such as go-quicbaas/go-xkms. The strategy is registered as the sole
-// entry in the barrier's preference order; HardwareBacked strategies
-// auto-unseal on startup. The option is only consulted when
-// cfg.Seal.Enabled is true; when nil the built-in strategy selection
-// (none → NoneStrategy, shamir → ShamirStrategy, default → deferred-
-// software) applies unchanged.
+// into the node builder. It is registered under its own ID in the system
+// barrier's strategy registry -- the registry server.WithStrategyRegistry
+// overlays -- and selected for the system barrier unless seal.strategy
+// names shamir or none. This is the injection point for cloud KMS
+// strategies (awskms, gcpkms, azurekv, vault) and hardware strategies
+// (tpm2, pkcs11) constructed by higher-level composers such as
+// go-quicbaas/go-xkms; HardwareBacked strategies auto-unseal on startup. A
+// composer that would rather select by name registers its strategy in the
+// server.WithStrategyRegistry registry under the name seal.strategy
+// selects. The option is only consulted when cfg.Seal.Enabled is true.
 func WithSealStrategy(strategy seal.SealingStrategy) NodeOption {
 	return func(o *nodeOptions) { o.sealStrategy = strategy }
 }
@@ -402,13 +487,32 @@ func WithLogger(log *slog.Logger) NodeOption {
 // go-quicraft/pkg/config directly — the qrdb SDK is the single boundary.
 type RaftMTLSConfig = quicraftconfig.MTLSConfig
 
-// WithRaftMTLS injects PEM-encoded mTLS certificate material into the
-// quicraft Raft transport. It is only consulted for multi-node clustered
-// nodes (len(members) > 1); single-node clusters use WithoutTransport and
-// require no TLS material. Callers are responsible for loading the PEM
-// bytes from the operator-supplied certificate files.
+// WithRaftMTLS injects the node's cluster mTLS identity: the Raft transport
+// and the cluster key plane both present it. It is only consulted for
+// multi-node clustered nodes (len(members) > 1); single-node clusters use
+// WithoutTransport and require no TLS material. CACert is always required.
+// The identity is either the Cert/Key PEM pair, loaded by the caller from
+// the operator-supplied certificate files, or Certificate, whose PrivateKey
+// may be a crypto.Signer whose key is held on a TPM or HSM -- the seam a
+// composer uses so the node key never enters the process; Certificate takes
+// precedence. A device-held key that cannot also agree keys
+// (ecdh.KeyExchanger) needs WithKeyDeliveryDecrypter for the key plane.
 func WithRaftMTLS(mtls *RaftMTLSConfig) NodeOption {
 	return func(o *nodeOptions) { o.raftMTLS = mtls }
+}
+
+// WithKeyDeliveryDecrypter injects the decrypter a clustered node opens the
+// tenant keys its peers deliver with. Peers seal each delivery to the public
+// key of the node's Raft certificate (DHKEM-P-256), so dec must be that key.
+// It is the seam a composer (go-xkms) uses when that key is held on a TPM,
+// HSM or other device: build dec with keydelivery.NewDecrypter over an
+// ecdh.KeyExchanger that sends the key agreement to the device, and the
+// private key is never in this process. Without it the node derives the
+// software decrypter from its WithRaftMTLS key. A decrypter for any other key
+// leaves the cluster key plane off, with a warning. Ignored on a standalone
+// node, which has no key plane.
+func WithKeyDeliveryDecrypter(dec keydelivery.Decrypter) NodeOption {
+	return func(o *nodeOptions) { o.keyDecrypter = dec }
 }
 
 // WithClusterCAKeyProvider injects a cakey.Provider that replaces the
@@ -669,6 +773,13 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.KeyWrapProvider = crypto.KeyWrapProvider
 	infra.KeyDir = crypto.KeyDir
 	infra.DEKKeyDir = crypto.DEKKeyDir
+	// The composition seams. Each is nil unless a composer set it, and nil
+	// keeps the software default inside lifecycle.BuildServices.
+	infra.BackupSink = crypto.BackupSink
+	infra.Clock = crypto.Clock
+	infra.DEKProvider = crypto.DEKProvider
+	infra.InvitationRedeemLimiter = crypto.InvitationRedeemLimiter
+	infra.HolderActLimiter = crypto.HolderActLimiter
 	// The holder events (and the backup plaintext-override audit) recorded
 	// before they take effect follow the node's one audit failure posture.
 	// The sealed window's graph is built before the authorization
@@ -681,6 +792,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 			return infra, err
 		}
 		infra.AuditFailurePolicy = policy
+		infra.InvitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
 	}
 	return infra, nil
 }
@@ -994,6 +1106,10 @@ type Node struct {
 	// are delivered to. Nil on a standalone node.
 	clusterIdentity *quicraftconfig.MTLSConfig
 
+	// keyDecrypter opens the tenant keys peers deliver to this node
+	// (WithKeyDeliveryDecrypter); nil derives it from clusterIdentity's key.
+	keyDecrypter keydelivery.Decrypter
+
 	// peerAttestation carries WithPeerAttestationGate from the node
 	// constructor to wireClientAndServer.
 	peerAttestation *middleware.PeerAttestationGate
@@ -1156,6 +1272,12 @@ type Node struct {
 	// only by the lifecycle-gated boot, teardown and Close paths.
 	stopLeaseExpiry func()
 
+	// stopReclaimSweep ends the reclaim sweeper of the current standalone
+	// data plane (startReclaimSweepStandalone) and waits for it to exit; nil
+	// on a clustered node, whose sweeper runs on bgCtx and bgWG. Written only
+	// by the lifecycle-gated boot, teardown and Close paths.
+	stopReclaimSweep func()
+
 	// featureGate decides when the clustered host's Raft groups may be sent
 	// guarded writes; nil for a host with no transport. featureAdv is its
 	// lease-backed advertisement once startFeatureGate has brought it up, and
@@ -1180,6 +1302,10 @@ type Node struct {
 	// and the multi-protocol server's transport handlers route through the same
 	// underlying scoped-router semantics.
 	encMigrator atomic.Pointer[service.EncryptionMigrator]
+
+	// clock is the clock the node's lessor and its lease-expiry sweeper run
+	// on. Nil keeps the real clock.
+	clock clock.Clock
 }
 
 // quicraftCloser is satisfied by *quicraft.Host and allows tests to inject
@@ -1337,7 +1463,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		dataPlaneFS = encfs.New(vfs.Default, barrier)
 	}
 
-	stg, pdb, err := createNodeStorage(pending.backendType, pending.dataDir, dataPlaneFS, pending.cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, dataPlaneFS, pending.cfg.Storage.Objstore)
 	if err != nil {
 		return &StorageCreateError{Backend: string(pending.backendType), Err: err}
 	}
@@ -1345,7 +1471,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	n.pebbleDB = pdb
 
 	watchHub := watch.NewHub()
-	lr := lease.NewLessor()
+	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub, lr)
 	if err != nil {
 		_ = n.stg.Close()
@@ -1450,7 +1576,6 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
-	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
 	// An engine that keeps no leases (file, objstore) has nothing to publish
 	// the lease-backed volume-pool health report on.
 	if lifecycle.LocalEngineKeepsLeases(pending.backendType) {
@@ -1519,6 +1644,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		n.closeDatabaseManager()
 		return err
 	}
+	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
 	n.startLeaseExpiryStandalone(lr, svcNode.Lease)
 	return nil
 }
@@ -1724,11 +1850,41 @@ func (n *Node) startReclaimSweep(host *quicraft.Host, sweeper *service.ReclaimSw
 // leadership: a LocalBackend node is a single process with no peers, so it
 // owns every shared-store job itself. sweeper is always non-nil (see
 // lifecycle.BuildServices).
+//
+// The sweeper belongs to the data plane it sweeps, not to the node: it runs
+// until stopStandaloneSweepers, which teardownDataPlane and Close call before
+// closing the backend it reads. Both boot paths start it after their last
+// fallible step, so a boot that fails never leaves one sweeping a backend it
+// has already closed.
 func (n *Node) startReclaimSweepStandalone(sweeper *service.ReclaimSweeper) {
 	if sweeper == nil {
 		return
 	}
-	go sweeper.Run(n.background(), service.DefaultReclaimInterval, nil, n.logger)
+	ctx, cancel := context.WithCancel(n.background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sweeper.Run(ctx, service.DefaultReclaimInterval, nil, n.logger)
+	}()
+	n.stopReclaimSweep = func() {
+		cancel()
+		<-done
+	}
+}
+
+// stopStandaloneSweepers stops the lease-expiry and reclaim sweepers of the
+// current standalone data plane and waits for both to exit, so neither is
+// left mid-sweep against a backend about to close. It is a no-op on a
+// clustered node and when the sweepers are already stopped.
+func (n *Node) stopStandaloneSweepers() {
+	if n.stopLeaseExpiry != nil {
+		n.stopLeaseExpiry()
+		n.stopLeaseExpiry = nil
+	}
+	if n.stopReclaimSweep != nil {
+		n.stopReclaimSweep()
+		n.stopReclaimSweep = nil
+	}
 }
 
 // completeClusteredBoot finishes wiring the clustered node after the barrier
@@ -1825,7 +1981,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 
 	watchHub := watch.NewHub()
-	lr := lease.NewLessor()
+	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(encryptor)}
 	mvccOpts := []store.MVCCOption{
@@ -2339,12 +2495,10 @@ func (n *Node) Close() error {
 		n.bgCancel = nil
 	}
 	n.bgWG.Wait()
-	// Wait for the standalone lease-expiry sweeper to exit before anything it
-	// revokes through is stopped: cancelling alone leaves a revoke in flight.
-	if n.stopLeaseExpiry != nil {
-		n.stopLeaseExpiry()
-		n.stopLeaseExpiry = nil
-	}
+	// Wait for the standalone sweepers to exit before anything they sweep
+	// through is stopped: cancelling alone leaves a revoke or a reclaim in
+	// flight.
+	n.stopStandaloneSweepers()
 	record(n.stopFeatureGate())
 	record(n.stopMemberRecord())
 	// Stop the volume-pool Reporter's refresh goroutine before svcNode/host
@@ -2506,6 +2660,10 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	for _, o := range nodeOpts {
 		o(nOpts)
 	}
+	// The composition seams (backup sink, clock, storage factory, DEK
+	// provider, limiters) ride the server options from here on: that is the
+	// one funnel both boot paths read them through.
+	serverOpts = mergeSeamOptions(*nOpts, serverOpts)
 	log := nOpts.logger
 	if log == nil {
 		log = slog.Default()
@@ -2529,6 +2687,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
 		clusterCACertPEM:          nOpts.clusterCACertPEM,
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
+		clock:                     server.ResolveCryptoOptions(serverOpts...).Clock,
 	}
 	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
 		return nil, err
@@ -2547,7 +2706,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	// volume-pool catalog is attached in completeStandaloneBoot, directly
 	// over the local host and before buildServices (attachVolumeCatalog).
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, server.ResolveCryptoOptions(serverOpts...))
 		if err != nil {
 			return nil, err
 		}
@@ -2596,7 +2755,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	// Seal disabled: build storage + engine + services immediately.
-	stg, pdb, err := createNodeStorage(backendType, dataDir, nil, cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage.Objstore)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: string(backendType), Err: err}
 	}
@@ -2604,7 +2763,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	n.pebbleDB = pdb
 
 	watchHub := watch.NewHub()
-	lr := lease.NewLessor()
+	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub, lr)
 	if err != nil {
 		_ = n.stg.Close()
@@ -2676,7 +2835,6 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		return nil, &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
-	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
 
 	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, true); err != nil {
 		_ = svcNode.Stop(context.Background())
@@ -2685,6 +2843,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		n.closeDatabaseManager()
 		return nil, err
 	}
+	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
 	n.startLeaseExpiryStandalone(lr, svcNode.Lease)
 
 	return n, nil
@@ -2726,6 +2885,10 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	for _, o := range nodeOpts {
 		o(nOpts)
 	}
+	// The composition seams (backup sink, clock, storage factory, DEK
+	// provider, limiters) ride the server options from here on: that is the
+	// one funnel both boot paths read them through.
+	serverOpts = mergeSeamOptions(*nOpts, serverOpts)
 	log := nOpts.logger
 	if log == nil {
 		log = slog.Default()
@@ -2749,6 +2912,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
 		clusterCACertPEM:          nOpts.clusterCACertPEM,
 		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
+		clock:                     server.ResolveCryptoOptions(serverOpts...).Clock,
 	}
 	if n.embeddedCaller, err = parseEmbeddedCaller(nOpts.embeddedCaller); err != nil {
 		return nil, err
@@ -2757,6 +2921,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 	n.clusterIdentity = nOpts.raftMTLS
+	n.keyDecrypter = nOpts.keyDecrypter
 
 	dataDir := cfg.Raft.DataDir
 	if dataDir == "" {
@@ -2768,7 +2933,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// nodes run on a Raft host, so the volume pool cursor lives in the
 	// replicated system KV (clustered=true), bound once the data plane is up.
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, server.ResolveCryptoOptions(serverOpts...))
 		if err != nil {
 			return nil, err
 		}
@@ -2814,7 +2979,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 
 	// Seal disabled: build the host and services immediately.
 	watchHub := watch.NewHub()
-	lr := lease.NewLessor()
+	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(atrest.New(nil))}
 	mvccOptsNoSeal := []store.MVCCOption{
@@ -2894,10 +3059,13 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	n.startReclaimSweep(host, svcNode.ReclaimSweeper, cfg.Raft.ReplicaID)
 
 	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, false); err != nil {
+		// Stop the sweepers and WAIT for them to exit before tearing down
+		// what they read, as completeClusteredBoot's failure branch does.
 		if n.bgCancel != nil {
 			n.bgCancel()
 			n.bgCancel = nil
 		}
+		n.bgWG.Wait()
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
 		return nil, err
@@ -2920,11 +3088,16 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 // The subsystem must be built BEFORE host and data-plane storage construction
 // so that encfs can wrap PebbleDB once the barrier is unsealed.
 //
-// When nOpts.sealStrategy is non-nil, that pre-built strategy is registered
-// with the barrier instead of the built-in deferred-software fallback. This
-// is the injection path for cloud KMS (awskms, vault, gcpkms, azurekv) and
-// hardware (tpm2, pkcs11) strategies constructed by higher-level composers.
-func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, trail audit.AuditLogger) (*nodeSealSubsystem, error) {
+// The barrier's strategies resolve through crypto.StrategyRegistry
+// (server.WithStrategyRegistry) overlaid on qrdb's software strategies, and
+// a strategy injected with WithSealStrategy registers under its own name.
+// This is the injection path for cloud KMS (awskms, vault, gcpkms, azurekv)
+// and hardware (tpm2, pkcs11) strategies constructed by higher-level
+// composers. crypto.AuditLogger is the compliance trail the barriers record
+// on.
+func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, crypto server.CryptoOptions) (*nodeSealSubsystem, error) {
+	trail := crypto.AuditLogger
+
 	sealDataDir := filepath.Join(dataDir, "seal")
 	// SyncWrites is forced on for the seal store: DefaultConfig defaults it
 	// to false on the premise that the Raft WAL provides durability, but the
@@ -2962,12 +3135,6 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 
 	sealBackend := seal.NewStorageAdapter(sealStore)
 
-	strategyID := seal.StrategyID(cfg.Seal.Strategy)
-	if strategyID == "" {
-		strategyID = seal.StrategyPassphrase
-	}
-
-	var strategies []seal.SealingStrategy
 	// The system barrier, and every tenant barrier the registry builds,
 	// record their events on the caller's compliance trail
 	// (server.WithAuditLogger), which exists before the node does.
@@ -2989,48 +3156,22 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		log.Warn("node: encryption-migration crash recovery failed", "error", rerr)
 	}
 
-	switch {
-	case strategyID == seal.StrategyShamir:
-		shamirStrat, shamirErr := seal.NewShamirStrategy(
-			cfg.Seal.ShamirThreshold,
-			cfg.Seal.ShamirTotal,
-		)
-		if shamirErr != nil {
-			_ = sealStore.Close()
-			return nil, &StorageCreateError{Backend: "seal-shamir", Err: shamirErr}
-		}
-		strategies = append(strategies, shamirStrat)
+	// The system barrier resolves its strategy through the same registry
+	// tenant barriers use (server.WithStrategyRegistry), overlaid on qrdb's
+	// software strategies. A strategy injected with WithSealStrategy
+	// registers under its own name and is selected unless the configuration
+	// names shamir or none. The strategy a completed enable-encryption
+	// migration persisted is registered too, so the node unseals after a
+	// restart while the configuration still names the source strategy.
+	strategies, err := resolveNodeSealStrategies(ctx, cfg, nOpts, crypto.StrategyRegistry, sealBackend, barrierCfg.RootKeyPath)
+	if err != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-strategy", Err: err}
+	}
+	if strategies[0].ID() == seal.StrategyShamir {
 		barrierCfg.Shamir = &seal.ShamirConfig{
 			Threshold:   cfg.Seal.ShamirThreshold,
 			TotalShares: cfg.Seal.ShamirTotal,
-		}
-	case strategyID == seal.StrategyNone:
-		strategies = append(strategies, seal.NewNoneStrategy())
-	case nOpts != nil && nOpts.sealStrategy != nil:
-		// Caller-injected strategy: hardware/cloud KMS (awskms, vault, gcpkms,
-		// azurekv, tpm2, pkcs11). The pre-built strategy is used directly so
-		// the barrier can auto-unseal via hardware/KMS credentials without
-		// operator interaction.
-		strategies = append(strategies, nOpts.sealStrategy)
-	default:
-		// Passphrase / deferred software strategy.
-		strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
-	}
-
-	// Restart-survival for enable-encryption: if the persisted root-key blob was
-	// migrated to a keyed strategy the config-derived set does not cover (e.g.
-	// the barrier was migrated none -> passphrase but the config still names
-	// "none"), register that strategy too so the node unseals correctly after a
-	// migration + restart. The barrier is self-describing from its persisted
-	// sealed root key.
-	if persisted := persistedRootKeyStrategy(ctx, sealBackend, barrierCfg.RootKeyPath); persisted != "" && !strategyRegistered(strategies, persisted) {
-		switch persisted {
-		case seal.StrategyPassphrase:
-			strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
-		case seal.StrategyShamir:
-			if shamirStrat, e := seal.NewShamirStrategy(cfg.Seal.ShamirThreshold, cfg.Seal.ShamirTotal); e == nil {
-				strategies = append(strategies, shamirStrat)
-			}
 		}
 	}
 
@@ -3164,6 +3305,34 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		volumePoolRows:    volumePoolRows,
 		perTenantReg:      perTenantReg,
 	}, nil
+}
+
+// resolveNodeSealStrategies resolves the system barrier's strategies through
+// seal.NewSystemStrategyRegistry overlaid with composer. A strategy injected
+// with WithSealStrategy registers under its own ID and is the one selected
+// unless seal.strategy names shamir or none; otherwise the configured
+// strategy is, passphrase by default. The strategy the persisted root key
+// names follows, per seal.ResolveSystemStrategies.
+func resolveNodeSealStrategies(ctx context.Context, cfg *qrdbconfig.Config, nOpts *nodeOptions, composer seal.StrategyRegistry, backend seal.StorageBackend, rootKeyPath string) ([]seal.SealingStrategy, error) {
+	registry, err := seal.NewSystemStrategyRegistry(composer, cfg.Seal.ShamirThreshold, cfg.Seal.ShamirTotal)
+	if err != nil {
+		return nil, err
+	}
+	selected := seal.StrategyID(cfg.Seal.Strategy)
+	if nOpts != nil && nOpts.sealStrategy != nil {
+		injected := nOpts.sealStrategy
+		registry.Unregister(injected.ID())
+		if err := registry.Register(injected.ID(), func() (seal.SealingStrategy, error) { return injected, nil }); err != nil {
+			return nil, err
+		}
+		if selected != seal.StrategyShamir && selected != seal.StrategyNone {
+			selected = injected.ID()
+		}
+	}
+	if selected == "" {
+		selected = seal.StrategyPassphrase
+	}
+	return seal.ResolveSystemStrategies(registry, selected, seal.PersistedStrategyFrom(ctx, backend, rootKeyPath))
 }
 
 // ---------------------------------------------------------------------------
@@ -3615,7 +3784,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// throttled by the same engine and anonymous policy the ceremony applies
 	// to quorum challenges. The key names this node, so nodes in one process
 	// never share a bucket.
-	holderLimit, err := newHolderActLimit()
+	holderLimit, err := newHolderActLimit(server.ResolveCryptoOptions(callerOpts...).HolderActLimiter)
 	if err != nil {
 		return &ClientCreateError{Err: err}
 	}
@@ -4232,6 +4401,13 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	if dbManager != nil {
 		opts = append(opts, server.WithDatabaseManager(dbManager))
 	}
+	// The cluster-wide, per-tenant-opt-in replicated audit chain, served on every
+	// network transport as it is on the embedded one and on qrdbd. Without it a
+	// replicated audit query and the replicated chain verification were
+	// unavailable on REST, gRPC, QUIC, Unix and MCP of an SDK-built node.
+	if svcNode.ReplicatedAudit != nil {
+		opts = append(opts, server.WithReplicatedAuditLogger(svcNode.ReplicatedAudit))
+	}
 	// Caller opts last: allow overriding any of the above.
 	return append(opts, callerOpts...)
 }
@@ -4267,7 +4443,16 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 // daemon's mode:standalone branch and the embedded transport. An
 // unrecognized backend type falls back to pebble for backward
 // compatibility with this constructor's historical behavior.
-func createNodeStorage(backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+	if factory != nil {
+		stg, err := factory(dataDir, dataPlaneFS)
+		if err != nil {
+			return nil, nil, &lifecycle.LocalStorageError{Backend: backendType, Err: err}
+		}
+		// The engine needs only the storage; the raw pebble handle is for
+		// backend-specific concerns a composer's storage does not have.
+		return stg, nil, nil
+	}
 	switch backendType {
 	case database.BackendMemory, database.BackendFile, database.BackendObjstore:
 	default:
@@ -4310,6 +4495,14 @@ func buildClusteredHost(
 ) (*quicraft.Host, *database.MultiplexLogDB, error) {
 	hostCfg, shardCfg, hostOpts, err := buildClusteredRaftConfigs(cfg, members, mtls)
 	if err != nil {
+		return nil, nil, err
+	}
+
+	// A caller that has given up gets its cancellation, not a host: building
+	// one opens the WAL, binds the Raft transport and starts the shard, only
+	// for all of it to be torn down again on a cancelled boot. Callers wrap
+	// this in *HostCreateError like every other host-open failure.
+	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
 
@@ -4477,12 +4670,8 @@ func buildClusteredRaftConfigs(
 			}
 		}
 
-		var selfCert []byte
-		if mtls != nil {
-			selfCert = mtls.Cert
-		}
 		identities, err := cluster.ResolveMemberIdentities(
-			splitMemberIdentities(cfg.Raft.MemberIdentities), shardCfg.ReplicaID, selfCert)
+			splitMemberIdentities(cfg.Raft.MemberIdentities), shardCfg.ReplicaID, identityCertPEM(mtls))
 		if err != nil {
 			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
 				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}
@@ -4623,13 +4812,14 @@ func (n *Node) UserService() user.UserServicer {
 // policy the ceremony applies to quorum challenges, under keys prefixed with
 // a random identifier for this node, so nodes in one process never share a
 // bucket.
-func newHolderActLimit() (embedded.HolderActLimitFunc, error) {
+func newHolderActLimit(limiter ratelimit.Limiter) (embedded.HolderActLimitFunc, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return nil, err
 	}
 	prefix := hex.EncodeToString(id[:]) + "\x00"
+	limit := lifecycle.QuorumLimitWith(limiter)
 	return func(key string, anonymous bool) (bool, time.Duration) {
-		return lifecycle.QuorumLimit(prefix+key, anonymous)
+		return limit(prefix+key, anonymous)
 	}, nil
 }

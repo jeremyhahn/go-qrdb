@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ import (
 func TestServerTLSConfig_ProvisionsTLS13LeafChainedToCA(t *testing.T) {
 	ca := newTestLocalCA(t)
 
-	cfg, err := ServerTLSConfig(context.Background(), ca, "node.internal")
+	cfg, err := ServerTLSConfig(context.Background(), ca, newDeviceSigner(t), "node.internal")
 	if err != nil {
 		t.Fatalf("ServerTLSConfig: %v", err)
 	}
@@ -60,10 +61,47 @@ func TestServerTLSConfig_ProvisionsTLS13LeafChainedToCA(t *testing.T) {
 	}
 }
 
+// A device-held key serves the leaf end to end: the CA certifies its public
+// half, and a client that trusts the CA completes a TLS 1.3 handshake whose
+// CertificateVerify the device signed. No private key bytes are involved.
+func TestServerTLSConfig_DeviceHeldKeyServesHandshake(t *testing.T) {
+	ca := newTestLocalCA(t)
+	key := newDeviceSigner(t)
+
+	cfg, err := ServerTLSConfig(context.Background(), ca, key)
+	if err != nil {
+		t.Fatalf("ServerTLSConfig: %v", err)
+	}
+	if cfg.Certificates[0].PrivateKey != key {
+		t.Fatalf("leaf private key = %T, want the device signer", cfg.Certificates[0].PrivateKey)
+	}
+
+	caCert, err := ca.CACertificate(t.Context())
+	if err != nil {
+		t.Fatalf("CA certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- tls.Server(serverConn, cfg).HandshakeContext(t.Context()) }()
+
+	client := tls.Client(clientConn, &tls.Config{RootCAs: roots, ServerName: "localhost", MinVersion: tls.VersionTLS13})
+	if err := client.HandshakeContext(t.Context()); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server handshake: %v", err)
+	}
+}
+
 // TestServerTLSConfig_NilCA verifies a nil CA fails closed with ErrNilCA rather
 // than returning a usable (unauthenticated) config.
 func TestServerTLSConfig_NilCA(t *testing.T) {
-	cfg, err := ServerTLSConfig(context.Background(), nil)
+	cfg, err := ServerTLSConfig(context.Background(), nil, newDeviceSigner(t))
 	if cfg != nil {
 		t.Fatal("expected nil config when CA is nil")
 	}
@@ -72,14 +110,66 @@ func TestServerTLSConfig_NilCA(t *testing.T) {
 	}
 }
 
+// A nil key fails closed: ServerTLSConfig never generates one in its place.
+func TestServerTLSConfig_NilKey(t *testing.T) {
+	cfg, err := ServerTLSConfig(context.Background(), newTestLocalCA(t), nil)
+	if cfg != nil {
+		t.Fatal("expected nil config when key is nil")
+	}
+	var keyErr *IssueCertKeyError
+	if !errors.As(err, &keyErr) {
+		t.Fatalf("expected *IssueCertKeyError, got %T: %v", err, err)
+	}
+}
+
 // TestServerTLSConfig_IssueFailureWrapped verifies an issuance failure surfaces
 // as a typed *ServerTLSError.
 func TestServerTLSConfig_IssueFailureWrapped(t *testing.T) {
-	_, err := ServerTLSConfig(context.Background(), failingCA{})
+	_, err := ServerTLSConfig(context.Background(), failingCA{}, newDeviceSigner(t))
 	var provErr *ServerTLSError
 	if !errors.As(err, &provErr) {
 		t.Fatalf("expected *ServerTLSError, got %T: %v", err, err)
 	}
+}
+
+// A composed CA that certifies some other key, or returns no parsed
+// certificate, is refused before the leaf reaches a listener.
+func TestServerTLSConfig_IssuedKeyMismatch(t *testing.T) {
+	ca := newTestLocalCA(t)
+	other := newDeviceSigner(t)
+	cases := map[string]CeremonyCA{
+		"other key":      swappingCA{LocalCA: ca, key: other},
+		"no certificate": swappingCA{LocalCA: ca},
+	}
+	for name, composed := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ServerTLSConfig(context.Background(), composed, newDeviceSigner(t))
+			var encErr *CertEncodeError
+			if !errors.As(err, &encErr) {
+				t.Fatalf("expected *CertEncodeError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// swappingCA certifies key in place of the requested public key, or returns
+// an IssuedCert without its parsed Certificate when key is unset.
+type swappingCA struct {
+	*LocalCA
+	key deviceSigner
+}
+
+func (c swappingCA) IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error) {
+	if c.key.key == nil {
+		issued, err := c.LocalCA.IssueCertificate(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return &IssuedCert{CertPEM: issued.CertPEM}, nil
+	}
+	swapped := *req
+	swapped.PublicKey = c.key.Public()
+	return c.LocalCA.IssueCertificate(ctx, &swapped)
 }
 
 // failingCA is a CeremonyCA whose IssueCertificate always fails, exercising the

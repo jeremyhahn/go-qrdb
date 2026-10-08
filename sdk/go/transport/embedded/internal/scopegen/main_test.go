@@ -73,13 +73,22 @@ func TestRun_CheckAndStdout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	// Drain the pipe while run writes to it. The generated file is larger than
+	// a pipe's buffer can be: Linux shrinks a new pipe to one page once its
+	// user's pipe pages pass fs.pipe-user-pages-soft, as on a loaded CI host,
+	// and a write with no reader then blocks until the test times out.
+	var got bytes.Buffer
+	read := make(chan error, 1)
+	go func() {
+		_, err := got.ReadFrom(r)
+		read <- err
+	}()
 	stdout := os.Stdout
 	os.Stdout = w
 	runErr := run("", "")
 	os.Stdout = stdout
 	_ = w.Close()
-	var got bytes.Buffer
-	if _, err := got.ReadFrom(r); err != nil {
+	if err := <-read; err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if runErr != nil {

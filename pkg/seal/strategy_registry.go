@@ -82,9 +82,9 @@ func NewStrategyRegistry() *DefaultStrategyRegistry {
 // construction. It is registered under StrategyPassphrase. Shamir
 // registration is intentionally omitted from this
 // helper because the Shamir strategy requires a Threshold and Shares
-// configuration that only the daemon's init command can supply; the
-// daemon constructs it inline at init time and does not look it up via
-// the registry.
+// configuration that only the node's configuration can supply;
+// NewSystemStrategyRegistry adds it, with those parameters, for the
+// system barrier.
 func NewDefaultStrategyRegistry() *DefaultStrategyRegistry {
 	r := NewStrategyRegistry()
 	deferredSoftware := func() (SealingStrategy, error) {

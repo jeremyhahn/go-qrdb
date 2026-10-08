@@ -100,6 +100,20 @@ starting a second one. `cfg.RateLimiter` is ignored when
 | non-nil | nil | production `TokenBucketLimiter` constructed and installed |
 | non-nil | non-nil | the supplied `Limiter` installed, no new instance constructed |
 
+### The invitation-redeem and holder-act limiters
+
+Two further throttles are not part of `AuthMiddleware`: invitation redemption
+and share-holder acts (the ceremony's quorum challenges and the embedded
+transport's anonymous holder claims). Each defaults to a built-in token bucket
+and takes a `ratelimit.Limiter` from the composer instead:
+`server.WithInvitationRedeemLimiter` / `node.WithInvitationRedeemLimiter` and
+`server.WithHolderActLimiter` / `node.WithHolderActLimiter`. Both reach
+`lifecycle.Infra` in the standalone and the clustered boot paths. The redeem
+limiter is asked once per source address and once per tenant, each under its own
+key prefix and the policy `auth.invitation_redeem_limit` resolves. The built-in
+buckets read the node's `clock.Clock` (`WithClock`); a supplied limiter owns its
+own time. The caller that supplies a limiter closes it.
+
 ## Enforcement point
 
 `AuthMiddleware.authorize` — the single function every transport's

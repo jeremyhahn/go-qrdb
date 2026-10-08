@@ -74,6 +74,7 @@ var WithStrategyRegistry = qrdbserver.WithStrategyRegistry
 var WithPINBackend       = qrdbserver.WithPINBackend
 var WithFactorRegistry   = qrdbserver.WithFactorRegistry
 var WithCeremonyCA       = qrdbserver.WithCeremonyCA
+var WithServerTLSKey     = qrdbserver.WithServerTLSKey
 var WithModule           = qrdbserver.WithModule
 var WithServerTLS        = qrdbserver.WithTLS
 var WithRESTListener     = qrdbserver.WithRESTListener
@@ -348,6 +349,7 @@ over the same services, not a seventh transport.
 | MCP tool with no `MCPToolPermissions()` entry | fail-closed at call time | **yes** |
 | Client offering 0-RTT early data on a resumed session, on the native QUIC listener or REST's HTTP/3 listener | refused. Neither listener allows 0-RTT, because early data is replayable, so the client completes a full handshake before any request is accepted. HTTP/3 sets this through an explicit `QUICConfig`, because quic-go's `http3.Server` allows 0-RTT by default | **yes** |
 | MCP request no authenticator accepts, with authentication configured | 401 at the HTTP layer before the MCP layer reads the body, with `WWW-Authenticate` when `mcp.WithBearerChallenge` is set | **yes** |
+| MCP request whose credential the node could not finish checking -- a tenant user lookup that overran its budget, an unreachable revocation source, a rate limit | the status REST answers (`authmw.HTTPStatus`): 503 or 429, with `Retry-After` when the error names a delay, and no `WWW-Authenticate`. It is never 401: an MCP client treats 401 at `initialize` as terminal, and the credential was never judged | **yes** |
 | MCP request body over `defaultMaxRequestBodyBytes` (4 MiB, the same pre-auth cap every transport applies, configurable with `mcp.WithMaxBodyBytes`) | the read fails with `*http.MaxBytesError` and the request is refused; a caller with a larger payload uses the chunked import session API | **yes** |
 | MCP request body over 1 MiB (`maxAnonymousRequestBodyBytes`) on a listener without authentication -- the boot-time sealed-window listener, or a node with authentication off | refused the same way. Its callers are anonymous, and everything it serves them is a small JSON-RPC document | **yes** |
 | MCP connection beyond `DefaultMaxConnections` (configurable with `mcp.WithMaxConnections`) | the accept is not handed to the HTTP server until an existing connection closes (`netutil.LimitListener`); it never reads a byte in the meantime | **yes** |

@@ -117,7 +117,14 @@ sequenceDiagram
     QRDB->>QRDB: Initialize barrier with TPM2 strategy
 ```
 
-The same registry can be used to inject test/fake strategies in integration tests without any hardware coupling.
+The same registry can be used to inject test/fake strategies in integration tests without any hardware coupling. `sealtest.DeviceStrategy` (`pkg/seal/sealtest`) is such a fake: it wraps and unwraps the root key under a device key that never leaves it, takes no passphrase, and counts the operations it served.
+
+### Who consults the registry
+
+- **A tenant barrier** resolves its strategy through the registry (`TenantService` built with `WithStrategyRegistry`).
+- **A database barrier** resolves its mode through the same registry first (`database.WithBarrierStrategyRegistry`, fed from `Infra.StrategyRegistry` by `BuildServices`), then falls back to the built-in `passphrase`, empty and `shamir` modes. A mode neither holds is refused with `database.UnsupportedBarrierStrategyError`, never downgraded to a passphrase barrier. So a hardware strategy a composer registers once can seal a tenant barrier and a database barrier, and `database.DatabaseBarrierManager.SupportsMode` and `UpdateBarrier` follow the same answer.
+- **The system barrier** resolves its strategies through it too: `seal.NewSystemStrategyRegistry` overlays a composer's registry on the software strategies, and an injected `WithSealStrategy` is registered under its ID. See [extension-seams](../release/extension-seams.md).
+- **The seal store** is node-local by design and is not a composition seam: per-node seal keys are the one node-local state the architecture allows.
 
 
 ### Alternatives rejected

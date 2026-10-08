@@ -11,20 +11,23 @@ package lease
 import (
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 )
 
 // TestRemainingTTL_Expired verifies that remainingTTL returns 0 for an
 // already-expired lease rather than a negative value.
 func TestRemainingTTL_Expired(t *testing.T) {
+	now := clocktest.New().Now()
 	l := &lease{
 		id:     1,
 		ttl:    1,
-		expiry: time.Now().Add(-10 * time.Second), // expired in the past
+		expiry: now.Add(-10 * time.Second), // expired in the past
 		keys:   make(map[string]struct{}),
 	}
 	// remainingTTLLocked, not remainingTTL: the caller must hold l.mu, and a
 	// test holding the only reference to this lease trivially does (#174).
-	got := l.remainingTTLLocked()
+	got := l.remainingTTLLocked(now)
 	if got != 0 {
 		t.Errorf("remainingTTLLocked() on expired lease = %d, want 0", got)
 	}
@@ -33,13 +36,14 @@ func TestRemainingTTL_Expired(t *testing.T) {
 // TestRemainingTTL_Active verifies that remainingTTL returns a positive
 // number for an active lease.
 func TestRemainingTTL_Active(t *testing.T) {
+	now := clocktest.New().Now()
 	l := &lease{
 		id:     2,
 		ttl:    60,
-		expiry: time.Now().Add(60 * time.Second),
+		expiry: now.Add(60 * time.Second),
 		keys:   make(map[string]struct{}),
 	}
-	got := l.remainingTTLLocked()
+	got := l.remainingTTLLocked(now)
 	if got <= 0 {
 		t.Errorf("remainingTTLLocked() on active lease = %d, want > 0", got)
 	}
@@ -48,7 +52,8 @@ func TestRemainingTTL_Active(t *testing.T) {
 // TestLeases_FiltersExpired verifies that Leases does not return expired
 // leases, exercising the isExpired branch inside Leases.
 func TestLeases_FiltersExpired(t *testing.T) {
-	lr := NewLessor()
+	fake := clocktest.New()
+	lr := NewLessor(WithClock(fake))
 
 	// Grant an active lease.
 	active, err := lr.Grant(nopWriter{}, 60)
@@ -62,7 +67,7 @@ func TestLeases_FiltersExpired(t *testing.T) {
 	lr.leases[expiredID] = &lease{
 		id:     expiredID,
 		ttl:    1,
-		expiry: time.Now().Add(-5 * time.Second),
+		expiry: fake.Now().Add(-5 * time.Second),
 		keys:   make(map[string]struct{}),
 	}
 	lr.mu.Unlock()

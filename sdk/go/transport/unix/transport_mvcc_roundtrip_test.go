@@ -210,6 +210,46 @@ func TestUnixRT_GetAtRevision(t *testing.T) {
 	}
 }
 
+// TestUnixRT_GetAtRevision_Compacted: a revision below the compaction floor
+// comes back as the typed refusal carrying the revision asked for.
+func TestUnixRT_GetAtRevision_Compacted(t *testing.T) {
+	svc := newMockMVCCSvc()
+	svc.getAtRevFn = func(_ context.Context, _ string, revision int64) (*kv.KeyValue, error) {
+		return nil, &service.RevisionCompactedError{Requested: revision, Compacted: revision + 4}
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
+	defer cleanup()
+
+	_, err := tr.GetAtRevision(context.Background(), "k1", 3)
+	var compacted *transport.RevisionCompactedError
+	if !errors.As(err, &compacted) {
+		t.Fatalf("got %T: %v, want *transport.RevisionCompactedError", err, err)
+	}
+	if compacted.Revision != 3 {
+		t.Errorf("Revision = %d, want 3", compacted.Revision)
+	}
+}
+
+// TestUnixRT_GetAtRevision_OtherErrorIsNotCompacted: any other failure is not
+// reported as a compaction refusal.
+func TestUnixRT_GetAtRevision_OtherErrorIsNotCompacted(t *testing.T) {
+	svc := newMockMVCCSvc()
+	svc.getAtRevFn = func(context.Context, string, int64) (*kv.KeyValue, error) {
+		return nil, errors.New("disk on fire")
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
+	defer cleanup()
+
+	_, err := tr.GetAtRevision(context.Background(), "k1", 3)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var compacted *transport.RevisionCompactedError
+	if errors.As(err, &compacted) {
+		t.Fatalf("an internal failure was reported as a compaction refusal: %v", err)
+	}
+}
+
 func TestUnixRT_Range(t *testing.T) {
 	svc := newMockMVCCSvc()
 	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))

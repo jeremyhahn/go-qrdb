@@ -298,6 +298,43 @@ func TestGetAtRevision_NotFound(t *testing.T) {
 	}
 }
 
+// TestGetAtRevision_Compacted: a revision below the compaction floor comes
+// back as the typed refusal carrying the revision asked for, so a caller can
+// tell it from a transient failure.
+func TestGetAtRevision_Compacted(t *testing.T) {
+	svc := newMockMVCCSvc()
+	svc.getAtRevErr = &service.RevisionCompactedError{Requested: 3, Compacted: 7}
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.GetAtRevision(context.Background(), "k", 3)
+	var compacted *transport.RevisionCompactedError
+	if !errors.As(err, &compacted) {
+		t.Fatalf("got %T: %v, want *transport.RevisionCompactedError", err, err)
+	}
+	if compacted.Revision != 3 {
+		t.Errorf("Revision = %d, want 3", compacted.Revision)
+	}
+}
+
+// TestGetAtRevision_OtherErrorIsNotCompacted: any other failure is not
+// reported as a compaction refusal.
+func TestGetAtRevision_OtherErrorIsNotCompacted(t *testing.T) {
+	svc := newMockMVCCSvc()
+	svc.getAtRevErr = errors.New("disk on fire")
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.GetAtRevision(context.Background(), "k", 3)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var compacted *transport.RevisionCompactedError
+	if errors.As(err, &compacted) {
+		t.Fatalf("an internal failure was reported as a compaction refusal: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Range
 // ---------------------------------------------------------------------------

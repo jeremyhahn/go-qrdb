@@ -174,6 +174,10 @@ type startFlags struct {
 	authEnabled           bool
 	separationOfDuties    bool
 	spiffeTrustDomain     string
+
+	invitationTTL           string
+	invitationRequireKeyPin bool
+	invitationRedeemLimit   qrdbconfig.InvitationRedeemLimitConfig
 	// revocationCacheTTL is the auth.revocation_cache_ttl duration string.
 	// Empty means the default. See qrdbconfig.AuthConfig.RevocationCacheTTL —
 	// it is the window during which a revoked certificate still authenticates.
@@ -823,6 +827,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
+	f.invitationTTL = cfg.Auth.InvitationTTL
+	f.invitationRequireKeyPin = cfg.Auth.InvitationRequireKeyPin
+	f.invitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
@@ -1912,6 +1919,9 @@ func runStart(f *startFlags) (err error) {
 				KeyWrapRegistry:           keyWrapInjection.registry,
 				KeyWrapProvider:           keyWrapInjection.provider,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
+				InvitationTTL:             f.invitationTTL,
+				InvitationRequireKeyPin:   f.invitationRequireKeyPin,
+				InvitationRedeemLimit:     f.invitationRedeemLimit,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				PINBackend:                pinBackend,
 				Logger:                    slog.Default(),
@@ -2462,6 +2472,15 @@ func runStart(f *startFlags) (err error) {
 			if authResult != nil {
 				ckRevocation = authResult.authMW.RevocationChecker()
 			}
+			// The node's software key from its TLS bundle; a pair that does
+			// not parse leaves Identity nil, and the key plane off with a
+			// warning, as every other missing piece does.
+			var nodeIdentity *tls.Certificate
+			if pair, err := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM); err == nil {
+				nodeIdentity = &pair
+			} else {
+				slog.Warn("clusterkeys: node certificate and key do not form a pair", slog.Any("error", err))
+			}
 			raftTenants := lifecycle.ComposeRaftTenantCluster(lifecycle.RaftTenantClusterConfig{
 				Services:      svcNode,
 				Host:          host,
@@ -2472,8 +2491,7 @@ func runStart(f *startFlags) (err error) {
 				PeerAdmin:     registry,
 				TrustDomain:   f.clusterTrustDomain,
 				CACertPool:    bundle.CACertPool,
-				CertPEM:       bundle.CertPEM,
-				KeyPEM:        bundle.KeyPEM,
+				Identity:      nodeIdentity,
 				Revocation:    ckRevocation,
 				Logger:        slog.Default(),
 			})

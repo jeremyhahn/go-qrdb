@@ -16,13 +16,14 @@ package keydelivery
 
 import (
 	"crypto/ecdsa"
-	"crypto/hpke"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 )
 
 // infoDomain is the HPKE info domain-separation prefix. Bumping it breaks
@@ -49,15 +50,6 @@ func recipientPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
 		return nil, ErrUnsupportedKey
 	}
 	return raw, nil
-}
-
-// ownPrivateKey mirrors recipientPublicKey for the receiver's private key.
-func ownPrivateKey(priv *ecdsa.PrivateKey) (hpke.PrivateKey, error) {
-	sk, err := PrivateKeyFor(KEMP256, priv)
-	if err != nil {
-		return nil, errors.Join(ErrUnsupportedKey, err)
-	}
-	return sk, nil
 }
 
 // sealInfo builds the canonical, unambiguous HPKE `info` binding the full
@@ -135,7 +127,7 @@ func Seal(recipientPub *ecdsa.PublicKey, meta Meta, plaintext []byte) (*Envelope
 // Receiver opens delivery envelopes addressed to one node, enforcing target
 // match, a freshness window, and replay defense before HPKE decryption.
 type Receiver struct {
-	priv   *ecdsa.PrivateKey
+	dec    Decrypter
 	nodeID string
 	guard  *ReplayGuard
 	ttl    time.Duration
@@ -164,20 +156,35 @@ func WithReplayGuard(g *ReplayGuard) ReceiverOption {
 	}
 }
 
-// NewReceiver builds a Receiver bound to this node's ECDSA P-256 mTLS private
-// key and its NodeID. The private key is validated as DHKEM-usable up front.
-func NewReceiver(priv *ecdsa.PrivateKey, nodeID string, opts ...ReceiverOption) (*Receiver, error) {
-	if priv == nil {
+// WithClock sets the time source of the freshness window and of the default
+// replay guard the Receiver owns, so a composer's clock seam decides whether an
+// envelope is fresh. A nil clock keeps the wall clock. A guard supplied with
+// WithReplayGuard keeps its own clock.
+func WithClock(c clock.Clock) ReceiverOption {
+	return func(r *Receiver) {
+		if c != nil {
+			r.now = c.Now
+		}
+	}
+}
+
+// NewReceiver builds a Receiver bound to this node's HPKE decrypter and its
+// NodeID. dec is the DHKEM(P-256) key of the node's mTLS certificate: a
+// software key converted with PrivateKeyFor, or a device-held one built with
+// NewDecrypter, which opens envelopes without the private key ever being in
+// this process. A decrypter of any other KEM is refused up front.
+func NewReceiver(dec Decrypter, nodeID string, opts ...ReceiverOption) (*Receiver, error) {
+	if dec == nil {
 		return nil, ErrNilRecipientKey
 	}
 	if nodeID == "" {
 		return nil, ErrInvalidMeta
 	}
-	if _, err := ownPrivateKey(priv); err != nil {
-		return nil, err
+	if dec.KEM().ID() != p256.kem.ID() {
+		return nil, ErrUnsupportedKey
 	}
 	r := &Receiver{
-		priv:   priv,
+		dec:    dec,
 		nodeID: nodeID,
 		ttl:    DefaultTTL,
 		now:    time.Now,
@@ -187,6 +194,7 @@ func NewReceiver(priv *ecdsa.PrivateKey, nodeID string, opts ...ReceiverOption) 
 	}
 	if r.guard == nil {
 		r.guard = NewReplayGuard(r.ttl)
+		r.guard.now = r.now
 	}
 	return r, nil
 }
@@ -211,12 +219,8 @@ func (r *Receiver) Open(env *Envelope) ([]byte, error) {
 	if issued.After(now.Add(maxClockSkew)) || issued.Before(now.Add(-r.ttl)) {
 		return nil, ErrExpired
 	}
-	sk, err := ownPrivateKey(r.priv)
-	if err != nil {
-		return nil, err
-	}
 	info := sealInfo(env.Meta, env.Nonce, env.IssuedAt)
-	plaintext, err := p256.Open(sk, info, env.Payload)
+	plaintext, err := p256.Open(r.dec, info, env.Payload)
 	if err != nil {
 		return nil, ErrDecrypt
 	}

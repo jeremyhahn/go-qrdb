@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
@@ -60,8 +61,8 @@ type lease struct {
 // moment a writer is queued between the two acquisitions. Splitting the
 // locked/unlocked pair is what keeps that from being reintroduced by someone
 // "adding the missing lock".
-func (l *lease) remainingTTLLocked() int64 {
-	remaining := time.Until(l.expiry).Seconds()
+func (l *lease) remainingTTLLocked(now time.Time) int64 {
+	remaining := l.expiry.Sub(now).Seconds()
 	if remaining < 0 {
 		return 0
 	}
@@ -70,8 +71,8 @@ func (l *lease) remainingTTLLocked() int64 {
 
 // isExpiredLocked reports whether the lease has passed its expiry time.
 // The CALLER MUST HOLD l.mu -- see remainingTTLLocked.
-func (l *lease) isExpiredLocked() bool {
-	return time.Now().After(l.expiry)
+func (l *lease) isExpiredLocked(now time.Time) bool {
+	return now.After(l.expiry)
 }
 
 // isExpired reports whether the lease has passed its expiry time, taking
@@ -79,10 +80,10 @@ func (l *lease) isExpiredLocked() bool {
 //
 // Lock ordering across this package is lr.mu then l.mu, never the reverse, so
 // calling this while holding lr.mu (as Leases and ExpiredLeaseIDs do) is safe.
-func (l *lease) isExpired() bool {
+func (l *lease) isExpired(now time.Time) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return l.isExpiredLocked()
+	return l.isExpiredLocked(now)
 }
 
 // NoLease is the lease ID that means "no lease". Binding a key to it releases
@@ -115,22 +116,44 @@ type Lessor struct {
 	bindings map[string]int64 // key -> the lease it is bound to
 	idSeq    int64            // highest ID granted; guarded by mu
 	closed   atomic.Bool
+	clock    clock.Clock
 }
 
-// NewLessor creates a new Lessor.
-func NewLessor() *Lessor {
-	return &Lessor{
-		leases:   make(map[int64]*lease),
-		bindings: make(map[string]int64),
+// Option configures a Lessor.
+type Option func(*Lessor)
+
+// WithClock sets the time source every expiry, remaining-TTL and sweep decision
+// is made against. The default is clock.Real; a test passes a clocktest.Fake so
+// a lease's lifetime is driven by Advance rather than waited out. A nil Clock
+// leaves the default in place.
+func WithClock(c clock.Clock) Option {
+	return func(lr *Lessor) {
+		if c != nil {
+			lr.clock = c
+		}
 	}
 }
 
-// newLease builds the in-memory state of lease id with a full TTL ahead of it.
-func newLease(id, ttl int64) *lease {
+// NewLessor creates a new Lessor.
+func NewLessor(opts ...Option) *Lessor {
+	lr := &Lessor{
+		leases:   make(map[int64]*lease),
+		bindings: make(map[string]int64),
+		clock:    clock.Real(),
+	}
+	for _, opt := range opts {
+		opt(lr)
+	}
+	return lr
+}
+
+// newLease builds the in-memory state of lease id with a full TTL ahead of it,
+// counted from now.
+func newLease(id, ttl int64, now time.Time) *lease {
 	return &lease{
 		id:     id,
 		ttl:    ttl,
-		expiry: time.Now().Add(time.Duration(ttl) * time.Second),
+		expiry: now.Add(time.Duration(ttl) * time.Second),
 		keys:   make(map[string]struct{}),
 	}
 }
@@ -163,7 +186,7 @@ func (lr *Lessor) Grant(w Writer, ttl int64) (*Lease, error) {
 	}
 
 	lr.idSeq = id
-	l := newLease(id, ttl)
+	l := newLease(id, ttl, lr.clock.Now())
 	lr.leases[id] = l
 
 	return lr.toLease(l), nil
@@ -231,7 +254,7 @@ func (lr *Lessor) KeepAlive(id int64) (*Lease, error) {
 	}
 
 	l.mu.Lock()
-	l.expiry = time.Now().Add(time.Duration(l.ttl) * time.Second)
+	l.expiry = lr.clock.Now().Add(time.Duration(l.ttl) * time.Second)
 	l.mu.Unlock()
 
 	return lr.toLease(l), nil
@@ -346,9 +369,10 @@ func (lr *Lessor) Restore(r storage.Reader) error {
 		return err
 	}
 
+	now := lr.clock.Now()
 	leases := make(map[int64]*lease, len(t.ttls))
 	for id, ttl := range t.ttls {
-		leases[id] = newLease(id, ttl)
+		leases[id] = newLease(id, ttl, now)
 	}
 	for k, id := range t.bindings {
 		leases[id].keys[k] = struct{}{}
@@ -399,9 +423,10 @@ func (lr *Lessor) Leases() []*Lease {
 	lr.mu.RLock()
 	defer lr.mu.RUnlock()
 
+	now := lr.clock.Now()
 	result := make([]*Lease, 0, len(lr.leases))
 	for _, l := range lr.leases {
-		if l.isExpired() {
+		if l.isExpired(now) {
 			continue
 		}
 		result = append(result, lr.toLease(l))
@@ -414,9 +439,10 @@ func (lr *Lessor) ExpiredLeaseIDs() []int64 {
 	lr.mu.RLock()
 	defer lr.mu.RUnlock()
 
+	now := lr.clock.Now()
 	var expired []int64
 	for id, l := range lr.leases {
-		if l.isExpired() {
+		if l.isExpired(now) {
 			expired = append(expired, id)
 		}
 	}
@@ -438,6 +464,7 @@ func (lr *Lessor) Close() {
 
 // toLease converts an internal lease to the exported Lease type.
 func (lr *Lessor) toLease(l *lease) *Lease {
+	now := lr.clock.Now()
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -450,7 +477,7 @@ func (lr *Lessor) toLease(l *lease) *Lease {
 		ID:           l.id,
 		TTL:          l.ttl,
 		GrantedTTL:   l.ttl,
-		RemainingTTL: l.remainingTTLLocked(),
+		RemainingTTL: l.remainingTTLLocked(now),
 		Keys:         keys,
 	}
 }

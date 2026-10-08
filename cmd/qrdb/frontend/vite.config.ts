@@ -52,8 +52,9 @@ export default defineConfig({
     port: 5173,
     strictPort: false,
     // The API server the dev/E2E proxy forwards to. Defaults to the
-    // conventional local admin port; the real-backend DOM test tier overrides
-    // it via QRDB_PROXY_TARGET so each run can point at an ephemeral daemon.
+    // conventional local admin port for interactive use; every Playwright tier
+    // overrides it via QRDB_PROXY_TARGET (the mocked tier with a per-run port
+    // nothing listens on, the DOM tier with its daemon's admin port).
     proxy: buildApiProxy(process.env.QRDB_PROXY_TARGET ?? "https://localhost:63002"),
   },
 });

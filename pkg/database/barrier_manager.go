@@ -49,10 +49,70 @@ type DatabaseBarrierManager struct {
 	// auditTrail is the compliance trail every database barrier records its
 	// events on, keyed by the database's tenant (WithBarrierAuditTrail).
 	auditTrail audit.AuditLogger
+	// strategies resolves a barrier mode to a sealing strategy before the
+	// built-in passphrase default (WithBarrierStrategyRegistry). Nil resolves
+	// only the built-in modes.
+	strategies seal.StrategyRegistry
 }
 
 // BarrierManagerOption configures a DatabaseBarrierManager.
 type BarrierManagerOption func(*DatabaseBarrierManager)
+
+// WithBarrierStrategyRegistry makes the registry the place a database barrier's
+// mode is resolved to a sealing strategy, the seam the system and tenant
+// barriers already have: a composer registers a hardware strategy under a name
+// (go-xkms: tpm2, pkcs11, a cloud KMS) and a database whose barrier mode names
+// it is sealed by that device. A mode the registry does not hold falls back to
+// the built-in strategy for passphrase, and is refused with
+// UnsupportedBarrierStrategyError for any other. Shamir is not resolved here:
+// its custody is the holder authority. Nil keeps the built-in modes only.
+func WithBarrierStrategyRegistry(reg seal.StrategyRegistry) BarrierManagerOption {
+	return func(m *DatabaseBarrierManager) { m.strategies = reg }
+}
+
+// strategyFor resolves mode, with the empty mode meaning passphrase, to the
+// sealing strategy of a database barrier.
+func (m *DatabaseBarrierManager) strategyFor(dbName, mode string) (seal.SealingStrategy, error) {
+	if mode == "" {
+		mode = BarrierModePassphrase
+	}
+	if m.strategies != nil {
+		if factory, err := m.strategies.LookupFactory(seal.StrategyID(mode)); err == nil {
+			strategy, ferr := factory()
+			if ferr != nil {
+				return nil, &BarrierCreateError{Name: dbName, Err: ferr}
+			}
+			return strategy, nil
+		}
+	}
+	if mode == BarrierModePassphrase {
+		// NewDeferredSoftwareStrategy defers passphrase binding to each
+		// Seal/Unseal call (it reads Credentials.Secret at call time instead of
+		// baking a passphrase into the strategy at construction), matching the
+		// canonical software/passphrase factory in pkg/seal/strategy_registry.go.
+		// A bound strategy (seal.NewSoftwareStrategy(creds.Secret)) would ignore
+		// the creds argument passed to every later UnsealDatabase call in favor
+		// of whatever passphrase happened to be given here at create time, which
+		// would make wrong-secret unseal attempts succeed for the lifetime of the
+		// process and RegisterBarrier's re-open path unable to unseal at all
+		// (it has no real passphrase to bind at Open time).
+		return seal.NewDeferredSoftwareStrategy(), nil
+	}
+	return nil, &UnsupportedBarrierStrategyError{Mode: mode}
+}
+
+// SupportsMode reports whether a database barrier can be created in mode: one
+// of the built-in modes, or a strategy the registry holds.
+func (m *DatabaseBarrierManager) SupportsMode(mode string) bool {
+	if mode == "" || mode == BarrierModePassphrase || mode == BarrierModeShamir {
+		return true
+	}
+	if m.strategies == nil {
+		return false
+	}
+	_, err := m.strategies.LookupFactory(seal.StrategyID(mode))
+	return err == nil
+}
 
 // WithBarrierAuditTrail records the events of every database barrier the
 // manager builds -- initialize, unseal, seal, quorum-complete and the rest --
@@ -119,25 +179,14 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 		}
 		return m.registerShamir(ctx, dbName, tenantID, cfg, storage)
 	}
-	if cfg.Mode != "" && cfg.Mode != BarrierModePassphrase {
-		return &UnsupportedBarrierStrategyError{Mode: cfg.Mode}
+	strategy, err := m.strategyFor(dbName, cfg.Mode)
+	if err != nil {
+		return err
 	}
 
 	barrierCfg := m.barrierConfig(dbName, tenantID)
 
-	// NewDeferredSoftwareStrategy defers passphrase binding to each
-	// Seal/Unseal call (it reads Credentials.Secret at call time instead of
-	// baking a passphrase into the strategy at construction), matching the
-	// canonical software/passphrase factory in pkg/seal/strategy_registry.go.
-	// A bound strategy (seal.NewSoftwareStrategy(creds.Secret)) would ignore
-	// the creds argument passed to every later UnsealDatabase call in favor
-	// of whatever passphrase happened to be given here at create time, which
-	// would make wrong-secret unseal attempts succeed for the lifetime of the
-	// process and RegisterBarrier's re-open path unable to unseal at all
-	// (it has no real passphrase to bind at Open time).
-	strategy := seal.NewDeferredSoftwareStrategy()
-
-	_, err := m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
+	_, err = m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
@@ -172,18 +221,21 @@ func (m *DatabaseBarrierManager) RegisterBarrier(
 		return m.registerShamir(context.Background(), dbName, tenantID, cfg, storage)
 	}
 
-	barrierCfg := m.barrierConfig(dbName, tenantID)
+	// RegisterBarrier never has the real passphrase (the database is only
+	// being re-opened, not created), so a passphrase strategy must read
+	// Credentials.Secret from the later UnsealDatabase call rather than binding
+	// one now; strategyFor returns that deferred strategy.
+	strategy, err := m.strategyFor(dbName, cfg.Mode)
+	if err != nil {
+		return err
+	}
 
-	// Deferred strategy: RegisterBarrier never has the real passphrase (the
-	// database is only being re-opened, not created), so the strategy must
-	// read Credentials.Secret from the later UnsealDatabase call rather than
-	// binding a passphrase now. See the matching comment in EnsureBarrier.
-	strategy := seal.NewDeferredSoftwareStrategy()
+	barrierCfg := m.barrierConfig(dbName, tenantID)
 
 	// RegisterBarrier always supplies a real backend, so the pool path
 	// is never engaged here. context.Background is sufficient because
 	// RegisterTenant only consults ctx on the pool path.
-	_, err := m.registry.RegisterTenant(context.Background(), dbName, storage, barrierCfg, strategy)
+	_, err = m.registry.RegisterTenant(context.Background(), dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}

@@ -32,6 +32,23 @@ func payload(code wire.Code, message string) *wire.ErrorPayload {
 
 // TestMapToolError_TypedReconstitutions asserts the two codes this client
 // turns into a typed SDK error rather than a generic request failure.
+// TestIsToolOutOfRange matches the out-of-range tool error alone.
+func TestIsToolOutOfRange(t *testing.T) {
+	if !isToolOutOfRange(mapToolError("qrdb_get_at_revision", payload(wire.CodeOutOfRange, "revision 1 has been compacted"))) {
+		t.Error("the out-of-range tool error was not matched")
+	}
+	for _, err := range []error{
+		nil,
+		errors.New("plain"),
+		mapToolError("qrdb_get_at_revision", payload(wire.CodeInternal, "boom")),
+		mapToolError("qrdb_get_at_revision", payload(wire.CodeNotFound, "key not found: k")),
+	} {
+		if isToolOutOfRange(err) {
+			t.Errorf("isToolOutOfRange(%v) = true", err)
+		}
+	}
+}
+
 func TestMapToolError_TypedReconstitutions(t *testing.T) {
 	t.Run("not found becomes KeyNotFoundError", func(t *testing.T) {
 		err := mapToolError("qrdb_get", payload(wire.CodeNotFound, "key not found: k"))

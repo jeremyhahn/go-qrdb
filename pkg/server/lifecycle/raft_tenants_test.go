@@ -15,7 +15,14 @@
 package lifecycle_test
 
 import (
+	"crypto"
+	"crypto/ecdh"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,6 +31,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -101,6 +109,7 @@ type nopPlacementKV struct{ placement.KV }
 // raftTenantFixture is a node's identity and services for composing.
 type raftTenantFixture struct {
 	cfg lifecycle.RaftTenantClusterConfig
+	key *ecdsa.PrivateKey
 }
 
 func newRaftTenantFixture(t *testing.T, host *quicraft.Host) raftTenantFixture {
@@ -121,6 +130,10 @@ func newRaftTenantFixture(t *testing.T, host *quicraft.Host) raftTenantFixture {
 	}
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(caPEM)
+	pair, err := tls.X509KeyPair(kp.CertPEM, kp.KeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := placement.NewStore(nopPlacementKV{})
 	if err != nil {
 		t.Fatal(err)
@@ -136,10 +149,10 @@ func newRaftTenantFixture(t *testing.T, host *quicraft.Host) raftTenantFixture {
 			PeerAdmin:     lifecycle.NewPeerAdminRegistry(lifecycle.PeerAdminConfig{RaftAddr: "127.0.0.1:63001", AdminPort: 63002}),
 			TrustDomain:   qrdbconfig.DefaultClusterTrustDomain,
 			CACertPool:    pool,
-			CertPEM:       kp.CertPEM,
-			KeyPEM:        kp.KeyPEM,
+			Identity:      &pair,
 			Logger:        slog.New(slog.DiscardHandler),
 		},
+		key: pair.PrivateKey.(*ecdsa.PrivateKey),
 	}
 }
 
@@ -166,14 +179,41 @@ func TestComposeRaftTenantCluster_WithoutAPieceTheKeyPlaneIsOff(t *testing.T) {
 		"no barrier registry": func(c *lifecycle.RaftTenantClusterConfig) { c.Barriers = nil },
 		"no placement table":  func(c *lifecycle.RaftTenantClusterConfig) { c.Services = &lifecycle.Node{} },
 		"no services":         func(c *lifecycle.RaftTenantClusterConfig) { c.Services = nil },
-		"no node key":         func(c *lifecycle.RaftTenantClusterConfig) { c.KeyPEM = nil },
-		"a non-EC node key": func(c *lifecycle.RaftTenantClusterConfig) {
-			c.KeyPEM = []byte("-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n")
+		"no node identity":    func(c *lifecycle.RaftTenantClusterConfig) { c.Identity = nil },
+		"no node certificate": func(c *lifecycle.RaftTenantClusterConfig) {
+			c.Identity = &tls.Certificate{PrivateKey: c.Identity.PrivateKey}
 		},
-		"no CA pool":        func(c *lifecycle.RaftTenantClusterConfig) { c.CACertPool = nil },
-		"no trust domain":   func(c *lifecycle.RaftTenantClusterConfig) { c.TrustDomain = "" },
-		"no peer registry":  func(c *lifecycle.RaftTenantClusterConfig) { c.PeerAdmin = nil },
-		"a mismatched cert": func(c *lifecycle.RaftTenantClusterConfig) { c.CertPEM = []byte("not a certificate") },
+		"a non-EC node key": func(c *lifecycle.RaftTenantClusterConfig) {
+			_, key, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Identity = &tls.Certificate{Certificate: c.Identity.Certificate, PrivateKey: key}
+		},
+		"a device-held key and no decrypter": func(c *lifecycle.RaftTenantClusterConfig) {
+			key := c.Identity.PrivateKey.(*ecdsa.PrivateKey)
+			c.Identity = &tls.Certificate{Certificate: c.Identity.Certificate, PrivateKey: &deviceSigner{key: key}}
+		},
+		"no CA pool":       func(c *lifecycle.RaftTenantClusterConfig) { c.CACertPool = nil },
+		"no trust domain":  func(c *lifecycle.RaftTenantClusterConfig) { c.TrustDomain = "" },
+		"no peer registry": func(c *lifecycle.RaftTenantClusterConfig) { c.PeerAdmin = nil },
+		"a mismatched cert": func(c *lifecycle.RaftTenantClusterConfig) {
+			c.Identity = &tls.Certificate{Certificate: [][]byte{[]byte("not a certificate")}, PrivateKey: c.Identity.PrivateKey}
+		},
+		"a decrypter for another key": func(c *lifecycle.RaftTenantClusterConfig) {
+			c.Decrypter = newDeviceDecrypter(t, nil)
+		},
+		"a decrypter of another KEM": func(c *lifecycle.RaftTenantClusterConfig) {
+			key, err := ecdh.X25519().GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dec, err := keydelivery.NewDecrypter(keydelivery.KEMX25519, &deviceExchanger{key: key}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Decrypter = dec
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newRaftTenantFixture(t, host)
@@ -219,6 +259,121 @@ func TestComposeRaftTenantCluster_NilLoggerStillComposes(t *testing.T) {
 	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
 	if got.KeyReceiver == nil || got.KeySender == nil {
 		t.Fatalf("composed %+v with a nil logger; want a key receiver and sender", got)
+	}
+}
+
+// deviceExchanger stands in for a node key held on a device: it agrees keys
+// and nothing else, so a decrypter built on it never has the scalar.
+type deviceExchanger struct{ key *ecdh.PrivateKey }
+
+var _ ecdh.KeyExchanger = (*deviceExchanger)(nil)
+
+func (d *deviceExchanger) PublicKey() *ecdh.PublicKey { return d.key.PublicKey() }
+func (d *deviceExchanger) Curve() ecdh.Curve          { return d.key.Curve() }
+func (d *deviceExchanger) ECDH(p *ecdh.PublicKey) ([]byte, error) {
+	return d.key.ECDH(p)
+}
+
+// deviceExchangerFor is a device holding key for key agreement.
+func deviceExchangerFor(t *testing.T, key *ecdsa.PrivateKey) *deviceExchanger {
+	t.Helper()
+	k, err := key.ECDH()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &deviceExchanger{key: k}
+}
+
+// newDeviceDecrypter returns a DHKEM-P-256 decrypter whose key agreement runs
+// on a device holding key, or a fresh, unrelated key when key is nil.
+func newDeviceDecrypter(t *testing.T, key *ecdsa.PrivateKey) keydelivery.Decrypter {
+	t.Helper()
+	var device *deviceExchanger
+	if key == nil {
+		k, err := ecdh.P256().GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		device = &deviceExchanger{key: k}
+	} else {
+		device = deviceExchangerFor(t, key)
+	}
+	dec, err := keydelivery.NewDecrypter(keydelivery.KEMP256, device, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dec
+}
+
+// deviceSigner stands in for a node key held on a device: it signs and
+// nothing else, so an identity built on it carries no key bytes.
+type deviceSigner struct{ key *ecdsa.PrivateKey }
+
+var _ crypto.Signer = (*deviceSigner)(nil)
+
+func (d *deviceSigner) Public() crypto.PublicKey { return d.key.Public() }
+func (d *deviceSigner) Sign(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	return d.key.Sign(r, digest, opts)
+}
+
+// deviceKey is a device key that both signs and agrees keys, as a TPM or HSM
+// ECDH-capable key does.
+type deviceKey struct {
+	*deviceSigner
+	*deviceExchanger
+}
+
+// A composer whose node key is held on a device supplies the decrypter; the
+// key plane composes on it in place of the software default.
+func TestComposeRaftTenantCluster_DeviceHeldDecrypter(t *testing.T) {
+	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
+	f.cfg.Decrypter = newDeviceDecrypter(t, f.key)
+
+	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
+	if got.KeyReceiver == nil || got.KeySender == nil {
+		t.Fatalf("composed %+v with a device-held decrypter; want a key receiver and sender", got)
+	}
+}
+
+// A node whose identity key is held on a device composes the whole key plane
+// from a signer and a decrypter: no private key bytes are handed over.
+func TestComposeRaftTenantCluster_DeviceHeldIdentity(t *testing.T) {
+	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
+	f.cfg.Identity = &tls.Certificate{Certificate: f.cfg.Identity.Certificate, PrivateKey: &deviceSigner{key: f.key}}
+	f.cfg.Decrypter = newDeviceDecrypter(t, f.key)
+
+	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
+	if got.KeyReceiver == nil || got.KeySender == nil {
+		t.Fatalf("composed %+v with a device-held identity; want a key receiver and sender", got)
+	}
+}
+
+// A device key that also agrees keys needs no separate decrypter: the default
+// decrypter runs the key agreement on it.
+func TestComposeRaftTenantCluster_DeviceKeyThatAgreesKeys(t *testing.T) {
+	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
+	key := &deviceKey{deviceSigner: &deviceSigner{key: f.key}, deviceExchanger: deviceExchangerFor(t, f.key)}
+	f.cfg.Identity = &tls.Certificate{Certificate: f.cfg.Identity.Certificate, PrivateKey: key}
+
+	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
+	if got.KeyReceiver == nil || got.KeySender == nil {
+		t.Fatalf("composed %+v with an ECDH-capable device key; want a key receiver and sender", got)
+	}
+}
+
+// An identity with a certificate but no signer still receives, through the
+// composer's decrypter, but cannot authenticate to peers, so it sends nothing.
+func TestComposeRaftTenantCluster_IdentityWithoutASignerDoesNotSend(t *testing.T) {
+	f := newRaftTenantFixture(t, raftharness.NewCluster(t, 1).Hosts[0])
+	f.cfg.Identity = &tls.Certificate{Certificate: f.cfg.Identity.Certificate}
+	f.cfg.Decrypter = newDeviceDecrypter(t, f.key)
+
+	got := lifecycle.ComposeRaftTenantCluster(f.cfg)
+	if got.KeyReceiver == nil {
+		t.Fatal("no receiver; want one composed on the decrypter")
+	}
+	if got.KeySender != nil {
+		t.Fatal("composed a sender without a signer")
 	}
 }
 

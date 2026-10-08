@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -299,12 +300,19 @@ func (c *compactionCell) requireHistory(t *testing.T, tenantID, key string, rev 
 func (c *compactionCell) requireCompacted(t *testing.T, tenantID, key string, rev int64) {
 	t.Helper()
 	h := c.as(t, tenantID)
-	if _, err := h.mvcc.GetAtRevision(h.ctx, key, rev); err == nil {
-		t.Fatalf("%s: %s's compacted revision %d is still readable", c.tk, tenantID, rev)
+	if _, err := h.mvcc.GetAtRevision(h.ctx, key, rev); !isCompacted(err) {
+		t.Fatalf("%s: reading %s's compacted revision %d = %v; want the compaction refusal", c.tk, tenantID, rev, err)
 	}
 	if kv, err := h.mvcc.GetRevision(h.ctx, key); err != nil || string(kv.Value) != tenantID+"-v2" {
 		t.Fatalf("%s: %s lost its current value: %v, %v", c.tk, tenantID, kv, err)
 	}
+}
+
+// isCompacted reports whether err is the refusal of a read below a
+// compaction floor.
+func isCompacted(err error) bool {
+	var compacted *transport.RevisionCompactedError
+	return errors.As(err, &compacted)
 }
 
 // currentRevision returns the store's current revision as tenantID sees it.

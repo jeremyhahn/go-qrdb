@@ -1038,7 +1038,26 @@ INT_PROJECT ?= qrdb-int-$(shell hostname | tr -cd '[:alnum:]' | tail -c 16)
 # that has ALL protocols enabled (REST, gRPC, QUIC, Unix, MCP).
 # This is the single entry point for all integration tests.
 INT_COMPOSE := test/integration/api/docker-compose.yml
-INT_IMAGE   := go-qrdb-dev:latest
+
+# The image a run builds and its stack runs, namespaced by the same per-run
+# identity as INT_PROJECT. It used to be the fixed `go-qrdb-dev:latest`, and
+# four CI runs that landed on one host at once each rebuilt that one tag
+# between another run's build and its `up`: the test container's CLI called
+# `FTSIndex` and the server, baked from a different tree, answered "unknown
+# method". Namespacing containers, networks and volumes is not enough while
+# the image they run is shared.
+#
+# The compose files take these through the environment, as REQUIRED
+# interpolations (`${QRDB_INT_IMAGE:?...}`): there is no fallback tag, because a
+# fallback is a shared tag again. The `export` reaches every `docker compose`
+# call below, sub-makes included. The devcontainer keeps its own stable
+# `go-qrdb-dev:latest` (.devcontainer/docker-compose.yml); nothing here builds
+# or runs it. integration-down removes these when the run ends.
+# test/buildgates/integration_image_tag_test.go holds all of this in place.
+INT_IMAGE     := go-qrdb-int:$(INT_PROJECT)
+INT_GPU_IMAGE := go-qrdb-int-gpu:$(INT_PROJECT)
+export QRDB_INT_IMAGE     := $(INT_IMAGE)
+export QRDB_INT_GPU_IMAGE := $(INT_GPU_IMAGE)
 
 # integration-image builds the image the stack runs, with the code under test
 # baked in. It is a separate target because the build needs credentials the
@@ -1105,7 +1124,7 @@ integration-test-standalone: integration-image
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
-		docker compose -p $(INT_PROJECT) down -v; \
+		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
 
 # --abort-on-container-exit attaches only to the tests container, so a server
@@ -1118,6 +1137,21 @@ _integration-server-logs:
 		echo "==> $$svc log (last 200 lines)"; \
 		docker compose -p $(INT_PROJECT) logs --no-color --tail=200 "$$svc" || true; \
 	done
+
+# integration-down ends a run: it removes the stack (containers, networks,
+# volumes, and any overlay service such as ollama, hence --remove-orphans) and
+# then the run's own images, so per-run tags do not pile up on a host. Every
+# stage calls it after its tests, pass or fail, and CI's always() teardown step
+# calls it with the job's INT_PROJECT for a run that was interrupted. It is the
+# one place a run is torn down: a bare `docker compose down` cannot stand in for
+# it, because the compose files require QRDB_INT_IMAGE and refuse every command,
+# `down` included, without it. It removes only the tags derived from
+# INT_PROJECT, never another run's image; a tag that was never built is not an
+# error.
+.PHONY: integration-down
+integration-down:
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v --remove-orphans || true
+	@docker image rm $(INT_IMAGE) $(INT_GPU_IMAGE) >/dev/null 2>&1 || true
 
 # Cluster stage: the self-spawning tests in ./test/integration (single-node +
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
@@ -1137,7 +1171,7 @@ integration-test-cluster: integration-image
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
-		docker compose -p $(INT_PROJECT) down -v; \
+		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
 
 # Cluster tenancy stage: the multi-node tenant suites, run on EVERY push
@@ -1195,10 +1229,10 @@ integration-test-gpu:
 	@$(stage-gomodauth) \
 	set +e; \
 	cd test/integration/api && \
-		docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+		docker compose -f docker-compose.yml -f docker-compose.gpu.yml -p $(INT_PROJECT) \
 			up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose -f docker-compose.yml -f docker-compose.gpu.yml down -v; \
+		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
 
 # Auto-detecting variant: uses GPU when nvidia-smi is in PATH, CPU otherwise.
@@ -1372,7 +1406,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -2746,7 +2780,7 @@ endef
 # THESE FOUR LITERALS ARE WHAT EVERY `make` ENTRYPOINT BUILDS THE IMAGE WITH
 # (#322). They were three, they were hand-synced, and the Dockerfiles restated
 # their own -- gosec and govulncheck at `@latest`, golangci-lint at v2.7.2
-# against ci.yml's v2.13.2, so the gate image and CI could analyse one commit
+# against ci.yml's pin, so the gate image and CI could analyse one commit
 # with different analysers and neither result would say so.
 #
 # The Dockerfiles now take these as build ARGs, and their ARG DEFAULTS ARE
@@ -2759,7 +2793,7 @@ endef
 #
 # `export` rather than passing them per-recipe: every `docker compose` call in
 # this file builds one of those Dockerfiles, directly or through a service that
-# shares the `go-qrdb-dev:latest` tag, and compose reads these from its own
+# builds one, and compose reads these from its own
 # environment. Exporting covers all of them, including the ones added after
 # this comment -- naming the call sites instead would leave the next one to be
 # found by a failed build. The compose files take them through the
@@ -2803,13 +2837,14 @@ TRIVY_VERSION         := v0.75.0
 # dependency, so demanding they match would be a gate red by construction. The
 # divergence is made VISIBLE instead -- the check prints both, every run.
 #
-# The two are not interchangeable even when they happen to be equal, as they are
-# at golangci-lint v2.14.0 and gosec v2.29.0: the difference is soundness rather
-# than strictness. gosec v2.28.0's G703 accepted filepath.Clean as a
-# path-traversal sanitizer and v2.29.0 does not, upstream having removed it with
-# the note that Clean "evaluates '..' elements instead of rejecting them, so the
-# traversal succeeds" (securego/gosec#1721). A golangci-lint that bundled the
-# older gosec would CLEAR a cleaned path that the gosec leg reports HIGH/HIGH.
+# Since golangci-lint v2.14.0 the two ARE the same version (v2.29.0), so the
+# lint leg and the gosec leg judge a path with one G703. They were not always:
+# v2.28.0's G703 accepted filepath.Clean as a path-traversal sanitizer and
+# v2.29.0 does not, upstream having removed it with the note that Clean
+# "evaluates '..' elements instead of rejecting them, so the traversal
+# succeeds" (securego/gosec#1721). The lint leg then CLEARED a cleaned path
+# that the gosec leg reported HIGH/HIGH, which is why equality is not demanded
+# but the bundled version is recorded: the next bump may diverge again.
 #
 # Bumping GOLANGCI_LINT_VERSION means re-measuring the exclusions in
 # .golangci.yml and updating this line in the same change. Read it off the
@@ -3426,29 +3461,29 @@ EMBEDDING_COMPOSE := -f docker-compose.yml -f docker-compose.embedding.yml
 .PHONY: integration-test-embedding
 integration-test-embedding: ## Run embedding e2e tests (opt-in Ollama overlay)
 	@echo "==> Running embedding integration tests (Ollama overlay)..."
-	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@$(stage-gomodauth) \
 	set +e; \
 	cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
 		INTEGRATION_RUN='Embedding' \
-		docker compose $(EMBEDDING_COMPOSE) up --build --abort-on-container-exit integration-tests; \
+		docker compose $(EMBEDDING_COMPOSE) -p $(INT_PROJECT) up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose $(EMBEDDING_COMPOSE) down -v; \
+		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
 
 .PHONY: integration-test-rag
 integration-test-rag: ## Run RAG e2e tests (opt-in Ollama overlay)
 	@echo "==> Running RAG integration tests (Ollama overlay)..."
-	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@$(stage-gomodauth) \
 	set +e; \
 	cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
 		INTEGRATION_RUN='RAG' \
-		docker compose $(EMBEDDING_COMPOSE) up --build --abort-on-container-exit integration-tests; \
+		docker compose $(EMBEDDING_COMPOSE) -p $(INT_PROJECT) up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose $(EMBEDDING_COMPOSE) down -v; \
+		$(MAKE) -s -C $(CURDIR) integration-down INT_PROJECT=$(INT_PROJECT); \
 		exit $$rc
 
 # ============================================================================

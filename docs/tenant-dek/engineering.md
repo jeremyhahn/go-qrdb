@@ -46,6 +46,30 @@ embedder's key directory into `lifecycle.Infra.DEKKeyDir` up front, the
 same `ResolveCryptoOptions` shape `WithKeyDir`/`CryptoOptions.KeyDir` use
 for Backup.
 
+### The engine seam: `dek.Provider`
+
+`service.NewDEKService` takes a `dek.Provider`, not a `*dek.Keyring`. The
+interface is `Status`, `Rotate`, `Retire`, `Encrypt`, `Decrypt` and `Rewrap`,
+each acting on the tenant it is given, and carries operations only: no method
+takes or returns a key. `dek.Keyring` is the software default and satisfies it
+(compile-time asserted).
+
+A composer replaces the engine outright with `server.WithDEKProvider(p)` or
+`node.WithDEKProvider(p)`. `server.ResolveCryptoOptions` carries it into
+`lifecycle.Infra.DEKProvider`, and `BuildServices` uses it in place of the
+keyring it would otherwise build; `qrdbd` and `sdk/go/node` both forward it, in
+the standalone and the clustered boot paths. The provider's owner closes it.
+Tenant scoping stays in `service.DEKService`, above the seam, so a provider
+sees only a tenant the service already resolved.
+
+This seam is **distinct** from `keywrap.Provider`. Keywrap wraps a key a
+`Keyring` holds, and an embedder that keeps the software keyring still registers
+a hardware KEK through it. `dek.Provider` is for a device that holds the tenant
+keys itself and runs the AEAD, the rotation and the retirement. `dektest.Device`
+(`pkg/dek/dektest`) is the fake: it keeps its keys behind the interface and
+counts operations, which is what the tests assert to show no key bytes cross
+the seam. See [extension-seams](../release/extension-seams.md).
+
 ## The stored record
 
 Key `__sys:dek/keyring` inside the tenant's resolved store. JSON (format

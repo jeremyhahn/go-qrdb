@@ -48,11 +48,11 @@ func TestNode_AnonymousClaimsAreThrottled(t *testing.T) {
 // independent although they share the process-wide engine
 // (lifecycle.QuorumLimit).
 func TestNewHolderActLimit_NodesDoNotShareABucket(t *testing.T) {
-	a, err := newHolderActLimit()
+	a, err := newHolderActLimit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newHolderActLimit()
+	b, err := newHolderActLimit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

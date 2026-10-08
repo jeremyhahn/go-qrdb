@@ -333,7 +333,11 @@ func testKVRestoreLifecycleOverProtocol(t *testing.T, node *multiProtoNode, prot
 			t.Fatalf("[%s] mutate put %s: %v\noutput: %s", proto.name, key, err, out)
 		}
 
-		revBefore := kvCLIRevision(t, node, proto)
+		// The key's own ModRevision, not the store's current revision, is what
+		// proves the dry run wrote nothing: the current revision is shared by
+		// every writer on the store -- other databases, and the node's own
+		// periodic system records -- so it may move while the dry run runs.
+		modBefore := kvModRevision(t, node, proto, key)
 		result, out, err := kvRestoreJSON(t, node, proto, "--revision", strconv.FormatInt(revOrig, 10), "--keys", key, "--dry-run")
 		if err != nil {
 			t.Fatalf("[%s] kv restore --dry-run %s: %v\noutput: %s", proto.name, key, err, out)
@@ -344,10 +348,9 @@ func testKVRestoreLifecycleOverProtocol(t *testing.T, node *multiProtoNode, prot
 		if len(result.Changes) != 1 || result.Changes[0].Action != transport.RestoreActionRevert {
 			t.Fatalf("[%s] kv restore --dry-run %s changes = %+v, want a single planned revert", proto.name, key, result.Changes)
 		}
-		revAfter := kvCLIRevision(t, node, proto)
-		if revAfter != revBefore {
-			t.Fatalf("[%s] kv restore --dry-run %s: current revision moved from %d to %d, want unchanged (dry run must write nothing)",
-				proto.name, key, revBefore, revAfter)
+		if modAfter := kvModRevision(t, node, proto, key); modAfter != modBefore {
+			t.Fatalf("[%s] kv restore --dry-run %s: the key's mod revision moved from %d to %d, want unchanged (dry run must write nothing)",
+				proto.name, key, modBefore, modAfter)
 		}
 
 		got, err := runCLIProto(t, node, proto, "kv", "get", key)
@@ -365,6 +368,10 @@ func testKVRestoreLifecycleOverProtocol(t *testing.T, node *multiProtoNode, prot
 			if !strings.Contains(out, want) {
 				t.Fatalf("[%s] kv restore --dry-run %s table output missing %q, got:\n%s", proto.name, key, want, out)
 			}
+		}
+		if modAfter := kvModRevision(t, node, proto, key); modAfter != modBefore {
+			t.Fatalf("[%s] kv restore --dry-run %s (table): the key's mod revision moved from %d to %d, want unchanged",
+				proto.name, key, modBefore, modAfter)
 		}
 	})
 

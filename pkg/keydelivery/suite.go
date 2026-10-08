@@ -235,34 +235,61 @@ func RecipientFromPKIX(der []byte) (string, []byte, error) {
 	return RecipientFromPublicKey(pub)
 }
 
-// PrivateKeyFor converts an ECDSA or ECDH private key to an HPKE private key
-// of the named suite, refusing a key that belongs to a different KEM.
-func PrivateKeyFor(name string, priv crypto.PrivateKey) (hpke.PrivateKey, error) {
-	s, err := LookupSuite(name)
-	if err != nil {
-		return nil, err
-	}
-	var ek *ecdh.PrivateKey
+// Decrypter is the receiving half of an HPKE exchange: the key that opens a
+// payload sealed to its public key. It is an hpke.PrivateKey, which the
+// standard library builds from software keys or from opaque, device-held
+// key halves (see NewDecrypter), so opening never requires the private key
+// in this process.
+type Decrypter = hpke.PrivateKey
+
+// PrivateKeyFor converts an ECDSA or ECDH private key to a Decrypter of the
+// named suite, refusing a key that belongs to a different KEM. Any
+// ecdh.KeyExchanger is accepted, so a device-held ECDH key opens envelopes
+// without its scalar ever being exported.
+func PrivateKeyFor(name string, priv crypto.PrivateKey) (Decrypter, error) {
+	var kx ecdh.KeyExchanger
 	switch k := priv.(type) {
 	case *ecdsa.PrivateKey:
 		converted, cerr := k.ECDH()
 		if cerr != nil {
 			return nil, &UnsupportedRecipientKeyError{Reason: cerr.Error()}
 		}
-		ek = converted
-	case *ecdh.PrivateKey:
-		ek = k
+		kx = converted
+	case ecdh.KeyExchanger:
+		kx = k
 	default:
 		return nil, &UnsupportedRecipientKeyError{Reason: "key type has no registered KEM"}
 	}
-	curveSuite, err := suiteForCurve(ek.Curve())
+	return NewDecrypter(name, kx, nil)
+}
+
+// NewDecrypter builds the Decrypter of the named suite from opaque key
+// halves. The DHKEM suites take only kx, the key exchange; the hybrid suite
+// takes kx (X25519) and pq, the ML-KEM decapsulation key. Each half may be
+// backed by a hardware module: the operation is sent to the device and no
+// private key is ever in hand. A key of another KEM is refused.
+func NewDecrypter(name string, kx ecdh.KeyExchanger, pq crypto.Decapsulator) (Decrypter, error) {
+	s, err := LookupSuite(name)
 	if err != nil {
 		return nil, err
 	}
-	if curveSuite != s.name {
+	if kx == nil {
+		return nil, ErrNilRecipientKey
+	}
+	if s.name == KEMMLKEM768X25519 {
+		if pq == nil || kx.Curve() != ecdh.X25519() {
+			return nil, &KEMKeyMismatchError{Suite: s.name}
+		}
+		return hpke.NewHybridPrivateKey(pq, kx)
+	}
+	curveSuite, err := suiteForCurve(kx.Curve())
+	if err != nil {
+		return nil, err
+	}
+	if curveSuite != s.name || pq != nil {
 		return nil, &KEMKeyMismatchError{Suite: s.name}
 	}
-	return hpke.NewDHKEMPrivateKey(ek)
+	return hpke.NewDHKEMPrivateKey(kx)
 }
 
 // suiteForCurve maps an ECDH curve onto its registered DHKEM suite name.

@@ -142,11 +142,11 @@ fakelint
 echo "== the accepting branch =="
 fakego "$(buildinfo_lines v2.29.0)"
 expect accept "bundled v2.29.0, measured v2.29.0" \
-	"bundles gosec v2.29.0" "$(repo ok v2.29.0 v2.29.1)"
+	"bundles gosec v2.29.0" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== the divergence from GOSEC_VERSION is PRINTED, not merely tolerated =="
 expect accept "note names both legs and both versions" \
-	"DIFFERENT gosecs" "$(repo ok v2.29.0 v2.29.1)"
+	"DIFFERENT gosecs" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== a golangci-lint from a release tarball records (devel) for its own module =="
 # Only the main-module record is (devel); dependency versions stay exact. The
@@ -156,53 +156,53 @@ echo "== a golangci-lint from a release tarball records (devel) for its own modu
 fakego "$(printf '%s: go1.27.1\n%smod%sgithub.com/golangci/golangci-lint/v2%s(devel)\n%s\n' \
 	"$work/bin/golangci-lint" "$TAB" "$TAB" "$TAB" "$(gosecdep v2.29.0)")"
 expect accept "main module (devel), dep exact" \
-	"bundles gosec v2.29.0" "$(repo ok v2.29.0 v2.29.1)"
+	"bundles gosec v2.29.0" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== golangci-lint moved and took a different gosec with it: must REJECT =="
-fakego "$(buildinfo_lines v2.29.1)"
-expect reject "bundled v2.29.1 against measured v2.29.0" \
-	"Re-measure" "$(repo ok v2.29.0 v2.29.1)"
+fakego "$(buildinfo_lines v2.30.0)"
+expect reject "bundled v2.30.0 against measured v2.29.0" \
+	"Re-measure" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== the near-miss a substring comparison would accept: must REJECT =="
 fakego "$(buildinfo_lines v12.29.0)"
 expect reject "bundled v12.29.0 against measured v2.29.0" \
-	"bundles gosec v12.29.0" "$(repo ok v2.29.0 v2.29.1)"
+	"bundles gosec v12.29.0" "$(repo ok v2.29.0 v2.30.0)"
 fakego "$(buildinfo_lines v2.29.01)"
 expect reject "bundled v2.29.01 against measured v2.29.0" \
-	"bundles gosec v2.29.01" "$(repo ok v2.29.0 v2.29.1)"
+	"bundles gosec v2.29.01" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== the v prefix is optional on either side =="
 fakego "$(buildinfo_lines 2.29.0)"
 expect accept "bundled 2.29.0 against measured v2.29.0" \
-	"bundles gosec 2.29.0" "$(repo ok v2.29.0 v2.29.1)"
+	"bundles gosec 2.29.0" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== a replaced gosec is unknown code: must REJECT =="
 fakego "$(buildinfo_lines v2.29.0 "example.com/fork/gosec${TAB}v0.0.1")"
 expect reject "gosec replaced by a fork" \
-	"replaces github.com/securego/gosec/v2" "$(repo ok v2.29.0 v2.29.1)"
+	"replaces github.com/securego/gosec/v2" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== nothing to read is never a pass =="
 fakego "$(printf '%s: go1.27.1\n%smod%sgithub.com/golangci/golangci-lint/v2%sv2.14.0\n' \
 	"$work/bin/golangci-lint" "$TAB" "$TAB" "$TAB")"
 expect reject "no gosec dependency recorded" \
-	"records no dependency" "$(repo ok v2.29.0 v2.29.1)"
+	"records no dependency" "$(repo ok v2.29.0 v2.30.0)"
 
 # The gosec module named by a `mod` record instead of a `dep` record is the
 # gosec binary itself, not a golangci-lint that bundles it. Accepting it would
 # let the wrong binary satisfy this check.
-fakego "$(printf '%s: go1.27.1\n%smod%sgithub.com/securego/gosec/v2%sv2.29.0\n' \
+fakego "$(printf '%s: go1.27.1\n%smod%sgithub.com/securego/gosec/v2%sv2.30.0\n' \
 	"$work/bin/golangci-lint" "$TAB" "$TAB" "$TAB")"
 expect reject "gosec's own binary offered as the carrier" \
-	"records no dependency" "$(repo ok v2.29.0 v2.29.1)"
+	"records no dependency" "$(repo ok v2.29.0 v2.30.0)"
 
 fakego_broken
 expect reject "go cannot read the build info" \
-	"could not read the build info" "$(repo ok v2.29.0 v2.29.1)"
+	"could not read the build info" "$(repo ok v2.29.0 v2.30.0)"
 
 echo "== the discovery floor: a lookup that finds nothing must FAIL =="
 fakego "$(buildinfo_lines v2.29.0)"
 expect reject "GOLANGCI_GOSEC_VERSION absent from the Makefile" \
-	"no GOLANGCI_GOSEC_VERSION pin" "$(repo nopin - v2.29.1)"
+	"no GOLANGCI_GOSEC_VERSION pin" "$(repo nopin - v2.30.0)"
 expect reject "GOSEC_VERSION absent from the Makefile" \
 	"no GOSEC_VERSION pin" "$(repo nogosec v2.29.0 -)"
 expect reject "Makefile absent" \
@@ -211,11 +211,11 @@ expect reject "Makefile absent" \
 echo "== a missing tool is an image defect, not a network install =="
 rm -f "$work/bin/golangci-lint"
 expect reject "golangci-lint absent" \
-	"is not installed" "$(repo ok v2.29.0 v2.29.1)"
+	"is not installed" "$(repo ok v2.29.0 v2.30.0)"
 fakelint
 rm -f "$work/bin/go"
 expect reject "go absent" \
-	"go is not on PATH" "$(repo ok v2.29.0 v2.29.1)"
+	"go is not on PATH" "$(repo ok v2.29.0 v2.30.0)"
 
 echo
 echo "check-bundled-gosec.sh: ${pass} passed, ${fail} failed"

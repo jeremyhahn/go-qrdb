@@ -149,6 +149,24 @@ func TestIsWireNotFound(t *testing.T) {
 	}
 }
 
+// TestIsWireOutOfRange fires on the shared mapper's out-of-range and on nothing
+// else.
+func TestIsWireOutOfRange(t *testing.T) {
+	if !isWireOutOfRange(mapWireError("mvcc.GetAtRevision", wire.StatusOutOfRange, errorBody(t, wire.StatusOutOfRange, "revision 1 has been compacted"))) {
+		t.Error("a StatusOutOfRange frame must be recognised as the compaction refusal")
+	}
+	for _, st := range []uint16{
+		wire.StatusError, wire.StatusNotFound, wire.StatusUnavailable, wire.StatusInvalidArgument,
+	} {
+		if isWireOutOfRange(mapWireError("mvcc.GetAtRevision", st, errorBody(t, st, "revision 1 has been compacted"))) {
+			t.Errorf("%s was recognised as the compaction refusal", wire.StatusName(st))
+		}
+	}
+	if isWireOutOfRange(nil) {
+		t.Error("nil is not the compaction refusal")
+	}
+}
+
 // TestMapUserNotFound_TypesTheIdTheCallerAsked is the #289 contract on QUIC:
 // the typed error names the user the CALLER asked for, reconstructed from the
 // call site's own argument and never parsed out of the server's message.

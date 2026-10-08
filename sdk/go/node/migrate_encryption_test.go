@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -255,6 +254,21 @@ func TestNode_EnableEncryption_ViaEmbeddedTransport(t *testing.T) {
 	kv := n.KVService()
 	require.NoError(t, kv.Put(ctx, "key/embedded-transport", []byte("value")))
 
+	// The transport acknowledges the migration and leaves it running, so the
+	// test waits on the migration itself rather than polling for its effect
+	// against a clock: under a loaded -race run a pebble-backed recycle can
+	// outlast any fixed bound. Holding the lifecycle gate across the call
+	// parks the system migration on it, which makes "queued" observable;
+	// releasing hands the slot straight to the queued migration, and
+	// acquiring again then returns only once it has finished.
+	require.NoError(t, n.lifeGate.acquire(ctx))
+	held := true
+	t.Cleanup(func() {
+		if held {
+			n.lifeGate.release()
+		}
+	})
+
 	resp, err := n.Client().Barrier().BarrierEnableEncryption(ctx, &transport.BarrierEnableEncryptionRequest{
 		Strategy:   string(seal.StrategyPassphrase),
 		Passphrase: []byte("enable-enc-pass-embedded"),
@@ -263,18 +277,15 @@ func TestNode_EnableEncryption_ViaEmbeddedTransport(t *testing.T) {
 	require.Equal(t, "migration_started", resp.Status)
 	require.Equal(t, "system", resp.Scope)
 
-	require.Eventually(t, func() bool {
-		// The system-scope migration recycles the whole in-process data
-		// plane, briefly swapping n.client to nil between teardown and the
-		// rebuilt client's Store -- this poll must tolerate that window
-		// rather than dereferencing a nil *sdk.Client.
-		client := n.Client()
-		if client == nil {
-			return false
-		}
-		status, serr := client.Barrier().BarrierStatus(ctx)
-		return serr == nil && status.Strategy == string(seal.StrategyPassphrase)
-	}, 5*time.Second, 20*time.Millisecond, "strategy never changed from none to passphrase")
+	waitForQueuedTransition(t, n)
+	held = false
+	n.lifeGate.release()
+	require.NoError(t, n.lifeGate.acquire(ctx))
+	n.lifeGate.release()
+
+	status, err := n.Client().Barrier().BarrierStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, string(seal.StrategyPassphrase), status.Strategy, "strategy never changed from none to passphrase")
 
 	// The data plane is rebuilt and serving again under the keyed barrier,
 	// reached through a freshly-resolved client (the recycle replaces it).

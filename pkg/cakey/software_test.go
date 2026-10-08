@@ -1782,6 +1782,85 @@ func TestSoftwareProvider_ConcurrentSigningIsSafe(t *testing.T) {
 	}
 }
 
+// TestSoftwareProvider_SigningSurvivesAConcurrentReload signs while another
+// goroutine reloads the same persisted material over and over. Each reload
+// swaps in a fresh Secret and destroys the one it retires -- exactly what
+// several concurrent first uses do when each loses the guarded write and
+// loads the winner's record. A Sign that had already read the retired
+// Secret must still open it: none may fail with a destroyed enclave.
+func TestSoftwareProvider_SigningSurvivesAConcurrentReload(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	pub, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("Public() = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+
+	const signers, reloaders, rounds = 8, 8, 50
+	stop := make(chan struct{})
+	reloadErrs := make([]error, reloaders)
+	var reloads sync.WaitGroup
+	for i := 0; i < reloaders; i++ {
+		reloads.Add(1)
+		go func(i int) {
+			defer reloads.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := p.Unseal(context.Background()); err != nil {
+					reloadErrs[i] = err
+					return
+				}
+			}
+		}(i)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, signers)
+	for i := 0; i < signers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				digest := sha256.Sum256([]byte{byte(i), byte(r)})
+				sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+					errs[i] = errors.New("signature does not verify")
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(stop)
+	reloads.Wait()
+	for i, err := range reloadErrs {
+		if err != nil {
+			t.Fatalf("reloader %d: Unseal: %v", i, err)
+		}
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("signer %d: %v", i, err)
+		}
+	}
+}
+
 // TestSoftwareProvider_RotationDestroysThePriorSecret is the owner-required
 // "rotation" proof: sealing and re-establishing (the same sequence a reseal
 // or an HSM failover drives) must not merely swap which pointer p.keySecret

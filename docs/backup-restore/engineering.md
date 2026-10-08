@@ -196,6 +196,13 @@ Cloud destinations require the corresponding go-objstore build tag
 (`WITH_AWS_S3`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
 `WITH_GLACIER`, `WITH_AZURE_ARCHIVE`).
 
+The durable sink an artifact is persisted to is a composition seam,
+`service.BackupSink`: `qrdbd` defaults to `<data-dir>/backups`, and an
+embedded node has none unless the embedder passes `node.WithBackupSink` (or
+`server.WithBackupSink`), which is forwarded in the standalone and the
+clustered boot paths. Without one, an embedded node's backups live in process
+memory only. See [extension-seams](../release/extension-seams.md).
+
 `KeyRef`/`DecryptionKeyRef` name key material by reference (the bare NAME of
 a key file inside the server's configured key directory for the built-in
 `"software"` keywrap provider, never a path); they are never raw key

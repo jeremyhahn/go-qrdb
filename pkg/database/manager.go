@@ -131,6 +131,16 @@ func (m *Manager) BarrierManager() *DatabaseBarrierManager {
 	return m.barrierMgr
 }
 
+// barrierModeSupported reports whether a database barrier can be configured in
+// mode: a built-in mode, or a strategy the barrier manager's registry holds.
+// Without a barrier manager only the built-in modes are supported.
+func (m *Manager) barrierModeSupported(mode string) bool {
+	if m.barrierMgr != nil {
+		return m.barrierMgr.SupportsMode(mode)
+	}
+	return mode == "" || mode == BarrierModePassphrase || mode == BarrierModeShamir
+}
+
 // SetBarrierManager sets or replaces the DatabaseBarrierManager used for
 // barrier operations, and re-registers the barrier for every already-open
 // database whose configuration has barrier encryption enabled on a
@@ -1010,7 +1020,7 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 		if err := barrierDataPathError(cfg); err != nil {
 			return err
 		}
-		if barrier.Mode != "" && barrier.Mode != BarrierModePassphrase && barrier.Mode != BarrierModeShamir {
+		if !m.barrierModeSupported(barrier.Mode) {
 			return &UnsupportedBarrierStrategyError{Mode: barrier.Mode}
 		}
 		if !activeNow {

@@ -35,7 +35,7 @@
 # which self-reports its version as `dev` because gosec takes that string from
 # ldflags — so `make ci` printed `Gosec  : dev` and a finding under it could not
 # be attributed to a scanner version AT ALL. A new finding and a moved scanner
-# were indistinguishable. golangci-lint sat at v2.7.2 against ci.yml's v2.13.2,
+# were indistinguishable. golangci-lint sat at v2.7.2 against ci.yml's pin,
 # so a developer's tree was linted against a different rule set from the gate's
 # while both reported passing the same gate.
 #

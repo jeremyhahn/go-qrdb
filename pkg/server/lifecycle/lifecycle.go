@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -52,6 +53,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -289,6 +291,11 @@ type Infra struct {
 	// already applies.
 	InvitationTTL string
 
+	// InvitationRedeemLimit is auth.invitation_redeem_limit: the per-source
+	// and per-tenant policies the redemption throttle enforces. Zero fields
+	// take the config defaults.
+	InvitationRedeemLimit qrdbconfig.InvitationRedeemLimitConfig
+
 	// InvitationRequireKeyPin is auth.invitation_require_key_pin: when true,
 	// every invitation must be pinned to the invited user's key, for
 	// compliance profiles that must never issue a bearer-only token.
@@ -347,6 +354,32 @@ type Infra struct {
 	// recovery. The caller constructs and owns the sink's lifecycle (e.g. the
 	// storage.Storage it wraps); BuildServices only reads from it.
 	BackupSink service.BackupSink
+
+	// DEKProvider, when non-nil, replaces the software dek.Keyring as the
+	// engine behind the tenant DEK service. It is the seam a composer fills
+	// with a device-backed implementation that holds each tenant's keys
+	// without exporting them (go-xkms hardware, composed by go-quicbaas). Nil
+	// keeps the software keyring, wrapped through KeyWrapRegistry /
+	// KeyWrapProvider. keywrap.Provider stays the key-wrap seam; this is the
+	// DEK-engine seam beside it.
+	DEKProvider dek.Provider
+
+	// Clock, when non-nil, is the time source for the node's security time
+	// gates: lease expiry, key-delivery freshness and replay window, the
+	// invitation-redeem and holder-act limiters. Nil is the real clock.
+	Clock clock.Clock
+
+	// InvitationRedeemLimiter, when non-nil, throttles invitation redemption
+	// in place of the built-in per-node token bucket. It is asked once per
+	// source address and once per tenant, under the policies the config
+	// resolves. BuildServices does not close an injected limiter; its owner
+	// does.
+	InvitationRedeemLimiter ratelimit.Limiter
+
+	// HolderActLimiter, when non-nil, throttles share-holder acts (claim,
+	// approve, ceremony steps) in place of the built-in per-node token
+	// bucket. BuildServices does not close an injected limiter.
+	HolderActLimiter ratelimit.Limiter
 
 	// KeyWrapRegistry is the canonical name->factory lookup for key-wrap
 	// (KEK) providers the Backup service resolves BackupOptions.
@@ -829,7 +862,8 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// named like a tenant would otherwise resolve to that tenant's barrier.
 	if infra.BarrierRegistry != nil && dbManager.BarrierManager() == nil {
 		bm, err := database.NewDatabaseBarrierManager(log, infra.BarrierRegistry.SystemBarrier(),
-			database.WithBarrierAuditTrail(infra.AuditLogger))
+			database.WithBarrierAuditTrail(infra.AuditLogger),
+			database.WithBarrierStrategyRegistry(infra.StrategyRegistry))
 		if err != nil {
 			return nil, &DatabaseBarrierManagerError{Err: err}
 		}
@@ -1134,8 +1168,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	// The tenant DEK keyring rides the StoreResolver both branches above
 	// build, so it is served whether or not the seal subsystem is enabled.
-	if n.StoreResolver != nil {
-		dekSvc, err := buildDEKService(n.StoreResolver, infra.KeyWrapRegistry, infra.KeyWrapProvider, infra.DEKKeyDir)
+	// An injected DEKProvider does not need the resolver, so it is served too.
+	if n.StoreResolver != nil || infra.DEKProvider != nil {
+		dekSvc, err := buildDEKService(infra.DEKProvider, n.StoreResolver, infra.KeyWrapRegistry, infra.KeyWrapProvider, infra.DEKKeyDir)
 		if err != nil {
 			return nil, err
 		}
@@ -1228,8 +1263,26 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	return n, nil
 }
 
-// buildDEKService builds the tenant DEK keyring service over resolver.
-func buildDEKService(resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
+// infraClock returns the node's injected clock, or the real one when the
+// composer supplied none.
+func infraClock(infra Infra) clock.Clock {
+	if infra.Clock == nil {
+		return clock.Real()
+	}
+	return infra.Clock
+}
+
+// buildDEKService builds the tenant DEK service. A non-nil provider is the
+// composer's dek.Provider seam and is served as is; otherwise the software
+// dek.Keyring is built over resolver.
+func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
+	if provider != nil {
+		svc, err := service.NewDEKService(provider)
+		if err != nil {
+			return nil, &DEKServiceError{Err: err}
+		}
+		return svc, nil
+	}
 	opts := []dek.KeyringOption{}
 	if keyWrapRegistry != nil {
 		// A shared registry is already populated with whatever extras its
@@ -1522,7 +1575,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	// idempotent, so a backend that arrives decorated keeps its one counter,
 	// and one that does not is never left without a lockout.
 	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
-	svc.SetQuorumLimiter(QuorumLimit)
+	svc.SetQuorumLimiter(QuorumLimitWith(infra.HolderActLimiter))
 	svc.SetAuditLogger(infra.AuditLogger)
 	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
 	return svc, nil
@@ -1586,21 +1639,36 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		// than guessed at with a fallback: an invitation's lifetime is a
 		// security-relevant bound, not a value to silently substitute for.
 		ttl, terr := qrdbconfig.ParseInvitationTTL(infra.InvitationTTL)
-		if err != nil || terr != nil {
+		perSource, perTenant, lerr := infra.InvitationRedeemLimit.Resolved()
+		if err != nil || terr != nil || lerr != nil {
 			log.Warn("lifecycle: invitation self-enrolment is disabled",
-				"store_error", err, "ttl_error", terr)
+				"store_error", err, "ttl_error", terr, "redeem_limit_error", lerr)
 		} else {
+			// Redemption is the one verb any caller may make with no
+			// credential, so it is always throttled: a composer's limiter
+			// when injected (its owner closes it), else a per-node token
+			// bucket this node closes on stop.
+			limiter := infra.InvitationRedeemLimiter
+			if limiter == nil {
+				bucket := ratelimit.NewTokenBucketLimiter(ratelimit.WithClock(infra.Clock))
+				n.addCloser(bucket.Close)
+				limiter = bucket
+			}
 			n.Invitations = service.NewInvitationService(service.InvitationDeps{
-				Invitations:   invites,
-				Users:         invitationUsers,
-				Certs:         n.CertProv,
-				Anchors:       n.TrustAnchors,
-				Tenants:       n.Tenant,
-				TTL:           ttl,
-				TrustDomain:   infra.SPIFFETrustDomain,
-				AuditLogger:   infra.AuditLogger,
-				AuditPolicy:   infra.AuditFailurePolicy,
-				RequireKeyPin: infra.InvitationRequireKeyPin,
+				RedeemLimiter:   limiter,
+				RedeemPerSource: ratelimit.Policy{RatePerSecond: perSource.RatePerSecond, Burst: perSource.Burst},
+				RedeemPerTenant: ratelimit.Policy{RatePerSecond: perTenant.RatePerSecond, Burst: perTenant.Burst},
+				Now:             infraClock(infra).Now,
+				Invitations:     invites,
+				Users:           invitationUsers,
+				Certs:           n.CertProv,
+				Anchors:         n.TrustAnchors,
+				Tenants:         n.Tenant,
+				TTL:             ttl,
+				TrustDomain:     infra.SPIFFETrustDomain,
+				AuditLogger:     infra.AuditLogger,
+				AuditPolicy:     infra.AuditFailurePolicy,
+				RequireKeyPin:   infra.InvitationRequireKeyPin,
 			})
 		}
 	}

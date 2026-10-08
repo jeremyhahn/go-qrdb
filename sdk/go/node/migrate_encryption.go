@@ -474,12 +474,9 @@ func (p *nodeMigrationProvider) reopenStrategy(id seal.StrategyID) (seal.Sealing
 // leaving the seal layer (barrier, registry, seal store, volume pool) intact.
 // It mirrors the data-plane portion of Close.
 func (n *Node) teardownDataPlane() {
-	// The sweeper revokes through the data plane being stopped; the rebuild
-	// starts a new one over the new engine's lessor.
-	if n.stopLeaseExpiry != nil {
-		n.stopLeaseExpiry()
-		n.stopLeaseExpiry = nil
-	}
+	// The sweepers revoke and reclaim through the data plane being stopped;
+	// the rebuild starts new ones over the new engine and lessor.
+	n.stopStandaloneSweepers()
 	if client := n.client.Swap(nil); client != nil {
 		_ = client.Close()
 	}
@@ -556,37 +553,6 @@ func canonicalRootKeyStrategy(ctx context.Context, n *Node) (seal.StrategyID, er
 		return "", err
 	}
 	return sealed.Strategy, nil
-}
-
-// persistedRootKeyStrategy reads the persisted sealed root-key blob at
-// rootKeyPath and returns its sealing strategy, or "" when no blob exists or it
-// cannot be decoded. It lets the boot sequence detect a barrier that was
-// migrated to a keyed strategy after the fact (enable-encryption) so it can
-// register the matching strategy even when the config still names the
-// pre-migration one.
-func persistedRootKeyStrategy(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) seal.StrategyID {
-	blob, err := backend.Get(ctx, rootKeyPath)
-	if err != nil || len(blob) == 0 {
-		return ""
-	}
-	var sealed struct {
-		Strategy seal.StrategyID `json:"strategy"`
-	}
-	if json.Unmarshal(blob, &sealed) != nil {
-		return ""
-	}
-	return sealed.Strategy
-}
-
-// strategyRegistered reports whether a strategy with the given ID is already in
-// the slice.
-func strategyRegistered(strategies []seal.SealingStrategy, id seal.StrategyID) bool {
-	for _, s := range strategies {
-		if s.ID() == id {
-			return true
-		}
-	}
-	return false
 }
 
 // keyedStrategyFor builds the keyed sealing strategy for the migration

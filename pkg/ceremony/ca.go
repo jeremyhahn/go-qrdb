@@ -16,6 +16,7 @@ package ceremony
 
 import (
 	"context"
+	"crypto"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -112,9 +113,16 @@ var (
 	oidOrganizationalUnit = asn1.ObjectIdentifier{2, 5, 4, 11}
 )
 
-// IssueCertRequest describes a certificate to be issued directly by the CA,
-// including key generation.
+// IssueCertRequest describes a certificate to be issued directly by the CA
+// for a key the caller already holds. The CA certifies PublicKey and never
+// generates, sees or returns the private half: the caller keeps it -- in
+// memory, or on a device behind a crypto.Signer -- and pairs it with the
+// returned certificate itself.
 type IssueCertRequest struct {
+	// PublicKey is the public half of the key the certificate binds.
+	// Required; a nil PublicKey is a *IssueCertKeyError.
+	PublicKey crypto.PublicKey
+
 	// CommonName is the subject common name for the certificate.
 	CommonName string
 
@@ -139,17 +147,14 @@ type IssueCertRequest struct {
 	ValidityDays int
 }
 
-// IssuedCert holds a certificate and its corresponding private key,
-// both as parsed objects and PEM-encoded bytes.
+// IssuedCert holds a certificate the CA issued, parsed and PEM-encoded. It
+// carries no private key: the key is the caller's (IssueCertRequest.PublicKey).
 type IssuedCert struct {
 	// Certificate is the parsed x509 certificate.
 	Certificate *x509.Certificate
 
 	// CertPEM is the PEM-encoded certificate.
 	CertPEM []byte
-
-	// KeyPEM is the PEM-encoded private key.
-	KeyPEM []byte
 }
 
 // CeremonyCA is the interface for the certificate authority used during
@@ -181,7 +186,7 @@ type CeremonyCA interface {
 	// CABundle returns the PEM-encoded CA certificate chain.
 	CABundle() ([]byte, error)
 
-	// IssueCertificate generates a new key pair and issues a certificate
-	// with the given parameters.
+	// IssueCertificate issues a certificate for req.PublicKey with the given
+	// parameters. It never generates or returns a private key.
 	IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error)
 }

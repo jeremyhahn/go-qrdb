@@ -11,6 +11,49 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **The system barrier resolves its sealing strategy through the strategy
+  registry.** `seal.NewSystemStrategyRegistry` holds qrdb's software
+  strategies overlaid by a composer's `server.WithStrategyRegistry` registry,
+  and `seal.ResolveSystemStrategies` builds the configured strategy and the
+  one the persisted root key names. Both `qrdbd` and `sdk/go/node` use it; the
+  node's `WithSealStrategy` registers its strategy under its own ID.
+- **The server TLS leaf key is a `crypto.Signer`.** `server.WithServerTLSKey`
+  (and `sdk/go` `WithServerTLSKey`) composes a device-held signer in; only its
+  public half reaches the CA and handshakes sign through it. Unset, each
+  transport's auto-provisioned leaf gets a fresh in-memory P-256 key.
+  `ceremony.ServerTLSConfig` takes the signer as its third argument, and
+  `ceremony.CeremonyCA.IssueCertificate` certifies the caller's
+  `IssueCertRequest.PublicKey` (required; `*ceremony.IssueCertKeyError`
+  without it) instead of generating a key.
+- **HPKE recipients open through a `keydelivery.Decrypter`.**
+  `keydelivery.NewReceiver` takes a `Decrypter` instead of an
+  `*ecdsa.PrivateKey`, and `ceremony.ShareEnvelope.Open` takes a
+  `keydelivery.Decrypter`. `keydelivery.NewDecrypter` builds one over a
+  device-held `ecdh.KeyExchanger`, so the private key never enters the
+  process. `sdk/go/node` `WithKeyDeliveryDecrypter` and
+  `lifecycle.RaftTenantClusterConfig.Decrypter` compose a node's device-held
+  decrypter into the key plane; unset, the node's software key is converted.
+- **A clustered node's mTLS identity can be a `crypto.Signer`.**
+  `lifecycle.RaftTenantClusterConfig.Identity` (a `*tls.Certificate`) carries
+  the node identity into the cluster key plane. `sdk/go/node` takes it from
+  `WithRaftMTLS`'s `Certificate` when set, else from the `Cert`/`Key` pair, and
+  derives its member identity and cluster-join certificate from the same leaf,
+  so a node whose key is held on a TPM or HSM forms a cluster with no key PEM.
+  A key plane the identity cannot serve reports `*lifecycle.NodeIdentityError`
+  in its warning.
+
+### Removed
+
+- **`ceremony.IssuedCert.KeyPEM`.** A CA no longer generates or returns a leaf
+  private key; the caller holds it.
+- **`lifecycle.RaftTenantClusterConfig.CertPEM` and `KeyPEM`.** Replaced by
+  `Identity`; no key PEM flows into the cluster key plane.
+- **`server.WithSealStrategy` and `CryptoOptions.SealStrategy`.** Nothing
+  consumed them; inject a system-barrier strategy with `sdk/go/node`'s
+  `WithSealStrategy` or through `server.WithStrategyRegistry`.
+
 ## [0.47.0-alpha] - 2026-10-08
 
 ### Changed

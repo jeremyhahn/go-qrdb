@@ -1307,6 +1307,12 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   and keeps its records under that barrier.
 - `pkg/database`: `DatabaseBarrierManager` keeps its own `BarrierRegistry` over
   the system barrier, so a database name can never collide with a tenant id.
+  It resolves a barrier mode through the `seal.StrategyRegistry` a composer
+  supplies (`WithBarrierStrategyRegistry`) before the built-in
+  `passphrase`/empty/`shamir` modes, so a hardware strategy registered once
+  seals a database barrier as it seals a tenant barrier; a mode neither knows is
+  `UnsupportedBarrierStrategyError`, on create (`EnsureBarrier`), on re-open
+  (`RegisterBarrier`) and on `UpdateBarrier`.
   `DatabaseConfig.Validate` (and the database service, before any
   reservation) refuses a Shamir M-of-N outside 2 <= M <= N <=
   `MaxShamirShares` (255, the seal's GF(2^8) split limit) with

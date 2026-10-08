@@ -177,6 +177,15 @@ storage:
     transport: grpc
 ```
 
+A composer can replace the configured backend of a **standalone** node's data
+plane: `server.WithStorageFactory` / `node.WithStorageFactory` take a
+`func(dataDir string, dataPlaneFS vfs.FS) (storage.Storage, error)`, and the
+node closes what it returns. A factory that writes files must route its I/O
+through the `vfs.FS` it is given so the data stays under the barrier. A
+clustered replica's storage is chosen by its state machine, which node options
+do not reach yet, and the seal store is node-local by design and not behind the
+factory. See [release/extension-seams.md](../release/extension-seams.md).
+
 Raft-mode state machines select their backend separately with
 `raft.sm_storage` (`pebble` default, `file`, `memory`) — see
 [../run-modes/engineering.md](../run-modes/engineering.md). Objstore is refused

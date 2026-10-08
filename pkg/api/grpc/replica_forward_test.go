@@ -26,6 +26,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
@@ -234,6 +235,29 @@ func newFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Duratio
 	return c
 }
 
+// awaitConnected opens the forwarder's connection to t and waits until it is
+// ready. A forward gives the handshake half its budget and, when the
+// connection is not ready by then, treats the target as unreachable -- the
+// request never left -- and moves to the next replica. A test whose
+// assertion is about what happens after the request reached t awaits the
+// connection first, so a slow handshake on a loaded host cannot turn t into
+// an unreachable target and the test into one about a different path.
+func (c *fwdCluster) awaitConnected(t *testing.T, target *fakeTarget) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cc, _ := c.forwarder.conn(ctx, target.addr)
+	if cc == nil {
+		t.Fatalf("the forwarder opened no connection to %s", target.addr)
+	}
+	for state := cc.GetState(); state != connectivity.Ready; state = cc.GetState() {
+		cc.Connect()
+		if !cc.WaitForStateChange(ctx, state) {
+			t.Fatalf("the forwarder's connection to %s never became ready (%s)", target.addr, state)
+		}
+	}
+}
+
 func callerCtx(pairs ...string) context.Context {
 	md := metadata.Pairs(append([]string{MetadataDatabase, "orders", "authorization", "Bearer secret"}, pairs...)...)
 	return metadata.NewOutgoingContext(context.Background(), md)
@@ -323,26 +347,34 @@ func TestReplicaForwardGRPC_UnreachableRetriesTheNextReplica(t *testing.T) {
 }
 
 func TestReplicaForwardGRPC_AFailureAfterSendingIsNotRetried(t *testing.T) {
-	for name, setup := range map[string]func(b *fakeTarget){
+	for name, setup := range map[string]func(t *testing.T, b *fakeTarget){
 		// Something between the nodes failed the request: the target's
 		// handler never marked it served.
-		"unmarked failure": func(b *fakeTarget) {
+		"unmarked failure": func(_ *testing.T, b *fakeTarget) {
 			b.unmarked = true
 			b.answer = func(context.Context) error { return status.Error(codes.Internal, "on the way") }
 		},
-		// The target took the request and did not answer in time.
-		"timeout": func(b *fakeTarget) {
-			b.answer = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+		// The target took the request and did not answer in time. It holds
+		// the request until the subtest ends rather than until its own
+		// deadline: that deadline is the forward's, and a target answering
+		// on it races the forwarder's -- the answer, marked served, is the
+		// target's own error, which caches the target as a replica that
+		// answered.
+		"timeout": func(t *testing.T, b *fakeTarget) {
+			hold := make(chan struct{})
+			t.Cleanup(func() { close(hold) })
+			b.answer = func(context.Context) error { <-hold; return status.Error(codes.Internal, "too late") }
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := replicaforwardtest.NewCA(t)
 			b := startTarget(t, ca, "node-1", "raft-b")
 			cc := startTarget(t, ca, "node-2", "raft-c")
-			setup(b)
+			setup(t, b)
 			c := newFwdCluster(t, ca, 300*time.Millisecond, b, cc)
 			c.cache.Put(42, replicaforward.CachedLeader{TenantID: "acme", Database: "orders", ReplicaID: 1, RaftAddr: "raft-b",
 				Endpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: b.addr}})
+			c.awaitConnected(t, b)
 
 			_, err := c.client.Put(callerCtx(), &pb.PutRequest{Key: "k", Value: []byte("v")})
 			if err == nil {

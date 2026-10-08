@@ -302,21 +302,19 @@ func (r *DatabaseRaftConfig) Validate() error {
 
 const (
 	// BarrierModePassphrase selects a single-passphrase (software KDF)
-	// sealing strategy for a per-database encryption barrier. This is the
-	// only strategy EnsureBarrier currently implements.
+	// sealing strategy for a per-database encryption barrier. It is the
+	// default mode.
 	BarrierModePassphrase = "passphrase"
 
 	// BarrierModeShamir selects M-of-N Shamir quorum sealing for a
-	// per-database encryption barrier. Accepted as a configuration value but
-	// not yet implemented by EnsureBarrier, which rejects it with
-	// UnsupportedBarrierStrategyError.
+	// per-database encryption barrier, under its holders' authority.
 	BarrierModeShamir = "shamir"
 )
 
 // DatabaseBarrierConfig holds encryption barrier settings for a single database.
 type DatabaseBarrierConfig struct {
 	Enabled        bool   `yaml:"enabled"        json:"enabled"`
-	Mode           string `yaml:"mode"           json:"mode,omitempty"`           // "passphrase" or "shamir"
+	Mode           string `yaml:"mode"           json:"mode,omitempty"`           // "passphrase", "shamir", or a strategy a composer registered (WithBarrierStrategyRegistry)
 	SharesRequired int    `yaml:"sharesRequired" json:"sharesRequired,omitempty"` // shamir threshold
 	SharesTotal    int    `yaml:"sharesTotal"    json:"sharesTotal,omitempty"`    // shamir total shares
 }

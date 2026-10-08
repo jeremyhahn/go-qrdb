@@ -235,7 +235,11 @@ func initLeaderTenant(t *testing.T, reg *seal.BarrierRegistry, allocator volume.
 // private key and node ID.
 func newTestKDReceiver(t *testing.T, priv *ecdsa.PrivateKey, nodeID string) *keydelivery.Receiver {
 	t.Helper()
-	kd, err := keydelivery.NewReceiver(priv, nodeID)
+	dec, err := keydelivery.PrivateKeyFor(keydelivery.KEMP256, priv)
+	if err != nil {
+		t.Fatalf("keydelivery.PrivateKeyFor: %v", err)
+	}
+	kd, err := keydelivery.NewReceiver(dec, nodeID)
 	if err != nil {
 		t.Fatalf("keydelivery.NewReceiver(%s): %v", nodeID, err)
 	}

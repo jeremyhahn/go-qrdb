@@ -348,7 +348,11 @@ func newHolderE2E(t *testing.T, tk transportKind) *holderE2E {
 	e.pool = x509.NewCertPool()
 	e.pool.AppendCertsFromPEM(caPEM)
 
-	if e.serverTLS, err = ceremony.ServerTLSConfig(context.Background(), e.ca, "127.0.0.1"); err != nil {
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.serverTLS, err = ceremony.ServerTLSConfig(context.Background(), e.ca, serverKey, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	e.serverTLS.ClientCAs = e.pool
@@ -509,7 +513,12 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		if err != nil {
 			e.t.Fatalf("create user: %v", err)
 		}
+		adminKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			e.t.Fatal(err)
+		}
 		issued, err := e.ca.IssueCertificate(ctx, &ceremony.IssueCertRequest{
+			PublicKey:    adminKey.Public(),
 			CommonName:   "holder-admin",
 			KeyUsage:     x509.KeyUsageDigitalSignature,
 			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
@@ -525,10 +534,7 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		if _, err := svc.User.AddCertBinding(ctx, adminUser.ID, user.ComputeSPKIThumbprint(issued.Certificate), 0); err != nil {
 			e.t.Fatalf("enrol holder-admin cert binding: %v", err)
 		}
-		cert, err := tls.X509KeyPair(issued.CertPEM, issued.KeyPEM)
-		if err != nil {
-			e.t.Fatal(err)
-		}
+		cert := tls.Certificate{Certificate: [][]byte{issued.Certificate.Raw}, PrivateKey: adminKey, Leaf: issued.Certificate}
 		e.adminTLS = &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: e.pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS13}
 	}
 	return e.dial(e.adminTLS).Barrier()

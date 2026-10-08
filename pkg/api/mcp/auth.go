@@ -18,6 +18,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -123,7 +125,8 @@ func (s *Server) protectedResourceMetadataHandler(w http.ResponseWriter, r *http
 // authenticateHandler wraps the MCP endpoint whenever authentication is
 // configured, and authenticates every HTTP request BEFORE mcp-go reads any of
 // it. A request no configured authenticator accepts is answered 401 at the
-// HTTP layer, so initialize, ping and tools/list -- which enumerates the whole
+// HTTP layer (or 503/429 when the node could not finish checking it; see
+// writeAuthenticationRefusal), so initialize, ping and tools/list -- which enumerates the whole
 // tool surface -- are never answered to an anonymous caller, and mcp-go never
 // parses an anonymous body. A request that does authenticate proceeds with its
 // identity bound into the request context, where authHTTPContext picks it up
@@ -140,15 +143,39 @@ func (s *Server) authenticateHandler(next http.Handler) http.Handler {
 		// authenticates as that caller (docs/replica-forwarding).
 		authCtx, _, err := s.authMW.AuthenticateHTTP(ctx, w, r)
 		if err != nil {
-			slog.Debug("mcp: request authentication failed", "error", err)
-			if s.bearerChallenge != "" {
-				w.Header().Set("WWW-Authenticate", s.bearerChallenge)
-			}
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			writeAuthenticationRefusal(w, err, s.bearerChallenge)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(authCtx))
 	})
+}
+
+// writeAuthenticationRefusal answers a request the auth chain refused with the
+// status its failure class names, the same mapping REST applies
+// (authmw.HTTPStatus). Only a failure to establish who the caller is gets 401;
+// a node that could not finish checking a valid credential -- a tenant's user
+// store slower than the lookup budget, an unreachable revocation source, a
+// rate limit -- answers 503 or 429, with Retry-After when the error names a
+// delay. Answering those 401 told a correctly enrolled caller its credential
+// was bad, and an MCP client treats 401 at initialize as terminal.
+//
+// The bearer challenge rides only a 401: it tells an OAuth client to go and
+// authorize, which is the wrong advice when the credential was never judged.
+func writeAuthenticationRefusal(w http.ResponseWriter, err error, bearerChallenge string) {
+	status := authmw.HTTPStatus(err, http.StatusUnauthorized)
+	if status == http.StatusUnauthorized {
+		// Debug: a misconfigured client is diagnosable without log spam.
+		slog.Debug("mcp: request authentication failed", "error", err)
+		if bearerChallenge != "" {
+			w.Header().Set("WWW-Authenticate", bearerChallenge)
+		}
+	} else {
+		slog.Warn("mcp: request authentication could not complete", "status", status, "error", err)
+	}
+	if delay, ok := authmw.RetryAfter(err); ok {
+		w.Header().Set("Retry-After", strconv.FormatInt(authmw.RetryAfterSeconds(delay), 10))
+	}
+	http.Error(w, strings.ToLower(http.StatusText(status)), status)
 }
 
 // defaultMaxRequestBodyBytes bounds an authenticated MCP HTTP request body

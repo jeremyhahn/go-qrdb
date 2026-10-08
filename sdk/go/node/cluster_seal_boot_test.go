@@ -19,12 +19,17 @@ package node
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -102,8 +107,28 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 			return cs.Active && cs.Local == "serving"
 		})
 	}
-	if err := nodes[0].Client().Barrier().BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// A seal or clear whose record the system shard could not confirm -- its
+	// read or write met a leader election, which a loaded host can start at
+	// any point here -- is the documented retryable refusal
+	// (docs/barrier-seal/api.md). The node that refused a seal has sealed
+	// itself anyway and refuses requests, so the seal is retried through the
+	// next node, once the unsealed nodes have a leader among themselves and a
+	// write through that node commits: retrying straight into the election,
+	// or toward a sealed leader, would seal that node too, and two sealed
+	// nodes leave the third no quorum. The refused seal may have committed after all, in
+	// which case every node seals on reading it and nothing is retried.
+	for sealer := 0; ; {
+		err := nodes[sealer].Client().Barrier().BarrierSeal(ctx)
+		if err == nil {
+			break
+		}
+		if !recordUnconfirmed(err) || sealer == len(nodes)-1 {
+			t.Fatalf("BarrierSeal through node %d: %v", replicas[sealer].id, err)
+		}
+		sealer++
+		if sealRecordedOrSettled(ctx, t, nodes[sealer:], replicas[sealer:]) {
+			break
+		}
 	}
 	for _, n := range nodes {
 		_ = n.Close()
@@ -118,8 +143,21 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 	for _, n := range restarted {
 		waitClusterSeal(n, "held", func(cs *transport.ClusterSeal) bool { return cs.Local == "held" })
 	}
-	if _, err := restarted[0].Client().Barrier().BarrierClusterUnseal(ctx); err != nil {
-		t.Fatalf("BarrierClusterUnseal: %v", err)
+	// A clear unseals nothing and a refused one changes nothing, so it is
+	// retried through the same node.
+	for {
+		_, err := restarted[0].Client().Barrier().BarrierClusterUnseal(ctx)
+		if err == nil {
+			break
+		}
+		if !recordUnconfirmed(err) {
+			t.Fatalf("BarrierClusterUnseal: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("BarrierClusterUnseal: %v", errors.Join(ctx.Err(), err))
+		case <-time.After(clusterPollInterval):
+		}
 	}
 	// Each node serves again once its monitor reads the cleared record.
 	for _, n := range restarted {
@@ -128,4 +166,64 @@ func TestClusteredNode_FirstRequestAfterRestartUnderASealedRecordIsRefused(t *te
 	if err := putUntilCommitted(ctx, restarted[0].Client().KV(), "after", []byte("v")); err != nil {
 		t.Fatalf("Put after cluster-unseal: %v", err)
 	}
+}
+
+// recordUnconfirmed reports whether err is a cluster seal record the system
+// shard could not confirm, which docs/barrier-seal/api.md makes a retryable
+// 503.
+func recordUnconfirmed(err error) bool {
+	var unconfirmed *clusterseal.RecordNotConfirmedError
+	return errors.As(err, &unconfirmed)
+}
+
+// sealRecordedOrSettled waits, after a seal whose record was not confirmed,
+// until nodes -- the ones the refused seal left unsealed -- report the node
+// record sealed, the refused write having committed after all, and returns
+// true; or until they agree on a system shard leader among themselves and a
+// write through nodes[0] commits, so a seal through nodes[0] meets a settled
+// leader rather than the node that sealed itself, and returns false.
+// replicas[i] is nodes[i]'s replica.
+func sealRecordedOrSettled(ctx context.Context, t *testing.T, nodes []*Node, replicas []formationReplica) bool {
+	t.Helper()
+	for {
+		st, err := nodes[0].Client().Barrier().BarrierStatus(ctx)
+		if err == nil && st.ClusterSeal != nil && st.ClusterSeal.Sealed {
+			return true
+		}
+		if leaderAmong(t, nodes, replicas) {
+			err = nodes[0].Client().KV().Put(ctx, "seal-retry-probe", []byte("v"))
+			if err == nil {
+				return false
+			}
+			var notLeader *transport.NotLeaderError
+			if !errors.As(err, &notLeader) && !errors.Is(err, quicraft.ErrReadIndexNotReady) && !errors.Is(err, seal.ErrSealed) {
+				t.Fatalf("probe write before retrying the seal: %v", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the node record neither sealed nor became writable: %v", errors.Join(ctx.Err(), err))
+		case <-time.After(clusterPollInterval):
+		}
+	}
+}
+
+// leaderAmong reports whether every one of nodes reports the same system
+// shard leader and that leader is one of them. replicas[i] is nodes[i]'s
+// replica.
+func leaderAmong(t *testing.T, nodes []*Node, replicas []formationReplica) bool {
+	t.Helper()
+	var leader uint64
+	for _, n := range nodes {
+		host, ok := n.host.(*quicraft.Host)
+		if !ok {
+			t.Fatalf("node host is %T, want *quicraft.Host", n.host)
+		}
+		id, known, err := host.GetLeaderID(shard.ShardKV)
+		if err != nil || !known || (leader != 0 && id != leader) {
+			return false
+		}
+		leader = id
+	}
+	return slices.ContainsFunc(replicas, func(r formationReplica) bool { return r.id == leader })
 }

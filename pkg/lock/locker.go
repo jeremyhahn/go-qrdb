@@ -19,10 +19,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -63,10 +63,27 @@ type Service struct {
 	watchSvc WatchServicer
 	kvSvc    MVCCKVServicer
 	logger   *slog.Logger
+	clock    clock.Clock
 }
 
 // Compile-time interface check.
 var _ Locker = (*Service)(nil)
+
+// Option configures a Service.
+type Option func(*Service)
+
+// WithClock sets the time source that stamps a lock's acquisition time. The
+// default is clock.Real. A lock's expiry is not decided here but by the lease
+// beneath it, whose clock is configured on the lessor (lease.WithClock); a test
+// that drives both from one clocktest.Fake sees acquisition time and expiry
+// agree. A nil Clock leaves the default in place.
+func WithClock(c clock.Clock) Option {
+	return func(s *Service) {
+		if c != nil {
+			s.clock = c
+		}
+	}
+}
 
 // NewLocker creates a new lock Service. All four service dependencies are
 // required. A no-op logger is used when logger is nil.
@@ -76,6 +93,7 @@ func NewLocker(
 	watchSvc WatchServicer,
 	kvSvc MVCCKVServicer,
 	logger *slog.Logger,
+	opts ...Option,
 ) (*Service, error) {
 	if txSvc == nil {
 		return nil, ErrNilTxService
@@ -92,13 +110,18 @@ func NewLocker(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
+	s := &Service{
 		txSvc:    txSvc,
 		leaseSvc: leaseSvc,
 		watchSvc: watchSvc,
 		kvSvc:    kvSvc,
 		logger:   logger,
-	}, nil
+		clock:    clock.Real(),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // TryLock attempts to acquire the lock without blocking. It returns
@@ -125,7 +148,7 @@ func (s *Service) TryLock(ctx context.Context, opts LockOptions) (*Lock, error) 
 		return nil, err
 	}
 
-	now := time.Now().Unix()
+	now := s.clock.Now().Unix()
 	lv := lockValue{
 		HolderID:     opts.HolderID,
 		Reentrant:    opts.Reentrant,

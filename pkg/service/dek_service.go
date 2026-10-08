@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"io"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -53,28 +54,33 @@ type DEKServicer interface {
 	Rewrap(ctx context.Context, tenantID string, ciphertext, aad []byte) (*dek.Rewrapped, error)
 }
 
-// DEKService implements DEKServicer over a dek.Keyring.
+// DEKService implements DEKServicer over a dek.Provider: the software
+// dek.Keyring by default, or a composer's device-backed engine.
 type DEKService struct {
-	keyring *dek.Keyring
+	provider dek.Provider
 }
 
 // Compile-time interface check.
 var _ DEKServicer = (*DEKService)(nil)
 
-// NewDEKService returns a DEKService over keyring.
-func NewDEKService(keyring *dek.Keyring) (*DEKService, error) {
-	if keyring == nil {
-		return nil, &dek.InvalidInputError{Op: "NewDEKService", Field: "keyring"}
+// NewDEKService returns a DEKService over provider.
+func NewDEKService(provider dek.Provider) (*DEKService, error) {
+	if provider == nil {
+		return nil, &dek.InvalidInputError{Op: "NewDEKService", Field: "provider"}
 	}
-	return &DEKService{keyring: keyring}, nil
+	return &DEKService{provider: provider}, nil
 }
 
-// Close releases the underlying keyring's cached "software" key-wrap
-// provider, if it ever resolved one. Mirrors BackupService.Close for the
-// identical reason: constructing the provider fresh on every call would
-// leak one open directory file descriptor per call.
+// Close releases the underlying provider's resources when it holds any. For
+// the software dek.Keyring that is the cached "software" key-wrap provider, if
+// it ever resolved one; mirrors BackupService.Close for the identical reason:
+// constructing the provider fresh on every call would leak one open directory
+// file descriptor per call. A provider with nothing to release needs no Close.
 func (s *DEKService) Close() error {
-	return s.keyring.Close()
+	if c, ok := s.provider.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // Status implements DEKServicer.
@@ -83,7 +89,7 @@ func (s *DEKService) Status(ctx context.Context, tenantID string) (*dek.Status, 
 	if err != nil {
 		return nil, err
 	}
-	return s.keyring.Status(ctx, t)
+	return s.provider.Status(ctx, t)
 }
 
 // Rotate implements DEKServicer.
@@ -92,7 +98,7 @@ func (s *DEKService) Rotate(ctx context.Context, tenantID string) (*dek.Status, 
 	if err != nil {
 		return nil, err
 	}
-	return s.keyring.Rotate(ctx, t)
+	return s.provider.Rotate(ctx, t)
 }
 
 // Retire implements DEKServicer.
@@ -101,7 +107,7 @@ func (s *DEKService) Retire(ctx context.Context, tenantID string, version uint64
 	if err != nil {
 		return nil, err
 	}
-	return s.keyring.Retire(ctx, t, version)
+	return s.provider.Retire(ctx, t, version)
 }
 
 // Encrypt implements DEKServicer.
@@ -110,7 +116,7 @@ func (s *DEKService) Encrypt(ctx context.Context, tenantID string, plaintext, aa
 	if err != nil {
 		return nil, err
 	}
-	return s.keyring.Encrypt(ctx, t, plaintext, aad)
+	return s.provider.Encrypt(ctx, t, plaintext, aad)
 }
 
 // Decrypt implements DEKServicer.
@@ -119,7 +125,7 @@ func (s *DEKService) Decrypt(ctx context.Context, tenantID string, ciphertext, a
 	if err != nil {
 		return nil, err
 	}
-	return s.keyring.Decrypt(ctx, t, ciphertext, aad)
+	return s.provider.Decrypt(ctx, t, ciphertext, aad)
 }
 
 // Rewrap implements DEKServicer.
@@ -128,7 +134,7 @@ func (s *DEKService) Rewrap(ctx context.Context, tenantID string, ciphertext, aa
 	if err != nil {
 		return nil, err
 	}
-	return s.keyring.Rewrap(ctx, t, ciphertext, aad)
+	return s.provider.Rewrap(ctx, t, ciphertext, aad)
 }
 
 // dekTenant resolves the tenant a keyring request acts on: the caller's own,

@@ -16,6 +16,9 @@ package ceremony
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -519,7 +522,17 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	var tlsCertPEM []byte
 	var spkiPin string
 	if ca != nil {
+		// The certificate returned here is a record of the CA's issuance,
+		// not the listener's identity -- the server presents its own leaf
+		// (ServerTLSConfig) -- so it binds a key that is dropped on return,
+		// exactly as the key the CA used to generate for it was.
+		tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, &CertEncodeError{Err: err}
+		}
 		tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
+			PublicKey:    tlsKey.Public(),
 			CommonName:   opts.Hostname,
 			SANs:         opts.SANs,
 			KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

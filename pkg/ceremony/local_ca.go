@@ -17,8 +17,6 @@ package ceremony
 import (
 	"context"
 	"crypto"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -104,8 +102,8 @@ func (c *LocalCA) CABundle() ([]byte, error) {
 	return c.caCertPEM, nil
 }
 
-// IssueCertificate generates a new ECDSA P-256 key pair and issues a leaf
-// certificate signed by the local CA with the given parameters.
+// IssueCertificate issues a leaf certificate for req.PublicKey, signed by the
+// local CA with the given parameters.
 func (c *LocalCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*IssuedCert, error) {
 	return issueCertificateWith(c.caCert, c.caKey, req)
 }
@@ -160,17 +158,16 @@ func signCSRWith(caCert *x509.Certificate, caKey crypto.Signer, csrPEM []byte, o
 	return cert, nil
 }
 
-// issueCertificateWith generates a new ECDSA P-256 key pair and issues a leaf
-// certificate under caCert/caKey. It is the common body of
-// LocalCA.IssueCertificate and ProviderCA.IssueCertificate.
+// issueCertificateWith issues a leaf certificate for req.PublicKey under
+// caCert/caKey. It is the common body of LocalCA.IssueCertificate and
+// ProviderCA.IssueCertificate. A request without a PublicKey is a
+// *IssueCertKeyError: no leaf key is ever generated here.
 func issueCertificateWith(caCert *x509.Certificate, caKey crypto.Signer, req *IssueCertRequest) (*IssuedCert, error) {
 	if req == nil {
 		return nil, &CertEncodeError{Err: errors.New("nil issue request")}
 	}
-
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, &CertEncodeError{Err: err}
+	if req.PublicKey == nil {
+		return nil, &IssueCertKeyError{Field: "PublicKey"}
 	}
 
 	serial, err := randomSerial()
@@ -191,7 +188,7 @@ func issueCertificateWith(caCert *x509.Certificate, caKey crypto.Signer, req *Is
 		BasicConstraintsValid: true,
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &leafKey.PublicKey, caKey)
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, req.PublicKey, caKey)
 	if err != nil {
 		return nil, &CertEncodeError{Err: err}
 	}
@@ -200,15 +197,9 @@ func issueCertificateWith(caCert *x509.Certificate, caKey crypto.Signer, req *Is
 		return nil, &CertEncodeError{Err: err}
 	}
 
-	keyDER, err := x509.MarshalPKCS8PrivateKey(leafKey)
-	if err != nil {
-		return nil, &CertEncodeError{Err: err}
-	}
-
 	return &IssuedCert{
 		Certificate: cert,
 		CertPEM:     pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		KeyPEM:      pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
 	}, nil
 }
 

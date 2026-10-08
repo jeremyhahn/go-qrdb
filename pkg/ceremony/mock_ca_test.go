@@ -143,9 +143,8 @@ func (m *mockCA) CABundle() ([]byte, error) {
 }
 
 func (m *mockCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*IssuedCert, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
+	if req.PublicKey == nil {
+		return nil, &IssueCertKeyError{Field: "PublicKey"}
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -163,7 +162,7 @@ func (m *mockCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*Is
 		DNSNames:     req.SANs,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, template, m.cert, &key.PublicKey, m.key)
+	certDER, err := x509.CreateCertificate(rand.Reader, template, m.cert, req.PublicKey, m.key)
 	if err != nil {
 		return nil, err
 	}
@@ -173,17 +172,9 @@ func (m *mockCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*Is
 		return nil, err
 	}
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
 	return &IssuedCert{
 		Certificate: cert,
-		CertPEM:     certPEM,
-		KeyPEM:      keyPEM,
+		CertPEM:     pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
 	}, nil
 }
 

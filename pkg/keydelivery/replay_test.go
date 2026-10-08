@@ -74,7 +74,7 @@ func TestReceiver_Options(t *testing.T) {
 	}
 	shared := NewReplayGuard(time.Hour)
 
-	r, err := NewReceiver(priv, "node-b", WithTTL(time.Hour), WithReplayGuard(shared))
+	r, err := NewReceiver(softwareDecrypter(t, priv), "node-b", WithTTL(time.Hour), WithReplayGuard(shared))
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestReceiver_Options(t *testing.T) {
 	}
 
 	// Zero/nil option args are ignored (defaults preserved).
-	r2, err := NewReceiver(priv, "node-b", WithTTL(0), WithReplayGuard(nil))
+	r2, err := NewReceiver(softwareDecrypter(t, priv), "node-b", WithTTL(0), WithReplayGuard(nil))
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}

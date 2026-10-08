@@ -112,10 +112,41 @@ built.
 - Coverage — every founder named, an anchor for a joiner — is go-quicraft's
   rule and is left to `StartShard`, which returns `*quicraft.InvalidMemberError`.
   Restating it here would be a second copy of the rule to drift.
+
+**A node's mTLS identity can be a signer, not key bytes.** `sdk/go/node`'s
+`WithRaftMTLS` takes `RaftMTLSConfig` (go-quicraft's `MTLSConfig`): either the
+`Cert`/`Key` PEM pair, or `Certificate`, a `*tls.Certificate` whose
+`PrivateKey` is any `crypto.Signer` -- a TPM- or HSM-held key that signs on
+the device. `Certificate` takes precedence, and `CACert` is required either
+way. The one identity serves every consumer:
+
+- the Raft transport presents it (go-quicraft signs handshakes through the
+  signer);
+- the local member identity is derived from its leaf;
+- the cluster key plane's sender presents it, through
+  `lifecycle.RaftTenantClusterConfig.Identity`, and its receiver publishes the
+  leaf for peers to seal tenant keys to;
+- the member-side cluster join reads the node certificate from it.
+
+The key plane also needs the node's HPKE decrypter. A device key that agrees
+keys itself (`ecdh.KeyExchanger`) serves as the default decrypter. Otherwise
+the composer supplies one with `WithKeyDeliveryDecrypter` (see
+`docs/multi-tenancy/engineering.md`); without one the key plane is off, with a
+warning. `qrdbd` builds the identity from its TLS bundle's software key.
 - The SDK node wraps each refusal in `*node.ConfigError{Field:
   "raft.member_identities"}`, which unwraps to the typed cause.
 
 ### Enrollment role — `pkg/clusterenroll`
+
+**SDK surface and device-held keys.** `sdk/go/clusterenroll` re-exports the CSR
+join: `StartJoinServer` (taking a `cakey.Provider`), `MintJoinToken`, `JoinCSR`
+and `JoinCSRHTTP`, with their option and typed-error types. The joiner builds
+the CSR itself, so its key can sit behind a `crypto.Signer` that never exports
+it and the issued leaf certifies the device's public key. `Resolve`, `ResolveCA`
+and `Join` are the software path: they generate the node key in process and
+return PEM, the software default. A composer that enrolls through the CSR join
+hands the result to `WithRaftMTLS` as a signer-backed `Certificate`. See
+[release/extension-seams.md](../release/extension-seams.md).
 
 `clusterenroll.Resolve` / `ResolveCA` decide, on the run that first puts
 cluster CA material in the data directory, which of three roles this node

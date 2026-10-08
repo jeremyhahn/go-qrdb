@@ -237,7 +237,22 @@ CI's `test-typescript` job, required by the CI gate, runs the TypeScript SDK's
 `tsc`, `npm test` (which typechecks the tests, then runs the vitest suites) and
 build, then `svelte-check` on this frontend against the built SDK. *(Corrected:
 this section recorded that no CI job ran the TypeScript suites; that gap is
-closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
+closed.)* The job also runs the mocked Playwright tier
+(`playwright.config.ts`, no backend). *(Corrected: this section said the
+Playwright suites were not in CI; the mocked tier is. The real-backend and DOM
+tiers need a live `qrdbd` and run through `make test-e2e`.)*
+
+The mocked tier uses **per-run ports**, never fixed ones: CI job containers use
+host networking, so two jobs on one runner host share a loopback interface and a
+fixed port made the second fail with "already used". `playwright.port.ts` picks
+two distinct free loopback ports when the config loads (or honours
+`PLAYWRIGHT_PORT` and `PLAYWRIGHT_PROXY_PORT`) and exports them so worker
+processes agree. The first goes to Vite with `--strictPort` and to
+`use.baseURL`. The second is the dev server's API proxy target
+(`QRDB_PROXY_TARGET`), on which nothing listens: the tier has no backend, so a
+request a spec leaves unmocked is refused rather than proxied to whatever
+another job's `qrdbd` serves on the conventional admin port. `reuseExistingServer`
+stays off in CI, so a run never tests against another job's server.
 
 ## Test strategy
 

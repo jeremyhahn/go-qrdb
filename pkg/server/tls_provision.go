@@ -16,6 +16,9 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -51,7 +54,8 @@ func (e *TLSUnavailableError) Error() string {
 //     explicitly weaker MinVersion.
 //   - Otherwise, when a CeremonyCA is available, a server certificate is
 //     auto-provisioned from it (chained to the node's own CA) so the operator
-//     never has to configure TLS by hand.
+//     never has to configure TLS by hand. The leaf binds the WithServerTLSKey
+//     signer when one is composed in, else a fresh in-memory P-256 key.
 //   - When neither is available the method fails closed with a
 //     *TLSUnavailableError; the caller must NOT fall back to a plaintext
 //     listener.
@@ -66,7 +70,15 @@ func (s *Server) resolveTransportTLS(transport string, extraSANs ...string) (*tl
 	if s.opts.ceremonyCA == nil {
 		return nil, &TLSUnavailableError{Transport: transport}
 	}
-	cfg, err := ceremony.ServerTLSConfig(context.Background(), s.opts.ceremonyCA, extraSANs...)
+	key := s.opts.serverTLSKey
+	if key == nil {
+		generated, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, &ceremony.ServerTLSError{Err: err}
+		}
+		key = generated
+	}
+	cfg, err := ceremony.ServerTLSConfig(context.Background(), s.opts.ceremonyCA, key, extraSANs...)
 	if err != nil {
 		return nil, err
 	}

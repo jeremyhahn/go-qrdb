@@ -22,6 +22,7 @@ package quic
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
@@ -78,8 +79,31 @@ func TestE2E_GetRevision_ServerErr(t *testing.T) {
 func TestE2E_GetAtRevision_ServerErr(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	serverErr(srv, "mvcc.GetAtRevision", "err")
-	if _, err := tr.GetAtRevision(context.Background(), "k", 1); err == nil {
+	_, err := tr.GetAtRevision(context.Background(), "k", 1)
+	if err == nil {
 		t.Fatal("expected err")
+	}
+	var compacted *transport.RevisionCompactedError
+	if errors.As(err, &compacted) {
+		t.Fatalf("a server fault was reported as a compaction refusal: %v", err)
+	}
+}
+
+// TestE2E_GetAtRevision_Compacted: the frame a real server sends for a
+// revision below the compaction floor, wire.StatusOutOfRange, comes back as
+// the typed refusal carrying the revision asked for.
+func TestE2E_GetAtRevision_Compacted(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("mvcc.GetAtRevision", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOutOfRange, []byte("service: revision 3 has been compacted (compacted revision 7)")
+	})
+	_, err := tr.GetAtRevision(context.Background(), "k", 3)
+	var compacted *transport.RevisionCompactedError
+	if !errors.As(err, &compacted) {
+		t.Fatalf("got %T: %v, want *transport.RevisionCompactedError", err, err)
+	}
+	if compacted.Revision != 3 {
+		t.Errorf("Revision = %d, want 3", compacted.Revision)
 	}
 }
 

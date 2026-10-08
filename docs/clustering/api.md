@@ -102,7 +102,11 @@ rather than streaming, so it works over unary-only REST.
 `node.NewClusteredNode(ctx, cfg, members, serverOpts, node.WithRaftMTLS(mtls))`
 takes the other replicas' Raft identities in `cfg.Raft.MemberIdentities`
 (`sdk.DaemonRaftConfig.MemberIdentities`), a comma-separated
-`replicaID=spki:<hex>` list; the local entry is derived from `mtls.Cert`.
+`replicaID=spki:<hex>` list; the local entry is derived from the node's own
+certificate: the leaf of `mtls.Certificate` when set, else `mtls.Cert`.
+`mtls.Certificate` is a `*tls.Certificate` whose `PrivateKey` may be any
+`crypto.Signer`, so a node whose key is held on a TPM or HSM forms a cluster
+with no key PEM; `mtls.CACert` is required either way.
 `node.MemberIdentityFromPEM(certPEM)` computes a peer's identity from its
 certificate. Every refusal is a `*node.HostCreateError`: it wraps a
 `*node.ConfigError` for `raft.member_identities` (itself unwrapping to the

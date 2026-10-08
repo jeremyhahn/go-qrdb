@@ -58,4 +58,21 @@ func QuorumLimit(key string, anonymous bool) (bool, time.Duration) {
 	return quorumLimiter().Allow(key, policy)
 }
 
+// QuorumLimitWith returns the throttle QuorumLimit applies, over limiter
+// instead of the process-wide token bucket. It is how a composer's
+// ratelimit.Limiter becomes the holder-act throttle; a nil limiter returns
+// QuorumLimit itself, the software default.
+func QuorumLimitWith(limiter ratelimit.Limiter) ceremony.QuorumLimitFunc {
+	if limiter == nil {
+		return QuorumLimit
+	}
+	return func(key string, anonymous bool) (bool, time.Duration) {
+		policy := quorumCallerPolicy
+		if anonymous {
+			policy = quorumAnonymousPolicy
+		}
+		return limiter.Allow(key, policy)
+	}
+}
+
 var _ ceremony.QuorumLimitFunc = QuorumLimit

@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -36,7 +37,7 @@ func TestBuildNodeSealSubsystem_BarriersRecordOnTheCallersTrail(t *testing.T) {
 	cfg.Seal.RootKeyPath = "root-key"
 	trail := audit.NewRingBuffer(32)
 
-	sub, err := buildNodeSealSubsystem(ctx, cfg, t.TempDir(), slog.Default(), nil, trail)
+	sub, err := buildNodeSealSubsystem(ctx, cfg, t.TempDir(), slog.Default(), nil, server.CryptoOptions{AuditLogger: trail})
 	if err != nil {
 		t.Fatal(err)
 	}

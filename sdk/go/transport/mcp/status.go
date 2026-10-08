@@ -122,6 +122,15 @@ func isToolNotFound(err error) bool {
 	return errors.As(err, &knf)
 }
 
+// isToolOutOfRange reports whether err is the request error the shared mapper
+// builds from wire.CodeOutOfRange, the server's class for a revision below
+// the compaction floor and nothing else, as 416 is on REST. It is the exact
+// counterpart of the QUIC transport's isWireOutOfRange.
+func isToolOutOfRange(err error) bool {
+	var re *transport.RequestError
+	return errors.As(err, &re) && re.StatusCode == int(wire.CodeOutOfRange)
+}
+
 // mapUserNotFound rebuilds a bare not-found as the typed user-not-found,
 // naming the id the CALLER asked for.
 //

@@ -152,6 +152,7 @@ They are listed below and are linked from the feature folder that owns them.
 | [credentials/secret-resolution.md](credentials/secret-resolution.md) | [credentials](credentials/) |
 | [gui/README.md](gui/README.md) | [desktop-gui](desktop-gui/) |
 | [design/](design/) | design records — read as history and intent, **not** as shipped behaviour |
+| [release/extension-seams.md](release/extension-seams.md) | [release](release/), [key-wrapping](key-wrapping/), [tenant-dek](tenant-dek/) — every composition seam an upstream composer can fill, its option, and the open gaps |
 | [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md) | open questions |
 | [future/sqlite-vfs.md](future/sqlite-vfs.md) | future enhancement — proposed, **not implemented**: qrdb as a drop-in SQLite storage backend via a custom VFS |
 

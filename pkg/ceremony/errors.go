@@ -296,6 +296,20 @@ func (e *CertEncodeError) Unwrap() error {
 	return e.Err
 }
 
+// IssueCertKeyError is returned when a certificate is asked for without the
+// key it is to bind: an IssueCertRequest with no PublicKey, or a server TLS
+// leaf with no crypto.Signer. The CA never generates a leaf key to fill the
+// gap -- the key belongs to the caller, who may hold it on a device.
+type IssueCertKeyError struct {
+	// Field names the missing input.
+	Field string
+}
+
+// Error returns a human-readable description of the missing key.
+func (e *IssueCertKeyError) Error() string {
+	return fmt.Sprintf("ceremony: certificate issuance requires %s", e.Field)
+}
+
 // CACertParseError wraps an error from CA certificate parsing.
 type CACertParseError struct {
 	Err error

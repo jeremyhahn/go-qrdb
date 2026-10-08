@@ -1168,6 +1168,14 @@ func isWireNotFound(err error) bool {
 	return errors.As(err, &knf)
 }
 
+// isWireOutOfRange reports whether err is the request error the shared mapper
+// builds from wire.StatusOutOfRange, the server's class for a revision below
+// the compaction floor and nothing else, as 416 is on REST.
+func isWireOutOfRange(err error) bool {
+	var re *transport.RequestError
+	return errors.As(err, &re) && re.StatusCode == int(wire.StatusOutOfRange)
+}
+
 // stripScheme removes http:// or https:// prefixes from addresses so
 // that QUIC DialAddr receives a bare host:port.
 func stripScheme(addr string) string {

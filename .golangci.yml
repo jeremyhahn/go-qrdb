@@ -147,12 +147,12 @@ linters:
       # it moves -- which is the signal to re-measure this block, not to widen
       # it.
       #
-      # THAT IS A SEPARATE GOSEC FROM THE ONE `make gosec` RUNS (GOSEC_VERSION),
-      # and it is only the same release by coincidence of the two bumps: the
-      # earlier pair differed in soundness rather than strictness. The two
+      # AT v2.14.0 THAT IS THE SAME GOSEC AS THE ONE `make gosec` RUNS (v2.29.0),
+      # but it was not always, and nothing makes the two move together. The two
       # exclusion lists are still NOT copies of each other and must not be made
-      # into copies. GOSEC_EXCLUDE in the Makefile carries its own measurements
-      # and they do not agree with these.
+      # into copies: the invocations differ (this leg drops gosec in test files,
+      # `make gosec` scans them with -tests), and GOSEC_EXCLUDE in the Makefile
+      # carries its own measurements.
       #
       # G602 WAS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST. `make gosec`
       # runs with -tests at -severity=low (#408), so the standalone leg REACHES
@@ -229,10 +229,10 @@ linters:
       # by file, a new file-open site anywhere else goes RED and gets audited.
       #
       # G703 IS NOT SUPPRESSED HERE AT ALL, and the reason is the second finding
-      # of that audit. The entry this replaces was INERT: golangci-lint v2.13.2
-      # bundled gosec v2.28.0, whose G703 treated filepath.Clean as a sanitizer,
-      # so it reports nothing at pkg/system/openssl.go:126 -- while `make gosec`
-      # on the pinned gosec v2.29.0 reports it HIGH/HIGH. Reproduced on a
+      # of that audit. The entry this replaces was INERT: the golangci-lint of
+      # the day bundled gosec v2.28.0, whose G703 treats filepath.Clean as a
+      # sanitizer, so it reported nothing at pkg/system/openssl.go:126 -- while
+      # `make gosec` on the pinned gosec v2.29.0 reported it HIGH/HIGH. Reproduced on a
       # two-file probe, not inferred from version numbers, and since confirmed
       # in the analyser's own source: v2.29.0's pathtraversal.go drops Clean,
       # Abs and url.PathEscape from its sanitizer list, noting that Clean

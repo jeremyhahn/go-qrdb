@@ -12,12 +12,25 @@
 # port. Nothing referenced those names: the tests address the servers by compose
 # SERVICE name (https://qrdbd:63002). The Makefile supplies a per-run project
 # name so containers, networks and volumes are namespaced together.
+#
+# The image is per-run too. Every service built from the Dockerfile runs the
+# one tag the Makefile names for this run, QRDB_INT_IMAGE
+# (`go-qrdb-int:<INT_PROJECT>`), which `make integration-image` builds and
+# `make integration-down` removes. It was the fixed `go-qrdb-dev:latest`, and
+# concurrent runs on one host rebuilt it under each other's stacks: a CLI from
+# one tree drove a server from another. The interpolation is REQUIRED, with no
+# default, because any default is a shared tag again; compose therefore refuses
+# every command on this file, `down` included, without it -- go through make
+# (`make integration-down INT_PROJECT=...` tears a stack down by hand).
+# test/buildgates/integration_image_tag_test.go fails on a literal tag here.
+x-int-image: &int-image "${QRDB_INT_IMAGE:?QRDB_INT_IMAGE is unset, run this stack through make}"
+
 # The analyser pins .devcontainer/Dockerfile bakes in (#322), plus
 # QRDB_BUILD_TAGS (go-qrdb#555), the feature-tag set its qrdbd/qrdb builds
-# compile with. These three services build that same Dockerfile into the
-# same `go-qrdb-dev:latest` tag the devcontainer uses, so they take the same
-# args, or an integration build and a gate build would bake different
-# analysers -- or different CLI/server feature sets -- into one tag.
+# compile with. These three services build the same Dockerfile the
+# devcontainer does, so they take the same args, or an integration build and a
+# gate build of one tree would bake different analysers -- or different
+# CLI/server feature sets.
 #
 # THE KEYS CARRY NO VALUE ON PURPOSE -- compose's environment-passthrough form,
 # which takes the value from the environment when set and OMITS the arg when it
@@ -46,7 +59,7 @@ services:
       args: *scanner-pins
       secrets:
         - gomodauth
-    image: go-qrdb-dev:latest
+    image: *int-image
     hostname: qrdbd
     expose:
       - "63001/udp"  # Raft/QUIC (UDP)
@@ -208,7 +221,7 @@ services:
       args: *scanner-pins
       secrets:
         - gomodauth
-    image: go-qrdb-dev:latest
+    image: *int-image
     hostname: qrdbd-shamir
     expose:
       - "64001/udp"  # Raft/QUIC (UDP)
@@ -370,7 +383,7 @@ services:
       args: *scanner-pins
       secrets:
         - gomodauth
-    image: go-qrdb-dev:latest
+    image: *int-image
     privileged: true
     # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
     # locked-memory requirement is explicit rather than a side effect (see

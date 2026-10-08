@@ -918,10 +918,24 @@ and gives both the replica host they add and remove replicas through.
 `qrdbd` and a clustered embedded node (`sdk/go/node`) both call it, so an
 embedded node is a full member: placed as a replica it receives the tenant's
 key and serves the database. It needs what a `qrdbd` node needs -- a REST
-listener (the key routes), its node certificate and key (`WithRaftMTLS`, the
-SPIFFE SAN naming its Raft address), and `auth.peer_admin_urls` when nodes
+listener (the key routes), its node identity (`WithRaftMTLS`, the SPIFFE SAN
+naming its Raft address; carried as `RaftTenantClusterConfig.Identity`, a
+`*tls.Certificate` whose key may be a device-held `crypto.Signer`), and `auth.peer_admin_urls` when nodes
 share a host on distinct admin ports. A missing piece disables what needs it,
 with a warning, rather than failing the boot.
+
+**The key plane opens deliveries through a decrypter, not a key.** Peers seal
+each tenant key to the public key of the node's certificate (DHKEM-P-256), and
+`keydelivery.NewReceiver` takes the `keydelivery.Decrypter` that opens them.
+`RaftTenantClusterConfig.Decrypter` carries it, and an embedder supplies it
+with `node.WithKeyDeliveryDecrypter`. A composer whose node key is held on a
+TPM or HSM builds it with `keydelivery.NewDecrypter` over an
+`ecdh.KeyExchanger` that runs the key agreement on the device. Left unset,
+the node derives the decrypter from its identity key: a software ECDSA key,
+as `qrdbd` has, or a device key that agrees keys itself. A signer that cannot
+agree keys and no decrypter leaves the key plane off, with a warning. A
+decrypter that is not for the certificate's key would fail every delivery, so
+it leaves the key plane off, with a warning.
 
 ## Error semantics
 

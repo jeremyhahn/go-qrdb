@@ -803,6 +803,14 @@ map.
 | `sdk/go/transport/*`, `sdk/go/node/node.go` | `AuditFilter.Replicated`, `AuditClient.VerifyReplicatedChain`, `ChainContinuityResult`, the embedded transport's `WithReplicatedAuditLogger` |
 | `cmd/qrdb/audit.go` | `--replicated` on `qrdb audit query` / `qrdb audit verify` |
 
+**Reachability from a composer.** `sdk/go/node` forwards the node's own
+`Node.ReplicatedAudit` to REST, gRPC, QUIC, Unix and MCP as well as the
+embedded transport (`server.WithReplicatedAuditLogger`, surfaced as
+`CryptoOptions.ReplicatedAuditLogger`), so `--replicated` query and chain
+verification answer the replicated chain on every transport. A logger the
+caller passes as a server option comes last and replaces the node's. Before
+this, the network transports of an SDK node answered the local trail only.
+
 **Error classification at apply time.** `Chain.Append`/`Chain.Prune` errors
 split into exactly two buckets, and the handler on both engine families
 makes the identical split:

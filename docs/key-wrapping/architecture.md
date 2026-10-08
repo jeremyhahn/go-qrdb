@@ -524,6 +524,14 @@ typed error (`*dek.LegacyKeyringFormatError`) rather than migrated
 silently. See [tenant-dek/architecture.md](../tenant-dek/architecture.md)
 for the full design.
 
+**`keywrap.Provider` is the key-wrap seam, not the DEK seam.** The engine
+behind the tenant DEK service is a separate interface, `dek.Provider`
+(`server.WithDEKProvider`), that a composer fills when a device holds the tenant
+keys and runs the encryption itself. A composer that keeps the software keyring
+fills only this seam. See
+[tenant-dek/engineering.md](../tenant-dek/engineering.md#the-engine-seam-dekprovider)
+and [release/extension-seams.md](../release/extension-seams.md).
+
 ## Trust boundaries
 
 - **The KEK itself never leaves the provider that holds it.** `Wrap`/

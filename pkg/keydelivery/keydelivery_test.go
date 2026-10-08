@@ -45,10 +45,25 @@ func goodMeta() Meta {
 	}
 }
 
+// softwareDecrypter converts priv to the Decrypter of its curve's suite: the
+// software default a node's own key file yields.
+func softwareDecrypter(t *testing.T, priv *ecdsa.PrivateKey) Decrypter {
+	t.Helper()
+	name, _, err := RecipientFromPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("RecipientFromPublicKey: %v", err)
+	}
+	dec, err := PrivateKeyFor(name, priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyFor: %v", err)
+	}
+	return dec
+}
+
 // newReceiver builds a Receiver for priv/nodeID and pins its clock to now.
 func newReceiver(t *testing.T, priv *ecdsa.PrivateKey, nodeID string, now time.Time, opts ...ReceiverOption) *Receiver {
 	t.Helper()
-	r, err := NewReceiver(priv, nodeID, opts...)
+	r, err := NewReceiver(softwareDecrypter(t, priv), nodeID, opts...)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -280,9 +295,9 @@ func TestMeta_ValidateBranches(t *testing.T) {
 
 func TestNewReceiver_Validation(t *testing.T) {
 	if _, err := NewReceiver(nil, "node-a"); !errors.Is(err, ErrNilRecipientKey) {
-		t.Fatalf("nil priv: %v", err)
+		t.Fatalf("nil decrypter: %v", err)
 	}
-	if _, err := NewReceiver(mustP256(t), ""); !errors.Is(err, ErrInvalidMeta) {
+	if _, err := NewReceiver(softwareDecrypter(t, mustP256(t)), ""); !errors.Is(err, ErrInvalidMeta) {
 		t.Fatalf("empty nodeID: %v", err)
 	}
 	// Non-P-256 (P-384) keys are rejected fail-closed: the DHKEM(P-256) curve
@@ -294,8 +309,47 @@ func TestNewReceiver_Validation(t *testing.T) {
 	if _, err := Seal(&p384.PublicKey, goodMeta(), []byte("secret-key-material-bytes-32byte")); !errors.Is(err, ErrUnsupportedKey) {
 		t.Fatalf("P-384 Seal: expected ErrUnsupportedKey, got %v", err)
 	}
-	if _, err := NewReceiver(p384, "node-b"); !errors.Is(err, ErrUnsupportedKey) {
+	if _, err := NewReceiver(softwareDecrypter(t, p384), "node-b"); !errors.Is(err, ErrUnsupportedKey) {
 		t.Fatalf("P-384 NewReceiver: expected ErrUnsupportedKey, got %v", err)
+	}
+}
+
+// A node whose key is held on a device opens its deliveries through
+// NewDecrypter: the device performs the key agreement, and the scalar is
+// never asked for.
+func TestReceiver_DeviceHeldKeyOpens(t *testing.T) {
+	recip := mustP256(t)
+	ek, err := recip.ECDH()
+	if err != nil {
+		t.Fatalf("ECDH: %v", err)
+	}
+	device := &deviceKX{key: ek}
+	dec, err := NewDecrypter(KEMP256, device, nil)
+	if err != nil {
+		t.Fatalf("NewDecrypter: %v", err)
+	}
+	if _, err := dec.Bytes(); err == nil {
+		t.Fatal("a device-held decrypter must not serialize its private key")
+	}
+
+	secret := []byte("32-byte-root-key-or-sealed-blob!")
+	env, err := Seal(&recip.PublicKey, goodMeta(), secret)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	r, err := NewReceiver(dec, goodMeta().TargetNodeID)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	got, err := r.Open(env)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !bytes.Equal(got, secret) {
+		t.Fatalf("round-trip mismatch: %q", got)
+	}
+	if device.ops == 0 {
+		t.Fatal("the device performed no key agreement")
 	}
 }
 

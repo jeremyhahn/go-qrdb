@@ -118,7 +118,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
-	cfgPath := writeMultiProtocolSealConfig(t)
+	cfgPath := writeMultiProtocolSealConfig(t, "")
 
 	raftPorts := allocatePorts(t, n)
 	quicPorts := allocatePorts(t, n)

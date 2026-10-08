@@ -260,6 +260,9 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 
 	resp, err := t.call(ctx, "mvcc.GetAtRevision", payload)
 	if err != nil {
+		if isWireOutOfRange(err) {
+			return nil, &transport.RevisionCompactedError{Revision: revision}
+		}
 		return nil, err
 	}
 

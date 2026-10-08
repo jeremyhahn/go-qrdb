@@ -21,6 +21,7 @@ package server
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -48,14 +49,17 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -171,6 +175,9 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
+	// seamOptions are the composition seams (seam_options.go).
+	seamOptions
+
 	// replicaLocator and replicaTimeout configure replica forwarding on
 	// every network listener (WithReplicaForwarding); nil forwards nothing.
 	replicaLocator *replicaforward.Locator
@@ -227,6 +234,7 @@ type serverOptions struct {
 	ceremonySvc        service.CeremonyServicer
 	credentialSvc      service.CredentialServicer
 	ceremonyCA         ceremony.CeremonyCA
+	serverTLSKey       crypto.Signer
 	collectionSvc      service.CollectionServicer
 	barrierRegistry    *seal.BarrierRegistry
 	dekSvc             service.DEKServicer
@@ -262,11 +270,6 @@ type serverOptions struct {
 	authFactorSvc         service.AuthFactorServicer
 	userAuthFactorSvc     service.UserAuthFactorServicer
 	soAuthenticator       *auth.SOAuthenticator
-
-	// sealStrategy overrides the default seal strategy used when no
-	// strategyRegistry is configured. When both are nil the daemon
-	// constructs a NewDeferredSoftwareStrategy at init time as fallback.
-	sealStrategy seal.SealingStrategy
 
 	// strategyRegistry is the canonical name→factory lookup for sealing
 	// strategies. qrdb provides a default registry pre-populated with
@@ -832,6 +835,17 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 	return func(o *serverOptions) { o.ceremonyCA = ca }
 }
 
+// WithServerTLSKey sets the private key of the server TLS leaf the transports
+// auto-provision from the CeremonyCA (see WithCeremonyCA). Only the key's
+// public half reaches the CA and every handshake signs through key, so a
+// composer passes a device-held signer (TPM, PKCS#11, cloud KMS) and the leaf
+// key never leaves the device. Unset, each transport's leaf gets a fresh
+// in-memory ECDSA P-256 key -- the software default. It has no effect when
+// WithTLS supplies the listener's configuration outright.
+func WithServerTLSKey(key crypto.Signer) ServerOption {
+	return func(o *serverOptions) { o.serverTLSKey = key }
+}
+
 // WithCollectionService configures the collection service for all protocol servers.
 func WithCollectionService(svc service.CollectionServicer) ServerOption {
 	return func(o *serverOptions) { o.collectionSvc = svc }
@@ -1020,15 +1034,6 @@ func WithSOAuthenticator(a *auth.SOAuthenticator) ServerOption {
 	return func(o *serverOptions) { o.soAuthenticator = a }
 }
 
-// WithSealStrategy injects a pre-constructed SealingStrategy to use as
-// the default for the storage barrier. Use this when the strategy is
-// fully known at server construction time (typical for software-only
-// deployments). For name-based selection at `qrdbd init --barrier-strategy`
-// time use WithStrategyRegistry instead.
-func WithSealStrategy(strategy seal.SealingStrategy) ServerOption {
-	return func(o *serverOptions) { o.sealStrategy = strategy }
-}
-
 // WithStrategyRegistry injects a populated StrategyRegistry so per-tenant
 // barriers can resolve hardware/cloud seal strategies (TPM2, PKCS#11, cloud
 // KMS, Vault) by name. qrdb provides a default registry pre-populated with
@@ -1182,12 +1187,14 @@ func WithTrustAnchors(r trustanchor.Registry) ServerOption {
 // injection would silently no-op.
 type CryptoOptions struct {
 	StrategyRegistry       seal.StrategyRegistry
-	SealStrategy           seal.SealingStrategy
 	PINBackend             pin.PINBackend
 	FactorRegistry         *authfactors.FactorRegistry
 	CertKeyProviderFactory cakey.ProviderFactory
 	TrustAnchors           trustanchor.Registry
 	AuditLogger            audit.AuditLogger
+	// ReplicatedAuditLogger is the cluster-wide, per-tenant-opt-in replicated
+	// audit chain passed through WithReplicatedAuditLogger; nil when none was.
+	ReplicatedAuditLogger *service.OptInAuditLogger
 	// KeyWrapRegistry and KeyWrapProvider carry WithKeyWrapRegistry /
 	// WithKeyWrapProvider into lifecycle.Infra.KeyWrapRegistry /
 	// KeyWrapProvider, the same forwarding StrategyRegistry needs and for
@@ -1208,6 +1215,15 @@ type CryptoOptions struct {
 	// hand it to the ceremony service, which issues every share holder's
 	// certificate from it.
 	CeremonyCA ceremony.CeremonyCA
+
+	// The composition seams (see seam_options.go). Each is nil when no
+	// option set it, which keeps the software default.
+	BackupSink              service.BackupSink
+	Clock                   clock.Clock
+	StorageFactory          StorageFactory
+	DEKProvider             dek.Provider
+	InvitationRedeemLimiter ratelimit.Limiter
+	HolderActLimiter        ratelimit.Limiter
 }
 
 // ResolveCryptoOptions applies the given ServerOptions to a throwaway option
@@ -1225,18 +1241,25 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 	}
 	return CryptoOptions{
 		StrategyRegistry:       o.strategyRegistry,
-		SealStrategy:           o.sealStrategy,
 		PINBackend:             o.pinBackend,
 		FactorRegistry:         o.factorRegistry,
 		CertKeyProviderFactory: o.certKeyProviderFactory,
 		TrustAnchors:           o.trustAnchors,
 		AuditLogger:            o.auditLogger,
+		ReplicatedAuditLogger:  o.replicatedAudit,
 		KeyWrapRegistry:        o.keyWrapRegistry,
 		KeyWrapProvider:        o.keyWrapProvider,
 		KeyDir:                 o.keyDir,
 		DEKKeyDir:              o.dekKeyDir,
 		AuthFactorService:      o.authFactorSvc,
 		CeremonyCA:             o.ceremonyCA,
+
+		BackupSink:              o.backupSink,
+		Clock:                   o.clock,
+		StorageFactory:          o.storageFactory,
+		DEKProvider:             o.dekProvider,
+		InvitationRedeemLimiter: o.invitationRedeemLimiter,
+		HolderActLimiter:        o.holderActLimiter,
 	}
 }
 

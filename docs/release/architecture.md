@@ -18,6 +18,9 @@ limitations under the License.
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 
+The composition seams a release exposes to upstream composers (go-xkms,
+go-quicbaas) are inventoried in [extension-seams.md](extension-seams.md).
+
 ## What a release is
 
 A release is one version, published as a set of tags that all point at the

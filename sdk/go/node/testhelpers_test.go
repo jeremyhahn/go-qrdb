@@ -17,6 +17,7 @@ package node
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -151,4 +152,22 @@ func volumeEntitlements() *quota.Entitlements {
 		AllowSystemManagedBarrier: true,
 		AllowedVolumePools:        []string{"default"},
 	}
+}
+
+// closeRefusalBound bounds how long a boot or migration WAITING on the
+// lifecycle gate may take to be refused once Close begins. A failure bound: a
+// correct gate refuses at once, and the waiter the test watches is otherwise
+// parked on a slot the test itself holds, so without the refusal it does not
+// return until the test gives up.
+//
+// It and waitForQueuedTransition live here rather than in the `!integration`
+// lifecycle_test.go because migrate_encryption_test.go, which is unconstrained,
+// calls the helper too.
+const closeRefusalBound = 30 * time.Second
+
+// waitForQueuedTransition waits until a transition is blocked on n's gate.
+func waitForQueuedTransition(t *testing.T, n *Node) {
+	t.Helper()
+	require.Eventually(t, func() bool { return n.lifeGate.waiting.Load() > 0 },
+		closeRefusalBound, time.Millisecond, "the migration never queued on the lifecycle gate")
 }

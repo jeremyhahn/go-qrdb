@@ -751,10 +751,8 @@ const (
 const BarrierOffDataPathWarning = "database barrier is not on the data path; the database fails closed while sealed and is unprotected once unsealed"
 
 // UnsupportedBarrierStrategyError is returned when a database barrier is
-// requested with a strategy mode that EnsureBarrier does not yet implement.
-// Only the passphrase (software) strategy is currently supported for
-// per-database barriers; Shamir quorum splitting for this subsystem is not
-// yet implemented.
+// requested with a strategy mode that is neither built in (passphrase, shamir)
+// nor held by the barrier manager's strategy registry.
 type UnsupportedBarrierStrategyError struct {
 	Mode string
 }

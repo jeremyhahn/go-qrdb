@@ -15,10 +15,40 @@ func (c *Client) SealStore() transport.SealStoreClient
 Composition-plane options (Tier 2), on the server constructor:
 
 ```go
-func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption   // hardware injection
-func WithSealStrategy(s seal.SealingStrategy) ServerOption          // direct injection
+func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption   // hardware injection, system and tenant barriers
 func WithPINBackend(b pin.PINBackend) ServerOption
 ```
+
+and on the embedded node (`sdk/go/node`):
+
+```go
+func WithSealStrategy(strategy seal.SealingStrategy) NodeOption     // a pre-built strategy, registered under its ID
+```
+
+The system barrier resolves its strategies through a registry, the same seam
+tenant barriers use:
+
+```go
+// pkg/seal
+func NewSystemStrategyRegistry(composer StrategyRegistry, threshold, total int) (*DefaultStrategyRegistry, error)
+func ResolveSystemStrategies(registry StrategyRegistry, configured, persisted StrategyID) ([]SealingStrategy, error)
+```
+
+`NewSystemStrategyRegistry` holds qrdb's software strategies — passphrase
+(deferred), none, and shamir with the configured threshold and total —
+overlaid by every strategy the composer's registry holds, which wins on a
+shared name. `sdk/go/node` passes the `WithStrategyRegistry` registry as the
+composer and registers a `WithSealStrategy` strategy under its own ID; that
+strategy is selected unless `seal.strategy` names `shamir` or `none`. A
+composer that would rather select by name registers its strategy under the
+name `seal.strategy` selects. `qrdbd` composes no hardware strategy and passes
+no composer. `ResolveSystemStrategies` builds the selected strategy, which must
+resolve, then the one the persisted root key names when it differs (the
+`enable-encryption` restart path), best effort. **Correction (2026-10-07):**
+`pkg/server` also carried a `WithSealStrategy`, surfaced by
+`ResolveCryptoOptions` and consumed by nothing; it is deleted, and the system
+barrier no longer selects its strategy with a `switch` that bypassed the
+registry.
 
 `pkg/seal`:
 
@@ -234,8 +264,9 @@ services and to the server, which wraps the node's sealed-window probe with
   (via `NewDeferredSoftwareStrategy`, so the passphrase arrives at
   Initialize/Unseal time rather than at construction) and `StrategyNone`.
   **`StrategyShamir` is deliberately NOT in it** — it needs a threshold and
-  share count only the daemon's init command can supply, and the daemon
-  constructs it inline.
+  share count only the node's configuration can supply, so
+  `NewSystemStrategyRegistry` adds it, with those parameters, for the system
+  barrier.
 - **The two software constructors have OPPOSITE credential semantics, and the
   difference is invisible in the type.** Both return a `SoftwareStrategy`.
   `NewSoftwareStrategy` binds its passphrase at construction and **ignores the

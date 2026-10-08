@@ -16,10 +16,17 @@ package server
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"io"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +101,79 @@ func TestAutoProvision_GRPC_RefusesPlaintext(t *testing.T) {
 	client := pb.NewQRDBServiceClient(conn)
 	if _, err := client.Health(ctx, nil); err == nil {
 		t.Fatal("expected plaintext Health RPC to fail against a TLS-only gRPC listener")
+	}
+}
+
+// deviceTLSKey stands in for a server TLS key held on a device: it exposes
+// only Public and Sign, so its private half cannot be marshalled, and it
+// counts the signatures the handshake asks of it.
+type deviceTLSKey struct {
+	key   *ecdsa.PrivateKey
+	signs *atomic.Int32
+}
+
+func (k deviceTLSKey) Public() crypto.PublicKey { return k.key.Public() }
+
+func (k deviceTLSKey) Sign(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	k.signs.Add(1)
+	return k.key.Sign(r, digest, opts)
+}
+
+// TestAutoProvision_WithServerTLSKey_DeviceSignerServesLeaf proves the
+// WithServerTLSKey seam: the auto-provisioned leaf certifies the composed
+// signer's public key and the handshake signs through it, with no private key
+// bytes involved anywhere.
+func TestAutoProvision_WithServerTLSKey_DeviceSignerServesLeaf(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate device key: %v", err)
+	}
+	device := deviceTLSKey{key: ecKey, signs: new(atomic.Int32)}
+	if _, err := x509.MarshalPKCS8PrivateKey(device); err == nil {
+		t.Fatal("device key marshalled; it must be opaque")
+	}
+
+	cfg := testConfig(t, false, true) // gRPC only
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithServerTLSKey(device))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	conn, err := tls.Dial("tcp", srv.GRPCAddr(), &tls.Config{
+		RootCAs:    testServerCAPool(t),
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS13,
+	})
+	if err != nil {
+		t.Fatalf("TLS dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	leaf := conn.ConnectionState().PeerCertificates[0]
+	if !ecKey.PublicKey.Equal(leaf.PublicKey) {
+		t.Fatal("leaf does not certify the composed signer's public key")
+	}
+	if device.signs.Load() == 0 {
+		t.Fatal("handshake did not sign through the composed signer")
+	}
+}
+
+// Without WithServerTLSKey each transport's leaf gets its own fresh software
+// key: two listeners present different public keys.
+func TestAutoProvision_DefaultKeyPerTransport(t *testing.T) {
+	srv := New(testConfig(t, false, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
+	first, err := srv.resolveTransportTLS("gRPC")
+	if err != nil {
+		t.Fatalf("resolveTransportTLS: %v", err)
+	}
+	second, err := srv.resolveTransportTLS("REST")
+	if err != nil {
+		t.Fatalf("resolveTransportTLS: %v", err)
+	}
+	a := first.Certificates[0].Leaf.PublicKey.(*ecdsa.PublicKey)
+	if a.Equal(second.Certificates[0].Leaf.PublicKey) {
+		t.Fatal("two auto-provisioned leaves share a default key")
 	}
 }
 

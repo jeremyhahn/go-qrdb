@@ -30,19 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
-// TestWithSealStrategy_Applied asserts that an injected SealingStrategy
-// is reachable from the server's serverOptions for the lifecycle layer
-// to consume at barrier-initialization time.
-func TestWithSealStrategy_Applied(t *testing.T) {
-	strategy := seal.NewNoneStrategy()
-	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
-		WithSealStrategy(strategy),
-	)
-	if srv.opts.sealStrategy != strategy {
-		t.Fatal("sealStrategy not stored in opts")
-	}
-}
-
 // TestWithStrategyRegistry_Applied asserts that an injected
 // StrategyRegistry is reachable from the server's serverOptions and that
 // the daemon can resolve names through it.
@@ -287,24 +274,20 @@ func TestStart_AllProtocols_WithCertEnrollmentAndOnboarding(t *testing.T) {
 	}
 }
 
-// TestWithAllInjections_Compose asserts that all four Phase-3 injections
-// coexist on the same server without conflicting.
+// TestWithAllInjections_Compose asserts that the Phase-3 injections coexist
+// on the same server without conflicting.
 func TestWithAllInjections_Compose(t *testing.T) {
-	strategy := seal.NewNoneStrategy()
 	reg := seal.NewDefaultStrategyRegistry()
 	backend, _ := pin.NewSoftwareBackend(nil, pin.DefaultHashConfig())
 	factors := authfactors.NewFactorRegistry()
 
 	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
-		WithSealStrategy(strategy),
 		WithStrategyRegistry(reg),
 		WithPINBackend(backend),
 		WithFactorRegistry(factors),
 	)
 
 	switch {
-	case srv.opts.sealStrategy != strategy:
-		t.Fatal("sealStrategy clobbered by other options")
 	case srv.opts.strategyRegistry != reg:
 		t.Fatal("strategyRegistry clobbered by other options")
 	case srv.opts.pinBackend == nil || pin.NewLockoutBackend(srv.opts.pinBackend) != srv.opts.pinBackend:

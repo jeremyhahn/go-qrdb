@@ -35,6 +35,9 @@ type RevokeFunc func(ctx context.Context, leaseID int64) error
 // debug and retried on the next tick; once a revoke is applied locally
 // the lease leaves the Lessor and is no longer reported as expired.
 //
+// The tick runs on the Lessor's clock (see WithClock), so a test drives the
+// sweep by advancing a clocktest.Fake rather than waiting out the interval.
+//
 // interval <= 0 uses DefaultExpiryInterval. A nil isLeader or revoke
 // disables the sweep (the call returns immediately) — callers that want
 // expiry MUST supply both.
@@ -46,14 +49,14 @@ func (lr *Lessor) RunExpiry(ctx context.Context, interval time.Duration, isLeade
 		return
 	}
 
-	ticker := time.NewTicker(interval)
+	ticker := lr.clock.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			if !isLeader() {
 				continue
 			}

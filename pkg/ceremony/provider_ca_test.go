@@ -166,7 +166,9 @@ func TestProviderCA_CACertificate_FallsBackWithoutCertOnlyAccessor(t *testing.T)
 
 func TestProviderCA_IssueCertificate(t *testing.T) {
 	ca := newTestProviderCA(t)
+	key := newDeviceSigner(t)
 	issued, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{
+		PublicKey:    key.Public(),
 		CommonName:   "node-1",
 		SANs:         []string{"node1.example.test", "10.0.0.1"},
 		ValidityDays: 1,
@@ -176,7 +178,14 @@ func TestProviderCA_IssueCertificate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "node-1", issued.Certificate.Subject.CommonName)
 	require.Contains(t, string(issued.CertPEM), "BEGIN CERTIFICATE")
-	require.Contains(t, string(issued.KeyPEM), "BEGIN PRIVATE KEY")
+	require.True(t, key.Public().(interface{ Equal(crypto.PublicKey) bool }).Equal(issued.Certificate.PublicKey))
+}
+
+func TestProviderCA_IssueCertificate_NoPublicKey(t *testing.T) {
+	ca := newTestProviderCA(t)
+	_, err := ca.IssueCertificate(context.Background(), &IssueCertRequest{CommonName: "node-1", ValidityDays: 1})
+	var keyErr *IssueCertKeyError
+	require.ErrorAs(t, err, &keyErr)
 }
 
 func TestProviderCA_IssueCertificate_NilRequest(t *testing.T) {

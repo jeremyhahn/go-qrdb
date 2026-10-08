@@ -16,8 +16,10 @@ package ceremony
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"os"
 )
 
@@ -34,10 +36,15 @@ const ServerTLSValidityDays = 365
 var baseServerSANs = []string{"localhost", "127.0.0.1", "::1"}
 
 // ServerTLSConfig auto-provisions a server TLS configuration from the node's
-// CeremonyCA. It issues a fresh leaf certificate — signed by the same CA that
-// signs the node's own TLS/SO certificates, so clients that already trust the
-// cluster CA verify it without further configuration — and returns a
+// CeremonyCA. It issues a fresh leaf certificate for key — signed by the same
+// CA that signs the node's own TLS/SO certificates, so clients that already
+// trust the cluster CA verify it without further configuration — and returns a
 // *tls.Config pinned to TLS 1.3.
+//
+// key is the leaf's private key as a crypto.Signer. Only its public half
+// reaches the CA, and the handshake signs through it, so a key held on a
+// device (TPM, PKCS#11, cloud KMS) serves without its bytes ever being
+// exported. A nil key is a *ServerTLSError wrapping *IssueCertKeyError.
 //
 // The leaf carries SANs for localhost, 127.0.0.1, ::1, the machine hostname,
 // and any extraSANs (e.g. a configured advertise host). Duplicate SANs are
@@ -51,11 +58,14 @@ var baseServerSANs = []string{"localhost", "127.0.0.1", "::1"}
 // itself never widens its stated client-verification posture here.
 //
 // A nil ca is a caller error and returns ErrNilCA — callers must fail closed
-// rather than start a plaintext listener. Certificate issuance and key-pair
-// assembly failures are wrapped in a *ServerTLSError.
-func ServerTLSConfig(ctx context.Context, ca CeremonyCA, extraSANs ...string) (*tls.Config, error) {
+// rather than start a plaintext listener. Certificate issuance failures are
+// wrapped in a *ServerTLSError.
+func ServerTLSConfig(ctx context.Context, ca CeremonyCA, key crypto.Signer, extraSANs ...string) (*tls.Config, error) {
 	if ca == nil {
 		return nil, ErrNilCA
+	}
+	if key == nil {
+		return nil, &ServerTLSError{Err: &IssueCertKeyError{Field: "a crypto.Signer"}}
 	}
 
 	sans := serverSANs(extraSANs)
@@ -65,6 +75,7 @@ func ServerTLSConfig(ctx context.Context, ca CeremonyCA, extraSANs ...string) (*
 	}
 
 	issued, err := ca.IssueCertificate(ctx, &IssueCertRequest{
+		PublicKey:   key.Public(),
 		CommonName:  commonName,
 		SANs:        sans,
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -77,15 +88,33 @@ func ServerTLSConfig(ctx context.Context, ca CeremonyCA, extraSANs ...string) (*
 		return nil, &ServerTLSError{Err: err}
 	}
 
-	cert, err := tls.X509KeyPair(issued.CertPEM, issued.KeyPEM)
-	if err != nil {
+	if err := checkIssuedKey(issued, key.Public()); err != nil {
 		return nil, &ServerTLSError{Err: err}
+	}
+	cert := tls.Certificate{
+		Certificate: [][]byte{issued.Certificate.Raw},
+		PrivateKey:  key,
+		Leaf:        issued.Certificate,
 	}
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
 	}, nil
+}
+
+// checkIssuedKey confirms the CA certified the key it was given: a composed
+// CA that returned no parsed certificate, or one for some other key, would
+// otherwise surface as a handshake failure far from the cause.
+func checkIssuedKey(issued *IssuedCert, want crypto.PublicKey) error {
+	if issued == nil || issued.Certificate == nil {
+		return &CertEncodeError{Err: errors.New("CA returned no certificate")}
+	}
+	got, ok := issued.Certificate.PublicKey.(interface{ Equal(crypto.PublicKey) bool })
+	if !ok || !got.Equal(want) {
+		return &CertEncodeError{Err: errors.New("CA certified a different public key")}
+	}
+	return nil
 }
 
 // serverSANs returns the deduplicated union of the base server SANs, the

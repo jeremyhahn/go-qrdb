@@ -46,9 +46,17 @@ func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger)
 func (t *ScopedCeremonyService) StartRekey(ctx, barrier *seal.StorageBarrier, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier)
 func ParseShareEnvelope(raw []byte) (*ShareEnvelope, error)
-func (e *ShareEnvelope) Open(priv *hpke.PrivateKey) ([]byte, error)
+func (e *ShareEnvelope) Open(dec keydelivery.Decrypter) ([]byte, error)
 func (e *ShareEnvelope) OpenWithKey(priv crypto.PrivateKey) ([]byte, error)
 ```
+
+`Open` takes a `keydelivery.Decrypter` (an `hpke.PrivateKey`), not a key
+value. A holder whose envelope key is held on a device builds the decrypter
+with `keydelivery.NewDecrypter(kem, kx, pq)`: `kx` is an `ecdh.KeyExchanger`
+and `pq`, for the hybrid suite, a `crypto.Decapsulator`, each of which sends
+its operation to the device. The private key is never in the process.
+`OpenWithKey` is the software path for a key file. (Corrected 2026-10-07: this
+listing gave `Open` a `*hpke.PrivateKey` pointer, which never existed.)
 
 Composition (Tier 2), through the server and node options:
 `WithCeremonyCA`, `WithFactorRegistry` (hardware factors from go-xkms),

@@ -79,7 +79,7 @@ type StrategyFactory func() (SealingStrategy, error)
 - `StrategyPassphrase` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
 - `StrategyNone` — built via `NewNoneStrategy()`.
 
-`StrategyShamir` is intentionally NOT registered in the default registry because the Shamir strategy requires a `Threshold` and `Shares` configuration that only the daemon's init command can supply; the daemon constructs it inline at init time.
+`StrategyShamir` is intentionally NOT registered in the default registry because the Shamir strategy requires a `Threshold` and `Shares` configuration that only the node's configuration can supply; `seal.NewSystemStrategyRegistry` adds it, with those parameters, for the system barrier.
 
 ### Hardware injection — `WithStrategyRegistry`
 
@@ -113,18 +113,9 @@ sequenceDiagram
 
 The same registry can be used to inject test/fake strategies in integration tests without any hardware coupling.
 
-### Direct injection — `WithSealStrategy`
+### The system barrier resolves through the registry
 
-For deployments that know the strategy at construction time (typical software-only setups, embedded SDK callers) `WithSealStrategy` bypasses the registry and hands the constructor a pre-built `SealingStrategy`:
-
-```go
-// pkg/server/server.go:469-476
-func WithSealStrategy(strategy seal.SealingStrategy) ServerOption {
-    return func(o *serverOptions) { o.sealStrategy = strategy }
-}
-```
-
-Pick one or the other; the registry is for name-based dispatch at `qrdbd init --barrier-strategy <name>`, the direct injector is for compile-time decisions.
+The system barrier is built from `seal.NewSystemStrategyRegistry(composer, threshold, total)` — qrdb's software strategies overlaid by the composer's registry — and `seal.ResolveSystemStrategies`. The embedded node (`sdk/go/node`) passes the `WithStrategyRegistry` registry as the composer; its `WithSealStrategy` node option registers a pre-built strategy under its own ID, selected unless `seal.strategy` names `shamir` or `none`. The former `server.WithSealStrategy` option was consumed by nothing and is deleted; see [../barrier-seal/engineering.md](../barrier-seal/engineering.md).
 
 ## StorageBarrier
 
@@ -159,7 +150,7 @@ Use cases:
 - Test fixtures that exercise the storage path without crypto overhead
 - Deployments where the storage device already provides authenticated full-disk encryption (LUKS+integrity, BitLocker with TPM-bound VMK, etc.)
 
-`StrategyNone` is registered in the default registry alongside `StrategySoftware`. Operators opt in with `qrdbd init --barrier-strategy none` or by selecting it explicitly via `WithSealStrategy(NewNoneStrategy())`.
+`StrategyNone` is registered in the default registry alongside `StrategySoftware`. Operators opt in with `qrdbd init --barrier-strategy none` or with `seal.strategy: none` in the node's configuration.
 
 > **Operational note**: When `none` is selected, the audit log marks every barrier operation with `strategy: none` so the absence of encryption is permanently visible in the trail. The xkms `--require-encryption` compliance gate refuses to come up against a `none`-mode barrier.
 

@@ -158,63 +158,45 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 			slog.Any("error", rerr))
 	}
 
-	var strategies []seal.SealingStrategy
-	switch f.sealConfig.Strategy {
-	case "shamir":
-		shamirStrat, shamirErr := seal.NewShamirStrategy(
-			f.sealConfig.ShamirThreshold, f.sealConfig.ShamirTotal)
-		if shamirErr != nil {
-			_ = sealStore.Close()
-			return nil, &SealStrategyError{Strategy: "shamir", Err: shamirErr}
-		}
-		strategies = append(strategies, shamirStrat)
+	// The system barrier resolves its strategies through the same registry an
+	// embedder's composer overlays (seal.NewSystemStrategyRegistry); qrdbd
+	// composes no hardware strategy, so it holds qrdb's software strategies:
+	//   - "passphrase" (the default): deferred software. The admin supplies the
+	//     passphrase at BarrierInitialize / Unseal and it is run through the
+	//     KDF; there is no construction-time placeholder, so the barrier is
+	//     never sealed with a deployment-derivable key.
+	//   - "none": barrier-present-but-unencrypted, the canonical source state
+	//     for `qrdb barrier enable-encryption` (handleSystemMigration).
+	//   - "shamir": M-of-N with the configured threshold and total.
+	// The strategy the persisted root key names is registered too: after an
+	// enable-encryption the config still names the pre-migration strategy, and
+	// the barrier is self-describing from its persisted state, so the
+	// in-process re-init -- or a later restart -- can unseal it.
+	configured := seal.StrategyID(f.sealConfig.Strategy)
+	if configured == "" {
+		configured = seal.StrategyPassphrase
+	}
+	registry, strategyErr := seal.NewSystemStrategyRegistry(nil, f.sealConfig.ShamirThreshold, f.sealConfig.ShamirTotal)
+	if strategyErr != nil {
+		_ = sealStore.Close()
+		return nil, &SealStrategyError{Strategy: string(configured), Err: strategyErr}
+	}
+	strategies, resolveErr := seal.ResolveSystemStrategies(registry, configured,
+		seal.PersistedStrategyFrom(sigCtx, sealBackend, barrierCfg.RootKeyPath))
+	if resolveErr != nil {
+		_ = sealStore.Close()
+		return nil, &SealStrategyError{Strategy: string(configured), Err: resolveErr}
+	}
+	if configured == seal.StrategyShamir {
 		shareTTL, ttlErr := f.sealConfig.ShareTTLDuration()
 		if ttlErr != nil {
 			_ = sealStore.Close()
-			return nil, &SealStrategyError{Strategy: "shamir", Err: ttlErr}
+			return nil, &SealStrategyError{Strategy: string(configured), Err: ttlErr}
 		}
 		barrierCfg.Shamir = &seal.ShamirConfig{
 			Threshold:   f.sealConfig.ShamirThreshold,
 			TotalShares: f.sealConfig.ShamirTotal,
 			QuorumTTL:   shareTTL,
-		}
-	case "none":
-		// Barrier-present-but-unencrypted: the at-rest store is wrapped in
-		// zero-epoch (plaintext) format. Initialized with empty credentials, it
-		// boots serving and can later be migrated to a keyed strategy in place
-		// via `qrdb barrier enable-encryption` (handleSystemMigration). This is
-		// the canonical source state for enabling encryption after the fact.
-		strategies = append(strategies, seal.NewNoneStrategy())
-	default: // "passphrase"
-		// Deferred software (passphrase) strategy: the admin supplies the
-		// passphrase at BarrierInitialize / Unseal time and it is run through the
-		// KDF. There is no construction-time placeholder, so the barrier is never
-		// sealed with a deployment-derivable key. (Matches the Software factory in
-		// pkg/seal/strategy_registry.go.)
-		strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
-	}
-
-	// Restart-survival for enable-encryption: if the persisted root-key blob was
-	// migrated to a keyed strategy after the fact (the daemon was started with
-	// strategy "none" but `qrdb barrier enable-encryption` since rewrote the
-	// canonical root key to passphrase/shamir), ALSO register the migrated
-	// strategy so the in-process re-init — or a later process restart — can unseal
-	// it. The static config still names the pre-migration strategy; the barrier is
-	// self-describing from its persisted state. Mirrors the SDK node's
-	// buildNodeSealSubsystem restart-survival path.
-	if persisted := seal.PersistedStrategyFrom(sigCtx, sealBackend, barrierCfg.RootKeyPath); persisted != "" && !sealStrategyRegistered(strategies, persisted) {
-		switch persisted {
-		case seal.StrategyPassphrase:
-			strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
-		case seal.StrategyShamir:
-			// none->shamir requires the M-of-N params, which are not in a "none"
-			// config; register only when they are available (a real shamir config
-			// or a daemon whose config carried them). Best-effort.
-			if f.sealConfig.ShamirThreshold >= 2 && f.sealConfig.ShamirTotal >= f.sealConfig.ShamirThreshold {
-				if shamirStrat, e := seal.NewShamirStrategy(f.sealConfig.ShamirThreshold, f.sealConfig.ShamirTotal); e == nil {
-					strategies = append(strategies, shamirStrat)
-				}
-			}
 		}
 	}
 
@@ -546,15 +528,4 @@ func strconvI(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
-}
-
-// sealStrategyRegistered reports whether a strategy with the given ID is already
-// present in the slice, so restart-survival registration does not duplicate it.
-func sealStrategyRegistered(strategies []seal.SealingStrategy, id seal.StrategyID) bool {
-	for _, s := range strategies {
-		if s.ID() == id {
-			return true
-		}
-	}
-	return false
 }

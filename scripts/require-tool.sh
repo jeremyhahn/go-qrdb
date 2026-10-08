@@ -34,8 +34,8 @@
 #
 # (#195) An install step is ALSO a version substitution. `actions/setup-go`
 # prepends GOPATH/bin to PATH, so a freshly installed binary SHADOWS the baked
-# one in /usr/local/bin. This repository's ci.yml installed one golangci-lint
-# release unconditionally over an image that bakes another — believing itself
+# one in /usr/local/bin. This repository's ci.yml installed golangci-lint
+# unconditionally over an image that baked a different one — believing itself
 # pinned by the image while running something else entirely.
 #
 # (#195, gosec) Pinning alone was never sufficient for gosec: it takes its

@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Go 1.27.0+ is required: go-enclave v0.5.0-alpha declares `go 1.27.0` and
-# go-quicraft v0.11.0-alpha consumes it, and the official golang images pin
+# Go 1.27.1 (the latest release) is required: go-enclave declares `go 1.27.x`
+# and go-quicraft consumes it, and the official golang images pin
 # GOTOOLCHAIN=local so an older base cannot satisfy that requirement (and
 # cannot auto-upgrade). This must stay >= the highest `go` directive across
 # the workspace modules.

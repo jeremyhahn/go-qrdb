@@ -79,12 +79,11 @@ func (ca *testCeremonyCA) CABundle() ([]byte, error) {
 	}), nil
 }
 
-// IssueCertificate generates a new key pair and issues a certificate
-// signed by the test CA.
+// IssueCertificate issues a certificate for req.PublicKey signed by the test
+// CA, refusing a request without one as the real CAs do.
 func (ca *testCeremonyCA) IssueCertificate(_ context.Context, req *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
+	if req.PublicKey == nil {
+		return nil, &ceremony.IssueCertKeyError{Field: "PublicKey"}
 	}
 
 	template := &x509.Certificate{
@@ -97,7 +96,7 @@ func (ca *testCeremonyCA) IssueCertificate(_ context.Context, req *ceremony.Issu
 		DNSNames:     req.SANs,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.caCert, &key.PublicKey, ca.caKey)
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.caCert, req.PublicKey, ca.caKey)
 	if err != nil {
 		return nil, err
 	}
@@ -107,17 +106,9 @@ func (ca *testCeremonyCA) IssueCertificate(_ context.Context, req *ceremony.Issu
 		return nil, err
 	}
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
 	return &ceremony.IssuedCert{
 		Certificate: cert,
-		CertPEM:     certPEM,
-		KeyPEM:      keyPEM,
+		CertPEM:     pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
 	}, nil
 }
 

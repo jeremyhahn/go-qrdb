@@ -95,11 +95,29 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
+| `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run (`make integration-test-standalone`, `-cluster`, `-cluster-tenancy`, `-dao`, `-gpu`, `-embedding`, `-rag`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
+| `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
+| `test/buildgates/integration_image_tag_test.go` | every service a `test/integration/api` compose file builds names its image through a required interpolation (`${VAR:?...}`, never a literal tag or a `${VAR:-default}`); each such variable is exported from a Makefile variable derived from `INT_PROJECT`; `integration-image` tags its build with it; every stage that brings the stack up passes `-p $(INT_PROJECT)` and ends with `integration-down`, which removes the images; no workflow runs `docker compose` itself, and every job that runs a stage tears down through `make integration-down` under `always()` with the stage's own `INT_PROJECT` |
 
 `AGENTS.md`'s Testing section is where a lane reads "how do I test my feature
 in isolation" first; this table is the engineering-level index of where that
 tooling lives, kept beside this folder's other test/buildgates entries rather
 than duplicated.
+
+### Per-run integration images
+
+A Docker integration run's compose project was already per run, but the image
+it built and ran was the fixed `go-qrdb-dev:latest`, which the devcontainer
+also builds (from a different Dockerfile stage). Two runs on one host rebuilt
+that tag between each other's build and `up`, so a test container's CLI could
+drive a server baked from another tree; it surfaced as "unknown method" from a
+server that predated the RPC. Each run now builds and runs its own tag, derived
+from `INT_PROJECT`, and removes it when the run ends. The compose files require
+the tag (`${QRDB_INT_IMAGE:?...}`) and refuse every command without it, `down`
+included, so a stack is always driven through `make`; to tear one down by hand,
+run `make integration-down INT_PROJECT=<project>`. Two concurrent runs on one
+machine need distinct `INT_PROJECT` values, as before. The devcontainer keeps
+its own stable `go-qrdb-dev:latest`.
 
 ## Integration Target
 

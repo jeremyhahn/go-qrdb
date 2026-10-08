@@ -174,13 +174,6 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 	}
 }
 
-// isCompacted reports whether err is the refusal of a read below a
-// compaction floor.
-func isCompacted(err error) bool {
-	var compacted *transport.RevisionCompactedError
-	return errors.As(err, &compacted)
-}
-
 // platformScopeRefusals is crossTenantRefusals with embedded's predicate
 // replaced. Every remote transport renders a ScopeCross RBAC denial (a
 // tenant holding admin:node_compaction, refused because it is not the system

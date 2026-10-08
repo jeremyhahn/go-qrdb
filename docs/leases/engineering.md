@@ -283,6 +283,14 @@ when the absence arrives typed.
 No lease-specific configuration keys. The sweep runs on the leader; its cadence
 follows the Raft tick rather than a separate setting.
 
+The lessor's time source is a composition seam: `server.WithClock` /
+`node.WithClock` hand the node's `clock.Clock` to the lessor, so lease time and
+its expiry sweeper follow it. Nil keeps the real clock. A composer anchors lease
+expiry to a trusted time source with it; a test shares one fake clock between a
+node and its client so a lease's expiry follows the fake. The same clock reaches
+the key-delivery receiver and the invitation-redeem and holder-act token
+buckets. See [release/extension-seams.md](../release/extension-seams.md#the-clock).
+
 ## Persistence
 
 Lease objects and key bindings live in the lease table described under

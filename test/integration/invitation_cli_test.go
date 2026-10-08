@@ -55,6 +55,21 @@ var invitationProtocols = []multiProtocol{
 	{name: "unix", scheme: "unix"},
 }
 
+// redemptionsPerProtocol is how many redemptions
+// testInvitationRoundTripOverProtocol makes: one that enrols, one replay and
+// one unknown token.
+const redemptionsPerProtocol = 3
+
+// invitationRedeemLimitYAML sizes auth.invitation_redeem_limit.per_source to
+// every redemption this test makes. All but unix's come from the one
+// loopback address (unix draws on a separate "local" bucket), so the default
+// burst (config.DefaultRedeemPerSource) would, correctly, throttle quic's
+// enrolment and everything after it -- with the same opaque refusal a bad
+// token gets.
+var invitationRedeemLimitYAML = fmt.Sprintf(
+	"auth:\n  invitation_redeem_limit:\n    per_source:\n      burst: %d\n",
+	len(invitationProtocols)*redemptionsPerProtocol)
+
 // unauthenticatedArgsFor returns the root-level qrdb CLI flags that select
 // the given protocol against node with NO client certificate at all --
 // unlike cliArgsFor, this is the redeemer's half, who holds no credential
@@ -70,7 +85,7 @@ func unauthenticatedArgsFor(node *multiProtoNode, proto multiProtocol) []string 
 // TestInvitation_CLI_InviteAndEnroll_PerProtocol drives the full invite ->
 // enroll round trip through the CLI binary against every transport.
 func TestInvitation_CLI_InviteAndEnroll_PerProtocol(t *testing.T) {
-	node := startMultiProtocolNode(t)
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", invitationRedeemLimitYAML)
 
 	for _, proto := range invitationProtocols {
 		proto := proto
