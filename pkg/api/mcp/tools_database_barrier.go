@@ -74,7 +74,7 @@ func handleDatabaseUnseal(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_unseal", Err: err}
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 		if err := dbSvc.UnsealDatabase(ctx, name, creds); err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_unseal", Err: err}
 		}

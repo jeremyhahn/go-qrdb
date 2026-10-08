@@ -180,8 +180,7 @@ func (v *SecretValue) Open(ctx context.Context) (*secure.Buffer, error) {
 // or a buffer destroyed out from under the copy.
 //
 // The conversion runs inside a COORDINATED borrow (go-qrdb#74), via
-// secure.CopyOut, rather than string(buf.Bytes()): Bytes releases its borrow
-// the instant it returns, so a concurrent Destroy of buf could unmap the pages
+// secure.CopyOut, so a concurrent Destroy of buf cannot unmap the pages
 // mid-conversion. CopyOut holds the borrow for the whole copy and refuses an
 // empty source, which is what lets this tell "unmapped mid-read" from "an
 // empty secret". The intermediate slice is wiped; the string it produces can

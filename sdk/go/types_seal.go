@@ -62,7 +62,7 @@ type StorageBackend = seal.StorageBackend
 // secret is protected memory — a *enclave.SealedEnclave, never a []byte — and
 // is built with NewCredentials (consuming) or CredentialsFor (borrowing). The
 // zero value means "no credentials supplied". The caller OWNS a credential it
-// builds: destroy it (creds.Secret.Destroy(), nil-safe) once the seal or
+// builds: destroy it (seal.DestroyCredentials(creds), nil-safe) once the seal or
 // unseal it was built for has returned; nothing downstream destroys it.
 type Credentials = seal.Credentials
 

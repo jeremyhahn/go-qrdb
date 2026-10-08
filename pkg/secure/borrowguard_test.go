@@ -147,14 +147,6 @@ func TestBorrowGuard_CoversEveryPurgeClassEntryPoint(t *testing.T) {
 			}
 			b.Destroy()
 		}},
-		{"Buffer.Bytes", func() {
-			b, err := NewBuffer(8)
-			if err != nil {
-				return
-			}
-			defer b.Destroy()
-			_ = b.Bytes()
-		}},
 		{"Buffer.Size", func() {
 			b, err := NewBuffer(8)
 			if err != nil {

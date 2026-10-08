@@ -921,7 +921,7 @@ func (s *Server) setupBarrier(
 				s.sealStore = nil
 				return nil, nil, &BarrierPassphraseError{Err: credErr}
 			}
-			defer softwareCreds.Secret.Destroy()
+			defer seal.DestroyCredentials(softwareCreds)
 			effStrategy = seal.StrategyPassphrase
 		}
 	}

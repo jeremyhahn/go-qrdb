@@ -51,7 +51,7 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 	if err != nil {
 		return delayed("UnsealDatabase", err)
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 	return t.dbSvc.UnsealDatabase(ctx, name, creds)
 }
 

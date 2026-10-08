@@ -292,7 +292,7 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 	// Validate synchronously so the caller gets immediate feedback on bad input
 	// (the async path can no longer surface a structured error to this client).
 	if err := opts.Validate(); err != nil {
-		creds.Secret.Destroy()
+		seal.DestroyCredentials(creds)
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -309,7 +309,7 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		// request, so destroying it in the handler would pull the
 		// passphrase out from under a running migration. The destroy
 		// belongs to the last reader, and that is this goroutine.
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 		resultCh <- s.encMigrator.EnableEncryption(migrationCtx, scope, opts)
 	}()
 

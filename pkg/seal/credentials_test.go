@@ -16,7 +16,10 @@ package seal
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,7 +32,7 @@ func TestNewCredentials_ConsumesTheSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCredentials: %v", err)
 	}
-	defer creds.Secret.Destroy()
+	defer DestroyCredentials(creds)
 	for i, c := range src {
 		if c != 0 {
 			t.Fatalf("source byte %d survived NewCredentials: %q", i, src)
@@ -59,7 +62,7 @@ func TestCredentialsFor_BorrowsTheSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CredentialsFor: %v", err)
 	}
-	defer creds.Secret.Destroy()
+	defer DestroyCredentials(creds)
 	if string(src) != "borrowed" {
 		t.Fatalf("CredentialsFor altered the caller's slice: %q", src)
 	}
@@ -102,10 +105,32 @@ func TestMustCredentials_PanicsWhereNewCredentialsErrors(t *testing.T) {
 
 func TestMustCredentials_RoundTrip(t *testing.T) {
 	creds := MustCredentials(context.Background(), []byte("fixture"))
-	defer creds.Secret.Destroy()
+	defer DestroyCredentials(creds)
 	if got := credentialPlaintext(t, creds); got != "fixture" {
 		t.Fatalf("MustCredentials holds %q", got)
 	}
+}
+
+func TestDestroyCredentials_ReleasesTheSecret(t *testing.T) {
+	creds, err := NewCredentials(context.Background(), []byte("released"))
+	if err != nil {
+		t.Fatalf("NewCredentials: %v", err)
+	}
+	DestroyCredentials(creds)
+	if creds.Secret.IsAlive() {
+		t.Fatal("credential is still alive after DestroyCredentials")
+	}
+	if _, err := creds.Secret.Open(t.Context()); !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("Open after DestroyCredentials = %v, want ErrEnclaveDestroyed", err)
+	}
+	// Idempotent, like the Destroy it wraps: a second release is a no-op.
+	DestroyCredentials(creds)
+}
+
+func TestDestroyCredentials_ZeroIsNoOp(t *testing.T) {
+	// The zero value means "no credentials supplied"; releasing it must
+	// neither panic nor touch anything.
+	DestroyCredentials(Credentials{})
 }
 
 // credentialPlaintext copies the credential's secret out under the enclave
@@ -117,7 +142,11 @@ func credentialPlaintext(t *testing.T, creds Credentials) string {
 	if err != nil {
 		t.Fatalf("open credential: %v", err)
 	}
-	defer opened.Destroy()
+	defer func() {
+		if err := opened.Destroy(); err != nil {
+			t.Errorf("release opened credential: %v", err)
+		}
+	}()
 	var out []byte
 	if err := opened.WithBytes(func(view []byte) error {
 		out = append([]byte(nil), view...)

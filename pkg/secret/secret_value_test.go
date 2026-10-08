@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 func TestSecretValue_NewSecretValue_CopiesBacking(t *testing.T) {
@@ -115,8 +116,12 @@ func TestSecretValue_Open(t *testing.T) {
 		t.Fatal("Open returned a nil buffer for a non-empty value")
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != "s3cr3t" {
-		t.Errorf("Open buffer = %q, want s3cr3t", buf.Bytes())
+	got, err := secure.CopyOut(buf)
+	if err != nil {
+		t.Fatalf("CopyOut: %v", err)
+	}
+	if string(got) != "s3cr3t" {
+		t.Errorf("Open buffer = %q, want s3cr3t", got)
 	}
 
 	// An empty value opens to a nil buffer with no error.

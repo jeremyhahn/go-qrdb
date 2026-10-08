@@ -53,14 +53,14 @@ func TestNewBuffer(t *testing.T) {
 			if buf.Size() != tc.size {
 				t.Fatalf("Size() = %d, want %d", buf.Size(), tc.size)
 			}
-			if got := buf.Bytes(); len(got) != tc.size {
+			if got := contents(buf); len(got) != tc.size {
 				t.Fatalf("len(Bytes()) = %d, want %d", len(got), tc.size)
 			}
 			buf.Destroy()
 			if buf.Size() != 0 {
 				t.Fatalf("after Destroy, Size() = %d, want 0", buf.Size())
 			}
-			if buf.Bytes() != nil {
+			if contents(buf) != nil {
 				t.Fatalf("after Destroy, Bytes() != nil")
 			}
 		})
@@ -81,7 +81,7 @@ func TestNewBufferFromBytes_RoundTrip(t *testing.T) {
 	if bytes.Equal(src, want) {
 		t.Fatalf("source slice not wiped; contents still match original")
 	}
-	if got := buf.Bytes(); !bytes.Equal(got, want) {
+	if got := contents(buf); !bytes.Equal(got, want) {
 		t.Fatalf("Buffer contents mismatch:\n got=%x\nwant=%x", got, want)
 	}
 }
@@ -111,7 +111,7 @@ func TestNewBufferFromBytes_ResultIsWritable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WithBytes: %v", err)
 	}
-	if got := string(buf.Bytes()); got != "xxxxxxxxx" {
+	if got := string(contents(buf)); got != "xxxxxxxxx" {
 		t.Fatalf("Bytes() after mutation = %q, want all 'x'", got)
 	}
 }
@@ -181,7 +181,7 @@ func TestBuffer_NilReceiverIsSafe(t *testing.T) {
 	if buf.Size() != 0 {
 		t.Fatalf("nil Size() = %d, want 0", buf.Size())
 	}
-	if buf.Bytes() != nil {
+	if contents(buf) != nil {
 		t.Fatalf("nil Bytes() != nil")
 	}
 }
@@ -209,19 +209,20 @@ func TestBuffer_ConcurrentDestroy(t *testing.T) {
 // guarantee: the caller cannot observe the prior contents. memguard
 // unmaps the underlying page on Destroy, so any attempt to read via a
 // retained slice reference faults with SIGSEGV. Our wrapper's public
-// API shields the caller from that fault by returning nil for Bytes()
-// and 0 for Size() after Destroy; this test asserts that contract.
+// API shields the caller from that fault by refusing WithBytes (so CopyOut
+// yields nothing) and returning 0 for Size() after Destroy; this test asserts
+// that contract.
 func TestBuffer_MemoryInaccessibleAfterDestroy(t *testing.T) {
 	buf, err := NewBufferFromBytes([]byte("canary-bytes"))
 	if err != nil {
 		t.Fatalf("NewBufferFromBytes: %v", err)
 	}
-	// Before Destroy, Bytes returns non-nil and Size reports the length.
+	// Before Destroy, the contents read back and Size reports the length.
 	if buf.Size() != len("canary-bytes") {
 		t.Fatalf("pre-destroy Size mismatch")
 	}
-	if len(buf.Bytes()) != len("canary-bytes") {
-		t.Fatalf("pre-destroy Bytes len mismatch")
+	if len(contents(buf)) != len("canary-bytes") {
+		t.Fatalf("pre-destroy contents len mismatch")
 	}
 
 	buf.Destroy()
@@ -229,8 +230,8 @@ func TestBuffer_MemoryInaccessibleAfterDestroy(t *testing.T) {
 	// Post-Destroy: our wrapper must refuse to hand out the underlying
 	// slice. This prevents accidental use-after-destroy faults at
 	// callers.
-	if buf.Bytes() != nil {
-		t.Fatalf("Bytes() must be nil after Destroy")
+	if contents(buf) != nil {
+		t.Fatalf("contents must be unreadable after Destroy")
 	}
 	if buf.Size() != 0 {
 		t.Fatalf("Size() must be 0 after Destroy")
@@ -261,23 +262,25 @@ func TestWrapAllocError(t *testing.T) {
 	}
 }
 
-// TestBuffer_BytesAndWithBytesSurviveTheUnderlyingEnclaveBeingDestroyed drives
-// Bytes and WithBytes against a Buffer whose go-enclave MemoryEnclave was
+// TestBuffer_ReadsSurviveTheUnderlyingEnclaveBeingDestroyed drives CopyOut and
+// WithBytes against a Buffer whose go-enclave MemoryEnclave was
 // destroyed WITHOUT going through this package's own Destroy — the one way
 // b.destroyed can read false while b.enc no longer holds anything. Both
 // accessors must report empty/refused rather than propagate go-enclave's
 // ErrEnclaveDestroyed as a foreign error type.
-func TestBuffer_BytesAndWithBytesSurviveTheUnderlyingEnclaveBeingDestroyed(t *testing.T) {
+func TestBuffer_ReadsSurviveTheUnderlyingEnclaveBeingDestroyed(t *testing.T) {
 	buf, err := NewBuffer(16)
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	// Reach past this package's own Destroy so buf.destroyed stays false while
 	// the underlying enclave is actually gone.
-	buf.enc.Destroy()
+	if err := buf.enc.Destroy(); err != nil {
+		t.Fatalf("enclave Destroy: %v", err)
+	}
 
-	if got := buf.Bytes(); got != nil {
-		t.Fatalf("Bytes() on a Buffer whose enclave was destroyed = %v, want nil", got)
+	if got := contents(buf); got != nil {
+		t.Fatalf("CopyOut on a Buffer whose enclave was destroyed = %v, want nil", got)
 	}
 
 	called := false

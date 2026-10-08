@@ -601,7 +601,7 @@ func TestRecoveryStrategy_CloseWipesItsRootKeyCopy(t *testing.T) {
 	if openErr != nil {
 		t.Fatalf("root key should be readable before Close: %v", openErr)
 	}
-	aliased := !bytes.Equal(buf.Bytes(), want)
+	aliased := !bytes.Equal(bufferContents(buf), want)
 	buf.Destroy()
 	if aliased {
 		t.Fatal("the strategy aliased the caller's key instead of copying it")

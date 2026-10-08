@@ -156,7 +156,7 @@ func (s *sealedShareStore) Claim(ctx context.Context, username string) ([]byte, 
 	// The destination is allocated INSIDE the callback from len(src), never
 	// from buf.Size() beforehand.
 	//
-	// Sizing via buf.Size() and then reading via buf.Bytes() as two separate
+	// Sizing via buf.Size() and then reading in a second borrow as two separate
 	// calls would leave a gap between them in which the buffer could be
 	// destroyed — under memguard, by a process-wide purge landing in that gap;
 	// under go-enclave, by any concurrent Destroy with a handle to buf. Either

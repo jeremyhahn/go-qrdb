@@ -168,8 +168,8 @@ func runSecretFromBufferRaceChild() {
 		fail("Secret.Open: %v", err)
 	}
 	defer opened.Destroy()
-	if !bytes.Equal(opened.Bytes(), want) {
-		fail("sealed content = %q, want %q", opened.Bytes(), want)
+	if !bytes.Equal(contents(opened), want) {
+		fail("sealed content = %q, want %q", contents(opened), want)
 	}
 
 	fmt.Fprintln(os.Stdout, "PASS: NewSecretFromBuffer observed the uncorrupted plaintext throughout sealing")

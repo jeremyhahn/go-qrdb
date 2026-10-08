@@ -159,7 +159,7 @@ func runStdinProviderRaceChild() {
 	}
 	defer result.buf.Destroy()
 
-	if got := string(result.buf.Bytes()); got != want {
+	if got := string(contents(result.buf)); got != want {
 		fail("Passphrase returned %q, want %q -- "+
 			"scratch's pages were mutated or unmapped out from under the read", got, want)
 	}

@@ -24,7 +24,7 @@ import (
 
 func TestPlaintext_RoundTrip(t *testing.T) {
 	creds := seal.MustCredentials(context.Background(), []byte("correct horse battery staple"))
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 
 	got := Plaintext(t, creds)
 	if string(got) != "correct horse battery staple" {
@@ -52,7 +52,7 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 	got := Snapshot(creds)
 	// The snapshot survives the owner destroying the credential — which is
 	// the reason a double takes one during the call.
-	creds.Secret.Destroy()
+	seal.DestroyCredentials(creds)
 	if !bytes.Equal(got, []byte("snap")) {
 		t.Fatalf("Snapshot = %q, want snap", got)
 	}
@@ -66,7 +66,7 @@ func TestSnapshot_NoSecretIsNil(t *testing.T) {
 
 func TestSnapshot_DestroyedCredentialPanics(t *testing.T) {
 	creds := seal.MustCredentials(context.Background(), []byte("gone"))
-	creds.Secret.Destroy()
+	seal.DestroyCredentials(creds)
 	defer func() {
 		if recover() == nil {
 			t.Fatal("Snapshot of a destroyed credential must panic, not answer")

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package objstore provides a key-value storage engine backed by go-objstore,
-// so any go-objstore provider (local, memory, s3, gcs, azure, minio, ...) can
+// so any go-objstore provider (local, memory, s3, gcs, azure, ...) can
 // serve as a flat KV backend. It mirrors the file backend's contract — a simple
 // KV engine with no MVCC, and a commit journal giving Batch the same
 // all-or-nothing-after-recovery guarantee (see journal.go) — and is intended
@@ -55,10 +55,10 @@ type Engine struct {
 
 // New constructs an objstore-backed engine for the given go-objstore provider.
 // Providers are resolved through go-objstore's factory: "local" and "memory" are
-// always available, while cloud providers ("s3", "gcs", "azure", "minio",
-// "glacier", "azurearchive") link their SDKs and are compiled in only when
-// go-objstore's matching build tag is set (awss3, gcpstorage, azureblob, minio,
-// glacier, azurearchive). Settings are passed verbatim to the provider.
+// always available, while cloud providers ("s3", "gcs", "azure", "glacier",
+// "azurearchive") link their SDKs and are compiled in only when go-objstore's
+// matching build tag is set (awss3, gcpstorage, azureblob, glacier,
+// azurearchive). Settings are passed verbatim to the provider.
 //
 // The store must be dedicated to this engine. An empty store is marked with
 // this build's object layout; a non-empty one is opened only if it carries

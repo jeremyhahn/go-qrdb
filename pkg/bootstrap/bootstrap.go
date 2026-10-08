@@ -306,7 +306,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		// and a ciphertext held a few hundred microseconds longer costs
 		// nothing. Destroy is nil-safe, so the none strategy's empty
 		// Credentials is fine.
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 		if initErr := system.Initialize(ctx, creds); initErr != nil {
 			if errors.Is(initErr, seal.ErrAlreadyInitialized) {
 				result.BarrierAlreadyInitialized = true

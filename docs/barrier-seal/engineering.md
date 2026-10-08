@@ -471,12 +471,11 @@ services and to the server, which wraps the node's sealed-window probe with
   and the ceremony's barrier unseal are supplied by consumers, and any
   conforming implementation may allocate protected memory of its own. Under
   go-enclave that allocation no longer deadlocks a borrow held across the call
-  (the go-enclave migration removed the process-wide lock that made it), but converting
-  these sites to a held borrow is a separate, not-yet-landed change.
-  Those sites read without a borrow deliberately, each with a
-  `//secure:unborrowed injected-interface` directive the secure analyzer
-  requires (rule 4 below), and are covered by a regression test that fails if
-  a borrow is reintroduced.
+  (the go-enclave migration removed the process-wide lock that made it), but
+  `pkg/secure` still forbids reaching consumer code from inside a borrow. Those
+  sites take a heap copy with `secure.CopyOut` and wipe it as soon as the call
+  returns — go-enclave offers no accessor that reads without a borrow — and are
+  covered by a regression test that fails if a borrow is held across the call.
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
   tests drive each converted path and report a nested borrow as a test failure
   naming both sites, instead of a process that stops with no diagnostic.
@@ -817,7 +816,7 @@ bytes and no error is broken, and the read fails with `io.ErrNoProgress`, as
 ## Secure-memory rules, and what enforces them
 
 Key material in this repository is held through `pkg/secure`, a facade over a
-process-wide mlocking allocator. Four rules protect that boundary, and they
+process-wide mlocking allocator. Three rules protect that boundary, and they
 are enforced by a `go vet` plugin under `pkg/secure/analyzer/` that `make
 secure-analyzer` runs in CI's Lint job over **every Go module in the tree**
 under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
@@ -827,18 +826,13 @@ under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
 | 1 | No raw `memguard` import anywhere (go-enclave is the protected-memory library; `pkg/secure` is its facade) | Every file, tests included |
 | 2 | No `ssh.ParsePrivateKey`; use `ParsePrivateKeyWithPassphrase` on Buffer-backed bytes | Every file, tests included |
 | 3 | No struct field named `Passphrase`, `Password`, `PIN`, `Secret`, `PrivateKey`, `KeyMaterial` or `RecoveryShare` typed `string` or `[]byte` | Scoped — see below |
-| 4 | No `secure.Buffer.Bytes` reference (call, method value or method expression) unless a `//secure:unborrowed <kind> <reason>` directive trailing the read, or standing alone on the line above it, names why it cannot hold a borrow; `<kind>` is `injected-interface`, `allocates-protected` or `nested-enclave` | Every file except `_test.go` |
 
-Rule 4 exists because `Bytes` returns a slice into locked pages with no lock
-held, so a concurrent destroy — the shutdown sweep above all — can unmap the
-pages mid-read and fault the process. `WithBytes` and `secure.CopyOut` hold
-the borrow across the read. A read that cannot hold one crosses an interface a
-consumer implements (the barrier's `Encrypt`, a sealing strategy, the share
-distributor), which `pkg/secure` forbids reaching from inside a borrow. The
-directive is written at the site and read by the analyzer; it is not an
-allowlist, and nothing away from the line can silence a read. Test files are
-out of scope: a test reads its buffer on the goroutine that owns it, with no
-shutdown sweep running.
+There is no rule about reading a `secure.Buffer` without a borrow, because it
+cannot be written: go-enclave scopes every borrow to a callback, so
+`WithBytes` and `secure.CopyOut` are the only ways to read a buffer and the
+compiler rejects anything else. A read whose material must cross an interface
+a consumer implements takes a `CopyOut` copy, which the lifetime analyzer
+below then requires to be wiped.
 
 Both the sweep and its module coverage matter. `./...` does not cross a module
 boundary, so `sdk/go` needs its own pass; and a single tag combination reports
@@ -878,7 +872,7 @@ is tracked rather than assumed away.
 
 ### Lifetimes: where a copy of protected bytes ends
 
-The four rules are about declarations and access. None of them asks what
+The three rules are about declarations and access. None of them asks what
 happens to bytes once they are copied out of protected memory, and that is how
 an unrecoverable plaintext copy once landed with every rule green: a
 passphrase moved into a `secure.Buffer`, read back with
@@ -888,8 +882,7 @@ analyzer in the same tool, `securecopy`, follows every such copy.
 **A copy-out** is `append(x, view...)`, `copy(dst, view)` into a
 non-protected destination, `bytes.Clone`/`slices.Clone` of a view,
 `string(view)`, or a call to a function known to return one. A *view* is the
-`[]byte` a literal `WithBytes` callback receives, a `Buffer.Bytes` result, or
-a re-slice of either.
+`[]byte` a literal `WithBytes` callback receives, or a re-slice of one.
 
 **The obligation ends** when the variable holding the copy is:
 
@@ -908,7 +901,8 @@ is reported too: a deferred call evaluates `x` when the defer statement runs,
 so it wipes whatever `x` held then. `defer func() { secure.Wipe(x) }()` reads
 `x` at exit and counts wherever it is written. A copy that has to outlive every
 wipe carries `//secure:unwiped <reason>` trailing it, or standing alone on the
-line above it, in the same per-site form as rule 4.
+line above it; the directive is per site and visible in review, not an
+allowlist.
 
 **What it cannot see**, which stays a review obligation:
 
@@ -937,11 +931,10 @@ returned to its transport response.
 ### The gate is checked against a known instance
 
 `make test-secure-analyzer` plants a raw `memguard` import, a raw holder
-field, a bare `secure.Buffer.Bytes` read, an unwiped copy-out and a copy-out
+field, an unwiped copy-out and a copy-out
 whose deferred wipe precedes it, requires each to be reported, and requires `go vet` to exit nonzero —
 a diagnostic that does not fail the command does not block a merge. It also
-requires the four scoped populations, a directive-justified read, a read in a
-test file and a correctly wiped copy-out to stay silent through the real
+requires the four scoped populations and a correctly wiped copy-out to stay silent through the real
 binary.
 A clean sweep and a neutered analyzer print the same thing; only the red run
 distinguishes them.

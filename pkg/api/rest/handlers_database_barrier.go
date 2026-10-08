@@ -63,7 +63,7 @@ func (s *Server) handleUnsealDatabase(w http.ResponseWriter, r *http.Request, na
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 	if err := s.databaseSvc.UnsealDatabase(r.Context(), name, creds); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

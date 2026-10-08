@@ -277,7 +277,7 @@ func run() error {
 	}
 
 	if len(suites) == 0 {
-		return &perfresult.ErrNoResults{}
+		return &perfresult.NoResultsError{}
 	}
 
 	printResults(suites, *chartDir, *reportPath)

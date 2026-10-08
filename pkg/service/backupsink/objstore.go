@@ -14,7 +14,7 @@
 
 // Package backupsink provides durable BackupSink implementations for the
 // backup service. The Sink here persists backups to any storage.Storage —
-// most usefully the object-store backend (local, s3, gcs, azure, minio) — so
+// most usefully the object-store backend (local, s3, gcs, azure) — so
 // backups survive process restarts instead of being pinned in memory.
 //
 // Layout within the store:

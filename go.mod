@@ -30,11 +30,11 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jeremyhahn/go-codec v1.4.0
-	github.com/jeremyhahn/go-enclave v0.7.0-alpha
-	github.com/jeremyhahn/go-objstore v0.3.0-alpha
+	github.com/jeremyhahn/go-enclave v0.8.0-alpha
+	github.com/jeremyhahn/go-objstore v0.4.0-alpha
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.46.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.18.0
-	github.com/jeremyhahn/go-truststrap v0.4.0-alpha
+	github.com/jeremyhahn/go-quicraft v0.20.0
+	github.com/jeremyhahn/go-truststrap v0.6.0-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/prometheus/client_golang v1.24.1
@@ -90,8 +90,6 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.59.0 // indirect
 	github.com/RaduBerinde/axisds v0.1.0 // indirect
 	github.com/RaduBerinde/btreemap v0.0.0-20260105202824-d3184786f603 // indirect
-	github.com/awnumar/memcall v0.5.0 // indirect
-	github.com/awnumar/memguard v0.23.0 // indirect
 	github.com/aws/aws-sdk-go v1.55.8 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.43.5 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.36 // indirect

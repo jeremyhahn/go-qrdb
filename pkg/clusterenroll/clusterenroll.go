@@ -329,7 +329,7 @@ func (a *Advertiser) NoisePublicKey() []byte {
 	if a == nil || a.noiseKey == nil {
 		return nil
 	}
-	return a.noiseKey.Public
+	return a.noiseKey.PublicBytes()
 }
 
 // Addr returns the listen address of the Noise server, as bound (the
@@ -1021,11 +1021,11 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 	}
 	listenAddr := net.JoinHostPort(opts.NoiseHost, strconv.Itoa(listenPort))
 
-	// The embedded DHKey aliases the protected private scalar; the Advertiser
-	// owns the StaticKey from here and releases it in Stop.
+	// The StaticKey keeps its private scalar in protected memory; the
+	// Advertiser owns it from here and releases it in Stop.
 	srv, err := newNoiseServer(&noiseboot.ServerConfig{
 		ListenAddr: listenAddr,
-		StaticKey:  &noiseKey.DHKey,
+		StaticKey:  noiseKey,
 		CABundler:  provider,
 		Logger:     logger,
 	})
@@ -1254,13 +1254,13 @@ func logAdvertiserInfo(adv *Advertiser, opts AdvertiseOptions) {
 	// node is not listening on (go-qrdb#167).
 	if opts.AdminPort == 0 {
 		slog.Warn("bootstrap enrollment: admin port is unconfigured; joining nodes cannot be told which port to use",
-			"noise_public_key", hex.EncodeToString(adv.noiseKey.Public),
+			"noise_public_key", hex.EncodeToString(adv.noiseKey.PublicBytes()),
 			"noise_addr", adv.Addr(),
 		)
 		return
 	}
 	slog.Info("bootstrap enrollment information for joining nodes",
-		"noise_public_key", hex.EncodeToString(adv.noiseKey.Public),
+		"noise_public_key", hex.EncodeToString(adv.noiseKey.PublicBytes()),
 		"noise_addr", adv.Addr(),
 		"admin_port", opts.AdminPort,
 	)

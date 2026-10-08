@@ -48,7 +48,7 @@ const (
 	BackendRaft BackendType = "raft"
 
 	// BackendObjstore uses an object store (go-objstore: local, s3, gcs,
-	// azure, minio, ...) as a flat key-value backend. Like BackendFile it is a
+	// azure, ...) as a flat key-value backend. Like BackendFile it is a
 	// simple KV engine (no MVCC); it is intended for blob/backup-oriented
 	// workloads, not hot consensus paths.
 	BackendObjstore BackendType = "objstore"

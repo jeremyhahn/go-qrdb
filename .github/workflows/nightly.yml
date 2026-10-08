@@ -346,7 +346,8 @@ jobs:
       #
       # `make trivy` is the contract, so the gate calls it. What that buys
       # beyond removing the copies is the database-age guard it now carries: it
-      # refreshes, refuses to certify anything with a database older than
+      # refreshes (through the runner's cache, then upstream when the cache is
+      # stale), refuses to certify anything with a database older than
       # TRIVY_DB_MAX_AGE_HOURS, and only then scans, with --skip-db-update so
       # the database checked is the database used. Before this, a green Trivy
       # job said a scan ran and nothing about what it knew.

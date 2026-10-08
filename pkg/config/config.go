@@ -768,7 +768,7 @@ type StorageConfig struct {
 // KV store (suited to blob/backup workloads, not hot consensus paths).
 type ObjstoreConfig struct {
 	// Provider selects the go-objstore backend: "local", "memory", "s3",
-	// "gcs", "azure", or "minio". Empty defaults to "local", rooted under the
+	// "gcs", or "azure". Empty defaults to "local", rooted under the
 	// node data directory.
 	Provider string `yaml:"provider,omitempty"`
 

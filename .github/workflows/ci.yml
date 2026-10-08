@@ -1031,7 +1031,8 @@ jobs:
           exit 1
 
       # `make trivy` refreshes the database and refuses to certify one older
-      # than TRIVY_DB_MAX_AGE_HOURS before scanning (#451), so a green result
+      # than TRIVY_DB_MAX_AGE_HOURS before scanning (#451) -- falling back from
+      # the runner's cache to upstream when the cache is stale -- so a green result
       # means a current database found nothing -- not merely that a scan ran.
       - name: Trivy gate (fail on CRITICAL/HIGH)
         run: make trivy

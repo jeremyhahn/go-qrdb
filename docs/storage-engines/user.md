@@ -162,7 +162,7 @@ moves instead to the same sorted-segment layout Pebble already uses for the
 bucket rather than on local disk. When this ships:
 
 - `objstore` will pick it when you want a database's durable data in S3, GCS,
-  Azure, MinIO or a local object-store directory, with capacity that is not
+  Azure or a local object-store directory, with capacity that is not
   bounded by the node's attached disk.
 - A small local directory is still required (WAL, manifest, block cache) —
   object storage replaces the *bulk* of the data, not every byte on the node.

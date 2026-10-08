@@ -104,7 +104,7 @@ type PebbleStorage = pebble.PebbleStorage
 
 // ObjStoreEngine is an object-storage-backed storage engine. The "local" and
 // "memory" providers are always available; cloud providers (s3, gcs, azure,
-// minio, glacier, azurearchive) are compiled in only when go-objstore's
+// glacier, azurearchive) are compiled in only when go-objstore's
 // matching build tag is set.
 type ObjStoreEngine = objstore.Engine
 

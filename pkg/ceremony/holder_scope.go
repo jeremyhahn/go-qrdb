@@ -946,7 +946,6 @@ func (h *holderScope) distribute(ctx context.Context, secret *secure.Buffer, ros
 	}
 
 	var shares []*shamir.ProtectedShare
-	//secure:unborrowed allocates-protected SplitProtected seals each share into a go-enclave enclave of its own
 	if err := secret.WithBytes(func(k []byte) error {
 		var serr error
 		shares, serr = shamir.SplitProtected(k, roster.Threshold, roster.Total)

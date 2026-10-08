@@ -61,7 +61,7 @@ database is opened. The design below fixes all three.
 | `raft` | its own Raft group, replicated across the cluster | anything you cannot afford to lose to one node |
 | `pebble` | a durable store on one node | single-node deployments, or data you can rebuild |
 | `file` | a store of plain files on one node | small data sets you want to inspect with ordinary tools |
-| `objstore` | an object store (local directory, S3, GCS, Azure, MinIO…) | large, cold data where object-store durability is what you want |
+| `objstore` | an object store (local directory, S3, GCS, Azure…) | large, cold data where object-store durability is what you want |
 | `memory` | nothing survives a restart | tests and caches |
 
 If you leave `--backend` out, the server's default is used: replicated `raft`

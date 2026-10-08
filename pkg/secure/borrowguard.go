@@ -88,7 +88,7 @@ var borrowGuardArmed atomic.Bool
 // this package from inside a WithBytes callback at all, which the guard keeps
 // enforcing so that hazard cannot be reintroduced by a future change to how
 // enclave locking works. checkNoBorrow marks a constructor/Destroy-shaped
-// call; enterBorrow/exitBorrow bracket a Bytes/Size/WithBytes-shaped one.
+// call; enterBorrow/exitBorrow bracket a Size/WithBytes-shaped one.
 
 // checkNoBorrow reports (if the guard is armed) a violation when the calling
 // goroutine already holds a borrow and is entering a constructor or Destroy.
@@ -155,7 +155,7 @@ type BorrowViolationFunc func(*NestedBorrowError)
 // While armed, a goroutine that already holds a borrow and then enters any
 // constructor/Destroy-shaped operation (NewBuffer, NewBufferFromBytes,
 // NewSecret, NewSecretFromBuffer, Secret.Open, either Destroy) or any further
-// borrow-shaped operation (Buffer.Bytes, Buffer.Size, Buffer.WithBytes) is
+// borrow-shaped operation (Buffer.Size, Buffer.WithBytes) is
 // reported to onViolation with a *NestedBorrowError, before the call is
 // allowed to proceed.
 //

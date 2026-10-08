@@ -160,9 +160,9 @@ func (b *StorageBarrier) masterKeyBuffer(ctx context.Context) (*secure.Buffer, e
 // conditional, so there is no branch to skip — and exists purely so a test
 // can inject a delay: the copy itself completes in nanoseconds, far too fast
 // to reliably race enclave.WipeAll against without instrumentation, which
-// would otherwise leave a regression that reverted this function back to an
-// unguarded dst.Bytes() read passing every existing test right up until a
-// real WipeAll actually landed in the (now unguarded) gap in production.
+// would otherwise leave a regression that released dst's borrow before the
+// copy finished passing every existing test right up until a real WipeAll
+// actually landed in the (now unguarded) gap in production.
 var copyEnclaveToBufferHook = func() {}
 
 // copyEnclaveToBuffer copies the reconstructed secret out of enc into a freshly
@@ -185,14 +185,12 @@ var copyEnclaveToBufferHook = func() {}
 // longer deadlock against it. The ordering is kept anyway as allocation
 // hygiene, and because it costs nothing to keep.
 //
-// The copy itself holds BOTH enclaves' borrows for its whole duration — dst's
-// via its own WithBytes, not dst.Bytes(), which would release go-enclave's
-// lock on dst the instant it returned. Doing that here would leave the exact
-// gap SecretValue.WithBytes's own round-3 fix closed (go-qrdb#114 review):
+// The copy itself holds BOTH enclaves' borrows for its whole duration. Releasing
+// dst's before the write finished would leave the exact gap SecretValue.WithBytes's own round-3 fix closed (go-qrdb#114 review):
 // dst is freshly allocated and already registered on go-enclave's shutdown
 // ledger the moment secure.NewBuffer returns, so a concurrent enclave.WipeAll
 // needs no external reference to dst to destroy it mid-copy — an unguarded
-// dst.Bytes() write could fault against pages WipeAll had already unmapped.
+// write could fault against pages WipeAll had already unmapped.
 // Nesting the two borrows is safe: go-enclave gives every enclave its own
 // independent lock, so holding dst's and enc's at once cannot deadlock either
 // against the other or against anything else in the process.

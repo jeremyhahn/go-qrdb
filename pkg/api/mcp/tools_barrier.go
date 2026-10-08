@@ -166,7 +166,7 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			ShamirTotal:     mcp.ParseInt(req, "shamir_total", 0),
 		}
 		if err := opts.Validate(); err != nil {
-			creds.Secret.Destroy()
+			seal.DestroyCredentials(creds)
 			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
 		}
 
@@ -183,7 +183,7 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			// passphrase out from under a running migration. The destroy
 			// belongs to whoever the last reader is, and that is this
 			// goroutine.
-			defer creds.Secret.Destroy()
+			defer seal.DestroyCredentials(creds)
 			resultCh <- migrator.EnableEncryption(migrationCtx, scope, opts)
 		}()
 

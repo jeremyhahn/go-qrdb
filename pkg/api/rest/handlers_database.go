@@ -282,7 +282,7 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 		req.Barrier.Secret = ""
 	}
 

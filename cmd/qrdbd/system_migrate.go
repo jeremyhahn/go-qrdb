@@ -110,15 +110,15 @@ func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope servi
 	// the unlock credential here — the recycler built it for the async system
 	// path and only handleSystemMigration (the enqueued path) destroys it.
 	if !m.sealEnabled {
-		opts.Credentials.Secret.Destroy()
+		seal.DestroyCredentials(opts.Credentials)
 		return service.ErrMigrationProviderUnavailable
 	}
 	if scope.Kind != service.ScopeSystem {
-		opts.Credentials.Secret.Destroy()
+		seal.DestroyCredentials(opts.Credentials)
 		return service.ErrMigrationProviderUnavailable
 	}
 	if err := opts.Validate(); err != nil {
-		opts.Credentials.Secret.Destroy()
+		seal.DestroyCredentials(opts.Credentials)
 		return err
 	}
 	if !m.inProgress.CompareAndSwap(false, true) {
@@ -129,7 +129,7 @@ func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope servi
 		// errors.New here would fall through both mappers' defaults to a
 		// misleading 500/Internal for an entirely routine, expected
 		// condition (go-qrdb#550 review).
-		opts.Credentials.Secret.Destroy()
+		seal.DestroyCredentials(opts.Credentials)
 		return seal.ErrMigrationInProgress
 	}
 	req := &systemMigrationRequest{opts: opts, done: make(chan error, 1)}
@@ -161,7 +161,7 @@ func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope servi
 		// rather than blocking forever on a full buffered channel; release
 		// the slot this call reserved since nothing was actually enqueued.
 		m.inProgress.Store(false)
-		opts.Credentials.Secret.Destroy()
+		seal.DestroyCredentials(opts.Credentials)
 		return seal.ErrMigrationInProgress
 	}
 }
@@ -199,7 +199,7 @@ func handleSystemMigration(
 	// check gets a typed error instead of the nil-pointer panic this function
 	// used to hit at sealSub.SealBarrier below (go-qrdb#550 review).
 	if sealSub == nil {
-		req.opts.Credentials.Secret.Destroy()
+		seal.DestroyCredentials(req.opts.Credentials)
 		rerr := &SystemMigrationSealDisabledError{}
 		req.done <- rerr
 		return false, rerr
@@ -264,7 +264,7 @@ func handleSystemMigration(
 	// The recycle has consumed the unlock credential; destroy the credential the
 	// reconciler handed off (the system-scope path owns it — the reconciler can't
 	// destroy it because this recycle runs async across the in-process reboot).
-	req.opts.Credentials.Secret.Destroy()
+	seal.DestroyCredentials(req.opts.Credentials)
 	req.done <- rerr
 	if rerr != nil {
 		// Do NOT reboot into a half-migrated state. The crash-safe journal plus

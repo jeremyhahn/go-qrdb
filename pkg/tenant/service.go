@@ -1929,7 +1929,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 		if creds, err = seal.CredentialsFor(ctx, passphrase); err != nil {
 			return nil, &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 	}
 
 	// Register a sealed shell when the tenant barrier is not yet
@@ -2194,7 +2194,7 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	if err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 
 	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}

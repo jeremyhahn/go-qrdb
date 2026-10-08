@@ -355,7 +355,7 @@ func (s *BarrierService) BarrierInitialize(ctx context.Context, secret []byte) e
 	if err != nil {
 		return err
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 	return s.barrier.Initialize(ctx, creds)
 }
 
@@ -367,7 +367,7 @@ func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error
 	if err != nil {
 		return err
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 	return s.barrier.Unseal(ctx, creds)
 }
 

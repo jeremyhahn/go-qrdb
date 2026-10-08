@@ -11,6 +11,30 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **go-enclave v0.8.0-alpha in every module.** Every protected-memory read is
+  a scoped borrow (`Buffer.WithBytes`, `secure.CopyOut`). Every go-enclave
+  `Destroy` error is handled: `secure.LogRelease` logs a release problem a
+  caller cannot return (WARN, or ERROR for a corrupted canary), and
+  `seal.DestroyCredentials` replaces `creds.Secret.Destroy()` for a
+  caller-owned seal credential.
+- **go-quicraft v0.20.0, go-objstore v0.4.0-alpha, go-truststrap
+  v0.6.0-alpha.** `github.com/awnumar/memguard` is no longer in any module's
+  graph: go-enclave is the one protected-memory implementation. The benchmark
+  harnesses take go-quicraft's `test/performance` v0.20.0, whose result errors
+  are typed (`perfresult.NoResultsError` replaces `ErrNoResults`).
+
+### Removed
+
+- **`secure.Buffer.Bytes`.** It handed out a view of locked pages with no
+  borrow held; read through `WithBytes`, or take a wipeable copy with
+  `secure.CopyOut`. The secure analyzer's rule 4 (`//secure:unborrowed`),
+  which policed `Bytes`, is retired with it.
+- **MinIO support.** The `WITH_MINIO` make flag and its `minio` build tag are
+  gone, and no `minio` objstore provider is documented or compiled in. S3 is
+  served by the `s3` provider (`WITH_AWS_S3`).
+
 ## [0.46.0-alpha] - 2026-10-08
 
 ### Added

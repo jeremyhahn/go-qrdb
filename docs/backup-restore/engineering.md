@@ -193,7 +193,7 @@ No dedicated config section. Destinations are per request:
 - Object store URI: `s3://bucket/prefix`
 
 Cloud destinations require the corresponding go-objstore build tag
-(`WITH_AWS_S3`, `WITH_MINIO`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
+(`WITH_AWS_S3`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
 `WITH_GLACIER`, `WITH_AZURE_ARCHIVE`).
 
 `KeyRef`/`DecryptionKeyRef` name key material by reference (the bare NAME of

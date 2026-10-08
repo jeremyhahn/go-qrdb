@@ -79,7 +79,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		if creds, err = seal.CredentialsFor(ctx, []byte(req.Barrier.Secret)); err != nil {
 			return nil, err
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 	}
 	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, t.dbSvc, cfg, creds)
 	if err != nil {

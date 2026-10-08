@@ -58,7 +58,9 @@
 # path directly would be this script guessing at a location trivy is free to
 # change.
 #
-# `make trivy` calls it BETWEEN a `--download-db-only` refresh and a
+# trivy-certified-db.sh runs it after each download source (the configured cache,
+# then trivy's upstream repositories), so a stale cache falls back rather than
+# failing the scan. `make trivy` calls that BETWEEN a `--download-db-only` refresh and a
 # `--skip-db-update` scan, so the database this certifies and the database the
 # scan rules with are the same one, and neither leg can move under the other.
 #

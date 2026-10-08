@@ -33,7 +33,7 @@ func TestInitialize_RefusesShamirWithoutHolders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer creds.Secret.Destroy()
+	defer DestroyCredentials(creds)
 
 	for name, init := range map[string]func(b *StorageBarrier, s *ShamirStrategy) error{
 		"Initialize": func(b *StorageBarrier, _ *ShamirStrategy) error {

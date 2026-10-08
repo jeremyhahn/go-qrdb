@@ -7,13 +7,7 @@ import "github.com/jeremyhahn/go-enclave"
 // Buffer stands in for the mlocked working copy.
 type Buffer struct{ b []byte }
 
-// Bytes is the unborrowed accessor rule 4 governs.
-func (b *Buffer) Bytes() []byte { return b.b }
-
-// Bytes is a package-level function sharing the method's name.
-func Bytes() []byte { return nil }
-
-// WithBytes is the borrowed accessor.
+// WithBytes is the only accessor.
 func (b *Buffer) WithBytes(fn func([]byte) error) error { return fn(b.b) }
 
 // Wipe is inferred a consumer: it hands its argument to enclave.Wipe.

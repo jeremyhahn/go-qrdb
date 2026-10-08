@@ -74,7 +74,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		if creds, err = seal.CredentialsFor(ctx, []byte(req.Barrier.Secret)); err != nil {
 			return nil, err
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 	}
 
 	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, s.databaseSvc, cfg, creds)

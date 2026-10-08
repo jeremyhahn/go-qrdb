@@ -16,7 +16,6 @@ package secure
 
 import (
 	"context"
-	"log/slog"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-enclave"
@@ -188,16 +187,13 @@ func (s *Secret) Open(ctx context.Context) (*Buffer, error) {
 // dst is allocated BEFORE frozen is borrowed, matching copyEnclaveToBuffer's
 // ordering (pkg/seal/shamir.go) and pkg/secure's own rule 6: no protected
 // allocation runs while an enclave borrow is held. The copy itself holds BOTH
-// enclaves' borrows for its whole duration — dst's via its own WithBytes, not
-// Bytes(), so a concurrent WipeAll cannot unmap dst mid-copy.
+// enclaves' borrows for its whole duration, so a concurrent WipeAll cannot
+// unmap dst mid-copy.
 func copyFrozenToWritable(frozen *enclave.MemoryEnclave) (*Buffer, error) {
 	size := frozen.Size()
 	buf, err := NewBuffer(size)
 	if err != nil {
-		if destroyErr := frozen.Destroy(); destroyErr != nil {
-			slog.Warn("secure: releasing a frozen enclave reported a non-fatal problem",
-				slog.String("error", destroyErr.Error()))
-		}
+		LogRelease("frozen enclave", frozen.Destroy())
 		return nil, err
 	}
 	copyErr := buf.WithBytes(func(dst []byte) error {
@@ -206,10 +202,7 @@ func copyFrozenToWritable(frozen *enclave.MemoryEnclave) (*Buffer, error) {
 			return nil
 		})
 	})
-	if destroyErr := frozen.Destroy(); destroyErr != nil {
-		slog.Warn("secure: releasing a frozen enclave reported a non-fatal problem",
-			slog.String("error", destroyErr.Error()))
-	}
+	LogRelease("frozen enclave", frozen.Destroy())
 	if copyErr != nil {
 		buf.Destroy()
 		return nil, copyErr
@@ -229,5 +222,5 @@ func (s *Secret) Destroy() {
 	if sealed == nil {
 		return
 	}
-	sealed.Destroy()
+	LogRelease("sealed secret", sealed.Destroy())
 }

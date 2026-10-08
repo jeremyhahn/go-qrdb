@@ -55,15 +55,6 @@ func TestAnalyzer_GoodSSHNonIdent(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), Analyzer, "good_ssh_nonident")
 }
 
-// TestAnalyzer_UnborrowedBytes verifies rule 4 (go-qrdb#428): an unborrowed
-// secure.Buffer.Bytes reference — call, method value or method expression —
-// is reported unless a well-formed //secure:unborrowed directive sits on its
-// line or the line above; a malformed directive is reported as such; a Bytes
-// method on any other type and every reference in a test file are silent.
-func TestAnalyzer_UnborrowedBytes(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), Analyzer, "unborrowed_bytes")
-}
-
 // TestCopyOutAnalyzer verifies securecopy (go-qrdb#459) end to end: every
 // copy-out shape it names is reported when nothing wipes, returns or consumes
 // it; every discharge it names silences it; a wipe or an argument-evaluating
@@ -72,24 +63,6 @@ func TestAnalyzer_UnborrowedBytes(t *testing.T) {
 func TestCopyOutAnalyzer(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), CopyOutAnalyzer,
 		"copyout_cases", "github.com/jeremyhahn/go-qrdb/pkg/secure")
-}
-
-// TestParseUnborrowedDirective exercises every branch of the directive parser.
-func TestParseUnborrowedDirective(t *testing.T) {
-	cases := map[string]directiveState{
-		"//secure:unborrowed injected-interface the barrier is injected": directiveValid,
-		"//secure:unborrowed nested-enclave inside a quicraft borrow":    directiveValid,
-		"//secure:unborrowed allocates-protected the callee enclaves it": directiveValid,
-		"//secure:unborrowed injected-interface":                         directiveMalformed,
-		"//secure:unborrowed":                                            directiveMalformed,
-		"//secure:unborrowedinjected-interface reason":                   directiveMalformed,
-		"//secure:unborrowed because reasons":                            directiveMalformed,
-	}
-	for text, want := range cases {
-		if got := parseUnborrowedDirective(text); got != want {
-			t.Errorf("parseUnborrowedDirective(%q) = %d, want %d", text, got, want)
-		}
-	}
 }
 
 // TestIsSensitiveType exercises every branch of isSensitiveType directly.

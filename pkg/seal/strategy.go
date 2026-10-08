@@ -22,6 +22,8 @@ import (
 	"time"
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // --- Re-exported types from go-quicraft/pkg/seal ---
@@ -45,7 +47,7 @@ type StorageBackend = quicraftseal.StorageBackend
 // Build one with NewCredentials; the zero value means "no credentials
 // supplied", which is what strategies that ignore credentials take.
 //
-// The caller OWNS the credential: destroy it (creds.Secret.Destroy(), nil-safe)
+// The caller OWNS the credential: destroy it (DestroyCredentials, nil-safe)
 // once the seal or unseal it was built for has returned. Nothing downstream
 // destroys it, because a credential that is passed through two layers would
 // otherwise be released by the first to finish with it.
@@ -66,6 +68,15 @@ type Credentials = quicraftseal.Credentials
 // block, and boringcrypto's is a different type. FIPS-certified crypto is
 // GOFIPS140=latest, which is unaffected.
 var NewCredentials = quicraftseal.NewCredentials
+
+// DestroyCredentials releases creds' secret and logs any problem the release
+// reports (secure.LogRelease): it is how a caller destroys a credential it
+// owns, typically deferred, where creds.Secret.Destroy() would drop the
+// error. It is nil-safe and idempotent, like the Destroy it wraps, and a zero
+// Credentials is a no-op.
+func DestroyCredentials(creds Credentials) {
+	secure.LogRelease("seal credentials", creds.Secret.Destroy())
+}
 
 // MustCredentials is NewCredentials for fixtures: a test's passphrase, a
 // constant a program cannot run without. It panics on the error NewCredentials

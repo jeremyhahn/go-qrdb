@@ -3222,7 +3222,7 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 			log.Warn("node: barrier credentials failed", "error", err)
 			return false
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 
 	default:
 		// Unknown / hardware strategy. Inspect the barrier's active strategy

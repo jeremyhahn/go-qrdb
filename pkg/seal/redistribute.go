@@ -105,7 +105,6 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 	defer key.Destroy()
 
 	var aead cipher.AEAD
-	//secure:unborrowed injected-interface unsealKeyAEAD hands the key to the configured AEADProvider (go-qrdb#428)
 	if err := key.WithBytes(func(k []byte) error {
 		var aerr error
 		aead, aerr = b.unsealKeyAEAD(k)

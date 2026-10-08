@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -157,7 +158,7 @@ func (r *daemonLocalRecycler) Recycle(ctx context.Context, m *clustermig.Cluster
 		// consumed by the boot loop (handleSystemMigration), which owns destroying
 		// it; destroying here would pull it out from under the still-running
 		// recycle.
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 	}
 	return r.migrator.EnableEncryption(ctx, scope, opts)
 }
@@ -175,12 +176,7 @@ func withCredentialBytes(ctx context.Context, creds seal.Credentials, fn func([]
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if derr := opened.Destroy(); derr != nil {
-			slog.Warn("cluster migration: releasing an opened credential enclave reported a non-fatal problem",
-				slog.String("error", derr.Error()))
-		}
-	}()
+	defer func() { secure.LogRelease("cluster migration opened credential", opened.Destroy()) }()
 	return opened.WithBytes(fn)
 }
 

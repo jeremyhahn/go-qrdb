@@ -239,7 +239,7 @@ func (s *Server) handleBarrierEnableEncryption(ctx context.Context, payload []by
 		ShamirTotal:     int(req.GetShamirTotal()),
 	}
 	if err := opts.Validate(); err != nil {
-		creds.Secret.Destroy()
+		seal.DestroyCredentials(creds)
 		return nil, err
 	}
 
@@ -256,7 +256,7 @@ func (s *Server) handleBarrierEnableEncryption(ctx context.Context, payload []by
 		// request, so destroying it in the handler would pull the
 		// passphrase out from under a running migration. The destroy
 		// belongs to the last reader, and that is this goroutine.
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 		resultCh <- migrator.EnableEncryption(migrationCtx, scope, opts)
 	}()
 

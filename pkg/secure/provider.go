@@ -148,7 +148,8 @@ func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, erro
 	// The read runs inside scratch's own WithBytes, held for the WHOLE loop,
 	// because scratch is on go-enclave's shutdown ledger the moment NewBuffer
 	// returns: a concurrent WipeAll needs no reference to it to unmap it, and
-	// a bare Bytes() alias could fault mid-read (go-qrdb#114 review, round 4).
+	// an alias read outside a borrow could fault mid-read (go-qrdb#114 review,
+	// round 4).
 	// Holding it costs shutdown nothing — WipeAll's sweep uses TryLock, so it
 	// skips a held enclave rather than waiting on an operator still typing.
 	var n int

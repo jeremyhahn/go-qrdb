@@ -111,8 +111,8 @@ func TestStdinProvider_RegularFileSeeksBackExactly(t *testing.T) {
 		t.Fatalf("Passphrase: %v", err)
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != "hunter2" {
-		t.Fatalf("passphrase = %q", buf.Bytes())
+	if string(contents(buf)) != "hunter2" {
+		t.Fatalf("passphrase = %q", contents(buf))
 	}
 	off, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {

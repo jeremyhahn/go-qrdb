@@ -21,7 +21,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +28,7 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // MaxCredentialFileSize bounds a migration credential file. A passphrase is
@@ -98,7 +98,7 @@ func (l *LocalCredentials) Hold(ctx context.Context, m *ClusterMigration, creden
 		return err
 	}
 	if prev, loaded := l.held.Swap(scopeLabel(m.TenantID, m.Database), &heldCredential{generation: m.Generation, creds: creds}); loaded {
-		prev.(*heldCredential).creds.Secret.Destroy() //nolint:errcheck // type assertion on a value this map only ever holds
+		seal.DestroyCredentials(prev.(*heldCredential).creds) //nolint:errcheck // type assertion on a value this map only ever holds
 	}
 	return nil
 }
@@ -116,7 +116,7 @@ func (l *LocalCredentials) Release(m *ClusterMigration) {
 		return
 	}
 	if l.held.CompareAndDelete(key, h) {
-		h.creds.Secret.Destroy()
+		seal.DestroyCredentials(h.creds)
 	}
 }
 
@@ -147,12 +147,7 @@ func openCopy(ctx context.Context, creds seal.Credentials) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if derr := opened.Destroy(); derr != nil {
-			slog.Warn("clustermig: releasing an opened credential enclave reported a non-fatal problem",
-				slog.String("error", derr.Error()))
-		}
-	}()
+	defer func() { secure.LogRelease("clustermig opened credential", opened.Destroy()) }()
 	var out []byte
 	err = opened.WithBytes(func(b []byte) error {
 		out = bytes.Clone(b)

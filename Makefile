@@ -352,7 +352,6 @@ WITH_CODEC_PROTOBUF ?= 1
 # destinations; downstream composers (xkms, quicbaas) enable what they need. Tag
 # names match go-objstore exactly. The provider umbrellas enable the whole family.
 WITH_AWS_S3        ?= 0
-WITH_MINIO         ?= 0
 WITH_GCP_STORAGE   ?= 0
 WITH_AZURE_BLOB    ?= 0
 WITH_GLACIER       ?= 0
@@ -456,9 +455,6 @@ endif
 # Object-storage (go-objstore) cloud backends.
 ifeq ($(WITH_AWS_S3),1)
   BUILD_TAGS += awss3
-endif
-ifeq ($(WITH_MINIO),1)
-  BUILD_TAGS += minio
 endif
 ifeq ($(WITH_GCP_STORAGE),1)
   BUILD_TAGS += gcpstorage
@@ -3108,9 +3104,14 @@ TRIVY_DB_MAX_AGE_HOURS := 24
 # report rather than a gate. It is a CANNED RECIPE rather than a target for
 # that reason: `trivy` and `trivy-report` below each open with it, and neither
 # can be invoked without it.
+#
+# The download goes through the environment's configured db repository (the
+# runner's pull-through cache) first. When that yields a database older than
+# the limit -- or none -- scripts/trivy-certified-db.sh discards it and
+# downloads from trivy's upstream repositories, names the source that served
+# it, and still fails closed if every source is stale. The limit does not move.
 define trivy-certified-db
-	trivy fs --scanners vuln --download-db-only .
-	@./scripts/check-trivy-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
+	@./scripts/trivy-certified-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
 endef
 
 # The BLOCKING severity floor. It does not move, and #522 is the occasion on
@@ -3225,6 +3226,7 @@ trivy-report: ## Report sub-threshold (MEDIUM/LOW) advisories; advisory in night
 .PHONY: test-trivy-db
 test-trivy-db: ## Test the trivy database-age guard
 	@./scripts/check-trivy-db_test.sh
+	@./scripts/trivy-certified-db_test.sh
 
 # The contract CI calls (devops.md §8): gosec, govulncheck, go mod verify and
 # trivy fs, in the same form a developer runs locally.

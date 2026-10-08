@@ -22,7 +22,7 @@ An `objstore` backend additionally configures its provider:
 storage:
   backend: objstore
   objstore:
-    provider: s3        # local | memory | s3 | gcs | azure | minio
+    provider: s3        # local | memory | s3 | gcs | azure
     settings:
       bucket: "my-bucket"
       region: "us-east-1"
@@ -96,7 +96,7 @@ serving node, because the consumer is PebbleDB and it needs a real path.
 Cloud object-storage backends come from go-objstore and are build-tag gated:
 
 ```bash
-make build WITH_AWS_S3=1 WITH_MINIO=1 WITH_GCP_STORAGE=1 \
+make build WITH_AWS_S3=1 WITH_GCP_STORAGE=1 \
            WITH_AZURE_BLOB=1 WITH_GLACIER=1 WITH_AZURE_ARCHIVE=1
 ```
 
@@ -116,7 +116,7 @@ itself does not change; what changes is what the node does with it:
 storage:
   engine: objstore
   objstore:
-    provider: s3          # local | memory | s3 | gcs | azure | minio
+    provider: s3          # local | memory | s3 | gcs | azure
     settings:
       bucket: qrdb-data
       prefix: "node-a/db-1"   # qrdb-controlled identifier, never a raw key

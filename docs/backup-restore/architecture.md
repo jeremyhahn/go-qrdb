@@ -70,7 +70,7 @@ Selective at both ends: back up specific shards, restore specific shards.
 |---|---|---|
 | Backup service, manifest, checksums | `pkg/service` (backup) | go-qrdb |
 | Shard snapshot capture | driven through `pkg/cluster` over **go-quicraft** | go-qrdb / go-quicraft |
-| Destination storage (local paths, S3, GCS, Azure, MinIO, Glacier) | — | **go-objstore** |
+| Destination storage (local paths, S3, GCS, Azure, Glacier) | — | **go-objstore** |
 | Compression and encryption | `pkg/crypto`, `pkg/codec` | go-qrdb |
 | SDK surface | `sdk/go` (`transport.BackupClient`) | go-qrdb |
 

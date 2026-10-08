@@ -29,10 +29,11 @@
 //     KeyMaterial, or RecoveryShare with Go type `string` or `[]byte`
 //     are flagged. The fix is to switch to `*secure.Secret` or
 //     `*secure.Buffer`.
-//  4. No reference to `secure.Buffer.Bytes` outside a test file unless a
-//     `//secure:unborrowed <kind> <reason>` directive on its line or the
-//     line above names why the read cannot hold a borrow (go-qrdb#428). The
-//     fix is `Buffer.WithBytes` or `secure.CopyOut`; see unborrowed.go.
+//
+// There is no rule about unborrowed reads. go-enclave scopes every borrow to a
+// callback, so secure.Buffer has no accessor that returns its bytes without
+// one: WithBytes and secure.CopyOut are the only ways to read it, and the
+// compiler enforces that.
 //
 // Those are DECLARATION and ACCESS rules. The same vet tool also runs a second
 // analyzer, CopyOutAnalyzer ("securecopy", copyout.go), about LIFETIMES: a
@@ -66,8 +67,7 @@
 //
 // Rule 3 is scoped; rules 1 and 2 are not. The clauses, the argument for
 // each and the counts they silenced are in scope.go, which is the document
-// of record for that decision. Rule 4 does not apply in test files, for the
-// reason given in unborrowed.go.
+// of record for that decision.
 //
 // # Downstream consumers
 //
@@ -237,9 +237,6 @@ func run(pass *analysis.Pass) (any, error) {
 			return true
 		})
 	}
-
-	// Rule 4: an unborrowed Buffer.Bytes read must carry its justification.
-	checkUnborrowedBytes(pass)
 
 	return nil, nil
 }

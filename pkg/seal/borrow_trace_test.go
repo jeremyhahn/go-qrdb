@@ -92,7 +92,11 @@ func TestCopyEnclaveToBuffer_AllocatesOutsideEveryBorrow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enclave.NewMemoryEnclaveCopy: %v", err)
 	}
-	defer enc.Destroy()
+	defer func() {
+		if err := enc.Destroy(); err != nil {
+			t.Errorf("enc.Destroy: %v", err)
+		}
+	}()
 
 	dst, err := copyEnclaveToBuffer(enc)
 	if err != nil {
@@ -100,7 +104,7 @@ func TestCopyEnclaveToBuffer_AllocatesOutsideEveryBorrow(t *testing.T) {
 	}
 	defer dst.Destroy()
 
-	if !bytes.Equal(dst.Bytes(), want) {
+	if !bytes.Equal(bufferContents(dst), want) {
 		t.Error("the copy did not land in the destination")
 	}
 }

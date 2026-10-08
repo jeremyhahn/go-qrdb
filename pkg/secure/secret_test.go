@@ -65,8 +65,8 @@ func TestNewSecret(t *testing.T) {
 				t.Fatalf("Open: %v", err)
 			}
 			defer buf.Destroy()
-			if !bytes.Equal(buf.Bytes(), want) {
-				t.Fatalf("round-trip mismatch:\n got=%x\nwant=%x", buf.Bytes(), want)
+			if !bytes.Equal(contents(buf), want) {
+				t.Fatalf("round-trip mismatch:\n got=%x\nwant=%x", contents(buf), want)
 			}
 		})
 	}
@@ -91,8 +91,8 @@ func TestNewSecretFromBuffer(t *testing.T) {
 	if buf.Size() != 0 {
 		t.Fatalf("after NewSecretFromBuffer, buf.Size() = %d, want 0", buf.Size())
 	}
-	if buf.Bytes() != nil {
-		t.Fatalf("after NewSecretFromBuffer, buf.Bytes() != nil")
+	if contents(buf) != nil {
+		t.Fatalf("after NewSecretFromBuffer, contents(buf) != nil")
 	}
 
 	open, err := sec.Open(context.Background())
@@ -100,7 +100,7 @@ func TestNewSecretFromBuffer(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer open.Destroy()
-	if !bytes.Equal(open.Bytes(), want) {
+	if !bytes.Equal(contents(open), want) {
 		t.Fatalf("round-trip mismatch")
 	}
 }

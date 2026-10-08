@@ -52,12 +52,10 @@ err := sv.WithBytes(func(plaintext []byte) error {
 })
 ```
 
-`Bytes()` and `String()` still exist for callers that must hand a raw `[]byte`
-or `string` to an API that takes one, but they copy the secret into the
-garbage-collected heap, where it cannot be wiped reliably. Both are
-**deprecated** and go away in the stack's coordinated breaking release; reach
-for them only when an interface leaves no choice. Call `Clear()` once you are
-done to destroy the enclave.
+There is no accessor that returns the plaintext as an ordinary `[]byte` or
+`string`. A caller that must hand one to an API that takes it copies it out of
+the `Open` buffer with `secure.CopyOut` and wipes the copy when the call
+returns. Call `Clear()` once you are done to destroy the enclave.
 
 Every *accidental* path to the plaintext is closed. `SecretValue` implements
 `fmt.Formatter` and `slog.LogValuer`, which `fmt` and `log/slog` consult ahead
@@ -79,12 +77,8 @@ what serializing a configuration *means* — `MarshalYAML`/`MarshalJSON` reprodu
 the document the value was loaded from. If an operator puts a secret inline in
 that document, writing the document back out writes the secret; use a reference.
 
-Only an explicit `String()` or `Bytes()` call still materializes the plaintext.
-That is deliberate: `String()` is the documented way to hand a secret to an API
-that takes a string, and silently redacting it would break those callers at run
-time with no compile error to warn them. Changing it belongs to the stack's
-coordinated breaking release; until then it is deprecated, and the paths a
-caller does not choose deliberately are already safe.
+Only an explicit `WithBytes` or `Open` call materializes the plaintext, and
+then only in protected memory for the length of that call.
 
 ## Protected config fields
 

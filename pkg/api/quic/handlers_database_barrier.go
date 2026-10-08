@@ -57,7 +57,7 @@ func (s *Server) handleDatabaseUnseal(ctx context.Context, payload []byte) ([]by
 	if err != nil {
 		return nil, err
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), creds); err != nil {
 		return nil, err
 	}

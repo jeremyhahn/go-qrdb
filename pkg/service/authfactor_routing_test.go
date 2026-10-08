@@ -482,7 +482,7 @@ func newSealAfterResolveResolver(t *testing.T) *sealAfterResolveResolver {
 	if err := barrier.Initialize(context.Background(), creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	creds.Secret.Destroy()
+	seal.DestroyCredentials(creds)
 	store, err := seal.NewTenantSharedKVStore(seal.WrapTenantBarrier("acme", barrier), kvstore.NewMemoryKVStore())
 	if err != nil {
 		t.Fatalf("NewTenantSharedKVStore: %v", err)

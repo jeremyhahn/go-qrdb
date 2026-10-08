@@ -37,8 +37,8 @@ func TestStdinProvider_ReadsUntilNewline(t *testing.T) {
 				t.Fatalf("Passphrase: %v", err)
 			}
 			defer buf.Destroy()
-			if !bytes.Equal(buf.Bytes(), tc.want) {
-				t.Fatalf("got %q, want %q", buf.Bytes(), tc.want)
+			if !bytes.Equal(contents(buf), tc.want) {
+				t.Fatalf("got %q, want %q", contents(buf), tc.want)
 			}
 		})
 	}
@@ -83,8 +83,8 @@ func TestCallbackProvider(t *testing.T) {
 		t.Fatalf("Passphrase: %v", err)
 	}
 	defer buf.Destroy()
-	if !bytes.Equal(buf.Bytes(), want) {
-		t.Fatalf("got %q, want %q", buf.Bytes(), want)
+	if !bytes.Equal(contents(buf), want) {
+		t.Fatalf("got %q, want %q", contents(buf), want)
 	}
 }
 
@@ -177,8 +177,8 @@ func TestStdinProvider_LineEndings(t *testing.T) {
 				t.Fatalf("Passphrase(%q): %v", tc.in, err)
 			}
 			defer buf.Destroy()
-			if string(buf.Bytes()) != tc.want {
-				t.Fatalf("Passphrase(%q) = %q, want %q", tc.in, buf.Bytes(), tc.want)
+			if string(contents(buf)) != tc.want {
+				t.Fatalf("Passphrase(%q) = %q, want %q", tc.in, contents(buf), tc.want)
 			}
 		})
 	}
@@ -197,8 +197,8 @@ func TestStdinProvider_DoesNotOverRead(t *testing.T) {
 		t.Fatalf("Passphrase: %v", err)
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != "hunter2" {
-		t.Fatalf("passphrase = %q, want %q", buf.Bytes(), "hunter2")
+	if string(contents(buf)) != "hunter2" {
+		t.Fatalf("passphrase = %q, want %q", contents(buf), "hunter2")
 	}
 	rest, err := io.ReadAll(r)
 	if err != nil {
@@ -236,7 +236,7 @@ func TestStdinProvider_AtMaxLength(t *testing.T) {
 		t.Fatalf("Passphrase at exactly MaxStdinPassphraseLen: %v", err)
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != want {
+	if string(contents(buf)) != want {
 		t.Fatalf("length = %d, want %d", buf.Size(), MaxStdinPassphraseLen)
 	}
 }
@@ -324,8 +324,8 @@ func TestStdinProvider_EOFWithoutNewlineSuccess(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer buf.Destroy()
-	if !bytes.Equal(buf.Bytes(), []byte("mysecret")) {
-		t.Fatalf("got %q, want %q", buf.Bytes(), "mysecret")
+	if !bytes.Equal(contents(buf), []byte("mysecret")) {
+		t.Fatalf("got %q, want %q", contents(buf), "mysecret")
 	}
 }
 
@@ -375,8 +375,8 @@ func TestStdinProvider_ReadsRawIOEOF(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer buf.Destroy()
-	if !bytes.Equal(buf.Bytes(), data) {
-		t.Fatalf("got %q, want %q", buf.Bytes(), data)
+	if !bytes.Equal(contents(buf), data) {
+		t.Fatalf("got %q, want %q", contents(buf), data)
 	}
 }
 
@@ -422,7 +422,7 @@ func TestCopyPrefix_RefusesADestroyedSource(t *testing.T) {
 	if err := copyPrefix(dst, src, 4); !errors.As(err, &nilBuf) {
 		t.Fatalf("copyPrefix from a destroyed source: %v, want *NilBufferError", err)
 	}
-	if got := dst.Bytes(); !bytes.Equal(got, make([]byte, 4)) {
+	if got := contents(dst); !bytes.Equal(got, make([]byte, 4)) {
 		t.Errorf("dst = %q after a refused copy, want zeros", got)
 	}
 }

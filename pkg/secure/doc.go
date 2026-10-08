@@ -74,25 +74,25 @@
 //  1. The zero value of either type is unusable. Use the provided
 //     constructors.
 //  2. Always defer Destroy() immediately after constructing a Buffer.
-//  3. Never store the []byte returned by Buffer.Bytes() beyond the
-//     lifetime of the Buffer. Never copy it into an unprotected slice.
+//  3. Never retain the []byte a WithBytes callback receives beyond the
+//     callback. Never copy it into an unprotected slice except through
+//     CopyOut (rule 7).
 //  4. Secret is safe to hand to another goroutine (its Destroy is
 //     idempotent and atomic). Buffer is single-owner: Open → use →
 //     Destroy on one goroutine.
 //  5. Constructors that take a []byte consume the caller's slice — the
 //     bytes are wiped on entry, on every return path including failure. Do
 //     not reuse the slice after the call.
-//  6. Prefer Buffer.WithBytes to Buffer.Bytes for anything that reads the
-//     material. Only WithBytes holds the borrow across the read, which is
-//     what makes it safe against a concurrent Destroy of the SAME Buffer
+//  6. Read the material only through Buffer.WithBytes, which is the only
+//     accessor go-enclave offers. It holds the borrow across the read, which
+//     is what makes it safe against a concurrent Destroy of the SAME Buffer
 //     (see below). Never call back into this package from inside a
 //     WithBytes callback — a nested call on the SAME object deadlocks, and
 //     the guard treats any nested call as a violation regardless of object.
 //  7. When the borrow must end in a caller-owned []byte because the calling
 //     signature says []byte, use CopyOut rather than writing the copy by
 //     hand. It holds ONE borrow across the whole copy and refuses an empty
-//     source; the hand-written version sizes from Size() and then reads
-//     Bytes(), which is two separate reads with a gap between them.
+//     source, and the securecopy analyzer requires the caller to wipe it.
 //  8. Arm the borrow guard in the tests for any path that reads protected
 //     memory: `defer secure.GuardBorrows(t.Fatalf)()`. See below.
 //

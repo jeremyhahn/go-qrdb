@@ -542,9 +542,14 @@ func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, ou
 	//
 	// The key cannot be read under a held borrow: resolveDomainKey hands it to
 	// the configured AEADProvider, an interface consumers implement, and then
-	// decrypts into a second protected buffer of its own.
-	//secure:unborrowed injected-interface resolveDomainKey hands the key to the configured AEADProvider (go-qrdb#428)
-	rootKey, err := b.resolveDomainKey(ctx, round.domain, keyBuf.Bytes())
+	// decrypts into a second protected buffer of its own. It gets a copy that
+	// is wiped the moment the call returns.
+	key, err := secure.CopyOut(keyBuf)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed key", Cause: err}
+	}
+	rootKey, err := b.resolveDomainKey(ctx, round.domain, key)
+	secure.Wipe(key)
 	if err != nil {
 		emitAudit(b.config.AuditLogger, "quorum-complete", "barrier", b.config.RootKeyPath, "deny",
 			map[string]string{"domain": string(round.domain), "op": string(round.op)})

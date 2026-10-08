@@ -187,7 +187,7 @@ every touched shard's lock for `fast` and the in-memory ones
 ([../key-value/engineering.md](../key-value/engineering.md)).
 
 Cloud object-storage backends come from go-objstore and are build-tag gated:
-`WITH_AWS_S3`, `WITH_MINIO`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
+`WITH_AWS_S3`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
 `WITH_GLACIER`, `WITH_AZURE_ARCHIVE`.
 
 ## Error semantics
@@ -394,7 +394,7 @@ key, never shared between instances.
 storage:
   engine: objstore
   objstore:
-    provider: s3          # local | memory | s3 | gcs | azure | minio
+    provider: s3          # local | memory | s3 | gcs | azure
     settings:
       bucket: qrdb-data
       prefix: "node-a/db-1"   # qrdb-controlled; never a key

@@ -31,7 +31,7 @@ import (
 // unusable; callers must use one of the provided constructors.
 //
 // Thread safety: Destroy is safe to call concurrently with itself (it is
-// idempotent via atomic CAS). However, Bytes() / Size() / Wipe() while
+// idempotent via atomic CAS). However, WithBytes() / Size() / Wipe() while
 // another goroutine is calling Destroy() is undefined and must be
 // avoided — Buffer is intended to be single-owner for its working life.
 //
@@ -74,6 +74,26 @@ func wrapAllocError(size int, err error) error {
 		return &InvalidSizeError{Size: size}
 	}
 	return err
+}
+
+// LogRelease records a problem go-enclave reported while releasing what, and
+// is the one way go-qrdb handles the error from a go-enclave Destroy whose
+// caller has nowhere to return it (a deferred release, or a Destroy with no
+// result of its own). A nil err logs nothing. A corrupted canary or guard is
+// logged at ERROR: memory the enclave did not own was written. Anything else
+// is logged at WARN: the material was wiped, or the release is still on
+// go-enclave's ledger for a retry or the shutdown sweep to finish, so the
+// caller has nothing further to do about it.
+func LogRelease(what string, err error) {
+	if err == nil {
+		return
+	}
+	attrs := []any{slog.String("what", what), slog.String("error", err.Error())}
+	if errors.Is(err, enclave.ErrEnclaveCorrupted) {
+		slog.Error("secure: protected memory was corrupted before its release", attrs...)
+		return
+	}
+	slog.Warn("secure: releasing protected memory reported a problem", attrs...)
 }
 
 // processAllocator returns the shared, process-wide locked-memory budget
@@ -127,10 +147,9 @@ func NewBuffer(size int) (*Buffer, error) {
 // real hardening: a write through a retained slice faults instead of
 // silently corrupting the enclave. But this package's Buffer has always been
 // uniformly writable regardless of which constructor built it — the fill-in
-// -place pattern NewBuffer exists for depends on it, and Bytes/WithBytes
-// document mutation as sometimes intended — so freezing only the
-// NewBufferFromBytes half would make a write through Bytes()/WithBytes()
-// SIGSEGV the process depending on which constructor happened to build the
+// -place pattern NewBuffer exists for depends on it, and WithBytes documents
+// mutation as sometimes intended — so freezing only the NewBufferFromBytes
+// half would make a write through WithBytes() SIGSEGV the process depending on which constructor happened to build the
 // Buffer being written to, which is exactly the kind of landmine a caller has
 // no way to see coming.
 //
@@ -159,81 +178,22 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 		return nil
 	}); werr != nil {
 		enclave.Wipe(src)
-		if derr := enc.Destroy(); derr != nil {
-			slog.Warn("secure: releasing a failed NewBufferFromBytes allocation reported a non-fatal problem",
-				slog.String("error", derr.Error()))
-		}
+		LogRelease("failed NewBufferFromBytes allocation", enc.Destroy())
 		return nil, werr
 	}
 	enclave.Wipe(src)
 	return &Buffer{enc: enc}, nil
 }
 
-// Bytes returns the underlying mlocked byte slice. The caller MUST NOT
-// retain this slice beyond the lifetime of the Buffer, MUST NOT copy
-// its contents into unprotected memory, and MUST NOT mutate it unless
-// explicitly intended. Returns nil after Destroy.
-//
-// # This method cannot protect the slice it returns
-//
-// The returned slice aliases the enclave's locked pages and is NOT covered
-// by any lock once Bytes has returned: a concurrent Destroy on THIS Buffer
-// unmaps those pages, and a read through the stale slice then faults the
-// process rather than returning an error (go-qrdb#71).
-//
-// Use WithBytes for anything that must be safe against that — or CopyOut,
-// when the calling signature forces a []byte. Either holds the borrow for
-// the whole read, which is the only shape a lock can cover.
-//
-// # What Bytes is still FOR
-//
-// Not "everything not yet converted". The remaining callers are reads whose
-// borrow cannot be held at all, and they fall into three kinds:
-//
-//   - injected-interface: the material crosses into an INJECTED INTERFACE —
-//     seal.EncryptionBarrier, seal.SealingStrategy, ceremony's BarrierUnseal —
-//     whose implementations are supplied by consumers. Any conforming one may
-//     allocate protected memory of its own, which no longer deadlocks against
-//     a held borrow (go-qrdb#114 removed the process-wide lock that made it),
-//     but rule 6 still forbids it, and the migration for these sites is
-//     tracked separately (go-qrdb#145);
-//   - allocates-protected: the read spans a call in this repository that
-//     allocates protected memory of its own, such as a strategy constructor
-//     copying the key into its own enclave — rule 6 again, with a callee that
-//     can be named;
-//   - nested-enclave: the read happens inside a go-quicraft enclave borrow,
-//     whose own WithBytes documentation forbids nesting a second
-//     protected-memory borrow inside it.
-//
-// A call site using Bytes for any OTHER reason is a defect. Each surviving
-// one carries a directive naming its kind and reason, trailing the read or
-// standing alone on the line above it:
-//
-//	//secure:unborrowed injected-interface m.barrier is a seal.EncryptionBarrier
-//
-// pkg/secure/analyzer's rule 4 reports any reference to Bytes outside a test
-// file that lacks one (go-qrdb#428).
-func (b *Buffer) Bytes() []byte {
-	if b == nil || b.destroyed.Load() {
-		return nil
-	}
-	enterBorrow("Buffer.Bytes")
-	defer exitBorrow()
-	out, err := b.enc.Open()
-	if err != nil {
-		return nil
-	}
-	return out
-}
-
 // WithBytes calls fn with the buffer's mlocked bytes, holding the borrow for
 // the whole call.
 //
-// This is the borrow with an actual guarantee, and the reason to prefer it
-// to Bytes: only a borrow held across the READ — not merely across the
+// It is the only way to read a Buffer: go-enclave scopes every borrow to a
+// callback, and a borrow held across the READ — not merely across an
 // accessor — keeps THIS buffer's pages mapped for the whole time fn touches
 // them, so a concurrent Destroy on the same Buffer waits rather than
-// unmapping underneath the reader.
+// unmapping underneath the reader. A caller whose signature forces a []byte
+// that outlives the callback uses CopyOut and wipes the copy when done.
 //
 // fn MUST NOT retain the slice beyond the call, and MUST NOT call this
 // Buffer's own methods reentrantly: enclave.MemoryEnclave's lock is not
@@ -279,58 +239,52 @@ func (b *Buffer) Size() int {
 // the process allocator. Safe to call multiple times — subsequent calls are
 // no-ops. Safe to call on a nil receiver.
 //
-// Any non-fatal release problem go-enclave reports is DISCARDED here — this
-// is the deferable form, matching enclave.MemoryEnclave.Destroy's own
-// contract exactly, and a deferred call has nowhere to hand an error to. Use
-// DestroyErr to observe it. A detected canary corruption is not a discarded
-// case: it PANICS, from underneath this call exactly as it does from
-// DestroyErr, because that is a state a caller cannot act on either way (see
-// DestroyErr).
+// This is the deferable form: a deferred call has nowhere to hand an error to,
+// so any release problem go-enclave reports is logged (see LogRelease) rather
+// than returned. Use DestroyErr to observe it.
 func (b *Buffer) Destroy() {
-	_ = b.DestroyErr()
+	LogRelease("buffer", b.DestroyErr())
 }
 
-// DestroyErr is Destroy with go-enclave's non-fatal release report kept
-// instead of discarded.
+// DestroyErr is Destroy with go-enclave's release report returned instead of
+// logged. A failed release never panics; it returns nil for an ordinary
+// release and for a
+// nil or already-destroyed Buffer. Otherwise it returns what
+// enclave.MemoryEnclave.Destroy reported:
 //
-// It returns enclave.ErrReleasedWithoutWipe when the environment denied the
-// mprotect that makes a frozen region writable again before wiping it, so the
-// pages were unmapped WITHOUT this package's in-process zeroing — nothing
-// leaked to another process either way (the kernel zeroes an anonymous page
-// before reuse), but the defense-in-depth wipe this package promises did not
-// run, which is worth a caller's own logging or metrics rather than silently
-// dropping.
+//   - enclave.ErrReleasedWithoutWipe: the environment denied the mprotect that
+//     makes a frozen region writable again before wiping it, so the pages were
+//     unmapped WITHOUT the in-process zeroing. Nothing leaked to another
+//     process (the kernel zeroes an anonymous page before reuse), but the
+//     defense-in-depth wipe did not run.
+//   - enclave.ErrLockedMemoryUnavailable: the kernel refused munlock or
+//     munmap. The material is wiped and reads as destroyed, but the pages are
+//     still held; b stays retryable, so a later DestroyErr resumes the release.
+//   - enclave.ErrEnclaveCorrupted: the canary or guards were overwritten, so
+//     memory this package did not own was written. The pages are still wiped
+//     and released.
 //
-// It returns nil for an ordinary release, and for a nil or already-destroyed
-// Buffer. Like the underlying enclave.MemoryEnclave.Destroy, it PANICS if
-// the canary guarding the enclave failed to verify: that means memory this
-// package did not own was written, and the state a caller would use to
-// recover is the state that is already wrong.
+// go-qrdb's own test suite cannot force any of these: they are exercised only
+// from INSIDE go-enclave's package-internal tests (unexported syscall seams),
+// and reproducing them here would mean widening b.enc from the concrete
+// *enclave.MemoryEnclave to an interface purely to inject a fake (go-qrdb#114
+// review, round 2: tracked as a known gap rather than papered over with a seam
+// that exists for one test).
 //
-// The ErrReleasedWithoutWipe branch is delegated to
-// enclave.MemoryEnclave.Destroy rather than reproduced here, and go-qrdb's
-// own test suite cannot force it: triggering a denied mprotect is exercised
-// only from INSIDE go-enclave's own package-internal tests (unexported
-// syscall seams), and reproducing it from this package would mean widening
-// b.enc from the concrete *enclave.MemoryEnclave to an interface purely to
-// inject a fake — an architecture change this delegation deliberately keeps
-// out of scope (go-qrdb#114 review, round 2: tracked as a known gap rather
-// than papered over with a seam that exists for one test).
-//
-// An abandoned attempt does NOT leave b permanently marked destroyed. The CAS
-// below flips b.destroyed to true before the release runs, which is right for
-// the ordinary concurrent-Destroy case (only one caller proceeds; the rest see
-// nil immediately) but would be wrong for any attempt that never reaches the
-// end of b.enc.Destroy: a go-enclave panic after a failed unlock or unmap,
-// or an armed borrow guard's violation handler panicking or calling
-// runtime.Goexit from checkNoBorrow before the release even starts. Without
-// the reset, a caller that recovers and retries would find b.destroyed already
-// true and get a false "nil, already destroyed" for a release that never
-// completed, while the mapping stays live and registered (go-qrdb#114 review,
-// round 4, non-blocking). The reset is keyed on completion rather than on
-// recover(), so it covers the checkNoBorrow window as well as the release
-// itself, runs on runtime.Goexit (where recover returns nil), and lets the
-// original panic propagate with its own stack instead of a re-panic.
+// An attempt that does not finish does NOT leave b permanently marked
+// destroyed. The CAS below flips b.destroyed to true before the release runs,
+// which is right for the ordinary concurrent-Destroy case (only one caller
+// proceeds; the rest see nil immediately) but would be wrong for any attempt
+// that does not complete the release: a refused munlock or munmap, or an armed
+// borrow guard's violation handler panicking or calling runtime.Goexit from
+// checkNoBorrow before the release even starts. Without the reset, a caller
+// that retries would find b.destroyed already true and get a false "nil,
+// already destroyed" for a release that never completed, while the mapping
+// stays live and registered (go-qrdb#114 review, round 4, non-blocking). The
+// reset is keyed on completion rather than on recover(), so it covers the
+// checkNoBorrow window as well as the release itself, runs on runtime.Goexit
+// (where recover returns nil), and lets an original panic propagate with its
+// own stack instead of a re-panic.
 func (b *Buffer) DestroyErr() error {
 	if b == nil {
 		return nil
@@ -346,7 +300,7 @@ func (b *Buffer) DestroyErr() error {
 	}()
 	checkNoBorrow("Buffer.Destroy")
 	err := b.enc.Destroy()
-	completed = true
+	completed = !errors.Is(err, enclave.ErrLockedMemoryUnavailable)
 	return err
 }
 

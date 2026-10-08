@@ -57,13 +57,6 @@ func toString(buf *secure.Buffer) string {
 	return s
 }
 
-// An unborrowed Bytes result is a view too.
-func fromBytes(buf *secure.Buffer) {
-	v := buf.Bytes()
-	out := append([]byte(nil), v...) // want `append\(\.\.\., view\.\.\.\) copies protected bytes`
-	use(out)
-}
-
 // A caller of a function that returns a copy owns it.
 func callerDrops(buf *secure.Buffer) {
 	out, err := secure.CopyOut(buf) // want `CopyOut\(\.\.\.\) copies protected bytes`

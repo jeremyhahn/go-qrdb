@@ -235,7 +235,7 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 			if creds, err = seal.CredentialsFor(ctx, []byte(mcp.ParseString(req, "barrier_secret", ""))); err != nil {
 				return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
 			}
-			defer creds.Secret.Destroy()
+			defer seal.DestroyCredentials(creds)
 		}
 
 		info, err := service.CreateDatabaseForTenantWithCredentials(ctx, dbSvc, cfg, creds)

@@ -30,8 +30,12 @@ func varMulti(buf *secure.Buffer) {
 }
 
 func returnsSecond(buf *secure.Buffer) (int, []byte) { // want returnsSecond:"returnsCopy\\(1\\)"
-	v := buf.Bytes()
-	return len(v), append([]byte(nil), v...)
+	var out []byte
+	_ = buf.WithBytes(func(b []byte) error {
+		out = append([]byte(nil), b...)
+		return nil
+	})
+	return len(out), out
 }
 
 // A copy passed straight to an ordinary function is reported.

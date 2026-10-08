@@ -796,7 +796,7 @@ func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, sec
 		if err != nil {
 			return &SystemBarrierInitError{Cause: err}
 		}
-		defer creds.Secret.Destroy()
+		defer seal.DestroyCredentials(creds)
 		if err := s.barrier.VerifyCredentials(ctx, creds); err != nil {
 			return &SystemBarrierCredentialMismatchError{Cause: err}
 		}
@@ -806,7 +806,7 @@ func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, sec
 	if err != nil {
 		return &SystemBarrierInitError{Cause: err}
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 
 	if err := s.barrier.Initialize(ctx, creds); err != nil {
 		if !errors.Is(err, seal.ErrAlreadyInitialized) {

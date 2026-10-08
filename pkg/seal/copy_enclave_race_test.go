@@ -112,7 +112,11 @@ func runCopyEnclaveRaceChild() {
 	if err != nil {
 		fail("enclave.NewMemoryEnclaveCopy: %v", err)
 	}
-	defer enc.Destroy()
+	defer func() {
+		if err := enc.Destroy(); err != nil {
+			fail("enc.Destroy: %v", err)
+		}
+	}()
 
 	// wipeWait bounds the race's WipeAll call well short of copyHold, so the
 	// wait for the destination's borrow times out while the copy is still in
@@ -162,7 +166,7 @@ func runCopyEnclaveRaceChild() {
 	}
 	defer result.dst.Destroy()
 
-	if got := result.dst.Bytes(); !bytes.Equal(got, want) {
+	if got := bufferContents(result.dst); !bytes.Equal(got, want) {
 		fail("copyEnclaveToBuffer's result = %q, want %q -- "+
 			"the destination's pages were mutated or unmapped out from under the copy", got, want)
 	}

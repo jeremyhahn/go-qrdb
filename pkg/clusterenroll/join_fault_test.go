@@ -428,7 +428,7 @@ func TestJoinClientExchange_HandshakeMessage2Invalid(t *testing.T) {
 	defer key.Destroy()
 
 	_, csrDER := generateTestCSR(t)
-	_, err = joinClientExchange(clientConn, key.Public, 5*time.Second, "tok", csrDER, "", 0, nil)
+	_, err = joinClientExchange(clientConn, key.PublicBytes(), 5*time.Second, "tok", csrDER, "", 0, nil)
 	var fetchErr *FetchError
 	if !errors.As(err, &fetchErr) {
 		t.Fatalf("joinClientExchange against a garbage msg2 = %v, want *FetchError", err)

@@ -313,7 +313,7 @@ invariant, not debt.** Do not "fix" it by removing the wrapper.
 | `Engine` interface and the file/memory/pebble engines | `pkg/storage` | go-qrdb |
 | Namespace (tenant prefix) wrapper | `pkg/storage/namespace` | go-qrdb |
 | Volume pool adapter, state stores | `pkg/storage/pool` | go-qrdb |
-| Object-storage backends (local, memory, S3, GCS, Azure, MinIO, Glacier) and the pool primitive | — | **go-objstore** |
+| Object-storage backends (local, memory, S3, GCS, Azure, Glacier) and the pool primitive | — | **go-objstore** |
 | `seal.StorageBackend` shape | — | **go-quicraft** (satisfied by duck typing) |
 | State machines composed over these | `pkg/statemachine`, `pkg/engine` | go-qrdb |
 
@@ -342,7 +342,7 @@ go-xkms, not only for this repo.
 - **No encryption.** The barrier sits above.
 - **No remote volume pools.** `LocalOnly` is deliberate.
 - **No cloud object-storage backends of its own.** Those are go-objstore's, and
-  are build-tag gated (`awss3`, `minio`, `gcpstorage`, `azureblob`, `glacier`,
+  are build-tag gated (`awss3`, `gcpstorage`, `azureblob`, `glacier`,
   `azurearchive`).
 
 ## Target design: object-storage LSM segment layout
@@ -454,7 +454,7 @@ Composition, conceptually:
                               +-------+--------+
                                       |
                           go-objstore common.Storage
-                          (local | s3 | gcs | azure | minio)
+                          (local | s3 | gcs | azure)
 ```
 
 ### Decisions needing the owner
@@ -566,7 +566,7 @@ than by keeping the branch alive.
 `common.Storage.Get`/`GetWithContext` return a whole-object `io.ReadCloser`;
 there is no `ReadAt`/byte-range method. Pebble's `remote.ObjectReader.ReadAt`
 expects concurrent, partial, offset reads of potentially large SSTables — the
-pattern every mainstream object-store API (S3, GCS, Azure, MinIO) supports
+pattern every mainstream object-store API (S3, GCS, Azure) supports
 natively via HTTP Range, and every local filesystem supports via
 `os.File.ReadAt`. go-objstore's own interface does not expose it.
 **Recommendation:** file a Gitea issue on `go-objstore` (this repo's agent
@@ -651,7 +651,7 @@ per the existing ruling in `../databases/architecture.md`).
 ### Provider coverage
 
 Every go-objstore provider that supports fast, random reads is viable:
-`local`, `memory`, `s3`, `gcs`, `azure`, `minio` — reachable at Pebble object
+`local`, `memory`, `s3`, `gcs`, `azure` — reachable at Pebble object
 names of ~24 bytes, nowhere near any provider's key-length ceiling (OS-5).
 **`glacier` and `azurearchive` are archive-only tiers with retrieval delays
 measured in hours** (go-objstore registers them only as `Archiver`, never as
@@ -666,7 +666,7 @@ what they already are — backup/archive destinations reached through
 |---|---|---|
 | `pebble.Engine`, `storage.Storage`, `Batch`, `Iterator`, `Snapshot` | `pkg/storage/pebble` | go-qrdb (unchanged) |
 | `remote.Storage` adapter over go-objstore, encrypting wrapper (OS-4) | `pkg/storage/objstore` | go-qrdb (rewritten) |
-| `common.Storage` providers (local, s3, gcs, azure, minio) and their build tags | — | **go-objstore** |
+| `common.Storage` providers (local, s3, gcs, azure) and their build tags | — | **go-objstore** |
 | Ranged/offset reads on `common.Storage` (OS-6, not yet available) | — | **go-objstore** — tracked by a Gitea issue there, not implemented here |
 | `remote.Storage`, `objstorage.CreatorID`, `Options.Experimental.RemoteStorage` | — | **Pebble v2** (`cockroachdb/pebble/v2`) |
 | Fencing and ownership handoff for a single-owner local binding | `pkg/database`, `pkg/placement` | go-qrdb (`../databases/` design, depended on, not owned here) |

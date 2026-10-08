@@ -89,8 +89,8 @@ func TestStdinProvider_SeekableStreamReadsInBulk(t *testing.T) {
 		t.Fatalf("Passphrase: %v", err)
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != pass {
-		t.Fatalf("passphrase has %d bytes, want %d", len(buf.Bytes()), len(pass))
+	if string(contents(buf)) != pass {
+		t.Fatalf("passphrase has %d bytes, want %d", len(contents(buf)), len(pass))
 	}
 	if cs.reads > 2 {
 		t.Fatalf("a 1000-byte passphrase took %d reads; the bulk path takes at most 2", cs.reads)
@@ -116,8 +116,8 @@ func TestStdinProvider_UnseekableStreamStillDoesNotOverRead(t *testing.T) {
 		t.Fatalf("Passphrase: %v", err)
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != "hunter2" {
-		t.Fatalf("passphrase = %q, want %q", buf.Bytes(), "hunter2")
+	if string(contents(buf)) != "hunter2" {
+		t.Fatalf("passphrase = %q, want %q", contents(buf), "hunter2")
 	}
 	if cr.reads != len("hunter2\n") {
 		t.Fatalf("unseekable stream took %d reads, want one per byte (%d)", cr.reads, len("hunter2\n"))
@@ -142,8 +142,8 @@ func TestStdinProvider_SeekerThatCannotSeekIsReadBytewise(t *testing.T) {
 		t.Fatalf("Passphrase: %v", err)
 	}
 	defer buf.Destroy()
-	if string(buf.Bytes()) != "hunter2" {
-		t.Fatalf("passphrase = %q, want %q", buf.Bytes(), "hunter2")
+	if string(contents(buf)) != "hunter2" {
+		t.Fatalf("passphrase = %q, want %q", contents(buf), "hunter2")
 	}
 	rest, err := io.ReadAll(sr)
 	if err != nil {
@@ -220,8 +220,8 @@ func TestStdinProvider_BothPathsAgree(t *testing.T) {
 					t.Fatalf("Passphrase: %v", err)
 				}
 				defer buf.Destroy()
-				if string(buf.Bytes()) != tc.want {
-					t.Fatalf("passphrase = %q, want %q", buf.Bytes(), tc.want)
+				if string(contents(buf)) != tc.want {
+					t.Fatalf("passphrase = %q, want %q", contents(buf), tc.want)
 				}
 				rest, err := io.ReadAll(sr)
 				if err != nil {

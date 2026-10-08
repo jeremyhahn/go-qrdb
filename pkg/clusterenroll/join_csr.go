@@ -600,7 +600,7 @@ func (s *JoinServer) PublicKey() []byte {
 	if s == nil || s.key == nil {
 		return nil
 	}
-	return s.key.Public
+	return s.key.PublicBytes()
 }
 
 // Stop gracefully shuts down the listener and releases the static key's
@@ -677,7 +677,7 @@ func (s *JoinServer) handle(conn net.Conn) {
 
 	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
 		Pattern:        noise.HandshakeNK,
-		LocalStaticKey: &s.key.DHKey,
+		LocalStaticKey: s.key,
 		IsInitiator:    false,
 	})
 	if err != nil {

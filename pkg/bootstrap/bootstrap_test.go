@@ -1908,7 +1908,7 @@ func TestCredentialsForStrategy_InvalidStrategyReturnsError(t *testing.T) {
 // flow — and overrides SealRootKey to keep the credential's enclave rather
 // than open it. After BootstrapSystem returns, that enclave must be destroyed.
 //
-// Delete the `defer creds.Secret.Destroy()` and this fails.
+// Delete the `defer seal.DestroyCredentials(creds)` and this fails.
 // ---------------------------------------------------------------------------
 
 type retainingStrategy struct {
@@ -2035,7 +2035,7 @@ func TestCredentialsForStrategy_CopiesOutOfTheBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credentialsForStrategy: %v", err)
 	}
-	defer creds.Secret.Destroy()
+	defer seal.DestroyCredentials(creds)
 	if got := string(sealtest.Plaintext(t, creds)); got != "correct horse battery staple" {
 		t.Fatalf("Secret = %q, want the supplied passphrase", got)
 	}

@@ -68,8 +68,8 @@ the interface.
   gone by the time the read happens yields nothing, and the read **fails
   closed** rather than returning a correctly sized run of zeros that a caller
   cannot tell from the real credential. The same applies to a resolved
-  `SecretValue`: `Bytes()` answers `nil` and `String()` answers `""` when the
-  material can no longer be read, and `WithBytes` holds the SAME enclave's
+  `SecretValue`: its plaintext is read only through `WithBytes` or `Open`, and
+  `WithBytes` holds the SAME enclave's
   borrow for its callback's entire duration rather than releasing it before
   the callback runs — a concurrent destroy blocks against that borrow instead
   of racing it.

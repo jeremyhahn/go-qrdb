@@ -263,7 +263,7 @@ func runSealUnderExhaustedBudgetChild() {
 		fail("Secret.Open: %v", err)
 	}
 	defer opened.Destroy()
-	if got := string(opened.Bytes()); got != material {
+	if got := string(contents(opened)); got != material {
 		fail("sealed content = %q, want %q", got, material)
 	}
 

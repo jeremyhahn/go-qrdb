@@ -45,8 +45,8 @@ import (
 //
 // A VIEW is protected memory seen as a []byte: the parameter of a function
 // literal passed to a WithBytes(func([]byte) error) error method (any type —
-// secure.Buffer, secret.SecretValue, a go-enclave enclave, a Borrower), a
-// secure.Buffer.Bytes result, or a re-slice of either. A COPY-OUT is:
+// secure.Buffer, secret.SecretValue, a go-enclave enclave, a Borrower), or a
+// re-slice of one. A COPY-OUT is:
 //
 //   - append(x, view...)
 //   - copy(dst, view) where dst is not itself a view
@@ -75,8 +75,8 @@ import (
 // on a channel, passed to an ordinary function, or simply dropped. A copy
 // that genuinely has to outlive every wipe carries //secure:unwiped <reason>
 // trailing it, or standing alone on the line above it, which is per site and
-// visible in review in the same way rule 4's directive is. A directive
-// trailing a different statement on the line above covers nothing.
+// visible in review. A directive trailing a different statement on the line
+// above covers nothing.
 //
 // # What this cannot see, stated rather than implied away
 //
@@ -486,37 +486,21 @@ func (st *copyState) reportf(pos token.Pos, format string, args ...any) {
 }
 
 // views returns the variables in body that hold a view of protected memory:
-// the []byte parameter of a literal callback passed to WithBytes, and any
-// variable assigned from secure.Buffer.Bytes.
+// the []byte parameter of a literal callback passed to WithBytes.
 func (st *copyState) views(body *ast.BlockStmt) map[*types.Var]struct{} {
 	out := make(map[*types.Var]struct{})
 	info := st.pass.TypesInfo
 	ast.Inspect(body, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.CallExpr:
-			if lit := withBytesCallback(info, x); lit != nil {
-				for _, field := range lit.Type.Params.List {
-					for _, name := range field.Names {
-						if v, ok := info.Defs[name].(*types.Var); ok {
-							out[v] = struct{}{}
-						}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if lit := withBytesCallback(info, call); lit != nil {
+			for _, field := range lit.Type.Params.List {
+				for _, name := range field.Names {
+					if v, ok := info.Defs[name].(*types.Var); ok {
+						out[v] = struct{}{}
 					}
-				}
-			}
-		case *ast.AssignStmt:
-			// Bytes has one result, so a Bytes call on the right lines up
-			// with the variable at the same index on the left.
-			for i, rhs := range x.Rhs {
-				call, ok := ast.Unparen(rhs).(*ast.CallExpr)
-				if !ok {
-					continue
-				}
-				sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-				if !ok || !isSecureBufferBytes(info, sel) {
-					continue
-				}
-				if v := rootVar(info, x.Lhs[i]); v != nil {
-					out[v] = struct{}{}
 				}
 			}
 		}
@@ -549,11 +533,6 @@ func isView(info *types.Info, views map[*types.Var]struct{}, expr ast.Expr) bool
 	if v := rootVar(info, expr); v != nil {
 		_, ok := views[v]
 		return ok
-	}
-	if call, ok := ast.Unparen(expr).(*ast.CallExpr); ok {
-		if sel, isSel := ast.Unparen(call.Fun).(*ast.SelectorExpr); isSel {
-			return isSecureBufferBytes(info, sel)
-		}
 	}
 	return false
 }

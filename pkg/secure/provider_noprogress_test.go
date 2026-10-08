@@ -124,8 +124,8 @@ func TestStdinProvider_ToleratesFewerEmptyReadsThanTheLimit(t *testing.T) {
 				t.Fatalf("Passphrase: %v", err)
 			}
 			defer buf.Destroy()
-			if string(buf.Bytes()) != "hunter2" {
-				t.Fatalf("passphrase = %q, want %q", buf.Bytes(), "hunter2")
+			if string(contents(buf)) != "hunter2" {
+				t.Fatalf("passphrase = %q, want %q", contents(buf), "hunter2")
 			}
 		})
 	}
