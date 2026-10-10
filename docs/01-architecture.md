@@ -42,7 +42,7 @@ Source: `go.mod`
 ```
 module github.com/jeremyhahn/go-qrdb
 
-go 1.27.1
+go 1.27.2
 
 require github.com/jeremyhahn/go-quicraft v0.0.0
 replace github.com/jeremyhahn/go-quicraft => ../go-quicraft

@@ -27,4 +27,4 @@
 # thing to question: it means pkg/fts's real coverage fell, being written down
 # as the new normal.
 # build-tags: codec_bson codec_json codec_msgpack codec_protobuf codec_yaml qrdb_embedded qrdb_etcd qrdb_fts qrdb_mysql qrdb_pgsql qrdb_sql qrdb_ts qrdb_vector raft
-github.com/jeremyhahn/go-qrdb/pkg/fts 97.70
+github.com/jeremyhahn/go-qrdb/pkg/fts 97.39

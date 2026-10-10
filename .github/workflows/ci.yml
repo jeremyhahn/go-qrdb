@@ -57,13 +57,13 @@ permissions:
   security-events: write
 
 env:
-  # Go 1.27.1, the latest release (owner ruling 2026-10-07: never pin below
+  # Go 1.27.2, the latest release (owner ruling 2026-10-07: never pin below
   # latest). The 1.27 floor is forced by a Layer 0 dependency rather than
   # chosen (#540): go-enclave's own `go` directive is 1.27.x, go-quicraft
   # consumes it and moved with it, and this module cannot consume either and
-  # stay behind. The `go` directive is 1.27.1 in the root and every nested
+  # stay behind. The `go` directive is 1.27.2 in the root and every nested
   # module (Go evaluates the language version from the MAIN module, so a nested
-  # one left behind fails with "requires go >= 1.27.1" rather than upgrading).
+  # one left behind fails with "requires go >= 1.27.2" rather than upgrading).
   # setup-go 'stable' is prohibited as a spec — it flipped to 1.27 mid-campaign
   # and broke every repo riding it; an exact version is pinned here for the same
   # reason it always was.
@@ -71,7 +71,7 @@ env:
   # The swiss blocker that used to be recorded here was gone before the 1.27
   # move (#177, 2026-09-02): cockroachdb/swiss widened its build tag to
   # `!go1.28`, and both modules had been measured clean under 1.27 since.
-  GO_VERSION: "1.27.1"
+  GO_VERSION: "1.27.2"
 
   # ANALYSIS TOOL PINS (#179, #195). These are the versions BAKED into the
   # self-hosted runner image; the steps below ASSERT the binary they got matches

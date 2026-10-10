@@ -13,6 +13,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **`golang.org/x/net` v0.59.0 → v0.60.0** in the root, `sdk/go`,
+  `sdk/go/gorm/conformance` and `test/performance/qrdb` modules, fixing the
+  HTTP/2 vulnerabilities `govulncheck` reported against the REST server
+  (GO-2026-6617, GO-2026-6612).
+- **Go 1.27.1 → 1.27.2.** The `go` directive of every module, the CI, release
+  and nightly `GO_VERSION`, and the Dockerfiles move to the release that
+  fixes the thirteen standard-library vulnerabilities `govulncheck` reported
+  (among them `html/template`, reached through the REST server). No action pin
+  or dependency version changes.
+
 - **The system barrier resolves its sealing strategy through the strategy
   registry.** `seal.NewSystemStrategyRegistry` holds qrdb's software
   strategies overlaid by a composer's `server.WithStrategyRegistry` registry,
